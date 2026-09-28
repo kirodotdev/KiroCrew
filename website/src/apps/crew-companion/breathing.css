@@ -1,0 +1,59 @@
+/*
+ * Styles for the breathing exercise. A real stylesheet rather than a template
+ * literal in TypeScript: CSS is not program text, and keeping it here means the
+ * i18n scanner never has to decide whether a declaration block is prose.
+ *
+ * The overlay is position:fixed so it needs no containing block from its parent —
+ * that is what lets one component serve both the dashboard page and the
+ * companion's own panel without either host arranging anything for it.
+ *
+ * Colours are dashboard CSS variables, so the exercise follows the active theme.
+ */
+@keyframes ccFade { from { opacity:0 } to { opacity:1 } }
+@keyframes ccHoldPulse { 0%,100% { opacity:1 } 50% { opacity:.55 } }
+
+.cc-breathe { position:absolute; inset:0; z-index:10; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; text-align:center;
+  /* The card's own surface, so the exercise is the same box as the panel rather
+     than a full-screen takeover. */
+  background:var(--card); border-radius:16px;
+  animation:ccFade .18s ease-out both; }
+
+.cc-breathe-end { position:absolute; top:10px; right:10px; width:28px; height:28px;
+  border-radius:50%; display:inline-flex; align-items:center; justify-content:center;
+  background:none; border:none; cursor:pointer; color:var(--muted); font-size:13px;
+  line-height:1; padding:0; }
+.cc-breathe-end:hover { background:var(--border); color:var(--text-strong); }
+.cc-breathe-end:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+.cc-breathe-stage { width:136px; height:136px; display:flex; align-items:center;
+  justify-content:center; position:relative; }
+.cc-breathe-ring { position:absolute; width:112px; height:112px; border-radius:50%;
+  border:1.5px solid var(--accent); opacity:.5;
+  transition:transform .6s cubic-bezier(.4,0,.2,1); }
+.cc-breathe-art { display:block; }
+.cc-breathe-glyph { display:inline-flex; transition:transform .6s cubic-bezier(.4,0,.2,1); }
+
+.cc-breathe-count { margin-top:10px; font-size:34px; font-weight:700; line-height:1;
+  color:var(--text-strong); font-variant-numeric:tabular-nums; }
+.cc-breathe-label { font-size:13px; font-weight:600; color:var(--text-strong); margin-top:8px; }
+.cc-breathe-route { color:var(--muted); font-weight:400; }
+
+.cc-breathe-dots { display:flex; gap:5px; justify-content:center; margin-top:14px; }
+.cc-breathe-dot { width:5px; height:5px; border-radius:50%; background:var(--border); }
+.cc-breathe-dot-on { background:var(--accent); }
+
+.cc-breathe-pulse { animation:ccHoldPulse 2s ease-in-out infinite; }
+
+.cc-breathe-start { display:inline-flex; align-items:center; gap:6px; margin-top:10px;
+  padding:5px 11px; border-radius:999px; border:1px solid var(--border);
+  background:transparent; color:var(--text-strong); font-size:12.5px;
+  font-weight:550; cursor:pointer; }
+.cc-breathe-start:hover { border-color:var(--accent); color:var(--accent); }
+.cc-breathe-start:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-breathe { animation:none; }
+  .cc-breathe-ring, .cc-breathe-glyph { transition:none !important; }
+  .cc-breathe-pulse { animation:none; }
+}

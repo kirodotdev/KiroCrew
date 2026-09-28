@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <mask id="fe-cut">
+    <rect width="24" height="24" fill="white"/>
+    <path d="M4.3,5 L11.7,5 Q13,5 13.92,5.92 L15.08,7.08 Q16,8 16,9.3 L16,20.7 Q16,22 14.7,22 L4.3,22 Q3,22 3,20.7 L3,6.3 Q3,5 4.3,5 Z" fill="black" stroke="black" stroke-width="2.2" stroke-linejoin="round"/>
+  </mask>
+  <g mask="url(#fe-cut)">
+    <path d="M8.3,3 L16.7,3 Q18,3 18.92,3.92 L20.08,5.08 Q21,6 21,7.3 L21,17.7 Q21,19 19.7,19 L10.3,19 Q9,19 9,17.7 L9,7.3 Q9,6 8.28,4.92 L7.72,4.08 Q7,3 8.3,3 Z" fill="var(--ico-a, currentColor)" fill-opacity="0.14" stroke="var(--ico-a, currentColor)" stroke-width="1.3" stroke-opacity="0.55" stroke-linejoin="round"/>
+  </g>
+  <path d="M4.3,5 L11.7,5 Q13,5 13.92,5.92 L15.08,7.08 Q16,8 16,9.3 L16,20.7 Q16,22 14.7,22 L4.3,22 Q3,22 3,20.7 L3,6.3 Q3,5 4.3,5 Z" fill="var(--ico-a, currentColor)" fill-opacity="0.25" stroke="var(--ico-a, currentColor)" stroke-width="1.8" stroke-linejoin="round"/>
+  <rect x="5.5" y="11" width="6" height="2" rx="1" fill="var(--ico-b, currentColor)"/>
+  <rect x="5.5" y="14" width="4" height="2" rx="1" fill="var(--ico-b, currentColor)" fill-opacity="0.8"/>
+  <rect x="5.5" y="17" width="7" height="2" rx="1" fill="var(--ico-b, currentColor)" fill-opacity="0.8"/>
+</svg>

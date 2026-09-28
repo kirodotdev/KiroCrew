@@ -1,0 +1,36 @@
+# Nightly: the "Meet CrewMates" first-run flow, reached from the Crew Members
+# page. The seeded home is already onboarded (seed_home.py sets
+# dashboard.onboarded), so the flow does not fire by itself; the page offers it
+# while the roster holds nothing beyond the built-in `default` row, which is why
+# this scenario seeds NO members. The Crew Members page sits behind a
+# feature-preview switch (per-device localStorage), so the tester turns it on
+# through the GUI first, exactly as a user would. Nightly-only: it walks four
+# steps and two writes (the crewmate and its schedule).
+name: meet-crewmates-flow
+tier: nightly
+feature: members
+user_story: >-
+  As a new user who has never had a crewmate, I want a short guided flow that
+  explains what a crewmate is and creates my first one with a standing job, so
+  that I own a working crewmate without learning the agent editor first.
+docs_url: docs/system-specs/modules/config.md
+summary: Open Meet CrewMates from the empty Crew Members page, walk its four steps and land in Radar's chat
+preconditions:
+  seed: rich
+  members: []
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
+  - Open the Crew Members page. After the preview is on, a "Crew Members" item appears in the left rail, directly under Sessions; click it.
+  - The roster holds only the built-in "default" row. Click the small "Meet CrewMates" button under the roster. A full-screen chapter titled "Meet CrewMates" opens, showing three example crewmates (Radar, Scribe, Fixer) and a counter reading "1 of 4".
+  - Click "Next". The step "Name your first crewmate" opens with the Name box already reading "Radar" and a "Built from" choice. Leave both as they are and click "Next".
+  - The step "Give Radar a job" opens with the job box already filled, "When" set to "Every morning at 9:00" and a "Where it reports" list whose "Its own chat" switch is on. Leave everything as it is and click "Create Radar".
+  - Wait until the step "Radar is ready" appears (a large avatar and a line saying when Radar starts). Then click "Open Radar's chat".
+  - Wait about two seconds.
+expectations:
+  - The Crew Members page is showing again and a row named "Radar" is visible in its roster.
+  - A conversation for Radar is open (the name "Radar" is visible in the conversation header or card).
+  - The "Meet CrewMates" button is no longer visible under the roster (a crewmate now exists).
+max_steps: 18
+max_seconds: 480

@@ -1,0 +1,162 @@
+import { Sparkles } from 'lucide-react'
+import { findReport, sendErrorToChat, type ErrorReport } from '../utils/errorReport'
+import { buildErrorPrompt } from '../utils/errorReport.prompt'
+
+import { i18nT } from '../i18n/t'
+
+/**
+ * "Ask the agent" — turns a dead-end error message into a chat that already
+ * knows what broke.
+ *
+ * This is an AI agent app: an error the user cannot fix themselves is usually
+ * one the agent can, so no error surface should be a dead end. The button
+ * carries the full structured context (route, endpoint, HTTP status, backend
+ * `code`, raw body) into the composer, not just the sentence already on screen.
+ *
+ * Two ways to supply that context:
+ *  - `report` — a structured {@link ErrorReport}, when the caller has one;
+ *  - `message` — just the string, when it does not. The report is then recovered
+ *    from the error journal by message match, which is what makes this droppable
+ *    into the ~80 existing ad-hoc `setError(e.message)` sites unchanged.
+ *
+ * **Deliberately hook-free.** Its most important callers are ErrorBoundary
+ * fallbacks, and a boundary is exactly where the store or router may be the
+ * thing that threw — so requiring `<Provider>`/`<Router>` context would make the
+ * button unavailable in the case it matters most. Navigation goes through the
+ * `installSoftNavigate` seam in `utils/errorReport`, which degrades to a full
+ * page load instead of throwing.
+ */
+export function askAgentPrompt(report: ErrorReport | { message: string }): string {
+  return buildErrorPrompt(report, i18nT('components.askAgent.prompt_lead'))
+}
+
+/**
+ * Hand off with a forced full page load — for the root ErrorBoundary, where a
+ * soft navigation would just re-render the tree that threw.
+ *
+ * Takes the message and resolves the journal entry HERE, at call time, for the
+ * same reason the button does: the boundary's `componentDidCatch` journals the
+ * report only after React has already rendered this fallback.
+ */
+export function askAgentHard(message: string): void {
+  const resolved = findReport(message) ?? { message }
+  sendErrorToChat(askAgentPrompt(resolved), { hard: true })
+}
+
+export function handoffErrorToAgent({
+  report,
+  message,
+  hard = false,
+  onHandoff,
+}: {
+  report?: ErrorReport
+  message?: string
+  hard?: boolean
+  onHandoff?: () => void
+}): boolean {
+  const resolved: ErrorReport | { message: string } | null =
+    report ?? findReport(message) ?? (message ? { message } : null)
+  if (!resolved) return false
+  if (!sendErrorToChat(askAgentPrompt(resolved), { hard })) return false
+  try { onHandoff?.() } catch { /* dismissal is cosmetic; never throw here */ }
+  return true
+}
+
+export default function AskAgentButton({
+  report,
+  message,
+  variant = 'link',
+  hard = false,
+  onHandoff,
+  label,
+  gate,
+  className = '',
+  tone = 'danger',
+}: {
+  report?: ErrorReport
+  message?: string
+  /** `link` for inline use next to an error line; `solid` for a primary action in a fallback card. */
+  variant?: 'link' | 'solid'
+  /** Force a full page load (crash fallbacks, where the live tree is suspect). */
+  hard?: boolean
+  /**
+   * Runs only once the hand-off has actually proceeded — for a caller that
+   * DISMISSES something (a modal that would otherwise sit over the chat, an error
+   * banner whose job is done).
+   *
+   * The guard matters: clearing a surface on a staging failure leaves neither a
+   * navigation nor a visible diagnostic, so the error is erased with nothing shown
+   * in its place. `sendErrorToChat` reports whether it staged, so one check covers
+   * every caller.
+   */
+  onHandoff?: () => void
+  /**
+   * Overrides the shared "Ask the agent" label.
+   *
+   * For a surface that stacks SEVERAL notices, where the default leaves every
+   * hand-off looking like the same affordance and nothing says which failure
+   * each one carries. The reports genuinely differ -- each has its own
+   * endpoint, status and code -- so the label is the only part that was
+   * indistinguishable. Pass a full localized label, not a fragment to append.
+   */
+  label?: string
+  /**
+   * Runs the hand-off through the caller's own gate — `useGuardedLeave`'s
+   * `leave`, for a fallback rendered somewhere that HAS one in scope (the
+   * notification sheet's). The hand-off navigates away from the page on
+   * screen, and this button is hook-free by design, so it cannot ask that page
+   * itself. The gate receives the hand-off as `proceed` and decides whether it
+   * runs; a veto leaves the surface exactly as it was — nothing staged, nothing
+   * moved. Without a gate the hand-off runs directly.
+   */
+  gate?: (proceed: () => void) => void
+  className?: string
+  /**
+   * Link tint. `danger` (default) for placement inside an error surface;
+   * `warn` for a WARNING surface (the pre-approval findings box) — a
+   * danger-red link inside an amber box dresses a not-yet-failed state in
+   * error color. Only affects the `link` variant.
+   */
+  tone?: 'danger' | 'warn'
+}) {
+  // Render only needs to know whether there is anything to offer. The report is
+  // resolved at CLICK time, not here, because of an ordering hazard in the
+  // boundaries: React runs getDerivedStateFromError -> renders this fallback ->
+  // and only THEN componentDidCatch, which is what journals the report. Resolving
+  // during render would therefore capture the pre-journal state — a bare message
+  // with no stack and no component context — and since componentDidCatch writes an
+  // instance field rather than state, nothing re-renders to correct it.
+  if (!report && !message) return null
+
+  const onClick = () => {
+    // The gate goes in FRONT of the whole hand-off, staging included: a vetoed
+    // hand-off that had already queued its prompt would deliver it to the next
+    // chat the user opens, long after the crash it describes.
+    const proceed = () => { handoffErrorToAgent({ report, message, hard, onHandoff }) }
+    if (gate) gate(proceed)
+    else proceed()
+  }
+
+  const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'
+  const skin = variant === 'solid'
+    ? 'px-4 py-1.5 rounded-lg text-[13px] font-medium bg-accent text-accent-fg border-none hover:opacity-90'
+    // Surface-tinted, not muted grey: inside an alert a grey link reads as
+    // unrelated chrome. Underline marks it as the action in the banner. The
+    // tint follows the surface (danger in an error banner, warn in the
+    // pre-approval warning box) so the link never escalates its host.
+    : tone === 'warn'
+      ? 'text-[12px] font-medium text-warn/80 hover:text-warn bg-transparent border-none p-0 underline decoration-warn/30 hover:decoration-warn underline-offset-2'
+      : 'text-[12px] font-medium text-danger/80 hover:text-danger bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2'
+
+  return (
+    <button
+      type="button"
+      className={`${base} ${skin} ${className}`}
+      title={i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
+      onClick={onClick}
+    >
+      <Sparkles size={13} aria-hidden="true" />
+      {label ?? i18nT('components.askAgent.ask_the_agent')}
+    </button>
+  )
+}

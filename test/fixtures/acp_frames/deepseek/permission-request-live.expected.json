@@ -1,0 +1,71 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo kiro-crew-gate-probe",
+          "description": "print a probe marker"
+        },
+        "title": "print a probe marker",
+        "tool_call_id": "toolu_probe_01",
+        "tool_input": "{\n  \"command\": \"echo kiro-crew-gate-probe\",\n  \"description\": \"print a probe marker\"\n}",
+        "tool_kind": "other",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo kiro-crew-gate-probe",
+          "description": "print a probe marker"
+        },
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "toolu_probe_01",
+        "tool_input": "{\n  \"command\": \"echo kiro-crew-gate-probe\",\n  \"description\": \"print a probe marker\"\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_01",
+        "tool_final": true,
+        "tool_output": "kiro-crew-gate-probe\n",
+        "tool_output_bytes": 21,
+        "tool_output_digest": "9ad76f96e1b8e32791de50b9c3b9019149fe830b0f70a7adcd40024bb2795385",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

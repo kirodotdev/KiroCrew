@@ -1,0 +1,10 @@
+{"_meta": {"backend": "kas", "recorded": "synthesized", "date": "2026-09-06", "agent_version": "0.54.3", "note": "Mid-turn steer and summarization discriminants; both spellings classify_notification accepts. See ../README.md."}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "steering_queued", "content": {"type": "text", "text": "also check the tests"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "steering_consumed"}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "steering_cleared"}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "AgentExecutionUserMessageQueued", "content": {"type": "text", "text": "also check the tests"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "AgentExecutionSteeringInjected"}}}
+{"jsonrpc": "2.0", "method": "_kiro.dev/session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "subagent progress"}, "_meta": {"kiro": {"kind": "agent-subtask", "agentSubtaskId": "subtask-1"}}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "summarization_started"}}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "kas-session-0001", "update": {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "summarization_completed", "conversationSummary": "the turn was summarized"}}}}}
+{"jsonrpc": "2.0", "id": 5, "result": {"stopReason": "cancelled"}}

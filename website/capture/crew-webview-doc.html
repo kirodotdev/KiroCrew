@@ -1,0 +1,126 @@
+<!doctype html>
+<!-- Stand-in for the MINTED crew document, served same-origin by the capture
+     dev server so the expanded frame has real content behind it.
+
+     WHY A STATIC FILE. The real document arrives from a single-use URL the
+     gateway mints (POST /api/sandbox-doc), which a capture running without a
+     gateway cannot obtain. What the mint-failure capture has to show is whether
+     the failure bar stays legible ON TOP OF a rendered document, so the frame
+     needs SOMETHING with the template's density and contrast -- four tiles and a
+     prose lead -- rather than an accurate copy of one crew's data.
+
+     The iframe's sandbox is `allow-scripts` with no `allow-same-origin`, so this
+     loads in an opaque origin exactly as a minted document does. It carries no
+     script for that reason: nothing here needs one, and a script would only
+     invite the reader to think the stand-in is doing more than standing in. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Research crew dashboard</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --doc-bg: #16181d;
+        --doc-card: #1e2128;
+        --doc-border: #2c313b;
+        --doc-text: #e6e8ec;
+        --doc-muted: #9aa2b1;
+        --doc-accent: #7aa2f7;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 18px;
+        background: var(--doc-bg);
+        color: var(--doc-text);
+        font:
+          13px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      h1 {
+        margin: 0 0 2px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .sub {
+        margin: 0 0 16px;
+        color: var(--doc-muted);
+        font-size: 12px;
+      }
+      .lead {
+        margin: 0 0 16px;
+        padding: 12px 14px;
+        background: var(--doc-card);
+        border: 1px solid var(--doc-border);
+        border-left: 3px solid var(--doc-accent);
+        border-radius: 8px;
+      }
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .tile {
+        padding: 12px 14px;
+        background: var(--doc-card);
+        border: 1px solid var(--doc-border);
+        border-radius: 8px;
+      }
+      .k {
+        margin: 0 0 6px;
+        color: var(--doc-muted);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+      .v {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .note {
+        margin: 6px 0 0;
+        color: var(--doc-muted);
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Research crew</h1>
+    <!-- What the shipped template prints here is `data.subtitle`, and the fixture's
+         is "Cycle 41". This used to read "Published yesterday", a time claim no
+         template makes, which put a THIRD age on the failed-refresh shots beside
+         the bar chip's and the band's. -->
+    <p class="sub">Cycle 41</p>
+
+    <p class="lead">
+      Six sources read this cycle. The open question is whether the throughput
+      number holds once the cache is cold, which the next cycle measures.
+    </p>
+
+    <div class="tiles">
+      <div class="tile">
+        <p class="k">Sources read</p>
+        <p class="v">146</p>
+      </div>
+      <div class="tile">
+        <p class="k">Open questions</p>
+        <p class="v">3</p>
+      </div>
+      <div class="tile">
+        <p class="k">Throughput</p>
+        <p class="v">18/h</p>
+        <p class="note">Warm cache only.</p>
+      </div>
+      <div class="tile">
+        <p class="k">Cycle</p>
+        <p class="v">41</p>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,1102 @@
+"""Instances registry — persistent store of remote KiroCrew instances.
+
+Backs the *Instances* feature (multi-instance management). The registry is a
+small JSON file at ``~/.kiro/crew/instances.json``. Each record describes how to
+reach one remote Kiro Crew over **either SSH or AWS SSM Session Manager**
+(``connection_method``); the *local* instance is implicit (the gateway itself)
+and is never stored here.
+
+Two persisted hints support lazy reconnect on gateway restart:
+
+* per-instance ``was_connected`` — whether the instance had an open tunnel when
+  it was last touched; renders "disconnected — click to reconnect".
+* top-level ``last_active_id`` — the single instance to auto-revive on startup
+  (startup opens *no* other tunnels, avoiding a stale-credential ssh herd).
+
+Security notes (standard practices):
+
+* No credentials/tokens are ever written here. Records hold only connection
+  *coordinates* (ssh host alias, ports, ttl). Dashboard tokens are minted at
+  connect time and live only in memory / the browser cookie.
+* ``ssh_host`` and ``remote_bin`` get a light charset check here to reject
+  obviously malformed input early; the injection-safe validation that guards
+  the actual ``ssh`` command line lives with the ``SshTunnelManager``.
+* Writes go through :func:`kiro_crew.atomic_write.atomic_write` (temp file +
+  rename) so a crash mid-write can't corrupt the registry.
+
+The registry reads-then-writes the file on every mutation rather than caching an
+in-memory copy, and holds a lock keyed by the registry's path across that pair,
+so two registry objects in one gateway don't clobber each other's changes. An
+out-of-band ``kirocrew`` CLI edit is a separate process and so is outside that
+lock: it always reads a complete file, but a mutation it interleaves with the
+gateway's can still be lost.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
+from kiro_crew.instances.constants import (
+    HOP_LEASE_DEADLINE_CAP_SECS,
+    HOP_LEASE_MAX,
+    TTL_PATTERN,
+)
+from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
+from kiro_crew.instances.validation import split_ecs_target, ssm_target_matches
+from kiro_crew.slugs import slug_hash_fallback
+
+logger = logging.getLogger(__name__)
+
+# Spelled at module level because inside the class body ``list`` names
+# :meth:`InstancesRegistry.list`, so a ``-> list[str]`` annotation on any method defined
+# after it resolves to that method and mypy rejects it as not valid as a type.
+_IdList = list[str]
+
+# Monkeypatchable in tests via ``monkeypatch.setattr`` alongside KIROCREW_HOME,
+# per the shared-state test-isolation lesson. ``None`` means "derive from
+# config_dir() at call time" so KIROCREW_HOME overrides are always honoured.
+_DEFAULT_DIR: Path | None = None
+_FILENAME = "instances.json"
+
+# Instance id: slug-like, what the URL/switcher key uses. Kept conservative so
+# it is safe as a dict key, a query param, and a filename component.
+_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\Z")
+
+# ssh_host / remote_bin light charset guard (early reject only — the real
+# injection-safe validation lives in the tunnel manager, Stage 4). Allows
+# hostnames, FQDNs, ssh config aliases, user@host, and absolute bin paths.
+_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9._@\-]{1,255}\Z")
+_REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
+
+# ssm_target: an EC2 instance id (i-<hex>), an SSM managed-instance id
+# (mi-<hex>), or an ECS task target (ecs:<cluster>_<taskId>_<runtimeId>) for the
+# Fargate lane; early reject only, mirroring the ssh_host guard above — the
+# authoritative validation lives with the tunnel manager (validation.py).
+#
+# The shape is NOT re-spelled here. A per-module copy of the same security charset
+# lets one lane be widened while the other goes on refusing the value, so the
+# decision lives in validation.ssm_target_matches and is imported, the same seam
+# _AWS_PROFILE_RE uses below.
+# aws_profile: named profile in ~/.aws/config; conservative charset, no shell
+# metacharacters ('+' is legal: IAM entity names permit it, and SSO-derived
+# profiles use "<account>+<permission-set>"). Single source of truth lives in
+# validation.py; the empty "default credential chain" value is handled by the
+# `if self.aws_profile` guard at the check site rather than by the pattern.
+_AWS_PROFILE_RE = _validation_aws_profile_re
+# aws_region: standard AWS region shape (e.g. us-east-1, eu-west-2). Empty
+# string means "use the profile's/environment's default region".
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z|^\Z")
+# ssm_run_as: the remote POSIX user that SSM commands are wrapped in
+# (``sudo -u <user> -i``). Unix username shape, matching the charset
+# cloud.ssm.run_command validates at the chokepoint. Defaults to the
+# launcher-provisioned AL2023 user; an Ubuntu AMI needs "ubuntu".
+_SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}\Z")
+# Shared with both token minters (see constants.TTL_PATTERN).
+_TTL_RE = re.compile(TTL_PATTERN)
+_DEFAULT_SSM_RUN_AS = "ec2-user"
+
+# The port a stock gateway binds, so "add a remote that has not been
+# reconfigured" needs no edit. NOT a second definition of the number:
+# ``config/loader.py`` owns it per docs/system-specs/common/code-style.md, which
+# names that module as the single owner of the dashboard port and cites
+# ``dashboard/origin.py`` importing it rather than restating it. This is the same
+# re-export seam, giving the value a name that says what it means HERE (the
+# REMOTE's port, not ours).
+#
+# The local forward does not mirror this value: mirroring would pre-fill the port
+# a stock remote actually binds and land the user on a guaranteed local-port
+# collision.
+DEFAULT_REMOTE_PORT = _DEFAULT_PORT
+_DEFAULT_TTL = "20h"
+
+# Supported connection transports. "ssh" is the original/default transport
+# (ssh -N -L); "ssm" tunnels over AWS Systems Manager Session Manager
+# (aws ssm start-session --document-name AWS-StartPortForwardingSession),
+# needing no inbound SSH port and no SSH key — only IAM + the SSM agent.
+# "fargate" is the same SSM port-forward aimed at an ECS task
+# (``ssm_target`` = ``ecs:<cluster>_<task-id>_<runtime-id>``) whose only listener
+# is the crew container's turn API: no dashboard, no token to mint, and nothing
+# to run ``kirocrew`` on, so the tunnel manager forwards and does nothing else.
+#: Longest crew name this registry will retain.
+#:
+#: A bound bounds every field it retains, and a name is retained: it is persisted
+#: per row and echoed in every list response, so an unbounded one turns the row
+#: caps into no bound at all -- eight chained rows of arbitrarily long names are
+#: still an arbitrarily large registry and an arbitrarily large reply.
+#:
+#: The number is the SAME one the relay already applies: `CHAINED_NAME_MAX` in
+#: `website/src/lib/chainAnnounce.ts` slices an announced name to it before
+#: anything is sent, so frame code could never exceed this. Repeating it here is
+#: what makes the bound a property of the STORE rather than of one caller, which
+#: is the only place it holds for a caller that does not go through the relay.
+#: `test_the_backend_name_cap_matches_the_relays` pins the two together.
+#:
+#: Enforced by :func:`validate_instance_name` at the WRITE sites (``add``, and
+#: ``update`` only when the patch carries ``name``), not in
+#: :meth:`Instance.validate` -- see that function for why capping the whole
+#: record loses an unrelated hint write on a row already over the cap.
+INSTANCE_NAME_MAX = 200
+
+CONNECTION_METHODS: tuple[str, ...] = ("ssh", "ssm", "fargate")
+_DEFAULT_CONNECTION_METHOD = "ssh"
+# The methods whose forwarder is ``aws ssm start-session``; they share the
+# ``ssm_target`` / ``aws_profile`` / ``aws_region`` coordinates.
+SSM_TRANSPORT_METHODS: frozenset[str] = frozenset({"ssm", "fargate"})
+
+# ``local_port == 0`` is the sentinel for "not yet allocated" — the port
+# allocator (Stage 3) assigns a real port at connect time.
+_UNALLOCATED_PORT = 0
+
+# ``forwarder_pid == 0`` is the sentinel for "no forwarder child recorded".
+# Connect records the spawned tunnel child's pid so a forwarder orphaned by a
+# gateway hard-kill can later be reclaimed by identity (its own pid) instead of
+# a process-table match; disconnect resets it together with ``local_port``.
+_NO_FORWARDER_PID = 0
+
+
+class InstancesError(Exception):
+    """Base error for registry operations."""
+
+
+class DuplicateInstanceError(InstancesError):
+    """Raised when adding an instance whose id already exists."""
+
+
+class InstanceNotFoundError(InstancesError):
+    """Raised when an operation targets an unknown instance id."""
+
+
+class InvalidInstanceError(InstancesError):
+    """Raised when an instance record fails validation."""
+
+
+def _slugify(name: str) -> str:
+    """Derive a slug-like id from a human name (lowercase, hyphen-separated)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    slug = slug[:63]
+    return slug or slug_hash_fallback(name, "instance")
+
+
+def validate_ttl(ttl: str) -> None:
+    """Reject a ttl the token minters would refuse.
+
+    Checked where a ttl is WRITTEN rather than in :meth:`Instance.validate`, so a
+    legacy record whose stored ttl predates this rule keeps working: its hint
+    writes (``was_connected`` / ``local_port`` from connect and disconnect) go
+    through ``update()`` too, and failing those would break the teardown path
+    over a field the caller never touched.
+    """
+    if not _TTL_RE.match(ttl):
+        raise InvalidInstanceError(
+            f"invalid ttl {ttl!r}: expected a positive integer of at most four "
+            f"digits followed by 'h' or 'm' (e.g. 20h, 30m)"
+        )
+
+
+def validate_instance_name(name: str) -> None:
+    """Reject a name longer than the registry retains.
+
+    Checked where a name is WRITTEN rather than in :meth:`Instance.validate`, for
+    the same reason as :func:`validate_ttl`: a stored name that exceeds this cap
+    keeps working. Nothing truncates on the way in -- no length check at the
+    handler, none in :meth:`Instance.from_dict` -- so a stored row can be longer
+    than this, and ``validate()`` runs against the WHOLE record on every
+    ``update()``. Capping there fails the hint writes that carry an unrelated
+    field: ``disconnect`` resets ``was_connected`` and ``local_port`` through
+    ``update()``, and those writes are best-effort, so the refusal is swallowed and
+    the reset is lost -- reviving at the next start a crew the user explicitly
+    disconnected, and holding a port that is free for anything else to bind.
+    An over-cap stored name is then unfixable except by renaming, which is the one
+    write this rule must still refuse.
+    """
+    if len(name) > INSTANCE_NAME_MAX:
+        raise InvalidInstanceError(
+            f"instance name is {len(name)} characters: at most " f"{INSTANCE_NAME_MAX} are kept"
+        )
+
+
+@dataclass
+class Instance:
+    """One remote Kiro Crew instance reachable over SSH or SSM.
+
+    Holds the connection coordinates plus the lazy-reconnect ``was_connected``
+    hint. The local instance is implicit and is never represented by an
+    ``Instance`` record.
+
+    ``connection_method`` selects the transport: ``"ssh"`` (default, uses
+    ``ssh_host``/``remote_bin``) or ``"ssm"`` (uses ``ssm_target`` — an EC2/SSM
+    managed-instance id — plus optional ``aws_profile``/``aws_region``; no SSH
+    key or inbound port needed). ``"fargate"`` is the SSM forward aimed at an ECS
+    task target; it has no dashboard, so no token is ever minted for it. All
+    methods share ``remote_port``/``ttl``.
+    """
+
+    id: str
+    name: str
+    ssh_host: str = ""
+    remote_port: int = DEFAULT_REMOTE_PORT
+    local_port: int = _UNALLOCATED_PORT
+    ttl: str = _DEFAULT_TTL
+    remote_bin: str = ""
+    # "ssh" (default), "ssm" or "fargate" -- see CONNECTION_METHODS.
+    connection_method: str = _DEFAULT_CONNECTION_METHOD
+    # SSM-transport fields. ssm_target is an EC2 instance id (i-...) or SSM
+    # managed instance id (mi-...) for "ssm", an ECS task target (ecs:...) for
+    # "fargate"; aws_profile/aws_region are optional (empty = use the default
+    # credential chain / region).
+    ssm_target: str = ""
+    aws_profile: str = ""
+    aws_region: str = ""
+    # Remote POSIX user for SSM commands (mint / restart / probe), which
+    # cloud.ssm.run_command wraps in `sudo -u <user> -i`. Defaults to the
+    # launcher-provisioned AL2023 user; set "ubuntu" (or whoever runs the remote
+    # gateway) on other AMIs, otherwise the tunnel comes up but the mint fails.
+    ssm_run_as: str = _DEFAULT_SSM_RUN_AS
+    # Provisioner that created this crew, when known. Empty means the machine
+    # was added directly or predates source tracking.
+    provisioner_id: str = ""
+    # Chaining coordinates. A CHAINED instance is one this gateway cannot reach
+    # directly: another instance already in this registry reaches it, and this
+    # gateway rides that hop. ``via_instance_id`` is that parent's id, and
+    # ``via_remote_port`` is the loopback port ON THE PARENT where the parent's
+    # own forward to this instance listens — so the forward opened here targets
+    # ``<parent's host>`` and ``via_remote_port`` rather than this record's own
+    # ``ssh_host``/``remote_port``, which describe where the crew's gateway
+    # listens on its OWN machine and stay informational.
+    #
+    # ``via_remote_id`` is this crew's id in the PARENT's registry, which is a
+    # different fact from either of those: ``via_instance_id`` names the parent
+    # here, while this names the CHILD there. The parent is the side that mints
+    # this crew's token, and it looks the crew up by its own id, so that is the
+    # id the mint request must carry. An id derived from the name here would only
+    # coincide with it by luck — a name collision, a rename on the parent, or an
+    # explicitly assigned id makes them differ, and the parent then answers 404
+    # for a crew it holds.
+    #
+    # All three empty is a top-level instance, which is every record written
+    # before chaining existed; the loader defaults them, so an old registry file
+    # is read unchanged.
+    via_instance_id: str = ""
+    via_remote_port: int = _UNALLOCATED_PORT
+    via_remote_id: str = ""
+    # Sticky "connection intent" — the source of truth for whether a tab should
+    # exist for this instance. Set True when a tunnel is opened and cleared ONLY
+    # on an explicit user disconnect; deliberately LEFT TRUE across gateway
+    # shutdown and across a failed auto-revive, so the frontend keeps the tab
+    # (showing an error / click-to-reconnect state) instead of dropping it.
+    # Startup uses it to decide which instances to auto-reconnect.
+    was_connected: bool = False
+    # Pid of the tunnel forwarder child this manager spawned for the recorded
+    # ``local_port`` (0 = none recorded), paired with the opaque start-time
+    # identity ``platform_compat.process_start_time`` reported for it ("" =
+    # unknown). Persisted so a forwarder orphaned by a gateway hard-kill can be
+    # reclaimed by its OWN identity — pid + start time + exact argv — never by
+    # matching the process table, which cannot distinguish our child from an
+    # operator's own forward. Either half missing means the identity
+    # cannot be confirmed and no reclaim happens (fail closed).
+    forwarder_pid: int = _NO_FORWARDER_PID
+    forwarder_start: str = ""
+    # HMAC over (id, forwarder_pid, forwarder_start, local_port) under a
+    # gateway-held key ("" = unsigned). The registry file is agent-writable, so
+    # the identity above gates but cannot authorize by itself; the signature is
+    # what makes it the GATEWAY's own claim — a record an agent wrote or
+    # redirected fails verification and is never reclaimed (fail closed).
+    forwarder_sig: str = ""
+
+    def validate(self) -> None:
+        """Raise :class:`InvalidInstanceError` if any field is malformed."""
+        if not _ID_RE.match(self.id):
+            raise InvalidInstanceError(
+                f"invalid instance id {self.id!r}: must match {_ID_RE.pattern}"
+            )
+        if not self.name or not self.name.strip():
+            raise InvalidInstanceError("instance name must be non-empty")
+        if self.connection_method not in CONNECTION_METHODS:
+            raise InvalidInstanceError(
+                f"invalid connection_method {self.connection_method!r}: "
+                f"must be one of {CONNECTION_METHODS}"
+            )
+        if self.connection_method == "ssh":
+            if not self.ssh_host or not _SSH_HOST_RE.match(self.ssh_host):
+                raise InvalidInstanceError(
+                    f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
+                )
+        elif self.connection_method == "fargate":
+            # The same splitter the ``fargate`` transport reads the target with,
+            # so a target this arm stores is one that lane can open.
+            #
+            # Checked UNSTRIPPED, and what reaches here is user input, not a
+            # stored record: handlers_instances passes
+            # ``str(body.get("ssm_target", ""))`` straight into this constructor,
+            # and ``validate_ssm_target`` (the layer that strips) runs later, at
+            # connect time. An ECS target is 90-plus characters copied out of the
+            # AWS console, where a trailing space or newline rides along far more
+            # often than it does with ``i-0abc``; the splitter refuses such a
+            # paste rather than storing it. That fails closed, which is why the
+            # behaviour is left alone, but a reader should know it is the paste
+            # that lands on it.
+            if not self.ssm_target or split_ecs_target(self.ssm_target) is None:
+                raise InvalidInstanceError(
+                    f"invalid ssm_target {self.ssm_target!r}: a fargate instance needs "
+                    f"an ECS task target (ecs:<cluster>_<task-id>_<runtime-id>)"
+                )
+            self._validate_aws_coordinates()
+        else:  # ssm
+            # ``ssm_target_matches`` admits the ECS task shape too (it is the
+            # shared SSM-transport charset), but an ECS task has no SSM agent to
+            # run ``kirocrew token`` on, so a record filed here would forward and
+            # then fail at the mint. Refuse it and name the arm that stores it.
+            if split_ecs_target(self.ssm_target) is not None:
+                raise InvalidInstanceError(
+                    f"invalid ssm_target {self.ssm_target!r}: an ECS task target belongs "
+                    f"to the fargate connection method, not ssm"
+                )
+            # Checked UNSTRIPPED: what reaches here is the request body's
+            # ``ssm_target`` as typed, and ``validate_ssm_target`` (the layer that
+            # strips) runs later, at connect time. A pasted ``i-``/``mi-`` id with
+            # a trailing space or newline is refused here rather than stored.
+            if not self.ssm_target or not ssm_target_matches(self.ssm_target):
+                # No regex in the message — it reaches the Settings form verbatim.
+                raise InvalidInstanceError(
+                    f"invalid ssm_target {self.ssm_target!r}: must be an EC2/SSM "
+                    f"managed-instance id (i-... or mi-...) followed by 8 to 17 "
+                    f"hex digits"
+                )
+            self._validate_aws_coordinates()
+            if not _SSM_RUN_AS_RE.match(self.ssm_run_as):
+                raise InvalidInstanceError(
+                    f"invalid ssm_run_as {self.ssm_run_as!r}: must be a Unix "
+                    f"username (lowercase, starts with a letter or underscore)"
+                )
+        if self.remote_bin and not _REMOTE_BIN_RE.match(self.remote_bin):
+            raise InvalidInstanceError(f"invalid remote_bin {self.remote_bin!r}")
+        for label, port, allow_zero in (
+            ("remote_port", self.remote_port, False),
+            ("local_port", self.local_port, True),
+        ):
+            lo = 0 if allow_zero else 1
+            if not isinstance(port, int) or not (lo <= port <= 65535):
+                raise InvalidInstanceError(
+                    f"invalid {label} {port!r}: must be an int in "
+                    f"[{lo}, 65535]" + (" (0 = unallocated)" if allow_zero else "")
+                )
+        if not isinstance(self.provisioner_id, str):
+            raise InvalidInstanceError(
+                f"invalid provisioner_id {self.provisioner_id!r}: must be a string"
+            )
+        self._validate_chain()
+        if not isinstance(self.forwarder_pid, int) or self.forwarder_pid < 0:
+            raise InvalidInstanceError(
+                f"invalid forwarder_pid {self.forwarder_pid!r}: must be an int "
+                f">= 0 (0 = no forwarder recorded)"
+            )
+        if not isinstance(self.forwarder_start, str):
+            raise InvalidInstanceError(
+                f"invalid forwarder_start {self.forwarder_start!r}: must be a "
+                f"string ('' = unknown)"
+            )
+        if not isinstance(self.forwarder_sig, str):
+            raise InvalidInstanceError(
+                f"invalid forwarder_sig {self.forwarder_sig!r}: must be a "
+                f"string ('' = unsigned)"
+            )
+
+    def _validate_aws_coordinates(self) -> None:
+        """Reject a malformed ``aws_profile`` / ``aws_region`` (empty = default)."""
+        if self.aws_profile and not _AWS_PROFILE_RE.match(self.aws_profile):
+            raise InvalidInstanceError(
+                f"invalid aws_profile {self.aws_profile!r} "
+                f"(allowed: letters, digits, '.', '_', '+', '-')"
+            )
+        if self.aws_region and not _AWS_REGION_RE.match(self.aws_region):
+            raise InvalidInstanceError(f"invalid aws_region {self.aws_region!r}")
+
+    def _validate_chain(self) -> None:
+        """Reject a malformed chaining pair.
+
+        The two fields travel together: a parent with no port names a hop with no
+        destination, and a port with no parent names a destination with no hop.
+        Either half alone would be read as "top level" by every consumer while
+        the record clearly means something else, so the pair is refused rather
+        than silently half-applied.
+
+        A record naming ITSELF as its parent is refused here. Longer loops
+        (``a`` via ``b`` via ``a``) span two records and cannot be seen from one,
+        so they are refused by the handler that walks the chain.
+        """
+        if self.via_instance_id and not _ID_RE.match(self.via_instance_id):
+            raise InvalidInstanceError(
+                f"invalid via_instance_id {self.via_instance_id!r}: must match {_ID_RE.pattern}"
+            )
+        if self.via_instance_id == self.id and self.via_instance_id:
+            raise InvalidInstanceError(
+                f"invalid via_instance_id {self.via_instance_id!r}: an instance cannot be "
+                f"reached through itself"
+            )
+        if not isinstance(self.via_remote_port, int) or isinstance(self.via_remote_port, bool):
+            raise InvalidInstanceError(
+                f"invalid via_remote_port {self.via_remote_port!r}: must be an int"
+            )
+        if self.via_instance_id:
+            if not (1 <= self.via_remote_port <= 65535):
+                raise InvalidInstanceError(
+                    f"invalid via_remote_port {self.via_remote_port!r}: a chained instance "
+                    f"needs the port on its parent where the parent's own forward listens "
+                    f"(1-65535)"
+                )
+        elif self.via_remote_port != _UNALLOCATED_PORT:
+            raise InvalidInstanceError(
+                f"invalid via_remote_port {self.via_remote_port!r}: only a chained instance "
+                f"(one with via_instance_id) has a port on a parent"
+            )
+        if self.via_remote_id and not _ID_RE.match(self.via_remote_id):
+            raise InvalidInstanceError(
+                f"invalid via_remote_id {self.via_remote_id!r}: must match {_ID_RE.pattern}"
+            )
+        if self.via_instance_id and not self.via_remote_id:
+            raise InvalidInstanceError(
+                "a chained instance needs via_remote_id: the parent mints this crew's token "
+                "and looks it up by ITS OWN id for the crew, which an id derived here does "
+                "not reliably equal"
+            )
+        if self.via_remote_id and not self.via_instance_id:
+            raise InvalidInstanceError(
+                f"invalid via_remote_id {self.via_remote_id!r}: only a chained instance "
+                f"(one with via_instance_id) has an id on a parent"
+            )
+
+    def to_dict(self) -> dict:
+        """Serialize to the JSON shape stored in ``instances.json``."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "ssh_host": self.ssh_host,
+            "remote_port": self.remote_port,
+            "local_port": self.local_port,
+            "ttl": self.ttl,
+            "remote_bin": self.remote_bin,
+            "connection_method": self.connection_method,
+            "ssm_target": self.ssm_target,
+            "aws_profile": self.aws_profile,
+            "aws_region": self.aws_region,
+            "ssm_run_as": self.ssm_run_as,
+            "provisioner_id": self.provisioner_id,
+            "via_instance_id": self.via_instance_id,
+            "via_remote_port": self.via_remote_port,
+            "via_remote_id": self.via_remote_id,
+            "was_connected": self.was_connected,
+            "forwarder_pid": self.forwarder_pid,
+            "forwarder_start": self.forwarder_start,
+            "forwarder_sig": self.forwarder_sig,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Instance:
+        """Build an :class:`Instance` from a stored dict, coercing types.
+
+        Tolerant of missing/extra keys so older registry files (pre-SSM, with
+        no ``connection_method``) load cleanly — they default to ``"ssh"``.
+        """
+
+        def _as_int(value: object, default: int) -> int:
+            try:
+                return int(value)  # type: ignore[call-overload]
+            except (TypeError, ValueError):
+                return default
+
+        def _as_epoch(value: object, default: float) -> float:
+            """Coerce a stored epoch second with this loader's own tolerance.
+
+            A file written before the reservation existed has no such key, and a
+            hand-edited one may hold anything, so an unreadable value reads as
+            "none outstanding" rather than raising out of the loader. The cost of
+            that is one port becoming allocatable early -- which is exactly the
+            behaviour before the field existed.
+            """
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return default
+            return default if float(value) < 0 else float(value)
+
+        return cls(
+            id=str(data.get("id", "")),
+            name=str(data.get("name", "")),
+            ssh_host=str(data.get("ssh_host", "")),
+            remote_port=_as_int(data.get("remote_port"), DEFAULT_REMOTE_PORT),
+            local_port=_as_int(data.get("local_port"), _UNALLOCATED_PORT),
+            ttl=str(data.get("ttl", _DEFAULT_TTL)),
+            remote_bin=str(data.get("remote_bin", "")),
+            connection_method=str(data.get("connection_method", _DEFAULT_CONNECTION_METHOD)),
+            ssm_target=str(data.get("ssm_target", "")),
+            aws_profile=str(data.get("aws_profile", "")),
+            aws_region=str(data.get("aws_region", "")),
+            # `or _DEFAULT_SSM_RUN_AS` (not just a dict default): a record written
+            # by an older build has no key, and one written with an explicit
+            # empty string would fail validation — both mean "use the default".
+            ssm_run_as=str(data.get("ssm_run_as", "") or _DEFAULT_SSM_RUN_AS),
+            provisioner_id=str(data.get("provisioner_id", "") or ""),
+            via_instance_id=str(data.get("via_instance_id", "") or ""),
+            # max() for the same reason as forwarder_pid: a hand-edited negative
+            # normalizes to the "no hop" sentinel rather than failing every later
+            # update() on a field the caller never touched.
+            via_remote_port=max(_UNALLOCATED_PORT, _as_int(data.get("via_remote_port"), 0)),
+            via_remote_id=str(data.get("via_remote_id", "") or ""),
+            was_connected=bool(data.get("was_connected", False)),
+            # max(): a hand-edited negative pid normalizes to the sentinel
+            # rather than poisoning every later update() with a validate error
+            # — matching this loader's documented key tolerance.
+            forwarder_pid=max(_NO_FORWARDER_PID, _as_int(data.get("forwarder_pid"), 0)),
+            forwarder_start=str(data.get("forwarder_start", "") or ""),
+            forwarder_sig=str(data.get("forwarder_sig", "") or ""),
+        )
+
+
+@dataclass
+class _RegistryDoc:
+    """In-memory view of the whole ``instances.json`` document."""
+
+    instances: list[Instance] = field(default_factory=list)
+    last_active_id: str = ""
+    #: port -> epoch second a chained credential minted against it stops being valid.
+    #:
+    #: Document-level, NOT a field on the crew whose hop was lent, and that placement
+    #: is the whole point: ``remove`` filters ``instances``, so a reservation held on
+    #: the row vanished with the crew while its credential was still live, handing the
+    #: port back to the allocator. Keyed by PORT because the port is what the holder of
+    #: the credential forwards to, and it must stay withheld whether or not the crew it
+    #: belonged to still exists.
+    hop_leases: dict[int, float] = field(default_factory=dict)
+
+
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.RLock:
+    """Return the one lock every registry object over *path* shares.
+
+    A lock owned by a registry object serialises only that object's own callers.
+    Callers build a registry per request -- :mod:`kiro_crew.cloud.connect`, the
+    instances handlers and the dashboard server each construct their own -- so
+    two objects over the same file would interleave a read with the other's
+    write and drop a record. Keying by resolved path gives them one lock, which
+    is what makes the read-modify-write in each mutation atomic.
+
+    Locks are kept for the life of the process and never evicted: a lock is the
+    thing a writer may be holding right now, so dropping one would hand the next
+    caller a fresh lock and reopen the window. The table holds one entry per
+    distinct registry file, which is one in a gateway.
+    """
+    try:
+        key = str(path.resolve())
+    except OSError:
+        key = str(path.absolute())
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
+
+
+#: How many hops a chain may ride. A -> B -> C is the deepest arrangement the
+#: chaining feature supports: the hub holds one hop to B and a second hop that
+#: rides B's own forward to C. Two hops, three levels counting the hub.
+#:
+#: The cap is the safety mechanism, not a tuning knob: each extra level adds a
+#: forward, a token minted through one more relay, and one more machine whose
+#: failure takes the pane down, while the arrangement gets harder to read off the
+#: tab bar the deeper it goes.
+MAX_VIA_HOPS = 2
+
+#: How many crews may ride ONE parent's hop.
+#:
+#: The depth cap above bounds how far a chain reaches; this bounds how WIDE it
+#: gets, and the two are separate because a chain of legal depth can still be
+#: added without end. A chained row is created by the parent's own pane
+#: announcing a crew it connected, so the population behind one parent is
+#: decided by whatever runs in that pane rather than by anyone at this
+#: dashboard: without a cap a single parent can fill the registry, and every
+#: row it adds is another forward and another mint this gateway attempts.
+#:
+#: Counted per parent, not across the registry, so one parent cannot crowd the
+#: others out. Sized past any honest arrangement -- each crew behind a hop is a
+#: local port and a process here, and a person with more than this many behind
+#: one machine is better served connecting them from a dashboard closer to them.
+MAX_CHAINED_PER_PARENT = 8
+
+
+def ancestor_ids(instances: list[Instance], instance_id: str) -> list[str]:
+    """Ids on *instance_id*'s via chain, nearest parent first.
+
+    Walks ``via_instance_id`` outward. The walk is bounded and remembers where it
+    has been, so a registry a hand edit left holding a loop (``a`` via ``b`` via
+    ``a``) terminates and returns the ids it saw rather than spinning; a caller
+    reads a chain longer than :data:`MAX_VIA_HOPS` as "refuse this".
+
+    *instance_id* itself is never in the result. A parent id naming no record ends
+    the walk, because an absent parent is a hop with no host to ride.
+    """
+    by_id = {inst.id: inst for inst in instances}
+    seen: set[str] = {instance_id}
+    chain: list[str] = []
+    current = by_id.get(instance_id)
+    # One step past the cap so a caller can SEE an over-deep chain instead of
+    # being handed a truncated one that looks legal.
+    for _ in range(MAX_VIA_HOPS + 2):
+        if current is None or not current.via_instance_id:
+            break
+        parent_id = current.via_instance_id
+        chain.append(parent_id)
+        if parent_id in seen:
+            break
+        seen.add(parent_id)
+        current = by_id.get(parent_id)
+    return chain
+
+
+def descendant_ids(instances: list[Instance], instance_id: str) -> list[str]:
+    """Ids reached THROUGH *instance_id*, each parent before its own children.
+
+    A chained instance rides its parent's forward, so a parent going away takes
+    every record below it with it. Breadth-first and visit-guarded, so a looped
+    registry terminates; *instance_id* itself is never included.
+    """
+    children: dict[str, list[str]] = {}
+    for inst in instances:
+        if inst.via_instance_id:
+            children.setdefault(inst.via_instance_id, []).append(inst.id)
+    out: list[str] = []
+    seen = {instance_id}
+    queue = list(children.get(instance_id, ()))
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        out.append(current)
+        queue.extend(children.get(current, ()))
+    return out
+
+
+def _find(doc: _RegistryDoc, instance_id: str) -> Instance | None:
+    """Return the record in *doc* with *instance_id*, or ``None`` if absent.
+
+    Hands back the live object out of ``doc.instances`` (not a copy), so a caller
+    holding the lock can mutate it in place and persist *doc*.
+    """
+    for inst in doc.instances:
+        if inst.id == instance_id:
+            return inst
+    return None
+
+
+class InstancesRegistry:
+    """CRUD over ``instances.json`` with atomic writes and a per-file lock.
+
+    Every mutation re-reads the file, applies the change, validates, and writes
+    atomically while holding the lock shared by all registry objects over that
+    file, so threads in one process -- a launch registering its instance, a
+    dashboard edit, the server's own reads -- cannot interleave a read with a
+    write and drop one another's records.
+
+    That lock spans threads, not processes. A separate process writing the same
+    file serialises only on :func:`atomic_write`'s rename, which keeps the file
+    readable at all times but leaves a read-modify-write pair non-atomic across
+    processes.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        if path is not None:
+            self._path = path
+        else:
+            base = _DEFAULT_DIR if _DEFAULT_DIR is not None else config_dir()
+            self._path = base / _FILENAME
+        self._lock = _lock_for(self._path)
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    # ── persistence ──────────────────────────────────────────────────────
+
+    def _read(self) -> _RegistryDoc:
+        """Load the registry document from disk, tolerating absence/corruption."""
+        if not self._path.exists():
+            return _RegistryDoc()
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to read %s: %s — treating as empty", self._path, e)
+            return _RegistryDoc()
+        if not isinstance(raw, dict):
+            logger.warning("%s is not a JSON object — treating as empty", self._path)
+            return _RegistryDoc()
+        raw_list = raw.get("instances", [])
+        instances: list[Instance] = []
+        if isinstance(raw_list, list):
+            for entry in raw_list:
+                if isinstance(entry, dict) and entry.get("id"):
+                    instances.append(Instance.from_dict(entry))
+        last_active = raw.get("last_active_id", "")
+        leases: dict[int, float] = {}
+        raw_leases = raw.get("hop_leases")
+        if isinstance(raw_leases, dict):
+            # The deadline is clamped, not validated: a stored value further out than the
+            # cap cannot have come from this gateway's writer, which clamps before it
+            # writes, so honouring it would let a foreign write reserve a port for as long
+            # as it liked. Clamping keeps the lease (the credential it names may well be
+            # live) while bounding what it can cost.
+            #
+            # The clamp is anchored to the FILE's mtime rather than to the clock, because
+            # a horizon taken from the clock is recomputed on every read and so slides
+            # with it: an over-cap deadline would come back as a fresh ``now + cap`` each
+            # time, never satisfy ``u <= now``, and withhold its port for as long as this
+            # process lives, with ``sync_hop_holds`` keeping a socket bound on it. mtime
+            # is when a writer last clamped, and admission clamps to ``write_time + cap``,
+            # so an entry this gateway wrote is never cut, while a foreign far-future one
+            # lapses one cap after the last write and frees its port on its own.
+            #
+            # The clock is the anchor only when the file cannot be stat'ed -- it was
+            # removed between the existence check at the top of this method and here, so
+            # there is no write time to anchor to. A fresh home does not reach this line
+            # at all: no file means the early return above.
+            try:
+                clamped_at = self._path.stat().st_mtime
+            except OSError:
+                clamped_at = time.time()
+            horizon = clamped_at + HOP_LEASE_DEADLINE_CAP_SECS
+            for key, value in raw_leases.items():
+                # Tolerant like the rest of this loader, and fail-OPEN by necessity:
+                # an unreadable entry is one this gateway cannot honour, so it is
+                # dropped rather than raising out of every read. The cost is that one
+                # port becomes allocatable early -- the behaviour before leases existed.
+                try:
+                    port = int(key)
+                    until = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= port <= 65535 and until > 0:
+                    leases[port] = min(max(until, leases.get(port, 0.0)), horizon)
+            if len(leases) > HOP_LEASE_MAX:
+                # Overflow can only be a foreign write: admission refuses at the cap. The
+                # SOONEST-expiring entries are kept, so what is dropped is what would have
+                # withheld a port longest -- the opposite choice would let one oversized
+                # write pin the cap's worth of ports for the full horizon. Loud, with the
+                # count, because silently shedding a lease makes a port allocatable while
+                # a credential may still name it.
+                ordered = sorted(leases.items(), key=lambda kv: (kv[1], kv[0]))
+                discarded = len(leases) - HOP_LEASE_MAX
+                leases = dict(ordered[:HOP_LEASE_MAX])
+                logger.error(
+                    "Hop-lease map held %s entries, over the %s cap: discarded the %s "
+                    "furthest-future lease(s). Those ports are allocatable again, so a "
+                    "chained credential naming one is no longer protected.",
+                    len(ordered),
+                    HOP_LEASE_MAX,
+                    discarded,
+                )
+        return _RegistryDoc(
+            instances=instances,
+            last_active_id=str(last_active) if isinstance(last_active, str) else "",
+            hop_leases=leases,
+        )
+
+    def _write(self, doc: _RegistryDoc) -> None:
+        """Persist *doc* atomically. ``last_active_id`` is dropped if stale."""
+        ids = {inst.id for inst in doc.instances}
+        last_active = doc.last_active_id if doc.last_active_id in ids else ""
+        payload = {
+            "instances": [inst.to_dict() for inst in doc.instances],
+            # String keys, because JSON object keys are strings; read back as ints.
+            "hop_leases": {str(port): until for port, until in doc.hop_leases.items()},
+            "last_active_id": last_active,
+        }
+        atomic_write(self._path, json.dumps(payload, indent=2) + "\n", fsync=True)
+
+    # ── read API ─────────────────────────────────────────────────────────
+
+    def list(self) -> list[Instance]:
+        """Return all configured instances (excludes the implicit local one)."""
+        with self._lock:
+            return self._read().instances
+
+    def get(self, instance_id: str) -> Instance | None:
+        """Return the instance with *instance_id*, or ``None`` if absent."""
+        with self._lock:
+            return _find(self._read(), instance_id)
+
+    def get_last_active(self) -> Instance | None:
+        """Return the last-active instance to auto-revive on startup."""
+        with self._lock:
+            doc = self._read()
+            if not doc.last_active_id:
+                return None
+            return _find(doc, doc.last_active_id)
+
+    # ── write API ────────────────────────────────────────────────────────
+
+    def add(
+        self,
+        *,
+        name: str,
+        ssh_host: str = "",
+        remote_port: int = DEFAULT_REMOTE_PORT,
+        local_port: int = _UNALLOCATED_PORT,
+        ttl: str = _DEFAULT_TTL,
+        remote_bin: str = "",
+        connection_method: str = _DEFAULT_CONNECTION_METHOD,
+        ssm_target: str = "",
+        aws_profile: str = "",
+        aws_region: str = "",
+        ssm_run_as: str = _DEFAULT_SSM_RUN_AS,
+        provisioner_id: str = "",
+        via_instance_id: str = "",
+        via_remote_port: int = _UNALLOCATED_PORT,
+        via_remote_id: str = "",
+        instance_id: str | None = None,
+    ) -> Instance:
+        """Add a new instance and return it.
+
+        *instance_id* is derived from *name* when omitted, with a numeric suffix
+        to disambiguate collisions. Raises :class:`DuplicateInstanceError` if an
+        explicit id already exists, or :class:`InvalidInstanceError` on bad input.
+
+        *connection_method* selects the transport ("ssh", "ssm" or "fargate"); the
+        fields required depend on it -- see :meth:`Instance.validate`.
+
+        *via_instance_id* / *via_remote_port* / *via_remote_id* make the record
+        CHAINED: it is reached through another instance's already-open hop rather
+        than dialled directly. ``via_remote_id`` is this crew's id in the PARENT's
+        registry, which is what the parent looks it up by when it mints the token.
+        The trio is validated for shape here; that the parent exists, is itself
+        reachable, and does not make the chain too deep is decided by the caller,
+        which is the only layer that sees the whole chain.
+        """
+        with self._lock:
+            doc = self._read()
+            existing_ids = {inst.id for inst in doc.instances}
+
+            if instance_id:
+                new_id = instance_id
+                if new_id in existing_ids:
+                    raise DuplicateInstanceError(f"instance id {new_id!r} already exists")
+            else:
+                base = _slugify(name)
+                new_id = base
+                n = 2
+                while new_id in existing_ids:
+                    new_id = f"{base}-{n}"
+                    n += 1
+
+            inst = Instance(
+                id=new_id,
+                name=name,
+                ssh_host=ssh_host,
+                remote_port=remote_port,
+                local_port=local_port,
+                ttl=ttl,
+                remote_bin=remote_bin,
+                connection_method=connection_method,
+                ssm_target=ssm_target,
+                aws_profile=aws_profile,
+                aws_region=aws_region,
+                ssm_run_as=ssm_run_as or _DEFAULT_SSM_RUN_AS,
+                provisioner_id=provisioner_id,
+                via_instance_id=via_instance_id,
+                via_remote_port=via_remote_port,
+                via_remote_id=via_remote_id,
+                was_connected=False,
+            )
+            inst.validate()
+            validate_ttl(inst.ttl)
+            validate_instance_name(inst.name)
+            doc.instances.append(inst)
+            self._write(doc)
+            logger.info(
+                "Added instance %s (%s: %s)",
+                inst.id,
+                inst.connection_method,
+                inst.ssh_host or inst.ssm_target,
+            )
+            return inst
+
+    def update(
+        self, instance_id: str, *, mark_last_active: bool = False, **changes: object
+    ) -> Instance:
+        """Patch fields on an existing instance and return the updated record.
+
+        Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
+        ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
+        ``ssm_run_as``, ``provisioner_id``,
+        ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
+        ``forwarder_start``, ``forwarder_sig``, ``via_instance_id``,
+        ``via_remote_port``.
+        The ``id`` is
+        immutable. ``mark_last_active=True`` additionally records the instance
+        as the auto-revive target in the SAME read-modify-write, so callers that
+        need both (a connect persisting its hints) get one atomic file rewrite
+        instead of two — the pair becomes durable together. Raises
+        :class:`InstanceNotFoundError` / :class:`InvalidInstanceError`.
+        """
+        allowed = {
+            "name",
+            "ssh_host",
+            "remote_port",
+            "local_port",
+            "ttl",
+            "remote_bin",
+            "connection_method",
+            "ssm_target",
+            "ssm_run_as",
+            "provisioner_id",
+            "aws_profile",
+            "aws_region",
+            "was_connected",
+            "forwarder_pid",
+            "forwarder_start",
+            "forwarder_sig",
+            # A parent that reconnects lands on a new loopback port, so the hop
+            # its children ride has to be re-pointed without re-adding them.
+            "via_instance_id",
+            "via_remote_port",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise InvalidInstanceError(f"unknown fields: {sorted(unknown)}")
+        if "ttl" in changes:
+            validate_ttl(str(changes["ttl"]))
+        if "name" in changes:
+            validate_instance_name(str(changes["name"]))
+        with self._lock:
+            doc = self._read()
+            target = _find(doc, instance_id)
+            if target is None:
+                raise InstanceNotFoundError(f"no instance with id {instance_id!r}")
+            for key, value in changes.items():
+                setattr(target, key, value)
+            target.validate()
+            if mark_last_active:
+                doc.last_active_id = instance_id
+            self._write(doc)
+            logger.info("Updated instance %s: %s", instance_id, sorted(changes))
+            return target
+
+    def lend_hop(self, port: int, until: float) -> None:
+        """Withhold *port* from allocation until *until*, and prune what has lapsed.
+
+        Called when a chained credential is minted against *port*. Recorded on the
+        document rather than on the crew's row so that removing the crew cannot drop
+        it: the holder of that credential forwards to the PORT, and the port must stay
+        withheld for as long as the credential can be used, whoever still exists here.
+
+        ``max`` so a second mint cannot shorten a reservation an earlier one earned.
+        Lapsed entries are dropped on the way through, which bounds the map without a
+        timer -- the only thing that can add to it is a mint.
+
+        REFUSES at :data:`HOP_LEASE_MAX` live leases rather than trimming, and the caller
+        turns that into a failed mint. Trimming here would be the wrong shape: every entry
+        names a credential that is still valid, so shedding one to admit another hands out
+        a port some live token still points at. A refusal costs a connect; a trim costs the
+        credential. The deadline is clamped to :data:`HOP_LEASE_DEADLINE_CAP_SECS`, which
+        the caller's own TTL already respects -- it is enforced here too so the bound holds
+        for every writer, not just the one that happens to be careful.
+        """
+        if not (1 <= int(port) <= 65535):
+            raise InvalidInstanceError(f"invalid hop lease port {port!r}: expected 1-65535")
+        if float(until) <= 0:
+            raise InvalidInstanceError(f"invalid hop lease deadline {until!r}: expected an epoch")
+        now = time.time()
+        capped = min(float(until), now + HOP_LEASE_DEADLINE_CAP_SECS)
+        with self._lock:
+            doc = self._read()
+            kept = {p: u for p, u in doc.hop_leases.items() if u > now}
+            # Only a NEW port can push the count up; re-leasing one already held just
+            # moves its deadline, so a refresh of a live lease is never refused.
+            if int(port) not in kept and len(kept) >= HOP_LEASE_MAX:
+                raise InvalidInstanceError(
+                    f"cannot lend hop {int(port)}: {len(kept)} hop leases are already live, "
+                    f"at the {HOP_LEASE_MAX} cap. Each one withholds a loopback port for a "
+                    f"chained credential that is still valid, so none can be dropped to make "
+                    f"room."
+                )
+            kept[int(port)] = max(capped, kept.get(int(port), 0.0))
+            doc.hop_leases = kept
+            self._write(doc)
+
+    def live_hop_leases(self) -> set[int]:
+        """Ports still withheld because a chained credential against them is valid."""
+        now = time.time()
+        with self._lock:
+            return {p for p, u in self._read().hop_leases.items() if u > now}
+
+    def live_hop_lease_deadlines(self) -> dict[int, float]:
+        """The same live leases, each with the epoch it lapses at.
+
+        Separate from :meth:`live_hop_leases` because the two answer different
+        questions: the allocator only needs to know WHICH ports to skip, while the
+        OS-level hold on a lent port needs to know how long to keep it, so it can let
+        go on its own rather than squatting a port whose credential has died.
+        """
+        now = time.time()
+        with self._lock:
+            return {int(p): float(u) for p, u in self._read().hop_leases.items() if u > now}
+
+    def remove_cascade(self, instance_id: str) -> _IdList:
+        """Remove *instance_id* AND every row reached through it, in ONE write.
+
+        A chained crew rides its parent's forward, so a parent removed on its own leaves a
+        row that can never connect and that nothing lists as reachable -- an orphan whose
+        only cure is a user noticing it. Every path that removes a parent has to take the
+        subtree, so the cascade lives here: one definition, shared by the dashboard DELETE
+        handler and the cloud destroy path.
+
+        Returns the ids removed, DEEPEST FIRST, so a caller can audit or report each one;
+        empty when no such row exists. One write, so there is no instant at which a child
+        is gone and its parent is not, and an interleaved read cannot see the orphan at all.
+
+        This does NOT tear anything down: a live forward for a removed row keeps running.
+        Callers that can reach the tunnel manager disconnect the subtree FIRST, deepest
+        first, and this ordering matches theirs so the two read the same way.
+        """
+        with self._lock:
+            doc = self._read()
+            if not any(i.id == instance_id for i in doc.instances):
+                return []
+            doomed = [*reversed(descendant_ids(list(doc.instances), instance_id)), instance_id]
+            targets = set(doomed)
+            doc.instances = [i for i in doc.instances if i.id not in targets]
+            if doc.last_active_id in targets:
+                doc.last_active_id = ""
+            self._write(doc)
+            if len(doomed) > 1:
+                logger.info(
+                    "Removed instance %s and %s chained below it: %s",
+                    instance_id,
+                    len(doomed) - 1,
+                    ", ".join(doomed[:-1]),
+                )
+            else:
+                logger.info("Removed instance %s", instance_id)
+            return doomed
+
+    def remove(self, instance_id: str) -> bool:
+        """Remove an instance. Returns ``True`` if it existed, ``False`` otherwise."""
+        with self._lock:
+            doc = self._read()
+            before = len(doc.instances)
+            doc.instances = [i for i in doc.instances if i.id != instance_id]
+            if len(doc.instances) == before:
+                return False
+            if doc.last_active_id == instance_id:
+                doc.last_active_id = ""
+            self._write(doc)
+            logger.info("Removed instance %s", instance_id)
+            return True

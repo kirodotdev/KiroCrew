@@ -1,0 +1,38 @@
+# Smoke: a finished reply carries a muted footer saying how long the turn
+# took. `chat_runner` measures the turn and stores `turn_stats` on the turn's
+# last assistant message; `AssistantMessage` renders the footer once the turn
+# is over and that message is the transcript's newest reply. The fake ACP
+# backend answers every prompt at once with one canned line and reports no
+# credits and no cost, so on the seeded target the footer is a clock glyph and
+# an elapsed time, possibly led by a model label
+# (docs/system-specs/modules/turn-stats-footer.md). The number is whatever the
+# round trip took and is not judged; the footer's presence under the newest
+# reply is.
+#
+# The subject is the seeded "Welcome to KiroCrew" session: pinned, outside the  (brand-ok: fixture title)
+# Demos folder, titled on disk (so a send here starts no auto-title), and its
+# seeded replies carry no turn stats, so the only footer on screen is the one
+# this turn adds. More bubbles in the same thread do not change what the retry
+# reads: the footer sits under the newest reply either way.
+name: chat-turn-stats-footer
+tier: smoke
+feature: chat
+user_story: >-
+  As a user, I want each finished reply to show how long it took, so that I
+  can gauge responsiveness.
+docs_url: docs/system-specs/modules/turn-stats-footer.md
+summary: Send a message in the pinned Welcome session and read the elapsed-time footer under the reply
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the left sidebar's session list click the pinned row titled "Welcome to KiroCrew" (below the "Demos" folder, outside it) so that its conversation opens.  # brand-ok: verbatim seeded session title from the rich fixture
+  - Click into the message box at the bottom of the conversation and type exactly "ping from the gui test".
+  - Press Enter to send it, then wait about three seconds for the reply to arrive and the screen to settle.
+expectations:
+  - A bubble containing "ping from the gui test" is visible in the conversation, and a reply from the assistant is visible below it (its wording does not matter).
+  - Directly under that newest reply is a small muted line with a clock icon followed by a duration in seconds, such as "0.4s" or "1.2s" (the number itself does not matter, and a model name may sit before the clock).
+  - The message box is empty again, and no red error banner or error bubble is visible.
+max_steps: 8
+max_seconds: 240

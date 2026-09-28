@@ -1,0 +1,198 @@
+{
+  "name": "kb_golden_v1",
+  "docs": [
+    {
+      "id": "d-deploy-runbook",
+      "title": "Service deploy runbook",
+      "section_title": "Rollout steps",
+      "content": "To deploy the payments service, push to the release branch, wait for the pipeline to reach the gamma stage, run the smoke suite, then approve the prod promotion. Rollbacks are one-click from the pipeline console.",
+      "tags": ["runbook", "deploy", "payments"]
+    },
+    {
+      "id": "d-oncall-rotation",
+      "title": "On-call rotation policy",
+      "section_title": "Escalation",
+      "content": "Primary on-call holds the pager for one week starting Monday. If unacknowledged for 15 minutes the page escalates to the secondary, then to the team lead. Swaps must be recorded in the rotation calendar.",
+      "tags": ["oncall", "policy"]
+    },
+    {
+      "id": "d-db-owner",
+      "title": "Database ownership",
+      "section_title": "Ownership",
+      "content": "The orders database is owned by the Fulfillment team. Schema changes require a review from a Fulfillment engineer. The team's Slack channel is fulfillment-eng.",
+      "tags": ["database", "ownership", "orders"]
+    },
+    {
+      "id": "d-db-contact",
+      "title": "Fulfillment team contacts",
+      "section_title": "Contacts",
+      "content": "The Fulfillment team lead is Dana Ruiz. Dana approves emergency schema changes to the orders database outside business hours.",
+      "tags": ["contacts", "fulfillment"]
+    },
+    {
+      "id": "d-retention-old",
+      "title": "Data retention (2023 policy)",
+      "section_title": "Log retention",
+      "content": "As of 2023, application logs are retained for 30 days before deletion. This policy applies to all non-audit logs.",
+      "tags": ["retention", "policy", "2023"]
+    },
+    {
+      "id": "d-retention-new",
+      "title": "Data retention (2025 policy, current)",
+      "section_title": "Log retention",
+      "content": "Effective January 2025, application logs are retained for 90 days before deletion, superseding the earlier 30-day rule. Audit logs are retained for seven years.",
+      "tags": ["retention", "policy", "2025", "current"]
+    },
+    {
+      "id": "d-cache-ttl-wrong",
+      "title": "Cache configuration (draft, corrected below)",
+      "section_title": "TTL",
+      "content": "The session cache TTL was documented as 3600 seconds in this early draft. This value was never deployed and is corrected in the current configuration note.",
+      "tags": ["cache", "draft"]
+    },
+    {
+      "id": "d-cache-ttl-correct",
+      "title": "Cache configuration (current)",
+      "section_title": "TTL",
+      "content": "The session cache TTL is 900 seconds. This corrects the earlier draft that stated 3600 seconds. 900 seconds is the value deployed in production.",
+      "tags": ["cache", "current", "correction"]
+    },
+    {
+      "id": "d-region-claim-a",
+      "title": "Primary region (infra wiki)",
+      "section_title": "Regions",
+      "content": "The service's primary region is us-east-1 according to the infrastructure wiki page last edited in March.",
+      "tags": ["region", "infra"]
+    },
+    {
+      "id": "d-region-claim-b",
+      "title": "Primary region (architecture decision record, authoritative)",
+      "section_title": "Regions",
+      "content": "ADR-042 establishes us-west-2 as the primary region for the service, contradicting the older infra wiki claim of us-east-1. The ADR is authoritative for region decisions.",
+      "tags": ["region", "adr", "authoritative"]
+    },
+    {
+      "id": "d-feature-flag-announcement",
+      "title": "Feature flag rollout plan (superseded by retraction)",
+      "section_title": "Rollout",
+      "content": "The new-checkout feature flag will be enabled at 100 percent of traffic starting next Tuesday. Rollout proceeds in three ramps: 10 percent, 50 percent, then 100 percent.",
+      "tags": ["feature-flag", "rollout"]
+    },
+    {
+      "id": "d-feature-flag-retracted",
+      "title": "Feature flag rollout (retracted)",
+      "section_title": "Status",
+      "content": "RETRACTED: the plan to enable the new-checkout feature flag at 100 percent was withdrawn after a regression was found. Do not rely on the earlier rollout note; the flag remains at 0 percent.",
+      "tags": ["feature-flag", "retracted"]
+    },
+    {
+      "id": "d-security-mfa-proposal",
+      "title": "Authentication proposal (draft, never adopted)",
+      "section_title": "Authentication",
+      "content": "Draft proposal: allow SMS-based MFA as an alternative for production console access where hardware tokens are impractical. This draft was not adopted; it is retained for historical context only.",
+      "tags": ["security", "mfa", "draft"]
+    },
+    {
+      "id": "d-security-mfa",
+      "title": "Security baseline",
+      "section_title": "Authentication",
+      "content": "All production console access requires hardware MFA. This requirement has been restated in every quarterly security review and remains mandatory.",
+      "tags": ["security", "mfa", "baseline"]
+    },
+    {
+      "id": "d-security-mfa-audit",
+      "title": "Q3 security audit findings",
+      "section_title": "Access controls",
+      "content": "Audit item AC-3: verified that production console access enforces hardware MFA for all sampled accounts. This independently corroborates the security baseline requirement; no exceptions were found.",
+      "tags": ["security", "mfa", "audit"]
+    },
+    {
+      "id": "d-backup-schedule",
+      "title": "Backup schedule",
+      "section_title": "Backups",
+      "content": "Full database backups run nightly at 02:00 UTC. Incremental backups run every four hours. Restores are tested monthly.",
+      "tags": ["backup", "schedule"]
+    },
+    {
+      "id": "d-deploy-cd-proposal",
+      "title": "Continuous deployment proposal (hypothetical)",
+      "section_title": "Deploys",
+      "content": "Hypothetically, if the payments service migrated to continuous deployment, the deploy steps would collapse to a single merge: no release branch, no gamma soak, and no manual approval gate. This describes a possible future state, not the current process.",
+      "tags": ["deploy", "proposal", "hypothetical"]
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-clean-1",
+      "class": "clean_fact",
+      "question": "How often do full database backups run?",
+      "gold_doc_ids": ["d-backup-schedule"]
+    },
+    {
+      "id": "q-multi-1",
+      "class": "multi_hop",
+      "question": "Who can approve an emergency schema change to the orders database out of hours?",
+      "gold_doc_ids": ["d-db-owner", "d-db-contact"]
+    },
+    {
+      "id": "q-time-1",
+      "class": "time_bound",
+      "question": "What is the current log retention period as of 2025?",
+      "gold_doc_ids": ["d-retention-new"]
+    },
+    {
+      "id": "q-correction-1",
+      "class": "correction",
+      "question": "What is the deployed session cache TTL?",
+      "gold_doc_ids": ["d-cache-ttl-correct"]
+    },
+    {
+      "id": "q-contradiction-1",
+      "class": "contradiction",
+      "question": "What is the authoritative primary region for the service?",
+      "gold_doc_ids": ["d-region-claim-b"]
+    },
+    {
+      "id": "q-retraction-1",
+      "class": "retraction",
+      "question": "Is the new-checkout feature flag enabled at 100 percent?",
+      "gold_doc_ids": ["d-feature-flag-retracted"]
+    },
+    {
+      "id": "q-reinforcement-1",
+      "class": "reinforcement",
+      "question": "Is hardware MFA required for production console access?",
+      "gold_doc_ids": ["d-security-mfa", "d-security-mfa-audit"]
+    },
+    {
+      "id": "q-hypothetical-1",
+      "class": "hypothetical_exclusion",
+      "question": "What are the steps to deploy the payments service?",
+      "gold_doc_ids": ["d-deploy-runbook"]
+    },
+    {
+      "id": "q-abstain-1",
+      "class": "abstention",
+      "question": "What is the company's parental leave policy for contractors in Brazil?",
+      "gold_doc_ids": []
+    },
+    {
+      "id": "q-citation-1",
+      "class": "citation_fidelity",
+      "question": "Which section documents the on-call escalation timing?",
+      "gold_doc_ids": ["d-oncall-rotation"]
+    },
+    {
+      "id": "q-clean-2",
+      "class": "clean_fact",
+      "question": "How long does the primary on-call hold the pager before a swap window?",
+      "gold_doc_ids": ["d-oncall-rotation"]
+    },
+    {
+      "id": "q-time-2",
+      "class": "time_bound",
+      "question": "Under the older 2023 policy, how many days were application logs retained?",
+      "gold_doc_ids": ["d-retention-old"]
+    }
+  ]
+}

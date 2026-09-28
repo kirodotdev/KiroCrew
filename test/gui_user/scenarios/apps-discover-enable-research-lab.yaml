@@ -1,0 +1,35 @@
+# Smoke: the App Store's daily path -- find an app on Discover, open its detail
+# page, enable it, and reach its page from the rail. The subject is the Research
+# Lab builtin: it ships in the wheel (no registry download), is off by default,
+# runs on Linux, declares no desktop-app requirement and no separate backend
+# process, and asks for no session-approval consent, so "Enable" is one click
+# with no trust dialog and its page renders an empty campaign list from the
+# gateway alone. The storefront's registry rows come from the network when the
+# runner has it and from the bundled seed listing otherwise; the builtin row is
+# local either way, and the search box narrows the list to it so the tester
+# never scrolls a catalog whose length depends on the registry.
+name: apps-discover-enable-research-lab
+tier: smoke
+feature: apps
+user_story: >-
+  As a user, I want to browse the App Store storefront, open an app's detail
+  page and enable it, so that the app appears in my sidebar and I can extend
+  the dashboard.
+docs_url: docs/feature-map/README.md
+summary: Search Discover for Research Lab, enable it from its detail page and open it from the rail
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /apps
+steps:
+  - You are on the App Store's Discover page (its title reads "Discover", with "Browse and install agentic apps" beneath). If a notice says the store or registry could not be reached, ignore it. In the page header find the search box whose placeholder reads "Search apps", click into it and type exactly "Research".
+  - The list of apps narrows. Find the row named "Research Lab" and click on its name (not the "Enable" button at its right edge) to open the app's detail page.
+  - The detail page shows "Research Lab" as its heading. Click the button labelled "Enable" and wait two seconds; the button turns into "Disable".
+  - Look at the left rail. Under the "Apps" label, below "Discover" and "Library", a new item labelled "Research Lab" (flask icon) has appeared. Click it.
+  - Wait a second for the page to load.
+expectations:
+  - The main area shows the Research Lab page, with a heading "Research Lab" beside a flask icon and a button labelled "+ New Campaign".
+  - The page says "Run autonomous research campaigns" (no campaign exists yet) and no red error banner is visible.
+  - The "Research Lab" item is listed in the left rail and is highlighted as the active item.
+max_steps: 12
+max_seconds: 300

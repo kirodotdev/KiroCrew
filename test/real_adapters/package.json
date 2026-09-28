@@ -1,0 +1,10 @@
+{
+  "name": "kirocrew-real-adapters",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Locked manifest for the Real Adapter Contract Tests lane. Not shipped and not part of the product build: the frontend and build lanes never read this directory. It exists so ci.yml installs the adapters those tests drive from a committed lockfile (npm ci) instead of resolving a floating registry version at job time -- top-level AND transitive, so a cache miss cannot change what the lane measures. Each version below is the release the live measurements in test/test_codex_session_mcp.py and test/test_opencode_session_mcp.py were taken against; test/real_adapter_gate.py reads this file for those pins and asserts against them. Dependabot refreshes this manifest weekly, and THAT bump PR's run of the lane is where adapter drift shows up. To bump by hand: edit the exact version, run `npm install --package-lock-only` in this directory, commit both files, and re-measure whatever the lane then reds.",
+  "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.11.0",
+    "opencode-ai": "1.18.30"
+  }
+}

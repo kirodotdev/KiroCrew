@@ -1,0 +1,1726 @@
+"""Signed CLI artifact-manifest and installer verification tests."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+import yaml
+from installer_test_helpers import run_bounded
+from skill_script_helpers import load_skill_script
+
+from kiro_crew import platform_compat
+
+ROOT = Path(__file__).resolve().parents[1]
+HELPER = ROOT / "packaging" / "signing" / "cli-manifest.py"
+INSTALLER = ROOT / "cli.sh"
+CLI_WORKFLOW = ROOT / ".github" / "workflows" / "publish-cli.yml"
+PINNED_PUBLIC_KEY = ROOT / "packaging" / "signing" / "cli-manifest-public.pem"
+VERSION = "1.2.3"
+CHANNEL = "stable"
+WHEEL_NAME = f"kirocrew-{VERSION}-py3-none-any.whl"
+CDN_BASE = "https://fixtures.invalid"
+
+
+def _find_openssl() -> str | None:
+    direct = shutil.which("openssl")
+    if direct:
+        return direct
+    if os.name != "nt":
+        return None
+
+    git = shutil.which("git")
+    candidates: list[Path] = []
+    if git:
+        candidates.append(Path(git).resolve().parents[1] / "usr" / "bin" / "openssl.exe")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(variable)
+        if root:
+            candidates.append(Path(root) / "Git" / "usr" / "bin" / "openssl.exe")
+    return next((str(path) for path in candidates if path.is_file()), None)
+
+
+@pytest.fixture(scope="module")
+def _openssl_bin() -> str:
+    """Resolve the OpenSSL executable path once per module (no PATH mutation)."""
+    openssl = _find_openssl()
+    if openssl is None:
+        pytest.skip("OpenSSL is not available")
+    return openssl
+
+
+@pytest.fixture(autouse=True)
+def _openssl_on_path(_openssl_bin: str, monkeypatch):
+    """Expose Git for Windows' OpenSSL to Python helpers and installer shells.
+
+    Function-scoped (not module-scoped): a module-scoped mutation is applied
+    once at the first test's setup and reverted once at the last test's
+    teardown, so every test in between runs correctly but the first/last
+    test's own per-test env snapshot shows PATH changing across the test
+    boundary. monkeypatch.setenv is function-scoped and reverts after EACH
+    test, so no single test's boundary ever sees the mutation persist. The
+    binary lookup itself stays module-scoped (``_openssl_bin``) since it does
+    no PATH mutation and is safe to cache.
+    """
+    openssl_dir = str(Path(_openssl_bin).parent)
+    monkeypatch.setenv("PATH", openssl_dir + os.pathsep + os.environ.get("PATH", ""))
+
+
+@dataclass(frozen=True)
+class SigningKey:
+    private: Path
+    public: Path
+    key_id: str
+    public_b64: str
+
+
+@pytest.fixture(scope="module")
+def test_key(tmp_path_factory: pytest.TempPathFactory, _openssl_bin: str) -> SigningKey:
+    root = tmp_path_factory.mktemp("cli-manifest-key")
+    private = root / "private.pem"
+    public = root / "public.pem"
+    subprocess.run(
+        [
+            _openssl_bin,
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:3072",
+            "-out",
+            str(private),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=root,
+    )
+    subprocess.run(
+        [_openssl_bin, "pkey", "-in", str(private), "-pubout", "-out", str(public)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=root,
+    )
+    der = subprocess.run(
+        [_openssl_bin, "pkey", "-pubin", "-in", str(public), "-outform", "DER"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=root,
+    ).stdout
+    return SigningKey(
+        private=private,
+        public=public,
+        key_id=f"sha256:{hashlib.sha256(der).hexdigest()}",
+        public_b64=base64.b64encode(public.read_bytes()).decode("ascii"),
+    )
+
+
+def _run_helper(
+    *args: str,
+    cwd: Path,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the signing helper from *cwd*.
+
+    A child inherits pytest's CWD (the checkout) unless told otherwise, so every
+    spawn here runs from the test's own temp dir: the helper -- and the
+    ``openssl`` it shells out to -- can then only ever write there.
+    """
+    return subprocess.run(
+        [sys.executable, str(HELPER), *args],
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        cwd=cwd,
+    )
+
+
+def _write_canonical_json(path: Path, value: dict[str, object]) -> None:
+    path.write_bytes(
+        (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+    )
+
+
+def _build_manifest(
+    root: Path,
+    key: SigningKey,
+    wheel: Path,
+    *,
+    channel: str = CHANNEL,
+    artifact_base: str = CDN_BASE,
+    min_version: str = "",
+) -> Path:
+    payload = root / "payload.json"
+    signature = root / "signature.bin"
+    manifest = root / "cli-manifest.json"
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    wheel_url = f"{artifact_base.rstrip('/')}/cli/{channel}/{VERSION}/{WHEEL_NAME}"
+    extra_args = ("--min-version", min_version) if min_version else ()
+    _run_helper(
+        "payload",
+        "--channel",
+        channel,
+        "--version",
+        VERSION,
+        "--wheel-url",
+        wheel_url,
+        "--sha256",
+        digest,
+        "--python-requires",
+        ">=3.10",
+        "--pub-date",
+        "2026-08-01T00:00:00Z",
+        *extra_args,
+        "--public-key",
+        str(key.public),
+        "--output",
+        str(payload),
+        cwd=root,
+    )
+    subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(key.private),
+            "-out",
+            str(signature),
+            str(payload),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=root,
+    )
+    _run_helper(
+        "assemble",
+        "--payload",
+        str(payload),
+        "--signature",
+        str(signature),
+        "--public-key",
+        str(key.public),
+        "--output",
+        str(manifest),
+        cwd=root,
+    )
+    return manifest
+
+
+def test_helper_builds_a_canonical_independently_verifiable_manifest(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    manifest_path = _build_manifest(tmp_path, test_key, wheel)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["schema"] == "kirocrew-cli-artifact-manifest-v1"
+    assert manifest["algorithm"] == "RSASSA_PKCS1_V1_5_SHA_256"
+    assert manifest["key_id"] == test_key.key_id
+    assert manifest["sha256"] == hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+    signature = tmp_path / "decoded-signature.bin"
+    signature.write_bytes(base64.b64decode(manifest.pop("signature"), validate=True))
+    payload = tmp_path / "reconstructed-payload.json"
+    _write_canonical_json(payload, manifest)
+    verified = subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-verify",
+            str(test_key.public),
+            "-signature",
+            str(signature),
+            str(payload),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+
+def test_helper_accepts_paths_relative_to_its_own_cwd(tmp_path: Path, test_key: SigningKey) -> None:
+    """The publish workflow hands the helper RELATIVE paths, from the checkout.
+
+    ``publish-cli.yml`` runs ``--public-key packaging/signing/cli-manifest-public.pem``
+    with the repository as cwd.  The helper pins openssl's own cwd to the temp
+    dir (so openssl's stray output files never land in the checkout), which
+    means every path must be anchored BEFORE it reaches openssl -- a path still
+    relative at that point is looked up under the temp dir instead, and the
+    publish fails with "openssl rejected the public key" while the key is fine.
+    Drive the two subcommands the workflow uses, plus ``verify`` and
+    ``key-info``, exactly the way the workflow does.
+    """
+    checkout = tmp_path / "checkout"
+    (checkout / "packaging" / "signing").mkdir(parents=True)
+    shutil.copy(test_key.public, checkout / "packaging" / "signing" / "public.pem")
+    wheel = checkout / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    (checkout / "dist").mkdir()
+
+    _run_helper(
+        "payload",
+        "--channel",
+        CHANNEL,
+        "--version",
+        VERSION,
+        "--wheel-url",
+        f"{CDN_BASE}/cli/{CHANNEL}/{VERSION}/{WHEEL_NAME}",
+        "--sha256",
+        hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "--python-requires",
+        ">=3.10",
+        "--pub-date",
+        "2026-08-01T00:00:00Z",
+        "--public-key",
+        "packaging/signing/public.pem",
+        "--output",
+        "dist/payload.json",
+        cwd=checkout,
+    )
+    assert (checkout / "dist" / "payload.json").is_file()
+    subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(test_key.private),
+            "-out",
+            "dist/signature.bin",
+            "dist/payload.json",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=checkout,
+    )
+    _run_helper(
+        "assemble",
+        "--payload",
+        "dist/payload.json",
+        "--signature",
+        "dist/signature.bin",
+        "--public-key",
+        "packaging/signing/public.pem",
+        "--output",
+        "dist/cli-manifest.json",
+        cwd=checkout,
+    )
+    assert (checkout / "dist" / "cli-manifest.json").is_file()
+    _run_helper(
+        "verify",
+        "--manifest",
+        "dist/cli-manifest.json",
+        "--public-key",
+        "packaging/signing/public.pem",
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+        cwd=checkout,
+    )
+    key_info = _run_helper("key-info", "--public-key", "packaging/signing/public.pem", cwd=checkout)
+    assert json.loads(key_info.stdout)["key_id"] == test_key.key_id
+    # And the cwd pin still holds: openssl left nothing in the checkout.
+    assert sorted(path.name for path in checkout.iterdir()) == sorted(
+        [WHEEL_NAME, "dist", "packaging"]
+    )
+
+
+def test_optional_min_version_is_signed_and_round_trips(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """The forced-update floor rides INSIDE the signed payload: a manifest built
+    with one carries it, the signature covers it (tampering it invalidates the
+    envelope), and `verify` accepts the result."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    manifest_path = _build_manifest(tmp_path, test_key, wheel, min_version="1.2.0")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["min_version"] == "1.2.0"
+
+    verified = _run_helper(
+        "verify",
+        "--manifest",
+        str(manifest_path),
+        "--public-key",
+        str(test_key.public),
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+        cwd=tmp_path,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+    # Flip the floor after signing: the canonical payload changes, so the
+    # existing signature must fail to verify.
+    manifest["min_version"] = "0.0.1"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    tampered = _run_helper(
+        "verify",
+        "--manifest",
+        str(manifest_path),
+        "--public-key",
+        str(test_key.public),
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+        check=False,
+        cwd=tmp_path,
+    )
+    assert tampered.returncode != 0
+
+
+def test_manifest_without_min_version_omits_the_field(tmp_path: Path, test_key: SigningKey) -> None:
+    """No floor means NO field — the canonical bytes must stay identical to the
+    pre-floor manifest format, or every no-floor release would re-sign
+    differently and break byte-identical publish retries."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    manifest_path = _build_manifest(tmp_path, test_key, wheel)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "min_version" not in manifest
+
+
+@pytest.mark.parametrize("bad", ["1.2.0rc1", "v1.2.0", "abc", "1.2.0-insider.1"])
+def test_min_version_must_be_a_bare_release(tmp_path: Path, test_key: SigningKey, bad: str) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    with pytest.raises(subprocess.CalledProcessError):
+        _build_manifest(tmp_path, test_key, wheel, min_version=bad)
+
+
+def test_min_version_above_the_manifest_version_is_refused(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """A floor the manifest's own version cannot satisfy would force an update
+    loop the feed can never resolve — always a publisher typo."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel bytes")
+    with pytest.raises(subprocess.CalledProcessError):
+        _build_manifest(tmp_path, test_key, wheel, min_version="9.9.9")
+
+
+def test_helper_refuses_to_assemble_a_tampered_payload(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"original")
+    manifest = _build_manifest(tmp_path, test_key, wheel)
+    assert manifest.exists()
+
+    payload = tmp_path / "payload.json"
+    signature = tmp_path / "signature.bin"
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    data["sha256"] = "0" * 64
+    _write_canonical_json(payload, data)
+    refused = _run_helper(
+        "assemble",
+        "--payload",
+        str(payload),
+        "--signature",
+        str(signature),
+        "--public-key",
+        str(test_key.public),
+        "--output",
+        str(tmp_path / "refused.json"),
+        check=False,
+        cwd=tmp_path,
+    )
+    assert refused.returncode == 1
+    assert "rejected" in refused.stderr
+    assert not (tmp_path / "refused.json").exists()
+
+
+def test_repository_public_key_is_explicitly_unconfigured_or_valid(tmp_path: Path) -> None:
+    result = _run_helper(
+        "key-info",
+        "--public-key",
+        str(PINNED_PUBLIC_KEY),
+        check=False,
+        cwd=tmp_path,
+    )
+    if b"UNCONFIGURED" in PINNED_PUBLIC_KEY.read_bytes():
+        assert result.returncode == 1
+        assert "not configured" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["key_id"].startswith("sha256:")
+
+
+def _installer_with_trust_root(tmp_path: Path, *, key_id: str, public_b64: str) -> Path:
+    source = INSTALLER.read_text(encoding="utf-8")
+    source, key_id_changes = re.subn(
+        r'^CLI_MANIFEST_KEY_ID="[^"]*"$',
+        f'CLI_MANIFEST_KEY_ID="{key_id}"',
+        source,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    source, public_key_changes = re.subn(
+        r'^CLI_MANIFEST_PUBLIC_KEY_B64="[^"]*"$',
+        f'CLI_MANIFEST_PUBLIC_KEY_B64="{public_b64}"',
+        source,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert key_id_changes == public_key_changes == 1
+    script = tmp_path / "cli.sh"
+    script.write_text(source, encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def _patched_installer(
+    tmp_path: Path,
+    key: SigningKey,
+    *,
+    key_id: str | None = None,
+    public_b64: str | None = None,
+) -> Path:
+    return _installer_with_trust_root(
+        tmp_path,
+        key_id=key.key_id if key_id is None else key_id,
+        public_b64=key.public_b64 if public_b64 is None else public_b64,
+    )
+
+
+def _write_fake_tools(root: Path) -> tuple[Path, Path, Path]:
+    root.mkdir(parents=True, exist_ok=True)
+    tools = root / "tools"
+    tools.mkdir()
+    curl_marker = root / "curl-called"
+    install_marker = root / "pipx-installed"
+    curl = tools / "curl"
+    curl.write_text(
+        """#!/bin/sh
+set -eu
+touch "$FAKE_CURL_MARKER"
+# Real `curl -f` separates an HTTP error (22) from a transport failure (7, 6,
+# 28), and cli.sh reads that difference, so this fake has to keep them apart
+# instead of collapsing both into one status.
+if [ -n "${FAKE_CURL_FORCE_EXIT:-}" ]; then
+  echo "curl: forced transport failure" >&2
+  exit "$FAKE_CURL_FORCE_EXIT"
+fi
+out=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+case "$url" in
+  https://fixtures.invalid/*) rel=${url#https://fixtures.invalid/} ;;
+  *) echo "unexpected URL: $url" >&2; exit 9 ;;
+esac
+[ -n "$out" ] || exit 10
+# An absent artifact is this CDN's 404, so answer as `curl -f` would.
+[ -f "$FAKE_CDN_ROOT/$rel" ] || exit 22
+cp "$FAKE_CDN_ROOT/$rel" "$out"
+""",
+        encoding="utf-8",
+    )
+    pipx = tools / "pipx"
+    pipx.write_text(
+        """#!/bin/sh
+set -eu
+case "$1" in
+  install) touch "$FAKE_INSTALL_MARKER" ;;
+  environment) printf '%s\\n' "$HOME/.local/bin" ;;
+  *) exit 11 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    pipx.chmod(0o755)
+
+    # cli.sh resolves an interpreter off PATH, and a bare host PATH hands it
+    # whatever version-manager shim is installed. Those shims resolve their tool
+    # installs under HOME, which this harness repoints at an empty temp dir, so
+    # a shim wedges instead of answering and the probe ladder stalls. Shadow
+    # EVERY candidate in cli.sh's ladder, not just the running version: the
+    # ladder tries python3.12 first, so on a 3.10 or 3.11 host that entry still
+    # reaches a host shim -- and a stock macOS has no `timeout` to bound it. The
+    # names are aliases rather than version claims; the probe only asserts
+    # >=3.10, which the interpreter running these tests satisfies. It must stay
+    # a REAL interpreter: cli.sh uses $PY for the signature and digest
+    # verification under test, so a stub would make those assertions vacuous.
+    for _name in ("python3.13", "python3.12", "python3.11", "python3.10", "python3"):
+        (tools / _name).symlink_to(sys.executable)
+
+    return tools, curl_marker, install_marker
+
+
+def _stage_cdn(root: Path, manifest: Path, wheel: Path, *, include_feed: bool = True) -> Path:
+    cdn = root / "cdn"
+    version_dir = cdn / "cli" / CHANNEL / VERSION
+    version_dir.mkdir(parents=True)
+    shutil.copy2(wheel, version_dir / WHEEL_NAME)
+    shutil.copy2(manifest, version_dir / "cli-manifest.json")
+    if include_feed:
+        feed_dir = cdn / "feed" / CHANNEL
+        feed_dir.mkdir(parents=True)
+        shutil.copy2(manifest, feed_dir / "latest-cli.json")
+    return cdn
+
+
+def _run_installer(
+    script: Path,
+    root: Path,
+    cdn: Path,
+    *args: str,
+    curl_exit: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    if os.name == "nt":
+        pytest.skip("cli.sh is supported on macOS and Linux only")
+    tools, curl_marker, install_marker = _write_fake_tools(root)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{tools}{os.pathsep}{env['PATH']}",
+            "HOME": str(root / "home"),
+            "KIROCREW_HOME": str(root / "data-home"),
+            "FAKE_CDN_ROOT": str(cdn),
+            "FAKE_CURL_MARKER": str(curl_marker),
+            "FAKE_INSTALL_MARKER": str(install_marker),
+            # Always set, so an ambient value cannot reach a run that did not
+            # ask for a forced failure.
+            "FAKE_CURL_FORCE_EXIT": curl_exit or "",
+        }
+    )
+    result = run_bounded(["sh", str(script), "--cdn", CDN_BASE, *args], env, cwd=str(root))
+    return result, curl_marker, install_marker
+
+
+def test_the_harness_shadows_every_interpreter_the_installer_probes(
+    tmp_path: Path,
+) -> None:
+    """No ladder entry may fall through to a host interpreter.
+
+    Shadowing only the running python3.X leaves cli.sh's first candidate
+    (python3.12) resolving to whatever the host has, which on a version-manager
+    host is a shim that wedges -- and a stock macOS has no ``timeout`` to bound
+    the probe. Read the ladder out of cli.sh so it cannot drift from this.
+    """
+    if os.name == "nt":
+        # The shadowing is symlink-based and Windows gates symlink creation on
+        # privilege, so this asserts a POSIX-only property. Every other caller
+        # of _write_fake_tools already skips Windows before reaching it.
+        pytest.skip("cli.sh and its PATH shadowing are POSIX-only")
+    tools, _curl_marker, _install_marker = _write_fake_tools(tmp_path / "run")
+
+    ladder = re.search(r"for _c in ([^;]+); do", INSTALLER.read_text())
+    assert ladder, "cli.sh no longer has a recognizable interpreter ladder"
+
+    candidates = [c for c in ladder.group(1).split() if c.startswith("python")]
+    assert candidates, "no interpreter candidates parsed out of cli.sh's ladder"
+
+    unshadowed = [c for c in candidates if not (tools / c).exists()]
+    assert not unshadowed, f"host interpreters reachable from the harness: {unshadowed}"
+
+
+def test_a_wedged_grandchild_does_not_outlive_the_bounded_run(tmp_path: Path) -> None:
+    """The timeout path must reap the whole tree, not just the shell it spawned.
+
+    Without the process-group kill a wedged grandchild is reparented to init and
+    keeps burning a core until someone notices by hand.
+    """
+    if os.name == "nt":
+        pytest.skip("process groups are POSIX-only")
+    pidfile = tmp_path / "grandchild.pid"
+    script = tmp_path / "spawn.sh"
+    script.write_text(
+        """#!/bin/sh
+# Detach a grandchild that outlives its parent shell, which is how a wedged
+# interpreter shim under `sh` behaves.
+sh -c 'echo $$ > "$1"; exec sleep 300' _ "$1" &
+wait
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_bounded(["sh", str(script), str(pidfile)], os.environ.copy(), 5.0, cwd=str(tmp_path))
+    pid = int(pidfile.read_text(encoding="utf-8").strip())
+    # Liveness through the repo's own probe (AGENTS.md "Cross-platform"): a raw
+    # ``os.kill(pid, 0)`` is a POSIX idiom that TERMINATES the target on Windows,
+    # and the sweep's caller filter recognises only the sanctioned helper.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not platform_compat.pid_exists(pid):
+            return
+        time.sleep(0.05)
+    pytest.fail(f"grandchild {pid} survived the bounded run")
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_installer_verifies_signature_and_digest_before_installing(
+    tmp_path: Path, test_key: SigningKey, pinned: bool
+) -> None:
+    case = tmp_path / ("pinned" if pinned else "channel")
+    case.mkdir()
+    wheel = case / WHEEL_NAME
+    wheel.write_bytes(b"verified wheel")
+    manifest = _build_manifest(case, test_key, wheel)
+    cdn = _stage_cdn(case, manifest, wheel, include_feed=not pinned)
+    script = _patched_installer(case, test_key)
+
+    extra = ("--version", VERSION) if pinned else ()
+    result, curl_marker, install_marker = _run_installer(script, case / "run", cdn, *extra)
+
+    assert result.returncode == 0, result.stderr
+    assert curl_marker.exists()
+    assert install_marker.exists()
+    assert "Verified signed manifest." in result.stdout
+    assert "Verified SHA-256." in result.stdout
+
+
+def test_installer_accepts_a_manifest_carrying_a_min_version_floor(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """A breaking release's feed carries the optional signed ``min_version``
+    floor — and the installer is exactly the tool an out-of-date install runs
+    to satisfy it, so refusing such a manifest would strand every client the
+    floor exists to move."""
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"verified wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel, min_version="1.2.0")
+    cdn = _stage_cdn(tmp_path, manifest, wheel)
+    script = _patched_installer(tmp_path, test_key)
+
+    result, _curl_marker, install_marker = _run_installer(script, tmp_path / "run", cdn)
+
+    assert result.returncode == 0, result.stderr
+    assert install_marker.exists()
+    assert "Verified signed manifest." in result.stdout
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_installer_refuses_when_signed_manifest_is_missing(
+    tmp_path: Path, test_key: SigningKey, pinned: bool
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel)
+    cdn = _stage_cdn(tmp_path, manifest, wheel, include_feed=False)
+    if pinned:
+        (cdn / "cli" / CHANNEL / VERSION / "cli-manifest.json").unlink()
+    script = _patched_installer(tmp_path, test_key)
+
+    extra = ("--version", VERSION) if pinned else ()
+    result, _, install_marker = _run_installer(script, tmp_path / "run", cdn, *extra)
+
+    assert result.returncode == 1
+    assert "signed CLI manifest not found" in result.stderr
+    assert not install_marker.exists()
+
+
+@pytest.mark.parametrize("case", ["pinned-absent", "unpinned-absent", "pinned-unreachable"])
+def test_only_a_pinned_manifest_the_host_denied_is_attributed_to_the_cutoff(
+    tmp_path: Path, test_key: SigningKey, case: str
+) -> None:
+    """A pinned miss must name the cutoff, and nothing else may.
+
+    Failing closed on a missing manifest is correct, but a bare URL reads as a
+    broken CDN, so an operator whose rollback runbook names a pre-signing release
+    files an infrastructure bug instead of migrating off it. The guidance has to
+    stay off the other two refusals that reach the same line: an unpinned run,
+    where this means the channel feed is gone and pinning policy is not the
+    reader's problem, and an unreachable host, where blaming the cutoff would
+    attribute an outage to policy and send the operator to a doc that cannot
+    help.
+    """
+    pinned = case.startswith("pinned")
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel)
+    cdn = _stage_cdn(tmp_path, manifest, wheel, include_feed=False)
+    if case == "pinned-absent":
+        (cdn / "cli" / CHANNEL / VERSION / "cli-manifest.json").unlink()
+    script = _patched_installer(tmp_path, test_key)
+
+    extra = ("--version", VERSION) if pinned else ()
+    # 7 is curl's connect failure, the transport case cli.sh must not attribute.
+    forced = "7" if case == "pinned-unreachable" else None
+    result, _, install_marker = _run_installer(
+        script, tmp_path / "run", cdn, *extra, curl_exit=forced
+    )
+
+    assert result.returncode == 1
+    assert not install_marker.exists()
+    assert "signed CLI manifest not found" in result.stderr
+    guidance = (
+        f"'{VERSION}' cannot be pinned",
+        "docs/guides/install.md#pinning-an-exact-version",
+        "Re-run without --version",
+    )
+    for line in guidance:
+        if case == "pinned-absent":
+            assert line in result.stderr, f"a denied pinned manifest must explain: {line}"
+        else:
+            assert line not in result.stderr, f"{case} must not claim the cutoff: {line}"
+
+
+def test_no_documented_cli_pin_is_below_the_declared_cutoff() -> None:
+    """No documented pin may sit below the floor the policy declares.
+
+    A pin below the cutoff has no signed manifest, so the installer fails closed
+    on it: a documented example there is a command that cannot succeed for any
+    reader who copies it. Derive the floor from the policy prose and hold two
+    things to it: the three documents state the same floor, and no
+    ``cli.sh --version`` example anywhere in the docs sits below it. Changing the
+    floor then has to move the examples with it instead of stranding them.
+    """
+    guide = ROOT / "docs" / "guides" / "install.md"
+    stated = re.compile(r"minimum pinnable release\s+is\s+`([0-9]+(?:\.[0-9]+)+)`")
+
+    declared = stated.search(guide.read_text(encoding="utf-8"))
+    assert declared, f"{guide.name} no longer declares a minimum pinnable release"
+    floor_text = declared.group(1)
+    floor = tuple(int(part) for part in floor_text.split("."))
+
+    # One floor, stated wherever a reader or a release operator will look for
+    # it. Left to drift, these disagree and the cutoff stops being a policy.
+    for path in (ROOT / "README.md", ROOT / "packaging" / "signing" / "README.md"):
+        echoed = stated.search(path.read_text(encoding="utf-8"))
+        assert echoed, f"{path.relative_to(ROOT)} does not state the minimum pinnable release"
+        assert echoed.group(1) == floor_text, (
+            f"{path.relative_to(ROOT)} states floor {echoed.group(1)}, "
+            f"{guide.name} states {floor_text}"
+        )
+
+    # `playwright-cli.sh --version` is a different installer on its own version
+    # line, so the lookbehind keeps `-cli.sh` suffixes out of the scan.
+    invocation = re.compile(r"(?<![\w.-])cli\.sh\b")
+    pin = re.compile(r"--version[= ]([0-9]+(?:\.[0-9]+)+)")
+
+    scanned = 0
+    offenders: list[str] = []
+    for doc in sorted(ROOT.glob("*.md")) + sorted((ROOT / "docs").rglob("*.md")):
+        for number, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            if not invocation.search(line):
+                continue
+            for found in pin.findall(line):
+                scanned += 1
+                if tuple(int(part) for part in found.split(".")) < floor:
+                    offenders.append(f"{doc.relative_to(ROOT)}:{number} pins {found}")
+
+    assert not offenders, (
+        "documented pins below the cutoff have no signed manifest and cannot be "
+        f"installed: {'; '.join(offenders)}"
+    )
+    assert scanned, "no documented cli.sh --version example found; this scan went blind"
+
+
+def test_installer_refuses_corrupted_embedded_public_key_before_network(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    corrupted = base64.b64encode(b"not an RSA public key").decode("ascii")
+    script = _patched_installer(tmp_path, test_key, public_b64=corrupted)
+
+    result, curl_marker, install_marker = _run_installer(
+        script, tmp_path / "run", tmp_path / "unused-cdn"
+    )
+
+    assert result.returncode == 1
+    assert "embedded CLI manifest public key is invalid" in result.stderr
+    assert not curl_marker.exists(), "a corrupted trust root must fail before network I/O"
+    assert not install_marker.exists()
+
+
+def test_installer_refuses_a_manifest_changed_after_signing(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"verified wheel")
+    manifest_path = _build_manifest(tmp_path, test_key, wheel)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    cdn = _stage_cdn(tmp_path, manifest_path, wheel)
+    script = _patched_installer(tmp_path, test_key)
+
+    result, _, install_marker = _run_installer(script, tmp_path / "run", cdn)
+
+    assert result.returncode == 1
+    assert "manifest signature verification failed" in result.stderr
+    assert not install_marker.exists()
+
+
+def test_installer_refuses_wheel_bytes_that_do_not_match_signed_digest(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"signed wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel)
+    wheel.write_bytes(b"tampered wheel")
+    cdn = _stage_cdn(tmp_path, manifest, wheel)
+    script = _patched_installer(tmp_path, test_key)
+
+    result, _, install_marker = _run_installer(script, tmp_path / "run", cdn)
+
+    assert result.returncode == 1
+    assert "SHA-256 mismatch" in result.stderr
+    assert not install_marker.exists()
+
+
+def test_installer_refuses_unsigned_legacy_feed_without_fallback(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"wheel")
+    legacy = {
+        "channel": CHANNEL,
+        "version": VERSION,
+        "wheel_url": f"{CDN_BASE}/cli/{CHANNEL}/{VERSION}/{WHEEL_NAME}",
+        "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "python_requires": ">=3.10",
+        "pub_date": "2026-08-01T00:00:00Z",
+    }
+    manifest = tmp_path / "legacy.json"
+    manifest.write_text(json.dumps(legacy), encoding="utf-8")
+    cdn = _stage_cdn(tmp_path, manifest, wheel)
+    script = _patched_installer(tmp_path, test_key)
+
+    result, _, install_marker = _run_installer(script, tmp_path / "run", cdn)
+
+    assert result.returncode == 1
+    assert "malformed signed manifest" in result.stderr
+    assert not install_marker.exists()
+
+
+def test_installer_fails_before_network_when_trust_root_is_unconfigured(
+    tmp_path: Path,
+) -> None:
+    script = _installer_with_trust_root(
+        tmp_path,
+        key_id="UNCONFIGURED",
+        public_b64="UNCONFIGURED",
+    )
+    result, curl_marker, install_marker = _run_installer(
+        script, tmp_path / "run", tmp_path / "unused-cdn"
+    )
+
+    assert result.returncode == 1
+    assert "manifest signing trust root is not configured" in result.stderr
+    assert not curl_marker.exists(), "unconfigured trust must fail before any network request"
+    assert not install_marker.exists()
+
+
+def test_installer_and_repository_public_key_are_one_fail_closed_contract() -> None:
+    source = INSTALLER.read_text(encoding="utf-8")
+    key_id = re.search(r'^CLI_MANIFEST_KEY_ID="([^"]+)"$', source, re.M)
+    key_b64 = re.search(r'^CLI_MANIFEST_PUBLIC_KEY_B64="([^"]+)"$', source, re.M)
+    assert key_id and key_b64
+
+    public_bytes = PINNED_PUBLIC_KEY.read_bytes()
+    if key_id.group(1) == "UNCONFIGURED":
+        assert key_b64.group(1) == "UNCONFIGURED"
+        assert b"UNCONFIGURED" in public_bytes
+    else:
+        assert key_id.group(1).startswith("sha256:")
+        assert base64.b64decode(key_b64.group(1), validate=True) == public_bytes
+        assert b"UNCONFIGURED" not in public_bytes
+
+
+def test_kms_signer_requires_matching_non_exportable_key_and_verifies_output(
+    tmp_path: Path, test_key: SigningKey, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"kms-signed wheel")
+    payload = tmp_path / "payload.json"
+    signature = tmp_path / "signature.bin"
+    manifest = tmp_path / "manifest.json"
+    _run_helper(
+        "payload",
+        "--channel",
+        CHANNEL,
+        "--version",
+        VERSION,
+        "--wheel-url",
+        f"{CDN_BASE}/cli/{CHANNEL}/{VERSION}/{WHEEL_NAME}",
+        "--sha256",
+        hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "--python-requires",
+        ">=3.10",
+        "--pub-date",
+        "2026-08-01T00:00:00Z",
+        "--public-key",
+        str(test_key.public),
+        "--output",
+        str(payload),
+        cwd=tmp_path,
+    )
+    subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(test_key.private),
+            "-out",
+            str(signature),
+            str(payload),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=tmp_path,
+    )
+    public_der = subprocess.run(
+        ["openssl", "pkey", "-pubin", "-in", str(test_key.public), "-outform", "DER"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=tmp_path,
+    ).stdout
+
+    # Import-by-path writes bytecode beside the source unless suppressed; the
+    # helper does the suppression, so no __pycache__ lands in packaging/signing/.
+    helper = load_skill_script("cli_manifest_test_helper", HELPER)
+
+    key_arn = "arn:aws:kms:us-west-2:000000000000:key/test"
+    aws_calls: list[list[str]] = []
+
+    def fake_aws_json(args: list[str]) -> dict[str, object]:
+        aws_calls.append(args)
+        if args[:2] == ["kms", "get-public-key"]:
+            return {
+                "KeyUsage": "SIGN_VERIFY",
+                "KeySpec": "RSA_3072",
+                "SigningAlgorithms": ["RSASSA_PKCS1_V1_5_SHA_256"],
+                "PublicKey": base64.b64encode(public_der).decode("ascii"),
+            }
+        if args[:2] == ["kms", "sign"]:
+            return {"Signature": base64.b64encode(signature.read_bytes()).decode("ascii")}
+        raise AssertionError(f"unexpected AWS CLI arguments: {args}")
+
+    monkeypatch.setattr(helper, "_run_aws_json", fake_aws_json)
+    helper._kms_sign_command(
+        argparse.Namespace(
+            payload=payload,
+            key_arn=key_arn,
+            public_key=test_key.public,
+            output=manifest,
+        )
+    )
+
+    assert [call[:2] for call in aws_calls] == [
+        ["kms", "get-public-key"],
+        ["kms", "sign"],
+    ]
+    assert json.loads(manifest.read_text(encoding="utf-8"))["key_id"] == test_key.key_id
+
+
+def _workflow_steps() -> list[dict]:
+    workflow = yaml.safe_load(CLI_WORKFLOW.read_text(encoding="utf-8"))
+    return workflow["jobs"]["publish-cli"]["steps"]
+
+
+def _workflow_step(name: str) -> dict:
+    return next(step for step in _workflow_steps() if step.get("name") == name)
+
+
+def test_publish_workflow_fails_closed_and_uses_non_exportable_kms_signing() -> None:
+    steps = _workflow_steps()
+    names = [step.get("name") for step in steps]
+    guard = _workflow_step("Refuse partial CLI signing configuration")
+    signer = _workflow_step("Build and sign CLI artifact manifest")
+    publisher = _workflow_step("Publish wheel and signed channel manifest")
+
+    assert names.index("Configure AWS credentials") < names.index(signer["name"])
+    assert names.index(signer["name"]) < names.index(publisher["name"])
+    assert guard["if"] == "env.HAS_PUBLISH_ROLE != env.HAS_MANIFEST_KEY"
+    assert "kms-sign" in signer["run"]
+    assert "CLI_MANIFEST_SIGNING_KEY_ARN" in CLI_WORKFLOW.read_text(encoding="utf-8")
+    assert "PRIVATE_KEY" not in signer["run"]
+    assert "AWS_SECRET_ACCESS_KEY" not in signer["run"]
+
+
+def test_publish_workflow_uses_a_deterministic_manifest_publication_date() -> None:
+    run = _workflow_step("Build and sign CLI artifact manifest")["run"]
+
+    assert 'git show -s --format=%ct "$GITHUB_SHA"' in run
+    assert 'date -u -d "@${SOURCE_DATE_EPOCH}"' in run
+    assert '--pub-date "$PUB_DATE"' in run
+    assert '--pub-date "$(date -u' not in run
+
+
+def _write_workflow_shims(tools: Path, key: SigningKey) -> None:
+    """Stand-ins for the two commands the signing step reaches outside the repo.
+
+    ``aws`` answers the two KMS calls the helper makes -- ``get-public-key`` with
+    the test key's DER, ``sign`` with a real PKCS#1 v1.5 signature over the digest
+    the helper hands it -- so the step's ``kms-sign`` produces a manifest OpenSSL
+    verifies for real. ``date`` is shimmed ONLY where the host lacks GNU
+    ``-d`` (macOS), because the step is written for the ubuntu runner and this
+    test judges the step, not the host's coreutils.
+    """
+    tools.mkdir(parents=True, exist_ok=True)
+    aws = tools / "aws"
+    aws.write_text(
+        f"""#!/bin/sh
+set -eu
+sub="$1 $2"
+message=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --message) message="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$sub" in
+  "kms get-public-key")
+    der=$(openssl pkey -pubin -in "{key.public}" -outform DER | openssl base64 -A)
+    printf '{{"KeyUsage":"SIGN_VERIFY","KeySpec":"RSA_3072",'
+    printf '"SigningAlgorithms":["RSASSA_PKCS1_V1_5_SHA_256"],"PublicKey":"%s"}}\\n' "$der"
+    ;;
+  "kms sign")
+    digest="$FAKE_AWS_SCRATCH/digest.bin"
+    printf '%s' "$message" | openssl base64 -d -A > "$digest"
+    sig=$(openssl pkeyutl -sign -inkey "{key.private}" -in "$digest" \\
+      -pkeyopt digest:sha256 | openssl base64 -A)
+    printf '{{"Signature":"%s"}}\\n' "$sig"
+    ;;
+  *) echo "unexpected aws invocation: $*" >&2; exit 9 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    aws.chmod(0o755)
+
+    gnu_date = subprocess.run(
+        ["date", "-u", "-d", "@0", "+%Y"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if gnu_date.returncode != 0:
+        date = tools / "date"
+        date.write_text(
+            f"""#!/bin/sh
+# GNU `date -u -d @EPOCH +FORMAT` for a host whose date(1) lacks -d.
+when=""; fmt=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -u) shift ;;
+    -d) when="$2"; shift 2 ;;
+    +*) fmt="${{1#+}}"; shift ;;
+    *) echo "date shim: unsupported argument $1" >&2; exit 2 ;;
+  esac
+done
+exec {sys.executable} -c 'import sys, datetime
+epoch = int(sys.argv[1].lstrip("@"))
+print(datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime(sys.argv[2]))' "$when" "$fmt"
+""",
+            encoding="utf-8",
+        )
+        date.chmod(0o755)
+
+
+def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """Run the workflow's OWN signing script, unedited, against the real helper.
+
+    Every other test here calls ``cli-manifest.py`` with arguments the test
+    chooses; none proves the arguments ``publish-cli.yml`` chooses still fit.
+    The workflow passes the public key as a RELATIVE path, resolves the wheel's
+    ``Requires-Python`` with ``unzip`` and ``awk``, derives ``--pub-date`` from
+    the commit, and reads ``packaging/MIN_VERSION`` -- none of which a test that
+    hand-builds the argument list exercises, so a helper change can be green
+    under every unit test and refuse the workflow's first real invocation. This
+    test takes the ``run:`` block of "Build and sign CLI artifact manifest"
+    straight out of the YAML and executes it with bash in a fake checkout shaped
+    like the runner's -- the committed helper, the key at
+    ``packaging/signing/cli-manifest-public.pem``, a wheel artifact,
+    ``packaging/MIN_VERSION``, a git commit for ``$GITHUB_SHA`` -- with only
+    ``aws`` standing in. A drift between the workflow's invocation and the
+    helper's contract (a path, a flag, a new required argument) fails here, on
+    the PR, instead of at the next publish.
+    """
+    if os.name == "nt":
+        pytest.skip("the publish step runs on the ubuntu runner")
+    if shutil.which("bash") is None or shutil.which("unzip") is None:
+        pytest.skip("bash and unzip are required to run the workflow step")
+
+    checkout = tmp_path / "checkout"
+    (checkout / "packaging" / "signing").mkdir(parents=True)
+    shutil.copy(HELPER, checkout / "packaging" / "signing" / "cli-manifest.py")
+    shutil.copy(test_key.public, checkout / "packaging" / "signing" / "cli-manifest-public.pem")
+    (checkout / "packaging" / "MIN_VERSION").write_text("# no floor\n", encoding="utf-8")
+
+    dist = checkout / "cli-dist"
+    dist.mkdir()
+    wheel = dist / WHEEL_NAME
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            f"kirocrew-{VERSION}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: kirocrew\nVersion: {VERSION}\nRequires-Python: >=3.12\n",
+        )
+
+    # Git confined to the fixture. Git reads its whole configuration surface
+    # from GIT_* variables -- where the repository is (GIT_DIR, GIT_WORK_TREE,
+    # GIT_COMMON_DIR, ...), where templates and hooks come from
+    # (GIT_TEMPLATE_DIR), and command-scope config that survives a /dev/null
+    # global config (GIT_CONFIG_COUNT / _KEY_n / _VALUE_n, GIT_CONFIG_PARAMETERS,
+    # which git itself exports into hooks, so a hook-driven test run carries
+    # them). Any one of those inherited would let the fixture's `git init` /
+    # `git commit` touch the REAL repository or run host hooks. Rather than name
+    # the dangerous ones, drop the entire GIT_* namespace and set only what the
+    # fixture needs; the same env drives the step's own `git show`.
+    hermetic = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    hermetic.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        }
+    )
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-q", "-m", "fixture"],
+    ):
+        subprocess.run(argv, check=True, cwd=checkout, env=hermetic, stdout=subprocess.DEVNULL)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        cwd=checkout,
+        env=hermetic,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    assert (checkout / ".git").is_dir(), "the fixture repository must live inside the fixture"
+
+    tools = tmp_path / "tools"
+    _write_workflow_shims(tools, test_key)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    outputs = tmp_path / "github-output"
+    outputs.write_text("", encoding="utf-8")
+
+    step = _workflow_step("Build and sign CLI artifact manifest")
+    # The step's own env block names the wheel outputs and the two vars; the
+    # values are the fixture's. CHANNEL comes from the job env in the YAML.
+    assert set(step["env"]) == {
+        "CDN_BASE",
+        "KEY_ARN",
+        "WHEEL_PATH",
+        "WHEEL_NAME",
+        "WHEEL_VERSION",
+        "SHA256",
+    }, "the step's env block changed: teach this test the new inputs"
+    env = {
+        **hermetic,
+        "PATH": f"{tools}{os.pathsep}{os.environ.get('PATH', '')}",
+        "FAKE_AWS_SCRATCH": str(runner_temp),
+        "CHANNEL": CHANNEL,
+        "CDN_BASE": CDN_BASE,
+        "KEY_ARN": "arn:aws:kms:us-west-2:000000000000:key/test",
+        "WHEEL_PATH": "cli-dist/" + WHEEL_NAME,
+        "WHEEL_NAME": WHEEL_NAME,
+        "WHEEL_VERSION": VERSION,
+        "SHA256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+        "GITHUB_SHA": sha,
+        "RUNNER_TEMP": str(runner_temp),
+        "GITHUB_OUTPUT": str(outputs),
+    }
+    result = run_bounded(["bash", "-e", "-c", step["run"]], env, cwd=str(checkout))
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+
+    written = dict(
+        line.split("=", 1) for line in outputs.read_text(encoding="utf-8").splitlines() if line
+    )
+    # The step records the manifest path relative to the checkout, exactly as
+    # the downstream publish step consumes it.
+    manifest_path = checkout / written["path"]
+    assert manifest_path == dist / "cli-manifest.json"
+    assert written["key_id"] == test_key.key_id
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["channel"] == CHANNEL
+    assert manifest["version"] == VERSION
+    assert manifest["python_requires"] == ">=3.12"
+    assert "min_version" not in manifest
+    # The signature the shimmed KMS produced must verify like a real one: the
+    # helper's `verify` is the same gate publish-installer.yml applies to a
+    # live feed.
+    _run_helper(
+        "verify",
+        "--manifest",
+        str(manifest_path),
+        "--public-key",
+        str(test_key.public),
+        "--expected-channel",
+        CHANNEL,
+        "--artifact-base",
+        CDN_BASE,
+        cwd=tmp_path,
+    )
+    # And the step left nothing behind in the checkout but what it declared.
+    stray = sorted(
+        p.relative_to(checkout).as_posix()
+        for p in checkout.rglob("*")
+        if p.is_file() and ".git" not in p.parts
+    )
+    assert stray == [
+        "cli-dist/cli-manifest.json",
+        f"cli-dist/{WHEEL_NAME}",
+        "packaging/MIN_VERSION",
+        "packaging/signing/cli-manifest-public.pem",
+        "packaging/signing/cli-manifest.py",
+    ]
+
+
+def _verify_manifest(
+    manifest: Path,
+    key: SigningKey,
+    *,
+    expected_channel: str = CHANNEL,
+    artifact_base: str = CDN_BASE,
+) -> subprocess.CompletedProcess[str]:
+    return _run_helper(
+        "verify",
+        "--manifest",
+        str(manifest),
+        "--public-key",
+        str(key.public),
+        "--expected-channel",
+        expected_channel,
+        "--artifact-base",
+        artifact_base,
+        check=False,
+        cwd=manifest.parent,
+    )
+
+
+def test_verify_accepts_a_signed_manifest_and_rejects_tampering(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"wheel-bytes")
+    manifest = _build_manifest(tmp_path, test_key, wheel)
+
+    verified = _verify_manifest(manifest, test_key)
+    assert verified.returncode == 0, verified.stderr
+
+    # Tampered field: the signature does not cover the payload.
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["version"] = "9.9.9"
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    refused = _verify_manifest(tampered, test_key)
+    assert refused.returncode == 1
+
+    # Missing signature: fail closed before any crypto.
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    del data["signature"]
+    unsigned = tmp_path / "unsigned.json"
+    unsigned.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    refused = _verify_manifest(unsigned, test_key)
+    assert refused.returncode == 1
+    assert "signature" in refused.stderr
+
+
+def test_verify_refuses_a_valid_manifest_for_another_channel(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"wrong-channel-wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel, channel="nightly")
+
+    refused = _verify_manifest(manifest, test_key, expected_channel=CHANNEL)
+
+    assert refused.returncode == 1
+    assert "channel does not match" in refused.stderr
+
+
+def test_verify_refuses_a_valid_manifest_from_another_artifact_host(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"wrong-host-wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel, artifact_base="https://attacker.invalid")
+
+    refused = _verify_manifest(manifest, test_key)
+
+    assert refused.returncode == 1
+    assert "wheel URL does not match" in refused.stderr
+
+
+def test_installer_publish_refuses_an_unconfigured_trust_root() -> None:
+    """Merging the strict cli.sh must not brick the live curl one-liner.
+
+    publish-installer.yml path-triggers on cli.sh pushes to main. Until KMS
+    provisioning pins a real fingerprint, cli.sh is deliberately fail-closed
+    (CLI_MANIFEST_KEY_ID=UNCONFIGURED refuses every install), so the publish
+    lane must refuse to replace the live installer with it. This pins the
+    guard's presence, its refusal semantics, and its position before any
+    credentialed/upload step.
+    """
+    installer_workflow = ROOT / ".github" / "workflows" / "publish-installer.yml"
+    workflow = yaml.safe_load(installer_workflow.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["publish-installer"]["steps"]
+    names = [step.get("name") for step in steps]
+
+    guard = next(
+        step for step in steps if step.get("name") == "Refuse to publish an unconfigured trust root"
+    )
+    assert "CLI_MANIFEST_KEY_ID" in guard["run"]
+    assert "UNCONFIGURED" in guard["run"]
+    assert "exit 1" in guard["run"]
+    # A non-placeholder key id is not enough: it must be the SPKI-DER SHA-256
+    # fingerprint of the exact public key embedded in cli.sh, or the published
+    # installer rejects every feed before installation.
+    assert "CLI_MANIFEST_PUBLIC_KEY_B64" in guard["run"]
+    assert "base64 -d" in guard["run"]
+    assert "openssl pkey -pubin" in guard["run"]
+    assert "-outform DER" in guard["run"]
+    assert "sha256sum" in guard["run"]
+    assert 'if [ "$key_id" != "$derived_key_id" ]' in guard["run"]
+    feed_gate = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify every live channel feed against the pinned key"
+    )
+    # A pinned key alone is not sufficient: every LIVE feed must verify with
+    # the exact checks cli.sh performs, or publishing the strict installer
+    # bricks that channel. Absent feeds (404) are skip-with-warning: they are
+    # not installable by the current installer either.
+    assert "cli-manifest.py verify" in feed_gate["run"]
+    assert '--expected-channel "$channel"' in feed_gate["run"]
+    assert '--artifact-base "${CDN_BASE}"' in feed_gate["run"]
+    for channel in ("nightly", "insider", "stable"):
+        assert channel in feed_gate["run"]
+    assert "exit 1" in feed_gate["run"]
+    upload_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if "aws" in str(step.get("run", "")) or "credentials" in str(step.get("uses", ""))
+    ]
+    assert upload_indexes, "publish lane must still publish"
+    assert names.index(guard["name"]) < names.index(feed_gate["name"]) < min(upload_indexes)
+
+
+def test_publish_workflow_writes_immutable_manifest_before_signed_feed() -> None:
+    run = _workflow_step("Publish wheel and signed channel manifest")["run"]
+    immutable = 'put_immutable "${PREFIX}/cli-manifest.json" "$MANIFEST_PATH"'
+    # The feed write targets ${FEED_KEY} (feed/<channel>/latest-cli.json),
+    # and sits behind the monotonicity guard's advance verdict -- but its
+    # ORDER relative to the immutable manifest put is unchanged: the pointer
+    # may only ever name a manifest that is already live.
+    feed_key = 'FEED_KEY="feed/${CHANNEL}/latest-cli.json"'
+    feed = 'aws s3 cp "$MANIFEST_PATH" "s3://${BUCKET}/${FEED_KEY}"'
+
+    assert immutable in run
+    assert feed_key in run
+    assert feed in run
+    assert run.index(immutable) < run.index(feed_key) < run.index(feed)
+    assert "cat > /tmp/latest-cli.json" not in run
+    assert "--cache-control no-cache" in run
+
+
+def test_installer_authenticates_before_reading_or_downloading_artifact() -> None:
+    source = INSTALLER.read_text(encoding="utf-8")
+    executable = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    verify = executable.index("openssl dgst -sha256 -verify")
+    parse_fields = executable.index("read_field()")
+    wheel_download = executable.index("curl -fsS --proto '=https' \"$WHEEL_URL\"")
+    assert verify < parse_fields < wheel_download
+    assert "SHA256SUMS" not in executable, "strict installer must have no unsigned fallback"
+
+
+def test_publish_workflow_gates_all_artifact_work_before_side_effects() -> None:
+    steps = _workflow_steps()
+    assert steps[0]["name"] == "Refuse partial CLI signing configuration"
+    complete_config = "env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY"
+    for name in (
+        "Checkout manifest verifier contract",
+        "Download wheel artifact",
+        "Locate wheel and compute checksum",
+    ):
+        assert _workflow_step(name)["if"] == complete_config
+
+    promote = "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}"
+    fresh_build = "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}"
+    assert _workflow_step("Verify immutable promotion bundle")["if"] == promote
+    assert _workflow_step("Attest wheel provenance")["if"] == fresh_build
+    assert _workflow_step("Verify promoted wheel provenance")["if"] == promote
+
+
+def test_installer_fetches_authenticated_urls_without_redirects() -> None:
+    source = INSTALLER.read_text(encoding="utf-8")
+    fetches = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip().startswith("curl ") and '"$' in line
+    ]
+
+    assert len(fetches) == 2
+    assert all("--proto '=https'" in line for line in fetches)
+    assert all(re.search(r"(?:^|\s)-[^\s]*L", line) is None for line in fetches)
+    manifest_fetch = next(line for line in fetches if '"$MANIFEST_URL"' in line)
+    assert "--max-filesize 65536" in manifest_fetch
+
+
+# ---------------------------------------------------------------------------
+# One contract, two verifiers.
+#
+# publish-installer.yml gates every live channel feed with
+# ``cli-manifest.py verify``, while end users run cli.sh's own inline verifier.
+# Those are separate implementations of one contract, so until the tests below
+# existed nothing failed when a rule was added to one side and not the other --
+# and the shape that reaches users is a publication reporting a feed valid that
+# the installer then refuses.
+#
+# The direction matters and only one direction is a defect. The gate is allowed
+# to be STRICTER than the installer: it caps the payload at 16 KiB against the
+# installer's 64 KiB, caps every field at 2048 characters, and refuses a
+# ``min_version`` above the version the manifest ships. Each of those costs a
+# publisher one loud failure on a feed the installer would have taken, which is
+# a safe trade. The gate may never be LAXER, because that publishes a feed that
+# bricks installs while reporting success.
+#
+# So the invariant is: whatever the gate ACCEPTS, a real cli.sh run must also
+# accept. The fixtures are built once and driven through both sides to hold it.
+# ---------------------------------------------------------------------------
+
+#: The fixture classes publication and installation must agree on. ``valid`` is
+#: the only one either side may accept; each other name is a manifest a release
+#: process must never ship, for a different reason.
+SHARED_FIXTURES = ("valid", "wrong-channel", "wrong-host", "tampered", "legacy")
+
+
+def _shared_fixture(root: Path, key: SigningKey, name: str) -> tuple[Path, Path]:
+    """Build the (manifest, wheel) pair for shared fixture *name*.
+
+    One builder for both verifiers: a fixture authored twice is how the two
+    sides drift while every test still passes.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    wheel = root / WHEEL_NAME
+    wheel.write_bytes(f"wheel bytes for {name}".encode("ascii"))
+
+    if name == "valid":
+        return _build_manifest(root, key, wheel), wheel
+    if name == "wrong-channel":
+        # Correctly signed for another channel. Both sides are asked for
+        # CHANNEL, so both must refuse to cross the channel boundary.
+        return _build_manifest(root, key, wheel, channel="nightly"), wheel
+    if name == "wrong-host":
+        # Correctly signed, but bound to an artifact host neither side asked
+        # for: a valid signer must not be able to redirect the download.
+        return (
+            _build_manifest(root, key, wheel, artifact_base="https://attacker.invalid"),
+            wheel,
+        )
+    if name == "tampered":
+        manifest = _build_manifest(root, key, wheel)
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["sha256"] = "0" * 64
+        manifest.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return manifest, wheel
+    if name == "legacy":
+        # An unsigned feed shape, carrying no signature block at all. Neither
+        # side has an unsigned fallback, so this input must be refused.
+        manifest = root / "legacy.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "channel": CHANNEL,
+                    "version": VERSION,
+                    "wheel_url": f"{CDN_BASE}/cli/{CHANNEL}/{VERSION}/{WHEEL_NAME}",
+                    "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                    "python_requires": ">=3.10",
+                    "pub_date": "2026-08-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return manifest, wheel
+    raise AssertionError(f"unknown shared fixture: {name}")
+
+
+def test_shared_fixture_names_are_the_set_the_two_verifiers_agree_on() -> None:
+    """Adding a fixture class must add it to BOTH sides, not to one.
+
+    The differential test below is parametrized over this tuple, so a name
+    added here is automatically driven through the gate and through a real
+    installer run. Pinning the tuple keeps the next author from quietly
+    reducing the agreed set instead of extending it.
+    """
+    assert SHARED_FIXTURES == ("valid", "wrong-channel", "wrong-host", "tampered", "legacy")
+    assert len(set(SHARED_FIXTURES)) == len(SHARED_FIXTURES)
+
+
+@pytest.mark.parametrize("fixture", SHARED_FIXTURES)
+def test_publication_gate_never_accepts_what_the_installer_refuses(
+    tmp_path: Path, test_key: SigningKey, fixture: str
+) -> None:
+    """The load-bearing invariant: gate accepts => a real cli.sh run accepts.
+
+    Runs the SAME manifest through ``cli-manifest.py verify`` (what
+    publish-installer.yml gates a live feed with) and through cli.sh itself
+    (what a user's ``curl … | sh`` executes), then asserts the two cannot
+    disagree in the direction that ships a broken feed.
+    """
+    manifest, wheel = _shared_fixture(tmp_path / fixture, test_key, fixture)
+
+    gate = _verify_manifest(manifest, test_key)
+    gate_accepted = gate.returncode == 0
+
+    cdn = _stage_cdn(tmp_path / fixture, manifest, wheel)
+    script = _patched_installer(tmp_path / fixture, test_key)
+    installed, _curl_marker, install_marker = _run_installer(
+        script, tmp_path / fixture / "run", cdn
+    )
+    installer_accepted = installed.returncode == 0
+
+    assert not (gate_accepted and not installer_accepted), (
+        f"false green on fixture {fixture!r}: the publication gate accepted a manifest "
+        f"cli.sh refused, so publishing this feed would brick installs while the gate "
+        f"reported success. installer stderr: {installed.stderr}"
+    )
+
+    if fixture == "valid":
+        assert gate_accepted, gate.stderr
+        assert installer_accepted, installed.stderr
+        assert install_marker.exists()
+    else:
+        assert not gate_accepted, f"{fixture!r} must not pass the publication gate"
+        assert not installer_accepted, f"{fixture!r} must not install"
+        assert not install_marker.exists()
+
+
+def test_gate_and_installer_normalize_a_repeated_slash_artifact_base_alike(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """A repeated-slash artifact base was a real false green, not a typo class.
+
+    cli.sh applies ``${ARTIFACT_BASE%/}`` and wheel_engine interpolates its base
+    unchanged, so both strip at most ONE trailing slash. The gate used
+    ``str.rstrip("/")``, which strips every one, so for a base of
+    ``https://host//`` the gate expected ``https://host/cli/...`` while the
+    installer expected ``https://host//cli/...``. A feed carrying the former
+    passed publication and was refused at install time -- exactly the failure
+    the gate exists to catch, produced by the gate itself.
+
+    The manifest here is signed for the URL the OLD gate accepted, so this test
+    fails against the previous normalization and passes once the gate models the
+    installer.
+    """
+    doubled_base = f"{CDN_BASE}//"
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"repeated-slash wheel")
+    # Signed for the single-slash URL: what rstrip() derives from doubled_base.
+    manifest = _build_manifest(tmp_path, test_key, wheel, artifact_base=CDN_BASE)
+
+    gate = _verify_manifest(manifest, test_key, artifact_base=doubled_base)
+
+    assert gate.returncode == 1, (
+        "the gate accepted a feed bound to a base the installer normalizes "
+        "differently; that is the false green this check exists to stop"
+    )
+    assert "repeated slashes" in gate.stderr
+
+    # And prove the installer really does refuse it, so the assertion above is
+    # protecting a live divergence rather than a hypothetical one.
+    cdn = _stage_cdn(tmp_path, manifest, wheel)
+    script = _patched_installer(tmp_path, test_key)
+    installed, _curl_marker, install_marker = _run_installer(
+        script, tmp_path / "run", cdn, "--cdn", doubled_base
+    )
+
+    assert installed.returncode == 1
+    assert "does not match the requested channel/version/artifact host" in installed.stderr
+    assert not install_marker.exists()
+
+
+def test_gate_still_accepts_a_single_trailing_slash_artifact_base(
+    tmp_path: Path, test_key: SigningKey
+) -> None:
+    """One trailing slash is what the installer itself tolerates, so the gate must.
+
+    ``${ARTIFACT_BASE%/}`` removes exactly one, so ``https://host/`` and
+    ``https://host`` are the same base to cli.sh. Refusing the slashed spelling
+    would turn a tightening into an outage for any caller that passes it.
+    """
+    wheel = tmp_path / WHEEL_NAME
+    wheel.write_bytes(b"single-slash wheel")
+    manifest = _build_manifest(tmp_path, test_key, wheel, artifact_base=CDN_BASE)
+
+    accepted = _verify_manifest(manifest, test_key, artifact_base=f"{CDN_BASE}/")
+
+    assert accepted.returncode == 0, accepted.stderr
+
+
+def test_the_live_feed_gate_invokes_the_verifier_these_fixtures_pin() -> None:
+    """The invariant is only worth holding if the workflow runs this verifier.
+
+    Reads publish-installer.yml rather than trusting the comment above it: the
+    feed gate must still shell ``cli-manifest.py verify`` with the channel and
+    artifact base bound, and must still take its public key from cli.sh's own
+    embedded trust root rather than from a separately stored copy that could
+    rotate independently.
+    """
+    installer_workflow = ROOT / ".github" / "workflows" / "publish-installer.yml"
+    workflow = yaml.safe_load(installer_workflow.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["publish-installer"]["steps"]
+    gate = next(
+        step for step in steps if step.get("name", "").startswith("Verify every live channel feed")
+    )
+    run = gate["run"]
+
+    # Anchor on a LIVE line, not on the text appearing anywhere: commenting the
+    # invocation out leaves every substring in place, so a bare `in run` check
+    # stays green while the gate stops verifying anything.
+    invocations = [
+        line
+        for line in run.splitlines()
+        if "packaging/signing/cli-manifest.py verify" in line and not line.lstrip().startswith("#")
+    ]
+    assert invocations, "the feed gate no longer executes cli-manifest.py verify"
+    assert "--expected-channel" in run
+    assert "--artifact-base" in run
+    # The key the gate trusts is extracted from cli.sh itself, which is what
+    # makes "signed by the pinned key" mean the same thing on both sides.
+    assert "CLI_MANIFEST_PUBLIC_KEY_B64" in run
+    assert "cli.sh" in run

@@ -1,0 +1,9 @@
+{"_type": "metadata", "created_at": "2026-09-08T08:30:48.690964+00:00", "last_consolidated": 0, "compacted_at": "2026-09-08T08:30:49.727339+00:00", "rotated_at": "2026-09-08T08:30:49.650696+00:00", "rotation_generation": 1, "title": "Long history paging", "pinned": true}
+{"role": "user", "content": "Follow-up 1: does the live tail still line up with the archived head after a rewrite?", "ts": "2026-09-08T08:30:49.729332+00:00"}
+{"role": "assistant", "content": "Follow-up 1: yes - the rewrite keeps the rotation identity in the metadata line, so the archived head stays reachable.", "ts": "2026-09-08T08:30:49.729656+00:00"}
+{"role": "user", "content": "Follow-up 2: does the live tail still line up with the archived head after a rewrite?", "ts": "2026-09-08T08:30:49.729906+00:00"}
+{"role": "assistant", "content": "Follow-up 2: yes - the rewrite keeps the rotation identity in the metadata line, so the archived head stays reachable.", "ts": "2026-09-08T08:30:49.730185+00:00"}
+{"role": "user", "content": "Follow-up 3: does the live tail still line up with the archived head after a rewrite?", "ts": "2026-09-08T08:30:49.730433+00:00"}
+{"role": "assistant", "content": "Follow-up 3: yes - the rewrite keeps the rotation identity in the metadata line, so the archived head stays reachable.", "ts": "2026-09-08T08:30:49.730684+00:00"}
+{"role": "user", "content": "Follow-up 4: does the live tail still line up with the archived head after a rewrite?", "ts": "2026-09-08T08:30:49.730927+00:00"}
+{"role": "assistant", "content": "Follow-up 4: yes - the rewrite keeps the rotation identity in the metadata line, so the archived head stays reachable.", "ts": "2026-09-08T08:30:49.731175+00:00"}

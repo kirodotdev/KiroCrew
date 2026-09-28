@@ -1,0 +1,80 @@
+rules:
+  # ─── A test double's pid must not name a process the OS can allocate ──
+  # A mock subprocess carrying a plausible pid makes a production cleanup
+  # signal a real process. The kill helpers take their target from the
+  # integer `proc.pid` alone, resolve it against the runner's live process
+  # table, and signal whatever owns it. Under pytest-xdist that table is
+  # full of sibling workers, so the signal lands on another worker: its
+  # channel closes mid-batch and the shard reports whichever test it had
+  # been sent, with no assertion and no traceback to explain it. Running
+  # the file alone hides it — with a sparse process table the lookup
+  # raises and the suppressed exception swallows the whole path.
+  #
+  # Use a pid above every pid_max any supported platform will allocate, so
+  # the lookup fails before a signal is composed. `test/test_update_provider.py`
+  # names the spelling as `_UNALLOCATABLE_PID`, and asserts it exceeds 2**32;
+  # this rule uses the same threshold.
+  #
+  # Unconditional on purpose. Whether a given double reaches a kill path is
+  # not decidable from the file that declares it: the neutralising mock can
+  # live in a class fixture or a conftest, under any of the platform helper
+  # names, under `os.kill` / `os.killpg` beneath them, or behind a locally
+  # named fake. A rule that tried to read the coupling would have to answer
+  # that question and would be wrong in both directions, so this one asks
+  # only whether the literal is allocatable — one AST node, no coupling.
+  #
+  # Stricter than the file-scoped ratchet in `test/test_update_provider.py`,
+  # which permits the literal 1 on the grounds that the helpers refuse a
+  # reserved pid outright. `kill_process_tree` does refuse it, because
+  # `killpg(1, sig)` is `kill(-1, sig)` in libc. `kill_pid` does not: on
+  # POSIX it passes the value straight to `os.kill`, where 0 addresses the
+  # caller's own process group — the sibling workers. So a reserved literal
+  # is not a safe spelling here, and there is one spelling to learn.
+
+  - id: kirocrew.mock-pid-allocatable
+    patterns:
+      - pattern-either:
+          - pattern: $OBJ.pid = $N
+          - patterns:
+              - pattern: $CTOR(..., pid=$N, ...)
+              - metavariable-regex:
+                  metavariable: $CTOR
+                  regex: ^(MagicMock|Mock|AsyncMock|NonCallableMock|SimpleNamespace)$
+          # A metavariable in call position binds a bare name, never a dotted
+          # callee, so the qualified spelling needs its own alternative.
+          - patterns:
+              - pattern: $MOD.$CTOR(..., pid=$N, ...)
+              - metavariable-regex:
+                  metavariable: $CTOR
+                  regex: ^(MagicMock|Mock|AsyncMock|NonCallableMock|SimpleNamespace)$
+      - metavariable-comparison:
+          metavariable: $N
+          comparison: $N < 4294967296
+    # Scoped to the test trees on purpose. In production a pid assignment or a
+    # `pid=` keyword carries a pid the OS really issued, which is the whole
+    # point of the value; the hazard is a FABRICATED pid, and only a test
+    # fabricates one.
+    paths:
+      include:
+        - test/**
+        # Recursive on purpose: a built-in app's suites are not all one level
+        # down. aws_control/crew/packaging/tests is collected like any other,
+        # and a single-star include reads straight past it.
+        - src/kiro_crew/apps/builtins/**/tests/**
+    message: >
+      This pid is a number a live process can own, so a cleanup path that
+      signals it reaches whatever holds it on the runner — under pytest-xdist,
+      a sibling worker, which dies with no assertion and no traceback. Bind a
+      pid above every supported platform's pid_max instead: import
+      _UNALLOCATABLE_PID from the shared spelling in
+      test/test_update_provider.py, or write a literal greater than 2**32. A
+      reserved pid is not an alternative — kill_pid passes its argument
+      straight to os.kill, where 0 addresses the caller's own process group.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      category: correctness
+      subcategory: test-isolation
+      cwe: "CWE-283: Unverified Ownership"
+      references:
+        - https://man7.org/linux/man-pages/man2/kill.2.html

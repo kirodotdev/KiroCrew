@@ -1,0 +1,108 @@
+/*
+ * Companion motion (timings inlined from PONDER_MS=700ms, PONDER_CYCLES=3 —
+ * CSS cannot import the constants the template literal interpolated): the ponder loop, the celebrate hop and the error shake.
+ *
+ * A real stylesheet rather than template literals in TypeScript — CSS is not
+ * program text, and the i18n scanner cannot tell a keyframe block from prose.
+ */
+@keyframes kg-ponder {
+          0%   { transform: translateY(0)      scale(1,     1);     }
+          21%  { transform: translateY(-7px)   scale(1.010, 0.989); }
+          36%  { transform: translateY(-8px)   scale(1.029, 0.982); }
+          57%  { transform: translateY(-6.5px) scale(1.038, 0.975); }
+          71%  { transform: translateY(-5px)   scale(1.033, 0.979); }
+          86%  { transform: translateY(-2.5px) scale(1.014, 0.986); }
+          100% { transform: translateY(0)      scale(1,     1);     }
+        }
+        .kg-anim-ponder { animation: kg-ponder 700ms ease-in-out 3 both; will-change: transform; transform-origin: 50% 100%; }
+        .kg-anim-ponder-loop { animation: kg-ponder 700ms ease-in-out infinite; will-change: transform; transform-origin: 50% 100%; }
+        @media (prefers-reduced-motion: reduce) {
+          .kg-anim-ponder, .kg-anim-ponder-loop { animation: none; }
+        }
+
+/* Celebrate — a happy hop with a little squash on take-off/landing.
+           Applied to the layered container so eyes + dress-up ride along.
+           Hop height is the --kg-hop custom property so the same motion can be
+           scaled per surface: 38px suits the 128px desktop pet, but would launch
+           a 56px perched pet clear off the panel, so the panel sets less. */
+        @keyframes kg-celebrate {
+          0%   { transform: translateY(0)     scale(1, 1); }
+          12%  { transform: translateY(0)     scale(1.08, 0.88); }
+          38%  { transform: translateY(calc(-1 * var(--kg-hop, 38px))) scale(0.94, 1.09); }
+          58%  { transform: translateY(0)     scale(1.08, 0.88); }
+          74%  { transform: translateY(calc(-0.42 * var(--kg-hop, 38px))) scale(0.99, 1.01); }
+          100% { transform: translateY(0)     scale(1, 1); }
+        }
+        .kg-anim-celebrate { animation: kg-celebrate 900ms cubic-bezier(.3,.7,.4,1) both; will-change: transform; }
+
+        /* Error — traced from Mascot_Error.mp4: the body shakes rapidly side to
+           side and settles. Rotation ONLY; the footage turns the body, it does
+           not slide it. */
+        @keyframes kg-error {
+          0%,100% { transform: rotate(0deg); }
+          12% { transform: rotate(-9deg); }
+          26% { transform: rotate(8deg); }
+          40% { transform: rotate(-7deg); }
+          54% { transform: rotate(6deg); }
+          68% { transform: rotate(-4deg); }
+          84% { transform: rotate(2deg); }
+        }
+        .kg-anim-error { animation: kg-error 800ms ease-in-out both; will-change: transform; }
+
+        /* Correct — two little approving nods. */
+        @keyframes kg-correct {
+          0%,100% { transform: translateY(0) rotate(0deg); }
+          20% { transform: translateY(4px) rotate(3deg); }
+          40% { transform: translateY(0)   rotate(0deg); }
+          60% { transform: translateY(4px) rotate(3deg); }
+          80% { transform: translateY(0)   rotate(0deg); }
+        }
+        .kg-anim-correct { animation: kg-correct 760ms ease-in-out both; will-change: transform; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .kg-anim-celebrate, .kg-anim-error, .kg-anim-correct { animation: none; }
+        }
+
+/* Look — EYES ONLY. In the footage the body lean is unchanged from idle; all of
+           the expression is the eyes sliding across and holding (~0.7s). Only a 2px
+           settle here, so it can never be mistaken for Curious. */
+        @keyframes kg-look {
+          0%,100% { transform: translate(0, 0); }
+          15%     { transform: translate(-2px, 0); }
+          75%     { transform: translate(-2px, 0); }
+        }
+        .kg-anim-look { animation: kg-look 1100ms ease-in-out both; will-change: transform; }
+
+/* Curious — the mascot cocks its whole body to one side, holds, then snaps back.
+           Traced from the footage: anticipation, fast snap, overshoot, ~1.5s hold,
+           snap out — NOT a slow ramp. The lean is NEGATIVE because the filmed mascot
+           faces left while this art faces right; it tips toward the tail in both. */
+        @keyframes kg-curious {
+          0%   { transform: rotate(0deg) scale(1, 1) translateY(0); }
+          6%   { transform: rotate(4deg) scale(1.05, 0.95) translateY(2px); }
+          15%  { transform: rotate(-18deg) scale(0.90, 1.06) translateY(-5px); }
+          21%  { transform: rotate(-12deg) scale(1.02, 0.99) translateY(-2px); }
+          27%  { transform: rotate(-16deg) scale(1, 1) translateY(-4px); }
+          70%  { transform: rotate(-14deg) scale(1, 1) translateY(-3px); }
+          80%  { transform: rotate(-16deg) scale(0.99, 1.01) translateY(-5px); }
+          91%  { transform: rotate(3deg) scale(1.04, 0.96) translateY(1px); }
+          100% { transform: rotate(0deg) scale(1, 1) translateY(0); }
+        }
+        .kg-anim-curious { animation: kg-curious 2000ms cubic-bezier(.2,.85,.3,1) both; will-change: transform; }
+
+/* Fly / walking — a gentle floating bob with a slight FORWARD lean (+deg tips
+           toward +x, and the art faces +x; the flip mirrors the whole ghost when it
+           travels the other way, so forward stays forward). Loops for as long as the
+           companion is travelling, which includes an idle hop. */
+        @keyframes kg-fly {
+          0%,100% { transform: translateY(0)    rotate(3deg); }
+          50%     { transform: translateY(-5px) rotate(1deg); }
+        }
+        .kg-anim-fly { animation: kg-fly 900ms ease-in-out infinite; will-change: transform; }
+
+        /* Reduced motion: hold the resting pose rather than animating. The eye
+           OFFSET for these reactions still applies — expression without movement. */
+        @media (prefers-reduced-motion: reduce) {
+          .kg-anim-look, .kg-anim-curious, .kg-anim-fly { animation: none; }
+        }
+

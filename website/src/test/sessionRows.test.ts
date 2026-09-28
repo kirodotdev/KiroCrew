@@ -1,0 +1,628 @@
+import { describe, it, expect } from 'vitest'
+
+import {
+  buildTree,
+  columnMaxima,
+  fmtCredits,
+  fmtGb,
+  fmtHostPct,
+  fmtMb,
+  fmtTurns,
+  fmtUptime,
+  heatLevel,
+  rowName,
+  sessionChatPath,
+  aggregateOncePerRuntime,
+  sparklineBars,
+  sumOncePerRuntime,
+  type SessionPayloadRow,
+  type TaskPayloadRow,
+} from '../pages/system/sessionRows'
+
+const session = (over: Partial<SessionPayloadRow> = {}): SessionPayloadRow => ({
+  key: 'dashboard:chat-1',
+  title: 'A chat',
+  slot_key: 'chat-1',
+  untitled: false,
+  agent: 'kirocrew',
+  channel: 'dashboard',
+  pid: 7,
+  owns_runtime: true,
+  prompts: 1,
+  rss_mb: 100,
+  procs: 3,
+  mcp: 1,
+  cpu_cores: 0.1,
+  uptime_s: 60,
+  credits: 5.2,
+  turns: 3,
+  parent: null,
+  ...over,
+})
+
+const task = (over: Partial<TaskPayloadRow> = {}): TaskPayloadRow => ({
+  id: 't1',
+  task: 'a task',
+  agent: 'kirocrew-research',
+  parent: 'dashboard:chat-1',
+  rss_mb: 50,
+  peak_rss_mb: 60,
+  cpu_cores: 0.05,
+  procs: 7,
+  mcp: 6,
+  started_at: Date.now() / 1000 - 30,
+  shared: false,
+  pid: 8,
+  sampled: true,
+  ...over,
+})
+
+// ── sessionChatPath ──
+
+describe('sessionChatPath', () => {
+  it('routes a dashboard session to its chat window by BARE slot key', () => {
+    // ChatPage reads ?sid= and strips nothing, so the dashboard: prefix must not
+    // travel with it.
+    expect(sessionChatPath('dashboard:chat-69-1785905004')).toBe('/chat?sid=chat-69-1785905004')
+  })
+
+  it('encodes the slot key', () => {
+    expect(sessionChatPath('dashboard:chat a/b')).toBe('/chat?sid=chat%20a%2Fb')
+  })
+
+  it.each(['_bg', 'slack:C123', 'cron:job-1'])('has no chat window for %s', key => {
+    // These are real sessions with real memory but nothing to navigate to —
+    // null keeps the row non-interactive instead of shipping a dead click.
+    expect(sessionChatPath(key)).toBeNull()
+  })
+
+  it('rejects a bare prefix with no slot key', () => {
+    expect(sessionChatPath('dashboard:')).toBeNull()
+  })
+})
+
+// ── rowName ──
+
+describe('rowName', () => {
+  it('uses the resolved title', () => {
+    expect(rowName(session({ title: 'Windows testing issue found' }))).toBe('Windows testing issue found')
+  })
+
+  it('appends the slot key when untitled, so rows stay distinguishable', () => {
+    const name = rowName(session({ title: 'New Session…', untitled: true, slot_key: 'chat-70' }))
+    expect(name).toBe('New Session… chat-70')
+  })
+
+  it('falls back to the key when there is no title at all', () => {
+    expect(rowName(session({ title: '', key: 'dashboard:x' }))).toBe('dashboard:x')
+  })
+})
+
+// ── formatters ──
+
+describe('formatters', () => {
+  it('renders megabytes with one decimal and a group separator', () => {
+    expect(fmtMb(3238)).toBe('3,238.0MB')
+    expect(fmtMb(572)).toBe('572.0MB')
+  })
+
+  it.each([null, undefined, NaN])('renders %s as an em dash rather than 0', v => {
+    expect(fmtMb(v as number | null)).toBe('—')
+  })
+
+  it('takes a ratio for the host share, not a pre-multiplied percentage', () => {
+    // A double-multiply bug would render 5,000% here.
+    expect(fmtHostPct(1024, 2048)).toBe('50%')
+    expect(fmtHostPct(3238, 126976)).toBe('2.55%')
+  })
+
+  it('has no host share without a host total', () => {
+    expect(fmtHostPct(1024, null)).toBe('—')
+  })
+
+  it('renders a multi-day uptime coarsely', () => {
+    expect(fmtUptime(2 * 86400 + 6 * 3600 + 41 * 60)).toBe('2d 6h 41m')
+    expect(fmtUptime(9082)).toBe('2h 31m')
+  })
+
+  it('drops zero components', () => {
+    // Load-bearing: without dropZero this same input renders "0d 0h 1m", so both
+    // the exact form and the absence of a zero component discriminate.
+    expect(fmtUptime(90)).toBe('1m')
+    expect(fmtUptime(90)).not.toMatch(/0d/)
+  })
+
+  it('rejects a negative uptime', () => {
+    expect(fmtUptime(-1)).toBe('—')
+  })
+})
+
+// ── fmtGb ──
+
+describe('fmtGb', () => {
+  it('renders host-scale totals in GB with two decimals', () => {
+    expect(fmtGb(126771.2)).toMatch(/123\.80/)
+  })
+
+  it('renders an em dash for an unsampled total', () => {
+    expect(fmtGb(null)).toBe('—')
+  })
+})
+
+// ── sparklineBars ──
+
+describe('sparklineBars', () => {
+  it('scales against the host total, not the series maximum', () => {
+    // Same series, different ceiling: a self-scaled trace would peg the peak to
+    // full height in both cases and make a small blip look like saturation.
+    expect(sparklineBars([{ t: 1, mb: 1024 }, { t: 2, mb: 2048 }], 4096)).toEqual([25, 50])
+  })
+
+  it('clamps a series that exceeds the ceiling instead of overflowing the box', () => {
+    expect(sparklineBars([{ t: 1, mb: 10 }, { t: 2, mb: 999 }], 100)).toEqual([10, 100])
+  })
+
+  it('returns nothing for a series too short to show a trend', () => {
+    expect(sparklineBars([], 100)).toEqual([])
+    expect(sparklineBars([{ t: 1, mb: 5 }], 100)).toEqual([])
+  })
+})
+
+// ── buildTree ──
+
+describe('buildTree', () => {
+  it('nests each task under the right parent via subRows', () => {
+    // Tasks must be accessible through the parent session, not as top-level rows,
+    // because TanStack expand/collapse operates on subRows.
+    const rows = buildTree(
+      [session({ key: 'dashboard:a' }), session({ key: 'dashboard:b', rss_mb: 200 })],
+      [task({ id: 't-b', parent: 'dashboard:b' }), task({ id: 't-a', parent: 'dashboard:a' })],
+    )
+    const rowA = rows.find(r => r.id === 'dashboard:a')!
+    const rowB = rows.find(r => r.id === 'dashboard:b')!
+    expect(rowA.subRows).toHaveLength(1)
+    expect(rowA.subRows![0].id).toBe('t-a')
+    expect(rowB.subRows).toHaveLength(1)
+    expect(rowB.subRows![0].id).toBe('t-b')
+  })
+
+  it('omits subRows entirely when a session has no tasks', () => {
+    // An empty array would make TanStack treat the row as expandable (canExpand),
+    // which renders a meaningless disclosure chevron on a leaf row.
+    const rows = buildTree([session({ key: 'dashboard:solo' })], [])
+    expect(rows[0]).not.toHaveProperty('subRows')
+  })
+
+  it('assigns channel "subagent" to tasks regardless of parent channel', () => {
+    // A task was spawned by the agent, not the user — attributing the parent's
+    // channel would misreport origin when grouping by channel.
+    const rows = buildTree(
+      [session({ key: 'dashboard:a', channel: 'slack' })],
+      [task({ id: 't1', parent: 'dashboard:a' })],
+    )
+    expect(rows[0].subRows![0].channel).toBe('subagent')
+  })
+
+  it('shows unsampled task fields as null', () => {
+    // A task that has not been measured yet must read "—" in the UI, not "0".
+    const rows = buildTree(
+      [session()],
+      [task({ sampled: false, rss_mb: 0, peak_rss_mb: 0, cpu_cores: 0 })],
+    )
+    const t = rows[0].subRows![0]
+    expect(t.rssMb).toBeNull()
+    expect(t.peakMb).toBeNull()
+    expect(t.cpuCores).toBeNull()
+  })
+
+  it('carries the proc and MCP-stub counts of a task', () => {
+    // These columns used to be hardcoded null on task rows, which read as
+    // "subagents carry no MCP stubs" — the opposite of the truth.
+    const rows = buildTree([session()], [task({ procs: 7, mcp: 6 })])
+    const t = rows[0].subRows![0]
+    expect(t.procs).toBe(7)
+    expect(t.mcp).toBe(6)
+  })
+
+  it('leaves uncounted task columns null rather than zero', () => {
+    const rows = buildTree([session()], [task({ procs: null, mcp: null })])
+    const t = rows[0].subRows![0]
+    expect(t.procs).toBeNull()
+    expect(t.mcp).toBeNull()
+  })
+
+  it('marks a co-tenant of a multiplexed runtime as shared', () => {
+    const rows = buildTree([session({ owns_runtime: false, sharers: 2 })], [])
+    expect(rows[0].shared).toBe(true)
+  })
+
+  it('marks the FOUNDER of a multiplexed runtime as shared too', () => {
+    // owns_runtime is false only on the joiners, so reading it as "is this
+    // runtime shared?" leaves the founder's row claiming an exclusive process
+    // it does not have. The sharer count answers the question actually asked.
+    const rows = buildTree([session({ owns_runtime: true, sharers: 3 })], [])
+    expect(rows[0].shared).toBe(true)
+  })
+
+  it('leaves an exclusive runtime unshared', () => {
+    const rows = buildTree([session({ owns_runtime: true, sharers: 1 })], [])
+    expect(rows[0].shared).toBe(false)
+  })
+
+  it('treats a payload without a sharer count as exclusive', () => {
+    // An older gateway does not send it; a missing count must not badge every
+    // row as shared.
+    const rows = buildTree([session({ sharers: undefined })], [])
+    expect(rows[0].shared).toBe(false)
+  })
+
+  it('gives only sessions a destination — a task has no chat window', () => {    const rows = buildTree([session()], [task()])
+    expect(rows[0].href).toBe('/chat?sid=chat-1')
+    expect(rows[0].subRows![0].href).toBeNull()
+  })
+
+  it('does not mutate the input arrays', () => {
+    const sessions = [session({ key: 'dashboard:a' }), session({ key: 'dashboard:b' })]
+    const tasks = [task({ id: 't1', parent: 'dashboard:a' })]
+    const sessionsSnapshot = [...sessions.map(s => s.key)]
+    const tasksSnapshot = [...tasks.map(t => t.id)]
+    buildTree(sessions, tasks)
+    expect(sessions.map(s => s.key)).toEqual(sessionsSnapshot)
+    expect(tasks.map(t => t.id)).toEqual(tasksSnapshot)
+  })
+
+  it("preserves input order (sorting is the table's job)", () => {
+    // buildTree must NOT sort — imposing an order would fight the table's
+    // SortingState and make the first paint disagree with user-chosen order.
+    const rows = buildTree(
+      [session({ key: 'dashboard:z', rss_mb: 1 }), session({ key: 'dashboard:a', rss_mb: 999 })],
+      [],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:z', 'dashboard:a'])
+  })
+
+  it('keeps a parentless task visible as a top-level row', () => {
+    // The footer reports `tasks.length` under "Task sessions". Dropping a task
+    // whose parent matches no session would count it there and hide it from the
+    // table -- one quantity, two numbers, which is the defect this page exists
+    // to remove. An empty or stale parent key happens for real (an app-spawned
+    // task, or a task outliving its session).
+    const rows = buildTree(
+      [session({ key: 'dashboard:a' })],
+      [
+        task({ id: 't-child', parent: 'dashboard:a' }),
+        task({ id: 't-orphan', parent: '' }),
+        task({ id: 't-stale', parent: 'dashboard:gone' }),
+      ],
+    )
+
+    const taskRowCount = rows.reduce(
+      (n, r) => n + (r.kind === 'task' ? 1 : 0) + (r.subRows?.length ?? 0),
+      0,
+    )
+    // The invariant the footer depends on: every task in the payload is
+    // reachable in the tree.
+    expect(taskRowCount).toBe(3)
+
+    const topLevel = rows.filter(r => r.kind === 'task').map(r => r.id)
+    expect(topLevel).toContain('t-orphan')
+    expect(topLevel).toContain('t-stale')
+    // The matched one stays nested under its session, not promoted.
+    expect(rows.find(r => r.id === 'dashboard:a')?.subRows?.map(r => r.id)).toEqual(['t-child'])
+  })
+
+  const createdBy = (key: string) => ({ slot: key.replace('dashboard:', ''), key })
+
+  it('nests a created session under its running creator, the way a task nests', () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:conductor', slot_key: 'conductor' }),
+        session({ key: 'dashboard:worker', slot_key: 'worker', parent: createdBy('dashboard:conductor') }),
+      ],
+      [],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:conductor'])
+    const [conductor] = rows
+    expect(conductor.subRows?.map(r => [r.kind, r.id])).toEqual([['session', 'dashboard:worker']])
+    // The child keeps its own destination and its citation.
+    expect(conductor.subRows?.[0].href).toBe('/chat?sid=worker')
+    expect(conductor.subRows?.[0].parent).toEqual(createdBy('dashboard:conductor'))
+    // The placement is recorded on the row itself, so a renderer under a fold
+    // (where the parent row is a group row) can still tell nested from orphan.
+    expect(conductor.subRows?.[0].nested).toBe(true)
+    expect(conductor.nested).toBe(false)
+  })
+
+  it("puts a nested session's tasks under that session, not under the root", () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:conductor' }),
+        session({ key: 'dashboard:worker', parent: createdBy('dashboard:conductor') }),
+      ],
+      [task({ id: 't-of-worker', parent: 'dashboard:worker' }), task({ id: 't-of-root', parent: 'dashboard:conductor' })],
+    )
+    const [conductor] = rows
+    const worker = conductor.subRows?.find(r => r.id === 'dashboard:worker')
+    expect(worker?.subRows?.map(r => r.id)).toEqual(['t-of-worker'])
+    expect(conductor.subRows?.filter(r => r.kind === 'task').map(r => r.id)).toEqual(['t-of-root'])
+  })
+
+  it('nests to whatever depth the creating went', () => {
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:a' }),
+        session({ key: 'dashboard:b', parent: createdBy('dashboard:a') }),
+        session({ key: 'dashboard:c', parent: createdBy('dashboard:b') }),
+      ],
+      [],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:a'])
+    expect(rows[0].subRows?.[0].id).toBe('dashboard:b')
+    expect(rows[0].subRows?.[0].subRows?.[0].id).toBe('dashboard:c')
+  })
+
+  it('keeps a created session whose creator is not running as a top-level row with its citation', () => {
+    // The backend nulls `key` when the creator has no live row; the slot stays
+    // so the row can still say who opened it.
+    const orphan = session({
+      key: 'dashboard:worker',
+      parent: { slot: 'gone', key: null },
+    })
+    const rows = buildTree([orphan], [])
+    expect(rows.map(r => r.id)).toEqual(['dashboard:worker'])
+    expect(rows[0].nested).toBe(false)
+    expect(rows[0].parent?.slot).toBe('gone')
+    expect(rows[0].subRows).toBeUndefined()
+  })
+
+  it('does not follow a parent key that names no row in this payload', () => {
+    const rows = buildTree(
+      [session({ key: 'dashboard:worker', parent: createdBy('dashboard:not-here') })],
+      [],
+    )
+    expect(rows.map(r => r.id)).toEqual(['dashboard:worker'])
+  })
+
+  it('never loops on a cycle: its members become roots, a hanger-on keeps its edge', () => {
+    // The backend already breaks cycles; this is the table refusing to fail to
+    // paint on a payload it did not produce.
+    const rows = buildTree(
+      [
+        session({ key: 'dashboard:a', parent: createdBy('dashboard:b') }),
+        session({ key: 'dashboard:b', parent: createdBy('dashboard:a') }),
+        session({ key: 'dashboard:c', parent: createdBy('dashboard:a') }),
+        session({ key: 'dashboard:self', parent: createdBy('dashboard:self') }),
+      ],
+      [],
+    )
+    expect(rows.map(r => r.id).sort()).toEqual(['dashboard:a', 'dashboard:b', 'dashboard:self'])
+    expect(rows.find(r => r.id === 'dashboard:a')?.subRows?.map(r => r.id)).toEqual(['dashboard:c'])
+  })
+
+  it('a session nobody created carries a null parent', () => {
+    const [row] = buildTree([session()], [])
+    expect(row.parent).toBeNull()
+  })
+})
+
+// ── columnMaxima ──
+
+describe('columnMaxima', () => {
+  it('walks into subRows to find the true maximum', () => {
+    // A task can be larger than its parent session; ignoring subRows would
+    // understate the heat ceiling and overflow the tint.
+    const rows = buildTree(
+      [session({ key: 'dashboard:a', rss_mb: 100, cpu_cores: 0.5 })],
+      [task({ id: 't1', parent: 'dashboard:a', rss_mb: 200, cpu_cores: 1.2, sampled: true })],
+    )
+    const max = columnMaxima(rows)
+    expect(max.rssMb).toBe(200)
+    expect(max.cpuCores).toBe(1.2)
+  })
+
+  it('returns null when nothing is sampled', () => {
+    // No samples means no ceiling — a null max disables the heat tint entirely
+    // rather than dividing by zero.
+    const rows = buildTree(
+      [session({ key: 'dashboard:a', rss_mb: null, cpu_cores: null })],
+      [],
+    )
+    const max = columnMaxima(rows)
+    expect(max.rssMb).toBeNull()
+    expect(max.cpuCores).toBeNull()
+  })
+
+  it('ignores null values in unsampled tasks', () => {
+    const rows = buildTree(
+      [session({ key: 'dashboard:a', rss_mb: 50, cpu_cores: 0.3 })],
+      [task({ id: 't1', parent: 'dashboard:a', sampled: false, rss_mb: 0, cpu_cores: 0 })],
+    )
+    const max = columnMaxima(rows)
+    expect(max.rssMb).toBe(50)
+    expect(max.cpuCores).toBe(0.3)
+  })
+})
+
+// ── fmtCredits ──
+
+describe('fmtCredits', () => {
+  it('renders a cumulative total with 1 decimal place', () => {
+    expect(fmtCredits(18.4)).toBe('18.4')
+    expect(fmtCredits(0.9)).toBe('0.9')
+  })
+
+  it('renders an em dash for null (not measured, NOT zero)', () => {
+    expect(fmtCredits(null)).toBe('—')
+    expect(fmtCredits(undefined)).toBe('—')
+  })
+
+  it('renders an em dash for NaN', () => {
+    expect(fmtCredits(NaN)).toBe('—')
+  })
+
+  it('renders zero as a number, not as an em dash', () => {
+    // Zero credits is a measured fact, null is unmeasured — they are distinct.
+    expect(fmtCredits(0)).not.toBe('—')
+    expect(fmtCredits(0)).toBe('0.0')
+  })
+})
+
+// ── fmtTurns ──
+
+describe('fmtTurns', () => {
+  it('renders a turn count', () => {
+    expect(fmtTurns(7)).toBe('7')
+    expect(fmtTurns(100)).toBe('100')
+  })
+
+  it('renders an em dash for null (not measured, NOT zero)', () => {
+    expect(fmtTurns(null)).toBe('—')
+    expect(fmtTurns(undefined)).toBe('—')
+  })
+
+  it('renders zero turns as "0", not as an em dash', () => {
+    // Distinguishes "measured zero" from "not measured"
+    expect(fmtTurns(0)).toBe('0')
+  })
+})
+
+// ── heatLevel ──
+
+describe('heatLevel', () => {
+  it('returns 0 when max is null', () => {
+    expect(heatLevel(100, null)).toBe(0)
+  })
+
+  it('returns 0 when max is 0 (avoids division by zero)', () => {
+    expect(heatLevel(0, 0)).toBe(0)
+  })
+
+  it('is safe with a negative max', () => {
+    expect(heatLevel(5, -10)).toBe(0)
+  })
+
+  it('returns 0 when value is null', () => {
+    expect(heatLevel(null, 100)).toBe(0)
+  })
+
+  it('returns 1 at the 0.1 boundary', () => {
+    // share = 10/100 = 0.10, boundary is >= 0.1
+    expect(heatLevel(10, 100)).toBe(1)
+  })
+
+  it('returns 1 just below the 0.33 boundary', () => {
+    expect(heatLevel(32, 100)).toBe(1)
+  })
+
+  it('returns 2 at the 0.33 boundary', () => {
+    expect(heatLevel(33, 100)).toBe(2)
+  })
+
+  it('returns 2 just below the 0.66 boundary', () => {
+    expect(heatLevel(65, 100)).toBe(2)
+  })
+
+  it('returns 3 at the 0.66 boundary', () => {
+    expect(heatLevel(66, 100)).toBe(3)
+  })
+
+  it('returns 3 at the maximum (share = 1.0)', () => {
+    expect(heatLevel(100, 100)).toBe(3)
+  })
+
+  it('returns 0 for a very small share', () => {
+    expect(heatLevel(1, 100)).toBe(0)
+  })
+})
+
+// ── credits and turns in buildTree ──
+
+describe('buildTree credits and turns', () => {
+  it('carries credits and turns from the session payload', () => {
+    const rows = buildTree([session({ credits: 24.9, turns: 11 })], [])
+    expect(rows[0].credits).toBe(24.9)
+    expect(rows[0].turns).toBe(11)
+  })
+
+  it('maps null credits/turns from the payload as null, not zero', () => {
+    const rows = buildTree([session({ credits: null, turns: null })], [])
+    expect(rows[0].credits).toBeNull()
+    expect(rows[0].turns).toBeNull()
+  })
+
+  it('tasks always have null credits and turns (not measured per-task)', () => {
+    const rows = buildTree([session()], [task()])
+    expect(rows[0].subRows![0].credits).toBeNull()
+    expect(rows[0].subRows![0].turns).toBeNull()
+  })
+})
+
+// ── sumOncePerRuntime ──
+
+describe('sumOncePerRuntime', () => {
+  const leaf = (pid: number | null, procs: number | null, mcp: number | null = 0) => ({
+    original: { pid, procs, mcp } as never,
+  })
+
+  it('adds a shared runtime once, not once per co-tenant', () => {
+    // Three sessions on one 9-process runtime. A plain sum reports 27 processes
+    // that do not exist.
+    const rows = [leaf(7, 9), leaf(7, 9), leaf(7, 9)]
+    expect(aggregateOncePerRuntime('procs', rows)).toBe(9)
+  })
+
+  it('adds distinct runtimes normally', () => {
+    const rows = [leaf(1, 2), leaf(2, 3), leaf(3, 4)]
+    expect(aggregateOncePerRuntime('procs', rows)).toBe(9)
+  })
+
+  it('is a plain sum when every row has its own runtime', () => {
+    // The 1:1 case must be indistinguishable from the aggregation it replaces.
+    const rows = [leaf(1, 5), leaf(2, 5)]
+    expect(aggregateOncePerRuntime('procs', rows)).toBe(10)
+  })
+
+  it('counts rows with no pid separately — unmeasured is not shared', () => {
+    const rows = [leaf(null, 3), leaf(null, 4)]
+    expect(aggregateOncePerRuntime('procs', rows)).toBe(7)
+  })
+
+  it('returns null when nothing carries the column, keeping it apart from zero', () => {
+    expect(aggregateOncePerRuntime('procs', [leaf(1, null), leaf(2, null)])).toBeNull()
+    expect(aggregateOncePerRuntime('procs', [])).toBeNull()
+  })
+
+  it('skips an unmeasured row without dropping its runtime for a measured one', () => {
+    const rows = [leaf(7, null), leaf(7, 9)]
+    expect(aggregateOncePerRuntime('procs', rows)).toBe(9)
+  })
+
+  it('de-duplicates each column independently', () => {
+    const rows = [leaf(7, 9, 6), leaf(7, 9, 6)]
+    expect(aggregateOncePerRuntime('procs', rows)).toBe(9)
+    expect(aggregateOncePerRuntime('mcp', rows)).toBe(6)
+  })
+})
+
+describe('sumOncePerRuntime over payload pairs (the footer total)', () => {
+  it('counts a shared runtime once, so the footer matches the column', () => {
+    // The table footer reads the SAME figure as the procs column. Three
+    // co-tenants of one 9-process runtime plus one exclusive 4-process runtime
+    // is 13 real processes; summing per row reports 31.
+    const footer = sumOncePerRuntime([
+      [4242, 9], [4242, 9], [4242, 9], [5150, 4],
+    ])
+    expect(footer).toBe(13)
+  })
+
+  it('agrees with the column aggregate on the same rows', () => {
+    const rows = [
+      { original: { pid: 4242, procs: 9 } as never },
+      { original: { pid: 4242, procs: 9 } as never },
+      { original: { pid: 5150, procs: 4 } as never },
+    ]
+    expect(aggregateOncePerRuntime('procs', rows)).toBe(
+      sumOncePerRuntime([[4242, 9], [4242, 9], [5150, 4]]),
+    )
+  })
+})

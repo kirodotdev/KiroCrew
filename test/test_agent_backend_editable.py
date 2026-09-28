@@ -1,0 +1,190 @@
+"""``agent.acp_backend`` is writable from the dashboard, and only to real backends.
+
+The Developer > Agent Backend switch writes this field over
+``PATCH /api/config/kirocrew``, so it has to be in ``_EDITABLE_CONFIG`` at all —
+before this it was absent and every save came back "field not editable".
+
+The selectable-backend set is a REGISTRY an edition extends at boot
+(``register_selectable_backend``), which no import-time literal can see. A parity
+check against a literal copy of the list cannot see that registry, so these tests
+instead pin that each surface RESOLVES the set at request time from the one
+owner, ``agent_sdk.backends``, rather than carrying its own answer.
+"""
+
+from typing import Any, Dict, List
+
+import pytest
+
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+)
+from kiro_crew.agent_sdk import backends as acp_backends
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.handlers.agents import _supply_live_enum
+from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+FIELD = "agent.acp_backend"
+
+#: Known ids the public baseline deliberately does not offer, each entry carrying its
+#: reason in ``test_baseline_ships_every_known_backend``. An entry is a reasoned
+#: exclusion rather than a defect, and it earns its place by naming what the id fails.
+#: Empty today: no id is excluded. ``deepseek`` was the one member while it failed the
+#: ROUTING half of the selectability bar -- its sandbox decides its own tool calls and
+#: its ``session/request_permission`` carries only a model-initiated escalation, so
+#: Crew's PreToolUse gate never ran for what a session did. It left the set when Crew
+#: composed its own gate plugin into the harness and read the plugin's load marker
+#: back before the first prompt (``Routing.VERIFIED_GATE_EXTENSION``), which is the
+#: routing half met the way the exclusion said it had to be.
+NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
+
+
+@pytest.fixture
+def restore_registry():
+    """Snapshot/restore the module-global selectable sets around a mutation.
+
+    BOTH sets, because ``register_selectable_backend`` writes both: restoring only
+    ``_selectable`` would leak a widened baseline into every later test in the run.
+
+    Reached through ``agent_sdk.backends``, the module that DEFINES the pair. The
+    ``kiro_crew.acp_backends`` shim re-exports the public names only: a second
+    binding to a mutable set is how two views of one registry start disagreeing.
+    """
+    baseline_before = set(acp_backends._baseline)
+    before = set(acp_backends._selectable)
+    yield
+    acp_backends._baseline.clear()
+    acp_backends._baseline.update(baseline_before)
+    acp_backends._selectable.clear()
+    acp_backends._selectable.update(before)
+
+
+def test_acp_backend_is_editable_from_the_dashboard():
+    assert FIELD in _EDITABLE_CONFIG, f"{FIELD} must be PATCH-able or the switch cannot save"
+    assert _EDITABLE_CONFIG[FIELD]["type"] == "enum"
+
+
+def test_the_allowlist_resolves_the_set_and_never_carries_a_literal():
+    """A static ``values`` list cannot see boot registration.
+
+    This is the drift fix itself: the old literal made a registered backend fail
+    the PATCH with a misleading "invalid value", which is what the dashboard
+    surfaced as an unavailable option on a build that actually had it.
+    """
+    spec = _EDITABLE_CONFIG[FIELD]
+    assert "values" not in spec, "a frozen list here is exactly the drift being removed"
+    assert callable(spec["values_fn"])
+    assert set(spec["values_fn"]()) == set(acp_backends.selectable_backends())
+
+
+def test_the_default_backend_is_accepted_by_its_own_allowlist():
+    """The shipped default must be writable, or the switch cannot be reset."""
+    assert KiroCrewConfig().agent.acp_backend in _EDITABLE_CONFIG[FIELD]["values_fn"]()
+
+
+def test_a_registered_backend_reaches_the_allowlist(restore_registry):
+    """An edition registering a backend must not need a core edit to be writable.
+
+    Every KNOWN backend is now in the public baseline, so the "not yet registered"
+    starting state has to be constructed rather than borrowed from Claude Code. That
+    is the honest shape anyway: what is being tested is that the allowlist RESOLVES
+    the registry per call, not that any particular id starts out absent.
+    """
+    acp_backends._baseline.discard(ACP_BACKEND_CLAUDE)
+    acp_backends._selectable.discard(ACP_BACKEND_CLAUDE)
+    assert ACP_BACKEND_CLAUDE not in _EDITABLE_CONFIG[FIELD]["values_fn"]()
+
+    acp_backends.register_selectable_backend(ACP_BACKEND_CLAUDE)
+
+    assert ACP_BACKEND_CLAUDE in _EDITABLE_CONFIG[FIELD]["values_fn"]()
+
+
+def test_registering_an_unknown_backend_is_refused(restore_registry):
+    """A dashboard option that cannot start a session is worse than an absent one.
+
+    Matched on the UNKNOWN-id message rather than on ``ValueError`` alone, because
+    ``register_selectable_backend`` refuses for two independent reasons now -- an id
+    outside ``ACP_BACKENDS_KNOWN``, and a known id whose routing is ``UNVERIFIED``. An
+    unknown id resolves to ``UNVERIFIED`` too (``routing_for`` fails closed), so a bare
+    exception assertion here would pass even with the guard this test NAMES deleted.
+    """
+    with pytest.raises(ValueError, match="unknown ACP backend"):
+        acp_backends.register_selectable_backend("byo-harness")
+    assert "byo-harness" not in acp_backends.selectable_backends()
+
+
+def test_the_schema_endpoint_serves_the_same_set_as_the_allowlist():
+    """GET /api/config/schema drives which options the UI enables.
+
+    The tab renders every known backend but disables any value the schema does not
+    advertise, so a schema enum that disagreed with the PATCH allowlist would show
+    an option that is enabled and then refused (or hide one that works).
+    """
+    entry: Dict[str, Any] = {"path": FIELD, "enumValues": None}
+    _supply_live_enum(entry)
+    assert entry["enumValues"] == _EDITABLE_CONFIG[FIELD]["values_fn"]()
+
+
+def test_the_schema_endpoint_leaves_other_fields_alone():
+    """The binding is one path, not a blanket rewrite of every enum."""
+    entry: Dict[str, Any] = {"path": "agent.provider", "enumValues": ["acp"]}
+    _supply_live_enum(entry)
+    assert entry["enumValues"] == ["acp"]
+
+
+def test_a_registered_backend_reaches_the_schema_endpoint(restore_registry):
+    """The other half of the same guarantee: the UI lights it up with no FE change."""
+    acp_backends.register_selectable_backend(ACP_BACKEND_CLAUDE)
+    entry: Dict[str, Any] = {"path": FIELD, "enumValues": None}
+    _supply_live_enum(entry)
+    assert ACP_BACKEND_CLAUDE in entry["enumValues"]
+
+
+def test_the_field_declares_no_static_enum():
+    """The frozen copy is gone from the field metadata too.
+
+    Kept as its own assertion here (and not only in ``test_harness_parity``)
+    because this file is where someone re-adding ``enum=["", "kas"]`` to make the
+    schema "self-describing" would look for permission.
+    """
+    meta = KiroCrewConfig().agent.__dataclass_fields__["acp_backend"].metadata
+    assert meta.get("enum") is None
+
+
+def test_baseline_ships_every_known_backend():
+    """The public build's capability, stated once so a NARROWING is deliberate.
+
+    Claude Code is not excluded here: ``acp/client.py`` owns the
+    whole Claude spawn path and the adapter is a public npm package, so excluding it
+    would remove only the switch. If a backend is ever taken back out, the
+    reason belongs next to that removal — a build that cannot run a harness is a
+    different claim from a machine that has not installed it, and the install probe
+    already answers the second one.
+
+    ``NOT_SHIPPED_SELECTABLE`` is where that reason goes. It is an explicit list
+    rather than a relaxed assertion so a plain ``baseline != known`` still fails:
+    an id may sit outside the baseline only by being named there, with the reason
+    in the comment on that set. Every id NOT named there is offered, so a switch
+    that renders always has an install probe behind it to explain a session that
+    failed to start.
+    """
+    baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
+    assert baseline == sorted(
+        [
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_PI,
+            ACP_BACKEND_GOOSE,
+            ACP_BACKEND_DEEPSEEK,
+        ]
+    )
+    assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

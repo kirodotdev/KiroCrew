@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288" role="img" aria-label="Design Critique">
+  <defs>
+    <linearGradient id="dc-dd-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#171225"/>
+      <stop offset="100%" stop-color="#241a3a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#dc-dd-bg)"/>
+
+  <!-- Decorative orbs spread across full width so side-crop trims only decoration -->
+  <circle cx="90" cy="54" r="28" fill="#4c1d95" opacity="0.45"/>
+  <circle cx="56" cy="216" r="14" fill="#6d28d9" opacity="0.35"/>
+  <circle cx="620" cy="270" r="16" fill="#4c1d95" opacity="0.4"/>
+  <circle cx="1120" cy="58" r="22" fill="#4c1d95" opacity="0.4"/>
+  <circle cx="1150" cy="240" r="40" fill="#6d28d9" opacity="0.3"/>
+
+  <!-- Wireframe screen under critique (center-left) -->
+  <g transform="translate(150,44)">
+    <rect x="0" y="0" width="320" height="200" rx="14" fill="#241b38" stroke="#4c1d95" stroke-width="2.5"/>
+    <path d="M0,14 Q0,0 14,0 L306,0 Q320,0 320,14 L320,30 L0,30 Z" fill="#2e2248"/>
+    <circle cx="18" cy="15" r="3.5" fill="#6d28d9"/>
+    <circle cx="32" cy="15" r="3.5" fill="#6d28d9"/>
+    <circle cx="46" cy="15" r="3.5" fill="#6d28d9"/>
+    <!-- content blocks -->
+    <rect x="24" y="48" width="184" height="14" rx="5" fill="#3b2a5c"/>
+    <rect x="24" y="72" width="272" height="56" rx="8" fill="#1e1730" stroke="#3b2a5c" stroke-width="1.5"/>
+    <rect x="24" y="140" width="230" height="9" rx="4.5" fill="#332552"/>
+    <rect x="24" y="156" width="170" height="9" rx="4.5" fill="#332552"/>
+    <rect x="24" y="174" width="96" height="22" rx="11" fill="#6d28d9"/>
+    <!-- numbered critique pins -->
+    <circle cx="214" cy="56" r="15" fill="#f87171"/>
+    <text x="214" y="61" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" fill="#171225" text-anchor="middle">1</text>
+    <circle cx="280" cy="100" r="15" fill="#fbbf24"/>
+    <text x="280" y="105" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" fill="#171225" text-anchor="middle">2</text>
+    <circle cx="120" cy="185" r="15" fill="#a78bfa"/>
+    <text x="120" y="190" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" fill="#171225" text-anchor="middle">3</text>
+    <circle cx="248" cy="150" r="15" fill="#38bdf8"/>
+    <text x="248" y="155" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" fill="#171225" text-anchor="middle">4</text>
+  </g>
+
+  <!-- Findings list (center) -->
+  <g transform="translate(560,40)">
+    <rect x="0" y="0" width="270" height="48" rx="10" fill="#241b38" stroke="#4c1d95" stroke-width="1.5"/>
+    <circle cx="24" cy="24" r="11" fill="#f87171"/>
+    <text x="24" y="28.5" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" fill="#171225" text-anchor="middle">1</text>
+    <rect x="44" y="14" width="160" height="8" rx="4" fill="#ddd6fe"/>
+    <rect x="44" y="28" width="110" height="7" rx="3.5" fill="#4c1d95"/>
+    <rect x="218" y="16" width="40" height="16" rx="8" fill="#7f1d1d"/>
+
+    <rect x="0" y="62" width="270" height="48" rx="10" fill="#241b38" stroke="#4c1d95" stroke-width="1.5"/>
+    <circle cx="24" cy="86" r="11" fill="#fbbf24"/>
+    <text x="24" y="90.5" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" fill="#171225" text-anchor="middle">2</text>
+    <rect x="44" y="76" width="130" height="8" rx="4" fill="#ddd6fe"/>
+    <rect x="44" y="90" width="96" height="7" rx="3.5" fill="#4c1d95"/>
+    <rect x="218" y="78" width="40" height="16" rx="8" fill="#78350f"/>
+
+    <rect x="0" y="124" width="270" height="48" rx="10" fill="#241b38" stroke="#4c1d95" stroke-width="1.5"/>
+    <circle cx="24" cy="148" r="11" fill="#a78bfa"/>
+    <text x="24" y="152.5" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" fill="#171225" text-anchor="middle">3</text>
+    <rect x="44" y="138" width="150" height="8" rx="4" fill="#ddd6fe"/>
+    <rect x="44" y="152" width="84" height="7" rx="3.5" fill="#4c1d95"/>
+    <rect x="218" y="140" width="40" height="16" rx="8" fill="#3b2a5c"/>
+
+    <rect x="0" y="186" width="270" height="48" rx="10" fill="#241b38" stroke="#4c1d95" stroke-width="1.5" opacity="0.65"/>
+    <circle cx="24" cy="210" r="11" fill="#38bdf8" opacity="0.9"/>
+    <text x="24" y="214.5" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" fill="#171225" text-anchor="middle">4</text>
+    <rect x="44" y="200" width="140" height="8" rx="4" fill="#ddd6fe" opacity="0.55"/>
+    <rect x="44" y="214" width="78" height="7" rx="3.5" fill="#4c1d95" opacity="0.8"/>
+  </g>
+
+  <!-- Ruler + pencil signature badge (right) -->
+  <g transform="translate(980,144)">
+    <circle r="70" fill="#241b38" stroke="#4c1d95" stroke-width="2"/>
+    <circle r="70" fill="#a78bfa" opacity="0.08"/>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <!-- ruler -->
+      <g transform="rotate(-45)">
+        <rect x="-48" y="10" width="96" height="20" rx="4" fill="#a78bfa" fill-opacity="0.16" stroke="#a78bfa" stroke-width="2.4"/>
+        <line x1="-30" y1="10" x2="-30" y2="20" stroke="#a78bfa" stroke-width="2"/>
+        <line x1="-12" y1="10" x2="-12" y2="23" stroke="#a78bfa" stroke-width="2"/>
+        <line x1="6" y1="10" x2="6" y2="20" stroke="#a78bfa" stroke-width="2"/>
+        <line x1="24" y1="10" x2="24" y2="23" stroke="#a78bfa" stroke-width="2"/>
+      </g>
+      <!-- pencil -->
+      <g transform="rotate(-45)">
+        <rect x="-10" y="-46" width="20" height="60" rx="4" fill="#8b5cf6" fill-opacity="0.4" stroke="#c4b5fd" stroke-width="2.4"/>
+        <line x1="-10" y1="-30" x2="10" y2="-30" stroke="#c4b5fd" stroke-width="2"/>
+        <path d="M-10,14 L0,32 L10,14 Z" fill="#c4b5fd" stroke="#c4b5fd" stroke-width="2"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Approval check badge -->
+  <g transform="translate(1040,204)">
+    <circle r="22" fill="#a78bfa"/>
+    <circle r="17" fill="#8b5cf6"/>
+    <path d="M-9 0 L-2 8 L11 -8" stroke="#171225" stroke-width="3.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

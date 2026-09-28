@@ -1,0 +1,7454 @@
+"""Cron service for scheduling agent tasks.
+
+Jobs are stored in the config directory (``~/.kiro/crew/crons.json`` by default,
+overridden by ``KIROCREW_HOME``) and executed by a background
+asyncio timer.  Each job fires a callback (typically delivering the result to
+the dashboard and, when configured, the owner's Slack DM).
+
+Cross-process safety: the CLI and gateway run as separate processes sharing
+the same ``crons.json``.  All read-modify-write cycles use advisory file
+locking (fcntl), and a content-digest ``_sync()`` detects external file changes
+before every mutation.  Job execution releases the lock so long-running jobs
+don't block the CLI.
+
+Jobs are created via MCP tools (``cron_add``) or the CLI (``kirocrew cron add``).
+
+Supports three schedule types:
+- ``every`` — recurring interval (min 60s)
+- ``at`` — one-shot at a unix timestamp
+- ``cron`` — standard cron expression (min hour dom month dow)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import hashlib
+import json
+import logging
+import math
+import random
+import re
+import threading
+import time
+import uuid
+from contextlib import ExitStack, contextmanager
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Iterator,
+    NamedTuple,
+)
+from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    from kiro_crew.session import SessionManager
+
+try:
+    from cron_descriptor import Options, get_description  # type: ignore[import-untyped]
+except ImportError:
+    Options = None  # type: ignore[assignment,misc]
+    get_description = None  # type: ignore[assignment]
+from croniter import croniter  # type: ignore[import-untyped]
+
+from kiro_crew import (
+    cron_inflight,
+    cron_script,
+    platform_compat,
+    sel,
+    shutdown_event,
+    stall_attribution,
+)
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    config_dir,
+    data_home,
+    published_config_timezone,
+)
+from kiro_crew.constants import env_flag_enabled
+from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
+from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
+from kiro_crew.metrics.events import CRON_FIRES, emit_counter
+from kiro_crew.process_identity import (
+    ProcessHandle,
+    add_handle,
+    ending_fence,
+    failure_name,
+    join_failures,
+    kill_each,
+    kill_set,
+    kill_verified_process,
+    process_handle_of,
+    process_survived_async,
+    release_teardown_lease,
+    spawn_in_flight,
+    teardown_barriers,
+    teardown_capture,
+    with_kill_failure,
+)
+from kiro_crew.resource_status import admission_check
+from kiro_crew.runtime_ownership import authorize_runtime_kill
+from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
+
+logger = logging.getLogger(__name__)
+
+# ── Constants ──
+
+# Shown verbatim under the Schedule form's Save button, so it names the rule
+# and the next step rather than only the refusal.
+_CHAT_FOLDER_NEEDS_PERSISTENT = (
+    "Filing runs into a chat folder needs a persistent session: a stateless job "
+    "has no job-wide tab to file. Clear the chat folder, or keep the session."
+)
+
+# Table-driven string-field caps for the persistence chokepoint. Every
+# caller-supplied string field persisted by _build_job/_update_job_locked
+# is listed here with its cap matching the REST/MCP boundary schemas
+# (CRON_ADD_SCHEMA / cron_update ToolSchema in validation.py). A helper
+# iterates this table so adding a field requires ONE edit, not two.
+_CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
+    ("name", MAX_SHORT_STRING),
+    ("message", MAX_CRON_MESSAGE),
+    ("channel", CHANNEL_MAX_LEN),
+    ("thread_ts", 30),
+    ("agent_id", MAX_SHORT_STRING),
+    ("member_id", MAX_SHORT_STRING),
+    ("created_by", MAX_SHORT_STRING),
+    ("source_preset", MAX_SHORT_STRING),
+    ("source_template_prompt", MAX_CRON_MESSAGE),
+    ("folder_id", MAX_SHORT_STRING),
+    ("chat_folder_id", MAX_SHORT_STRING),
+    ("session_key", MAX_SHORT_STRING),
+    ("model", MAX_SHORT_STRING),
+    ("command", 5000),
+    ("script", 200),
+    ("timezone", 50),
+    # Secret-grant fields have no boundary FieldSpec: the pins are sha256 hex
+    # digests computed server-side by the grant endpoint / cron_secret_request
+    # tool (grant validity is enforced by pin equality at fire time, not by
+    # this length gate). Per the no-schema convention they use the general ID cap.
+    ("secret_env_pin", MAX_SHORT_STRING),
+    ("secret_env_pending_pin", MAX_SHORT_STRING),
+)
+
+
+def _validate_cron_string_fields(
+    values: dict[str, object],
+    *,
+    required: frozenset[str] = frozenset(),
+) -> None:
+    """Type+length gate for every caller-supplied string field.
+
+    Iterates _CRON_STRING_FIELD_CAPS. For each field:
+    - If in *required*: always validates (rejects non-str or over-cap).
+    - Otherwise: ``None`` and ``""`` mean "not set" and are skipped; any
+      other value — including falsy non-strings like ``[]`` or ``0``, which
+      a bare truthiness test would silently admit — must be a string within
+      the cap.
+    """
+    for field_name, cap in _CRON_STRING_FIELD_CAPS:
+        val = values.get(field_name)
+        if field_name in required:
+            if not isinstance(val, str):
+                raise ValueError(f"{field_name} must be a string")
+            if len(val) > cap:
+                raise ValueError(f"{field_name} exceeds max length {cap}")
+        else:
+            if val is None or val == "":
+                continue
+            if not isinstance(val, str):
+                raise ValueError(f"{field_name} must be a string")
+            if len(val) > cap:
+                raise ValueError(f"{field_name} exceeds max length {cap}")
+
+
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
+_DEFAULT_DIR: Path | None = None
+
+
+def _default_dir() -> Path:
+    """Cron data directory, resolved against the live data home."""
+    return _DEFAULT_DIR if _DEFAULT_DIR is not None else data_home()
+
+
+_CRONS_FILE = "crons.json"
+
+# ``$skill`` token pattern (mirrors skills._DOLLAR_SKILL_PATTERN; duplicated
+# here to avoid a cron<->skills import cycle).
+_SKILL_TOKEN_RE = re.compile(r"(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)")
+
+
+class CronStoreUnreadable(ValueError):
+    """A mutation could not be persisted because the last load failed.
+
+    Derives from ``ValueError`` rather than ``RuntimeError`` so a refusal lands in
+    the per-item handlers callers already have. The onboarding importer's apply
+    loop catches ``(OSError, ValueError, TypeError, sqlite3.Error)`` per item; a
+    ``RuntimeError`` escaped that tuple, so ONE corrupt ``crons.json`` failed the
+    whole apply request with a 500 and lost every later item in the plan, instead
+    of rejecting the single schedule it actually blocks. The three sites that
+    catch both classes list ``CronStoreUnreadable`` BEFORE ``ValueError``, so they
+    keep binding their own arm and their messages do not change.
+
+    Raised by :meth:`CronService._save` when ``_load`` could not read
+    ``crons.json``. The in-memory job list is empty for that reason rather than
+    because the store is empty, so writing it would overwrite records that are
+    still on disk. Persisting is refused AND the refusal is raised, so a
+    user-initiated mutation reports failure instead of returning success for a
+    write that never happened. Background writers (the reaper merge, the job
+    result merge, the deferred-removal drain) catch it and degrade: a corrupt
+    store must not take down the scheduler loop.
+
+    Also raised by :func:`dispatched_agents_from_disk` when the store is PRESENT
+    but nothing loads from it, so a reader that must fail CLOSED (the template
+    delete guard) does not mistake an unreadable store for an empty one.
+    """
+
+
+def _is_loadable_record(j: dict[str, Any]) -> bool:
+    """True when the SCHEDULER could build a job from *j*. NEVER raises.
+
+    :func:`_job_from_record` is the authority on that — it raises
+    ``KeyError``/``TypeError``/``AttributeError`` on a record that is not shaped
+    like a job — so asking it is the only honest test. ``isinstance(j, dict)``
+    is a weaker stand-in: ``{}`` is a dict the loader rejects. Wrapped here so
+    :func:`_read_job_records` keeps its non-raising contract.
+    """
+    try:
+        # warn_on_coercion=False: this probe runs at WS status-pusher cadence
+        # (count_enabled_from_disk on every push cycle, per connected
+        # dashboard) and never precedes a store rewrite, so the coercion
+        # recovery-window WARNING belongs to _load alone — emitting it here
+        # would repeat it indefinitely for one bad record.
+        _job_from_record(j, warn_on_coercion=False)
+    except Exception:
+        return False
+    return True
+
+
+def _read_job_records(path: Path) -> tuple[list[dict[str, Any]], bool]:
+    """Read *path*, returning ``(records, loadable)``. NEVER raises.
+
+    ``loadable`` is False only when the store is PRESENT but the scheduler can
+    build nothing from it. It exists for the DIAGNOSTIC caller, which must tell
+    "you have no crons" (fine) from "your crons stopped loading" (a fault);
+    runtime readers take ``[0]`` and keep degrading quietly, so the records
+    half is unchanged by it.
+
+    Single owner of the read-parse-shape prologue for the three readers that
+    deliberately bypass the scheduler so they work with no running gateway
+    (:func:`referenced_skill_names`, :func:`unhealthy_jobs_from_disk`,
+    :meth:`CronService.count_enabled_from_disk`). Each had grown its own
+    spelling of this prologue and they had drifted in WHICH corruption they
+    survived, so a store that one reader shrugged off crashed another. This is
+    NOT every reader of the file — see the exclusions below.
+
+    Every failure mode collapses to "no records", because all three callers
+    degrade quietly by contract rather than propagate:
+
+    * ``OSError`` — no file at all (every fresh install), permissions, or a
+      directory where the file should be.
+    * ``UnicodeError`` — the store is bytes on disk and can hold invalid
+      UTF-8. Reading with an explicit encoding also pins the decode to the
+      one :func:`~kiro_crew.atomic_write.atomic_write` writes, rather than to
+      the caller's locale.
+    * ``ValueError`` / ``TypeError`` — unparseable JSON.
+    * ``RecursionError`` — deeply nested JSON. It subclasses ``RuntimeError``,
+      NOT ``ValueError``, so it escapes a decode-error tuple and would abort
+      the caller from inside the read it expected to be safe.
+    * Shape — a document that parses but is not an object holding a ``jobs``
+      list (a top-level ``[]``, a scalar, ``{"jobs": null}``).
+
+    Non-dict entries are dropped here so that no caller repeats the check.
+    All three already discarded them — two by an explicit ``isinstance``
+    guard, one by letting :func:`_job_from_record` reject them — so
+    filtering centrally preserves each caller's behaviour exactly.
+
+    Three readers are deliberately NOT served, because each owes the user or
+    the scheduler a louder reaction than a quiet degrade:
+
+    * :meth:`CronService._load` reads bytes handed over by ``_sync``, logs a
+      warning naming the corruption, and resets the store fingerprint — those
+      are scheduler-state side effects folding in here would silence.
+    * :func:`~kiro_crew.portability._sanitize_imported_crons` rewrites an
+      unreadable import to an empty store and reports it to the caller.
+    * :func:`~kiro_crew.snapshot._merge_crons` prints which path it could not
+      read, skips the merge, and answers ``False`` so its caller can report
+      the refusal instead of a success.
+
+    The latter two still guard on ``(OSError, ValueError)`` only, so a deeply
+    nested store aborts an import or a snapshot merge there. That is a real
+    remaining gap, left for separate work: both owe the user a message naming
+    the file, which this quiet loader cannot give them.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        # An ABSENT store is the fresh-install case: nothing to load is not a
+        # fault. A path that is PRESENT but unusable — a directory, a broken
+        # symlink, unreadable bytes — is the opposite, since the scheduler
+        # loads nothing from it either and only that is worth reporting.
+        # ``is_file()`` cannot draw this line: it is False for a directory and
+        # for a broken symlink just as it is for a missing file. Use the
+        # ``exists() or is_symlink()`` form ``cli_doctor`` already uses for the
+        # same "present but not a usable file" distinction.
+        try:
+            present = path.exists() or path.is_symlink()
+        except OSError:
+            present = True
+        return ([], not present)
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError, RecursionError):
+        return ([], False)
+    records = data.get("jobs", []) if isinstance(data, dict) else None
+    if not isinstance(records, list):
+        return ([], False)
+    kept = [j for j in records if isinstance(j, dict)]
+    # Entries were present but NONE of them is loadable: the shape parsed, yet
+    # nothing the scheduler can run came out of it. That is a read failure for
+    # the diagnostic's purposes even though json.loads succeeded — distinct
+    # from an honestly empty `{"jobs": []}`, which yields nothing because there
+    # is nothing. Ask the LOADER, not `isinstance(dict)`: `{}` is a dict it
+    # rejects, so `{"jobs":[{}]}` would otherwise report healthy while the
+    # scheduler loads zero jobs. `kept` is returned UNCHANGED either way, so
+    # partial salvage still reaches the runtime readers.
+    return (kept, (not records) or any(_is_loadable_record(j) for j in kept))
+
+
+def referenced_skill_names() -> set[str]:
+    """Skill slugs referenced via ``$skill`` tokens in any cron job's message.
+
+    Read-only + best-effort: reads ``crons.json`` directly (so it needs no
+    running scheduler) and returns an empty set on any error. The skill
+    lifecycle uses this to exempt cron-referenced skills from eviction — a job
+    that says ``$deploy-helper`` keeps ``auto/deploy-helper`` from being
+    archived out from under it. Returns both the raw token and its last path
+    segment so callers can match either a full key or a bare slug.
+    """
+    out: set[str] = set()
+    try:
+        for j in _read_job_records(config_dir() / _CRONS_FILE)[0]:
+            msg = j.get("message") or ""
+            for m in _SKILL_TOKEN_RE.finditer(msg):
+                tok = m.group(1)
+                if any(c.isalpha() for c in tok):
+                    out.add(tok)
+                    out.add(tok.split("/")[-1])
+    except Exception:
+        return set()
+    return out
+
+
+def agent_sequence_dispatches(seq: list[str]) -> bool:
+    """Whether a job's ``agent_sequence`` is what dispatch actually runs.
+
+    A sequence of more than one agent takes precedence over ``agent_id``; a
+    shorter one is dormant and dispatch falls through to ``agent_id``. This is
+    the ONE spelling of that gate -- the Slack dispatch path, session-key
+    stability, and the doctor's disk reader all call it, so a change to the
+    dispatch semantics cannot silently leave a consumer reporting (or keying)
+    against the old rule.
+    """
+    return len(seq) > 1
+
+
+def dispatched_agents_from_disk(*, loadable_only: bool) -> list[tuple[str, str, str]]:
+    """``(job id, holder label, agent name)`` for every agent a stored job DISPATCHES.
+
+    The ONE walk that encodes the dispatch-mirroring rule, so the two readers
+    that need it -- ``kirocrew doctor`` through :func:`job_agent_names_from_disk`
+    and the Agent templates delete guard -- cannot drift when a job kind is
+    added. Reads ``crons.json`` directly (no running scheduler) and lets any
+    read or parse error propagate; the doctor wrapper is the one that swallows.
+
+    Mirrors dispatch, not storage: a ``script`` or ``command`` job bypasses
+    agent dispatch entirely, so its agent fields are dormant and the record is
+    skipped whole; otherwise, when :func:`agent_sequence_dispatches` the
+    sequence entries are reported and ``agent_id`` is dormant, else the
+    template the job actually runs is reported and the sequence (if any) is
+    dormant. That template is the captured ``execution_context.template_id``
+    when the record carries one (:func:`resolve_cron_memory` and the gateway
+    dispatch both read it there -- a schedule created from a template chat
+    with no ``agent`` argument names its template ONLY there, ``agent_id``
+    staying empty), else ``agent_id`` for a legacy record. A record whose
+    AGENT fields the scheduler's loader rejects (a non-list sequence, a
+    non-string entry or ``agent_id``) dispatches nothing and contributes nothing.
+
+    *loadable_only* is where the two readers legitimately differ. The delete
+    guard passes ``True``: it counts only records the scheduler could build
+    (:func:`_is_loadable_record`), because a record with no ``schedule`` never
+    fires and must not pin a template forever. Doctor passes ``False``: it
+    warns about every deprecated name written on disk, including a partial or
+    legacy record the operator can still see and repoint.
+    """
+    store = config_dir() / _CRONS_FILE
+    records, loadable = _read_job_records(store)
+    if not records and not loadable:
+        # Present but unreadable (permissions, bytes, JSON, shape): the
+        # scheduler loads nothing from it NOW, but a repaired store brings its
+        # jobs back with the agents they name -- so this is not "no
+        # references", it is "the references cannot be read", and the caller
+        # decides how loud to be. A store whose records parsed but none of
+        # which the scheduler can build is NOT this case: those records are
+        # returned and each reader applies its own loadability rule below.
+        raise CronStoreUnreadable(str(store))
+    out: list[tuple[str, str, str]] = []
+    for j in records:
+        if loadable_only and not _is_loadable_record(j):
+            continue
+        if j.get("script") or j.get("command"):
+            continue  # runs with no LLM; agent fields are dormant
+        seq = j.get("agent_sequence", [])
+        if not isinstance(seq, list) or any(not isinstance(s, str) for s in seq):
+            continue  # the scheduler's loader rejects this record whole
+        agent_id = j.get("agent_id", "")
+        if agent_id is not None and not isinstance(agent_id, str):
+            continue  # same rejection class
+        job_id = j.get("id")
+        job_id = job_id if isinstance(job_id, str) else ""
+        name = j.get("name")
+        label = name if isinstance(name, str) and name else (job_id or "<unnamed job>")
+        if agent_sequence_dispatches(seq):
+            names = [s for s in seq if s]
+        else:
+            runs = _captured_template_id(j.get("execution_context")) or agent_id
+            names = [runs] if runs else []
+        out.extend((job_id, label, agent) for agent in dict.fromkeys(names))
+    return out
+
+
+def _captured_template_id(execution_context: Any) -> str:
+    """The template a stored job's captured execution names, or ``""``.
+
+    Read leniently on purpose: this is a reference scan over records on disk,
+    not the loader, so a record whose context is missing or malformed simply
+    contributes no captured name and falls back to ``agent_id`` -- the same
+    order the dispatcher applies when it has no usable context.
+    """
+    if not isinstance(execution_context, dict):
+        return ""
+    template_id = execution_context.get("template_id")
+    return template_id if isinstance(template_id, str) else ""
+
+
+def job_agent_names_from_disk() -> list[tuple[str, str]]:
+    """``(job name, agent name)`` for every agent a stored cron job dispatches.
+
+    Read-only + best-effort like :func:`referenced_skill_names`: the doctor
+    wrapper over :func:`dispatched_agents_from_disk` that returns an empty list
+    on any error (an unreadable store included -- doctor reports that fault
+    through its own check), so ``kirocrew doctor`` can warn about a job that
+    still names a deprecated agent spec without failing over the store.
+    """
+    try:
+        return [
+            (label, agent)
+            for _job_id, label, agent in dispatched_agents_from_disk(loadable_only=False)
+        ]
+    except Exception:
+        return []
+
+
+_STORE_VERSION = 2
+_MIN_INTERVAL_SECS = 60
+_JOB_TIMEOUT_SECS = 1800  # 30 min per job
+# Margin the per-wake budget must leave above a command/script subprocess
+# timeout: the wake deadline cancels only the executor FUTURE (threads are
+# not interruptible), so a budget shorter than the subprocess bound leaves
+# the subprocess running while the guards clear and later wakes duplicate it.
+_SUBPROC_CLEANUP_ALLOWANCE_SECS = 5
+_TIMER_POLL_SECS = 30  # check for due cron-expr jobs
+_AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
+_REAPER_INTERVAL = 60  # seconds between reaper sweeps
+_REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
+#: How many ROUNDS of key-ending a reap or cancel runs over a run
+#: (``_end_run_sessions``): the first ends every key the run had registered,
+#: each with ONE reset-then-kill pass (``_end_run_processes``) under the key's
+#: ENDING FENCE (``SessionManager.ending_key``), held from before the pass until
+#: the run's terminal record and audit are written -- a claim or cold start under
+#: a fenced key is HELD at the door (it lands once the fence lifts, under the
+#: recorded key), one already in flight is refused at registration with its
+#: provider hard-killed there, so no session lands under a fenced key after the
+#: pass and the pass is never repeated for a key. What CAN land is a NEW key: a
+#: sequential run whose hung agent's session was reset moves on and registers
+#: its next agent's key while the round runs (the run's task is cancelled only
+#: after the passes), so after each round the run's keys are read again and a
+#: key no round has ended gets the next round, fenced too. Bounded so a run that
+#: keeps registering cannot hold the reaper: a key registered after the last
+#: round is a named kill failure, audited ``failed``, never ``reaped``. Each
+#: round spends at most ``_REAPER_RESET_TIMEOUT`` plus the kill's own bounds.
+_ENDING_ROUNDS = 2
+
+
+def _pool_queue_allowance(job: CronJob | None) -> int:
+    """Queue budget a command/script job may spend before its own code runs.
+
+    Single-sourced deliberately. TWO deadlines bound one run -- the execution
+    guard in :meth:`CronService._execute_with_timeout` and the reaper's
+    defence-in-depth sweep -- and the cron pool's queue wait happens inside both.
+    If only one of them accounts for that wait, the other pre-empts it, and the
+    two failures are opposite and both silent: a reaper that does not account for
+    it cancels a job that never executed (a skipped run), while an execution
+    deadline that does not account for it kills a job still sitting in the pool
+    queue and reports it as an overrun (the misdiagnosis this change exists to
+    remove, which also lets a claimed subprocess run on while the overlap guards
+    clear). Deriving both from this one function is what keeps them from drifting.
+
+    Only command and script jobs dispatch through the pool to EXECUTE, so only
+    they need the allowance; a message job gets none and neither deadline is
+    widened for it. That scoping holds only because the one piece of pool work
+    every job kind shares -- the fire-time governance gate -- is dispatched to
+    the GOVERNANCE pool rather than this one. Gating on the cron pool would put
+    a message job's gate behind job-duration work while its deadline was already
+    armed, spending an execution budget it has no allowance to cover; the fix
+    for that belongs at the gate's dispatch, not in a wider deadline here, since
+    widening would also delay the wedged-delivery backstop for runs that never
+    queue at all. See the gate sites in slack/gateway.py.
+    """
+    if job is None:
+        return 0
+    return _CRON_QUEUE_WAIT_SECS if (job.command or job.script) else 0
+
+
+def _gate_budget_allowance(job: CronJob | None) -> int:
+    """Seconds the fire-time gate may consume inside a pool-dispatching job's deadline.
+
+    A third term of the same shape as :func:`_pool_queue_allowance`.  The gate is
+    awaited BEFORE the pool dispatch and inside the deadline armed for the whole
+    run, so a gate that spends its full bound leaves the subprocess that much
+    less -- and a thread cannot be interrupted, so when the deadline then fires
+    with a worker already claimed, the overlap guards clear while the subprocess
+    runs on and the next wake duplicates its side effects.  That is the hazard
+    ``_SUBPROC_CLEANUP_ALLOWANCE_SECS`` exists for; the queue wait was a second
+    term it did not account for, and the gate bound is a third.
+
+    Scoped to command/script for the same reason the queue allowance is: only
+    those dispatch through the pool to EXECUTE, so only they carry the
+    claimed-worker hazard.  A message job's budget is left exactly as set -- its
+    protection is that :func:`cron_gate_budget` lands strictly below the wake
+    deadline and is the gate's TOTAL across both its phases, so the gate's own
+    bound fires first and the run is retained.
+
+    Rounded UP to an int: the value is added to a deadline that reaches the
+    operator as ``Timed out after {deadline}s``, and a float would render there
+    as ``2.0s``.  Up is the safe direction -- it can only add headroom.
+    """
+    if job is None or not (job.command or job.script):
+        return 0
+    return math.ceil(cron_gate_budget(effective_wake_budget(job)))
+
+
+def _vet_allowance(job: CronJob | None) -> int:
+    """Seconds the CLAIM-TIME vet may consume inside a pool-dispatching job's deadline.
+
+    A FOURTH term of the same shape as the three above, and it exists for the
+    same reason :func:`_gate_budget_allowance` does.  The fire-time gate runs
+    ``vet_job_at_fire_time`` BEFORE the pool dispatch; the claim-time vet runs
+    the SAME function again INSIDE the worker, ahead of the subprocess it
+    authorises -- so it too is spent inside the deadline armed for the whole run,
+    and a vet that spends its bound leaves the subprocess that much less.  A
+    thread cannot be interrupted, so when the deadline then fires with the
+    subprocess already started, the overlap guards clear while it runs on and the
+    next wake duplicates its side effects.  That is the hazard
+    :data:`_SUBPROC_CLEANUP_ALLOWANCE_SECS` exists for; the queue wait was a
+    second term it did not account for, the gate bound a third, and this a
+    fourth.
+
+    Sized from :func:`_gate_budget_allowance` rather than from a second copy of
+    its expression: it is the same work under the same bound, and two copies
+    would drift.  The direction of drift matters -- an allowance SMALLER than the
+    bound the vet is actually held to is exactly the unaccounted margin this
+    closes.
+
+    Scoped to command/script for the reason the other two are: only those
+    dispatch through the pool to EXECUTE, so only they carry the claimed-worker
+    hazard.  A message job never reaches ``_vet_at_claim_then`` at all.
+    """
+    return _gate_budget_allowance(job)
+
+
+def effective_wake_budget(job: CronJob) -> int:
+    """Seconds :meth:`CronService._execute_with_timeout` will allow this run.
+
+    Extracted so the fire-time gate can cap its own bound against the same
+    number rather than re-deriving the rule.  A second copy would drift, and the
+    direction it drifts matters: a gate bound that exceeded the real wake budget
+    would let the wake deadline fire first, which is the state where starvation
+    is indistinguishable from an overrun and a one-shot gets consumed by a run
+    that never dispatched.
+
+    Returns an int: the value reaches the operator through
+    ``last_error = f"Timed out after {deadline}s"``, and a float would render
+    there as ``2.0s``.
+
+    A non-numeric ``timeout_secs`` falls back to the default rather than raising.
+    ``_execute_with_timeout`` was the only caller when this rule lived inline, so
+    a duck-typed job never reached the comparison; the fire-time gate now derives
+    its own bound from this and runs on every job kind, so the rule has to
+    tolerate a store entry (or a test double) whose field is not a number.
+    """
+    raw = getattr(job, "timeout_secs", None)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return _JOB_TIMEOUT_SECS
+    return int(raw) if 1 <= raw <= 86400 else _JOB_TIMEOUT_SECS
+
+
+# Bound skip_date advancement by a WALL-CLOCK horizon rather than an iteration
+# count. An iteration cap couples the bound to schedule granularity: sized for a
+# weekly cron (old 52) it broke daily crons; re-sized for daily it would then
+# break sub-daily (e.g. a */5 cron does 288 fires/day and would exhaust a
+# daily-sized cap within days). Bounding by wall-clock time removes the coupling
+# entirely — a daily cron and a */5 cron both simply look ~2 years ahead for the
+# next non-skipped fire. A large absolute iteration ceiling remains ONLY as an
+# anti-infinite-loop safety net for a pathological all-skipped sub-minute
+# schedule; realistic skip_dates lists are short (hand-entered) and exit far
+# sooner, so the horizon is the binding constraint in every practical case.
+_MAX_SKIP_DATE_HORIZON_SECS = 2 * 365 * 24 * 3600  # ~2 years of look-ahead
+_MAX_SKIP_DATE_LOOKAHEAD = 500_000  # absolute safety ceiling (anti-infinite-loop)
+
+# Bounded non-blocking acquire for the cron-store advisory lock (see
+# CronService._file_lock). The spin never parks the event loop in an
+# uninterruptible kernel wait; it fails fast after the timeout instead.
+_FILE_LOCK_TIMEOUT_SECS = 10.0  # max wall-time to wait for the store lock
+_FILE_LOCK_POLL_SECS = 0.02  # sleep between non-blocking acquire attempts
+
+
+class CronPendingMismatch(RuntimeError):
+    """The job's pending secret request changed after the caller read it.
+
+    Raised inside the locked update when an ``expect_secret_env_pending``
+    precondition does not match the freshly reloaded record — the
+    compare-and-swap that keeps an approval or denial from acting on a request
+    the decider never saw (the agent can replace a pending request at any
+    moment). Callers surface it as HTTP 409 ``stale_request``.
+    """
+
+
+def cron_owner_matches(job_owner: str, target: str) -> bool:
+    """Whether ``job_owner`` names the same principal as ``target``.
+
+    THE one place an owner-key spelling is compared for release. A cron run does
+    not present a single spelling: ``build_cron_session_context`` mints
+    ``cron:<job id>`` for a persistent job and ``cron:<job id>:<run id>`` for a
+    stateless one, and the sequential-agent path mints
+    ``cron:<job id>:<agent>`` — and a job that run creates is stamped with
+    WHICHEVER of those the run happened to present. All of them name the same
+    principal, so plain ``==`` silently misses a child stamped with a longer
+    spelling than the caller holds: the release skips it, and because a match miss
+    is not a release FAILURE nothing warns.
+
+    Parses through :func:`cron_job_id_from_session_key` rather than its own
+    splitter, so the release path and the MCP surface cannot drift on what a
+    ``cron:`` key means.
+
+    Non-cron owners (``dashboard:``, a channel key) compare exactly. They have
+    ONE spelling each, and loosening them would let one session's key reach
+    another's jobs.
+
+    Deliberately NOT used by the MCP ownership gate (``_owned_by``), which stays
+    exact equality: this decides which jobs a RETIRED principal's cleanup may
+    release, not which jobs a live caller may read or write.
+    """
+    if job_owner == target:
+        return True
+    owner_principal = cron_job_id_from_session_key(job_owner)
+    return bool(owner_principal) and owner_principal == cron_job_id_from_session_key(target)
+
+
+class CronStoreBusy(TimeoutError):
+    """Raised when a cron-store mutator cannot acquire the store lock in time.
+
+    This is the DEFINED failure contract of the store mutators (:meth:`add_job`,
+    :meth:`update_job`, :meth:`remove_job`, :meth:`enable_job`, :meth:`ack_job`,
+    :meth:`unack_job` and their ``*_async`` variants): under sustained lock
+    contention they raise this instead of blocking forever. It subclasses
+    :class:`TimeoutError` so the existing ``except TimeoutError`` guards (the
+    reaper sweep, the timer tick, the read-path degrade) keep catching it, while
+    giving the public scheduling boundaries a named, greppable type to translate
+    into a clean *retryable* error — HTTP 409 at the dashboard handlers, a
+    structured ``Error:`` string at the MCP tools, a "store busy, try again"
+    reply at the Slack surfaces — rather than surfacing an opaque 500 / tool
+    crash. Contention is transient (a large atomic save on network storage, the
+    CLI process, or the off-loop batch-remove worker holding the lock), so the
+    correct caller response is to retry, not to fail permanently.
+    """
+
+
+@contextmanager
+def cron_store_lock(
+    store_dir: Path, *, timeout: float = _FILE_LOCK_TIMEOUT_SECS, poll: float = _FILE_LOCK_POLL_SECS
+) -> Iterator[None]:
+    """The cron store's cross-process advisory lock, for a caller with no service.
+
+    ONE implementation of the store lock: :meth:`CronService._file_lock` (every
+    store mutator, loop-safety guard included) delegates here, and the Agent
+    templates delete guard takes it directly around its reference check and the
+    file rename, so a schedule cannot be written between "nothing dispatches this
+    template" and the template going -- the two writers exclude each other on
+    the same ``.crons.lock`` file the mutators use. The reader side mirrors
+    :func:`dispatched_agents_from_disk`: a walk over the store file, so holding
+    the store lock across walk + rename is exactly what makes the pair atomic.
+
+    Off the event loop ONLY (the guard runs on a worker thread; the mutators go
+    through their ``*_async`` variants): the spin sleeps. Bounded -- raises
+    :class:`CronStoreBusy` after *timeout* rather than parking the caller on a
+    slow holder. Non-truncating create-or-open (GH-9248): a contending opener on
+    Windows must not crash at open() before the spin starts.
+    """
+    store_dir.mkdir(parents=True, exist_ok=True)
+    lock = store_dir / ".crons.lock"
+    deadline = time.monotonic() + timeout
+    with platform_compat.open_lock_file(lock) as lock_fd:
+        while not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
+            if time.monotonic() >= deadline:
+                raise CronStoreBusy(f"Could not acquire cron store lock within {timeout:g}s")
+            time.sleep(poll)
+        try:
+            yield
+        finally:
+            platform_compat.release_lock(lock_fd)
+
+
+# ── Loop-safety guard ───────────────────────────────────────────────────────
+# The store lock (``CronService._file_lock``) must NEVER be acquired on a thread
+# that has a running asyncio event loop: the bounded ``time.sleep`` spin would
+# park that loop under contention. The invariant is upheld structurally —
+# loop-resident callers use the ``*_async`` mutators (which ``asyncio.to_thread``
+# the lock+save) and the synchronous ``CronSDK`` facade offloads to a worker
+# thread when a loop is running — but conventions drift as new writers are
+# added. ``_file_lock`` therefore MACHINE-ENFORCES the rule: on entry it detects
+# a running loop on the current thread and, when strict mode is enabled, RAISES
+# so a regression is caught in CI rather than silently re-freezing the loop.
+#
+# Gating mirrors the repo's other strict rails (e.g. KIROCREW_STRICT_ON_LOOP_
+# PERSIST): OFF by default it degrades to a throttled warning (so no production
+# path is broken by an unforeseen legitimate on-loop caller, and existing tests
+# that seed jobs via the sync mutators from an async body keep passing); the CI
+# loop-safety regression test flips it ON to prove the guard fires and that the
+# sanctioned async / offloaded-sync paths do NOT trip it. Operators can export
+# KIROCREW_STRICT_LOOP_SAFETY=1 to escalate the warning to a hard failure fleet-
+# wide.
+_STRICT_LOOP_SAFETY_ENV = "KIROCREW_STRICT_LOOP_SAFETY"
+_loop_safety_warned = False
+
+
+class CronLoopSafetyError(RuntimeError):
+    """Raised when the cron store lock is acquired on a running event loop.
+
+    Signals a loop-park hazard: a synchronous ``_file_lock`` acquisition on a
+    thread with a live asyncio loop would block that loop in the bounded lock
+    spin under contention (the ``no-blocking-call-on-event-loop`` class this
+    module exists to eliminate). The fix is to use the ``*_async`` mutator
+    variant (``add_job_async`` et al.), or — from the synchronous ``CronSDK``
+    facade — to let it offload to a worker thread. Only raised under strict
+    mode (``KIROCREW_STRICT_LOOP_SAFETY``); otherwise the guard warns.
+    """
+
+
+# Jitter bounds (seconds) to spread job execution and avoid traffic spikes
+_JITTER_HOURLY_MAX = 5 * 60  # 0–5 minutes for hourly jobs
+_JITTER_DAILY_MAX = 59 * 60  # 0–59 minutes for daily jobs
+
+
+# ── Types ──
+
+
+@dataclass
+class CronSchedule:
+    """Schedule definition — ``every``, ``at``, or ``cron``."""
+
+    kind: str  # "every" | "at" | "cron"
+    every_secs: int | None = None
+    at_ts: float | None = None
+    cron_expr: str | None = None  # "min hour dom month dow"
+
+
+@dataclass
+class CronJob:
+    """A scheduled job."""
+
+    id: str
+    name: str
+    message: str
+    schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
+    channel: str | None = None
+    thread_ts: str | None = None
+    enabled: bool = True
+    user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
+    auto_paused: bool = (
+        False  # True when paused by execution after repeated failures; cleared on re-enable/success
+    )
+    last_run_ts: float | None = None
+    last_status: str | None = None  # "ok" | "error"
+    last_error: str | None = None
+    created_ts: float = 0.0
+    delete_after_run: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run was
+    # refused by the fire-time governance gate. A denied run is a policy
+    # state, not a completed run: a one-shot delete_after_run job is RETAINED
+    # instead of deleted, and a denied "at" job is parked DISABLED (a past-due
+    # at-job left enabled would be due again on every timer tick — a
+    # zero-delay refire loop) so an operator can re-enable it after a policy
+    # loosening. Recurring jobs need neither: they wait for their next slot.
+    # Reset at the start of every run.
+    fire_time_denied: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run never
+    # started because every pool worker was busy for the whole queue budget.
+    # Deliberately NOT fire_time_denied, even though both must retain a one-shot:
+    # that flag ALSO forces an "at" job disabled and is documented as a *policy*
+    # refusal, so reusing it would park a starved job needing an operator to
+    # re-enable it and would mislabel pool saturation as a governance denial in
+    # history. Starvation clears on its own, so this field is retention-only --
+    # read solely where a one-shot would otherwise be consumed by a run it never
+    # had. Reset at the start of every run.
+    run_never_started: bool = False
+    last_result: str | None = None
+    # Epoch at which ``last_result`` was produced, written by
+    # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
+    # history attribution.
+    last_result_ts: float = 0.0
+    # The run stamp as ALREADY RENDERED text, written once by
+    # :meth:`set_run_result` and PERSISTED. This is what the dashboard header
+    # displays, and it is a snapshot on purpose.
+    #
+    # The header is also the row's dedup key: ``ConversationLog.append_if_absent``
+    # judges "already persisted" by ``(role, content)``, so any injection site
+    # that RE-RENDERED the stamp would have to reproduce it byte for byte
+    # forever. Rendering reads the job's ``timezone``, which a user can edit
+    # after the run, so a re-render would silently mint a second, differently
+    # spelled copy of a row already on disk -- a duplicated run in the tab and
+    # in the replay a follow-up turn reads. Rendering once, here, is what makes
+    # every later injection (the three executor delivery paths and a later
+    # ``/to-chat`` re-surfacing) byte-identical no matter what the job's
+    # configuration has become since.
+    #
+    # DISPLAY ONLY. Row identity is ``cron_inject.run_marker``, which carries
+    # ``last_result_ts`` at full precision, so this stamp's resolution does not
+    # decide whether two runs collapse -- it is rendered for a person to read.
+    #
+    # ``""`` (a legacy job, or a store written by an older build) means
+    # "unknown" and renders the pre-stamp header unchanged, so rows already on
+    # disk keep deduping against their historical spelling.
+    last_result_stamp: str = ""
+    # Runtime-only (never serialized): True once THIS run produced a result
+    # via set_run_result(). For AGENT jobs ``last_result`` is a cross-run
+    # context-carry field that result-less runs deliberately leave in place
+    # for the next run's prompt dedup, so the history recorder needs this
+    # marker — not the value — to decide attribution. Command and script
+    # jobs instead clear it on every result-less exit: the prompt built for
+    # them is discarded (the command branch never reads it, the script
+    # branch reassigns the variable), so a carried-over value could only
+    # ever misreport a finished run's result. Identity/equality checks on
+    # the string cannot do that job: CPython interns equal literals and caches
+    # single-character latin-1 strings, so a run re-producing the same text
+    # is indistinguishable from a run that produced nothing. Reset at the
+    # start of every run by _run_job_isolated.
+    result_produced: bool = False
+    # Runtime-only, reset by _execute_with_timeout at the start of every run:
+    # True once THIS run's failure has been counted via record_failure(). The
+    # timeout handler consults it so a run that already recorded its failure
+    # (e.g. a delivery-path exception) and then overran its deadline during
+    # cleanup is counted once, not twice.
+    failure_recorded: bool = False
+    context_enabled: bool = False
+    agent_id: str = ""
+    # Member identity is distinct from the provider template in agent_id.
+    # These fields survive reload; omitted legacy records remain on V1.
+    member_id: str = ""
+    memory_store: str = ""
+    execution_context: dict[str, Any] | None = None
+    approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
+    acked_items: list[str] = field(default_factory=list)
+    created_by: str = ""  # Slack user ID of the creator (for DM fallback)
+    # Provenance of a job seeded from a Schedule-page template. Curated
+    # template prompts are COPIED into the job at save time (the user owns and
+    # edits their prompt), so a later fix to a template is unreachable for jobs
+    # already saved. Two create-only fields, written together by the dashboard
+    # create path ONLY (MCP / CLI / apps SDK / onboarding import never involve a
+    # template and leave both ""):
+    #
+    #   source_preset          -- the template preset id (e.g. "error-digest").
+    #   source_template_prompt -- the template's prompt text AS IT WAS at save
+    #                             time (a snapshot, written once, never updated).
+    #
+    # The snapshot is what makes "the template changed" an ATTRIBUTABLE claim.
+    # Comparing the job's live message against the template's CURRENT prompt is
+    # symmetric: it cannot tell a template that moved from a user who edited
+    # their own copy. The snapshot fixes one operand at save time, so the
+    # Schedule page can ask the two questions separately -- did the TEMPLATE
+    # move (snapshot != live preset prompt), which is the only thing that shows
+    # a "template updated" hint, versus did the USER edit their copy
+    # (message != snapshot), which shows nothing. It is a text snapshot, not a
+    # maintained revision integer, so it cannot drift out of date.
+    #
+    # "" for both means "unknown" -- a blank/non-dashboard create, or a job
+    # saved before these fields existed (_job_from_record defaults both to "").
+    # Such a job simply never shows the hint.
+    source_preset: str = ""
+    source_template_prompt: str = ""
+    silent: bool = False  # suppress auto-delivery; agent sends via send_message
+    session_key: str = ""  # session that created this job (for scoped removal)
+    last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
+    consecutive_dupes: int = 0  # count of suppressed duplicate results
+    last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
+    last_failure_hash: str = ""  # hash of last failure notification (dedup crashes)
+    last_failure_at: float = 0.0  # epoch of last failure Slack alert (dedup reminder)
+    consecutive_failures: int = 0  # consecutive failed runs (any error); drives auto-pause
+    skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["2026-04-06"]
+    timezone: str = ""  # IANA timezone for skip evaluation
+    persistent_session: bool = True  # False → fresh ephemeral session per run
+    minimal_context: bool = False  # True → skip memory/lessons/skills/history
+    hide_in_chat: bool = (
+        False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
+    )
+    # Cron folder grouping; "" = unfiled. CONTRACT for all consumers
+    # (Schedule UI, calendar, CLI, MCP): an id that does not match a folder
+    # in cron_folders.json MUST be treated as ungrouped — folder deletion
+    # clears assignments only best-effort, so dangling ids are expected and
+    # benign (they self-heal on the job's next folder move).
+    folder_id: str = ""
+    model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
+    # The CHAT (sidebar) folder the job's ``cron-{id}`` tab is filed into; "" =
+    # not filed, which is what every job predating the field keeps doing. Its
+    # run stamps and markers already make that one tab the job's timeline.
+    #
+    # Distinct from ``folder_id`` above, and the two are never interchangeable:
+    # ``folder_id`` groups the job's ROW on the Schedule page
+    # (``cron_folders.json``), while this names a folder in the chat sidebar's
+    # own tree (``folders.json``) and decides where the job's TAB lands. A job
+    # may carry either, both or neither, and one is never derived from the other.
+    #
+    # PERSISTENT jobs only: a stateless job (``persistent_session=False``) has
+    # no job-wide tab to file, so the store refuses the pair at save time rather
+    # than accepting a setting with no observable effect.
+    #
+    # Filing SUPPLEMENTS delivery, never replaces it: a run with a chat folder
+    # still reaches its Slack DM, its dashboard notification and its origin
+    # session exactly as it did before.
+    #
+    # CONTRACT for consumers, matching ``folder_id``'s: an id that does not
+    # match a folder in ``folders.json`` MUST be treated as "not filed". A chat
+    # folder can be deleted while a job still names it, and a dangling id must
+    # cost the tab its place in the sidebar and nothing else -- the run still
+    # delivers, and the skip is recorded once (see
+    # ``cron_inject.chat_folder_for_minted_tab``). A RENAME is a no-op: ids
+    # are stable, so the job follows the folder under its new name.
+    chat_folder_id: str = ""
+    # Transient-retry telemetry for the LAST completed run. Both fields are
+    # written in ONE place, `CronService._execute`, right after it stamps
+    # `last_run_ts`: it reads the in-flight `_transient_attempts` counter the
+    # gateway callback leaves on the live job object (a runtime attribute that
+    # never reaches disk) and clears it. 0 means the last run needed no retry,
+    # or this is a legacy record with neither key.
+    last_retry_count: int = 0
+    #: The ``last_run_ts`` the count above describes -- the same `time.time()`
+    #: value, assigned in the same place. A cancelled run advances
+    #: ``last_run_ts`` on its own path (the ``every`` scheduler needs it to, or
+    #: the schedule drifts) and never reaches the stamp, so the two disagree and
+    #: the Schedule page shows no count for it rather than the previous run's.
+    last_retry_run_ts: float = 0.0
+    #: The run GENERATION the store holds: a per-job counter, one above the
+    #: previous run's, allocated to a run at its first step -- or to the
+    #: ``cancel()`` / reap that takes its claim before that -- by
+    #: ``CronService._next_run_generation`` and written to the record by the
+    #: two terminal merges only (``_merge_job_result`` for a completed run,
+    #: ``_merge_terminal_state_locked`` for a cancelled or reaped one). Both
+    #: merges run in a worker thread behind the release of the run's claim,
+    #: under a store lock other writers contend for, so a replacement run
+    #: accepted in that window can complete and merge FIRST; the older run's
+    #: record is then discarded rather than applied over it (status, error,
+    #: result and the failure counter would all revert until some later run
+    #: merged again). An integer, not a timestamp: Windows' ``time.time()``
+    #: ticks every ~15.6 ms, so two runs of one job can claim with EQUAL
+    #: timestamps, which no "newer wins" rule can order. 0 is a legacy record
+    #: or a job that never ran.
+    run_generation: int = 0
+
+    # A sequence of MORE THAN ONE agent takes precedence over agent_id: the
+    # gateway runs those agents in order, each on its own session key. A
+    # one-element sequence does NOT, and falls through to agent_id.
+    agent_sequence: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)  # per-job environment variables
+    timeout_secs: int = _JOB_TIMEOUT_SECS
+    strict_schedule: bool = False  # when True, skip jitter and fire exactly on schedule
+    script: str = ""  # Script file "<config_dir>/crons/x.py:func"; bypasses LLM dispatch
+    command: str = ""  # Shell command for direct execution; bypasses LLM dispatch
+    timeout: int = (
+        0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
+    )
+    # Operator-approved vault secrets for SCRIPT jobs: env-var name ->
+    # vault secret NAME (kiro_crew.secrets.SecretVault; plaintext never touches
+    # this store). Minted ONLY by the owner approving an agent request on the
+    # Schedule page — no surface writes an active grant directly, so an agent
+    # cannot grant itself vault access. secret_env_pin (keyed, epoch-bound
+    # HMAC over the script spec + message + body bytes, see
+    # cron_script.compute_secret_env_pin) binds the grant to the code the
+    # operator approved: the crons/ scripts stay agent-writeable by design, so
+    # a body rewritten after approval fails closed at fire time instead of
+    # running with the secrets.
+    secret_env: dict[str, str] = field(default_factory=dict)
+    secret_env_pin: str = ""
+    # Agent-REQUESTED grant awaiting operator approval. The MCP
+    # ``cron_secret_request`` tool may write ONLY these fields — never the
+    # active pair above — so the agent-first flow is "agent proposes, human
+    # disposes": the dashboard approve endpoint re-verifies the pending pin
+    # against the job's CURRENT code before promoting pending -> active, so an
+    # approval never blesses code that changed after the request.
+    secret_env_pending: dict[str, str] = field(default_factory=dict)
+    secret_env_pending_pin: str = ""
+    secret_env_pending_ts: float = 0.0
+
+    def set_run_result(self, value: str) -> None:
+        """Record a result produced by the CURRENT run.
+
+        Sole write path for executor callbacks: pairs the ``last_result``
+        assignment with the runtime-only ``result_produced`` marker so the
+        history recorder can attribute the value to this run. Direct
+        ``last_result`` assignment stays reserved for store merge and
+        deserialization paths, which restore prior state rather than
+        produce a new result.
+        """
+        self.last_result = value
+        self.result_produced = True
+        # Stamped and RENDERED here rather than at injection time so all of a
+        # run's injection sites emit one identical header -- see
+        # ``last_result_stamp`` for why re-rendering duplicates rows.
+        self.last_result_ts = time.time()
+        self.last_result_stamp = self._render_run_stamp(self.last_result_ts)
+
+    def _render_run_stamp(self, when_ts: float) -> str:
+        """Render *when_ts* as the header suffix, in the job's own timezone.
+
+        Display-only: a bad timezone or a bad epoch must never fail the run
+        that produced the result, so any error degrades to the UNSTAMPED header
+        -- the same spelling a legacy row carries, which keeps the dedup
+        coherent -- rather than to a half-rendered third variant.
+        """
+        if not when_ts:
+            return ""
+        try:
+            when = datetime.fromtimestamp(when_ts, tz=_job_tz(self))
+            return f" | {when:%Y-%m-%d %H:%M:%S %Z}"
+        except Exception:
+            logger.debug("Cron run stamp render failed for job %s", self.id, exc_info=True)
+            return ""
+
+    def clear_carried_result(self) -> None:
+        """Drop a PREVIOUS run's result when this run produced none.
+
+        Result-less command/script exits must not display the last run's
+        output beside this run's status. Guarded on ``result_produced`` so a
+        run that produced and delivered a result and then failed during
+        cleanup keeps it. Assigns directly rather than via set_run_result()
+        so a cleared field is never marked as produced by this run.
+        """
+        if not self.result_produced:
+            self.last_result = ""
+
+    def _audit_pause_change(self, outcome: str) -> None:
+        """Emit a SEL audit event for an auto-pause permission transition.
+
+        Auto-pausing revokes a job's ability to execute (and clearing it restores
+        that ability), so the transition is a permission decision that must be
+        auditable per the security-controls guideline. Best-effort — an audit
+        write failure must never mask the failure/success bookkeeping that drives
+        the pause itself; the tool-invocation error paths already log the run
+        outcome separately."""
+        try:
+            sel.sel().log_tool_invocation(
+                session_key=f"cron:{self.id}",
+                tool_name=self.script or self.command or "cron_job",
+                tool_kind="cron_auto_pause",
+                outcome=outcome,
+                metadata={"job_id": self.id, "consecutive_failures": self.consecutive_failures},
+            )
+        except Exception:
+            logger.debug("SEL logging failed in cron auto-pause transition", exc_info=True)
+
+    def record_failure(self) -> None:
+        """Count one consecutive failure and auto-pause once the threshold is hit.
+
+        Auto-pause is execution-owned: it sets both `enabled` (so the in-memory
+        scheduler stops firing immediately) and `auto_paused` (the durable reason,
+        distinct from a user pause), so the pause survives a reload. Single-sourced
+        here so the many script/command failure branches can't drift on how a pause
+        is recorded — mirroring how the effective-enabled derivation reads it back.
+        """
+        self.consecutive_failures += 1
+        self.failure_recorded = True
+        if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
+            self.enabled = False
+            self.auto_paused = True
+            self._audit_pause_change("auto_paused")
+
+    def record_success(self) -> None:
+        """Reset the failure counter and lift any execution auto-pause.
+
+        Clearing an auto-pause also re-enables the job, because ``enabled`` is
+        not independent state: :func:`_job_enabled` reconstructs it on load as
+        ``not user_paused and not auto_paused``. Leaving ``enabled`` False after
+        clearing ``auto_paused`` therefore produces a job that is paused in
+        memory and enabled on disk — it stays stopped until the next restart
+        silently resumes it, which is the surprise a manual "Run Now" on an
+        auto-paused job would otherwise spring.
+
+        A job the user paused stays paused: ``user_paused`` is never mutated by
+        execution, so it is the discriminator here, and re-enabling THAT is the
+        user's action (``enable_job``).
+
+        Also clears the failure-alert dedup fields, and is the ONE owner of that
+        reset. A success means the job recovered, so the next failure must alert
+        fresh rather than be suppressed as a duplicate of the pre-recovery one --
+        and every success path (gate verdict, script, command, the scheduler
+        backstop) routes through here, so putting the reset at any single call
+        site would silence a relapse on the others for up to
+        ``_FAILURE_REMINDER_SECS``.
+        """
+        self.consecutive_failures = 0
+        self.last_failure_hash = ""
+        self.last_failure_at = 0.0
+        if self.auto_paused:
+            self.auto_paused = False
+            if not self.user_paused:
+                self.enabled = True
+            self._audit_pause_change("auto_pause_cleared")
+
+
+# ── Session-context helper ──
+
+
+def build_cron_session_context(job: CronJob) -> tuple[str, str]:
+    """Compute (session_key, prompt) for one cron run.
+
+    When ``job.persistent_session`` is True (default, legacy behaviour):
+      - session_key is stable across runs: ``cron:{job.id}``
+      - prompt prepends ``job.last_result`` so the agent has recent context
+
+    When ``job.persistent_session`` is False:
+      - session_key is unique per call: ``cron:{job.id}:{uuid}``
+        → each run opens a fresh agent session; no context accumulation
+      - prompt is the bare ``job.message`` — no last_result injection
+        (accumulated state is the other half of the bug)
+
+    The key prefix ``cron:{job.id}`` is preserved in both modes so the
+    reaper's existing session-matching logic continues to work.
+
+    This is a pure function — all side effects (session creation, Slack
+    delivery, acked_items handling) happen in the caller. Keep it that way
+    so it stays trivially unit-testable.
+    """
+    if job.persistent_session:
+        msg = job.message
+        if job.last_result:
+            last = job.last_result
+            if job.minimal_context and len(last) > 2000:
+                last = "[truncated]…" + last[-2000:]
+            msg = (
+                "[Previous run result — do NOT repeat the same content]\n"
+                f"{last}\n"
+                "[End of previous run result]\n\n"
+                f"{msg}"
+            )
+        return f"cron:{job.id}", msg
+
+    # Stateless: fresh key, bare message.
+    run_id = uuid.uuid4().hex[:8]
+    return f"cron:{job.id}:{run_id}", job.message
+
+
+def cron_job_id_from_session_key(session_key: object) -> str:
+    """The job id inside a ``cron:`` session key, or ``""`` for any other value.
+
+    Every shape this repository mints is ``cron:<job_id>`` with an OPTIONAL third
+    segment, and a job id is ``uuid4().hex[:8]`` so it never contains a colon --
+    which is what makes taking the second segment exact rather than a guess.
+
+    A FALSY key (``None`` or ``""``) is one of the "any other key" cases, not an
+    input error: ``session_key`` is an optional caller-supplied field, so the
+    falsy-skip at creation persists ``None`` on the row, and an ownerless row is
+    the documented state the CLI and the Schedule page manage. A non-string JSON
+    value is malformed persisted data, but it gets the same non-cron answer here:
+    this parser is shared by removal cleanup, where calling ``.startswith`` on a
+    list or mapping would abort after the target row was filtered from memory and
+    let a later save silently commit a removal the caller saw fail. Answering
+    ``""`` here is what every consumer already expects of a non-cron owner -- the
+    same reading ``_owned_by`` gives an empty key (reaches nothing) and the release
+    paths give one (``if not job.session_key: continue``). Guarding at this one
+    boundary rather than at each call site keeps the "ONE key parser" invariant
+    that :func:`cron_owner_matches` and the liveness checks depend on.
+    """
+    if not isinstance(session_key, str) or not session_key.startswith("cron:"):
+        return ""
+    return session_key.split(":")[1] if len(session_key.split(":")) > 1 else ""
+
+
+def cron_session_key_is_stable(job: CronJob) -> bool:
+    """Whether every run of *job* presents the SAME session key.
+
+    Lives beside :func:`build_cron_session_context` because it is the inverse of
+    that function's branch, and a predicate that can silently disagree with the
+    code that mints the key is worse than no predicate: it fails QUIET, as a
+    warning that stops firing or one that fires on the wrong job.
+
+    Two minting paths feed this, which is the whole reason callers must not infer
+    the answer from the key's shape:
+
+    * :func:`build_cron_session_context` -- ``cron:<job_id>`` when
+      ``persistent_session``, else ``cron:<job_id>:<run_id>`` with a fresh
+      ``uuid4`` per fire, so the three-segment form there is EPHEMERAL.
+    * the sequential-agent path in the Slack gateway -- ``cron:<job_id>:<agent>``
+      whenever ``agent_sequence`` holds more than one agent. It builds the key
+      directly rather than calling the function above, and an agent NAME is
+      stable, so the three-segment form there is DURABLE.
+
+    So the two forms are indistinguishable by separator count, and only the job
+    record separates them. The sequential path ignores ``persistent_session``
+    entirely, which is why it is checked second rather than combined.
+    """
+    if agent_sequence_dispatches(job.agent_sequence):
+        return True
+    return job.persistent_session
+
+
+# ── Cron expression matching (via croniter) ──
+
+
+def cron_expr_matches(expr: str, dt: datetime) -> bool:
+    """Check if ``dt`` matches a 5-field cron expression (min hour dom month dow)."""
+    try:
+        return croniter.match(expr, dt)
+    except (ValueError, KeyError):
+        return False
+
+
+def validate_cron_expr(expr: str) -> bool:
+    """Return True if ``expr`` is a syntactically valid 5-field cron expression."""
+    return croniter.is_valid(expr)
+
+
+# ── Service ──
+
+
+def _humanize_cron(expr: str, tz_name: str = "") -> str:
+    """Convert a 5-field cron expression to human-readable string with timezone."""
+    if get_description is None:
+        return expr
+    opts = Options()
+    opts.use_24hour_time_format = False
+    try:
+        desc = get_description(expr, opts)
+    except Exception:
+        return expr
+
+    # Timezone-aware display: evaluate the cron expression in the job's
+    # timezone (matching compute_next_run_ts) and display the local time.
+    parts = expr.split()
+    if tz_name and len(parts) == 5 and parts[0].isdigit() and parts[1].isdigit():
+        try:
+            tz = ZoneInfo(tz_name)
+            # Evaluate in job timezone, same as the scheduler does
+            base = datetime.now(tz)
+            next_local = croniter(expr, base).get_next(datetime).astimezone(tz)
+            local_time = platform_compat.strftime(next_local, "%-I:%M %p %Z")
+            # cron_descriptor produces UTC-based text; replace the time portion
+            utc_base = datetime.now(timezone.utc)
+            next_as_utc = croniter(expr, utc_base).get_next(datetime)
+            utc_time = platform_compat.strftime(next_as_utc, "%-I:%M %p")
+            utc_time_padded = next_as_utc.strftime("%I:%M %p")
+            result = desc.replace(f"At {utc_time}", f"At {local_time}")
+            if result == desc:
+                result = desc.replace(f"At {utc_time_padded}", f"At {local_time}")
+            if result == desc:
+                # Fallback: prepend local time if replacement failed
+                result = f"At {local_time}, {desc.removeprefix('At ')}"
+            return result
+        except Exception:
+            pass
+
+    return desc
+
+
+def format_schedule(schedule: CronSchedule, tz_name: str = "") -> str:
+    """Human-readable schedule description."""
+    # Fallback: the published config default. Reading the snapshot rather than
+    # loading config.json is what lets a loop-side caller omit tz_name safely.
+    if not tz_name:
+        tz_name = published_config_timezone()
+    if schedule.kind == "cron" and schedule.cron_expr:
+        return _humanize_cron(schedule.cron_expr, tz_name)
+    if schedule.kind == "every" and schedule.every_secs:
+        secs = schedule.every_secs
+        if secs % 3600 == 0:
+            return f"every {secs // 3600}h"
+        if secs % 60 == 0:
+            return f"every {secs // 60}m"
+        return f"every {secs}s"
+    if schedule.kind == "at" and schedule.at_ts:
+        # Tolerance lives HERE, at the render site, not in the deserializer: a
+        # stored at_ts that datetime.fromtimestamp cannot represent (NaN or
+        # Infinity from bare json.loads, epoch milliseconds, a beyond-year-9999
+        # stamp, a pre-epoch value on Windows) must degrade to a fallback
+        # string instead of raising inside the comprehension that serializes
+        # EVERY job on GET /api/crons -- and the record itself is preserved for
+        # the operator to repair. Same degrade-on-render posture as
+        # CronJob._render_run_stamp.
+        try:
+            tz = ZoneInfo(tz_name) if tz_name else None
+            if tz:
+                now = datetime.now(tz)
+                dt = datetime.fromtimestamp(schedule.at_ts, tz)
+            else:
+                now = datetime.now().astimezone()
+                dt = datetime.fromtimestamp(schedule.at_ts).astimezone()
+            if dt.date() == now.date():
+                return f"at {dt:%I:%M %p %Z}"
+            return f"at {dt:%I:%M %p %Z}, {platform_compat.strftime(dt, '%b %-d')}"
+        except Exception:
+            logger.debug("format_schedule: unrenderable at_ts %r", schedule.at_ts, exc_info=True)
+            return "at an invalid stored time"
+    return schedule.kind
+
+
+def is_valid_timezone(tz_name: str) -> bool:
+    """Return True if ``tz_name`` is a resolvable IANA timezone key.
+
+    Validates via the ``ZoneInfo`` constructor -- a single targeted, cached
+    lookup -- rather than ``available_timezones()``, which recursively walks
+    the entire tzdata tree and opens many files on every call. Because this
+    runs on callers reachable from the async event loop (dashboard cron PATCH
+    -> CronService.update_job), the cheap constructor path avoids blocking the
+    gateway (see ``no-blocking-call-on-event-loop``). ``ZoneInfo`` raises
+    ``ZoneInfoNotFoundError`` for unknown keys and ``ValueError`` for malformed
+    ones (e.g. absolute paths, ``..``); both are treated as invalid.
+    """
+    if not tz_name:
+        return False
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        return False
+    return True
+
+
+def is_valid_skip_date(value: object) -> bool:
+    """Return True iff ``value`` is a strict, zero-padded ``YYYY-MM-DD`` date.
+
+    ``datetime.strptime(s, "%Y-%m-%d")`` accepts non-padded inputs such as
+    ``"2026-1-1"``: they parse fine, but fire-time skip matching compares
+    against a zero-padded rendering (``"2026-01-01"``), so the intended skip
+    silently never matches and the job runs on a date the user told it to
+    skip -- with no error anywhere. Requiring the parsed value to round-trip
+    exactly back to ``%Y-%m-%d`` rejects non-padded (and calendar-invalid)
+    inputs at every persistence path, independent of the running Python
+    version's ``date.fromisoformat`` leniency.
+    """
+    s = str(value)
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d") == s
+    except (ValueError, TypeError):
+        return False
+
+
+_CRON_FOLDERS_FILE = "cron_folders.json"
+
+
+def _read_cron_folders() -> tuple[list[dict[str, Any]], bool]:
+    """Read ``cron_folders.json``, reporting whether the STORE was readable.
+
+    Returns ``(folders, readable)``. ``readable=False`` means the file exists
+    but could not be read or is not a JSON list — the folder set is UNKNOWN,
+    not empty. A caller that can create a folder must tell those apart: acting
+    on an unknown set as if it were empty creates a folder the store may
+    already hold, and the dashboard's next wholesale save of its own list
+    decides which version survives. A file that does not exist is readable and
+    genuinely empty; malformed ENTRIES inside a valid list are filtered out and
+    leave the store readable, because the list itself was intelligible.
+    """
+    path = config_dir() / _CRON_FOLDERS_FILE
+    try:
+        if not path.exists():
+            return [], True
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Failed to read %s", _CRON_FOLDERS_FILE, exc_info=True)
+        return [], False
+    if not isinstance(loaded, list):
+        logger.warning("%s is not a JSON list", _CRON_FOLDERS_FILE)
+        return [], False
+    return [
+        f
+        for f in loaded
+        if isinstance(f, dict)
+        and isinstance(f.get("id"), str)
+        and f.get("id")
+        and isinstance(f.get("name"), str)
+        and f.get("name")
+    ], True
+
+
+def load_cron_folders() -> list[dict[str, Any]]:
+    """Read the cron folder definitions from disk (read-only).
+
+    Returns the usable entries of ``cron_folders.json`` — dicts with a
+    non-empty string ``id`` and ``name``. The file is OWNED by the dashboard
+    (its Schedule page creates, renames and deletes folders); this helper never
+    writes, so a non-dashboard caller can resolve a folder reference without
+    racing the dashboard's wholesale rewrites of the file. Malformed entries
+    and unreadable files degrade to "no folders" rather than raising: a folder
+    lookup is always best-effort decoration on top of the job itself. A caller
+    that CREATES folders must use ``_read_cron_folders`` instead, whose second
+    element separates an unreadable store from a genuinely empty one.
+    """
+    return _read_cron_folders()[0]
+
+
+class CronFolderLookup(NamedTuple):
+    """Outcome of resolving a cron-folder reference against existing folders.
+
+    ``missing`` distinguishes the three outcomes a caller must treat
+    differently. A reference that matched nothing in a READABLE store
+    (``missing=True``) may legitimately be turned into a create by a caller
+    that owns a create path. Every other error is a refusal no caller may paper
+    over: an ambiguous name, and — the case that is easy to miss — a store that
+    could not be read at all, where the folder set is unknown rather than
+    empty. Without that flag the only signal is the message text, and matching
+    on prose is how a create leg silently starts firing on an ambiguity or on a
+    corrupt file.
+    """
+
+    folder_id: str
+    error: str | None
+    missing: bool = False
+
+
+def lookup_cron_folder_id(ref: str) -> CronFolderLookup:
+    """Resolve an EXISTING cron folder reference (id or name) to its id.
+
+    An empty ``ref`` resolves to ``""`` (ungrouped) with no error. Matching
+    order: exact id first, then case-insensitive name. A name shared by several
+    folders is refused rather than resolved to an arbitrary one, and an unknown
+    reference is an error with ``missing=True`` — creating folders is the
+    dashboard's job (its state holds the canonical in-memory list and rewrites
+    the file wholesale, so an out-of-band append here could be silently
+    clobbered by the next UI folder operation). A caller that DOES own a
+    server-side create path (the MCP tool, via the dashboard's own endpoint)
+    keys off ``missing`` to take it.
+
+    An UNREADABLE store is an error with ``missing=False``: the folder set is
+    unknown, so the reference may well exist, and creating it would add a
+    duplicate whose survival is decided by the dashboard's next save.
+    """
+    ref = str(ref or "").strip()
+    if not ref:
+        return CronFolderLookup("", None)
+    folders, readable = _read_cron_folders()
+    if not readable:
+        return CronFolderLookup(
+            "",
+            f"cron folder store is unreadable, cannot resolve {ref!r} — "
+            f"repair or remove {_CRON_FOLDERS_FILE}",
+        )
+    if any(f["id"] == ref for f in folders):
+        return CronFolderLookup(ref, None)
+    matches = [f for f in folders if f["name"].strip().lower() == ref.lower()]
+    if len(matches) > 1:
+        ids = ", ".join(f["id"] for f in matches)
+        return CronFolderLookup(
+            "", f"{len(matches)} cron folders are named {ref!r} ({ids}) — pass the folder id"
+        )
+    if matches:
+        return CronFolderLookup(matches[0]["id"], None)
+    return CronFolderLookup(
+        "",
+        f"cron folder not found: {ref!r} — create it first in the dashboard's Schedule page",
+        missing=True,
+    )
+
+
+def get_local_tz() -> tuple[str, ZoneInfo]:
+    """Return (tz_name, ZoneInfo) from the published config default, or UTC.
+
+    Reads :func:`published_config_timezone` rather than loading ``config.json``:
+    prompt assembly (``context.py``), the dashboard cron handler and the
+    messaging commands all reach this from the event loop, where a
+    stat/read/validate would be a per-call stall
+    (``no-blocking-call-on-event-loop``). The snapshot is refreshed by every
+    successful config load, so a settings change still reaches a running gateway.
+    """
+    try:
+        tz_name = published_config_timezone() or "UTC"
+        return tz_name, ZoneInfo(tz_name)
+    except Exception:
+        logger.warning(
+            "Failed to load timezone from config, falling back to UTC",
+            exc_info=True,
+        )
+        return "UTC", ZoneInfo("UTC")
+
+
+# Patterns for parse_time_string
+_RE_IN_DURATION = re.compile(
+    r"^in\s+(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours)$", re.I
+)
+_UNIT_SECS = {
+    "s": 1,
+    "sec": 1,
+    "second": 1,
+    "seconds": 1,
+    "m": 60,
+    "min": 60,
+    "minute": 60,
+    "minutes": 60,
+    "h": 3600,
+    "hr": 3600,
+    "hour": 3600,
+    "hours": 3600,
+}
+
+
+def parse_time_string(s: str) -> float | str:
+    """Parse a human time string into a Unix timestamp. Returns error string on failure.
+
+    Lives here, next to :func:`get_local_tz`, because BOTH one-shot entry points
+    need it: the ``cron_add`` MCP tool and ``POST /api/crons``. A second copy
+    would let the two drift, and "5pm" resolving to different instants depending
+    on which door the request came through is exactly the class of bug a shared
+    parser prevents. Relative forms ("in 30 minutes") are absolute already;
+    everything else is interpreted in the CONFIGURED timezone, never the
+    process's, so a gateway running in UTC still honours the user's setting.
+    """
+    s = s.strip()
+    _, tz = get_local_tz()
+    now = datetime.now(tz)
+
+    # "in 5 minutes", "in 2 hours"
+    m = _RE_IN_DURATION.match(s)
+    if m:
+        secs = int(m.group(1)) * _UNIT_SECS[m.group(2).lower()]
+        return time.time() + secs
+
+    # Try common formats with optional "tomorrow"
+    tomorrow = False
+    text = s
+    if text.lower().startswith("tomorrow"):
+        tomorrow = True
+        text = re.sub(r"^at\b\s*", "", text[8:].strip())
+
+    # "5pm", "5:30pm", "17:00", "9:30am"
+    for fmt in ("%I%p", "%I:%M%p", "%H:%M", "%I %p", "%I:%M %p"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            result = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+            if tomorrow:
+                result += timedelta(days=1)
+            elif result <= now:
+                result += timedelta(days=1)  # "5pm" when it's already 6pm → tomorrow
+            return result.timestamp()
+        except ValueError:
+            continue
+
+    # ISO-ish: "YYYY-MM-DD HH:MM", space or "T" separator, seconds optional
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=now.tzinfo)
+            return parsed.timestamp()
+        except ValueError:
+            continue
+
+    return f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', 'tomorrow 9am'"
+
+
+def _job_tz(job: CronJob) -> ZoneInfo:
+    """Return the job's timezone, falling back to the published default then UTC.
+
+    Reads :func:`published_config_timezone` rather than loading ``config.json``.
+    Both callers reach this from the event loop: :meth:`CronService._on_timer`
+    scans EVERY cron-expression job through :meth:`_is_due` on every tick, and
+    :meth:`CronJob.set_run_result` renders a completed run's stamp, so a config
+    stat/read/validate here was a recurring gateway stall
+    (``no-blocking-call-on-event-loop``). The snapshot is refreshed by every
+    successful config load, so a timezone change still reaches a running
+    gateway on the following tick.
+    """
+    try:
+        tz_name = job.timezone or published_config_timezone() or "UTC"
+        return ZoneInfo(tz_name)
+    except Exception:
+        logger.warning("Failed to resolve timezone for job %s, using UTC", job.id, exc_info=True)
+        return ZoneInfo("UTC")
+
+
+def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
+    """Return the next fire time as a UTC epoch, or ``None`` if unknown.
+
+    Never returns a non-finite float: the result feeds ``next_run_ts`` on the
+    ``GET /api/crons`` payload, and ``json.dumps`` (``allow_nan=True`` by
+    default) would emit the bare token ``Infinity`` -- invalid JSON that makes
+    the client reject the WHOLE listing. Finite extremes a hand-edited store
+    can carry still overflow here through arithmetic (``last + every_secs``
+    with ``every_secs=1e308`` sums to ``inf``), so the guard sits on the
+    RESULT, covering every arithmetic route at the serialize site.
+    """
+    result = _compute_next_run_ts_raw(job, now)
+    # Float-gated like every non-finite check in this module: a bignum int
+    # result serializes as digits (valid JSON) and math.isfinite(huge_int)
+    # raises OverflowError -- the exact escape this guard exists to prevent.
+    if isinstance(result, float) and not math.isfinite(result):
+        return None
+    return result
+
+
+def _next_cron_boundary_ts(job: CronJob, now: float) -> float | None:
+    """Return the immediate next cron boundary as a UTC epoch, ignoring skip_dates.
+
+    For TIMER ARMING only. It answers "when is the next minute this expression
+    matches" with a single ``croniter.get_next`` -- O(1), no ``skip_dates``
+    traversal -- so a job with many ``skip_dates`` cannot make the on-loop
+    re-arm walk up to ``_MAX_SKIP_DATE_LOOKAHEAD`` occurrences. ``skip_dates`` is
+    still enforced at fire time by :meth:`CronService._is_due`, so a wake that
+    lands on a skipped boundary is a cheap no-op that re-arms to the following
+    boundary. Returns ``None`` for a non-cron or invalid expression, or when the
+    boundary is non-finite, so the caller falls back to the poll interval.
+    """
+    sched = job.schedule
+    if sched.kind != "cron" or sched.cron_expr is None:
+        return None
+    try:
+        tz = _job_tz(job)
+        base = datetime.fromtimestamp(now, tz=tz)
+        nxt = croniter(sched.cron_expr, base).get_next(float)
+    except Exception:
+        logger.warning("Failed to compute next cron boundary for job %s", job.id, exc_info=True)
+        return None
+    if isinstance(nxt, float) and not math.isfinite(nxt):
+        return None
+    return nxt
+
+
+def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | None:
+    """Unchecked next-fire-time computation; see :func:`compute_next_run_ts`."""
+    try:
+        if not job.enabled:
+            return None
+        sched = job.schedule
+        now = now if now is not None else time.time()
+        if sched.kind == "every" and sched.every_secs is not None:
+            last = job.last_run_ts if job.last_run_ts is not None else job.created_ts
+            if last is None:
+                return None
+            nxt = last + sched.every_secs
+            return nxt if nxt > now else now
+        if sched.kind == "at" and sched.at_ts is not None:
+            return sched.at_ts if sched.at_ts > now else None
+        if sched.kind == "cron" and sched.cron_expr is not None:
+            # croniter interprets cron_expr in base's timezone; get_next(float) returns UTC epoch
+            tz = _job_tz(job)
+            base = datetime.fromtimestamp(now, tz=tz)
+            cron = croniter(sched.cron_expr, base)
+            # Advance past any skip_dates, bounded by a wall-clock horizon so the
+            # bound does not depend on schedule granularity (a daily and a */5
+            # cron both look ~2 years ahead). The iteration count is only a hard
+            # safety ceiling against a pathological all-skipped sub-minute config.
+            horizon = now + _MAX_SKIP_DATE_HORIZON_SECS
+            for _ in range(_MAX_SKIP_DATE_LOOKAHEAD):
+                nxt = cron.get_next(float)
+                if not job.skip_dates:
+                    return nxt
+                if nxt > horizon:
+                    logger.warning(
+                        "No valid next run within ~2y horizon for job %s (all dates skipped)",
+                        job.id,
+                    )
+                    return None
+                local_date = datetime.fromtimestamp(nxt, tz=tz).strftime("%Y-%m-%d")
+                if local_date not in job.skip_dates:
+                    return nxt
+            logger.warning(
+                "No valid next run within %d-iteration safety cap for job %s (all dates skipped)",
+                _MAX_SKIP_DATE_LOOKAHEAD,
+                job.id,
+            )
+            return None
+    except Exception:
+        logger.warning("Failed to compute next run for job %s", job.id, exc_info=True)
+        return None
+    return None
+
+
+def _record_user_paused(j: dict[str, Any]) -> bool:
+    """Single owner for the user-pause predicate of a serialized job.
+
+    The legacy ``!enabled`` fallback covers stores written before ``user_paused``
+    existed, where the only record of a pause was the ``enabled`` flag. Every
+    reader routes through here for the same reason :func:`_record_is_enabled`
+    exists: a future pause-state change must not land in one spelling of this
+    derivation and miss another.
+    """
+    return bool(j.get("user_paused", not j.get("enabled", True)))
+
+
+def _record_is_enabled(j: dict[str, Any]) -> bool:
+    """Single owner for the effective-enabled predicate of a serialized job.
+
+    A job is enabled when it is neither user-paused nor auto-paused, with the
+    legacy ``!enabled`` fallback for stores written before those fields existed.
+    Both ``_load`` (the scheduler deserialization path) and
+    ``count_enabled_from_disk`` (the off-thread dashboard count) MUST route
+    through here so the semantics have exactly one implementation and cannot
+    drift when a future pause-state change lands in only one reader.
+    """
+    return not _record_user_paused(j) and not j.get("auto_paused", False)
+
+
+def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, str]], bool]:
+    """Return ``(auto_paused, errored, loadable)`` for the doctor's cron check.
+
+    The first two are ``(id, name)`` pairs needing attention. ``loadable``
+    rides the SAME read rather than a second one: a store the scheduler cannot
+    load yields two empty buckets, which is indistinguishable from a healthy
+    empty store in the pairs alone, so the caller needs the flag to avoid
+    handing back a clean bill of health for a stopped scheduler.
+
+    Read-only + best-effort, and a sibling of :func:`referenced_skill_names` for
+    the same reason: it reads ``crons.json`` directly so it needs no running
+    scheduler. ``kirocrew doctor`` is the caller, and a diagnostic whose purpose
+    is to speak when the gateway is wedged must not depend on the gateway.
+
+    Non-raising by contract, via :func:`_read_job_records`, which owns the
+    read-parse-shape prologue this and the two other direct readers share: a
+    missing file (every fresh install — no crons yet), unreadable bytes,
+    invalid UTF-8, malformed JSON (including deeply nested input), a store not
+    shaped like a job list, and individual malformed records all report
+    "nothing found". The run on a host with a corrupt store is exactly the run
+    that most needs the caller's other diagnostics, and must not get a
+    traceback instead of them.
+
+    The two buckets are disjoint and carry different remediation. A job only
+    reaches ``auto_paused`` by failing repeatedly, so it almost always carries
+    ``last_status="error"`` too; reporting it in both would give a caller
+    contradictory advice (resume it vs. re-trigger it) for one job. Auto-pause
+    wins because re-triggering a paused job does not un-pause it.
+
+    A user-paused job appears in NEITHER bucket. ``user_paused`` is deliberately
+    distinct from ``auto_paused``: a job the user paused on purpose is not a
+    health signal, and a stale ``last_status`` from before they paused it is not
+    either. Both flags can be set at once — :meth:`CronStore._enable_job_locked`
+    clears ``auto_paused`` only when ENABLING, so pausing an already-auto-paused
+    job leaves ``auto_paused`` true and adds ``user_paused`` — and the explicit
+    user pause is the later, more specific instruction, so it wins.
+    """
+    auto_paused: list[tuple[str, str]] = []
+    errored: list[tuple[str, str]] = []
+    records, loadable = _read_job_records(config_dir() / _CRONS_FILE)
+    for j in records:
+        if not _is_loadable_record(j):
+            # A record the SCHEDULER cannot build is not a job to advise about.
+            # Classifying it anyway emits a resume/trigger hint for something
+            # that will never run — and because a non-empty bucket outranks the
+            # store report, it also HIDES the unloadable-store diagnostic behind
+            # a phantom job. Skipping here keeps the two consistent: the same
+            # predicate that clears `loadable` also decides what gets named.
+            # Diagnostic-only; the runtime readers take `[0]` and are unaffected.
+            continue
+        entry = (str(j.get("id") or "no-id"), str(j.get("name") or "(unnamed)"))
+        if _record_user_paused(j):
+            # The user pause wins unconditionally, per the contract above. An
+            # errored `at` record is NOT exempted: nothing in a serialized job
+            # separates a pause the user asked for from the one execution writes
+            # when it parks a fired at-job (both are enabled=False +
+            # user_paused=True, and `fire_time_denied` is not persisted), so an
+            # exemption cannot target only the execution case -- it also hands
+            # back a hint for a job the user deliberately switched off.
+            continue
+        if j.get("auto_paused", False):
+            auto_paused.append(entry)
+        elif j.get("last_status") == "error":
+            # _record_is_enabled is the shared predicate: reaching here means
+            # neither pause flag is set, so this bucket is the still-scheduled
+            # failures and cannot overlap the auto-paused one above.
+            errored.append(entry)
+    return (auto_paused, errored, loadable)
+
+
+def job_pause_state_from_disk(job_id: str) -> str | None:
+    """``"paused by the user"`` / ``"auto-paused"`` / ``"enabled"`` for *job_id*,
+    or None when the store has no such job.
+
+    A sibling of :func:`unhealthy_jobs_from_disk` for the doctor's stall
+    attribution: once a dump is attributed to a job, the next question is
+    whether that job is still scheduled to run again, answered from the store
+    directly so it holds when the gateway is down.
+    """
+    records, _loadable = _read_job_records(config_dir() / _CRONS_FILE)
+    for j in records:
+        if str(j.get("id") or "") != job_id:
+            continue
+        if _record_user_paused(j):
+            return "paused by the user"
+        if j.get("auto_paused", False):
+            return "auto-paused"
+        return "enabled"
+    return None
+
+
+def enabled_count_from_disk(path: Path) -> tuple[int, bool]:
+    """Return ``(enabled count, loadable)`` for the store at *path*.
+
+    A sibling of :func:`unhealthy_jobs_from_disk`: read-only, non-raising, needs
+    no running scheduler, and carries ``loadable`` on the SAME read for the same
+    reason — a store the scheduler cannot load counts 0, which is
+    indistinguishable from a healthy empty store in the number alone.
+
+    Single owner of the enabled-count reduction. Two callers need it and want
+    different halves: :meth:`CronService.count_enabled_from_disk` takes the count
+    and degrades a fault to 0 (its caller is a status pusher that must keep
+    running), while the telemetry probe needs ``loadable`` to report a fault as a
+    fault rather than as a plausible number. One loop serves both, so the two
+    readers cannot drift apart on which records count; sharing only the
+    ``_is_loadable_record`` / ``_record_is_enabled`` predicates would cap that
+    drift without removing it.
+    """
+    count = 0
+    records, loadable = _read_job_records(path)
+    for j in records:
+        # Same skip decision as _load: a record _job_from_record rejects is not
+        # a schedulable job, so it must not be counted.
+        if not _is_loadable_record(j):
+            continue
+        if _record_is_enabled(j):
+            count += 1
+    return (count, loadable)
+
+
+def _is_representable_number(value: Any) -> bool:
+    """True when *value* is a real number every consumer can hold.
+
+    The numeric half of the load-time type-shape contract: ``bool`` is
+    rejected (a stored ``true`` is not a count), non-``(int, float)`` is
+    rejected, a non-finite float is rejected (``json.loads`` parses
+    ``NaN``/``Infinity`` by default; NaN breaks comparison ordering and the
+    pair emits invalid JSON tokens), and an int too large to convert to a
+    float is rejected via ``try/except OverflowError`` -- the same predicate
+    shape as ``monitoring.models.is_finite_non_negative_number``, minus its
+    sign bound (a value bound has no place at load; see ``_job_from_record``).
+    Raises nothing, so nothing can leak outside ``_load``'s
+    ``(KeyError, TypeError)`` per-entry isolation.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def resolve_cron_memory(job: CronJob, *, validate_memory_files: bool = True) -> tuple[str, str]:
+    """Dispatch the job's captured execution, never its current display alias."""
+    from kiro_crew.execution_context import execution_from_record, validate_execution
+    from kiro_crew.memory_stores import memory_store_version, require_memory_store
+
+    if job.execution_context is not None:
+        execution = execution_from_record({"execution_context": job.execution_context})
+        if validate_memory_files:
+            validate_execution(execution)
+        return execution.store.legacy_name, execution.template_id
+    if not isinstance(job.member_id, str) or not isinstance(job.memory_store, str):
+        raise ValueError("memory_unavailable: malformed schedule identity")
+    # A V2 schedule must carry the captured execution record: its member ID is
+    # an immutable database identity and cannot be reconstructed from a name.
+    # Older V1 schedules may still carry the historical member selector beside
+    # their explicit legacy store; keep dispatching that store instead of
+    # silently auto-pausing it after an upgrade.
+    if memory_store_version(job.memory_store) == 2 or (job.member_id and not job.memory_store):
+        raise ValueError("memory_unavailable: schedule has no canonical execution context")
+    store = (
+        require_memory_store(job.memory_store, require_directory=validate_memory_files)
+        if job.memory_store
+        else ""
+    )
+    return store, job.agent_id
+
+
+def bind_cron_memory(job: CronJob) -> None:
+    """Capture existing member or creator once inside the new job record."""
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import (
+        derive_execution,
+        execution_for_store,
+        read_session_execution,
+    )
+
+    if job.execution_context is not None:
+        resolve_cron_memory(job, validate_memory_files=False)
+        return
+    creator = read_session_execution(job.session_key) if job.session_key else None
+    execution = creator or execution_for_store(
+        job.memory_store, template_id=job.agent_id or "kirocrew"
+    )
+    if job.member_id:
+        execution = derive_execution(execution, target_member=job.member_id)
+    if execution.memory_mode != "persistent":
+        raise ValueError("Restricted sessions cannot create persistent schedules")
+    if job.agent_id:
+        execution = replace(execution, template_id=job.agent_id)
+    job.execution_context = execution.to_record()
+    job.member_id = execution.member_id or ""
+    job.memory_store = execution.store.legacy_name
+
+
+def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
+    """Build one :class:`CronJob` from its serialized record.
+
+    Raises ``KeyError``/``TypeError`` when the record is malformed (missing
+    required keys, not shaped like a job object at all, or carrying a
+    non-string where the field decides WHAT the job executes). The caller
+    (:meth:`CronService._load`) isolates that failure to THIS entry — one bad
+    record must never discard the rest of the store.
+
+    Field-type handling splits by what a wrong type would cost:
+
+    - **Required identity/payload** (``id``, ``name``, ``message``,
+      ``schedule.kind``) and **execution selectors** (``script``, ``command``,
+      ``agent_id``, plus the ``agent_sequence`` / ``skip_dates`` lists) raise
+      ``TypeError`` on a non-string value, so the record is skipped whole.
+      Coercing a selector instead would fail OPEN: a script job whose
+      ``script`` degraded to ``""`` silently becomes an LLM agent job
+      (``_cron_callback`` picks the mode from which selector is non-empty),
+      executing the job's message through the default agent — worse than not
+      loading the record at all.
+    - **Everything else string-typed** coerces to the field's own unset value
+      (``""``, or ``None`` for ``Optional[str]`` fields), and every field
+      whose stored value was destroyed by that coercion is named in one
+      WARNING, because ``_save`` rewrites ``jobs[]`` wholesale and the coerced
+      value replaces the operator's stored one on the next write — the log
+      line is the recovery window, exactly like the skip warning in ``_load``.
+
+    It does NOT raise ``AttributeError`` for any record ``json.loads`` can
+    produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
+    same object, and only a ``dict`` survives a string subscript. An
+    ``AttributeError`` from this function therefore signals a defect in this
+    code, not bad data, so :meth:`CronService._load` deliberately lets it
+    propagate rather than catching it: catching it there would reclassify a
+    valid job as malformed, and because ``_save`` rewrites ``jobs[]`` from
+    ``self._jobs`` the next write would erase that job from disk permanently —
+    turning a code defect into silent, unrecoverable data loss. Letting it
+    propagate trades a loud failure at load for that silent loss.
+    """
+    coerced: list[str] = []
+
+    def _required_str(container: dict[str, Any], field: str) -> str:
+        value = container[field]  # KeyError for a missing required key
+        if not isinstance(value, str):
+            raise TypeError(
+                f"cron record field {field!r} must be a string, got {type(value).__name__}"
+            )
+        return value
+
+    def _selector_str(field: str) -> str:
+        # Absent key = legacy record, defaults to "". A PRESENT non-string
+        # (null included) is malformed: an execution selector has no safe
+        # fallback value — see the docstring.
+        if field not in j:
+            return ""
+        value = j[field]
+        if not isinstance(value, str):
+            raise TypeError(
+                f"cron record execution selector {field!r} must be a string, got {type(value).__name__}"
+            )
+        return value
+
+    def _str_list(field: str) -> list[str]:
+        # Absent field: a legacy record predating the field -- default empty.
+        # Explicit null is NOT the same thing: no writer produces it, and
+        # treating it as empty flips a multi-agent job onto the single-agent
+        # fallback -- an execution-path change, so the record skips whole.
+        if field not in j:
+            return []
+        value = j[field]
+        if not isinstance(value, list) or any(not isinstance(m, str) for m in value):
+            raise TypeError(f"cron record field {field!r} must be a list of strings")
+        return value
+
+    def _guard_str(field: str) -> str:
+        # Non-string (incl. null) degrades to "" -- the field's unset value --
+        # so it can never reach a consumer that calls string methods on it
+        # (the GET /api/crons redacting serializer would 500 the listing).
+        value = j.get(field)
+        if value is not None and not isinstance(value, str):
+            coerced.append(field)
+        return value if isinstance(value, str) else ""
+
+    def _guard_opt_str(field: str) -> str | None:
+        # Optional[str] sibling: None means "never set" and is semantically
+        # distinct from "" (e.g. last_status gates rendering on `is None`),
+        # so a non-string degrades to None, never to an invented "".
+        value = j.get(field)
+        if value is not None and not isinstance(value, str):
+            coerced.append(field)
+        return value if isinstance(value, str) else None
+
+    def _guard_num(field: str, default: Any) -> Any:
+        # The numeric half of split-by-cost: telemetry numerics COERCE to
+        # their declared unset value (never skip -- coercion drops no record,
+        # satisfying the data-loss rule unconditionally), joining the same
+        # coerced list and single WARNING as the string fields. This is what
+        # keeps a NaN/bignum in a telemetry field out of every consumer at
+        # once: the JSON envelope (bare NaN/Infinity tokens), timer and
+        # due-decision arithmetic (OverflowError / due-every-tick), delivery
+        # dedup arithmetic, subprocess budgets, and the secret-grant CAS
+        # (NaN != NaN is always true, permanently blocking approval).
+        # Absent field: a legacy record -- the declared default, silently.
+        # Explicit null is a present value: where the declared unset IS None
+        # (last_run_ts) it is the writer's own serialization of "never ran"
+        # and passes through; everywhere else it is malformed like any other
+        # non-number and joins the coerced list so the load names it.
+        if field not in j:
+            return default
+        value = j[field]
+        if value is None:
+            if default is None:
+                return default
+            coerced.append(field)
+            return default
+        if not _is_representable_number(value):
+            coerced.append(field)
+            return default
+        return value
+
+    # Schedule sub-fields decide WHEN the job fires and feed format_schedule
+    # on the listing path unguarded, so like the execution selectors they fail
+    # CLOSED: a mistyped value skips the record whole. The kind subscript runs
+    # first — only a dict survives a string subscript, so the .get() calls
+    # below can never raise AttributeError (see the docstring).
+    sched = j["schedule"]
+    sched_kind = _required_str(sched, "kind")
+    for _numeric_field in ("every_secs", "at_ts"):
+        _numeric_value = sched.get(_numeric_field)
+        if _numeric_value is not None and not _is_representable_number(_numeric_value):
+            # Representability is TYPE SHAPE for a schedule numeric: NaN and
+            # Infinity break comparison ordering (a NaN at_ts is due every
+            # tick) and emit invalid JSON tokens, and a bignum int crashes
+            # int-float arithmetic on the timer-arming path (`at_ts - now` ->
+            # OverflowError, aborting gateway startup). No write path can
+            # persist any of these -- _build_job and _update_job_locked refuse
+            # them at the persistence chokepoints, so this reader-side skip
+            # provably drops no writer-producible record. Deliberately no
+            # FINITE value bound: extreme representable values load intact
+            # and are tolerated at their consumers.
+            raise TypeError(
+                f"cron record schedule field {_numeric_field!r} must be a representable finite number"
+            )
+    _cron_expr = sched.get("cron_expr")
+    if _cron_expr is not None and not isinstance(_cron_expr, str):
+        raise TypeError("cron record schedule field 'cron_expr' must be a string")
+
+    job = CronJob(
+        id=_required_str(j, "id"),
+        name=_required_str(j, "name"),
+        message=_required_str(j, "message"),
+        schedule=CronSchedule(
+            kind=sched_kind,
+            every_secs=sched.get("every_secs"),
+            at_ts=sched.get("at_ts"),
+            cron_expr=_cron_expr,
+        ),
+        channel=_guard_opt_str("channel"),
+        thread_ts=_guard_opt_str("thread_ts"),
+        # Effective enabled is derived from the two "reasons a job is
+        # off": an explicit user pause and an execution auto-pause
+        # (repeated failures). Deriving it — rather than trusting the
+        # stored `enabled` — is what makes an auto-pause survive a
+        # restart: the failing run sets auto_paused=True, and a
+        # recurring job's `enabled` is otherwise never persisted, so a
+        # naive `enabled` read would resurrect the job on reload.
+        # The predicate (incl. the legacy !enabled fallback) has one
+        # owner, `_record_is_enabled`, shared with
+        # count_enabled_from_disk so the two readers cannot drift.
+        enabled=_record_is_enabled(j),
+        user_paused=_record_user_paused(j),
+        auto_paused=j.get("auto_paused", False),
+        last_run_ts=_guard_num("last_run_ts", None),
+        last_status=_guard_opt_str("last_status"),
+        last_error=_guard_opt_str("last_error"),
+        created_ts=_guard_num("created_ts", 0.0),
+        delete_after_run=j.get("delete_after_run", False),
+        last_result=_guard_opt_str("last_result"),
+        last_result_ts=_guard_num("last_result_ts", 0.0),
+        last_result_stamp=_guard_str("last_result_stamp"),
+        context_enabled=j.get("context_enabled", False),
+        agent_id=_selector_str("agent_id"),
+        # member_id / memory_store are memory-identity selectors: they decide
+        # WHOSE memory and protected runtime identity the job runs with, and
+        # resolve_cron_memory raises on a malformed binding rather than
+        # falling back -- so a present non-string skips the record whole,
+        # exactly like the execution selectors. Coercing to "" would silently
+        # strip a member binding and run the job unbound.
+        member_id=_selector_str("member_id"),
+        memory_store=_selector_str("memory_store"),
+        execution_context=j.get("execution_context"),
+        approval_mode=_guard_str("approval_mode"),
+        acked_items=j.get("acked_items", []),
+        created_by=_guard_str("created_by"),
+        source_preset=_guard_str("source_preset"),
+        source_template_prompt=_guard_str("source_template_prompt"),
+        silent=j.get("silent", False),
+        session_key=_guard_str("session_key"),
+        last_posted_hash=_guard_str("last_posted_hash"),
+        consecutive_dupes=_guard_num("consecutive_dupes", 0),
+        last_posted_at=_guard_num("last_posted_at", 0.0),
+        last_failure_hash=_guard_str("last_failure_hash"),
+        last_failure_at=_guard_num("last_failure_at", 0.0),
+        consecutive_failures=_guard_num("consecutive_failures", 0),
+        skip_dates=_str_list("skip_dates"),
+        timezone=_guard_str("timezone"),
+        persistent_session=j.get("persistent_session", True),
+        minimal_context=j.get("minimal_context", False),
+        hide_in_chat=j.get("hide_in_chat", False),
+        folder_id=_guard_str("folder_id"),
+        chat_folder_id=_guard_str("chat_folder_id"),
+        model=_guard_str("model"),
+        last_retry_count=_guard_num("last_retry_count", 0),
+        last_retry_run_ts=_guard_num("last_retry_run_ts", 0.0),
+        run_generation=_guard_num("run_generation", 0),
+        agent_sequence=_str_list("agent_sequence"),
+        env=j.get("env", {}),
+        timeout_secs=_guard_num("timeout_secs", _JOB_TIMEOUT_SECS),
+        strict_schedule=j.get("strict_schedule", False),
+        script=_selector_str("script"),
+        command=_selector_str("command"),
+        timeout=_guard_num("timeout", 0),
+        secret_env=j.get("secret_env", {}),
+        secret_env_pin=_guard_str("secret_env_pin"),
+        secret_env_pending=j.get("secret_env_pending", {}),
+        secret_env_pending_pin=_guard_str("secret_env_pending_pin"),
+        secret_env_pending_ts=_guard_num("secret_env_pending_ts", 0.0),
+    )
+    if coerced and warn_on_coercion:
+        logger.warning(
+            "Coercing non-string value(s) in cron job entry (id=%r) field(s) %s to unset; "
+            "the stored values will be replaced on the next write",
+            job.id,
+            ", ".join(coerced),
+        )
+    return job
+
+
+async def _manual_run_refused() -> bool:
+    """The coroutine :meth:`CronService.run_job` hands back without a claim.
+
+    ``run_job`` decides synchronously whether the job is already executing; a
+    refused trigger still has to return something the caller can ``await`` or
+    wrap in a task, so it gets this instead of the claimed body.
+    """
+    return False
+
+
+@dataclass(eq=False)
+class _RunClaim:
+    """One run's claim on its job: every piece of per-run state, in one object.
+
+    Created when the job is claimed (:meth:`CronService._claim_run`) and stored
+    as the job's single entry in ``CronService._claims``; the claim IS the run's
+    identity. ``eq=False`` keeps dataclass identity semantics: two claims are the
+    same run only when they are the same object, so a copied or reconstructed
+    claim can never pass a fence -- the property the ``(started, trigger)`` meta
+    tuple this replaces had only by accident of construction, and every fence
+    in :class:`CronService` (``_holds_claim``) relies on.
+
+    A claim's life: ``trigger``, ``claimed_at`` and ``marker_run`` are fixed at
+    claim time. ``task`` is the handle the dispatcher tracks (the manual route's
+    wrapper, then the run task that replaces it). ``generation``,
+    ``started_monotonic`` and ``jitter`` are stamped by ``_run_job_isolated`` as
+    the run body reaches them. ``taken`` is set by ``cancel()`` / ``_force_reap``
+    when they take over the run's terminal write: from then on the run's own
+    fences fail, the reaper skips it and ``running_since`` is silent, while the
+    claim stays stored so the job keeps reading as occupied until the teardown
+    pops it after its kill awaits. Releasing a claim is popping it -- one
+    operation for every field, so a field added here inherits every fence
+    instead of needing its own pop at every release site.
+    """
+
+    #: ``"manual"`` (``run_job``) or ``"scheduled"`` (the due-scan).
+    trigger: str
+    #: Epoch time the claim was taken -- the run's ``started_at`` for its
+    #: history row and ``running_since``.
+    claimed_at: float
+    #: Per-run token in the on-disk in-flight marker's file name, so the
+    #: finalizer clears only its own run's marker (see ``cron_inflight``).
+    marker_run: str = field(default_factory=lambda: uuid.uuid4().hex)
+    #: The run generation drawn at the run's first step (``_next_run_generation``),
+    #: stamped on the record the finalizer merges. None until drawn.
+    generation: int | None = None
+    #: ``time.monotonic()`` when the run body started; the reaper's deadline clock.
+    #: None while a manual claim is still parked in its store refresh (the
+    #: reaper then measures on the wall clock from ``claimed_at``).
+    started_monotonic: float | None = None
+    #: Jitter seconds the run slept before executing; the reaper's allowance.
+    jitter: float | None = None
+    #: The task the dispatcher tracks for this run, for cancel / reap / stop.
+    task: asyncio.Task[Any] | None = None
+    #: Set by ``cancel()`` / ``_force_reap`` once they own the run's terminal
+    #: write. The claim stays stored (the job is still occupied) but is no
+    #: longer the run's to release, and the reaper leaves it alone. A lock
+    #: with one release: the taker finishes it in a ``finally`` around its
+    #: kill awaits, so a teardown that fails still pops the claim it took.
+    taken: bool = False
+
+
+class _RunMarkers:
+    """Cancel / reap markers keyed by job id AND the run they were set for.
+
+    ``cancel()`` and the reaper mark the run whose claim they took, and a
+    finalizer consumes only a marker set for its own claim (identity, like
+    every claim fence in :class:`CronService`). Keyed by job id alone, a marker
+    is shared by every run of the job: a finalizer stalled in its executor
+    round trip consumes a replacement run's marker, that run's finalizer then
+    finds none and appends a failure row after the cancelled row ``cancel()``
+    already wrote for it -- and two cancellations landing before either is
+    consumed collapse into one marker, so one of the two runs finalizes as if
+    it had completed. Every question asked of a marker names the run: there is
+    no by-job-id membership, because no product path has a job-id-only question
+    to ask.
+    """
+
+    __slots__ = ("_marks",)
+
+    def __init__(self) -> None:
+        self._marks: dict[str, list[_RunClaim]] = {}
+
+    def mark(self, job_id: str, run: _RunClaim) -> None:
+        """Set the marker for ``run``; a run already marked is not marked twice."""
+        if not self.has(job_id, run):
+            self._marks.setdefault(job_id, []).append(run)
+
+    def has(self, job_id: str, run: _RunClaim | None) -> bool:
+        """Whether ``run`` -- this claim, not an equal one -- is marked."""
+        return any(mark is run for mark in self._marks.get(job_id, ()))
+
+    def consume(self, job_id: str, run: _RunClaim | None) -> bool:
+        """Remove ``run``'s marker, leaving every other run's in place."""
+        marks = self._marks.get(job_id)
+        if not marks:
+            return False
+        for index, mark in enumerate(marks):
+            if mark is run:
+                del marks[index]
+                if not marks:
+                    del self._marks[job_id]
+                return True
+        return False
+
+
+class CronService:
+    """Background service for managing and executing scheduled jobs."""
+
+    def __init__(
+        self,
+        base_dir: Path | None = None,
+        on_job: Callable[[CronJob], Awaitable[str | None]] | None = None,
+        *,
+        _defer_initial_load: bool = False,
+    ):
+        self._dir = base_dir if base_dir is not None else _default_dir()
+        self._path = self._dir / _CRONS_FILE
+        self._on_job = on_job
+        self._jobs: list[CronJob] = []
+        self._timer_task: asyncio.Task[None] | None = None
+        # True only for the span of an in-flight _on_timer() dispatch pass
+        # (set/cleared there). _arm_timer() checks this to avoid cancelling
+        # self._timer_task out from under a sweep that hasn't finished
+        # spawning its due jobs yet — see _arm_timer's guard for the failure
+        # mode this prevents.
+        self._on_timer_running = False
+        self._running = False
+        # The event loop this service is bound to, captured in create()/start()
+        # (the gateway's loop). _arm_timer() uses it to re-arm the timer THREAD-
+        # SAFELY when it is reached OFF the loop — inside an asyncio.to_thread
+        # worker running a locked core whose _sync()->_load() wants to re-arm —
+        # by handing the arm back to the loop via loop.call_soon_threadsafe(
+        # self._arm_timer). Arming is therefore an IN-SERVICE guarantee owned by
+        # CronService: no caller (mutator, app hook, SDK, or route) has to
+        # remember to drain a deferred arm, so no off-loop mutation path can
+        # silently leave the timer un-armed (the "scheduled job never fires"
+        # failure class this module exists to prevent). Stays None in genuinely
+        # loop-less processes (CLI, MCP server, apps SDK, tests), where there is
+        # no scheduler loop to arm.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._last_mtime: float = 0.0
+        # Fingerprint of the store as last LOADED, used by _sync to decide
+        # whether the on-disk file changed. mtime alone is insufficient: on
+        # filesystems with coarse (1s) mtime granularity — or simply two writes
+        # within the same clock tick — a second external write lands with an
+        # EQUAL st_mtime, so the old `mtime > self._last_mtime` check skipped
+        # the reload and silently dropped that update. A (mtime_ns, size) tuple
+        # improves on that but still collides when an external write preserves
+        # BOTH the coarse timestamp and the byte length (e.g. renaming a job to
+        # an equal-length name), which would again drop the update and let the
+        # next _save overwrite it. The authoritative signal is therefore a
+        # content DIGEST derived from the same bytes we parse; mtime_ns/size are
+        # retained for diagnostics. _save refreshes all three so we never reload
+        # our own write.
+        self._last_mtime_ns: int = 0
+        self._last_size: int = -1
+        self._last_digest: bytes = b""
+        # Set when _load could not read the store, cleared on every load that
+        # DID resolve (including a missing file and an honestly empty one).
+        # _save consults it so a degraded-to-empty job list is never persisted
+        # over a store that still holds records — see _save's refusal.
+        self._load_failed: bool = False
+        # job id → the claim of the run that occupies the job (see _RunClaim):
+        # its trigger and start stamp, the tracked task, the in-flight marker
+        # token, the generation, the monotonic start the reaper measures on and
+        # the jitter it allows for. Membership is "the job is running" for the
+        # due-scan, _next_wake_secs, run_job and the manual-run route; a claim
+        # is released by popping it, one operation for every field. Loop-owned:
+        # every claim, fence and release happens on the event loop, await-free.
+        self._claims: dict[str, _RunClaim] = {}
+        # Runs killed by the reaper / cancelled by the user, keyed by job id AND
+        # the run's claim: the run's own finalizer consumes its marker and
+        # skips the merge + history row its cancel() / reap already wrote.
+        self._reaped_jobs = _RunMarkers()
+        self._cancelled_jobs = _RunMarkers()
+        # job_id → the highest run generation this process has allocated for
+        # the job (see _next_run_generation). Service state, not job state:
+        # every _sync() reload replaces the CronJob objects, and a counter kept
+        # on one of them would be lost with it before the run's merge persisted
+        # it, handing the next run the same number.
+        self._run_generations: dict[str, int] = {}
+        # Where the loop-stall breaker looks for crash dumps. None = the data
+        # home's dump directory; tests point it at a temp dir.
+        self._dumps_dir: Path | None = None
+        # Job IDs whose one-shot (delete_after_run / Done) removal was DEFERRED
+        # because remove_job_async hit a contended store (CronStoreBusy). The
+        # timer tick drains these under the store lock in a worker thread (see
+        # defer_removal / _drain_pending_removals_locked / _tick_scan_locked) so
+        # a completed one-shot is always
+        # eventually removed and can never re-fire in the meantime.
+        self._pending_removals: set[str] = set()
+        # True while a critical-posture episode is deferring scheduled
+        # firings (see _on_timer). Log-throttle state only: the INFO line
+        # fires once per deferral episode, not once per deferred tick.
+        self._admission_deferring: bool = False
+        self._admission_last_log: float = 0.0
+        # job_id → ordered exact live session keys, each attributed to the run
+        # (the _RunClaim stored for the job when it was registered) that
+        # registered it. A stateless run can leave its session alive for
+        # pending subagents after the cron callback returns, while a newer run
+        # of the same job registers another key; a sequential job registers one
+        # key per agent inside ONE run and defers an earlier agent's reset while
+        # its sub-agents are pending. Keeping only the newest key makes
+        # ownership cleanup forget the older live runtime, and a reap or cancel
+        # that ends only the newest key records ``reaped`` while an earlier
+        # agent's session -- the same run's -- and its sub-agents survive. Dict
+        # insertion order gives the reaper the run's keys newest first; the
+        # attribution tells the run's own keys, all of which it ends, from an
+        # older run's key kept alive for its pending sub-agents, which it leaves
+        # alone; the full nested set protects every distinct live run. Duplicate
+        # registration is idempotent: one successful SessionManager reset retires
+        # the entire exact key, not one caller's reference to it.
+        self._active_session_lock = threading.Lock()
+        self._active_session_keys: dict[str, dict[str, _RunClaim | None]] = {}
+        self._sessions: SessionManager | None = None
+        self._reaper_task: asyncio.Task[None] | None = None
+        self._push_refresh: Callable[[str], None] | None = None  # set externally
+        _cfg = KiroCrewConfig.load().cron_history
+        _history_dir = base_dir if base_dir is not None else _default_dir()
+        # Execution history is BEST-EFFORT and must never be load-bearing for
+        # scheduling: a throw HERE would propagate out of CronService.__init__
+        # and take the WHOLE cron subsystem with it — the gateway scheduler, MCP
+        # cron_add/cron_list/cron_trigger and `kirocrew cron list` alike, none of
+        # which need history to work. That guarantee lives in the store itself:
+        # _prepare_dir resolves usability without raising and _degrade absorbs a
+        # later failure, so there is deliberately NO try/except here. One would
+        # guard a raise that cannot occur, and a reader would have to prove that
+        # for themselves before trusting either layer.
+        #
+        # The store's directory setup is synchronous filesystem I/O, so it is
+        # deferred on exactly the same condition as _load() below: a loop
+        # context constructs via create(), which then runs both off the loop in
+        # a worker thread. Without that, preparing the history directory would
+        # stat/open on the gateway's sole event loop — the same
+        # no-blocking-call-on-event-loop violation _defer_initial_load exists
+        # to prevent.
+        self._history = CronHistoryStore(
+            base_dir=_history_dir,
+            cron_summary_cap=_cfg.cron_summary_cap,
+            cron_trace_cap_kb=_cfg.cron_trace_cap_kb,
+            cron_max_records_per_job=_cfg.cron_max_records_per_job,
+            cron_max_index_records=_cfg.cron_max_index_records,
+            _defer_prepare=_defer_initial_load,
+        )
+        # Populate the in-memory snapshot from disk once at construction.
+        # The read paths (list_jobs / get_job) are CACHE-ONLY — they perform no
+        # filesystem I/O on the hot event-loop path (see list_jobs). They used
+        # to lazily _load() on first read via _sync(); loop-less callers that
+        # construct a service and read immediately without start() (the MCP and
+        # CLI processes, tests) relied on that. An initial load here restores
+        # the "a fresh service reflects on-disk state" invariant without
+        # putting any I/O back on the gateway's hot read path (the gateway
+        # constructs its service once at startup, off any hot loop, and
+        # start() reloads anyway). No timer is armed: _running is still False.
+        #
+        # BUT the initial _load() itself read_bytes()+blake2b-hashes the WHOLE
+        # crons.json — synchronous filesystem I/O. For genuinely-sync, loop-less
+        # processes (CLI, MCP server, apps SDK, tests) that is fine: there is no
+        # event loop to park. The async gateway, however, constructs its
+        # CronService INSIDE its running startup coroutine, so a plain
+        # constructor _load() would block the sole event loop (chat, WS, timers,
+        # heartbeat) on that read — violating no-blocking-call-on-event-loop.
+        # Loop contexts therefore MUST construct via the async factory
+        # CronService.create(), which passes _defer_initial_load=True (skipping
+        # the load here) and instead runs _load() in a worker thread via
+        # asyncio.to_thread. Enforced mechanically by
+        # test_cron_locking_regression.py::TestConstructionLoadOffLoop.
+        if not _defer_initial_load:
+            self._load()
+
+    # ── Lifecycle ──
+
+    @classmethod
+    async def create(
+        cls,
+        base_dir: Path | None = None,
+        on_job: Callable[[CronJob], Awaitable[str | None]] | None = None,
+    ) -> "CronService":
+        """Async factory for event-loop contexts (the gateway).
+
+        Equivalent to ``CronService(...)`` but SAFE to call from a running
+        event loop: the plain constructor performs its initial ``_load()`` —
+        a whole-file ``read_bytes()`` + blake2b hash of ``crons.json`` —
+        synchronously, which would block the sole gateway loop (chat, WS,
+        timers, heartbeat) during async startup. This factory constructs with
+        ``_defer_initial_load=True`` (so the constructor does no store I/O) and
+        then runs that initial ``_load()`` in a worker thread via
+        ``asyncio.to_thread``. ``_running`` is still ``False`` at this point, so
+        ``_load()`` arms no timer — running it off-loop is safe.
+
+        Genuinely-sync, loop-less processes (CLI, MCP server, apps SDK, tests)
+        must keep using the plain constructor, which loads inline.
+        """
+        self = cls(base_dir=base_dir, on_job=on_job, _defer_initial_load=True)
+        # Bind to the gateway loop so off-loop mutation paths (async mutators'
+        # worker cores, app-hook/SDK calls offloaded via asyncio.to_thread) can
+        # re-arm the timer thread-safely — see _arm_timer / __init__ _loop.
+        self._loop = asyncio.get_running_loop()
+        await asyncio.to_thread(self._load)
+        # Resolve history usability off the loop too (deferred in __init__).
+        await asyncio.to_thread(self._history.prepare)
+        return self
+
+    async def start(self) -> None:
+        """Load jobs and start the timer loop.
+
+        ``_load()`` is offloaded to a worker thread (``asyncio.to_thread``):
+        ``start()`` is always awaited on the gateway event loop, and the load
+        does a whole-file read+hash of ``crons.json`` — synchronous filesystem
+        I/O that must never run on the loop. ``_running`` is still ``False``
+        here, so the load arms no timer; ``_arm_timer()`` is called explicitly
+        on the loop afterwards.
+        """
+        # Bind to the running loop (idempotent if create() already did) so any
+        # off-loop re-arm during this service's lifetime self-heals to it.
+        self._loop = asyncio.get_running_loop()
+        await asyncio.to_thread(self._load)
+        self._running = True
+        await self._history.rotate_all()
+        # BEFORE the timer is armed: a job the previous gateway died running
+        # has no last_run_ts for that run, so it is due again the moment the
+        # timer fires. The breaker must have paused it by then or the boot
+        # re-runs the crash.
+        await asyncio.to_thread(self._apply_loop_stall_breaker)
+        self._arm_timer()
+        logger.info("Cron service started with %d jobs", len(self._jobs))
+
+    async def stop(self) -> None:
+        """Stop the timer loop and cancel running jobs."""
+        self._running = False
+        if self._reaper_task:
+            self._reaper_task.cancel()
+            try:
+                await self._reaper_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reaper_task = None
+        if self._timer_task:
+            self._timer_task.cancel()
+            self._timer_task = None
+        tasks = [claim.task for claim in self._claims.values() if claim.task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._claims.clear()
+
+    # ── Reaper ──
+
+    def start_reaper(self, sessions: SessionManager) -> None:
+        """Start the periodic reaper loop.  Call once after the event loop is running."""
+        self._sessions = sessions
+        if self._reaper_task is None:
+            self._reaper_task = asyncio.create_task(self._reaper_loop())
+
+    async def _reaper_loop(self) -> None:
+        """Periodically force-kill cron jobs that exceed the timeout.
+
+        Defense-in-depth: catches cases where ``asyncio.wait_for`` in
+        ``_execute_with_timeout`` fails to fire (event-loop saturation,
+        orphaned tasks).
+        """
+        while True:
+            await asyncio.sleep(_REAPER_INTERVAL)
+            now = time.time()
+            now_mono = time.monotonic()
+            # Snapshot the job list CACHE-ONLY — no store lock, no _sync, no
+            # disk I/O on the loop (same rationale as list_jobs/get_job). The
+            # batch-remove worker (remove_jobs → asyncio.to_thread) builds a
+            # NEW list and swaps self._jobs by an atomic reference assignment,
+            # so this comprehension iterates one coherent list object (either
+            # the pre- or post-swap list, never a half-rebuilt one) and can
+            # never tear. The reaper only needs the in-memory view to map
+            # running task ids → timeouts; cross-process freshness is
+            # irrelevant to force-killing a locally-running task.
+            jobs_by_id = {j.id: j for j in self._jobs}
+            for job_id, claim in list(self._claims.items()):
+                # The list is a snapshot for iteration order only; the job's
+                # run is whatever the store holds NOW. An earlier job's reap in
+                # this same sweep awaited (its session reset, the locked
+                # persist, the history append), and in that window this job's
+                # run can end and a replacement claim the job: the snapshot's
+                # claim then holds a run that is gone, with stamps that put the
+                # job far past its deadline. Measure and reap only the stored
+                # claim -- a replacement is a different object, measured on its
+                # own stamps by the next sweep. (The six-dict shape this
+                # replaces read the monotonic and jitter stamps live per
+                # iteration, so a replacement's fresh stamp made the sweep
+                # continue; the claim gives the same guarantee by identity.)
+                if self._claims.get(job_id) is not claim:
+                    continue
+                # A claim cancel() or an earlier reap has taken is theirs to
+                # finish: they popped the run's stamps, in the shape this
+                # replaces, exactly so a sweep landing inside their kill awaits
+                # would not reap the run a second time.
+                if claim.taken:
+                    continue
+                # A task that is done() while its claim is still here never
+                # reached _run_job_isolated's finally (a run that ends normally
+                # releases the claim there, before its task finishes), so the
+                # job still reads as running to the due-scan, _next_wake_secs
+                # and run_job. Release it on THIS sweep, not once the run's
+                # deadline passes: that is at least _JOB_TIMEOUT_SECS and up to
+                # a day away, and every scheduled fire until then is skipped.
+                # A live task or no tracked task falls through to the timeout
+                # backstop below unchanged.
+                if self.discard_finished_run(job_id):
+                    continue
+                elapsed = now - claim.claimed_at
+                # DECIDE and REPORT on the monotonic clock. A claim with no
+                # monotonic stamp (a manual run still parked in its store
+                # refresh, or a test that seeds only the epoch stamp) falls back
+                # to the wall-clock elapsed, so the backstop never stops reaping
+                # — it just cannot tell suspend time apart for that run.
+                #
+                # The reported duration is monotonic too, not wall-clock: a
+                # backward wall-clock step during a >=30-min run would otherwise
+                # render a negative "ran -Ns"/"Reaped after -Ns" in the log and
+                # the persisted history. Monotonic elapsed is equally legible
+                # ("seconds since start") and cannot go negative.
+                started_mono = claim.started_monotonic
+                elapsed_mono = now_mono - started_mono if started_mono is not None else elapsed
+                job = jobs_by_id.get(job_id)
+                deadline = (
+                    max(min(job.timeout_secs, 86400), _JOB_TIMEOUT_SECS)
+                    if job
+                    else _JOB_TIMEOUT_SECS
+                ) + (_pool_queue_allowance(job) + _gate_budget_allowance(job) + _vet_allowance(job))
+                jitter_allowance = claim.jitter or 0.0
+                if elapsed_mono <= deadline + jitter_allowance:
+                    continue
+                logger.warning(
+                    "Reaper: cron job %s exceeded %ds (ran %.0fs), force-killing",
+                    job_id,
+                    deadline,
+                    elapsed_mono,
+                )
+                try:
+                    # Named for the claim measured above: the reap takes that
+                    # claim or nothing (``_take_claim``'s ``expected``), so a
+                    # claim that changed under this sweep is never killed on
+                    # the snapshot's stamps.
+                    await self._force_reap(job_id, elapsed_mono, deadline, claim=claim)
+                except Exception:
+                    logger.exception("Reaper: failed to reap cron job %s", job_id)
+
+    async def _force_reap(
+        self,
+        job_id: str,
+        elapsed: float,
+        deadline: int = _JOB_TIMEOUT_SECS,
+        *,
+        claim: _RunClaim,
+    ) -> None:
+        """Kill the run ``claim`` stands for: its session process and its task.
+
+        ``claim`` is the run the caller measured over its deadline -- the
+        sweep, the only caller, passes the claim it iterated. The reap takes
+        that claim or nothing (identity): a stored claim that is a different
+        object is a replacement run the caller never measured, a claim that is
+        gone was a run that ended on its own, and a claim already taken is a
+        teardown someone else owns -- none is killed, and the job's session,
+        which is the replacement's now, is left alone. There is no reap by
+        job id alone: a kill needs a run to answer for, and the run is the
+        claim.
+        """
+        taken = self._take_claim(job_id, expected=claim)
+        if taken is None:
+            # Either the stored claim is taken -- cancel() or an earlier reap
+            # owns this run's teardown and is inside its kill awaits; its
+            # claim is not this reap's to pop below, and its terminal row is
+            # the only one owed (a second "Reaped" row here would draw a
+            # generation that could outrank a replacement run's) -- or the
+            # measured run is gone, or a replacement this reap was not named
+            # for stands in its place. The sweep skips all three itself; this
+            # covers a store that changed under the sweep's awaits.
+            return
+        # Mark the run this reap took: its finalizer consumes only its own
+        # marker.
+        self._reaped_jobs.mark(job_id, taken)
+        reap_started_at = taken.claimed_at
+        reap_trigger = taken.trigger
+        # The kill, then the finish -- in a ``finally``, so the claim this reap
+        # took is finished however the kill ends. ``taken`` is a lock with no
+        # other owner-death recovery: from the take on, by design, the run's
+        # own fences fail, the sweep skips the claim and discard_finished_run
+        # refuses it. A kill that raised would otherwise leave the claim taken
+        # for the life of the gateway -- the sweep swallows this coroutine's
+        # exception and skips the claim on every later sweep, and every manual
+        # run of the job 409s. What can raise here is a cancellation (the
+        # reaper task cancelled at shutdown); the ``Exception`` arm of the
+        # handler is a net for a reset failure the inner handlers let through,
+        # and today none does: they catch every ``Exception`` the reset raises,
+        # and ``_sigkill_session`` raises nothing. What the SIGKILL could not
+        # do it REPORTS instead -- the guard's refusal of the pid, an error
+        # the kill raised, an error ahead of the signal -- as its result, so
+        # a process group it left alive is never recorded as reaped: the
+        # failure, raised or reported, is carried into the terminal record
+        # below (the run's finally writes none for a taken run) and audited as
+        # ``failed``; a raised one is re-raised after the record, so the sweep
+        # still logs it.
+        #
+        # EVERY key the run registered is ended (``_run_session_keys``): a
+        # sequential job holds one key per agent, and an earlier agent's session
+        # is kept alive for its pending sub-agents while a later agent runs --
+        # a reap that ends only the newest key records ``reaped`` while that
+        # earlier session and its sub-agents survive. Each key is FENCED from
+        # before its first pass until the record and the audit are written
+        # (``SessionManager.ending_key``, see ``_end_run_processes``): a claim
+        # or cold start under it meets a key that is either being ended --
+        # held at the door -- or recorded, never one that is neither. The
+        # fences lift however the block ends; a kill failure that escaped is
+        # re-raised after the lift.
+        with ExitStack() as fences:
+            keys = self._fence_run_keys(job_id, taken, fences)
+            # The run's newest key names the record and the audit; the audit's
+            # metadata lists what was actually ENDED -- filled only by the kill
+            # passes, so a service without a session manager and a kill that
+            # raised report none.
+            session_key = keys[0]
+            ended: list[str] = []
+            kill_failure: BaseException | None = None
+            sigkill_failure: str | None = None
+            try:
+                # Kill the session processes first: reset each key and kill what
+                # the reset could not stop -- for every session that lands under
+                # it, bounded (see ``_end_run_processes``).
+                if self._sessions:
+                    sigkill_failure, ended = await self._end_run_sessions(
+                        job_id, taken, keys, fences, who="Reaper"
+                    )
+            except (Exception, asyncio.CancelledError) as exc:
+                # CancelledError too: the reaper task is cancelled at shutdown, and
+                # this reap still owes the finish and the record before it lets
+                # the cancellation through. GeneratorExit and the interpreter-exit
+                # signals are not caught (awaiting after them is an error); the
+                # finally still finishes the claim.
+                kill_failure = exc
+            finally:
+                # Cancel the asyncio task and release the claim directly. Don't rely on
+                # _run_job_isolated's finally — the reaper exists for cases where the
+                # normal path is stuck (idempotent with finally).
+                self._finish_taken_claim(job_id)
+            # One name for the record and the audit: a failure that escaped the
+            # kill (re-raised below) or one the SIGKILL reported.
+            kill_failed = (
+                failure_name(kill_failure) if kill_failure is not None else sigkill_failure
+            )
+
+            # Update job state and persist. The persist goes through the locked
+            # worker-thread merge helper (offloaded via asyncio.to_thread) — NOT a
+            # bare on-loop self._save() — so it re-syncs under the store lock and
+            # cannot clobber a concurrent add/update worker's just-written job
+            # list, and its bounded lock spin never parks the event loop this
+            # coroutine runs on. See _merge_terminal_state_locked.
+            job = next((j for j in self._jobs if j.id == job_id), None)
+            if job:
+                last_error = f"Reaped after {int(elapsed)}s (exceeded {deadline}s deadline)"
+                if kill_failed is not None:
+                    # Bounded at retention (``MAX_ERROR_DETAIL_LEN``): the kill's
+                    # reason is not this code's to size -- a Windows tree drain that
+                    # failed carries one line per process, several handles' failures
+                    # are joined -- and ``last_error`` is persisted and shown as is.
+                    last_error = with_kill_failure(last_error, kill_failed)
+                last_run_ts = time.time()
+                # Drawn here, in the same loop step as the release above (no await
+                # between them), so a replacement claim always draws a higher one
+                # and this record can never land over that run's.
+                generation = self._next_run_generation(job)
+                # Reflect into the in-memory snapshot for the history record below
+                # and any immediate reader; the authoritative persist is the locked
+                # merge, which re-derives the disk copy after _sync().
+                job.last_status = "error"
+                job.last_error = last_error
+                job.last_run_ts = last_run_ts
+                try:
+                    await asyncio.to_thread(
+                        self._merge_terminal_state_locked,
+                        job_id,
+                        last_status="error",
+                        last_error=last_error,
+                        last_run_ts=last_run_ts,
+                        run_generation=generation,
+                    )
+                except Exception:
+                    logger.exception("Reaper: failed to persist state for cron %s", job_id)
+                # Record timeout in history
+                try:
+                    record = CronRunRecord(
+                        job_id=job_id,
+                        trigger=reap_trigger,
+                        started_at=reap_started_at,
+                        finished_at=time.time(),
+                        duration_ms=int(elapsed * 1000),
+                        status="timeout",
+                        summary=job.last_error or "",
+                        error=job.last_error or "",
+                    )
+                    await self._history.append(record)
+                    if self._push_refresh:
+                        self._push_refresh("cron_history")
+                except Exception:
+                    logger.exception("Reaper: failed to record history for cron %s", job_id)
+
+            # SEL audit.
+            try:
+                from kiro_crew.sel import sel
+
+                sel().log_tool_invocation(
+                    session_key=session_key,
+                    source="cron",
+                    tool_name="reaper_force_kill",
+                    # Never ``reaped`` for a process group the kill left alive:
+                    # the reap ended the run's record, not its processes.
+                    outcome="reaped" if kill_failed is None else "failed",
+                    metadata={
+                        "job_id": job_id,
+                        "session_key": session_key,
+                        # The keys this reap actually ended, newest first --
+                        # only those every session of which was answered; a key
+                        # whose kill was refused or failed is not listed (it
+                        # stays registered, named in last_error), and none is
+                        # when the passes never ran or raised.
+                        "session_keys": ended,
+                        "elapsed": int(elapsed),
+                    },
+                )
+            except Exception:
+                logger.exception("Reaper: SEL audit failed for cron %s", job_id)
+        if kill_failure is not None:
+            raise kill_failure
+
+    def _session_process_handles(self, session_key: str) -> list[ProcessHandle]:
+        """Every process the key names at snapshot time, the torn-down one first.
+
+        Read BEFORE the reset by ``_force_reap`` and ``cancel`` (see
+        :class:`kiro_crew.process_identity.ProcessHandle` for why the reset itself loses it).
+
+        A miss in the live map is not yet "no process". The run's OWN teardown
+        reset -- the run body's ``finally`` in the gateway, or the deferred reset
+        a late sub-agent completion triggers -- pops the session out of the map
+        before the awaits that can hang, so a reap or cancel that arrives after
+        that pop finds nothing under the key while that reset still holds the
+        process. That is the ordinary shape of a run that hangs in its teardown,
+        not a timing corner: the reaper's cancel of the run task is what ends the
+        hung reset, and nothing else re-examines the process once the audit is
+        written. The session manager keeps every popped session readable through
+        ``tearing_down`` for exactly the life of its teardown (one entry per
+        teardown in flight, released when it ends however it ends -- that cancel
+        included), so a successor whose own reset popped it and hung beside the
+        run's teardown is a candidate too.
+
+        Two sessions can stand under one key at once: that torn-down one, and a
+        live successor a cold start registered under the key during the
+        teardown's awaits (a sub-agent completion delivering into the key). The
+        run's process is the torn-down one, but the reap ends the KEY: it resets
+        whatever is live under it too, so both are candidates, each verified and
+        killed on its own handle -- preferring either alone would leave the
+        other's process unrecorded (a torn-down run process abandoned mid-hung
+        shutdown by the reap's cancel, or a live successor a completed reset
+        failed to stop). Distinct process incarnations only: the same ``(pid,
+        start id)`` under both is one handle, the same pid under two start ids
+        is two (:meth:`_handles_of`). Empty when neither exists: nothing to kill.
+        """
+        if not self._sessions:
+            return []
+        return self._handles_of(self._sessions_under(session_key))
+
+    def _sessions_under(self, session_key: str) -> list[tuple[Any, ProcessHandle]]:
+        """The sessions the key names right now, each with its kill handle: every torn-down one first, in pop order, then the live one.
+
+        The torn-down ones are the sessions a reset popped under the key and
+        still holds (``SessionManager.tearing_down``): the run's OWN teardown's,
+        and any successor's whose own reset popped it and hung while the first
+        teardown still ran -- each is a process the reap must answer, and
+        retaining the first alone hid the successor's behind a record that said
+        ``reaped``. Their handle is the one the retention captured AT THE POP
+        (:class:`kiro_crew.session_lifecycle.TornDown`), never a re-read of the
+        session: the teardown that holds them clears the provider's pid in its
+        own awaits (the ACP client's reset, after a kill it could not confirm,
+        then hangs on the transport), so a handle read now says the session
+        names no process while the process stands, and the reap that trusted it
+        recorded ``reaped`` over it. The live one is whatever the map holds
+        under the key -- a successor a cold start registered during those
+        teardowns -- with its handle read now, before the reset pops it. Read
+        twice by :meth:`_end_run_processes`: once for the snapshot the kill
+        works from, and once after the pass to tell a session the pass has not
+        handled (a registration that landed after the reset's pop) from the ones
+        it has -- by identity, since a session is handled once its process was
+        answered, whatever key it sits under now. An entry of another shape (a
+        double's default return) is not a session.
+        """
+        if not self._sessions:
+            return []
+        tearing_down = getattr(self._sessions, "tearing_down", None)
+        torn = tearing_down(session_key) if callable(tearing_down) else None
+        pairs: list[tuple[Any, ProcessHandle]] = []
+        if isinstance(torn, list):
+            for entry in torn:
+                session = getattr(entry, "session", None)
+                handle = getattr(entry, "handle", None)
+                if session is not None and isinstance(handle, ProcessHandle):
+                    pairs.append((session, handle))
+        live = self._sessions._sessions.get(session_key)
+        if live:
+            pairs.append((live, process_handle_of(live)))
+        return pairs
+
+    @staticmethod
+    def _handles_of(pairs: list[tuple[Any, ProcessHandle]]) -> list[ProcessHandle]:
+        """One kill handle per distinct process incarnation among ``pairs``, in order.
+
+        A handle with no pid names no process (the session had never spawned,
+        or its client was already reset, when the handle was read).
+        Distinctness is the handle's own identity, ``(pid, start id)``: two
+        sessions naming the same incarnation are one handle -- their child records
+        and group merged (``process_identity.add_handle``), since the two readings
+        were taken at different moments -- while the same pid under two start ids
+        is two processes -- a successor the kernel handed a dead predecessor's
+        number -- and both are kept. A pid alone is never the key.
+        """
+        handles: list[ProcessHandle] = []
+        for _session, candidate in pairs:
+            if candidate.pid is None:
+                continue
+            add_handle(handles, candidate)
+        return handles
+
+    async def _end_run_processes(self, session_key: str, *, job_id: str, who: str) -> str | None:
+        """Reset ``session_key`` and kill what the reset could not stop -- for every session that lands under it, bounded; the caller holds the key's ending fence.
+
+        Runs under the key's ENDING FENCE (``SessionManager.ending_key``), which
+        the caller -- ``_force_reap``, ``cancel()`` -- raises synchronously
+        before awaiting this (so the first snapshot below is read with the fence
+        already up) and holds until the run's terminal record and audit are
+        written. While it is up, a claim or a new allocation under the key is
+        HELD at the door of ``get_or_create`` -- it lands once the fence lifts,
+        under a key whose run is recorded, so a sub-agent completion that races
+        the reap is delivered after the record, never dropped and never into a
+        key that is neither being ended nor recorded -- and an allocation
+        already in flight when it went up -- a late sub-agent completion
+        cold-starting the parent key again, caught inside ``provider.start()``
+        with nothing published yet that any snapshot could see -- is
+        invalidated: refused at registration when its start returns, fence up
+        or lifted, with the provider it started hard-killed there by the
+        closing manager's own path, and its call re-allocated after the lift.
+        Without the fence that start published after the passes, with its
+        process and the completion's injection running on behind a record that
+        said ``reaped``. A start still past its spawn door when the passes end
+        (:meth:`_spawn_in_flight`) is therefore reported, not waited for (its
+        start may take seconds, and the fence has already settled what happens
+        to it): a named kill failure, so the audit says ``failed`` -- while a
+        claim merely waiting behind the key, or a cold start still ahead of that
+        door, has started nothing and is not named. Nothing here lifts the
+        fence: a registration after the passes is a new life under the key, not
+        the run's process, and it lands only once the record it follows is
+        written.
+
+        One pass (:meth:`_reset_and_kill_once`) answers the sessions it saw: the
+        snapshot (:meth:`_sessions_under`) and the session the reset popped. It
+        is the ONLY pass, because nothing can land under the key after the pop
+        while the fence is up: every door into the live map either meets the
+        fence -- ``get_or_create``, at its front door, again after its busy-turn
+        wait and again at registration, for a cold start and a warm-pool claim
+        alike -- or never registers under a cron key at all
+        (``open_task_session`` publishes the task runner's own ``taskrunner:``
+        keys and refuses a key being ended at its door; the background session
+        publishes its own key), and every cron key is ``cron:``-prefixed. A
+        second reset-and-kill pass for a registrant the fence let through had
+        no trigger on that path and is gone. The key is still read once more
+        after the pass: a session under it that the pass did not handle (by
+        identity -- the sessions the snapshot and the pop capture named, kept
+        referenced so the comparison holds) is a registration the fence did not
+        stop -- a manager without the fence, or a door this reasoning missed --
+        and is a NAMED kill failure: reported, never reset, never signalled, so
+        the audit says ``failed``, not ``reaped``. Returns every failure,
+        joined, or None once every session under the key was answered and no
+        start is past its spawn door under it.
+        """
+        pairs = self._sessions_under(session_key)
+        failure, popped = await self._reset_and_kill_once(
+            session_key, pairs, job_id=job_id, who=who
+        )
+        handled = [session for session, _handle in pairs]
+        handled.extend(session for session in popped if not any(session is s for s in handled))
+        late = [
+            (session, handle)
+            for session, handle in self._sessions_under(session_key)
+            if not any(session is s for s in handled)
+        ]
+        late_failure: str | None = None
+        if late:
+            # Not chased: whatever landed under the key past the fence is
+            # reported, and the run is not recorded as reaped over it.
+            named = ", ".join(
+                f"pid {handle.pid}" if handle.pid is not None else "no process handle yet"
+                for _session, handle in late
+            )
+            logger.error(
+                "%s: a session registered under %s after the reset's pop for cron %s (%s); "
+                "not reset, not signalled",
+                who,
+                session_key,
+                job_id,
+                named,
+            )
+            late_failure = (
+                f"a session registered under the key after the reset's pop ({named}); "
+                "not reset, not signalled"
+            )
+        return join_failures(
+            failure, late_failure, self._spawn_in_flight(session_key, job_id=job_id, who=who)
+        )
+
+    def _fence_run_keys(self, job_id: str, run: _RunClaim, fences: ExitStack) -> list[str]:
+        """Raise the ending fence on every key ``run`` holds, synchronously, and return them newest first.
+
+        Called by ``_force_reap`` and ``cancel()`` on entry to their fenced
+        block, before any await: each fence is up before that key's first
+        snapshot is read (see :meth:`_end_run_processes`), and ``fences`` lifts
+        them all when the block ends -- after the run's terminal record and
+        audit. A run that registered no key (a persistent job before
+        registration, a script or command job, a legacy caller) is ended on the
+        job's stable key ``cron:<job id>``, which then also names its record.
+        """
+        keys = self._run_session_keys(job_id, run) or [f"cron:{job_id}"]
+        for key in keys:
+            fences.enter_context(ending_fence(self._sessions, key))
+        return keys
+
+    async def _end_run_sessions(
+        self,
+        job_id: str,
+        run: _RunClaim,
+        keys: list[str],
+        fences: ExitStack,
+        *,
+        who: str,
+    ) -> tuple[str | None, list[str]]:
+        """End every key of the run -- ``keys`` first, then any the run registers meanwhile, bounded -- and return the joined failure and the keys actually ended.
+
+        ``keys`` are the run's keys the caller fenced on entry
+        (:meth:`_fence_run_keys`); each is reset and its processes killed through
+        :meth:`_end_run_processes`, and a key every session of which was answered
+        is retired from the registry (:meth:`clear_active_session_key`), as the
+        gateway retires a key its own reset completed. The list returned is
+        exactly those keys -- the ones whose ending returned no failure -- and
+        is what the audit's ``session_keys`` says was ended: a key whose kill was
+        refused or failed is NOT in it (it stays registered, and its failure is
+        in the record's ``last_error``), and it is not ended a second time
+        either, because a key any round has attempted is never read back as a
+        late registration. The keys of a round are
+        ended CONCURRENTLY (``asyncio.gather``): each key's ending is bounded on
+        its own (one reset of ``_REAPER_RESET_TIMEOUT`` and verified kills), and
+        the fences stay up until the record is written, so a run with many keys
+        -- one per agent of a sequential job -- ended one after another would
+        hold its fences for the SUM of those bounds, past
+        ``session_allocation.ENDING_FENCE_WAIT_SECS``, and a completion held at
+        the door would be refused for a teardown that was merely long; ended
+        together, the fences are up for one key's bound -- per round
+        ``_REAPER_RESET_TIMEOUT`` plus the kill's own bounds (under 40 s),
+        ``_ENDING_ROUNDS`` rounds at most, so well inside the 180 s a held
+        caller waits. A key whose ending RAISED (a cancellation of the
+        reaper task at shutdown is what can) interrupts no other key's: every
+        ending of the round completes before the first exception is re-raised
+        to the caller, which records it as the run's kill failure and re-raises
+        it after the record, as for one key. The run's
+        task is still alive while its keys are ended -- the caller cancels it
+        only after the passes -- so a sequential run whose hung agent's session
+        is reset can move on and register its NEXT agent's key while an earlier
+        key is still being ended: after the round the run's keys are read again,
+        a key no round has attempted is fenced and ended too, and the chase is
+        bounded by ``_ENDING_ROUNDS`` rounds. A key the run registers after
+        the last round is a named kill failure -- reported, never reset, never
+        signalled -- so the audit says ``failed``, not ``reaped``.
+        """
+        ended: list[str] = []
+        attempted: list[str] = []
+        failures: list[str | None] = []
+        pending = list(keys)
+        for round_no in range(1, _ENDING_ROUNDS + 1):
+            results = await asyncio.gather(
+                *(self._end_run_processes(key, job_id=job_id, who=who) for key in pending),
+                return_exceptions=True,
+            )
+            raised: BaseException | None = None
+            for key, result in zip(pending, results):
+                attempted.append(key)
+                if isinstance(result, BaseException):
+                    if raised is None:
+                        raised = result
+                    else:
+                        logger.error(
+                            "%s: ending %s for cron %s also raised",
+                            who,
+                            key,
+                            job_id,
+                            exc_info=result,
+                        )
+                    continue
+                failures.append(result)
+                if result is None:
+                    # Ended: every session under the key was answered. A key
+                    # whose kill was refused or failed is neither listed as
+                    # ended nor retired -- the record says ``failed`` over it.
+                    ended.append(key)
+                    self.clear_active_session_key(job_id, key)
+            if raised is not None:
+                # Every ending of the round is over (``return_exceptions``): no
+                # sibling is left running under a fence about to lift.
+                raise raised
+            pending = [key for key in self._run_session_keys(job_id, run) if key not in attempted]
+            if not pending:
+                break
+            if round_no == _ENDING_ROUNDS:
+                # Not chased: whatever the run keeps registering is reported,
+                # and the run is not recorded as reaped over it.
+                named = ", ".join(pending)
+                logger.error(
+                    "%s: cron %s registered %s after %d rounds of resets; not reset, not signalled",
+                    who,
+                    job_id,
+                    named,
+                    _ENDING_ROUNDS,
+                )
+                failures.append(
+                    f"the run registered {named} after {_ENDING_ROUNDS} rounds of resets; "
+                    "not reset, not signalled"
+                )
+                break
+            logger.warning(
+                "%s: cron %s registered %s while its keys were being ended; "
+                "ending it too (round %d of %d)",
+                who,
+                job_id,
+                ", ".join(pending),
+                round_no + 1,
+                _ENDING_ROUNDS,
+            )
+            for key in pending:
+                fences.enter_context(ending_fence(self._sessions, key))
+        return join_failures(*failures), ended
+
+    def _spawn_in_flight(self, session_key: str, *, job_id: str, who: str) -> str | None:
+        """The named failure for a cold start past its spawn door under the fenced key, or None -- logged under the job.
+
+        The read itself, and what it names, is
+        :func:`kiro_crew.process_identity.spawn_in_flight` (the sub-agent
+        manager's reap reads it the same way); this adds the cron job to the log.
+        """
+        failure = spawn_in_flight(self._sessions, session_key)
+        if failure is not None:
+            logger.error("%s: %s -- under %s for cron %s", who, failure, session_key, job_id)
+        return failure
+
+    async def _reset_and_kill_once(
+        self, session_key: str, pairs: list[tuple[Any, ProcessHandle]], *, job_id: str, who: str
+    ) -> tuple[str | None, list[Any]]:
+        """One reset of the key, then the kill of what it could not stop; the failure and the popped sessions.
+
+        ``pairs`` is the snapshot -- the session objects the key named before
+        the reset, each with its kill handle: the one the retention captured at
+        its pop for a torn-down session, the one read now for the live one --
+        whose kill handles are taken FIRST: the reset pops the
+        session from the map before it can hang, so a kill that looked the key
+        up afterwards would find nothing and leave the process it names running
+        (see :class:`kiro_crew.process_identity.ProcessHandle`). The snapshot is
+        keyed by name, so the session the reset ACTUALLY pops is captured at the
+        pop itself (:func:`kiro_crew.process_identity.teardown_capture`): a cold
+        start can register a new session under the key between the snapshot and
+        the pop, and that one is
+        what a hung reset then holds. A reset that hung or failed gets every
+        handle killed; a completed one -- True, or False for a key a concurrent
+        reset had already popped (the common False is the run's OWN teardown
+        reset, popped before the caller looked and hung since; the caller's
+        ``_finish_taken_claim`` cancel is what ends it) -- is not proof the
+        process is gone (its own shutdown can fail without raising out of it; a
+        False one stopped nothing), so every handle is asked (pid + recorded
+        start id, then the tree it led: ``process_survived``) and a process still
+        standing gets the fallback, whose report is what the record says. A
+        popped session with no handle is a failure, not nothing.
+        """
+        if not self._sessions:
+            return None, []
+        handles = self._handles_of(pairs)
+        reset_kwargs, popped = teardown_capture(self._sessions, session_key)
+        seen = [session for session, _handle in pairs]
+        failure: str | None = None
+        try:
+            await asyncio.wait_for(
+                # Same class for the reaper and cancel: the run is over, so its
+                # conversation is over and its sub-agent runs end with it -- not
+                # a recycle.
+                self._sessions.reset(session_key, ends_conversation=True, **reset_kwargs),
+                timeout=_REAPER_RESET_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("%s: reset hung for cron %s, attempting SIGKILL", who, job_id)
+            targets, missing = kill_set(handles, popped, seen=seen)
+            failure = join_failures(
+                await self._sigkill_sessions(session_key, targets, who=who, popped=popped),
+                missing,
+            )
+        except Exception:
+            logger.exception("%s: reset failed for cron %s, attempting SIGKILL", who, job_id)
+            targets, missing = kill_set(handles, popped, seen=seen)
+            failure = join_failures(
+                await self._sigkill_sessions(session_key, targets, who=who, popped=popped),
+                missing,
+            )
+        else:
+            targets, missing = kill_set(handles, popped, seen=seen)
+            # Off the loop: the scan walks every recorded child.
+            survivors = [handle for handle in targets if await process_survived_async(handle)]
+            if survivors:
+                logger.warning(
+                    "%s: process survived the reset for cron %s, attempting SIGKILL", who, job_id
+                )
+                failure = await self._sigkill_sessions(
+                    session_key, survivors, who=who, popped=popped
+                )
+            failure = join_failures(failure, missing)
+        return failure, [session for session, _handle in popped]
+
+    async def _sigkill_sessions(
+        self,
+        session_key: str,
+        handles: list[ProcessHandle],
+        *,
+        who: str = "Reaper",
+        popped: list[tuple[Any, ProcessHandle]] | None = None,
+    ) -> str | None:
+        """Kill every handle's process (:func:`kiro_crew.process_identity.kill_each`); the failures joined, or None.
+
+        ``popped`` is the caller's captured pop, forwarded so each kill can release
+        the lease of the session its own reset destroyed even when that reset was
+        cancelled before ``provider.shutdown()`` -- the case where the manager's
+        torn-down table has already been unwound and holds nothing.
+        """
+        return await kill_each(
+            handles,
+            lambda handle: self._sigkill_session(session_key, handle, who=who, popped=popped),
+        )
+
+    async def _sigkill_session(
+        self,
+        session_key: str,
+        handle: ProcessHandle | None,
+        *,
+        who: str = "Reaper",
+        popped: list[tuple[Any, ProcessHandle]] | None = None,
+    ) -> str | None:
+        """Best-effort SIGKILL when the graceful reset hangs, fails, or left the process standing.
+
+        ``handle`` is one process handle the caller took before the reset
+        (:meth:`_session_process_handles`), and it is the ONLY thing that names
+        the process: the map is never consulted here (a session under the key
+        now is a successor registered during the reset's awaits, verified and
+        killed on its own handle by the caller), and ``session_key`` names the
+        run in the log only, prefixed with ``who`` -- the caller's name. ``None``
+        means no session was live, or being torn down, under the key before the
+        reset: nothing to kill, not a failure. The kill itself -- the two
+        start-id reads around the child walk, the group signal (by the group id
+        retained while the leader was alive once the leader is gone), the
+        pid-scoped fallback, the escaped-children sweep -- is
+        :func:`kiro_crew.process_identity.kill_verified_process`, whose only
+        caller today is this method; the sub-agent manager's twin of this path
+        still runs its own copy of the old kill, and its move onto the same
+        function is tracked follow-up work, not a change here. It never
+        raises (the caller took the run's claim and must still finish it) and
+        never swallows: it returns what stopped the kill, and the caller records
+        it so the audit does not say the run was reaped over a process tree left
+        alive.
+        """
+        if not self._sessions:
+            return None  # no session manager: nothing to kill
+        if handle is None:
+            # Nothing to kill, not a failure: no session was live, or being
+            # torn down, under the key before the reset, so the run has no
+            # process group to answer for. The map is deliberately not read:
+            # whatever it holds under the key now was registered after the
+            # snapshot -- a successor, not this run's process.
+            logger.warning("%s: no session found for %s", who, session_key)
+            return None
+        # Ownership, asked once before the escalation below starts. The gate answers
+        # from two tables and refuses on either: a LEASE, held by the session that
+        # owns the runtime, and a TENANCY, held by a party mid-flight on the process
+        # without owning it. At cap=1 a session-sharing sub-agent takes no lease --
+        # an acquisition cannot join an occupied runtime -- so the tenancy table is
+        # what speaks for it, and the gate reads that too. A refusal for a tenant is
+        # not this caller's mistake: the answer is to let the tenant finish, and its
+        # own last release hands the orphan back for teardown.
+        #
+        # The run's OWN lease is released first, and that ordering is the whole
+        # correctness of the gate here. A reset releases the lease inside
+        # ``provider.shutdown()``, so every await before it -- the ended-record
+        # write, the queue unlink, the child probes -- is a point where the
+        # teardown can hang or raise and land on this path with the lease still
+        # held. Asking the gate then would let the session being destroyed refuse
+        # its own last-resort kill: the wedged process would survive, and its pid
+        # would go on being refused by every sweep for the gateway's life while
+        # the run recorded a false "leased by another tenant". The rule this
+        # follows is the one the allocation path's own failure handler states --
+        # release before the kill, or the cleanup refuses its own teardown.
+        #
+        # What survives the release is a lease held by a DIFFERENT tenant, which
+        # is the only thing that may withhold the signal. A refusal is then
+        # reported the same way a refused pid is: as the thing that stopped the
+        # kill, so the run is never recorded as reaped over a process tree that is
+        # still standing.
+        # The captured pop goes with it: a reset this run abandoned on its timeout
+        # has already unwound the scope that made the subject readable through
+        # ``tearing_down``, and the pop the caller holds is then the only thing that
+        # still names the session whose lease must go before the gate is asked.
+        await release_teardown_lease(self._sessions, session_key, handle, who=who, popped=popped)
+        handle_pid = getattr(handle, "pid", None)
+        if isinstance(handle_pid, int) and not authorize_runtime_kill(
+            handle_pid,
+            reason=f"cron run teardown for {session_key}",
+            caller="cron._sigkill_session",
+        ):
+            logger.warning(
+                "%s: %s still leased by another tenant; not signalling it", who, session_key
+            )
+            return "runtime still leased by another tenant"
+        # The client's child-tree probe, record capture and escaped-children sweep,
+        # resolved through the session module at call time (circular import:
+        # session → cron; and a test's patch of the client module is what the
+        # sweep must run). Cron itself never reaches the ACP layer.
+        from kiro_crew.session import child_process_helpers
+
+        # The gate's answer above is separated from the first signal by the verified
+        # kill's own start-id read, group resolution and descendant walk. The barrier
+        # makes it current and shuts that window; a pid it does not grant has gained a
+        # tenant, and the refusal is reported the same way a refused pid is.
+        with teardown_barriers([handle_pid], who=who) as barriered:
+            if isinstance(handle_pid, int) and not barriered:
+                logger.warning(
+                    "%s: %s gained a tenant after the gate allowed it; not signalling it",
+                    who,
+                    session_key,
+                )
+                return "a tenant claimed the runtime after the gate allowed it"
+            return await kill_verified_process(
+                handle, who=who, key=session_key, child_helpers=child_process_helpers()
+            )
+
+    # ── User-initiated cancellation ──
+
+    async def cancel(self, job_id: str) -> bool:
+        """Cancel a running cron execution (user-initiated).
+
+        Kills the sandboxed subprocess (script/command crons) or the kiro-cli
+        session (agent crons), cancels the asyncio task, records a
+        ``cancelled`` history entry, and leaves ``consecutive_failures``
+        untouched. Returns True when a running execution was found. A kill
+        that raises still cancels the task, releases the run's claim and
+        records the entry (its error names the failure), then propagates.
+        """
+        # A finished task is not a running execution, whatever the claim says.
+        # Trusting the claim here would kill nothing, answer True, record a
+        # "Cancelled by user after Ns" row for a run that ended long ago, and
+        # add the job to _cancelled_jobs for a finally that never runs (the
+        # task is done) -- so the job's NEXT real run would be treated as
+        # cancelled and drop its result. Release the leftovers and answer
+        # "not running" instead; a live task is untouched and cancels below.
+        self.discard_finished_run(job_id)
+        if job_id not in self._claims:
+            return False
+        claim = self._take_claim(job_id)
+        if claim is None:
+            # The stored claim is already taken: another cancel() (a
+            # double-clicked Cancel) or the reaper is inside its kill awaits
+            # and owns this run's teardown. Carrying on would pop ITS claim at
+            # step 3, ending the job's occupancy before that kill finished,
+            # and write a second terminal row whose generation could outrank
+            # a replacement run's. Nothing here is this caller's to cancel:
+            # answer "not running", as the route does for an idle job.
+            return False
+        logger.info("Cancel: user-initiated cancellation of cron job %s", job_id)
+        # Mark the run this cancel took (see _RunMarkers): a marker keyed by
+        # job id alone would be consumed by whichever finalizer of this job
+        # reads it first.
+        self._cancelled_jobs.mark(job_id, claim)
+        started_at = claim.claimed_at
+        trigger = claim.trigger
+        elapsed = time.time() - started_at
+
+        job = next((j for j in self._jobs if j.id == job_id), None)
+        is_agent_job = job is None or not (job.script or job.command)
+
+        # Steps 1-2 are the kill awaits; step 3 finishes the claim in a
+        # ``finally``, so it runs however they end. ``taken`` is a lock with no
+        # other owner-death recovery: from the take on, by design, the run's
+        # own fences fail, the reaper sweep skips the claim and
+        # discard_finished_run refuses it. A kill that raised would otherwise
+        # leave the claim taken until restart: every manual run of the job 409s
+        # and every scheduled fire is skipped. What can raise here: step 1's
+        # executor hop (a pool shut down under it, a thread refused at
+        # interpreter exit -- RuntimeError either way) and a cancellation of
+        # this handler when the client disconnects. Step 2 raises nothing but
+        # a cancellation: its inner handlers catch every ``Exception`` the
+        # reset raises, and ``_sigkill_session`` raises nothing -- it REPORTS
+        # a refused pid or a failed kill as its result instead, so a process
+        # group it left alive is never recorded as cancelled. The failure,
+        # raised or reported, is carried into the terminal record (the run's
+        # finally writes none for a taken run) and audited as ``failed``; a
+        # raised one is re-raised after the record, so the caller still learns
+        # the kill failed.
+        #
+        # EVERY key the run registered is ended (``_run_session_keys``; a
+        # sequential job holds one per agent, an earlier agent's kept alive for
+        # its pending sub-agents), each FENCED from before step 1 until step 4's
+        # record and the audit are written (``SessionManager.ending_key``, see
+        # ``_end_run_processes``): a claim or cold start under it meets a key
+        # that is either being ended -- held at the door -- or recorded, never
+        # one that is neither. A script or command job's key names no session,
+        # so the fence gates nothing for it. The fences lift however the block
+        # ends; a kill failure that escaped is re-raised after the lift.
+        killed_proc = False
+        with ExitStack() as fences:
+            keys = self._fence_run_keys(job_id, claim, fences)
+            # The run's newest key names the record and the audit; the audit's
+            # metadata lists what was actually ENDED -- filled only by step 2, so
+            # a script or command job (whose key names no session and whose
+            # step 2 is skipped) and a kill that raised report none.
+            session_key = keys[0]
+            ended: list[str] = []
+            kill_failure: BaseException | None = None
+            sigkill_failure: str | None = None
+            try:
+                # 1. Script/command crons: SIGTERM the sandboxed subprocess group.
+                # Offloaded: kill_running_process performs blocking kernel calls.
+                killed_proc = await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), cron_script.kill_running_process, job_id
+                )
+
+                # 2. Agent crons: kill the kiro-cli sessions (mirrors _force_reap):
+                # reset each of the run's keys and kill what the reset could not
+                # stop, for every session that lands under it, bounded
+                # (``_end_run_sessions``).
+                if self._sessions and is_agent_job and not killed_proc:
+                    sigkill_failure, ended = await self._end_run_sessions(
+                        job_id, claim, keys, fences, who="Cancel"
+                    )
+            except (Exception, asyncio.CancelledError) as exc:
+                # CancelledError too: aiohttp cancels the route's handler when the
+                # client disconnects mid-cancel, and this coroutine still owes the
+                # finish and the record before it lets the cancellation through.
+                # GeneratorExit and the interpreter-exit signals are not caught
+                # (awaiting after them is an error); the finally still finishes.
+                kill_failure = exc
+            finally:
+                # 3. Cancel the asyncio task and release the claim directly
+                # (idempotent with _run_job_isolated's finally).
+                self._finish_taken_claim(job_id)
+            # One name for the record and the audit: a failure that escaped the
+            # kill (re-raised below) or one the SIGKILL reported.
+            kill_failed = (
+                failure_name(kill_failure) if kill_failure is not None else sigkill_failure
+            )
+
+            # 4. Update job state, persist, and record history. The persist goes
+            # through the locked worker-thread merge helper (offloaded via
+            # asyncio.to_thread) — NOT a bare on-loop self._save() — so it re-syncs
+            # under the store lock and cannot clobber a concurrent add/update
+            # worker; the bounded spin never parks this loop-side coroutine.
+            if job:
+                last_error = f"Cancelled by user after {int(elapsed)}s"
+                if kill_failed is not None:
+                    # Same bound as the reaper's (``with_kill_failure``).
+                    last_error = with_kill_failure(last_error, kill_failed)
+                last_run_ts = time.time()
+                # Drawn here, in the same loop step as the release in step 3 (no
+                # await between them), so a replacement claim always draws a higher
+                # one and this record can never land over that run's.
+                generation = self._next_run_generation(job)
+                # In-memory snapshot for the history record / immediate readers;
+                # the locked merge is authoritative.
+                job.last_status = "error"
+                job.last_error = last_error
+                job.last_run_ts = last_run_ts
+                try:
+                    await asyncio.to_thread(
+                        self._merge_terminal_state_locked,
+                        job_id,
+                        last_status="error",
+                        last_error=last_error,
+                        last_run_ts=last_run_ts,
+                        run_generation=generation,
+                    )
+                except Exception:
+                    logger.exception("Cancel: failed to persist state for cron %s", job_id)
+                try:
+                    record = CronRunRecord(
+                        job_id=job_id,
+                        trigger=trigger,
+                        started_at=started_at,
+                        finished_at=time.time(),
+                        duration_ms=int(elapsed * 1000),
+                        status="cancelled",
+                        summary=job.last_error or "",
+                        error=job.last_error or "",
+                    )
+                    await self._history.append(record)
+                    if self._push_refresh:
+                        self._push_refresh("cron_history")
+                except Exception:
+                    logger.exception("Cancel: failed to record history for cron %s", job_id)
+            if self._push_refresh:
+                self._push_refresh("crons")
+
+            # SEL audit.
+            try:
+                sel.sel().log_tool_invocation(
+                    session_key=session_key,
+                    source="cron",
+                    tool_name="cron_cancel",
+                    # Never ``cancelled`` for a process group the kill left alive.
+                    outcome="cancelled" if kill_failed is None else "failed",
+                    metadata={
+                        "job_id": job_id,
+                        "session_key": session_key,
+                        # The keys this cancel actually ended, newest first --
+                        # only those every session of which was answered; a key
+                        # whose kill was refused or failed is not listed (it
+                        # stays registered, named in last_error). None for a
+                        # script or command job, whose sessions step 2 never
+                        # touches, or when step 2 raised.
+                        "session_keys": ended,
+                        "elapsed": int(elapsed),
+                        # Named for what the return now MEANS, not for what it used
+                        # to. kill_running_process returns True either because it
+                        # signalled a live child OR because it recorded the cancel
+                        # against a spawn still in flight, where there is no child to
+                        # signal yet. Auditing that second case as
+                        # "killed_subprocess" asserted a kill that never happened.
+                        "cancellation_accepted": killed_proc,
+                    },
+                )
+            except Exception:
+                logger.exception("Cancel: SEL audit failed for cron %s", job_id)
+        if kill_failure is not None:
+            raise kill_failure
+        return True
+
+    # ── Public API ──
+
+    def add_job(
+        self,
+        name: str,
+        message: str,
+        every_secs: int | None = None,
+        at_ts: float | None = None,
+        cron_expr: str | None = None,
+        channel: str | None = None,
+        thread_ts: str | None = None,
+        delete_after_run: bool = False,
+        created_by: str = "",
+        approval_mode: str = "",
+        enabled: bool = True,
+        agent_id: str = "",
+        member_id: str = "",
+        model: str = "",
+        silent: bool = False,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
+        strict_schedule: bool = False,
+        hide_in_chat: bool = False,
+        folder_id: str = "",
+        chat_folder_id: str = "",
+        command: str = "",
+        script: str = "",
+        agent_sequence: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        persistent_session: bool = True,
+        session_key: str = "",
+        minimal_context: bool = False,
+        timeout: int = 0,
+        timeout_secs: int = 0,
+    ) -> CronJob:
+        """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
+
+        ``enabled=False`` creates the job already paused (``user_paused=True``,
+        mirroring :meth:`enable_job`) so the paused state is part of the FIRST
+        persist — never an enabled-then-paused two-save window that a crash or
+        a concurrent reader of the store could capture as enabled.
+
+        ``timezone``/``skip_dates`` are validated HERE, at the persistence
+        owner, and folded into the job before its single ``_save()`` -- so no
+        caller can strand a half-populated or invalid job on disk, and every
+        create path (MCP, apps SDK, dashboard, CLI) shares one check. This
+        consolidates **every** first-save field
+        (``agent_id``/``model``/``silent``/``strict_schedule``/``hide_in_chat``,
+        ``command``/``script``/``agent_sequence``/``env``/``persistent_session``)
+        into the same single locked build+persist, totalizing over all fields
+        into the same single locked build+persist, totalizing over all fields
+        the "fully-formed on first save" invariant. The MCP create path folds
+        ``session_key``/``minimal_context``/``timeout`` here too, replacing its
+        former create-then-mutate plus second unlocked ``_save()``.
+
+        Synchronous variant: the lock+save runs INLINE and so must only be
+        called from a loop-less context (CLI / MCP server process / a worker
+        thread) — the ``_file_lock`` loop-safety guard rejects it on a running
+        event loop. On the gateway loop use :meth:`add_job_async`. Accepts the
+        same full field set as :meth:`add_job_async` so a caller (e.g. the
+        synchronous ``CronSDK`` facade) can persist a fully-formed, owner-tagged
+        job in the single locked transaction with no follow-up unlocked
+        ``_save()``.
+        """
+        job = self._build_job(
+            name,
+            message,
+            every_secs=every_secs,
+            at_ts=at_ts,
+            cron_expr=cron_expr,
+            channel=channel,
+            thread_ts=thread_ts,
+            delete_after_run=delete_after_run,
+            created_by=created_by,
+            approval_mode=approval_mode,
+            enabled=enabled,
+            agent_id=agent_id,
+            member_id=member_id,
+            model=model,
+            silent=silent,
+            timezone=timezone,
+            skip_dates=skip_dates,
+            strict_schedule=strict_schedule,
+            hide_in_chat=hide_in_chat,
+            folder_id=folder_id,
+            chat_folder_id=chat_folder_id,
+            command=command,
+            script=script,
+            agent_sequence=agent_sequence,
+            env=env,
+            persistent_session=persistent_session,
+            session_key=session_key,
+            minimal_context=minimal_context,
+            timeout=timeout,
+            timeout_secs=timeout_secs,
+        )
+        self._persist_add_locked(job)
+        self._arm_timer()
+        logger.info("Added cron job '%s' (%s)", name, job.id)
+        return job
+
+    def add_job_if_absent(
+        self,
+        predicate: Callable[[CronJob], bool],
+        **kwargs: Any,
+    ) -> CronJob | None:
+        """Build and persist a job only when no current store entry matches."""
+        job = self._build_job(**kwargs)
+        if not self._persist_add_if_absent_locked(predicate, job):
+            return None
+        self._arm_timer()
+        return job
+
+    async def add_job_if_absent_async(
+        self,
+        predicate: Callable[[CronJob], bool],
+        **kwargs: Any,
+    ) -> CronJob | None:
+        """Event-loop-native :meth:`add_job_if_absent`.
+
+        Mirrors :meth:`add_job_async`: the job is built on-loop, the
+        lock/sync/check/append/save core runs in a worker thread so the
+        bounded ``_file_lock`` spin never parks the gateway loop, and timer
+        arming stays on-loop. The absence check and the append happen under
+        ONE store lock after a fresh ``_sync()``, so two concurrent
+        registrars (e.g. a CLI enable racing gateway boot) cannot both
+        observe the name as absent and persist duplicates. Returns None when
+        a matching job already exists.
+        """
+        job = self._build_job(**kwargs)
+        persisted = await asyncio.to_thread(self._persist_add_if_absent_locked, predicate, job)
+        if not persisted:
+            return None
+        self._arm_timer()
+        logger.info("Added cron job '%s' (%s) [if-absent]", job.name, job.id)
+        return job
+
+    def _persist_add_if_absent_locked(
+        self,
+        predicate: Callable[[CronJob], bool],
+        job: CronJob,
+    ) -> bool:
+        """Lock/reload/check/append/save — the atomic add-if-absent disk core.
+
+        Like :meth:`_persist_add_locked` (no timer work, thread-safe, raises
+        :class:`CronStoreBusy` on sustained contention) but the existence
+        check happens INSIDE the same lock, after ``_sync()`` refreshed the
+        in-memory view — closing the snapshot-then-append TOCTOU. Returns
+        False when an existing job matches ``predicate``.
+
+        Applies the same dead-parent guard as :meth:`_persist_add_locked`; see
+        :meth:`_drop_owner_if_parent_gone`.
+        """
+        with self._file_lock():
+            self._sync_for_write()
+            if any(predicate(existing) for existing in self._jobs):
+                return False
+            bind_cron_memory(job)
+            self._drop_owner_if_parent_gone(job)
+            self._jobs.append(job)
+            self._save()
+        return True
+
+    def _drop_owner_if_parent_gone(self, job: CronJob) -> None:
+        """Blank a ``cron:`` owner whose parent is absent. MUST hold the store lock.
+
+        Call after ``_sync_for_write()`` and before appending, so the decision is
+        made against the authoritative reloaded store. This is what makes a child
+        under a dead parent STRUCTURALLY impossible rather than merely cleaned up
+        afterwards: the removal cascade
+        (:meth:`_release_children_of_removed`) can only release children that
+        existed when it scanned, and a run of the parent still in flight can call
+        ``cron_add`` in the window between that scan and its own teardown — the
+        new row would then be born stamped with a key no session can ever present
+        again. Both halves resolve against the same in-lock reload, so whichever
+        transaction lands second sees the other's write.
+
+        Dropped rather than refused: the caller's request to schedule work is
+        honoured and the row lands in the documented ownerless state the CLI and
+        the Schedule page manage, which is the semantics every release path here
+        uses. Refusing would lose the user's job over a race they did not cause.
+        """
+        principal = cron_job_id_from_session_key(job.session_key)
+        if not principal or any(j.id == principal for j in self._jobs):
+            return
+        logger.warning(
+            "Cron job %s created with owner %s whose cron no longer exists; "
+            "storing it ownerless (manage from CLI or the Schedule page)",
+            job.id,
+            job.session_key,
+        )
+        job.session_key = ""
+
+    def _build_job(
+        self,
+        name: str,
+        message: str,
+        every_secs: int | None = None,
+        at_ts: float | None = None,
+        cron_expr: str | None = None,
+        channel: str | None = None,
+        thread_ts: str | None = None,
+        delete_after_run: bool = False,
+        created_by: str = "",
+        approval_mode: str = "",
+        enabled: bool = True,
+        agent_id: str = "",
+        member_id: str = "",
+        model: str = "",
+        silent: bool = False,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
+        strict_schedule: bool = False,
+        hide_in_chat: bool = False,
+        folder_id: str = "",
+        chat_folder_id: str = "",
+        command: str = "",
+        script: str = "",
+        agent_sequence: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        persistent_session: bool = True,
+        session_key: str = "",
+        minimal_context: bool = False,
+        timeout: int = 0,
+        timeout_secs: int = 0,
+    ) -> CronJob:
+        """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
+
+        Shared by :meth:`add_job` and :meth:`add_job_async` so both perform
+        identical validation on the event loop before any disk work. Raises
+        ``ValueError`` on an invalid schedule or approval mode.
+
+        ``timeout_secs`` is the per-wake execution budget (the
+        ``asyncio.wait_for`` deadline in ``_execute_with_timeout``); ``0`` means
+        the ``_JOB_TIMEOUT_SECS`` default. Distinct from ``timeout``, which
+        bounds only script/command subprocesses.
+
+        The optional presentation/routing fields (``agent_id``, ``model``,
+        ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
+        here so the job is persisted **fully-formed** in the single locked
+        transaction. This closes a create-then-mutate-then-unlocked-``_save``
+        window (two concurrent creates could otherwise interleave at the
+        ``await`` and the unlocked save could clobber the other request's job).
+        """
+        valid_approval_modes = ("", "auto")
+        if approval_mode not in valid_approval_modes:
+            raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+        # Writer mirror of _job_from_record's representable-number type-shape
+        # check: the reader may skip a record with a non-representable
+        # schedule numeric (NaN/Infinity/bignum) precisely BECAUSE no write
+        # path can persist one -- this chokepoint covers every create surface
+        # (CLI, MCP cron_add, dashboard POST, apps SDK, and both
+        # onboarding-import branches, which route here via add_job /
+        # add_job_if_absent), so reader and writer stay exactly aligned and
+        # the reader-side skip provably drops no writer-produced record.
+        for _numeric_label, _numeric_arg in (("every_secs", every_secs), ("at_ts", at_ts)):
+            if _numeric_arg is not None and not _is_representable_number(_numeric_arg):
+                raise ValueError(f"{_numeric_label} must be a representable finite number")
+        # Table-driven type+length gate for every persisted string field.
+        # Runs at the persistence owner so EVERY create path (MCP, apps SDK,
+        # dashboard, CLI) shares one check. name and message are required
+        # (validated even when empty); all other fields use the falsy-skip
+        # pattern (None/"" = "not set").
+        _validate_cron_string_fields(
+            {
+                "name": name,
+                "message": message,
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "agent_id": agent_id,
+                "member_id": member_id,
+                "created_by": created_by,
+                "folder_id": folder_id,
+                "chat_folder_id": chat_folder_id,
+                "session_key": session_key,
+                "model": model,
+                "command": command,
+                "script": script,
+                "timezone": timezone,
+            },
+            required=frozenset({"name", "message"}),
+        )
+        if chat_folder_id and not persistent_session:
+            raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+        if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
+            raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
+        if timeout_secs and (command or script):
+            if timeout:
+                _eff_sub = int(timeout)
+            elif script:
+                _eff_sub = 30
+            else:
+                _eff_sub = 300
+            if int(timeout_secs) < _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS:
+                raise ValueError(
+                    "timeout_secs (wake budget) must cover the command/script "
+                    f"subprocess timeout plus cleanup: need >= "
+                    f"{_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, got {timeout_secs}. "
+                    "A shorter wake budget cancels only the executor future — "
+                    "the subprocess keeps running while the next wake launches "
+                    "a duplicate."
+                )
+        if timezone and not is_valid_timezone(timezone):
+            raise ValueError(f"Invalid timezone: {timezone!r}")
+        skip_dates = skip_dates or []
+        for _d in skip_dates:
+            if not is_valid_skip_date(_d):
+                raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
+        if cron_expr:
+            if not validate_cron_expr(cron_expr):
+                raise ValueError(f"Invalid cron expression: {cron_expr}")
+            schedule = CronSchedule(kind="cron", cron_expr=cron_expr)
+        elif every_secs:
+            schedule = CronSchedule(kind="every", every_secs=max(every_secs, _MIN_INTERVAL_SECS))
+        elif at_ts:
+            schedule = CronSchedule(kind="at", at_ts=at_ts)
+        else:
+            raise ValueError("Must provide every_secs, at_ts, or cron_expr")
+
+        return CronJob(
+            id=uuid.uuid4().hex[:8],
+            name=name,
+            message=message,
+            schedule=schedule,
+            channel=channel,
+            thread_ts=thread_ts,
+            enabled=enabled,
+            user_paused=not enabled,
+            created_ts=time.time(),
+            delete_after_run=delete_after_run,
+            created_by=created_by,
+            approval_mode=approval_mode,
+            agent_id=agent_id,
+            member_id=member_id,
+            model=str(model or "").strip(),
+            silent=silent,
+            timezone=timezone,
+            skip_dates=skip_dates,
+            strict_schedule=strict_schedule,
+            hide_in_chat=hide_in_chat,
+            folder_id=folder_id,
+            chat_folder_id=chat_folder_id,
+            command=command,
+            script=script,
+            agent_sequence=list(agent_sequence) if agent_sequence else [],
+            env=dict(env) if env else {},
+            persistent_session=persistent_session,
+            session_key=session_key,
+            minimal_context=minimal_context,
+            timeout=timeout,
+            timeout_secs=int(timeout_secs) if timeout_secs else _JOB_TIMEOUT_SECS,
+        )
+
+    def _persist_add_locked(self, job: CronJob) -> None:
+        """Lock/reload/append/save for a new job — the thread-safe disk core.
+
+        Does NO timer work (``_arm_timer`` needs the event loop), so
+        :meth:`add_job_async` can run it in an executor thread. Raises
+        :class:`CronStoreBusy` if the store lock stays contended past the
+        timeout. Mirrors the :meth:`_remove_jobs_locked` batch precedent.
+
+        Applies the dead-parent guard before the append; see
+        :meth:`_drop_owner_if_parent_gone`.
+        """
+        with self._file_lock():
+            self._sync_for_write()
+            bind_cron_memory(job)
+            self._drop_owner_if_parent_gone(job)
+            self._jobs.append(job)
+            self._save()
+
+    async def add_job_async(
+        self,
+        name: str,
+        message: str,
+        every_secs: int | None = None,
+        at_ts: float | None = None,
+        cron_expr: str | None = None,
+        channel: str | None = None,
+        thread_ts: str | None = None,
+        delete_after_run: bool = False,
+        created_by: str = "",
+        approval_mode: str = "",
+        enabled: bool = True,
+        agent_id: str = "",
+        member_id: str = "",
+        model: str = "",
+        silent: bool = False,
+        timezone: str = "",
+        skip_dates: list[str] | None = None,
+        strict_schedule: bool = False,
+        hide_in_chat: bool = False,
+        folder_id: str = "",
+        chat_folder_id: str = "",
+        command: str = "",
+        script: str = "",
+        agent_sequence: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        persistent_session: bool = True,
+        session_key: str = "",
+        minimal_context: bool = False,
+        timeout: int = 0,
+        timeout_secs: int = 0,
+        source_preset: str = "",
+        source_template_prompt: str = "",
+    ) -> CronJob:
+        """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
+
+        The gateway's aiohttp/Slack handlers run on the sole asyncio event loop;
+        calling the sync :meth:`add_job` there parks the loop in the bounded lock
+        spin under contention. This builds+validates on the loop (no I/O),
+        offloads the lock+persist to a worker thread via ``asyncio.to_thread``
+        (the disk core is thread-safe — flock on separate fds mutually excludes
+        in-process too), then re-arms the timer back on the loop. Raises
+        :class:`CronStoreBusy` (retryable) on sustained contention; the public
+        boundaries translate it to a clean 409 / structured error.
+
+        Optional presentation/routing fields (``agent_id``, ``model``,
+        ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are
+        applied during the single locked build+persist so callers never need a
+        follow-up unlocked ``_save()`` (which could race a concurrent create and
+        drop a job).
+        """
+        job = self._build_job(
+            name,
+            message,
+            every_secs=every_secs,
+            at_ts=at_ts,
+            cron_expr=cron_expr,
+            channel=channel,
+            thread_ts=thread_ts,
+            delete_after_run=delete_after_run,
+            created_by=created_by,
+            approval_mode=approval_mode,
+            enabled=enabled,
+            agent_id=agent_id,
+            member_id=member_id,
+            model=model,
+            silent=silent,
+            timezone=timezone,
+            skip_dates=skip_dates,
+            strict_schedule=strict_schedule,
+            hide_in_chat=hide_in_chat,
+            folder_id=folder_id,
+            chat_folder_id=chat_folder_id,
+            command=command,
+            script=script,
+            agent_sequence=agent_sequence,
+            env=env,
+            persistent_session=persistent_session,
+            session_key=session_key,
+            minimal_context=minimal_context,
+            timeout=timeout,
+            timeout_secs=timeout_secs,
+        )
+        # Dashboard-only template provenance. Set on the freshly-built job
+        # BEFORE the off-loop persist -- the object has no other reference yet,
+        # so this is still a single fully-formed first save, not a
+        # build-then-mutate-then-second-save. Kept off _build_job because only
+        # this async path is ever called with them (the sync add_job, CLI, MCP
+        # and apps SDK never carry a template), so threading them through the
+        # shared constructor would be surface with no consumer.
+        if source_preset:
+            job.source_preset = source_preset
+            job.source_template_prompt = source_template_prompt
+        await asyncio.to_thread(self._persist_add_locked, job)
+        self._arm_timer()
+        logger.info("Added cron job '%s' (%s)", name, job.id)
+        return job
+
+    def update_job(self, job_id: str, **kwargs: Any) -> CronJob | None:
+        """Update fields on an existing job. Returns updated job or None if not found.
+
+        Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
+        approval_mode, silent, skip_dates, timezone, thread_ts, model,
+        timeout_secs (per-wake execution budget, 1..86400).
+
+        Raises :class:`CronStoreBusy` if the store lock is contended past the
+        timeout; see :meth:`update_job_async` for the event-loop-safe variant.
+        """
+        job = self._update_job_locked(job_id, **kwargs)
+        if job is not None:
+            self._arm_timer()
+        return job
+
+    async def update_job_async(self, job_id: str, **kwargs: Any) -> CronJob | None:
+        """Event-loop-safe :meth:`update_job`: the lock+save runs off the loop.
+
+        Offloads the lock/reload/mutate/save core to a worker thread, then
+        re-arms the timer on the loop. Raises :class:`CronStoreBusy` (retryable)
+        on sustained contention.
+
+        ``chat_folder_transition_out``: pass a dict to learn the folder
+        ``chat_folder_id`` held before this call replaced it. Filled under the
+        store's file lock, so it is atomic with the write; owned by the caller, so
+        concurrent callers cannot see or overwrite each other's answer.
+        """
+        job = await asyncio.to_thread(self._update_job_locked_kw, job_id, kwargs)
+        if job is not None:
+            self._arm_timer()
+        return job
+
+    def _update_job_locked_kw(self, job_id: str, kwargs: dict[str, Any]) -> CronJob | None:
+        """``asyncio.to_thread`` shim so kwargs cross the thread boundary as a dict."""
+        return self._update_job_locked(job_id, **kwargs)
+
+    def _update_job_locked(self, job_id: str, **kwargs: Any) -> CronJob | None:
+        """Lock/reload/mutate/save core of :meth:`update_job` (no timer work).
+
+        Returns the updated job, or ``None`` when the id is absent. Raises
+        :class:`CronStoreBusy` on lock contention and ``ValueError`` on invalid
+        input. Safe to run in an executor thread (does no ``_arm_timer``).
+        """
+        # Preconditions, not fields: popped before the field gates below ever
+        # see them. When present, the freshly reloaded (locked) record must
+        # still carry exactly the pending request the caller decided on.
+        expect_pending = kwargs.pop("expect_secret_env_pending", None)
+        expect_pending_ts = kwargs.pop("expect_secret_env_pending_ts", None)
+        # Same shape for the ACTIVE grant fields: the approval's compensating
+        # restore names the just-promoted (dead) grant here, so a concurrent
+        # revoke that already cleared the fields makes the restore a no-op
+        # instead of resurrecting state the operator withdrew.
+        expect_active = kwargs.pop("expect_secret_env", None)
+        expect_active_pin = kwargs.pop("expect_secret_env_pin", None)
+        # Optional OUT-parameter, owned by the caller: a dict this pass fills with
+        # ``{"chat_folder_was": <prior folder, possibly "">}`` when the update
+        # actually changes ``chat_folder_id``.
+        #
+        # An out-parameter rather than a field on the job, and the distinction is
+        # the whole reason this exists. The dashboard must move the job's chat tab
+        # out of its previous folder, and may only do so when the tab is still
+        # sitting where this feature put it -- so it needs the PRIOR value, read
+        # atomically with the write that replaces it. Reading it with a separate
+        # query is a read-then-write race. Stamping it on the ``CronJob`` closes
+        # that race and opens another: ``self._jobs`` holds ONE object per job, so
+        # concurrent callers share the attribute and each one's answer is visible
+        # to, and clobberable by, the others. A dict the caller allocated is seen
+        # by that caller alone.
+        chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
+        with self._file_lock():
+            self._sync_for_write()
+            for job in self._jobs:
+                if job.id != job_id:
+                    continue
+                if "member_id" in kwargs and (kwargs["member_id"] or "") != job.member_id:
+                    raise ValueError("member memory is fixed for this schedule; create a new job")
+                if expect_pending is not None and job.secret_env_pending != expect_pending:
+                    raise CronPendingMismatch("pending secret request changed")
+                if expect_pending_ts is not None and job.secret_env_pending_ts != expect_pending_ts:
+                    raise CronPendingMismatch("pending secret request was re-issued")
+                if expect_active is not None and job.secret_env != expect_active:
+                    raise CronPendingMismatch("active grant changed concurrently")
+                if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
+                    raise CronPendingMismatch("active grant pin changed concurrently")
+                # Validate approval_mode if provided
+                if "approval_mode" in kwargs:
+                    valid_approval_modes = ("", "auto")
+                    if kwargs["approval_mode"] not in valid_approval_modes:
+                        raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
+                # Validate before any mutations
+                # Table-driven type+length gate for every updatable string
+                # field. Falsy values are intentional no-ops (the assignment
+                # section below skips them too).
+                _validate_cron_string_fields(
+                    {f: kwargs[f] for f, _ in _CRON_STRING_FIELD_CAPS if f in kwargs},
+                )
+                # Cross-field: only a persistent job has a job-wide tab to file,
+                # so a request that itself names a folder for a job this update
+                # leaves stateless is refused. Turning persistence off on a filed
+                # job is NOT refused: MCP/CLI ``cron_update`` exposes
+                # ``persistent_session`` without ``chat_folder_id``, so a refusal
+                # there would be a dead end; the assignment below clears the
+                # folder instead and reports it through the transition sink.
+                # Read the flag through the same coercion the assignment below
+                # applies, so the guard judges the value that gets stored.
+                if (kwargs.get("chat_folder_id") or "") and not bool(
+                    kwargs.get("persistent_session", job.persistent_session)
+                ):
+                    raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+                if (
+                    "cron_expr" in kwargs
+                    and kwargs["cron_expr"]
+                    and "every_secs" in kwargs
+                    and kwargs["every_secs"]
+                ):
+                    raise ValueError("Cannot specify both cron_expr and every_secs")
+                if "cron_expr" in kwargs and kwargs["cron_expr"]:
+                    if not validate_cron_expr(kwargs["cron_expr"]):
+                        raise ValueError(f"Invalid cron expression: {kwargs['cron_expr']}")
+                if "every_secs" in kwargs and kwargs["every_secs"]:
+                    try:
+                        # OverflowError: int(float("inf")) -- not a ValueError,
+                        # so it must be caught here or it escapes the update.
+                        val = int(kwargs["every_secs"])
+                    except (ValueError, TypeError, OverflowError) as e:
+                        raise ValueError(f"Invalid interval: {kwargs['every_secs']}") from e
+                    if not _is_representable_number(val):
+                        # int() accepts a bignum that no consumer can hold
+                        # (int-float arithmetic raises OverflowError on the
+                        # timer-arming path) -- same writer mirror as
+                        # _build_job, one predicate.
+                        raise ValueError(f"Invalid interval: {kwargs['every_secs']}")
+                    if val < _MIN_INTERVAL_SECS:
+                        raise ValueError(f"Interval must be >= {_MIN_INTERVAL_SECS}s, got {val}")
+                # Calendar-validity of timezone / skip_dates, validated at the
+                # persistence owner so EVERY caller (MCP cron_add/cron_update,
+                # dashboard, CLI) is covered by one check rather than each
+                # write path re-implementing it. The schema regex only checks
+                # the YYYY-MM-DD shape, not that the date exists -- so
+                # skip_dates=["2026-02-30"] would otherwise persist silently
+                # and the skip would never match at fire time.
+                if "timezone" in kwargs and kwargs["timezone"]:
+                    if not is_valid_timezone(kwargs["timezone"]):
+                        raise ValueError(f"Invalid timezone: {kwargs['timezone']!r}")
+                if "skip_dates" in kwargs and kwargs["skip_dates"]:
+                    for _d in kwargs["skip_dates"]:
+                        if not is_valid_skip_date(_d):
+                            raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
+                # Per-wake budget and subprocess timeout: validated HERE, in
+                # the pre-mutation section with every other check, so a
+                # rejected update cannot leave earlier field mutations (name,
+                # message, ...) stranded on the in-memory job for a later
+                # save to persist. Assignments happen below with the rest.
+                _tsecs: int | None = None
+                if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
+                    try:
+                        _tsecs = int(kwargs["timeout_secs"])
+                    except (ValueError, TypeError) as e:
+                        raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
+                    if not 1 <= _tsecs <= 86400:
+                        raise ValueError(f"timeout_secs must be within 1..86400, got {_tsecs}")
+                # Script/command subprocess timeout. MCP cron_update passes this
+                # field, so a branch has to consume it here — otherwise the
+                # update is accepted and silently dropped.
+                _tsub: int | None = None
+                if "timeout" in kwargs and kwargs["timeout"] is not None:
+                    try:
+                        _tsub = int(kwargs["timeout"])
+                    except (ValueError, TypeError) as e:
+                        raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
+                    if not 0 <= _tsub <= 86400:
+                        raise ValueError(f"timeout must be within 0..86400, got {_tsub}")
+                # Vault secret grant: validated with the other pre-mutation
+                # checks so a rejected grant cannot strand earlier field
+                # mutations. An empty dict revokes (clears the pin too); a
+                # non-empty grant requires a script job and the code
+                # pin computed by the grant endpoint. This kwarg is reachable
+                # only from operator surfaces — mcp_cron never passes it.
+                if "secret_env" in kwargs and kwargs["secret_env"] is not None:
+                    _se = kwargs["secret_env"]
+                    if not isinstance(_se, dict) or not all(
+                        isinstance(k, str) and isinstance(v, str) for k, v in _se.items()
+                    ):
+                        raise ValueError("secret_env must be a str->str mapping")
+                    if _se:
+                        cron_script.validate_secret_env_grant(_se)
+                        if not job.script:
+                            raise ValueError(
+                                "secret_env grants apply only to SCRIPT jobs. "
+                                "An agent job's session would expose the plaintext "
+                                "to the model; a command job's pin can cover only "
+                                "the command TEXT — a command invoking an "
+                                "agent-writable helper file would run changed "
+                                "bytes under a still-valid pin."
+                            )
+                        if not kwargs.get("secret_env_pin"):
+                            raise ValueError("a non-empty secret_env requires secret_env_pin")
+                # Pending grant REQUEST (agent-reachable via the MCP
+                # cron_secret_request tool). Same validation as the active
+                # grant — a request the operator could never approve is
+                # refused at write time, not at approval time. Writing this
+                # field never touches the active pair.
+                if "secret_env_pending" in kwargs and kwargs["secret_env_pending"] is not None:
+                    _sp = kwargs["secret_env_pending"]
+                    if not isinstance(_sp, dict) or not all(
+                        isinstance(k, str) and isinstance(v, str) for k, v in _sp.items()
+                    ):
+                        raise ValueError("secret_env_pending must be a str->str mapping")
+                    if _sp:
+                        cron_script.validate_secret_env_grant(_sp)
+                        if not job.script:
+                            raise ValueError("secret grants apply only to script jobs")
+                        if not kwargs.get("secret_env_pending_pin"):
+                            raise ValueError(
+                                "a non-empty secret_env_pending requires " "secret_env_pending_pin"
+                            )
+                # Cross-field: the wake budget must cover the subprocess bound
+                # plus cleanup, evaluated on the POST-update effective values —
+                # the wake deadline cancels only the executor future, so a
+                # shorter budget leaves the subprocess running while later
+                # wakes launch duplicates.
+                if job.command or job.script:
+                    _eff_secs = _tsecs if _tsecs is not None else job.timeout_secs
+                    _eff_sub_new = _tsub if _tsub is not None else job.timeout
+                    if _eff_sub_new:
+                        _eff_sub = int(_eff_sub_new)
+                    elif job.script:
+                        _eff_sub = 30
+                    else:
+                        _eff_sub = 300
+                    if (_tsecs is not None or _tsub is not None) and _eff_secs < (
+                        _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS
+                    ):
+                        raise ValueError(
+                            "timeout_secs (wake budget) must cover the "
+                            "command/script subprocess timeout plus cleanup: "
+                            f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
+                            f"got {_eff_secs}"
+                        )
+                if "name" in kwargs and kwargs["name"]:
+                    job.name = kwargs["name"]
+                if "message" in kwargs and kwargs["message"]:
+                    job.message = kwargs["message"]
+                if "agent_id" in kwargs:
+                    job.agent_id = kwargs["agent_id"] or ""
+                if "channel" in kwargs:
+                    job.channel = kwargs["channel"] or None
+                if "thread_ts" in kwargs:
+                    # Paired with ``channel``: together they decide WHERE a run's
+                    # output lands, and ``add_job`` has always accepted both. With
+                    # no branch here the field was validated (see the caps table)
+                    # and then dropped, so the caller was told "Updated" while the
+                    # cron kept replying in the old thread. Falsy clears, mirroring
+                    # ``channel`` and how mcp_cron normalizes blank to None.
+                    #
+                    # A granted script job re-threaded this way fails its NEXT run
+                    # closed: thread_ts is bound into the grant's delivery
+                    # fingerprint (cron_script.delivery_fingerprint), so the pin
+                    # stops verifying until the operator re-approves. That is the
+                    # intended fail-closed path, not a regression.
+                    job.thread_ts = kwargs["thread_ts"] or None
+                if "approval_mode" in kwargs:
+                    job.approval_mode = kwargs["approval_mode"] or ""
+                if "silent" in kwargs:
+                    job.silent = bool(kwargs["silent"])
+                if "skip_dates" in kwargs:
+                    job.skip_dates = kwargs["skip_dates"] or []
+                if "timezone" in kwargs:
+                    job.timezone = kwargs["timezone"] or ""
+                if "strict_schedule" in kwargs:
+                    job.strict_schedule = bool(kwargs["strict_schedule"])
+                if "persistent_session" in kwargs:
+                    job.persistent_session = bool(kwargs["persistent_session"])
+                if "minimal_context" in kwargs:
+                    job.minimal_context = bool(kwargs["minimal_context"])
+                if "hide_in_chat" in kwargs:
+                    job.hide_in_chat = bool(kwargs["hide_in_chat"])
+                if "folder_id" in kwargs:
+                    job.folder_id = kwargs["folder_id"] or ""
+                if "chat_folder_id" in kwargs:
+                    # Reported only on a REAL change: the caller moves a chat tab on
+                    # the strength of this, and the dashboard form submits the field
+                    # on every save, so "unchanged" must not read as "cleared".
+                    #
+                    # An empty prior value IS reported: filing a job that was unfiled
+                    # is the transition that puts an existing tab into its folder,
+                    # and the save is the one moment where that placement is asked
+                    # for explicitly (the mint files only a tab that did not exist).
+                    _chat_folder_next = kwargs["chat_folder_id"] or ""
+                    if chat_folder_out is not None and job.chat_folder_id != _chat_folder_next:
+                        chat_folder_out["chat_folder_was"] = job.chat_folder_id
+                    job.chat_folder_id = _chat_folder_next
+                elif (
+                    "persistent_session" in kwargs
+                    and not job.persistent_session
+                    and job.chat_folder_id
+                ):
+                    # Un-persisting takes the job-wide tab away, so the folder goes
+                    # with it: cleared here and reported exactly as an explicit
+                    # clear is, so the caller moves the tab the same way.
+                    if chat_folder_out is not None:
+                        chat_folder_out["chat_folder_was"] = job.chat_folder_id
+                    job.chat_folder_id = ""
+                if "model" in kwargs:
+                    job.model = str(kwargs["model"] or "").strip()
+                if "secret_env" in kwargs and kwargs["secret_env"] is not None:
+                    job.secret_env = dict(kwargs["secret_env"])
+                    # Pin travels with the grant; a revoke (empty map) clears it.
+                    job.secret_env_pin = (
+                        str(kwargs.get("secret_env_pin") or "") if job.secret_env else ""
+                    )
+                if "secret_env_pending" in kwargs and kwargs["secret_env_pending"] is not None:
+                    job.secret_env_pending = dict(kwargs["secret_env_pending"])
+                    if job.secret_env_pending:
+                        job.secret_env_pending_pin = str(kwargs.get("secret_env_pending_pin") or "")
+                        job.secret_env_pending_ts = float(
+                            kwargs.get("secret_env_pending_ts") or 0.0
+                        )
+                    else:
+                        # Withdraw/deny clears the whole request record.
+                        job.secret_env_pending_pin = ""
+                        job.secret_env_pending_ts = 0.0
+                # Per-wake budget (the asyncio.wait_for deadline in
+                # _execute_with_timeout). Distinct from ``timeout``, which
+                # bounds only script/command subprocesses. This is the only
+                # writer that changes the field after creation: with no branch
+                # here an existing job is stuck on its creation-time value, and
+                # raising its budget means editing the store under _file_lock
+                # by hand.
+                if _tsecs is not None:
+                    job.timeout_secs = _tsecs
+                if _tsub is not None:
+                    job.timeout = _tsub
+
+                # Schedule changes (already validated above)
+                if "cron_expr" in kwargs and kwargs["cron_expr"]:
+                    job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+                elif "every_secs" in kwargs and kwargs["every_secs"]:
+                    job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+                self._save()
+                logger.info("Updated cron job %s", job_id)
+                return job
+        return None
+
+    def remove_job(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> bool:
+        """Remove a job by ID.
+
+        ``actor`` and ``source`` are required so every caller-requested
+        removal is attributable at this mutation seam. Automated one-shot
+        callers additionally provide ``one_shot_path`` to retain their
+        distinct audit outcome and path discriminator.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`remove_job_async` for the event-loop-safe variant.
+        """
+        ok = self._remove_job_locked(job_id)
+        self._audit_requested_removal(
+            job_id,
+            removed=ok,
+            actor=actor,
+            source=source,
+            one_shot_path=one_shot_path,
+        )
+        if ok:
+            self._arm_timer()
+        return ok
+
+    async def remove_job_async(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> bool:
+        """Event-loop-safe :meth:`remove_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = await asyncio.to_thread(self._remove_job_locked, job_id)
+        self._audit_requested_removal(
+            job_id,
+            removed=ok,
+            actor=actor,
+            source=source,
+            one_shot_path=one_shot_path,
+        )
+        if ok:
+            self._arm_timer()
+        return ok
+
+    def _audit_requested_removal(
+        self,
+        job_id: str,
+        *,
+        removed: bool,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> None:
+        """Audit one removal after persistence and outside the store lock."""
+        if one_shot_path is not None:
+            if removed:
+                self.audit_one_shot_removal(job_id, one_shot_path)
+            return
+        resources = f"job_id={job_id}"
+        if not removed:
+            resources += " reason=not_found"
+        try:
+            sel.sel().log_api_access(
+                caller=actor,
+                operation="cron.remove",
+                outcome="allowed" if removed else "not_found",
+                source=source,
+                resources=resources,
+            )
+        except Exception:
+            logger.warning("SEL audit for cron removal failed (job %s)", job_id, exc_info=True)
+
+    def defer_removal(self, job_id: str) -> None:
+        """Queue a one-shot job for removal on the next timer tick.
+
+        Called on the event loop when an immediate :meth:`remove_job_async` for
+        a completed ``delete_after_run`` / Done job raised :class:`CronStoreBusy`
+        (the store lock stayed contended past the timeout). There is otherwise
+        no caller to retry a fire-and-forget removal, so without this the
+        finished job would linger ENABLED with its recurring schedule and
+        re-fire on the next tick — duplicate execution and a duplicate
+        user-visible notification.
+
+        Two-layer guarantee:
+
+        * **Immediate** — the job is disabled IN MEMORY right now so the very
+          next :meth:`_on_timer` due-scan skips it (covers the window where the
+          store is unchanged and ``_sync`` does not reload).
+        * **Durable** — the id is recorded so :meth:`_drain_pending_removals_locked`,
+          invoked from the timer tick's worker-thread transaction while it
+          already holds the store lock (:meth:`_tick_scan_locked`), deletes it
+          from disk. The drain runs BEFORE the due-scan, so even a
+          ``_sync`` reload that re-enables the job (``enabled`` is derived from
+          persisted pause flags, not the removal intent) cannot let it fire.
+
+        Idempotent and cheap; safe to call for an id already queued.
+        """
+        for job in self._jobs:
+            if job.id == job_id:
+                job.enabled = False
+                break
+        self._pending_removals.add(job_id)
+
+    def audit_one_shot_removal(self, job_id: str, path: str) -> None:
+        """SEL-audit one automated one-shot removal. Call AFTER the store lock.
+
+        An automated removal with no human caller is exactly the delete an
+        operator cannot otherwise distinguish from data loss. Emits the same
+        ``cron.remove`` shape as the caller-requested single-delete path
+        (:meth:`_audit_requested_removal`, serving dashboard/MCP/CLI), with an
+        automated-actor identity and a ``one_shot_completed`` outcome.
+        ``source`` stays ``"cron"`` — the SEL spec treats ``source`` as a
+        constrained identity vocabulary (it skips redaction on that promise),
+        and ``"cron"`` is this module's established value — so the removal
+        path rides in ``resources`` as a ``path=`` discriminator instead.
+        Best-effort and exception-contained: the removal is already saved, so
+        audit unavailability must never break the caller. Never call while
+        holding ``_file_lock`` — the first ``sel()`` of a process constructs
+        the log and must not extend the store-lock hold.
+        """
+        try:
+            sel.sel().log_api_access(
+                caller="cron",
+                operation="cron.remove",
+                outcome="one_shot_completed",
+                source="cron",
+                resources=f"job_id={job_id} path={path}",
+            )
+        except Exception:
+            logger.warning(
+                "SEL audit for one-shot cron removal failed (job %s)", job_id, exc_info=True
+            )
+
+    def _drain_pending_removals_locked(self) -> list[str]:
+        """Delete jobs queued via :meth:`defer_removal`. MUST hold the store lock.
+
+        Returns the ids actually removed (sorted, empty when nothing drained)
+        so the caller can SEL-audit them after releasing the store lock.
+
+        Called from :meth:`_tick_scan_locked` (the timer tick's worker-thread
+        transaction) inside its ``_file_lock`` block, so the delete+save is
+        serialized against every other
+        mutator exactly like the other locked cores. Removes only the queued
+        ids still present after the tick's ``_sync``; saves once iff something
+        was actually removed (an all-missing queue never rewrites the file).
+        An id no longer present was already removed elsewhere, so dropping it
+        is correct -- but ONLY when the load succeeded. Under ``_load_failed``
+        the list is unknown rather than empty, so this returns before claiming
+        (see the guard below) instead of intersecting against nothing.
+
+        Cross-thread safety: this drain runs in the timer tick's WORKER thread
+        while :meth:`defer_removal` adds ids from the EVENT-LOOP thread. The
+        queue is claimed with a single-bytecode tuple swap
+        (``pending, self._pending_removals = self._pending_removals, set()``),
+        which is atomic under the GIL. A concurrent ``defer_removal`` add
+        therefore lands EITHER in ``pending`` (drained now) OR in the fresh
+        replacement set (drained next tick) — it can never fall into the gap
+        between a read and a reset and be silently erased. ``present`` is
+        computed AFTER the swap so the intersection sees the post-swap job
+        list, and the in-memory disable performed by ``defer_removal`` keeps
+        even an id deferred to the next tick from re-firing meanwhile.
+        """
+        if not self._pending_removals:
+            return []
+        if self._load_failed:
+            # Return WITHOUT claiming. The claim below is a reset, and `present`
+            # is built from `self._jobs`, which a failed load has emptied -- so
+            # the intersection would be empty and the early return below would
+            # drop the whole queue before ever reaching the `_save` its requeue
+            # arm guards. Absence from an unloaded list means "unknown", not
+            # "already removed", and dropping the intent lets the repaired store
+            # re-run a completed one-shot and notify a second time.
+            logger.warning("Deferred cron removals held: store unreadable, retrying next tick")
+            return []
+        # Atomic claim-and-reset (see docstring) — do NOT split into a read
+        # (``& present``) followed by ``.clear()``; an id added between those
+        # two steps would be erased without ever being deleted from disk, so
+        # the completed one-shot would re-fire and re-notify.
+        pending, self._pending_removals = self._pending_removals, set()
+        present = {j.id for j in self._jobs}
+        to_remove = pending & present
+        if not to_remove:
+            return []
+        # BACKGROUND tick: a failed epoch bump must not crash the scan, but
+        # it must also not let the delete proceed (the saved grant record
+        # would be replayable once the epoch state heals). Requeue exactly
+        # like the store-unreadable case and retry next tick.
+        try:
+            self._bump_grant_epochs_for(to_remove)
+        except (OSError, ValueError):
+            logger.warning("Deferred cron removals held: grant-epoch bump failed", exc_info=True)
+            self._pending_removals |= pending
+            return []
+        # A Done()/delete_after_run job that self-removes retires its principal
+        # just as a CLI remove does, so its children are released in the SAME
+        # save (see _remove_job_rows).
+        restore = self._remove_job_rows(to_remove)
+        # BACKGROUND writer: this runs inside the due-scan, so an unreadable
+        # store must not abort the tick and stop every other job. The deferred
+        # delete simply stays pending until the store is readable again.
+        try:
+            self._save()
+        except BaseException as exc:
+            # EVERY save failure rolls back, not just CronStoreUnreadable. _save
+            # also raises bare OSError (ENOSPC/EROFS/EIO out of atomic_write),
+            # which a narrow `except CronStoreUnreadable` let past this block
+            # entirely: the child owners stayed cleared in memory while disk still
+            # named the old owner, the queue stayed empty, and the fingerprint
+            # still matched the untouched file so no _sync would ever reload the
+            # truth back. The next successful save then persisted the cleared
+            # owners -- a silent release nothing asked for, from a removal that
+            # never happened.
+            for child, previous_owner in restore:
+                child.session_key = previous_owner
+            # REQUEUE, or the intent is lost outright. The claim above already
+            # emptied the queue, so the comment's promise that the delete "stays
+            # pending until the store is readable again" only holds if it is put
+            # back: the next _sync reloads the job from the file that still holds
+            # it, and a completed one-shot would run and notify a SECOND time.
+            # Union rather than assignment -- a concurrent defer_removal may have
+            # added to the fresh replacement set since the swap.
+            self._pending_removals |= to_remove
+            # self._jobs still has the removed rows filtered out, and only a
+            # reload can put them back -- so drop the fingerprint to force one.
+            # Without it the retry above is a promise nothing can keep: the next
+            # drain intersects the requeued ids against a _jobs that omits them,
+            # finds nothing to remove, and silently drops the intent.
+            self._reset_fingerprint()
+            if isinstance(exc, CronStoreUnreadable):
+                logger.warning("Deferred cron removal not persisted: %s", exc)
+                # Empty list, not a bare return: the caller SEL-audits what came
+                # back, and nothing was durably removed.
+                return []
+            # Anything else is a real write fault, not the tolerated
+            # store-unreadable case: surface it rather than reporting a quiet
+            # no-op tick after the disk refused the write.
+            raise
+        for jid in to_remove:
+            logger.info("Removed deferred one-shot cron job %s", jid)
+        # SEL audit is the CALLER's job (post-lock): this method runs inside
+        # the caller's ``_file_lock`` transaction, and the first ``sel()`` of a
+        # process constructs the log (trust-dir + HMAC key read), which must
+        # never extend the store-lock hold past the CronStoreBusy timeout.
+        return sorted(to_remove)
+
+    def _bump_grant_epochs_for(self, removed_ids: set[str]) -> None:
+        """Kill the secret grants of jobs about to be deleted from the store.
+
+        A deleted job's record (mapping + active pin) survives as
+        agent-readable history, and the store file is agent-writable:
+        without an epoch bump, re-creating the job from the saved record
+        would let the runner verify the old pin and inject the secret
+        again. Bumping BEFORE the store swap keeps the revoke fence's
+        fail-closed direction — and a FAILED bump (unwritable/corrupt epoch
+        state) raises so the caller ABORTS the delete: deleting while the
+        old epoch is still live would leave the saved record replayable the
+        moment the epoch state heals. Owner-driven removal paths propagate
+        the error; background ticks catch it and requeue/skip the delete
+        instead of crashing the scan.
+        """
+        # An id with a LIVE epoch entry must bump even when the record no
+        # longer carries grant fields: the store is agent-writable, so an
+        # agent can CLEAR the fields, delete the job, and replay the saved
+        # mapping+pin into a re-created job — the pin was minted under the
+        # still-committed epoch. An id with neither grant fields nor an
+        # epoch entry never had an active pin minted (pins are HMAC-keyed
+        # and only the approval path commits entries), so skipping it is
+        # safe and keeps the epoch file bounded across one-shot job churn.
+        epoch_ids = cron_script.grant_epoch_ids() if removed_ids else set()
+        for j in self._jobs:
+            if j.id in removed_ids and (j.secret_env or j.secret_env_pin or j.id in epoch_ids):
+                cron_script.bump_grant_epoch(j.id)
+
+    def _remove_job_locked(self, job_id: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`remove_job` (no timer work).
+
+        Removing a job also releases every job that job OWNS, in the same locked
+        write — see :meth:`_release_children_of_removed`.
+        """
+        with self._file_lock():
+            self._sync_for_write()
+            # Bump UNCONDITIONALLY: grant_epoch_ids() raises on corrupt epoch
+            # state, so removing even a missing id surfaces that corruption
+            # instead of answering a quiet False. The bump reads live rows, so
+            # it must precede the filter inside _remove_job_rows.
+            self._bump_grant_epochs_for({job_id})
+            if any(j.id == job_id for j in self._jobs):
+                restore = self._remove_job_rows({job_id})
+                try:
+                    self._save()
+                except BaseException:
+                    for child, previous_owner in restore:
+                        child.session_key = previous_owner
+                    # The removed rows are still filtered out of self._jobs and only
+                    # a reload can put them back, so drop the fingerprint to force
+                    # one. Without it the cache is missing rows that are still on
+                    # disk while the fingerprint says it agrees with disk: the next
+                    # _save() skips the reload and persists the removal this caller
+                    # was told had failed, completing the parent's removal while its
+                    # children keep the ownership just rolled back.
+                    self._reset_fingerprint()
+                    raise
+                logger.info("Removed cron job %s", job_id)
+                return True
+        return False
+
+    def _remove_job_rows(self, removed_ids: set[str]) -> list[tuple[CronJob, str]]:
+        """Filter ``removed_ids`` out of ``self._jobs`` and cascade the release.
+
+        The ONLY sanctioned spelling of a structural remove. Every site that
+        drops a job's row from ``self._jobs`` must route through this helper so
+        the removal and the release of the removed jobs' children land in the
+        SAME save -- a bare list-comprehension filter compiles and passes tests
+        while silently skipping the cascade, stranding every child the removed
+        cron owns. ``test_cron_remove_rows_structural.py`` fails any filter
+        site that bypasses this helper.
+
+        Same contract as :meth:`_release_children_of_removed`: IN-LOCK ONLY,
+        after ``_sync_for_write()``; the caller must ``_save()`` afterwards and
+        on save failure restore the returned ``(job, previous_owner)`` pairs
+        (and reset the fingerprint where its path requires it). Grant-epoch
+        bumps read the live rows, so callers bump BEFORE calling this.
+        """
+        self._jobs = [j for j in self._jobs if j.id not in removed_ids]
+        return self._release_children_of_removed(removed_ids)
+
+    def _release_children_of_removed(self, removed_ids: set[str]) -> list[tuple[CronJob, str]]:
+        """Clear ownership on jobs whose cron principal is among ``removed_ids``.
+
+        IN-LOCK ONLY: callers must already hold :meth:`_file_lock`, must have
+        reloaded through ``_sync_for_write()``, must have filtered the removed
+        rows out of ``self._jobs`` first (so a removed job cannot release
+        itself), and must ``_save()`` afterwards — the point is that a removal
+        and the release it implies land in ONE atomic write, never as two
+        transactions a crash could split.
+
+        Removing a cron retires its principal: ``cron:<job id>`` is presented
+        only by runs of that job, so once the row is gone no session can ever
+        present the key again and any job it created is manageable by nobody —
+        ``cron_list`` omits it, ``cron_update``/``cron_remove`` answer "job not
+        found", and it keeps firing. That is the same dead-owner state the
+        history-delete funnel exists to prevent, and the funnel cannot cover it:
+        it deliberately SKIPS a live cron principal, so a transcript deleted
+        before the cron is removed leaves nothing behind to notice later.
+
+        Released, not deleted or re-parented — the same semantics the delete
+        funnel uses. A child is the user's own scheduled work; only its owner is
+        gone, so it drops to the documented ownerless state the CLI and the
+        Schedule page manage rather than a third state or a guessed new parent.
+
+        Matches through :func:`cron_owner_matches`, the one matcher every release
+        path shares, so a child stamped under a longer spelling
+        (``cron:<parent>:<run id>``, ``cron:<parent>:<agent>``) is caught too.
+        Returns ``(job, previous_owner)`` pairs so the caller can roll the cache
+        back if its ``_save()`` fails.
+        """
+        if not removed_ids:
+            return []
+        targets = {f"cron:{job_id}" for job_id in removed_ids if job_id}
+        restore: list[tuple[CronJob, str]] = []
+        for job in self._jobs:
+            if not job.session_key:
+                continue
+            if not any(cron_owner_matches(job.session_key, target) for target in targets):
+                continue
+            restore.append((job, job.session_key))
+            job.session_key = ""
+        if restore:
+            logger.info(
+                "Released %d cron job(s) whose owning cron was removed: %s",
+                len(restore),
+                ", ".join(sorted(job.id for job, _ in restore)),
+            )
+        return restore
+
+    def _remove_jobs_locked(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+        """Sync core of :meth:`remove_jobs` — lock/reload/mutate/save only.
+
+        Deliberately does NO timer work so it is safe to run in an executor
+        thread (``_arm_timer`` needs the event loop). Cross-thread safety:
+        every other store mutation also takes ``_file_lock`` — flock on
+        separate fds mutually excludes within the process too — so a
+        concurrent loop-side mutation blocks until this completes.
+        """
+        removed: list[str] = []
+        missing: list[str] = []
+        with self._file_lock():
+            self._sync_for_write()
+            present = {j.id for j in self._jobs}
+            targets = set()
+            for jid in job_ids:
+                if jid in present:
+                    removed.append(jid)
+                    targets.add(jid)
+                else:
+                    missing.append(jid)
+            if targets:
+                self._bump_grant_epochs_for(targets)
+                restore = self._remove_job_rows(targets)
+                try:
+                    self._save()
+                except BaseException:
+                    for child, previous_owner in restore:
+                        child.session_key = previous_owner
+                    # The removed rows are still filtered out of self._jobs and only
+                    # a reload can put them back, so drop the fingerprint to force
+                    # one. Without it the cache is missing rows that are still on
+                    # disk while the fingerprint says it agrees with disk: the next
+                    # _save() skips the reload and persists the removal this caller
+                    # was told had failed, completing the parent's removal while its
+                    # children keep the ownership just rolled back.
+                    self._reset_fingerprint()
+                    raise
+                logger.info("Removed %d cron job(s) in batch", len(targets))
+        return removed, missing
+
+    async def remove_jobs(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
+        """Remove many jobs under ONE lock/reload/save, off the event loop.
+
+        ``actor`` and ``source`` are required so the completed batch is
+        audited here after persistence, outside the store lock.
+
+        Returns ``(removed_ids, missing_ids)`` preserving input order. Looping
+        :meth:`remove_job` per id would pay the file-lock + reload +
+        full-serialize + atomic-write cost PER id on the event loop — with up to
+        500 ids that starves every other gateway task (and on slow/network
+        storage even one save can stall). The disk work
+        runs in a worker thread; only ``_arm_timer`` (asyncio.create_task)
+        runs back on the loop, and only when something was actually removed.
+        """
+        requested = list(job_ids)
+        removed, missing = await asyncio.to_thread(self._remove_jobs_locked, requested)
+        self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
+        if removed:
+            self._arm_timer()
+        return removed, missing
+
+    def _audit_requested_batch_removal(
+        self,
+        requested: list[str],
+        removed: list[str],
+        missing: list[str],
+        *,
+        actor: str,
+        source: str,
+    ) -> None:
+        """Audit one caller-requested batch after persistence and off-lock."""
+        try:
+            sel.sel().log_api_access(
+                caller=actor,
+                operation="cron.batch_delete",
+                outcome="ok" if removed else "failed",
+                source=source,
+                resources=f"requested={requested} deleted={removed} failed={missing}",
+            )
+        except Exception:
+            logger.warning("SEL audit for cron batch removal failed", exc_info=True)
+
+    def remove_jobs_sync(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
+        """Synchronous sibling of :meth:`remove_jobs` — ONE atomic locked batch.
+
+        Removes every id in ``job_ids`` under a SINGLE :meth:`_remove_jobs_locked`
+        lock/reload/save transaction (not a per-id loop), so a contended store
+        either removes them all or removes none and raises :class:`CronStoreBusy`
+        — there is no partial-removal state that could leave some jobs orphaned
+        and still enabled. Returns ``(removed_ids, missing_ids)``.
+
+        Synchronous: only for loop-less callers / the offloaded ``CronSDK``
+        facade (the ``_file_lock`` loop-safety guard rejects it on a running
+        loop). On the loop use :meth:`remove_jobs`.
+        """
+        requested = list(job_ids)
+        removed, missing = self._remove_jobs_locked(requested)
+        self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
+        if removed:
+            self._arm_timer()
+        return removed, missing
+
+    def _remove_jobs_by_owner_locked(self, owner_prefix: str) -> list[str]:
+        """Select AND remove every job owned by ``owner_prefix`` under ONE lock.
+
+        Sync core of :meth:`remove_jobs_by_owner` — lock/reload/select/mutate/
+        save only, no timer work (so it is safe in an executor thread;
+        ``_arm_timer`` needs the event loop). The critical property over
+        passing in a pre-computed id list: the ownership SELECTION happens
+        AFTER the in-lock ``_sync()`` reload, against the authoritative on-disk
+        state — not against a possibly-stale in-memory/cache snapshot taken
+        before the lock. A job created by this owner in another process since
+        the last cache refresh is therefore still seen and removed, closing the
+        cross-process orphan window where a cache-only ``list_jobs()`` id
+        snapshot would miss it and leave it ENABLED after the app is deleted.
+
+        All-or-nothing within the single ``_file_lock`` transaction: a contended
+        store raises :class:`CronStoreBusy` before any mutation. Returns the
+        list of removed ids.
+
+        Selects through :meth:`_sync_for_write`, not ``_sync()``, because an EMPTY
+        owned set is not an authoritative one. ``_load`` degrades an unreadable
+        store to an empty job list, so the selection below would answer zero for a
+        reason unrelated to ownership, skip the ``if removed`` branch, never reach
+        ``_save()`` -- the only raiser on this path -- and return ``[]``. Uninstall
+        reads that as "this app owned nothing" and deletes the app while its
+        still-ENABLED jobs remain on disk to resume once the store parses again.
+        ``_sync_for_write`` refuses first. A missing or honestly empty store leaves
+        ``_load_failed`` clear, so a fresh install still tears down silently.
+        """
+        removed: list[str] = []
+        with self._file_lock():
+            self._sync_for_write()
+            removed = [j.id for j in self._jobs if getattr(j, "created_by", "") == owner_prefix]
+            if removed:
+                targets = set(removed)
+                self._bump_grant_epochs_for(targets)
+                restore = self._remove_job_rows(targets)
+                try:
+                    self._save()
+                except BaseException:
+                    for child, previous_owner in restore:
+                        child.session_key = previous_owner
+                    # The removed rows are still filtered out of self._jobs and only
+                    # a reload can put them back, so drop the fingerprint to force
+                    # one. Without it the cache is missing rows that are still on
+                    # disk while the fingerprint says it agrees with disk: the next
+                    # _save() skips the reload and persists the removal this caller
+                    # was told had failed, completing the parent's removal while its
+                    # children keep the ownership just rolled back.
+                    self._reset_fingerprint()
+                    raise
+                logger.info("Removed %d cron job(s) owned by %s", len(removed), owner_prefix)
+        return removed
+
+    async def remove_jobs_by_owner(self, owner_prefix: str) -> list[str]:
+        """Remove every job owned by ``owner_prefix`` under ONE lock, off-loop.
+
+        Selects and removes in a SINGLE :meth:`_remove_jobs_by_owner_locked`
+        lock/reload/select/save transaction — the owner scan runs against the
+        in-lock reloaded on-disk state, so a job another process created for
+        this owner since the last cache refresh is still removed (no
+        cross-process orphan window). All-or-nothing; propagates
+        :class:`CronStoreBusy` on a contended store. The disk work runs in a
+        worker thread; only ``_arm_timer`` runs back on the loop, and only when
+        something was actually removed. Returns the removed ids.
+        """
+        removed = await asyncio.to_thread(self._remove_jobs_by_owner_locked, owner_prefix)
+        if removed:
+            self._arm_timer()
+        return removed
+
+    def remove_jobs_by_owner_sync(self, owner_prefix: str) -> list[str]:
+        """Synchronous sibling of :meth:`remove_jobs_by_owner` — ONE atomic
+        locked select+remove batch.
+
+        Selects and removes every job whose ``created_by == owner_prefix``
+        under a SINGLE :meth:`_remove_jobs_by_owner_locked` transaction (the
+        owner scan runs on the in-lock reloaded state, so a cross-process
+        creation is still caught). All-or-nothing; raises
+        :class:`CronStoreBusy` on a contended store.
+
+        Synchronous: only for loop-less callers / the offloaded ``CronSDK``
+        facade (the ``_file_lock`` loop-safety guard rejects it on a running
+        loop). On the loop use :meth:`remove_jobs_by_owner`. Returns the removed
+        ids.
+        """
+        removed = self._remove_jobs_by_owner_locked(owner_prefix)
+        if removed:
+            self._arm_timer()
+        return removed
+
+    def adopt_job(self, job_id: str, session_key: str) -> bool:
+        """Point ``job_id`` at ``session_key`` as its originating chat session.
+
+        ``session_key`` names the chat session a job belongs to, and it is ONE
+        field with ONE meaning: every consumer reads it as the delivery target
+        (``session="origin"`` resolution and script-result injection both strip
+        the ``dashboard:`` prefix off it to get a slot). So adopting a job also
+        makes its output arrive in that session -- that is what being the
+        originating session IS, not a side effect the caller has to be warned
+        about separately. Pass ``""`` to release the job back to the operator
+        surfaces (CLI and the dashboard Schedule page), which is the state every
+        job created outside a chat legitimately starts in.
+
+        Deliberately NOT a branch in :meth:`_update_job_locked`: that path is
+        reachable from MCP ``cron_update`` and the dashboard ``PATCH``, and a
+        ``session_key`` branch there would hand both surfaces the power to
+        repoint where any job delivers. Ownership is asserted by the operator,
+        so the CLI -- the one surface that is not a session -- is its only
+        writer.
+
+        Returns ``False`` when the id is absent. Raises :class:`CronStoreBusy`
+        on lock contention. Synchronous only: the CLI is its sole caller and has
+        no event loop, so an async sibling would be dead code.
+        """
+        ok = self._adopt_job_locked(job_id, session_key)
+        if ok:
+            self._arm_timer()
+        return ok
+
+    def _adopt_job_locked(self, job_id: str, session_key: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`adopt_job` (no timer work)."""
+        with self._file_lock():
+            self._sync_for_write()
+            for job in self._jobs:
+                if job.id == job_id:
+                    job.session_key = session_key
+                    self._save()
+                    return True
+        return False
+
+    def _release_jobs_owned_by_locked(
+        self,
+        owner_keys: Collection[str],
+    ) -> list[str]:
+        """Select AND release every job owned by ``owner_keys`` under ONE lock.
+
+        Sync core of :meth:`release_jobs_owned_by` — lock/reload/select/mutate/
+        save only, no timer work (so it is safe in an executor thread;
+        ``_arm_timer`` needs the event loop). Same shape, and the same critical
+        property, as :meth:`_remove_jobs_by_owner_locked`: BOTH decisions this
+        makes — which owner keys name a retired principal, and which jobs still
+        carry one of them — happen AFTER the in-lock ``_sync_for_write()``
+        reload, against the authoritative on-disk state rather than a snapshot
+        taken before the lock.
+
+        That is the whole reason this exists instead of a caller-side
+        ``list_jobs()`` loop over :meth:`adopt_job`. ``list_jobs`` is cache-only
+        with up to one timer-poll interval of cross-process staleness, and both
+        decisions are wrong when read from it:
+
+        * OWNER staleness — between a pre-lock snapshot and a per-id write,
+          another surface (the CLI's ``cron adopt``, a cron-injected slot
+          re-stamping its key) can hand the job to a DIFFERENT owner, and an
+          unconditional per-id release would clear that new owner, silently
+          unbinding a job from a session that legitimately owns it.
+        * PRINCIPAL staleness — a ``cron:<job id>`` owner is only live while that
+          job exists, so its jobs must be kept owned; but a CLI ``cron remove``
+          inside the staleness window leaves the cache still listing the job, and
+          a cached liveness check would call the dead principal live and skip
+          releasing its children. Nothing re-runs the delete funnel, so those
+          jobs strand permanently.
+
+        Conditioning both on the reloaded state makes the release a
+        compare-and-clear against current truth: a re-adopted job keeps its new
+        owner, a job whose cron principal is still scheduled keeps its owner, and
+        either is simply absent from the returned ids.
+
+        Ownership is matched through :func:`cron_owner_matches`, not ``==``,
+        because one cron principal is stamped under several spellings
+        (``cron:<job id>``, ``cron:<job id>:<run id>``,
+        ``cron:<job id>:<agent>``) depending on which run created the job. An
+        exact comparison misses a child stamped with a longer spelling than the
+        caller holds, and a match MISS is not a release failure, so nothing warns.
+
+        The active exact-key registry is snapshotted only AFTER this transaction
+        acquires ``_file_lock`` and reloads the store. The short in-process
+        ``_active_session_lock`` makes that worker-thread read coherent with loop
+        registrations. A run that registered and persisted a child before this
+        lock was acquired is therefore visible in both snapshots; a run that
+        registers later cannot persist its child until this transaction releases
+        the same store lock. This closes the snapshot-to-lock TOCTOU window while
+        keeping every live stateless run out of principal-wide matching.
+
+        All-or-nothing within the single ``_file_lock`` transaction: a contended
+        store raises :class:`CronStoreBusy` before any mutation, and a save that
+        fails after the mutation puts every touched owner back before re-raising,
+        so the cache never reports a release that is not on disk. Returns the ids
+        actually released.
+
+        Selects through :meth:`_sync_for_write`, not ``_sync()``, for the reason
+        spelled out on :meth:`_remove_jobs_by_owner_locked`: ``_load`` degrades an
+        unreadable store to an empty job list, so an ownership scan over it would
+        answer "this session owned nothing", skip the save, and report a clean
+        release while the still-stamped jobs sit on disk. ``_sync_for_write``
+        refuses first, so the caller learns the release did not happen. It also
+        fails the liveness read closed, which matters in the opposite direction:
+        an empty job list would call every cron principal dead and release jobs a
+        live cron still owns.
+        """
+        owners = {k for k in owner_keys if k}
+        if not owners:
+            return []
+        released: list[str] = []
+        with self._file_lock():
+            self._sync_for_write()
+            active_keys = self.active_session_keys()
+            # Principal liveness, decided on the state the reload just brought
+            # in. A cron whose row is still here AND whose key is stable across
+            # runs presents that key again on every future run, so releasing the
+            # jobs it created would leave a LIVE owner unable to list, update or
+            # remove its own work.
+            #
+            # Existence alone is NOT enough. A stateless job mints
+            # ``cron:<job id>:<uuid4>`` fresh per fire, so the key its last run
+            # stamped on a child is already unpresentable even though the parent
+            # row is still scheduled -- retaining that ownership strands the child
+            # exactly as a removed parent would. ``cron_session_key_is_stable``
+            # is the predicate that lives beside the mint sites, so this cannot
+            # drift from what those sites actually produce; inferring it from the
+            # key's SHAPE is wrong, because a durable sequential-agent key and an
+            # ephemeral per-run key are both three segments.
+            live_by_id = {job.id: job for job in self._jobs}
+            targets: set[str] = set()
+            for key in owners:
+                principal = cron_job_id_from_session_key(key)
+                parent = live_by_id.get(principal) if principal else None
+                if parent is not None and cron_session_key_is_stable(parent):
+                    continue
+                targets.add(key)
+            if not targets:
+                return []
+            # Previous owners are recorded so the cache can be put BACK if the
+            # save fails. ``_save`` serializes ``self._jobs``, so the mutation
+            # has to precede persistence -- but an unwritable store (ENOSPC, a
+            # read-only volume) would then leave memory saying "ownerless" while
+            # disk still names the old owner: every ownership decision in this
+            # process reads the released state, the delete reports success, and
+            # the old owner resurrects on the next restart. Rolling back keeps
+            # the two agreeing on the only outcome that actually happened.
+            restore: list[tuple[CronJob, str]] = []
+            for job in self._jobs:
+                if not job.session_key:
+                    continue
+                if isinstance(job.session_key, str) and job.session_key in active_keys:
+                    continue
+                if not any(cron_owner_matches(job.session_key, target) for target in targets):
+                    continue
+                restore.append((job, job.session_key))
+                job.session_key = ""
+                released.append(job.id)
+            if released:
+                try:
+                    self._save()
+                except BaseException:
+                    for job, previous_owner in restore:
+                        job.session_key = previous_owner
+                    raise
+                logger.info(
+                    "Released %d cron job(s) owned by deleted session(s) %s",
+                    len(released),
+                    ", ".join(sorted(targets)),
+                )
+        return released
+
+    async def release_jobs_owned_by(self, owner_keys: Collection[str]) -> list[str]:
+        """Clear ``session_key`` on every job owned by a RETIRED ``owner_keys`` key.
+
+        The batch, owner-conditioned sibling of ``adopt_job(job_id, "")``: it
+        releases jobs back to the operator surfaces (CLI and the dashboard
+        Schedule page) the way a single ``--release`` does, but resolves both
+        principal liveness and current ownership INSIDE the store lock, on the
+        freshly reloaded state — so neither decision can be made from a stale
+        cache (see :meth:`_release_jobs_owned_by_locked`). Callers pass every
+        candidate owner key and do no filtering of their own.
+
+        One lock/reload/select/save transaction, all-or-nothing; propagates
+        :class:`CronStoreBusy` on a contended store so the caller can retry
+        rather than silently dropping the release. The worker snapshots the
+        complete ordered set of active and deferred per-run keys only after it
+        holds the store lock, so a newer stateless run cannot persist a child in
+        the snapshot-to-lock gap and have that live owner released. Only
+        ``_arm_timer`` runs back on the loop, and only when something was actually
+        released. Returns the released ids.
+        """
+        released = await asyncio.to_thread(
+            self._release_jobs_owned_by_locked,
+            owner_keys,
+        )
+        if released:
+            self._arm_timer()
+        return released
+
+    def _owner_keys_locked(self) -> set[str]:
+        """Every non-empty ``session_key`` on disk, read under ONE lock. STRICT.
+
+        The READ half of :meth:`_release_jobs_owned_by_locked`, with the same
+        freshness guarantee and the same failure contract, for the caller that
+        must decide WHICH owner keys to release before it can call the release at
+        all — the history delete's store-side owner sweep, which recovers the
+        exact owner key of a job whose transcript never recorded it.
+
+        Deliberately NOT ``list_jobs``/``list_jobs_async``. Both answer a job list
+        that is EMPTY or STALE in exactly the two states this scan has to
+        distinguish from "nobody owns anything", and neither raises:
+
+        * ``list_jobs`` is cache-only, up to one timer-poll interval behind a
+          cross-process write — and the cross-process job is precisely what the
+          sweep exists to find.
+        * ``list_jobs_async`` locks and syncs, but degrades on BOTH store
+          failures: :meth:`_synced_snapshot` swallows :class:`CronStoreBusy` and
+          returns the cache, and it syncs through ``_sync()``, whose ``_load``
+          turns an unreadable store into an empty job list. A contended or
+          corrupt store therefore reads as "no owners" — indistinguishable from
+          an honestly ownerless store, and the wrong answer for a caller about to
+          destroy the last record of an ownership it could not see.
+
+        So this raises instead of degrading: :class:`CronStoreBusy` out of
+        :meth:`_file_lock` on sustained contention, :class:`CronStoreUnreadable`
+        out of :meth:`_sync_for_write` on a store ``_load`` could not parse. The
+        caller is expected to fail CLOSED on either — an unknown job set is not an
+        empty one. ``_sync_for_write`` is the same reload the release uses and is
+        chosen for the same reason spelled out there: ``_sync()`` alone would let
+        an unreadable store answer "this session owned nothing".
+
+        Read-only: no mutation, no ``_save``, so nothing to roll back. Returns
+        owner keys, not jobs, because the scan's only question is which owner
+        spellings exist — the release re-resolves ownership and liveness per job
+        inside its own lock, and handing out ``CronJob`` objects would invite a
+        caller-side decision on state that is stale the moment the lock drops.
+        Includes jobs that are disabled or auto-paused: a paused job's owner is
+        still stamped on disk and still strands when the session goes.
+        """
+        with self._file_lock():
+            self._sync_for_write()
+            return {owner for job in self._jobs if (owner := job.session_key)}
+
+    async def owner_keys_async(self) -> set[str]:
+        """Event-loop-safe :meth:`_owner_keys_locked` — the lock+read runs off the loop.
+
+        Propagates :class:`CronStoreBusy` (retryable) and
+        :class:`CronStoreUnreadable` (not) rather than degrading to a partial
+        answer; see :meth:`_owner_keys_locked` for why a read this one is used for
+        must fail loudly. No timer work: nothing is mutated, so there is no
+        schedule change to arm.
+        """
+        return await asyncio.to_thread(self._owner_keys_locked)
+
+    def enable_job(
+        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+    ) -> bool:
+        """Enable or disable a job by ID.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`enable_job_async` for the event-loop-safe variant.
+        """
+        ok = (
+            self._enable_job_locked(job_id, enabled, expected_owner=expected_owner)
+            if expected_owner is not None
+            else self._enable_job_locked(job_id, enabled)
+        )
+        if ok:
+            self._arm_timer()
+        return ok
+
+    async def enable_job_async(
+        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+    ) -> bool:
+        """Event-loop-safe :meth:`enable_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = (
+            await asyncio.to_thread(
+                self._enable_job_locked, job_id, enabled, expected_owner=expected_owner
+            )
+            if expected_owner is not None
+            else await asyncio.to_thread(self._enable_job_locked, job_id, enabled)
+        )
+        if ok:
+            self._arm_timer()
+        return ok
+
+    def _enable_job_locked(
+        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+    ) -> bool:
+        """Lock/reload/mutate/save core; app ownership is checked under the lock.
+
+        An SDK-side cached lookup cannot authorize a mutation after another
+        process has changed the store. Missing and foreign jobs both refuse
+        when an expected owner is supplied; ordinary host calls retain False
+        for a missing job.
+        """
+        with self._file_lock():
+            self._sync_for_write()
+            for job in self._jobs:
+                if job.id == job_id:
+                    if expected_owner is not None and job.created_by != expected_owner:
+                        raise PermissionError("Cron job ownership violation")
+                    job.user_paused = not enabled
+                    job.enabled = enabled
+                    # Re-enabling clears an execution auto-pause; without this a
+                    # job auto-paused after failures would be re-derived as
+                    # disabled on the next reload despite the explicit resume.
+                    if enabled and job.auto_paused:
+                        job.auto_paused = False
+                        # Reset the counter too: the user re-enabled expecting a
+                        # fresh set of attempts. Left at the threshold, the very
+                        # next failure would immediately re-auto-pause the job
+                        # (consecutive_failures already >= threshold). Mirrors
+                        # record_success, which resets the counter on recovery.
+                        job.consecutive_failures = 0
+                        # A user resume that lifts an auto-pause restores execute
+                        # permission — audit it like the auto-pause transition.
+                        job._audit_pause_change("auto_pause_cleared")
+                    self._save()
+                    logger.info("%s cron job %s", "Enabled" if enabled else "Disabled", job_id)
+                    return True
+            if expected_owner is not None:
+                raise PermissionError("Cron job ownership violation")
+        return False
+
+    def ack_job(self, job_id: str, summary: str) -> bool:
+        """Acknowledge a cron notification — stores summary for future context.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`ack_job_async` for the event-loop-safe variant.
+        """
+        return self._ack_job_locked(job_id, summary)
+
+    async def ack_job_async(self, job_id: str, summary: str) -> bool:
+        """Event-loop-safe :meth:`ack_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = await asyncio.to_thread(self._ack_job_locked, job_id, summary)
+        # ack itself changes no schedule. If the worker's _sync() reloaded an
+        # external change, its _load() re-armed the timer thread-safely via the
+        # bound loop (see _arm_timer) — no drain needed here.
+        return ok
+
+    def _ack_job_locked(self, job_id: str, summary: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`ack_job`."""
+        with self._file_lock():
+            self._sync_for_write()
+            for job in self._jobs:
+                if job.id == job_id:
+                    job.acked_items.append(summary[:500])
+                    # Keep only last 20 acks
+                    job.acked_items = job.acked_items[-20:]
+                    self._save()
+                    return True
+        return False
+
+    def unack_job(self, job_id: str) -> bool:
+        """Remove the most recent acked item from a cron job.
+
+        Raises :class:`CronStoreBusy` on lock contention; see
+        :meth:`unack_job_async` for the event-loop-safe variant.
+        """
+        return self._unack_job_locked(job_id)
+
+    async def unack_job_async(self, job_id: str) -> bool:
+        """Event-loop-safe :meth:`unack_job`: the lock+save runs off the loop.
+
+        Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+        """
+        ok = await asyncio.to_thread(self._unack_job_locked, job_id)
+        # See ack_job_async: any external-change re-arm self-heals in the worker.
+        return ok
+
+    def _unack_job_locked(self, job_id: str) -> bool:
+        """Lock/reload/mutate/save core of :meth:`unack_job`."""
+        with self._file_lock():
+            self._sync_for_write()
+            for job in self._jobs:
+                if job.id == job_id and job.acked_items:
+                    job.acked_items.pop()
+                    self._save()
+                    return True
+        return False
+
+    # ── Active session tracking ──
+
+    def register_active_session_key(self, job_id: str, session_key: str) -> None:
+        """Register one live exact key for ``job_id`` under the run that holds the job's claim.
+
+        Several distinct keys may coexist: a finished stateless run can stay alive
+        for pending subagents while a newer run starts, and a sequential job holds
+        one key per agent inside one run. Each key is attributed to the run that
+        registered it -- the ``_RunClaim`` stored for the job at that moment, the
+        run the gateway's cron callback is executing under -- so a reap or cancel
+        of that run ends every key it registered and no other run's
+        (:meth:`_run_session_keys`). Pop-and-reinsert refreshes recency for
+        reaper/cancel targeting and re-attributes a stable key to the run
+        registering it now. Re-registering the same exact key is idempotent
+        because all claimants share one SessionManager runtime.
+        """
+        # Loop-owned, read on the loop: both product registrants run inside the
+        # cron callback, under the claim ``_run_job_isolated`` holds for the run.
+        run = self._claims.get(job_id)
+        with self._active_session_lock:
+            keys = self._active_session_keys.setdefault(job_id, {})
+            keys.pop(session_key, None)
+            keys[session_key] = run
+
+    def clear_active_session_key(self, job_id: str, session_key: str) -> None:
+        """Retire the exact key whose SessionManager reset completed."""
+        with self._active_session_lock:
+            keys = self._active_session_keys.get(job_id)
+            if not keys:
+                return
+            keys.pop(session_key, None)
+            if not keys:
+                self._active_session_keys.pop(job_id, None)
+
+    def _run_session_keys(self, job_id: str, run: _RunClaim) -> list[str]:
+        """Every live exact key ``run`` registered, newest first: the keys a reap or cancel of that run ends.
+
+        A key another run registered -- a finished run's session kept alive for
+        its pending sub-agents -- is not this run's and is left to its own end.
+        A key registered under no claim (no product path registers outside the
+        run callback; legacy callers and tests) belongs to whichever run of the
+        job is ended next, as the newest key did before keys were attributed.
+        Empty when the run registered none: the caller then ends the job's
+        stable key.
+        """
+        with self._active_session_lock:
+            keys = self._active_session_keys.get(job_id) or {}
+            return [key for key, owner in reversed(keys.items()) if owner is run or owner is None]
+
+    def active_session_keys(self) -> frozenset[str]:
+        """Snapshot every exact live key across current and deferred cron runs."""
+        with self._active_session_lock:
+            return frozenset(
+                session_key for keys in self._active_session_keys.values() for session_key in keys
+            )
+
+    def get_history(self) -> CronHistoryStore:
+        """Public accessor for the history store."""
+        return self._history
+
+    def is_running(self, job_id: str) -> bool:
+        """Return whether a job is currently executing."""
+        return job_id in self._claims
+
+    # ── Run claims ──
+    #
+    # A run's whole per-run state is one _RunClaim in self._claims (see that
+    # class). The helpers below are the only places that store, fence, take
+    # and release a claim, so a field added to _RunClaim inherits every fence.
+
+    def _claim_run(self, job_id: str, trigger: str) -> _RunClaim:
+        """Claim ``job_id`` for a new run and return the claim. Loop-side, await-free.
+
+        The caller has just established that the job is idle in this same loop
+        step (``run_job``'s guard, the due-scan's ``not in self._claims`` filter),
+        so the claim is stored unconditionally and becomes the job's occupancy at
+        once. The claim is handed to the run task rather than read back by it.
+        """
+        claim = _RunClaim(trigger=trigger, claimed_at=time.time())
+        self._claims[job_id] = claim
+        return claim
+
+    def _holds_claim(self, job_id: str, claim: _RunClaim | None) -> bool:
+        """Whether ``claim`` still owns ``job_id``'s run: the stored object, not taken.
+
+        Identity, not equality: ``cancel()`` and the reaper take the stored claim
+        when they tear a run down, and any later manual or scheduled claim stores
+        a NEW object, so a claim that is not the stored one belongs to someone
+        else and is left alone. Every site that releases a job's run state --
+        ``_release_claim`` and the fences in ``_run_job_isolated`` and
+        ``_run_claimed_manual`` -- asks this same question, so a newer claim is
+        never released by an older run, and a run that ``cancel()`` or the
+        reaper has taken releases nothing: they finish it after their kill
+        awaits, while its claim still keeps every other claimant out. The cancel
+        and reap markers are keyed by the same object (:class:`_RunMarkers`), so
+        a finalizer consumes only the marker set for its own run.
+        """
+        stored = self._claims.get(job_id)
+        return stored is not None and stored is claim and not stored.taken
+
+    def _release_claim(self, job_id: str, claim: _RunClaim | None) -> bool:
+        """Release ``claim`` -- every field at once -- if it still owns the job."""
+        if not self._holds_claim(job_id, claim):
+            return False
+        del self._claims[job_id]
+        return True
+
+    def _take_claim(self, job_id: str, expected: _RunClaim | None = None) -> _RunClaim | None:
+        """Take over the stored claim for a teardown (``cancel()`` / ``_force_reap``).
+
+        Returns the claim if this caller is the one taking it, None when there
+        is none or another teardown already took it. A taken claim stays stored
+        so the job keeps reading as occupied through the kill awaits, but the
+        run's own fences fail from here on and the reaper skips it;
+        ``_finish_taken_claim`` pops it once the teardown is done killing.
+        Only the taker finishes: a caller handed None owns nothing of the run
+        and stops there, because pressing on would pop the taker's claim out
+        from under its kill awaits and write a second terminal row.
+
+        With ``expected``, only THAT object is taken (identity, like every
+        claim fence). A caller that decided on a teardown from a claim it read
+        before an await -- the reaper sweep, measuring a snapshot of the claims
+        -- names the run it measured; a stored claim that is a different object
+        is a replacement run it never measured, and is left untaken. Without
+        it -- ``cancel()``, keyed by job like its route, guarding and taking
+        in one loop step -- the job's current run is taken, whichever it is.
+        """
+        claim = self._claims.get(job_id)
+        if claim is None or claim.taken:
+            return None
+        if expected is not None and claim is not expected:
+            return None
+        claim.taken = True
+        return claim
+
+    def _finish_taken_claim(self, job_id: str) -> None:
+        """Pop the taken claim and cancel its task: the last step of a teardown.
+
+        Only a TAKEN claim is popped. A claim that is not taken belongs to a
+        replacement run accepted after this teardown's own claim left the
+        store some other way, and is never this teardown's to release.
+        Idempotent with ``_run_job_isolated``'s finally.
+        """
+        stored = self._claims.get(job_id)
+        if stored is None or not stored.taken:
+            return
+        del self._claims[job_id]
+        task = stored.task
+        if task is not None and not task.done():
+            task.cancel()
+
+    def attach_run_task(self, job_id: str, task: asyncio.Task[Any]) -> None:
+        """Track ``task`` as the run that :meth:`run_job` just claimed ``job_id`` for.
+
+        The manual-run route wraps the coroutine ``run_job`` returns in a task
+        on the same line and hands it in here, still await-free, so ``cancel()``
+        can reach a run parked in its store refresh and ``stop()`` can await it.
+        The run task ``_run_claimed_manual`` spawns later replaces it. A claim
+        that already tracks a task, or no claim at all, is left alone.
+        """
+        claim = self._claims.get(job_id)
+        if claim is not None and claim.task is None:
+            claim.task = task
+
+    def discard_finished_run(self, job_id: str) -> bool:
+        """Drop the claim of a run whose task has already finished.
+
+        A claim is released by ``_run_job_isolated``'s ``finally``. A task that
+        ends without reaching it leaves the claim stored with nothing left to
+        clear it, so the job reads as running for the life of the gateway:
+        every manual run of it is refused, and the due-scan, ``_next_wake_secs``
+        and ``run_job`` -- which all skip a claimed job -- pass over every
+        scheduled fire. The three consumers that gate on "is a run in flight?"
+        ask here first: the manual-run route before its 409, the reaper sweep
+        before its deadline math, and ``cancel()`` before its guard, so a
+        finished task is never mistaken for a live one. A task still running,
+        or no tracked task at all, is left untouched -- and so is a claim
+        ``cancel()`` or the reaper has taken, whatever its task's state: its
+        task ending is the expected effect of that teardown's kill, not an
+        orphan, and the teardown pops the claim itself once its kill awaits
+        return (``_finish_taken_claim``). Dropping it here would read the job
+        idle mid-teardown, admit a replacement run, and let the teardown's
+        terminal row outrank that run's generation. Returns True when a stale
+        claim was dropped.
+        """
+        claim = self._claims.get(job_id)
+        if claim is None or claim.taken or claim.task is None or not claim.task.done():
+            return False
+        del self._claims[job_id]
+        logger.warning(
+            "Cron: dropped stale running markers for job %s -- its task had already finished",
+            job_id,
+        )
+        return True
+
+    def running_since(self, job_id: str) -> float | None:
+        """Return the epoch start time of a running job, or None.
+
+        Silent for a run ``cancel()`` or the reaper has taken: its terminal row
+        is being written and the badge clears, as it did when they popped the
+        run's start stamp ahead of their kill awaits.
+        """
+        claim = self._claims.get(job_id)
+        if claim is None or claim.taken:
+            return None
+        return claim.claimed_at
+
+    def set_refresh_callback(self, cb: Any) -> None:
+        """Set the dashboard refresh callback."""
+        self._push_refresh = cb
+
+    def run_job(self, job_id: str) -> Coroutine[Any, Any, bool]:
+        """Manually trigger a job via _run_job_isolated (records history).
+
+        A plain ``def`` that returns the coroutine, on purpose: the claim on the
+        job -- its ``_RunClaim`` with ``trigger="manual"`` -- is taken HERE,
+        synchronously, while the call expression is evaluated. It therefore
+        exists before the caller's ``asyncio.create_task`` has scheduled
+        anything and before the coroutine's first ``await``. The manual-run
+        route answers 409 "already running" off the claim and hands the task it
+        creates to ``attach_run_task``, and ``cancel()`` reads the same claim: a
+        claim taken only inside the coroutine -- after the offloaded store
+        refresh, up to a full lock spin later -- leaves a window in which Cancel
+        answers "not running" about a run that Run calls "already running", and
+        the run then executes anyway. Loop-only and await-free, so the
+        check-and-claim stays atomic against the due-scan and a concurrent
+        manual trigger; ``_run_claimed_manual`` releases the claim if the store
+        does not hold the job. Every caller awaits or schedules the returned
+        coroutine at once (the route wraps it in a task on the same line); one
+        that dropped it would leave the job claimed.
+        """
+        if job_id in self._claims:
+            return _manual_run_refused()
+        claim = self._claim_run(job_id, "manual")
+        return self._run_claimed_manual(job_id, claim)
+
+    def _next_run_generation(self, job: CronJob) -> int:
+        """Allocate the next run generation of ``job``. Loop-side, no store I/O.
+
+        One above both the generation the store holds for the job
+        (``job.run_generation``: the last record merged, as of the object's
+        last sync) and the highest this process has handed out for it, so two
+        runs of one job never share a number -- whatever the clock says
+        (Windows' ``time.time()`` ticks every ~15.6 ms, so two claims in one
+        tick carry equal timestamps), across the reloads that replace the job
+        object before a run's merge lands, and across restarts, which resume
+        above the persisted value. Called once per run at its first step (and
+        kept on its claim), and by ``cancel()`` / ``_force_reap`` for the
+        terminal record they write, each BEFORE the run's claim is released
+        and without an ``await`` in between, so a replacement claim always
+        draws a higher number. Not a locked store write: the claim sites are
+        loop-resident and never take the store lock, and the merge that carries
+        the number persists it under the lock anyway.
+        """
+        generation = max(job.run_generation, self._run_generations.get(job.id, 0)) + 1
+        self._run_generations[job.id] = generation
+        return generation
+
+    async def _run_claimed_manual(self, job_id: str, claim: _RunClaim) -> bool:
+        """Body of :meth:`run_job`, entered with the claim already taken."""
+        # Refresh the store off the loop, then resolve + spawn on the loop.
+        #
+        # The locked _sync() + snapshot runs in a worker thread (_synced_snapshot
+        # via asyncio.to_thread) so a manual trigger never pays the whole-file
+        # read_bytes() + blake2b hash of crons.json on the event loop.
+        # _claims is loop-owned; the claim was taken on the loop before this
+        # coroutine started, so a cancel() that lands while the refresh is in
+        # flight finds the run and cancels THIS task.
+        #
+        # One residual, benign race remains against the batch-remove worker: it
+        # may delete the job on its own thread in the instant between our
+        # snapshot and our spawn, so a manual run can execute a just-removed job
+        # ONCE (non-destructive — it is not persisted, and the next scan won't
+        # see it). The batch-remove worker holds the SAME flock, so a lock-held
+        # claim could not observe a delete mid-way regardless. Degrades to the
+        # in-memory snapshot under lock contention.
+        try:
+            snapshot = await asyncio.to_thread(self._synced_snapshot, True)
+        except BaseException:
+            # No run will consume the claim: release it unless cancel() already
+            # took it (the fence fails) or a newer claim has replaced it. A
+            # cancel() that reached us here also marked this claim in
+            # _cancelled_jobs for _run_job_isolated's finally to consume -- a
+            # finally this run never spawns -- so consume it here, or the
+            # marker would outlive its run.
+            self._release_claim(job_id, claim)
+            self._cancelled_jobs.consume(job_id, claim)
+            raise
+        if not self._holds_claim(job_id, claim):
+            # cancel() took the claim while the refresh was in flight and is
+            # still tearing down: it takes the claim first and cancels the
+            # tracked task only after its process-kill / session-reset awaits,
+            # so this coroutine can resume inside that gap. Dispatching here
+            # would start the very run cancel() is about to report cancelled.
+            # The marker cancel() left is keyed to this claim, for a
+            # _run_job_isolated finally that never runs; consume it here.
+            self._cancelled_jobs.consume(job_id, claim)
+            return False
+        job = next((j for j in snapshot if j.id == job_id), None)
+        if not job:
+            self._release_claim(job_id, claim)
+            return False
+        task = asyncio.create_task(self._run_job_isolated(job, claim))
+        claim.task = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise  # outer coroutine was cancelled, propagate
+        finally:
+            # Backstop for a run whose finally was cut short, idempotent with
+            # it and fenced the same way: the wrapper resumes one loop
+            # iteration after the run ends, and a claim that is not this
+            # wrapper's by then belongs to a replacement run.
+            if task.done():
+                self._release_claim(job.id, claim)
+        return True
+
+    def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+        """List jobs from the in-memory snapshot — CACHE-ONLY, never touches disk.
+
+        This is a hot path: it is called directly on the gateway event loop by
+        the dashboard WebSocket status push, the dashboard REST handlers, the
+        Slack handlers, the apps SDK, and MCP tools. It performs NO filesystem
+        I/O — no lock-file open, no ``read_bytes()``, no digest hash — so a
+        large ``crons.json`` can never freeze the loop with synchronous I/O
+        (the ``no-blocking-call-on-event-loop`` rule). ``list(self._jobs)`` is
+        never torn: CPython swaps the list reference atomically.
+
+        Cross-process freshness is maintained OFF the loop: the timer tick
+        (``_on_timer``, every ≤``_TIMER_POLL_SECS``) and every mutator
+        ``_sync()`` the in-memory snapshot under the store lock, so an external
+        write is picked up within one poll interval. Callers that need to
+        observe a cross-process write *immediately* use :meth:`list_jobs_async`,
+        which offloads a locked ``_sync()`` + snapshot to a worker thread.
+        """
+        return self._snapshot(list(self._jobs), include_disabled)
+
+    def count_enabled_from_disk(self) -> int:
+        """Count enabled jobs by reading ``crons.json`` directly — thread-safe.
+
+        Unlike :meth:`list_jobs`, which serves the in-memory snapshot that the
+        loop-side timer refreshes, this performs ONLY a read-only file parse. It
+        never mutates loop-owned state (``self._jobs``, ``self._last_mtime``) and
+        never touches the asyncio timer, so it is safe to invoke from a worker
+        thread via ``asyncio.to_thread``.
+
+        This exists specifically for the dashboard status count refresh, which
+        needs an enabled-job count off the event loop that is current across
+        processes: a job added by the CLI or an MCP tool reaches the snapshot
+        only on the next timer tick, while this read sees it at once.
+
+        Enabled semantics come from the shared ``_record_is_enabled`` predicate
+        (the single owner used by ``_load`` too): a job is enabled when it is
+        neither user-paused nor auto-paused (with the legacy ``!enabled``
+        fallback for stores written before those fields existed). A slightly stale count is
+        acceptable here — the caller caches it and the atomic tmp→rename write
+        in ``_save`` guarantees a concurrent read sees a whole file, never a
+        partial one.
+
+        The read, parse and shape guards are :func:`_read_job_records`, shared
+        with the other two direct readers. Routing through it is what keeps the
+        WS status pusher alive on a corrupt store: catching only
+        ``(OSError, json.JSONDecodeError)`` here would let invalid UTF-8
+        (``UnicodeDecodeError``, from a bare locale-dependent ``read_text()``)
+        and deeply nested JSON (``RecursionError``, a ``RuntimeError``) escape
+        and kill the pusher. A count of 0 is the correct degrade: an
+        unreadable store has no jobs anyone can schedule.
+
+        The reduction itself lives in :func:`enabled_count_from_disk`, whose
+        ``loadable`` half this method deliberately discards — the status pusher
+        wants a number it can always render, not a fault to handle.
+        """
+        return enabled_count_from_disk(self._path)[0]
+
+    def get_job(self, job_id: str) -> CronJob | None:
+        """Find a job by its id in the in-memory snapshot — CACHE-ONLY, no disk I/O.
+
+        See :meth:`list_jobs` for the cache-only rationale and the
+        off-loop freshness contract. Use :meth:`get_job_async` when a
+        guaranteed cross-process-fresh read is required.
+        """
+        for job in self._jobs:
+            if job.id == job_id:
+                return job
+        return None
+
+    @staticmethod
+    def _snapshot(jobs: list[CronJob], include_disabled: bool) -> list[CronJob]:
+        """Filter a job snapshot by the ``include_disabled`` flag."""
+        if include_disabled:
+            return jobs
+        return [j for j in jobs if j.enabled]
+
+    def _synced_snapshot(self, include_disabled: bool) -> list[CronJob]:
+        """Refresh from disk under the store lock, then snapshot. WORKER-THREAD ONLY.
+
+        Runs the blocking read/hash/parse + bounded lock spin OFF the event
+        loop (via :meth:`list_jobs_async` / :meth:`get_job_async` /
+        :meth:`run_job` -> ``asyncio.to_thread``). Degrades to the current
+        in-memory snapshot if the store is too contended to lock, so a read
+        never raises :class:`CronStoreBusy` into a caller. A worker-thread
+        ``_sync()`` may reach ``_arm_timer``, which hands the (re)arm back to
+        the bound event loop thread-safely (see :meth:`_arm_timer`), so no
+        caller-side drain is required.
+        """
+        try:
+            with self._file_lock():
+                self._sync()
+        except CronStoreBusy:
+            pass  # too contended for a guaranteed-fresh read — use the cache
+        return self._snapshot(list(self._jobs), include_disabled)
+
+    async def list_jobs_async(self, include_disabled: bool = False) -> list[CronJob]:
+        """Freshness-guaranteed :meth:`list_jobs`: offloads a locked sync to a worker.
+
+        For the rare loop-side caller that must observe a write made by another
+        process (CLI/MCP) *right now* rather than within the ≤``_TIMER_POLL_SECS``
+        timer refresh. The read/hash/parse and the bounded lock spin run in an
+        ``asyncio.to_thread`` worker so the event loop is never blocked; the
+        deferred timer arm (if the worker's ``_sync()`` reloaded an external
+        change) is drained back on the loop.
+        """
+        jobs = await asyncio.to_thread(self._synced_snapshot, include_disabled)
+        return jobs
+
+    async def get_job_async(self, job_id: str) -> CronJob | None:
+        """Freshness-guaranteed :meth:`get_job` — see :meth:`list_jobs_async`."""
+        jobs = await asyncio.to_thread(self._synced_snapshot, True)
+        for job in jobs:
+            if job.id == job_id:
+                return job
+        return None
+
+    def status(self) -> dict[str, Any]:
+        """Service status summary."""
+        return {
+            "running": self._running,
+            "jobs": len(self._jobs),
+            "enabled": sum(1 for j in self._jobs if j.enabled),
+        }
+
+    # ── Timer ──
+
+    def _next_wake_secs(self) -> float | None:
+        """Compute seconds until the next job should fire."""
+        now = time.time()
+        delays: list[float] = []
+        for job in self._jobs:
+            if not job.enabled or job.id in self._claims:
+                continue
+            if job.schedule.kind == "every" and job.schedule.every_secs:
+                last = job.last_run_ts or job.created_ts
+                next_run = last + job.schedule.every_secs
+                delays.append(max(0.0, next_run - now))
+            elif job.schedule.kind == "at" and job.schedule.at_ts:
+                delays.append(max(0.0, job.schedule.at_ts - now))
+            elif job.schedule.kind == "cron":
+                # Wake ON the next cron boundary (as `at`/`every` do), not on a
+                # flat poll whose phase is unrelated to the schedule -- a phase
+                # gap can straddle a cron's single matching minute and drop the
+                # occurrence, most visibly on low-frequency crons. Use the
+                # skip-free boundary helper: it is O(1), so a job with many
+                # skip_dates cannot make this on-loop re-arm traverse up to
+                # _MAX_SKIP_DATE_LOOKAHEAD occurrences. skip_dates is enforced at
+                # fire time by _is_due; a wake on a skipped boundary is a no-op
+                # that re-arms to the next one. _effective_delay() still caps the
+                # armed delay at _TIMER_POLL_SECS so an externally-added job is
+                # picked up within one poll.
+                cron_next = _next_cron_boundary_ts(job, now)
+                if cron_next is not None:
+                    delays.append(max(0.0, cron_next - now))
+                else:
+                    delays.append(_TIMER_POLL_SECS)
+        return min(delays) if delays else None
+
+    def _effective_delay(self) -> float:
+        """Compute the actual timer delay, capped at poll interval.
+
+        Ensures the timer always wakes within _TIMER_POLL_SECS to _sync()
+        externally-added jobs, even when the next job is far in the future.
+        """
+        delay = self._next_wake_secs()
+        if delay is None:
+            return _TIMER_POLL_SECS
+        if self._admission_deferring and delay < _TIMER_POLL_SECS:
+            # A critical-posture episode leaves deferred ``every``/``at``
+            # jobs overdue (``last_run_ts`` untouched by design), which
+            # would otherwise re-arm the timer at zero delay — a busy loop
+            # of scans and admission probes on a host already under memory
+            # pressure. Back off to the poll cadence: the episode is
+            # re-evaluated (and deferred jobs fire) within one poll of
+            # posture recovery.
+            return _TIMER_POLL_SECS
+        return min(delay, _TIMER_POLL_SECS)
+
+    def _arm_timer(self) -> None:
+        # Re-arming creates/cancels asyncio tasks, which is only legal on the
+        # event loop thread. When this is reached OFF the loop — a locked core
+        # running in an asyncio.to_thread worker whose _sync()->_load() wants to
+        # re-arm, an app-hook/SDK mutation offloaded via asyncio.to_thread, or a
+        # purely synchronous (CLI/test) context — there is no running loop here.
+        # Creating a task would raise RuntimeError, and a blind cancel could
+        # stop the existing timer WITHOUT rearming it, silently halting every
+        # scheduled job. So off-loop we cancel/create nothing and instead hand
+        # the arm back to the bound event loop (captured in create()/start())
+        # via loop.call_soon_threadsafe(self._arm_timer): the arm then runs ON
+        # the loop and (re)arms for real. Arming is thus owned by the service —
+        # no caller has to remember a drain step. In a genuinely loop-less
+        # process (self._loop is None) there is no scheduler to arm.
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            bound = self._loop
+            if bound is not None and not bound.is_closed():
+                bound.call_soon_threadsafe(self._arm_timer)
+            return
+        current = asyncio.current_task()
+        # Never cancel the timer task if we ARE that task. The tick's own
+        # `finally` re-arms while the tick coroutine is still executing, so a
+        # blind `self._timer_task.cancel()` there fires a CancelledError back
+        # into the running tick — aborting the in-flight `_on_timer` dispatch
+        # (dropping any due jobs not yet spawned) and leaving a half-processed
+        # sweep. We skip the cancel in that self-referential case and simply
+        # create the replacement task below; the finishing tick exits normally.
+        # A *different* caller rescheduling while the tick merely waits on
+        # shutdown_event still cancels correctly (current is not the timer task).
+        #
+        # A DIFFERENT hazard, same root cause, needs a second guard: a job's
+        # own completion handler calls _arm_timer() (see _run_job_isolated) to
+        # re-arm promptly instead of waiting out the rest of the poll cap, but
+        # that call runs on the JOB's task, not the timer's — so `current is
+        # not self._timer_task` above is true even while _on_timer is still
+        # mid-sweep (yielded at its own to_thread scan). Cancelling here would
+        # abort that sweep exactly as the self-referential case above
+        # describes, just reached from a different caller. Neither cancelling
+        # NOR creating a replacement task is safe in that window (creating one
+        # too would leave two timer tasks alive and double-fire the next
+        # tick), so this arm is dropped entirely: _on_timer's own tick already
+        # unconditionally re-arms in its `finally` once the sweep completes
+        # (by which point the completed job has released its claim),
+        # so the delay this caller wanted still gets picked up, just a moment
+        # later rather than being computed twice.
+        if self._on_timer_running and current is not self._timer_task:
+            return
+        if self._timer_task and not self._timer_task.done() and self._timer_task is not current:
+            self._timer_task.cancel()
+        if not self._running:
+            return
+        delay = self._effective_delay()
+
+        logger.debug("Cron: next timer in %.1fs", delay)
+
+        async def _tick() -> None:
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
+                return  # shutdown signaled
+            except asyncio.TimeoutError:
+                pass  # normal wake-up
+            if self._running:
+                try:
+                    await self._on_timer()
+                except Exception:
+                    logger.exception("Cron timer error — will re-arm")
+                finally:
+                    # Always re-arm, even after errors
+                    if self._running:
+                        self._arm_timer()
+
+        self._timer_task = asyncio.create_task(_tick())
+
+    def _tick_scan_locked(self) -> list[CronJob]:
+        """Locked store refresh + deferred-removal drain + snapshot. WORKER-THREAD ONLY.
+
+        The timer tick's blocking work — the bounded ``_file_lock`` spin, the
+        ``_sync()`` that ``read_bytes()`` + blake2b-hashes the WHOLE
+        ``crons.json``, and the deferred one-shot delete+save — runs here so it
+        can be offloaded off the event loop via ``asyncio.to_thread`` (see
+        :meth:`_on_timer`). Returns a snapshot of the current jobs; the loop
+        then runs the mutation-free, claim-aware due-scan against it.
+
+        Drains deferred removals BEFORE snapshotting so a completed
+        ``delete_after_run`` job whose immediate removal hit a busy store (see
+        :meth:`defer_removal`) is deleted here and can never appear due — even
+        though the ``_sync`` above may have re-derived it as enabled. If the
+        store is too contended to lock this tick, degrades to the in-memory
+        snapshot without draining (the next tick retries; ``defer_removal``'s
+        in-memory disable keeps a completed one-shot from re-firing meanwhile).
+        A worker-thread ``_sync()`` reload may reach ``_arm_timer``, which hands
+        the (re)arm back to the bound event loop thread-safely (see
+        :meth:`_arm_timer`) — no caller-side drain is required.
+        """
+        drained: list[str] = []
+        try:
+            with self._file_lock():
+                self._sync()
+                drained = self._drain_pending_removals_locked()
+        except CronStoreBusy:
+            logger.debug("Cron timer tick: store busy, using in-memory snapshot")
+        except OSError as exc:
+            logger.warning("Cron timer tick: store write failed, using in-memory snapshot: %s", exc)
+        # Post-lock on purpose: the emit must never extend the store-lock hold
+        # (see audit_one_shot_removal). Still on this worker thread, so the
+        # queue append cannot block the event loop either.
+        for jid in drained:
+            self.audit_one_shot_removal(jid, "cron_deferred_drain")
+        return list(self._jobs)
+
+    async def _on_timer(self) -> None:
+        """Fire due jobs as independent tasks (non-blocking).
+
+        The locked store refresh + deferred-removal drain + snapshot is
+        offloaded to a worker thread (:meth:`_tick_scan_locked`) so a large or
+        slow ``crons.json`` can never freeze the gateway loop with the
+        ``_sync()`` ``read_bytes()`` + blake2b hash on every tick (the
+        ``no-blocking-call-on-event-loop`` rule). The mutation-free due-scan —
+        which reads loop-owned ``self._claims`` — then runs on the loop
+        against the returned snapshot.
+
+        Brackets the whole body with ``self._on_timer_running`` so a job
+        completing during either ``to_thread`` await below (the scan, and the
+        admission check) cannot have its ``_arm_timer()`` call cancel
+        ``self._timer_task`` out from under this sweep — see ``_arm_timer``.
+        """
+        self._on_timer_running = True
+        try:
+            snapshot = await asyncio.to_thread(self._tick_scan_locked)
+            now = time.time()
+            due = [
+                j
+                for j in snapshot
+                if j.enabled and j.id not in self._claims and self._is_due(j, now)
+            ]
+
+            # An empty due-scan can only end the tick when no deferral episode is
+            # in progress: the recovery log (below) must still fire on a quiet
+            # tick, otherwise an episode that ends during a lull is never closed.
+            if not due and not self._admission_deferring:
+                return
+
+            # Posture-gated admission: while host memory is CRITICAL, defer this
+            # tick's ``every``/``at`` firings instead of admitting more work onto
+            # a host that cannot absorb it. The verdict is computed off-loop
+            # (config + procfs reads must not stall the event loop). Deferral is
+            # deliberately STATELESS and only applies to schedule kinds that stay
+            # due on their own (``last_run_ts`` untouched, so a deferred job fires
+            # on the first admitted tick). A cron-expression job is only due while
+            # its expression matches the current minute, so it cannot be deferred
+            # statelessly: an in-memory catch-up marker loses the occurrence on
+            # gateway restart, and dropping it silently loses the occurrence
+            # outright — so cron-expression jobs run normally even under critical
+            # posture (persisted deferral markers are a possible follow-up).
+            # Manual runs (run_job / cron_trigger) never pass through this scan
+            # and are not deferred. Fails open on unknown posture. The INFO log
+            # fires once per deferral episode and re-fires every 15 minutes so a
+            # long suspension stays diagnosable.
+            decision = await asyncio.to_thread(admission_check)
+
+            # The admission await yielded the loop, so the due snapshot may be
+            # stale: a manual run (run_job / cron_trigger) can have claimed — or
+            # even completed — a job meanwhile, and a job can have been edited,
+            # disabled, or queued for removal. Rebuild the due list from the LIVE
+            # job objects and re-run the due check BEFORE the deferral partition
+            # below: classifying by the stale snapshot's schedule kind would let
+            # an interval job edited into a matching cron expression during the
+            # await be deferred-and-dropped (its occurrence lost), and dispatching
+            # the snapshot object would execute a stale definition. An id-only
+            # check would double-fire a job whose manual run already finished.
+            # The re-check deliberately reuses the scan-time ``now``: a live
+            # ``last_run_ts`` advanced by a finished manual run still fails it
+            # (interval math for ``every``/``at``, the same-minute guard for cron
+            # expressions), while a minute boundary crossed during the await
+            # cannot drop a cron-expression occurrence that was genuinely due at
+            # scan time.
+            live_by_id = {j.id: j for j in self._jobs if j.enabled}
+            due = [
+                live_by_id[j.id]
+                for j in due
+                if j.id in live_by_id
+                and j.id not in self._claims
+                and j.id not in self._pending_removals
+                and self._is_due(live_by_id[j.id], now)
+            ]
+
+            if not decision.admitted:
+                deferred = [j for j in due if j.schedule.kind != "cron"]
+                due = [j for j in due if j.schedule.kind == "cron"]
+                now_mono = time.monotonic()
+                if not self._admission_deferring:
+                    self._admission_deferring = True
+                    self._admission_last_log = now_mono
+                    logger.info(
+                        "Cron: deferring interval/one-shot firings (%d deferred "
+                        "this tick; cron-expression jobs run normally) — %s "
+                        "(re-logged every 15 min while the episode lasts)",
+                        len(deferred),
+                        decision.reason,
+                    )
+                elif now_mono - self._admission_last_log >= 900.0:
+                    self._admission_last_log = now_mono
+                    logger.info(
+                        "Cron: STILL deferring interval/one-shot firings (%d "
+                        "deferred this tick) — %s",
+                        len(deferred),
+                        decision.reason,
+                    )
+                else:
+                    logger.debug("Cron: still deferring %d scheduled job(s)", len(deferred))
+            elif self._admission_deferring:
+                self._admission_deferring = False
+                logger.info("Cron: memory posture recovered — resuming scheduled firings")
+
+            if not due:
+                return
+
+            # Fire each job independently — one hung job never blocks others.
+            # The claim taken here is handed to the task rather than read back
+            # by it: see _run_job_isolated.
+            for j in due:
+                claim = self._claim_run(j.id, "scheduled")
+                claim.task = asyncio.create_task(self._run_job_isolated(j, claim))
+        finally:
+            self._on_timer_running = False
+
+    async def _run_job_isolated(self, job: CronJob, claim: _RunClaim) -> None:
+        """Execute a single job and merge results back to disk.
+
+        ``claim`` is the claim the dispatcher took for this run -- the object it
+        stored in ``_claims`` and tracked this task on (``_on_timer``,
+        ``_run_claimed_manual``) -- handed in rather than read back here. This
+        first step runs at least one loop iteration after ``create_task``, and
+        a ``cancel()`` in that gap takes the claim, marks the cancellation for
+        it, and awaits the process kill BEFORE it cancels the task, so the task
+        starts inside ``cancel()``: a claim read back from the store there would
+        be one this run does not own, the finally's marker lookup would miss,
+        and the run would be filed as a failure beside the cancelled row
+        ``cancel()`` writes.
+        """
+        if not self._holds_claim(job.id, claim):
+            # Taken before this run's first step: cancel() took the claim,
+            # wrote the run's terminal row and is about to cancel this task.
+            # Run nothing -- a stamp set now would sit on a claim that is no
+            # longer this run's to release, and that finally would double the
+            # row already written. The markers cancel() and the reaper key to
+            # this claim are consumed here, the one place left that can.
+            self._cancelled_jobs.consume(job.id, claim)
+            self._reaped_jobs.consume(job.id, claim)
+            return
+        # This run's generation, drawn while it verifiably holds the claim;
+        # the finally stamps it on the record it merges (see CronJob).
+        claim.generation = self._next_run_generation(job)
+        started_at = claim.claimed_at
+        trigger = claim.trigger
+        # Provisional; refined once the jitter sleep completes. Only read on
+        # the history path, which a cancelled-during-jitter run never reaches.
+        exec_started_at = started_at
+        being_cancelled = False
+        marker_write: "asyncio.Future[None] | None" = None
+        # Everything the finally below releases is claimed INSIDE the try. The
+        # caller (_on_timer, run_job) has already stored the claim and tracked
+        # this task on it, and the timer path never awaits the task, so that
+        # finally is the only release the claim ever gets. Bookkeeping ahead of
+        # the try -- the generation, the fire counter -- is outside that
+        # protection: an exception there ends the task with the claim still
+        # stored and nothing on this path left to release it; the job then
+        # reads as running until the reaper sweep, the manual-run route or
+        # cancel() meets the finished task (discard_finished_run), and every
+        # scheduled fire and every manual run in between is skipped or refused
+        # with 409.
+        try:
+            # Stamped here rather than derived from claimed_at: the two clocks
+            # share no epoch, so the reaper's deadline is only meaningful
+            # against a stamp taken on its own clock.
+            claim.started_monotonic = time.monotonic()
+            # One increment per execution, before the jitter sleep so a run
+            # cancelled during jitter still counts as fired. ``kind`` is the
+            # dispatch shape -- ``script`` and ``command`` bypass the model
+            # entirely, so this is the split between jobs that cost tokens and
+            # jobs that cost none.
+            if job.script:
+                kind = "script"
+            elif job.command:
+                kind = "command"
+            else:
+                kind = "agent"
+            emit_counter(CRON_FIRES, {"kind": kind, "trigger": trigger})
+            # Apply jitter to spread execution unless strict_schedule is set or manual
+            jitter = self._compute_jitter(job) if trigger != "manual" else 0
+            claim.jitter = jitter
+            # ``last_result`` is a cross-run context-carry field for AGENT jobs
+            # (see build_cron_session_context): result-less runs leave the
+            # previous value in place so the next run's prompt keeps its dedup
+            # context. Command and script jobs have theirs cleared once in the
+            # finally below, because the prompt built for them is never
+            # dispatched. The history recorder in the finally block must NOT
+            # attribute that carried-over value to THIS run, so clear the
+            # freshness marker here; executor callbacks set it via
+            # CronJob.set_run_result() when the run actually produces a result.
+            # (String identity/equality can't stand in for the marker: CPython
+            # interns equal literals and caches single-char strings, so a run
+            # re-producing the previous text looks identical to one that
+            # produced nothing.)
+            job.result_produced = False
+            # The jitter sleep MUST live inside this try: hourly/daily jobs
+            # sleep up to 59 min here, and a user cancel() during that window
+            # raises CancelledError at the sleep — if that happened BEFORE the
+            # try, the finally below would never run, leaking this run's
+            # _cancelled_jobs marker (and the rest of the bookkeeping): the
+            # run-keyed marker stays inert for later runs, but nothing else
+            # would ever consume it.
+            if jitter > 0:
+                logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
+                await asyncio.sleep(jitter)
+            exec_started_at = time.time()
+            # The record a hard exit leaves behind. Every other trace of this
+            # run (last_run_ts, the history row, status) is written in the
+            # finally below, which an os._exit from the loop-stall watchdog
+            # never reaches -- so without this file the store would show the
+            # job as never fired, it would be due again on the next boot, and
+            # nothing could say which job the dying gateway was running. Off
+            # the loop like every other write on this path; best-effort. The
+            # write is kept as a task so the finally below can wait for it: a
+            # cancellation that lands mid-write must not let clear_marker run
+            # before the worker publishes, or the marker it leaves behind would
+            # read as an abandoned run on the next boot.
+            # The in-flight marker is one file per RUN, named by the claim's
+            # token, so the clear in the finally can only remove this run's own
+            # marker -- never the one a replacement run wrote while this run's
+            # cancellation was still unwinding (see cron_inflight.clear_marker).
+            marker_write = asyncio.ensure_future(
+                asyncio.to_thread(
+                    cron_inflight.write_marker,
+                    self._dir,
+                    job.id,
+                    job.name,
+                    exec_started_at,
+                    run=claim.marker_run,
+                )
+            )
+            await asyncio.shield(marker_write)
+            # Notify dashboard that the job has started executing so the live
+            # is_running badge appears without a manual reload.
+            try:
+                if self._push_refresh:
+                    self._push_refresh("crons")
+            except Exception:
+                logger.debug("push_refresh failed on job start", exc_info=True)
+            await self._execute_with_timeout(job, claim)
+        except asyncio.CancelledError:
+            # stop() cancels this task WITHOUT marking _cancelled_jobs, so the
+            # finally must know not to clear the last completed run's result.
+            being_cancelled = True
+            raise
+        finally:
+            finished_at = time.time()
+            # The run ended by a path that runs finally, so it is no longer in
+            # flight whatever its outcome. A marker that survives this is what a
+            # hard exit looks like, so clear it first and unconditionally --
+            # after the write that may still be publishing it, or a
+            # cancellation mid-write would unlink nothing and leave the marker.
+            try:
+                if marker_write is not None and not marker_write.done():
+                    await asyncio.shield(marker_write)
+            except (asyncio.CancelledError, Exception):
+                pass  # the write is best-effort; the clear below still runs
+            try:
+                # This run's file only (the token is in its name): a replacement
+                # run accepted while this cancellation was unwinding -- a whole
+                # session teardown for an agent job -- has its own marker, and
+                # a clear by job id would have taken it, leaving a hard exit
+                # during that run with no evidence for the breaker.
+                await asyncio.to_thread(
+                    cron_inflight.clear_marker, self._dir, job.id, claim.marker_run
+                )
+            except Exception:
+                logger.debug("in-flight marker not cleared for %s", job.id, exc_info=True)
+            # Consume only THIS run's markers (identity on its claim).
+            # cancel() and the reaper mark the run they took; a marker keyed
+            # by job id alone would let this finalizer, stalled in the clear
+            # above while a replacement run was accepted and cancelled, eat
+            # that run's marker -- its finalizer then finds none and appends a
+            # failure row after the cancelled row cancel() already wrote.
+            reaped = self._reaped_jobs.consume(job.id, claim)
+            cancelled = self._cancelled_jobs.consume(job.id, claim)
+            # This run's terminal record, taken BEFORE the release below. The
+            # job object is shared by every run of the job, and the release
+            # lets a replacement start while the merge and history append are
+            # still pending: that run's `_execute` resets last_status and the
+            # result-produced flag on the same object, so a record read after
+            # the release would file this run as a failure with no summary and
+            # persist the replacement's blank status as this run's. The every-
+            # job stamp move and the carried-result clear are this run's own
+            # terminal writes, so they land here too, inside the claim.
+            terminal: CronJob | None = None
+            status = ""
+            run_result: str | None = None
+            if not reaped and not cancelled:
+                # For 'every' jobs, use started_at to prevent cumulative drift.
+                # `_execute` bound this run's retry count to the `last_run_ts` it
+                # stamped; moving that stamp has to move the binding with it, or
+                # the pair disagrees for every completed `every` run and the
+                # Schedule page never shows a count. Only a bound pair moves: a
+                # run that timed out never reached `_execute`'s stamp, so its
+                # pair is (previous run, this run) and stays mismatched.
+                if job.schedule.kind == "every":
+                    if job.last_retry_run_ts == job.last_run_ts:
+                        job.last_retry_run_ts = started_at
+                    job.last_run_ts = started_at
+                # One clear per result-less run. Scattering it over exit sites is
+                # what let the fire-time deny and script Skip paths keep a result.
+                if (job.command or job.script) and not being_cancelled:
+                    job.clear_carried_result()
+                status = "success" if job.last_status == "ok" else "failure"
+                # Attribute last_result to this run only if the run actually
+                # produced it (set_run_result sets the marker). Reading it
+                # unconditionally recorded the PREVIOUS run's result as this
+                # run's summary/trace whenever the run ended without producing
+                # one (observed in the wild: a timed-out run's history row
+                # carried the prior success's summary verbatim -- fabricated
+                # history on a status=failure record).
+                run_result = job.last_result if job.result_produced else None
+                # The merge copies this run's fields to the disk copy field by
+                # field; a shallow copy freezes them as this run left them.
+                terminal = copy.copy(job)
+                # The record's generation, which the merge compares against the
+                # one the store holds and stamps on it. Set on the copy, not
+                # the shared job -- only a merge moves the store's generation,
+                # so a run that has merely STARTED behind this one does not
+                # discard this record; a run whose record already landed does.
+                terminal.run_generation = claim.generation
+            # Release the claim only while it is still THIS run's (identity,
+            # see _holds_claim). cancel() and the reaper take the run they
+            # found before anything else can claim the job, and the marker
+            # clear above is a full executor round trip: a manual Run accepted
+            # in that gap holds a claim of its own that is not this run's to
+            # remove. Popping it anyway drops that run at its own claim re-check
+            # after the route answered "started", or, past the re-check, leaves
+            # it running with Cancel answering 409 and a further Run accepted
+            # beside it. A run that is still the claim holder (a normal
+            # completion, or stop()'s cancel, which takes nothing) releases
+            # everything here -- the one pop covers every field.
+            self._release_claim(job.id, claim)
+            # Notify dashboard that the job has finished (clears the badge).
+            try:
+                if self._push_refresh:
+                    self._push_refresh("crons")
+            except Exception:
+                logger.debug("push_refresh failed on job end", exc_info=True)
+            if terminal is not None:
+                try:
+                    # Offload the lock+sync+save merge to a worker thread:
+                    # _merge_job_result enters the bounded sync _file_lock,
+                    # whose spin does time.sleep(poll) for up to
+                    # _FILE_LOCK_TIMEOUT_SECS under contention. Calling it
+                    # directly here — on the gateway event loop, since
+                    # _run_job_isolated is a loop task — would park the whole
+                    # loop (chat, heartbeat, timer) for that window. to_thread
+                    # is safe for the same reason the batch-remove path uses it
+                    # (flock on separate fds mutually excludes in-process too,
+                    # and the self._jobs reassignment is an atomic reference
+                    # swap). CronStoreBusy (a TimeoutError) on sustained
+                    # contention is caught below and logged — the merge is
+                    # best-effort and the next run / reaper re-persists.
+                    await asyncio.to_thread(self._merge_job_result, terminal)
+                except Exception:
+                    logger.exception("Failed to merge result for job '%s'", job.name)
+                # Record history
+                try:
+                    record = CronRunRecord(
+                        job_id=job.id,
+                        trigger=trigger,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        duration_ms=int((finished_at - exec_started_at) * 1000),
+                        status=status,
+                        # Uncut on purpose: CronHistoryStore.append is the one
+                        # truncation site, applying the configured cap through
+                        # truncate_summary, which keeps URLs and the outcome
+                        # line. A slice here would cut ahead of both.
+                        summary=run_result or terminal.last_error or "",
+                        trace=run_result or "",
+                        error=terminal.last_error or "",
+                    )
+                    await self._history.append(record)
+                    if self._push_refresh:
+                        self._push_refresh("cron_history")
+                except Exception:
+                    logger.exception("Failed to record history for job '%s'", job.name)
+            # Re-arm now rather than waiting for whatever wake was already
+            # armed: a job that ran for most of its interval was invisible to
+            # every _next_wake_secs() computed while self._claims held it
+            # (see _next_wake_secs), so the armed delay can be stale by up to
+            # _TIMER_POLL_SECS by the time this job becomes due again. Placed
+            # at the very end, after last_run_ts/history are settled, so the
+            # delay this computes reflects this run's actual outcome. Safe to
+            # call unconditionally (also when reaped/cancelled, or when
+            # nothing changed): _arm_timer() itself no-ops when the service
+            # isn't running, and the self._on_timer_running guard there
+            # covers the one case where this job's own completion happens to
+            # race an in-flight dispatch sweep.
+            if self._running:
+                self._arm_timer()
+
+    @staticmethod
+    def _compute_jitter(job: CronJob) -> float:
+        """Return random jitter seconds based on schedule frequency.
+
+        - strict_schedule=True or one-shot 'at' jobs: no jitter
+        - Sub-hourly (every < 3600s or cron whose parsed minute field fires
+          more than once per hour): no jitter
+        - Hourly (every 3600–86399s or cron firing hourly): 0–5 min
+        - Daily (every >= 86400s or cron firing daily): 0–59 min
+        - Unrecognized cron patterns (fallback): 0–5 min
+        """
+        if job.strict_schedule:
+            return 0.0
+        sched = job.schedule
+        if sched.kind == "at":
+            return 0.0  # one-shot jobs fire at exact time
+        if sched.kind == "every" and sched.every_secs:
+            if sched.every_secs >= 86400:
+                return random.uniform(0, _JITTER_DAILY_MAX)
+            elif sched.every_secs >= 3600:
+                return random.uniform(0, _JITTER_HOURLY_MAX)
+            else:
+                return 0.0  # sub-hourly jobs shouldn't be jittered
+        if sched.kind == "cron" and sched.cron_expr:
+            # Ask croniter for the normalized minute set. Wildcard collapses
+            # to ["*"]; lists, ranges, steps, and their combinations expand
+            # and deduplicate, so cardinality reflects actual fires per hour.
+            try:
+                expanded, _ = croniter.expand(sched.cron_expr)
+                minute_values = expanded[0]
+            except (KeyError, TypeError, ValueError):
+                minute_values = []
+            if minute_values == ["*"] or len(minute_values) > 1:
+                return 0.0
+
+            parts = sched.cron_expr.split()
+            if len(parts) == 5:
+                # Single literal hour (e.g., "0 3 * * *") = truly daily/weekly
+                if parts[1].isdigit():
+                    return random.uniform(0, _JITTER_DAILY_MAX)
+                # Multi-hour patterns (*/2, 1,13) or wildcard = hourly jitter
+                if parts[1] != "*":
+                    return random.uniform(0, _JITTER_HOURLY_MAX)
+            return random.uniform(0, _JITTER_HOURLY_MAX)
+        return 0.0
+
+    @staticmethod
+    def _is_due(job: CronJob, now: float) -> bool:
+        if job.schedule.kind == "every" and job.schedule.every_secs:
+            last = job.last_run_ts or job.created_ts
+            if now < last + job.schedule.every_secs:
+                return False
+        elif job.schedule.kind == "at" and job.schedule.at_ts:
+            if now < job.schedule.at_ts:
+                return False
+        elif job.schedule.kind == "cron" and job.schedule.cron_expr:
+            tz = _job_tz(job)
+            dt = datetime.fromtimestamp(now, tz=tz)
+            if not cron_expr_matches(job.schedule.cron_expr, dt):
+                return False
+            # Don't re-fire within the same UTC minute (immune to DST ambiguity)
+            if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
+                return False
+        else:
+            return False
+        # Skip dates check (evaluated in job's local timezone, applies to all schedule types)
+        if job.skip_dates:
+            local_date = datetime.fromtimestamp(now, _job_tz(job)).strftime("%Y-%m-%d")
+            if local_date in job.skip_dates:
+                return False
+        return True
+
+    async def _execute_with_timeout(self, job: CronJob, claim: _RunClaim | None = None) -> None:
+        """Execute a job with a timeout guard.
+
+        ``claim`` is the run's own claim, handed down so ``_execute`` can ask
+        whether THIS run was cancelled (the markers are keyed by run, and
+        ``cancel()`` has taken the stored claim by the time that question is
+        asked); a direct call without one matches no marker.
+        """
+        timeout = effective_wake_budget(job)
+        # The cron pool's QUEUE WAIT happens inside this deadline, so the wake
+        # budget has to cover it as well as the execution.  Excluding queue wait
+        # from the per-call `timeout=` kwarg (see run_in_cron_pool) is not enough
+        # on its own: without the term below, a job still sitting in the pool
+        # queue is killed here and reported as an execution overrun, which is the
+        # exact misdiagnosis this whole change exists to remove.  Worse, a thread
+        # cannot be interrupted -- so if a worker claimed the call as this
+        # deadline fired, the subprocess runs on while the overlap guards clear
+        # and the next wake duplicates its side effects.  That is the hazard
+        # _SUBPROC_CLEANUP_ALLOWANCE_SECS was written for, and the queue wait is
+        # a second term it never accounted for, and the fire-time gate's own bound
+        # is a third -- it is awaited before the dispatch and inside this same
+        # deadline, so _gate_budget_allowance covers it.  The CLAIM-time vet is a
+        # fourth: the same vet again, inside the worker, ahead of the subprocess
+        # it authorises -- so _vet_allowance covers it, and without that term a
+        # widened inner backstop in the gateway is simply pre-empted here.
+        # All three allowances are
+        # shared with the reaper so the two deadlines cannot drift and pre-empt
+        # one another.  Only command/script jobs go through the pool, so a
+        # message job's budget is left exactly as set.
+        deadline = (
+            timeout + _pool_queue_allowance(job) + _gate_budget_allowance(job) + _vet_allowance(job)
+        )
+        # Fresh run: no failure counted yet. The timeout handler below reads
+        # this to avoid double-counting a run that already recorded its
+        # failure and then overran the deadline during cleanup.
+        job.failure_recorded = False
+        try:
+            await asyncio.wait_for(self._execute(job, claim), timeout=deadline)
+        except asyncio.TimeoutError:
+            # NB: Timeout bypasses _cron_callback's except block entirely —
+            # which also means it bypasses all Slack notification logic. Adding
+            # a timeout Slack alert is a separate feature and is intentionally
+            # out of scope here.
+            # Clear failure dedup state so a subsequent real error isn't
+            # suppressed as a dup of the pre-timeout failure, and count the
+            # timeout toward the auto-pause threshold for a run that actually
+            # DISPATCHED: a job that times out on every run must eventually
+            # auto-pause instead of running forever with zero user signal.
+            job.last_status = "error"
+            job.last_error = f"Timed out after {deadline}s"
+            job.last_run_ts = time.time()
+            job.last_failure_hash = ""
+            job.last_failure_at = 0.0
+            # Skip the count when this run already recorded its failure (a
+            # delivery-path exception followed by cleanup overrunning the
+            # deadline): one failed run is one failure, whichever handler
+            # observes it last.
+            #
+            # Skip it too when the payload NEVER STARTED. A stall that pushes
+            # wall clock past the wake deadline while the fire-time gate is
+            # still awaited cancels this coroutine AT that await, so no handler
+            # inside the gate runs and the marker set before it survives -- and
+            # the timeout lands here on a run that dispatched nothing. Counting
+            # it would auto-pause at _AUTO_PAUSE_THRESHOLD, and a paused job
+            # never fires again, so repeated event-loop saturation durably
+            # disables a job that has not run a line. This is the same
+            # discriminator the starvation, gate-deny and vet-overrun paths
+            # already use: a state that PREVENTED the run is not a defect OF
+            # the run. A genuine execution overrun still counts, because
+            # _execute resets the marker to False before invoking the callback.
+            if not job.failure_recorded and not job.run_never_started:
+                job.record_failure()
+            logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
+
+    async def _execute(self, job: CronJob, claim: _RunClaim | None = None) -> None:
+        """Run the job callback and update runtime fields (last_run_ts, last_status).
+
+        ``claim`` is this run's claim (see ``_execute_with_timeout``).
+        """
+        logger.info("Cron: executing '%s' (%s)", job.name, job.id)
+        # Reset status for this run so a prior run's "error" can't leak into an
+        # "ok" decision below. Same for the fire-time denial marker.
+        job.last_status = None
+        job.fire_time_denied = False
+        job.run_never_started = False
+        # Transient retries the callback took this run. The gateway callback only
+        # INCREMENTS `_transient_attempts` (a runtime attribute on the live job);
+        # this method is the one owner of reading it, clearing it and persisting
+        # it -- see the stamp after `last_run_ts` below. The read-and-clear sits
+        # in a `finally` so a cancelled or timed-out run (CancelledError skips
+        # everything after the await) cannot leak a half-spent budget into the
+        # next run's retry allowance.
+        retries = 0
+        try:
+            if self._on_job:
+                try:
+                    await self._on_job(job)
+                finally:
+                    retries = int(getattr(job, "_transient_attempts", 0) or 0)
+                    job._transient_attempts = 0  # type: ignore[attr-defined]
+            # Only mark "ok" if the callback did not itself report failure. The
+            # command/script paths return NORMALLY and signal failure by mutating
+            # the shared job (last_status="error"); only the LLM path raises.
+            # Overwriting unconditionally with "ok" destroyed that error before
+            # the history recorder and _merge_job_result read it, mis-reporting
+            # failed command/script runs as successful on the dashboard and in
+            # cron_list.
+            if job.last_status != "error":
+                job.last_status = "ok"
+                job.last_error = None
+                # Reset the auto-pause budget: without this, CronService-run
+                # jobs count failures monotonically (record_failure fires on
+                # the error/timeout paths but nothing ever reset the counter
+                # here), so any job accumulating _AUTO_PAUSE_THRESHOLD
+                # transient failures over its LIFETIME — successes in
+                # between notwithstanding — silently auto-paused. Guarded by
+                # the "error" check above so the deliberately-neutral paths
+                # (governance/fire-time denials, which set last_status =
+                # "error" without counting a failure) stay neutral: a policy
+                # denial neither spends nor refills the budget. Callback
+                # paths that already called record_success() are unaffected
+                # (resetting 0 to 0 is idempotent). The _cancelled_jobs
+                # check closes a cancel race: cancel() kills the sandboxed
+                # subprocess BEFORE task.cancel(), and the gateway's
+                # cancelled branch returns None without setting last_status,
+                # so a callback returning in that window would otherwise
+                # reach this branch — and cancel() documents that it leaves
+                # consecutive_failures untouched. Asked for THIS run's claim:
+                # cancel() has taken the stored claim by now, and a marker
+                # left by another run of the job is not this run's.
+                if not self._cancelled_jobs.has(job.id, claim):
+                    job.record_success()
+        except Exception as exc:
+            job.last_status = "error"
+            job.last_error = str(exc)
+            logger.error("Cron job '%s' failed: %s", job.name, exc)
+
+        job.last_run_ts = time.time()
+        # Retry telemetry is stamped HERE, with the `last_run_ts` it describes,
+        # so the two can never disagree for a run that completed. Stamping it
+        # anywhere inside the callback would bind it to the PREVIOUS run's
+        # `last_run_ts` (this line has not run yet while the callback is
+        # executing), and the Schedule page -- which shows the count only when
+        # the two stamps match -- would never show it. A cancelled run never
+        # reaches this line, so its own `last_run_ts` write leaves the pair
+        # mismatched and the page shows no count rather than a stale one.
+        job.last_retry_count = retries
+        job.last_retry_run_ts = job.last_run_ts
+
+        # One-shot "at" jobs: disable after the run. A fire-time-DENIED at-job
+        # is disabled too — its due time has passed, so leaving it enabled
+        # would make it due on EVERY timer tick (a zero-delay refire loop that
+        # floods audit/history until resource exhaustion). Parking it disabled
+        # (instead of deleting — including the delete_after_run shape, which
+        # the merge below retains) keeps it discoverable so an operator can
+        # re-enable it after a policy loosening. Recurring jobs are untouched:
+        # they simply wait for their next scheduled slot and resume on their
+        # own when policy loosens.
+        if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
+            job.enabled = False
+
+    def _merge_job_result(self, job: CronJob) -> None:
+        """Merge a single job's runtime state back to disk.
+
+        Enters the bounded sync :meth:`_file_lock` (which spins with
+        ``time.sleep`` under contention) and may raise :class:`CronStoreBusy`.
+        MUST NOT be called directly on the gateway event loop — its sole
+        loop-side caller, :meth:`_run_job_isolated`, offloads it via
+        ``asyncio.to_thread`` so the spin never parks the loop. Sync/CLI
+        contexts with no running loop may call it directly.
+
+        Fenced by run generation (``run_generation``, see :class:`CronJob`):
+        the record's fields are applied only while its generation is not
+        below the one the store holds, compared under the lock after the
+        ``_sync()``. The finalizer calls this behind the release of its claim,
+        so a replacement run can be accepted, complete and merge while this
+        call is still waiting for the lock; an older record landing after it
+        would revert status, error, result and the failure counter to a run
+        that is not the last one. ONLY the field copies are fenced: the
+        one-shot consume below is owed by this run's completion whatever
+        landed since -- a replacement's terminal merge writes status fields and
+        retires nothing -- and a stale record that skipped it would leave a
+        consumed ``delete_after_run`` at-job enabled on disk, due again on
+        every tick. The consume already tolerates the row being gone.
+        """
+        with self._file_lock():
+            self._sync()
+            by_id = {j.id: j for j in self._jobs}
+            if job.id in by_id and job.run_generation < by_id[job.id].run_generation:
+                logger.debug(
+                    "Cron: not applying the record of an older run of '%s' (generation %d);"
+                    " the store already holds generation %d",
+                    job.name,
+                    job.run_generation,
+                    by_id[job.id].run_generation,
+                )
+            elif job.id in by_id:
+                by_id[job.id].run_generation = job.run_generation
+                by_id[job.id].last_run_ts = job.last_run_ts
+                by_id[job.id].last_status = job.last_status
+                by_id[job.id].last_error = job.last_error
+                # Only propagate enabled=False for one-shot at-jobs that fired.
+                # Never overwrite enabled for recurring jobs — user_paused is the
+                # sole authority for user-controlled pause/resume state.
+                # Propagate the fired/parked disable for at-jobs — including a
+                # fire-time-DENIED one (parked disabled instead of deleted so
+                # it cannot refire every tick yet stays re-enableable).
+                if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
+                    by_id[job.id].enabled = job.enabled
+                    by_id[job.id].user_paused = not job.enabled
+                # auto_paused is execution-owned (repeated-failure auto-pause and
+                # its reset on success), so propagate it for every job — unlike
+                # `enabled`, which must not be clobbered for recurring jobs. Also
+                # reflect it into the disk copy's derived `enabled` so the next
+                # reader sees the pause before a reload re-derives it.
+                by_id[job.id].auto_paused = job.auto_paused
+                if job.auto_paused and not by_id[job.id].user_paused:
+                    by_id[job.id].enabled = False
+                by_id[job.id].last_result = job.last_result
+                # Both stamp fields travel WITH last_result. _sync() above
+                # replaced this list with the disk copies, so by_id[job.id] is
+                # a different object than `job` and every field a run produces
+                # has to be copied explicitly. Omitting these persisted the new
+                # result under the PREVIOUS run's stamp, so after a reload
+                # /to-chat rendered a header the executor never wrote and
+                # append_if_absent duplicated the row instead of collapsing it.
+                by_id[job.id].last_result_ts = job.last_result_ts
+                by_id[job.id].last_result_stamp = job.last_result_stamp
+                by_id[job.id].last_posted_hash = job.last_posted_hash
+                by_id[job.id].consecutive_dupes = job.consecutive_dupes
+                by_id[job.id].last_posted_at = job.last_posted_at
+                by_id[job.id].last_failure_hash = job.last_failure_hash
+                by_id[job.id].last_failure_at = job.last_failure_at
+                by_id[job.id].consecutive_failures = job.consecutive_failures
+                # Same shape as the other runtime->disk copies on this call: a
+                # field `_execute` sets on the in-memory `job` is invisible after
+                # reload unless copied here explicitly. A cancelled run never
+                # reached the stamp in `_execute`, so on it these still hold the
+                # last completed run's values and the copy changes nothing.
+                by_id[job.id].last_retry_count = job.last_retry_count
+                by_id[job.id].last_retry_run_ts = job.last_retry_run_ts
+            # A fire-time-DENIED run is a policy refusal, not a completed run:
+            # deleting the one-shot here would make the documented
+            # resume-on-policy-loosening semantic impossible for at-jobs.
+            # A run that never STARTED is the same story for a different reason --
+            # every pool worker was busy for the whole queue budget -- so consuming
+            # the one-shot would destroy scheduled work that never got a chance to
+            # run. Only the delete is suppressed: unlike a policy denial this needs
+            # no operator action, so the job stays enabled and simply retries.
+            # TWO signals, because the queue and the audit ask different
+            # questions and a corrupt store answers them differently.
+            #   delete_owed      -- is a consume OWED by this path at all?
+            #   removed_one_shot -- did this path actually remove a PRESENT job?
+            # Deriving both from presence conflated them: `_load` degrades an
+            # unreadable store to an empty job list WITHOUT raising, so presence
+            # is exactly what a corrupt store destroys, and the deferred queue
+            # below then never fired for a delete that was still owed on disk.
+            delete_owed = job.delete_after_run and not (
+                job.fire_time_denied or job.run_never_started
+            )
+            removed_one_shot = False
+            restore: list[tuple[CronJob, str]] = []
+            consumed_row = False
+            if delete_owed:
+                # Presence check keeps the audit honest: a Done-script one-shot
+                # already removed by the gateway path leaves nothing to delete
+                # here, and that path owns the audit record.
+                removed_one_shot = job.id in by_id
+                # BACKGROUND writer: a failed epoch bump must not crash the
+                # run path, but the delete is skipped — the deferred drain
+                # retries once the epoch state heals, never deleting a
+                # still-live grant record. The job has ALREADY RUN, so the
+                # held delete needs the same two-layer guard as
+                # `defer_removal`: the run path deliberately leaves `enabled`
+                # untouched for a delete_after_run at-job (the delete is what
+                # stops it), so without a persisted pause the save below
+                # writes it back live and every tick re-fires it until the
+                # bump succeeds; and without the queue entry no later pass
+                # ever retries the delete. `user_paused` is the persisted
+                # spelling `enabled` is re-derived from on reload.
+                try:
+                    self._bump_grant_epochs_for({job.id})
+                except (OSError, ValueError):
+                    logger.warning(
+                        "One-shot delete held for %s: grant-epoch bump failed",
+                        job.id,
+                        exc_info=True,
+                    )
+                    removed_one_shot = False
+                    if job.id in by_id:
+                        by_id[job.id].enabled = False
+                        by_id[job.id].user_paused = True
+                    self._pending_removals.add(job.id)
+                else:
+                    # Consuming the one-shot retires its principal cron:<job id>,
+                    # so a child that job created is released in the SAME save --
+                    # the fifth removal core alongside the four locked cores.
+                    # _remove_job_rows filters the row out before releasing so
+                    # the job cannot release itself; rolled back below if the
+                    # save fails.
+                    restore = self._remove_job_rows({job.id})
+                    consumed_row = True
+            # BACKGROUND writer: a job has already run, so an unreadable store
+            # must not surface as a job-runner crash. The run result is lost,
+            # which is strictly better than clobbering the store.
+            try:
+                self._save()
+            except BaseException as exc:
+                # EVERY save failure rolls back the child release, not just
+                # CronStoreUnreadable: the release lives in memory only until the
+                # save lands it, so a bare OSError (ENOSPC/EROFS/EIO out of
+                # atomic_write) that left the cleared owners in place while disk
+                # still named the old owner would let the next successful save
+                # persist a release nothing asked for, from a consume that never
+                # reached disk.
+                if consumed_row:
+                    for child, previous_owner in restore:
+                        child.session_key = previous_owner
+                    # The consumed row is still filtered out of self._jobs and
+                    # only a reload can put it back, so drop the fingerprint to
+                    # force one -- otherwise the next _save skips the reload and
+                    # persists the removal this path was told had failed,
+                    # completing the parent's removal while its children keep the
+                    # ownership just rolled back.
+                    self._reset_fingerprint()
+                # Queue the consume for EVERY save failure, not just the
+                # store-unreadable one: the fingerprint reset above forces a
+                # reload, and the save never landed, so the disk copy is still
+                # enabled. Without a queue entry the reloaded one-shot comes back
+                # enabled and runs a second time on the next tick. Keyed on
+                # delete_owed, NOT presence: an absent id proves nothing about
+                # whether the delete is owed, and the drain intersects the queue
+                # with what is present and drops the rest.
+                if delete_owed:
+                    self._pending_removals.add(job.id)
+                if isinstance(exc, CronStoreUnreadable):
+                    # Return WITHOUT auditing: the emit below records only a SAVED
+                    # removal, and nothing was saved. Auditing here would file a
+                    # removal record for a delete that never reached disk. The
+                    # drain retries the queued consume once the store is readable.
+                    logger.warning("Cron job result not persisted: %s", exc)
+                    return
+                # Anything else is a real write fault, not the tolerated
+                # store-unreadable case: surface it rather than reporting a quiet
+                # no-op after the disk refused the write.
+                raise
+        if removed_one_shot:
+            # The delete_after_run consume is an automated removal with no
+            # handler-level caller, so the emit lives with the removal.
+            # AFTER the lock: only a saved removal is recorded, and
+            # the sel call never extends the store-lock hold.
+            self.audit_one_shot_removal(job.id, "cron_run_complete")
+
+    def _merge_terminal_state_locked(
+        self,
+        job_id: str,
+        *,
+        last_status: str,
+        last_error: str,
+        last_run_ts: float,
+        run_generation: int,
+    ) -> None:
+        """Persist a job's terminal runtime state under the store lock.
+
+        Used for the reaper timeout (:meth:`_force_reap`) and user cancel
+        (:meth:`cancel`) paths. Mutating the in-memory job and calling a bare,
+        unlocked ``self._save()`` directly on the event loop would open a
+        lost-update race: between a concurrent
+        ``add_job_async``/``update_job_async`` worker's ``_sync`` and its
+        ``_save``, the unlocked save would re-serialize a stale ``self._jobs``
+        and silently drop the just-added/updated job from ``crons.json``.
+
+        WORKER-THREAD ONLY. Mirrors :meth:`_merge_job_result`: enters the
+        bounded sync :meth:`_file_lock` (whose spin does ``time.sleep`` and may
+        raise :class:`CronStoreBusy`), ``_sync()``s FIRST so any concurrent
+        worker's persisted job list is reloaded, then applies the terminal
+        fields to the disk copy and ``_save()``s — the whole read-modify-write
+        is one lock transaction. Both loop-side callers offload it via
+        ``asyncio.to_thread`` so the spin never parks the gateway loop. A
+        missing id (removed meanwhile) is a no-op.
+
+        Fenced by run generation like :meth:`_merge_job_result`:
+        ``run_generation`` is the number the caller drew for the run this
+        record is for, and the record is skipped (debug log, nothing saved)
+        when the store already holds a higher one. Both callers release the
+        run's claim before they offload this call, so a Run
+        accepted in that gap can complete and merge first; applying the older
+        record would persist that run's success as the cancellation or timeout
+        that came before it. Returning early here skips nothing owed: unlike
+        ``_merge_job_result`` this helper writes only the three status fields,
+        and the save after them has nothing to record once they are skipped.
+        """
+        with self._file_lock():
+            self._sync()
+            by_id = {j.id: j for j in self._jobs}
+            target = by_id.get(job_id)
+            if target is None:
+                return
+            if run_generation < target.run_generation:
+                logger.debug(
+                    "Cron: not applying the terminal record of an older run of '%s'"
+                    " (generation %d); the store already holds generation %d",
+                    target.name,
+                    run_generation,
+                    target.run_generation,
+                )
+                return
+            target.run_generation = run_generation
+            target.last_status = last_status
+            target.last_error = last_error
+            target.last_run_ts = last_run_ts
+            # BACKGROUND writer: reached from the reaper timeout and user
+            # cancel. An unreadable store must not abort the reaper loop.
+            try:
+                self._save()
+            except CronStoreUnreadable as exc:
+                logger.warning("Cron terminal state not persisted: %s", exc)
+
+    # ── Loop-stall breaker ──
+
+    def _apply_loop_stall_breaker(self) -> str | None:
+        """Pause the job the previous gateway died running. WORKER-THREAD ONLY.
+
+        The loop-stall watchdog hard-exits the gateway; the run in flight left an
+        in-flight marker (:mod:`kiro_crew.cron_inflight`) and the dump names the
+        PID. When the newest dump's wedged stack is a cron turn AND exactly one
+        abandoned marker carries that PID, that job is the one whose input
+        stalled the loop -- and left enabled it is due again as soon as the
+        timer arms, which is the hourly crash loop a user reported. It is parked
+        ``auto_paused`` with a ``last_error`` that says why and how to resume,
+        audited like the failure-count auto-pause. Ambiguous evidence (several
+        runs in flight, no marker, a non-cron surface) pauses nothing; the doctor
+        prints the same attribution so the operator can decide.
+
+        What the markers said is recorded (``cron_inflight.record_attribution``)
+        BEFORE they are swept, because the doctor and the restart notification
+        read the same evidence afterwards: an ambiguous verdict the breaker
+        declined to act on must still reach the operator who can act on it.
+
+        A dump is CLAIMED, and its markers swept, only once the breaker has
+        reached a verdict that survives a restart. A pause the store refused to
+        persist leaves the job enabled and still due, so claiming it would let the
+        next boot -- the one whose store is readable again -- skip the job and
+        re-run the crash the breaker exists to stop. That boot is the only one
+        that retries, so it keeps both the claim and the evidence intact.
+        Returns the paused job id, or None.
+
+        Every failure here is swallowed. This is a safety net that runs BEFORE
+        the timer arms, so a fault in it must cost at most the net: letting one
+        propagate would fail ``start()`` and leave the operator with no scheduler
+        at all, which is strictly worse than the crash loop it is trying to stop.
+        """
+        try:
+            return self._loop_stall_breaker_verdict()
+        except Exception:
+            logger.warning("loop-stall breaker skipped after an unexpected failure", exc_info=True)
+            return None
+
+    def _loop_stall_breaker_verdict(self) -> str | None:
+        """The breaker's body. See :meth:`_apply_loop_stall_breaker`, which owns
+        the promise that nothing in here can fail the cron service's start."""
+        try:
+            attribution = stall_attribution.attribute_latest_stall(self._dir, self._dumps_dir)
+        except Exception:
+            logger.debug("loop-stall attribution failed; breaker skipped", exc_info=True)
+            return None
+        if attribution is None:
+            cron_inflight.sweep_abandoned_markers(self._dir)
+            return None
+        if cron_inflight.read_claim(self._dir) == attribution.dump.name:
+            # Settled on an earlier boot: its evidence has been recorded, and
+            # re-pausing a job the operator resumed is what the claim prevents.
+            cron_inflight.sweep_abandoned_markers(self._dir)
+            return None
+        recorded = True
+        if attribution.candidates or attribution.unrelated_abandoned:
+            recorded = cron_inflight.record_attribution(
+                self._dir,
+                attribution.dump.name,
+                attribution.candidates,
+                attribution.unrelated_abandoned,
+            )
+        paused: str | None = None
+        if attribution.is_cron and attribution.job is not None:
+            settled, paused = self._pause_for_loop_stall(attribution)
+            if not settled:
+                return None
+        # Sweep only behind a written claim AND a readable record. With the claim
+        # missing, the next boot would re-derive this verdict from the retained
+        # markers (and the record), and the pause it reaches is idempotent: the
+        # job's own ``last_error`` names the dump, which settles it even after
+        # the operator has resumed the job. With the record missing, the
+        # markers are the only copy of what the doctor has to show.
+        if recorded and cron_inflight.write_claim(self._dir, attribution.dump.name):
+            cron_inflight.sweep_abandoned_markers(self._dir)
+        return paused
+
+    def _pause_for_loop_stall(
+        self, attribution: "stall_attribution.StallAttribution"
+    ) -> tuple[bool, str | None]:
+        """``(settled, paused job id)`` for the job *attribution* names.
+
+        *settled* is False ONLY when the verdict could not be recorded -- an
+        unreadable or unwritable store -- which is the one case a later boot must
+        retry. A job that is already paused, or gone from the store, is settled
+        with nothing paused: there is no action left for any boot to take.
+        """
+        marker = attribution.job
+        if marker is None:  # pragma: no cover - the caller checks
+            return (True, None)
+        with self._file_lock():
+            self._sync()
+            if self._load_failed:
+                logger.warning("loop-stall auto-pause deferred: cron store not readable")
+                return (False, None)
+            job = next((j for j in self._jobs if j.id == marker.job_id), None)
+            if job is None or job.auto_paused or job.user_paused:
+                return (True, None)
+            if job.last_error and attribution.dump.name in job.last_error:
+                # Paused for THIS dump on an earlier boot and since resumed by
+                # the operator (resume keeps ``last_error``): the verdict was
+                # recorded in the store itself, so a lost claim file cannot
+                # turn a resume into a second pause.
+                return (True, None)
+            before = (
+                job.enabled,
+                job.auto_paused,
+                job.last_status,
+                job.last_run_ts,
+                job.last_error,
+            )
+            job.enabled = False
+            job.auto_paused = True
+            job.last_status = "error"
+            job.last_run_ts = marker.started_at
+            job.last_error = (
+                "Paused: the gateway was terminated by the loop-stall watchdog while this "
+                f"job was running (crash dump {attribution.dump.name}). Inspect the command "
+                "the run was about to execute, then resume with "
+                f"`kirocrew cron resume {job.id}`."
+            )
+            try:
+                self._save()
+            except CronStoreUnreadable as exc:
+                # The in-memory job must match the store it could not reach:
+                # still enabled, still due, so this session schedules it as the
+                # disk says and the next boot retries the pause.
+                (
+                    job.enabled,
+                    job.auto_paused,
+                    job.last_status,
+                    job.last_run_ts,
+                    job.last_error,
+                ) = before
+                logger.warning("loop-stall auto-pause not persisted: %s", exc)
+                return (False, None)
+            job._audit_pause_change("auto_paused_loop_stall")
+        logger.error(
+            "Cron job '%s' (%s) auto-paused: the previous gateway was hard-exited by the "
+            "loop-stall watchdog while running it (%s). Resume with `kirocrew cron resume %s` "
+            "once the cause is fixed.",
+            job.name,
+            job.id,
+            attribution.dump.name,
+            job.id,
+        )
+        return (True, job.id)
+
+    # ── Persistence ──
+
+    @staticmethod
+    def _guard_off_event_loop() -> None:
+        """Enforce that the store lock is never acquired on a running loop.
+
+        Detects a running asyncio event loop on the CURRENT thread — the
+        loop-park hazard. Under strict mode (``KIROCREW_STRICT_LOOP_SAFETY``)
+        it raises :class:`CronLoopSafetyError`; otherwise it emits a single
+        throttled warning so an unforeseen legitimate caller is never broken in
+        production while the signal is still surfaced. Sanctioned loop-resident
+        paths never reach here on the loop thread: the ``*_async`` mutators run
+        the lock in an ``asyncio.to_thread`` worker, and the synchronous
+        :class:`~kiro_crew.apps.cron_sdk.CronSDK` facade offloads to a worker
+        thread when a loop is running — in both cases this executes on a worker
+        with no running loop, so the guard passes.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # loop-less thread/process — safe, the intended sync path
+        if env_flag_enabled(_STRICT_LOOP_SAFETY_ENV):
+            raise CronLoopSafetyError(
+                "CronService store lock acquired on a thread with a running "
+                "event loop — use the *_async mutator variant (add_job_async, "
+                "remove_job_async, …) or the offloaded CronSDK facade instead "
+                "of the synchronous mutator on the loop."
+            )
+        global _loop_safety_warned
+        if not _loop_safety_warned:
+            _loop_safety_warned = True
+            logger.warning(
+                "CronService store lock acquired on the event loop thread — "
+                "this can park the loop under contention. Use the *_async "
+                "mutator variants. Set %s=1 to make this a hard failure.",
+                _STRICT_LOOP_SAFETY_ENV,
+            )
+
+    @contextmanager
+    def _file_lock(
+        self, *, timeout: float = _FILE_LOCK_TIMEOUT_SECS, poll: float = _FILE_LOCK_POLL_SECS
+    ) -> Iterator[None]:
+        """Cross-process advisory lock on the cron store.
+
+        Acquires the lock with a NON-BLOCKING ``try_acquire_lock`` in a bounded
+        spin instead of a blocking ``fcntl.flock(LOCK_EX)``. A blocking flock
+        parks the calling thread in an uninterruptible kernel wait for as long
+        as another holder keeps the lock — and every store *mutator*
+        (:meth:`add_job`, :meth:`update_job`, :meth:`remove_job`,
+        :meth:`enable_job`, …) takes this lock directly on the gateway's
+        asyncio event loop. A single slow holder (a large atomic save on
+        network storage, the CLI process, or the off-loop batch-remove worker)
+        would therefore freeze the ENTIRE event loop — every unrelated session,
+        timer, and reaper — until it released.
+
+        The non-blocking spin polls with a short ``time.sleep`` between
+        attempts (releasing the GIL so worker threads make progress) and raises
+        :class:`CronStoreBusy` (a :class:`TimeoutError` subclass) after
+        ``timeout`` rather than blocking indefinitely. flock on separate open
+        descriptions mutually excludes within a single process too, so this
+        still serializes the loop-side mutators against the ``asyncio.to_thread``
+        batch-remove and mutator workers.
+
+        The loop-resident mutator boundaries do NOT call this directly on the
+        event loop — they use the ``*_async`` mutator variants (``add_job_async``
+        et al.), which offload this lock+save to a worker thread and translate a
+        raised :class:`CronStoreBusy` into a clean retryable error. The bounded
+        sync path here still serves the CLI/MCP server processes (no event loop
+        to park) and remains a strict improvement over the old unbounded flock.
+
+        The ``no-blocking-call-on-event-loop`` invariant is MACHINE-ENFORCED:
+        :meth:`_guard_off_event_loop` raises :class:`CronLoopSafetyError` (strict
+        mode) or warns (default) if this is entered on a thread with a running
+        asyncio loop — so a future writer that calls a sync mutator on the loop
+        is caught rather than silently re-freezing it.
+        """
+        self._guard_off_event_loop()
+        with cron_store_lock(self._dir, timeout=timeout, poll=poll):
+            yield
+
+    def _record_fingerprint(self) -> None:
+        """Snapshot the store file's fingerprint as the last-loaded state.
+
+        Called after a successful load and after a save so :meth:`_sync` treats
+        the current on-disk contents as already in memory and only reloads on a
+        genuine external change. Records a content digest (authoritative) plus
+        the (mtime_ns, size) tuple (diagnostic) from the bytes now on disk.
+        """
+        try:
+            st = self._path.stat()
+            raw = self._path.read_bytes()
+        except OSError:
+            self._reset_fingerprint()
+            return
+        self._last_mtime = st.st_mtime
+        self._last_mtime_ns = st.st_mtime_ns
+        self._last_size = st.st_size
+        self._last_digest = hashlib.blake2b(raw, digest_size=16).digest()
+
+    def _reset_fingerprint(self) -> None:
+        """Clear the fingerprint so the next :meth:`_sync` forces a reload."""
+        self._last_mtime = 0.0
+        self._last_mtime_ns = 0
+        self._last_size = -1
+        self._last_digest = b""
+
+    def _sync(self) -> None:
+        """Reload from disk if the file changed externally.
+
+        Compares a content DIGEST rather than only ``(mtime_ns, size)``: an
+        external atomic write can preserve both the coarse timestamp and the
+        byte length while changing content (e.g. renaming a job to an
+        equal-length name), which an mtime/size fingerprint misses — the stale
+        in-memory state would then be re-saved over the external change, losing
+        it. The bytes read here are the same bytes :meth:`_load` parses when a
+        reload is needed, so the file is read at most once per changed sync.
+
+        ─────────────────────────────────────────────────────────────────────
+        EXHAUSTIVE AUDIT — every ``_sync()`` caller and raw store-``read``
+        site in this module, classified by whether it can run on the gateway
+        event loop. INVARIANT: **no ``_sync()`` / whole-file ``read_bytes()`` +
+        hash ever runs on the loop.** All blocking store I/O is either in a
+        worker thread (``asyncio.to_thread``) or in a loop-less process
+        (CLI / MCP). Enforced mechanically by
+        ``test_cron_locking_regression.py::TestReadPathsLocked`` (on-loop reads
+        AND the timer tick must not touch the store on the loop).
+
+        ``_sync()`` callers
+          • _persist_add_locked / _update_job_locked_kw / _remove_job_locked /
+            _remove_jobs_locked / _enable_job_locked / _ack_job_locked /
+            _unack_job_locked  → OFF-LOOP: reached from the loop only via their
+            ``*_async`` wrappers, which ``await asyncio.to_thread(...)``; also
+            called directly by loop-less CLI/MCP/app-SDK processes.
+          • _synced_snapshot  → OFF-LOOP (worker): the body of
+            list_jobs_async / get_job_async / run_job's offloaded refresh.
+          • _tick_scan_locked  → OFF-LOOP (worker): the timer tick's
+            (``_on_timer``) offloaded lock+sync+drain+snapshot transaction.
+          • _merge_job_result  → OFF-LOOP on the gateway (``_run_job_isolated``
+            calls it via ``asyncio.to_thread``); loop-less CLI/MCP may call it
+            directly.
+          • run_job  → now OFF-LOOP: its former on-loop ``_sync()`` moved into
+            the ``_synced_snapshot`` offload; the claim stays on
+            the loop and does NO store I/O.
+
+        Raw store ``read_bytes()`` sites
+          • _record_fingerprint (post-load/save) / _sync / _load  → all reached
+            only through the OFF-LOOP ``_sync()`` callers above (or a loop-less
+            process). None on the loop.
+          • initial ``_load()`` (construction / ``start()``)  → the plain
+            constructor loads INLINE (loop-less CLI/MCP/apps-SDK/tests only —
+            no loop to park). Loop contexts (the gateway) build via the async
+            factory ``CronService.create()``, which sets
+            ``_defer_initial_load=True`` and runs ``_load()`` via
+            ``asyncio.to_thread``; ``start()`` likewise offloads its ``_load()``.
+            ``_running`` is False during both, so neither arms a timer off-loop.
+            OFF-LOOP on the gateway.
+
+        Cache-only (NO store I/O at all — never lock, read, or hash)
+          • list_jobs / get_job  → on-loop hot paths; return the atomically-
+            swapped in-memory snapshot.
+          • _reaper_loop's ``jobs_by_id`` snapshot  → on-loop; cache-only,
+            same atomic-reference-swap rationale as list_jobs.
+        ─────────────────────────────────────────────────────────────────────
+        """
+        if not self._path.exists():
+            # Clear the refusal latch: a store that is GONE is not an unreadable
+            # one, and _load's docstring already promises that a load which
+            # resolves -- "including a missing file" -- leaves the store writable.
+            # Returning bare left the latch set, so the one remediation this
+            # refusal PRINTS (move the unreadable file aside) did nothing on a
+            # live gateway: every later write kept failing until a restart. A
+            # fresh CLI/MCP process was unaffected because it reconstructs.
+            #
+            # Deliberately NOT a call to _load(), even though its missing-file
+            # branch clears this same flag: that branch also replaces _jobs with
+            # an empty list, which discards in-memory jobs not yet persisted --
+            # the reaper mutates a job and only then saves, so wiping first loses
+            # the update and the save never happens (test_cron_reaper's
+            # test_reaper_persists_state catches exactly that). Clearing the flag
+            # is the whole of the defect; emptying the list is a separate
+            # behaviour change and not one this needs.
+            #
+            # The fingerprint is left alone on purpose: the failed load that set
+            # this latch already reset it, so a file that reappears mismatches the
+            # cleared digest below and reloads normally.
+            #
+            # Clearing the latch re-opens _save(), so the snapshot it would write
+            # has to be trustworthy. When the latch was SET, _jobs came from a
+            # load that could not read the store -- it may predate an external
+            # removal, and writing it back resurrects whatever that writer
+            # deleted. _load's own missing-file branch empties the list for the
+            # same reason; this branch bypasses _load, so it must do it too.
+            # Conditioned on the latch, NOT unconditional: with the latch clear
+            # this is the ordinary no-store path, where the reaper's in-memory
+            # mutation is still waiting to be saved and wiping it would lose the
+            # update (test_cron_reaper's test_reaper_persists_state).
+            if self._load_failed:
+                self._jobs = []
+            self._load_failed = False
+            return
+        try:
+            raw = self._path.read_bytes()
+        except OSError:
+            # LATCH, the same as _load's two failure paths do. This is the THIRD
+            # way a read of the store can fail and the only one that never reaches
+            # _load, so returning bare left _save()'s guard -- the one thing
+            # standing between stale memory and the file -- open: a store that went
+            # unreadable AFTER a good load (EIO, EACCES, a botched restore) was
+            # overwritten from memory, discarding whatever it had come to hold.
+            #
+            # Still deliberately NOT un-latched: the store is unreadable here, so
+            # keeping an existing refusal is correct and clearing it would suppress
+            # a live fault rather than report it.
+            #
+            # _jobs is deliberately NOT emptied, unlike _load's paths: the
+            # missing-file rationale above applies unchanged -- wiping the list
+            # discards a mutation the reaper has made but not yet saved.
+            #
+            # The fingerprint has to be cleared WITH the latch, exactly as both
+            # _load failure paths pair them. Left alone, a fault over an UNCHANGED
+            # store leaves the tracked digest still matching the file, so the next
+            # _sync sees no change, skips the _load that is the only thing that
+            # clears this latch, and a store that is now perfectly healthy refuses
+            # every write until the process restarts.
+            self._reset_fingerprint()
+            self._load_failed = True
+            return
+        if hashlib.blake2b(raw, digest_size=16).digest() != self._last_digest:
+            logger.info("Cron file changed externally, reloading")
+            self._load(_preread=raw)
+
+    def _load(self, _preread: bytes | None = None) -> None:
+        """Deserialize jobs from crons.json and record the fingerprint.
+
+        ``_preread`` lets :meth:`_sync` hand in the bytes it already read for
+        the change check so the file is not read twice for one reload.
+
+        Clears :attr:`_load_failed` on entry and re-raises it only on the paths
+        that could not read the store, so a load that DOES resolve — including
+        a missing file and an honestly empty one — leaves the store writable,
+        and a store repaired between two loads heals itself.
+        """
+        self._load_failed = False
+        if not self._path.exists():
+            self._jobs = []
+            self._reset_fingerprint()
+            return
+        try:
+            st = self._path.stat()
+            raw = _preread if _preread is not None else self._path.read_bytes()
+            data = json.loads(raw)
+            records = data.get("jobs", []) if isinstance(data, dict) else None
+            if not isinstance(records, list):
+                # A document that parses but is not an object holding a jobs
+                # LIST (top-level [], a scalar, {"jobs": null}) cannot yield
+                # any job — same salvage story as unparseable JSON (there is
+                # nothing to keep), and without this guard data.get() / the
+                # loop below would raise an uncaught AttributeError/TypeError
+                # into _sync and gateway startup.
+                logger.warning(
+                    "Failed to load cron store: document is not an object with a jobs list"
+                )
+                self._jobs = []
+                self._reset_fingerprint()
+                self._load_failed = True
+                return
+            # Per-entry isolation: one malformed or legacy record must not
+            # discard the whole registry. Each record is built in its own
+            # try block; a bad one is warned about and skipped, and every
+            # well-formed job survives. The whole-store reset below is reserved
+            # for a file that yields nothing parseable at all, where there is
+            # nothing to salvage.
+            #
+            # The caught tuple is deliberately NARROWER than the exceptions
+            # _job_from_record can raise: KeyError and TypeError are its two
+            # bad-data signals, and AttributeError is not reachable from JSON.
+            # See _job_from_record's docstring for why, and for what catching it
+            # would cost.
+            jobs: list[CronJob] = []
+            for j in records:
+                try:
+                    jobs.append(_job_from_record(j))
+                except (KeyError, TypeError) as entry_exc:
+                    entry_id = (
+                        j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
+                    )
+                    logger.warning(
+                        "Skipping malformed cron job entry (id=%r): %r; "
+                        "the entry will be dropped from the store on the next write",
+                        entry_id,
+                        entry_exc,
+                    )
+            self._jobs = jobs
+            # Fingerprint from the stat taken BEFORE the read: if a writer
+            # replaced the file between our stat and read we may have loaded the
+            # newer content under an older fingerprint, which only costs one
+            # redundant reload on the next _sync — never a lost update. The
+            # digest is taken from the exact bytes we parsed so _sync compares
+            # like for like.
+            self._last_mtime = st.st_mtime
+            self._last_mtime_ns = st.st_mtime_ns
+            self._last_size = st.st_size
+            self._last_digest = hashlib.blake2b(raw, digest_size=16).digest()
+        except (OSError, ValueError, TypeError, RecursionError) as exc:
+            # Same class set as _read_job_records' json.loads guard, kept
+            # spelled identically so the two cannot drift. A decode-error-only
+            # handler here let two classes escape into _sync and gateway
+            # startup: UnicodeDecodeError (invalid UTF-8 — a SIBLING subclass
+            # of ValueError, not an ancestor of json.JSONDecodeError) and
+            # RecursionError (deeply nested JSON — a RuntimeError, outside the
+            # ValueError tree entirely). OSError covers the stat()/read_bytes()
+            # above, which _sync already guards but the constructor's
+            # _load() — and so gateway startup — does not. A genuinely absent
+            # file never reaches here: the exists() check returns early, so a
+            # fresh install still loads silently rather than warning.
+            logger.warning("Failed to load cron store: %s", exc)
+            self._jobs = []
+            self._reset_fingerprint()
+            self._load_failed = True
+
+        # Restore timers for active jobs loaded from disk
+        if self._running:
+            restored = sum(1 for j in self._jobs if j.enabled)
+            if restored:
+                self._arm_timer()
+                logger.info("Restored %d cron timer(s) from disk", restored)
+
+    def _unreadable_error(self) -> CronStoreUnreadable:
+        """The one wording for a refusal caused by an unreadable store.
+
+        Built in a single place because THREE guards raise it — :meth:`_sync_for_write`
+        before a mutation, :meth:`_save` at the disk boundary, and
+        :meth:`raise_if_store_unreadable` for a caller that must refuse without
+        attempting a write at all — and the message names the path plus the
+        remediation that the CLI, dashboard, MCP and Slack boundaries surface
+        verbatim. Two copies of that sentence would drift.
+        """
+        return CronStoreUnreadable(
+            f"refusing to write cron store: the last load could not read {self._path}, "
+            "so the in-memory job list is empty for that reason rather than because the "
+            "store is empty. Move the unreadable file aside to start fresh."
+        )
+
+    def raise_if_store_unreadable(self) -> None:
+        """Refuse if the last load could not read the store. NO I/O of its own.
+
+        Exists because every other guard is on a WRITE, and a caller that decides
+        whether to write by first comparing the loaded jobs against a desired state
+        never gets that far: an unreadable store loads as an EMPTY list — :meth:`_load`
+        warns, empties, latches ``_load_failed`` and RETURNS rather than raising, and
+        :meth:`_synced_snapshot` only translates :class:`CronStoreBusy` — so there is
+        no job to diverge, no mutation is attempted, and such a caller reports a
+        successful no-op over a corrupt file. That is the quiet-versus-broken
+        conflation, and it is invisible to :meth:`_sync_for_write`.
+
+        Reads the latch only, so it is safe on the event loop and adds no second read
+        after a :meth:`list_jobs_async` — which has just refreshed the latch under the
+        store lock. Call it AFTER that read, or the answer is one poll stale.
+        """
+        if self._load_failed:
+            raise self._unreadable_error()
+
+    def _sync_for_write(self) -> None:
+        """:meth:`_sync` for a MUTATING transaction — refuse BEFORE the mutation.
+
+        Every user-facing mutator edits ``self._jobs`` and only then reaches
+        ``_save()``, so refusing at the disk boundary alone left the caller told
+        "rejected" while the mutation stayed in the in-memory list — a resumed job
+        the timer can still fire, an ack already consumed, a removal already gone
+        from the cache. All TEN user-facing writers in ``_save``'s audit table now
+        route through here; the three BACKGROUND ones deliberately do not (below).
+        That is reachable, not theoretical:
+        :meth:`_tick_scan_locked` documents an in-memory-snapshot fallback for a
+        contended lock — it skips ``_sync()`` and returns ``list(self._jobs)`` — so
+        the due-scan could hand a refused job to the runner.
+
+        Refusing up front rather than undoing afterwards is what makes that
+        unrepresentable. ``_save()`` cannot roll back a mutation it never saw: its
+        write-path audit lists roughly a dozen writers, each touching different
+        fields, so a generic rollback there has nothing to key on and a partial one
+        would be a fresh defect. The check sits after ``_sync()`` because
+        ``_sync()`` is what sets ``_load_failed``.
+
+        ``_save()`` keeps its own guard rather than delegating to this one: it is
+        the backstop for any writer that does not come through here, and the three
+        BACKGROUND writers depend on it firing at the disk boundary — each wraps
+        only its ``_save()`` call, so an earlier raise would abort the reaper and
+        the tick instead of degrading them.
+        """
+        self._sync()
+        if self._load_failed:
+            raise self._unreadable_error()
+
+    def _save(self) -> None:
+        """Atomic write (tmp → rename) and update mtime tracking.
+
+        RAISES :exc:`CronStoreUnreadable` when the last :meth:`_load` could not
+        read the store, instead of writing. ``_load`` degrades an unreadable
+        store to an empty job list, which is indistinguishable HERE from an
+        honestly empty one — and this method serialises ``self._jobs``
+        wholesale, so one mutation after a failed load would persist that empty
+        list over a store still holding records. Measured on the base handler
+        alone (a ``json.JSONDecodeError`` store plus one ``add_job``), so this
+        is not a hazard the widened ``_load`` guard introduced.
+
+        It RAISES rather than returning quietly because a silent refusal is the
+        same silence-shaped failure this change exists to break: the mutator
+        would return success to the dashboard/CLI/MCP caller for a write that
+        never happened. Every writer below reaches disk through this one
+        method, so the single check covers all of them; the three BACKGROUND
+        writers catch the error and degrade so a corrupt store cannot take down
+        the reaper, the tick scan or the job runner. A missing store and an
+        honestly empty one are NOT failures (``_load`` clears the flag for
+        both), so a fresh install still writes.
+
+        WRITE-PATH AUDIT — every ``_save()`` call site and every structural
+        ``self._jobs`` mutation, each classified locked/unlocked and
+        on-loop/off-loop. INVARIANT: every writer holds :meth:`_file_lock` and
+        is reached from the gateway event loop ONLY via ``asyncio.to_thread``
+        (or runs in a genuinely loop-less CLI/MCP process). No bare on-loop
+        ``_save()`` remains. Keep this table in sync when adding a writer.
+        Counted by EXECUTABLE call site: three other lines in this file mention
+        ``self._save()`` in a comment or docstring and are not calls.
+
+        ==============================  ==========  ======================================
+        Writer (method)                 Locked?     Loop entry
+        ==============================  ==========  ======================================
+        _persist_add_locked             _file_lock  add_job_async → to_thread; sync CLI/MCP
+        _persist_add_if_absent_locked   _file_lock  add_job_if_absent_async → to_thread; sync
+        _update_job_locked              _file_lock  update_job_async → to_thread; sync CLI/MCP
+        _remove_job_locked              _file_lock  remove_job_async → to_thread; sync CLI/MCP
+        _remove_jobs_locked             _file_lock  remove_jobs → to_thread
+        _remove_jobs_by_owner_locked    _file_lock  app/owner teardown → to_thread; sync
+        _adopt_job_locked               _file_lock  adopt path → to_thread; sync
+        _enable_job_locked              _file_lock  enable_job_async → to_thread; sync CLI/MCP
+        _ack_job_locked                 _file_lock  ack_job_async → to_thread; sync
+        _unack_job_locked               _file_lock  unack_job_async → to_thread; sync
+        _merge_job_result               _file_lock  _run_job_isolated → to_thread; BACKGROUND
+        _merge_terminal_state_locked    _file_lock  _force_reap / cancel → to_thread; BACKGROUND
+        _drain_pending_removals_locked    (caller)  _tick_scan_locked holds _file_lock; BACKGROUND
+        _load (self._jobs = …)            (caller)  _sync() under _file_lock; else construction/start
+        ==============================  ==========  ======================================
+
+        In-memory-only job field writes that DON'T call ``_save()`` and are
+        persisted later under lock: ``defer_removal`` (sets ``enabled=False``
+        so the next due-scan skips it; the durable delete happens in the locked
+        ``_drain_pending_removals_locked``), and the pre-persist snapshot writes
+        in ``_force_reap``/``cancel`` (authoritative persist is the offloaded
+        ``_merge_terminal_state_locked``).
+        """
+        if self._load_failed:
+            raise self._unreadable_error()
+        self._dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "version": _STORE_VERSION,
+            "jobs": [
+                {
+                    "id": j.id,
+                    "name": j.name,
+                    "message": j.message,
+                    "schedule": asdict(j.schedule),
+                    "channel": j.channel,
+                    "thread_ts": j.thread_ts,
+                    "enabled": j.enabled,
+                    "user_paused": j.user_paused,
+                    "auto_paused": j.auto_paused,
+                    "last_run_ts": j.last_run_ts,
+                    "last_status": j.last_status,
+                    "last_error": j.last_error,
+                    "created_ts": j.created_ts,
+                    "delete_after_run": j.delete_after_run,
+                    "last_result": j.last_result,
+                    "last_result_ts": j.last_result_ts,
+                    "last_result_stamp": j.last_result_stamp,
+                    "context_enabled": j.context_enabled,
+                    "agent_id": j.agent_id,
+                    "member_id": j.member_id,
+                    "memory_store": j.memory_store,
+                    "execution_context": j.execution_context,
+                    "approval_mode": j.approval_mode,
+                    "acked_items": j.acked_items,
+                    "created_by": j.created_by,
+                    "source_preset": j.source_preset,
+                    "source_template_prompt": j.source_template_prompt,
+                    "silent": j.silent,
+                    "session_key": j.session_key,
+                    "last_posted_hash": j.last_posted_hash,
+                    "consecutive_dupes": j.consecutive_dupes,
+                    "last_posted_at": j.last_posted_at,
+                    "last_failure_hash": j.last_failure_hash,
+                    "last_failure_at": j.last_failure_at,
+                    "consecutive_failures": j.consecutive_failures,
+                    "skip_dates": j.skip_dates,
+                    "timezone": j.timezone,
+                    "persistent_session": j.persistent_session,
+                    "minimal_context": j.minimal_context,
+                    "hide_in_chat": j.hide_in_chat,
+                    "folder_id": j.folder_id,
+                    "chat_folder_id": j.chat_folder_id,
+                    "model": j.model,
+                    "last_retry_count": j.last_retry_count,
+                    "last_retry_run_ts": j.last_retry_run_ts,
+                    "run_generation": j.run_generation,
+                    "agent_sequence": j.agent_sequence,
+                    "env": j.env,
+                    "timeout_secs": j.timeout_secs,
+                    "strict_schedule": j.strict_schedule,
+                    "script": j.script,
+                    "command": j.command,
+                    "timeout": j.timeout,
+                    "secret_env": j.secret_env,
+                    "secret_env_pin": j.secret_env_pin,
+                    "secret_env_pending": j.secret_env_pending,
+                    "secret_env_pending_pin": j.secret_env_pending_pin,
+                    "secret_env_pending_ts": j.secret_env_pending_ts,
+                }
+                for j in self._jobs
+            ],
+        }
+        # Atomic write: unique tmp → rename
+        # Deferred import to avoid circular dependency (pre-existing)
+        from kiro_crew.atomic_write import atomic_write
+
+        atomic_write(self._path, json.dumps(data, indent=2))
+        # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
+        # our own write and does not reload it back over the in-memory state.
+        self._record_fingerprint()

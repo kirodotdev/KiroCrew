@@ -1,0 +1,9 @@
+schema-version: 2026-04-28
+fixture-name: memory-populated
+description: |
+  Every text-backed memory layer is non-empty at once.
+  The fixture seeds preferences, projects and semantic markdown, two days of
+  dated history, and a lessons.jsonl with three learned corrections. The vector
+  stores (memory.db, memory_index.db) stay out -- see the SQLite deferral in
+  ``rich/README.md`` -- so this covers the deterministic markdown layer and the
+  lessons store.

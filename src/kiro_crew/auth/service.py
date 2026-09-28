@@ -1,0 +1,853 @@
+"""KasLoginService — orchestrates interactive KAS-mode login for the dashboard API.
+
+Ties the token store, install-shape detection, and the device-code login flow into
+the small state machine the HTTP handlers expose: status -> begin -> poll -> (token
+saved) / logout. The service owns the pending-login table because the device flow is
+inherently two requests apart (begin returns the user code, poll observes approval),
+and the DeviceAuthorization codes must never leave the gateway process — the browser
+only ever sees the verification URI.
+
+Polling is single-shot by design: the dashboard drives the cadence, so a slow or
+abandoned login never pins a server-side task. Expiry is enforced locally from the
+authorization's own deadline, which also bounds how long an abandoned entry lives.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import secrets
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import aiohttp
+
+from kiro_crew.auth.login import builder_id, control_plane, device, portal
+from kiro_crew.auth.login.endpoints import (
+    BUILDER_ID_REGION,
+    BUILDER_ID_START_URL,
+    USER_AGENT,
+    social_service_url,
+)
+from kiro_crew.auth.shape import Transport, select_transport
+from kiro_crew.auth.store import (
+    KNOWN_IDENTITIES,
+    KasToken,
+    SocialProvider,
+    TokenStore,
+    TokenStoreError,
+)
+
+logger = logging.getLogger(__name__)
+
+_HEADERS = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+
+# Every auth request on the shared session is bounded. aiohttp's own default is five
+# minutes, which on a black-holed route leaves a poll hanging many times longer than
+# the dashboard's poll cadence; 30s is longer than any healthy auth call and short
+# enough that a dead route is visible inside one login.
+_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
+
+# How many CONSECUTIVE connection-level poll failures one pending login absorbs before
+# a poll reports the auth service unreachable. The poll is the longest-lived request in
+# a login -- one every few seconds for as long as the user takes to approve in their
+# browser -- so a closed keep-alive connection, a DNS blip or a few seconds offline is
+# the expected case, not evidence the login failed. Any poll that gets an answer clears
+# the count, so only a sustained outage crosses it.
+MAX_POLL_TRANSPORT_FAILURES = 3
+
+
+class UnknownLoginError(Exception):
+    """The login_id does not match any pending device authorization."""
+
+
+class SignedOutDuringLoginError(Exception):
+    """The user signed out while this begin was still talking to the issuer.
+
+    The login is never registered (its poll would have re-filled the vault the
+    user had just emptied), so the dashboard starts over from the signed-out
+    chooser rather than polling a code that leads nowhere.
+    """
+
+
+class UnknownIdentityError(ValueError):
+    """A caller named an identity slot (``replaces``) the store does not have.
+
+    A ``ValueError`` so branchless callers keep treating it as a bad request; a
+    distinct type so the handler can answer ``invalid_identity`` rather than
+    blaming the provider.
+    """
+
+
+class MissingStartUrlError(Exception):
+    """An IdC login was begun without the company start URL it requires."""
+
+
+class LoopbackUnavailableError(Exception):
+    """A loopback login cannot start here: wrong transport or no free callback port.
+
+    The dashboard treats this as 'fall back to the device flow now', so it is a
+    coded 409 rather than a failure.
+    """
+
+
+class InvalidRegionError(Exception):
+    """A caller-supplied region is outside the AWS region-name grammar.
+
+    The region is interpolated into the SSO-OIDC and control-plane hostnames
+    (``https://oidc.<region>.amazonaws.com``), so anything beyond the strict
+    grammar would let a crafted value (e.g. ``evil.com/``) redirect client
+    registration, device codes, and token exchange to an attacker host.
+    """
+
+
+# AWS region names: two-letter partition, one or more dash-joined words, numeric
+# suffix (us-east-1, us-gov-west-1, ap-southeast-3). Anchored and character-tight
+# so no URL metacharacter ('/', '@', ':', '.') can survive into the hostname.
+_REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d{1,2}$")
+
+
+@dataclass
+class _PendingLogin:
+    """A social device authorization awaiting user approval, keyed by login_id."""
+
+    auth: device.DeviceAuthorization
+    provider: SocialProvider
+    # Consecutive polls that never reached the issuer. Lives on the entry so it
+    # disappears with the login itself, and so two flows cannot share a budget.
+    transport_failures: int = 0
+
+
+@dataclass
+class _PendingOidcLogin:
+    """An SSO-OIDC device authorization (Builder ID / IdC) awaiting approval.
+
+    Carries the dynamically-registered client because the token poll needs its
+    credentials, and the identity/provider pair because they decide both the store
+    entry and KAS's governance classification. ``resolve_profile`` marks the IdC
+    path, whose token is unusable until a profile ARN is attached.
+    """
+
+    client: builder_id.RegisteredClient
+    auth: builder_id.DeviceAuthorization
+    region: str
+    identity: str
+    provider: str
+    resolve_profile: bool
+    # Same budget as _PendingLogin.transport_failures, for the SSO-OIDC poll.
+    transport_failures: int = 0
+
+
+# How long the loopback listener waits for the portal to redirect back. Long enough
+# for a full Google/GitHub sign-in with 2FA; short enough that a browser that can
+# never reach this machine's loopback (tunnel, tailnet, phone) degrades to the
+# device flow within one sitting instead of holding an allowlisted port all day.
+LOOPBACK_TIMEOUT_SECS = 300.0
+
+
+@dataclass
+class _PendingLoopbackLogin:
+    """A loopback (PKCE) social login whose listener task is running in-process.
+
+    ``task`` owns the bound callback port for its whole life: it serves the redirect,
+    exchanges the code and persists the token, then resolves. Polling only inspects
+    the task; cancelling it is what releases the port early.
+    """
+
+    task: asyncio.Task[KasToken]
+    provider: SocialProvider
+    expires_at: datetime
+
+
+def _parse_provider(provider_str: str) -> SocialProvider:
+    """Map a caller-supplied provider name to the wire enum (case-insensitive)."""
+    normalized = (provider_str or "").strip().lower()
+    for member in SocialProvider:
+        if member.value.lower() == normalized or member.name.lower() == normalized:
+            return member
+    raise ValueError(f"unknown social provider: {provider_str!r}")
+
+
+def _validate_replaces(replaces: str) -> str:
+    """Normalise the optional identity slot a re-authentication replaces.
+
+    Empty means "no replacement"; anything else must be one of the store's
+    identity kinds. The store's own guard (``TokenStore._entry``) is what would
+    refuse a bad slot at delete time, but that is after the NEW credential has
+    landed -- too late to tell the caller their request was malformed -- so the
+    same check runs here, at begin, where it is a plain 400.
+    """
+    cleaned = (replaces or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned not in KNOWN_IDENTITIES:
+        raise UnknownIdentityError(f"unknown identity kind: {cleaned!r}")
+    return cleaned
+
+
+_PendingKind = _PendingLogin | _PendingOidcLogin | _PendingLoopbackLogin
+
+
+def _social_from_login_option(login_option: str) -> SocialProvider | None:
+    """Map the portal callback's ``login_option`` (``google``/``github``) to the enum.
+
+    ``None`` for an empty or unrecognised value, so the caller can fall back to the
+    provider the user clicked rather than fail an otherwise-valid callback.
+    """
+    try:
+        return _parse_provider(login_option)
+    except ValueError:
+        return None
+
+
+def _expires_at(entry: _PendingKind) -> datetime:
+    if isinstance(entry, _PendingLoopbackLogin):
+        return entry.expires_at
+    return entry.auth.expires_at
+
+
+def _release(entry: _PendingKind) -> None:
+    """Drop an entry's live resources; only a loopback login holds any (its port)."""
+    if isinstance(entry, _PendingLoopbackLogin) and not entry.task.done():
+        entry.task.cancel()
+
+
+class KasLoginService:
+    """Login orchestration for the KAS-mode auth subsystem.
+
+    Handlers stay stateless; all mutable login state (the pending-authorization
+    table and the shared HTTP session) lives here, guarded by one asyncio.Lock so
+    concurrent dashboard tabs cannot corrupt the table.
+    """
+
+    def __init__(
+        self,
+        store: TokenStore,
+        *,
+        session: aiohttp.ClientSession | None = None,
+    ) -> None:
+        self._store = store
+        self._session = session
+        self._pending: dict[str, _PendingKind] = {}
+        # login_id -> the identity slot a re-authentication replaces once its own
+        # credential lands (see _persist_and_finish). Kept beside, not inside, the
+        # pending entries: it is a property of the request, not of the flow.
+        self._replaces: dict[str, str] = {}
+        # Bumped by every sign-out. A begin reads it before its first await and
+        # hands it to _register_pending, which refuses to register a login that
+        # was started before a sign-out: otherwise a begin already talking to the
+        # issuer when the user signed out would register afterwards, and its poll
+        # would put a credential back into a vault the user had just emptied.
+        self._epoch = 0
+        self._lock = asyncio.Lock()
+
+    async def _http(self) -> aiohttp.ClientSession:
+        # Lazy: constructing the session at gateway boot would bind it to a loop the
+        # service may never run on; first use always happens on the serving loop.
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=_HTTP_TIMEOUT)
+        return self._session
+
+    async def close(self) -> None:
+        # Release every held callback port first: a listener that outlives the
+        # service would keep an allowlisted port bound with nobody to poll it.
+        async with self._lock:
+            entries = list(self._pending.values())
+            self._pending.clear()
+        for entry in entries:
+            _release(entry)
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
+
+    async def status(self) -> dict[str, Any]:
+        """Current auth state + which login transport this install shape should use.
+
+        Beyond ``authenticated`` the answer carries what the dashboard's sign-in card
+        needs to say WHICH state the stored identity is in, all of it token-free:
+        ``expires_at`` (ISO-8601 UTC) and ``expired`` (inside the engine's refresh
+        margin), ``has_refresh_token``, ``refresh_rejected`` (the issuer refused the
+        last refresh -- recorded by the refresher, cleared by any new credential),
+        and ``usable``, which is :meth:`KasToken.is_usable` -- the same predicate the
+        spawn-time owner decision and ``kirocrew doctor`` read, so the three cannot
+        disagree. A rejected refresh does NOT flip ``usable``: that is a report for
+        the user to act on, not a reason to hand the spawn back to kiro-cli's login.
+        """
+
+        def _read() -> tuple[KasToken | None, datetime | None]:
+            token = self._store.resolve()
+            rejected = self._store.refresh_rejected(token.identity) if token else None
+            return token, rejected
+
+        # File reads happen off-loop: the store is tiny but sits on whatever disk the
+        # data home lives on, and status is polled by the dashboard.
+        token, rejected = await asyncio.to_thread(_read)
+        transport = select_transport()
+        return {
+            "authenticated": token is not None,
+            "provider": token.provider if token else "",
+            "identity": token.identity if token else "",
+            "transport": transport.value,
+            "expires_at": token.expires_at.astimezone(timezone.utc).isoformat() if token else None,
+            "expired": token.is_expired() if token else False,
+            "has_refresh_token": bool(token.refresh_token) if token else False,
+            "refresh_rejected": rejected is not None,
+            "usable": token.is_usable() if token else False,
+        }
+
+    async def begin_device(
+        self, provider_str: str, *, start_url: str = "", region: str = "", replaces: str = ""
+    ) -> dict[str, Any]:
+        """Start a device-code login; returns what the user needs to approve it.
+
+        ``google``/``github`` run the Kiro-proxied social flow; ``builder_id`` and
+        ``idc`` run the standard AWS SSO-OIDC device flow (``idc`` additionally
+        requires the company's ``start_url`` and takes an optional ``region``).
+        ``replaces`` names the identity slot a signed-in user is switching away
+        from; it is removed once this login's credential has landed (see
+        ``_persist_and_finish``). Raises ValueError for an unrecognized provider or
+        an unknown ``replaces`` slot, MissingStartUrlError for an IdC begin without
+        a start URL, and DeviceAuthError / BuilderIdAuthError when the auth service
+        rejects the authorization request, and SignedOutDuringLoginError when a
+        sign-out landed between this call's start and its registration.
+        """
+        # Before the first await: a sign-out that lands anywhere after this line
+        # invalidates this begin (see _register_pending).
+        epoch = self._epoch
+        replaces = _validate_replaces(replaces)
+        normalized = (provider_str or "").strip().lower()
+        if normalized in ("builder_id", "idc"):
+            cleaned_region = (region or "").strip()
+            if cleaned_region and not _REGION_RE.fullmatch(cleaned_region):
+                raise InvalidRegionError(f"not an AWS region name: {cleaned_region[:64]!r}")
+            region = cleaned_region
+        if normalized == "builder_id":
+            return await self._begin_oidc(
+                start_url=BUILDER_ID_START_URL,
+                region=region or BUILDER_ID_REGION,
+                identity="builder_id",
+                provider="BuilderId",
+                resolve_profile=False,
+                replaces=replaces,
+                epoch=epoch,
+            )
+        if normalized == "idc":
+            cleaned = (start_url or "").strip()
+            if not cleaned:
+                raise MissingStartUrlError("idc login requires the company start URL")
+            return await self._begin_oidc(
+                start_url=cleaned,
+                region=region or BUILDER_ID_REGION,
+                identity="identity_center",
+                provider="Enterprise",
+                resolve_profile=True,
+                replaces=replaces,
+                epoch=epoch,
+            )
+        provider = _parse_provider(provider_str)
+        session = await self._http()
+        auth = await device.initiate_device_authorization(provider, session=session)
+        return await self._register_pending(
+            _PendingLogin(auth=auth, provider=provider),
+            user_code=auth.user_code,
+            verification_uri_complete=auth.verification_uri_complete,
+            expires_at=auth.expires_at,
+            replaces=replaces,
+            epoch=epoch,
+        )
+
+    async def _begin_oidc(
+        self,
+        *,
+        start_url: str,
+        region: str,
+        identity: str,
+        provider: str,
+        resolve_profile: bool,
+        replaces: str = "",
+        epoch: int,
+    ) -> dict[str, Any]:
+        """Register a fresh SSO-OIDC client and start its device authorization."""
+        session = await self._http()
+        client = await builder_id.register_client(region, session=session)
+        auth = await builder_id.start_device_authorization(
+            client, region=region, start_url=start_url, session=session
+        )
+        return await self._register_pending(
+            _PendingOidcLogin(
+                client=client,
+                auth=auth,
+                region=region,
+                identity=identity,
+                provider=provider,
+                resolve_profile=resolve_profile,
+            ),
+            user_code=auth.user_code,
+            verification_uri_complete=auth.verification_uri_complete,
+            expires_at=auth.expires_at,
+            replaces=replaces,
+            epoch=epoch,
+        )
+
+    async def _register_pending(
+        self,
+        pending: _PendingKind,
+        *,
+        user_code: str,
+        verification_uri_complete: str,
+        expires_at: datetime,
+        replaces: str = "",
+        epoch: int,
+    ) -> dict[str, Any]:
+        # Opaque handle so the deviceCode (the secret half of the flow) never
+        # travels back to the browser; the poll endpoint accepts only this id.
+        login_id = secrets.token_urlsafe(16)
+        async with self._lock:
+            if epoch != self._epoch:
+                # A sign-out landed while this begin was in flight. Registering
+                # now would let its poll re-fill the vault the user just emptied.
+                _release(pending)
+                raise SignedOutDuringLoginError()
+            # Evict pending logins whose device code already expired: an abandoned
+            # login (UI cancel / "start over" resets client state without telling
+            # the server) is otherwise never polled again, so repeated
+            # start-and-abandon would grow this process-lifetime dict without bound.
+            now = datetime.now(timezone.utc)
+            expired = [lid for lid, entry in self._pending.items() if _expires_at(entry) <= now]
+            for lid in expired:
+                _release(self._pending.pop(lid))
+                self._replaces.pop(lid, None)
+            self._pending[login_id] = pending
+            if replaces:
+                self._replaces[login_id] = replaces
+        return {
+            "login_id": login_id,
+            "user_code": user_code,
+            "verification_uri_complete": verification_uri_complete,
+            "expires_at": expires_at.astimezone(timezone.utc).isoformat(),
+        }
+
+    async def poll_device(self, login_id: str) -> dict[str, Any]:
+        """One non-blocking poll of a pending login.
+
+        The caller loops, not us: {status: pending|authorized|expired|error},
+        plus provider on authorized. Raises UnknownLoginError for a stale/foreign id.
+        """
+        async with self._lock:
+            pending = self._pending.get(login_id)
+        if pending is None:
+            raise UnknownLoginError(login_id)
+
+        if isinstance(pending, _PendingLoopbackLogin):
+            return await self._poll_loopback(login_id, pending)
+
+        if datetime.now(timezone.utc) >= _expires_at(pending):
+            await self._forget(login_id)
+            return {"status": "expired"}
+
+        if isinstance(pending, _PendingOidcLogin):
+            return await self._poll_oidc(login_id, pending)
+
+        session = await self._http()
+        url = f"{social_service_url()}/oauth/device/poll"
+        payload = {"deviceCode": pending.auth.device_code, "clientId": USER_AGENT}
+        answered = False
+        try:
+            async with session.post(url, json=payload, headers=_HEADERS) as resp:
+                # The issuer answered, so whatever went wrong on earlier polls of this
+                # login was transient: the budget starts over.
+                answered = True
+                await self._clear_transport_failures(login_id)
+                if resp.status != 200:
+                    # Transient service hiccup: the flow's own expiry bounds retries,
+                    # so report pending rather than killing an approvable login. The
+                    # body is only log material, and a mislabelled charset makes
+                    # decoding it raise, so its failure must not decide the poll.
+                    try:
+                        body = await resp.text()
+                    except (aiohttp.ClientError, ValueError, asyncio.TimeoutError):
+                        body = "<body could not be read>"
+                    logger.warning("device poll HTTP %s: %s", resp.status, body)
+                    return {"status": "pending"}
+                try:
+                    data = await resp.json()
+                except (aiohttp.ClientError, ValueError):
+                    # Malformed 200 body: treat as a transient hiccup, not a crash;
+                    # the flow's expiry still bounds the caller's retries.
+                    logger.warning("device poll returned undecodable body", exc_info=True)
+                    return {"status": "pending"}
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            if answered:
+                # The issuer answered and only reading its body failed, so this is the
+                # same class as a 5xx or an undecodable body: pending, and no failure
+                # counted. Charging the budget here would shorten the next outage's
+                # tolerance for a poll that proved the service is up.
+                logger.warning("device poll answer could not be read: %s", err)
+                return {"status": "pending"}
+            if not await self._absorb_transport_failure(login_id, err):
+                raise
+            return {"status": "pending"}
+        if not isinstance(data, dict):
+            logger.warning("device poll returned non-object body: %r", type(data).__name__)
+            return {"status": "pending"}
+
+        status = data.get("status", "")
+        if status == "authorization_pending":
+            return {"status": "pending"}
+        if status == "expired_token":
+            await self._forget(login_id)
+            return {"status": "expired"}
+        if status == "authorized":
+            try:
+                token = device._token_from_poll(data, pending.provider)
+            except device.DeviceAuthError as err:
+                # Approved but unusable (e.g. no profile ARN) — surface as error,
+                # and drop the entry so the dashboard restarts cleanly.
+                logger.warning("authorized device poll rejected: %s", err)
+                await self._forget(login_id)
+                return {"status": "error"}
+            return await self._persist_and_finish(login_id, token)
+        # invalid_token and anything unrecognized: unrecoverable for this login_id.
+        logger.warning("device poll returned status %r", status)
+        await self._forget(login_id)
+        return {"status": "error"}
+
+    async def _absorb_transport_failure(self, login_id: str, err: BaseException) -> bool:
+        """Count one poll that never reached the issuer; True to answer ``pending``.
+
+        A dropped keep-alive connection, a DNS blip or a few seconds offline says
+        nothing about the login: the user is still approving it in their browser and
+        the device authorization is still valid at the issuer. The dashboard treats a
+        502 as terminal and offers only "start over", so surfacing one dropped packet
+        would destroy a live login. Absorb up to MAX_POLL_TRANSPORT_FAILURES in a row;
+        past that the outage is real and the caller re-raises for its coded 502.
+
+        False also for a login that is not registered -- there is nothing left to
+        protect, so the error is the honest answer.
+        """
+        async with self._lock:
+            pending = self._pending.get(login_id)
+            if not isinstance(pending, (_PendingLogin, _PendingOidcLogin)):
+                return False
+            pending.transport_failures += 1
+            absorbed = pending.transport_failures <= MAX_POLL_TRANSPORT_FAILURES
+            failures = pending.transport_failures
+        if absorbed:
+            logger.warning(
+                "device poll did not reach the auth service (%d/%d): %s",
+                failures,
+                MAX_POLL_TRANSPORT_FAILURES,
+                err,
+            )
+        else:
+            logger.warning("device poll unreachable %d times in a row: %s", failures, err)
+        return absorbed
+
+    async def _clear_transport_failures(self, login_id: str) -> None:
+        """Forget earlier failures: this poll reached the issuer and got an answer."""
+        async with self._lock:
+            pending = self._pending.get(login_id)
+            if isinstance(pending, (_PendingLogin, _PendingOidcLogin)):
+                pending.transport_failures = 0
+
+    async def _poll_oidc(self, login_id: str, pending: _PendingOidcLogin) -> dict[str, Any]:
+        """One non-blocking poll of an SSO-OIDC (Builder ID / IdC) pending login."""
+        session = await self._http()
+        try:
+            token = await builder_id.poll_token_once(
+                pending.client,
+                pending.auth,
+                region=pending.region,
+                identity=pending.identity,
+                provider=pending.provider,
+                session=session,
+            )
+        except builder_id.BuilderIdAuthError as err:
+            # expired_token and terminal rejections: unrecoverable for this login_id.
+            logger.warning("oidc device poll failed: %s", err)
+            await self._forget(login_id)
+            expired = "expired" in str(err)
+            return {"status": "expired" if expired else "error"}
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            if not await self._absorb_transport_failure(login_id, err):
+                raise
+            return {"status": "pending"}
+        await self._clear_transport_failures(login_id)
+        if token is None:
+            return {"status": "pending"}
+        if pending.resolve_profile:
+            # An IdC token is unusable without a profile ARN (the store itself drops
+            # it), so resolution failures must end the login loudly, not save junk.
+            # This leg deliberately gets no transport budget: the device code is
+            # already redeemed, so a later poll cannot re-obtain the token, and
+            # answering "pending" would only loop the dashboard until expiry.
+            try:
+                profiles = await control_plane.list_available_profiles(
+                    token.access_token, region=pending.region, session=session
+                )
+            except control_plane.ControlPlaneError as err:
+                logger.warning("could not resolve IdC profile ARN: %s", err)
+                await self._forget(login_id)
+                return {"status": "error"}
+            if not profiles:
+                logger.warning("IdC login has no available Kiro profiles")
+                await self._forget(login_id)
+                return {"status": "error"}
+            if len(profiles) > 1:
+                # Multi-profile selection UX is a documented follow-up; until then
+                # the first profile wins, and the choice is visible in the log.
+                logger.info(
+                    "IdC login has %d profiles; using %r",
+                    len(profiles),
+                    profiles[0].profile_name,
+                )
+            token.profile_arn = profiles[0].arn
+        return await self._persist_and_finish(login_id, token)
+
+    async def _persist_and_finish(self, login_id: str, token: KasToken) -> dict[str, Any]:
+        """Save an approved token; the shared terminal step of every poll flavor.
+
+        Runs under the pending lock, save included, and only while the login is
+        still registered. ``cancel`` takes the same lock, so it either runs first
+        (the entry is gone and nothing is ever written — the poll answers
+        ``UnknownLoginError``) or after the write has landed. A cancel can never
+        return while a credential the user abandoned is still on its way to disk,
+        and two polls of one approved login persist once. The write is one small
+        file, so other logins wait milliseconds.
+        """
+        async with self._lock:
+            if login_id not in self._pending:
+                raise UnknownLoginError(login_id)
+            result = await self._save_token(token)
+            self._pending.pop(login_id, None)
+            replaces = self._replaces.pop(login_id, "")
+            if result.get("status") == "authorized" and replaces:
+                # An explicit account switch. The store resolves by fixed slot
+                # priority (external_idp > builder_id > identity_center > social),
+                # not by recency, so ANY other stored slot that outranks the new one
+                # -- the one the user named, or one they had forgotten about -- would
+                # leave the agents on a different account while the card claimed
+                # the switch happened. A switch therefore means "this is the one
+                # account": every other slot is removed, only now, after the new
+                # credential is on disk, so a failed sign-in never leaves the vault
+                # empty. The delete is unconditional (a no-op on an empty slot):
+                # `load` only decides what to REPORT as replaced, never whether to
+                # delete, because a slot whose read failed transiently is exactly
+                # the one that would otherwise survive and resolve later. A removal
+                # that fails is reported, not hidden: the re-read status will still
+                # show the account that won, and Sign out clears it by hand.
+                removed: list[str] = []
+                failed = False
+                for other in KNOWN_IDENTITIES:
+                    if other == token.identity:
+                        continue
+                    try:
+                        held = await asyncio.to_thread(self._store.load, other) is not None
+                        await asyncio.to_thread(self._store.delete, other)
+                        if held:
+                            removed.append(other)
+                    except TokenStoreError as err:
+                        logger.warning("could not remove replaced KAS identity %s: %s", other, err)
+                        failed = True
+                if removed:
+                    result["replaced"] = removed
+                if failed:
+                    result["code"] = "previous_identity_not_removed"
+        return result
+
+    async def _save_token(self, token: KasToken) -> dict[str, Any]:
+        """Write an approved token to the store and shape the poll's terminal answer.
+
+        Takes no lock, so ``_persist_and_finish`` can run it while holding
+        ``self._lock`` to keep the login cancellable until the write lands.
+        """
+        try:
+            await asyncio.to_thread(self._store.save, token)
+        except TokenStoreError as err:
+            # Disk full / read-only store: the login was approved but we cannot
+            # persist it. Report error (not authorized); the caller drops the
+            # pending entry so a retry starts a fresh flow rather than looping.
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the OSError only, never the token value
+            logger.warning("could not persist approved KAS token: %s", err)
+            # The one poll error a dashboard must NOT retry on another transport:
+            # the store itself is unwritable, so every flavor would fail the same way.
+            return {"status": "error", "code": "token_store_failed"}
+        return {"status": "authorized", "provider": token.provider}
+
+    async def begin_loopback(self, provider_str: str, *, replaces: str = "") -> dict[str, Any]:
+        """Start a loopback (PKCE) social login; returns the portal URL to open.
+
+        Only Google/GitHub run through Kiro's portal; Builder ID / IdC stay on the
+        device flow (as in kiro-cli). Binding one of the Cognito-allowlisted ports
+        happens HERE, synchronously, so an all-ports-busy host fails the begin with a
+        coded error the dashboard can turn into an immediate device-flow fallback —
+        rather than a listener that never answers.
+
+        Raises ValueError for a non-social provider, LoopbackUnavailableError when
+        the transport is not loopback for this install shape or no callback port
+        can be bound, and SignedOutDuringLoginError when a sign-out landed
+        between this call's start and its registration.
+        """
+        epoch = self._epoch  # before the first await; see _register_pending
+        replaces = _validate_replaces(replaces)
+        provider = _parse_provider(provider_str)
+        if select_transport() is not Transport.LOOPBACK:
+            raise LoopbackUnavailableError("loopback transport not available on this install")
+        try:
+            # bind() is a syscall on the serving loop; tiny for loopback, but the
+            # gateway's no-blocking-call rule holds regardless of expected cost.
+            sock, port = await asyncio.to_thread(portal.bind_allowed_port)
+        except portal.PortalAuthError as err:
+            raise LoopbackUnavailableError(str(err)) from err
+        verifier = portal.generate_code_verifier()
+        state = portal.generate_state()
+        auth_url = portal.build_auth_url(port, state, portal.generate_code_challenge(verifier))
+        task = asyncio.create_task(
+            self._run_loopback(sock, port, provider, state, verifier),
+            name=f"kas-loopback-{port}",
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=LOOPBACK_TIMEOUT_SECS)
+        result = await self._register_pending(
+            _PendingLoopbackLogin(task=task, provider=provider, expires_at=expires_at),
+            user_code="",
+            verification_uri_complete=auth_url,
+            expires_at=expires_at,
+            replaces=replaces,
+            epoch=epoch,
+        )
+        # The dashboard opens this URL itself: the browser is the user's, not ours.
+        result["auth_url"] = auth_url
+        result["port"] = port
+        return result
+
+    async def _run_loopback(
+        self,
+        sock: Any,
+        port: int,
+        provider: SocialProvider,
+        state: str,
+        verifier: str,
+    ) -> KasToken:
+        """Serve the callback and exchange the code. Owns the socket.
+
+        Returns the token WITHOUT persisting it: the poll persists through
+        ``_save_token`` under the pending lock, only while the login is still
+        registered, so a cancelled login ("use a code instead", start over) can
+        never leave a credential behind that the user did not see land.
+        """
+        try:
+            callback = await portal.wait_for_callback(
+                sock, port, state, timeout_secs=LOOPBACK_TIMEOUT_SECS
+            )
+            redirect_uri = portal.rebuild_redirect_uri(
+                port, callback["path"], callback["login_option"]
+            )
+            # The portal page is where the user actually picks Google vs GitHub;
+            # the button they clicked here only chose the transport. Trust the
+            # callback's login_option so the stored provider matches the account.
+            chosen = _social_from_login_option(callback["login_option"]) or provider
+            session = await self._http()
+            return await portal.exchange_code(
+                chosen, callback["code"], verifier, redirect_uri, session=session
+            )
+        finally:
+            # The listener normally closes the socket with its runner; closing an
+            # already-closed socket is a no-op, so this only matters for the path
+            # where serving never started (cancel racing setup).
+            await asyncio.to_thread(sock.close)
+
+    async def _poll_loopback(self, login_id: str, pending: _PendingLoopbackLogin) -> dict[str, Any]:
+        """Report the listener task's state; terminal outcomes drop the entry.
+
+        A timeout or a listener failure carries ``code: loopback_failed`` so the
+        dashboard can degrade to the device flow for the same provider without a
+        detour through an error screen.
+        """
+        if not pending.task.done():
+            if datetime.now(timezone.utc) < pending.expires_at:
+                return {"status": "pending"}
+            # Deadline passed but the listener has not unwound yet: same outcome as
+            # its own timeout, reported now rather than one poll later.
+            await self._forget(login_id)
+            return {"status": "expired", "code": "loopback_timeout"}
+        # Classify the terminal answer under the pending lock so two polls of one
+        # finished task agree on who owns it; the success path then hands off to
+        # ``_persist_and_finish``, which re-checks registration under the same
+        # lock before writing, so a cancel landing in between wins and nothing
+        # is persisted.
+        async with self._lock:
+            if self._pending.get(login_id) is not pending:
+                raise UnknownLoginError(login_id)
+            if pending.task.cancelled():
+                self._pending.pop(login_id, None)
+                self._replaces.pop(login_id, None)
+                return {"status": "error", "code": "loopback_cancelled"}
+            err = pending.task.exception()
+            if err is not None:
+                self._pending.pop(login_id, None)
+                self._replaces.pop(login_id, None)
+        if err is None:
+            return await self._persist_and_finish(login_id, pending.task.result())
+        if isinstance(err, portal.PortalTimeoutError):
+            return {"status": "expired", "code": "loopback_timeout"}
+        logger.warning("loopback login failed: %s", err)
+        return {"status": "error", "code": "loopback_failed", "error": str(err)}
+
+    async def cancel(self, login_id: str) -> None:
+        """Abandon a pending login, releasing its callback port if it holds one.
+
+        Idempotent: an unknown or already-finished id is a no-op, because the
+        dashboard cancels on every 'start over' / 'use a code instead' click.
+        """
+        await self._forget(login_id)
+
+    async def logout(self, identity: str) -> None:
+        """Sign out of Crew's Kiro identity: delete ``identity`` AND every other slot.
+
+        The dashboard shows ONE identity (the slot ``resolve()`` picks), so a
+        sign-out that removed only that slot would let the next slot down the
+        priority order take over -- the recycled agents would come back running
+        as an account the user did not know was stored and never saw on the
+        card. Sign-out therefore means "no Crew identity remains": the named slot
+        goes first (so an unknown kind still raises ``ValueError`` before any
+        write, the store's own path guard), then every other stored slot, and a
+        slot that cannot be removed raises ``TokenStoreError`` so the handler
+        reports a failed sign-out rather than a false success with a live
+        credential still in the vault.
+
+        Runs under the pending lock, the same one ``_persist_and_finish`` holds
+        across its save, and drops every pending login first. Without that, a
+        poll whose approval was already in flight could land its credential
+        AFTER this returned success -- the user would read "signed out" while a
+        Kiro identity sat active in the vault. Ordered this way, an in-flight
+        poll either persists before we run (and its slot is then deleted here)
+        or finds its login gone and answers ``UnknownLoginError``; nothing is
+        written after a sign-out reports success. A begin still talking to the
+        issuer is covered by the epoch bump: it registers into the new epoch
+        and is refused (``SignedOutDuringLoginError``).
+        """
+        async with self._lock:
+            self._epoch += 1
+            entries = list(self._pending.values())
+            self._pending.clear()
+            self._replaces.clear()
+            for entry in entries:
+                _release(entry)
+            # The named slot first: an unknown kind raises before any write.
+            await asyncio.to_thread(self._store.delete, identity)
+            for other in KNOWN_IDENTITIES:
+                if other != identity:
+                    await asyncio.to_thread(self._store.delete, other)
+            # Nothing may resolve after a sign-out. A slot that survived is a
+            # failure to sign out, not a detail.
+            if await asyncio.to_thread(self._store.resolve) is not None:
+                raise TokenStoreError("a stored Kiro identity survived sign-out")
+
+    async def _forget(self, login_id: str) -> None:
+        async with self._lock:
+            entry = self._pending.pop(login_id, None)
+            self._replaces.pop(login_id, None)
+        if entry is not None:
+            _release(entry)

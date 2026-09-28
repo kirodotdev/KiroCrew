@@ -1,0 +1,677 @@
+"""Tests for the ledger → vector index adaptor.
+
+The owner's requirement was that this "will allow large amount of memories to be stored
++ vectorization", so the properties tested here are the ones that decide whether it
+scales:
+
+1. **Import is incremental.** A second import of an unchanged ledger must embed nothing.
+   This is the whole difference between a 100k-entry ledger being usable and being a
+   multi-hour stall on every dispatch cycle.
+2. **Embedding is deferred and batched.** One sweep per import, not one inference per
+   row.
+3. **Import is merge-only.** It must never tombstone a row another writer owns.
+4. **Nothing is fatal.** A broken store, a bad row, or a failed sweep degrades to "no
+   semantic search", never to a failed cycle.
+
+A fake store is used rather than a real SQLite/FAISS pair: these assertions are about
+*how the adaptor calls the store*, and a fake is the only way to assert "embedded
+exactly once" or "never called with preserve_existing=False".
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, ledger_index
+from kiro_crew.apps.builtins.ops_mission_control.backend.models import LedgerEntry
+from kiro_crew.vector_memory import EpisodicWriteOutcome, VectorMemoryStore
+
+
+class _FakeStore:
+    """Records how it was called. Mirrors only the surface the adaptor uses."""
+
+    def __init__(self, *, fail_write: bool = False, fail_backfill: bool = False) -> None:
+        self.writes: list[dict[str, Any]] = []
+        self.texts: set[str] = set()
+        self.backfill_calls = 0
+        self._fail_write = fail_write
+        self._fail_backfill = fail_backfill
+
+    def write_episodic_outcome(self, text: str, **kw: Any) -> Any:
+        if self._fail_write:
+            raise RuntimeError("store is broken")
+        self.writes.append({"text": text, **kw})
+        if text in self.texts:
+            return EpisodicWriteOutcome.REFUSED  # already present, as the real store reports
+        self.texts.add(text)
+        return EpisodicWriteOutcome.WRITTEN
+
+    def backfill_missing_embeddings(self, *, pace: bool = True) -> int:
+        if self._fail_backfill:
+            raise RuntimeError("model unavailable")
+        self.backfill_calls += 1
+        self.backfill_paced = pace
+        return len(self.texts)
+
+    def search_episodic(self, **kw: Any) -> list[dict]:
+        self.last_search = kw
+        return [{"text": t} for t in sorted(self.texts)]
+
+
+class _Env(unittest.TestCase):
+    """Isolated data home: the cursor and ledger are real files."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self._prev = os.environ.get("KIROCREW_HOME")
+        os.environ["KIROCREW_HOME"] = str(self.tmp)
+
+    def tearDown(self) -> None:
+        if self._prev is None:
+            os.environ.pop("KIROCREW_HOME", None)
+        else:
+            os.environ["KIROCREW_HOME"] = self._prev
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _seed(n: int, *, prefix: str = "lesson") -> None:
+        """Seed n entries.
+
+        Writes the file in ONE pass rather than calling ``upsert`` per entry.
+        ``upsert`` re-reads the whole ledger to merge by id, so seeding N entries
+        through it is O(N^2) — 21s for 2000 rows here. That cost is fine in production
+        (a route calls it once per recorded lesson, never in a loop) but it makes a
+        scale test measure the seeding rather than the thing under test.
+        """
+        entries = [
+            LedgerEntry.create(
+                pattern=f"{prefix} {i}: a failure that recurs in the pipeline",
+                fix=f"apply remediation number {i} to the upstream config",
+            )
+            for i in range(n)
+        ]
+        existing = ledger.read_entries() if ledger.ledger_path().exists() else []
+        ledger._write_all(existing + entries)
+
+
+class TestIncrementalImport(_Env):
+    def test_second_import_of_an_unchanged_ledger_does_nothing(self) -> None:
+        """The property that makes a large ledger viable at all."""
+        self._seed(20)
+        store = _FakeStore()
+
+        first = ledger_index.import_pending(store)
+        self.assertEqual(first["written"], 20)
+        self.assertEqual(store.backfill_calls, 1, "one batched sweep, not 20")
+        self.assertTrue(
+            store.backfill_paced,
+            "the only caller is the ledger-hygiene cron, which blocks but is "
+            "unattended, so the whole-corpus sweep must stay paced",
+        )
+
+        second = ledger_index.import_pending(store)
+        self.assertEqual(second["written"], 0, "an unchanged ledger must re-embed nothing")
+        self.assertEqual(store.backfill_calls, 1, "no second sweep when nothing was written")
+        self.assertEqual(len(store.writes), 20, "the store was not touched again")
+
+    def test_only_new_entries_are_imported(self) -> None:
+        self._seed(5)
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+        self._seed(3, prefix="newer")
+
+        again = ledger_index.import_pending(store)
+        self.assertEqual(again["written"], 3)
+        self.assertEqual(again["scanned"], 8, "scanning is cheap; embedding is not")
+
+    def test_import_is_bounded_per_call(self) -> None:
+        """A 100k first import must drain over cycles, not stall one."""
+        self._seed(30)
+        store = _FakeStore()
+        result = ledger_index.import_pending(store, limit=10)
+        self.assertEqual(result["written"], 10)
+        self.assertEqual(result["scanned"], 30, "the remainder is known, just not yet done")
+
+        rest = ledger_index.import_pending(store, limit=10)
+        self.assertEqual(rest["written"], 10, "the next call continues where it stopped")
+
+    def test_a_deleted_cursor_re_projects_without_duplicating(self) -> None:
+        """Cursor loss must be recoverable: the store's own check is the backstop."""
+        self._seed(4)
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+        ledger_index.reset_cursor()
+
+        after = ledger_index.import_pending(store)
+        self.assertEqual(after["written"], 0, "the store reports these already exist")
+        self.assertEqual(after["skipped"], 4)
+
+    def test_corrupt_cursor_degrades_to_rescanning(self) -> None:
+        """A bad cursor must not mean 'assume everything is imported' — that would
+        silently leave the index permanently stale."""
+        self._seed(3)
+        (self.tmp / "apps/ops-mission-control/data").mkdir(parents=True, exist_ok=True)
+        cursor = ledger_index._cursor_path()
+        cursor.write_text("{ not json", encoding="utf-8")
+
+        store = _FakeStore()
+        self.assertEqual(ledger_index.import_pending(store)["written"], 3)
+
+
+class _CappedStore(_FakeStore):
+    """A fake that refuses new rows once full, as a V1 store at its episodic cap."""
+
+    def __init__(self, cap: int) -> None:
+        super().__init__()
+        self.cap = cap
+
+    def _admit(self, text: str, kw: dict[str, Any]) -> Any:
+        self.writes.append({"text": text, **kw})
+        if text in self.texts:
+            return EpisodicWriteOutcome.REFUSED
+        if len(self.texts) >= self.cap:
+            return EpisodicWriteOutcome.AT_CAPACITY
+        self.texts.add(text)
+        return EpisodicWriteOutcome.WRITTEN
+
+    def write_episodic_outcome(self, text: str, **kw: Any) -> Any:
+        return self._admit(text, kw)
+
+
+class TestCapacityRefusal(_Env):
+    def test_capacity_refused_entries_are_retried_once_space_frees(self) -> None:
+        """A full store's refusal is not a duplicate: those entries must stay off the
+        cursor, or they are never indexed after the cap is raised."""
+        self._seed(5)
+        store = _CappedStore(cap=3)
+
+        first = ledger_index.import_pending(store)
+        self.assertEqual(first["written"], 3)
+        self.assertEqual(first["skipped"], 0, "a capacity refusal is not a duplicate")
+        self.assertEqual(len(store.writes), 4, "stops at the first capacity refusal")
+
+        store.cap = 10
+        second = ledger_index.import_pending(store)
+        self.assertEqual(second["written"], 2, "the refused entries are retried")
+        self.assertEqual(len(store.texts), 5)
+
+    def test_duplicates_are_still_cursored_when_the_store_is_not_full(self) -> None:
+        self._seed(2)
+        store = _CappedStore(cap=10)
+        ledger_index.import_pending(store)
+        ledger_index.reset_cursor()
+        again = ledger_index.import_pending(store)
+        self.assertEqual(again["skipped"], 2)
+        third = ledger_index.import_pending(store)
+        self.assertEqual(len(store.writes), 4, "cursored duplicates are not rewritten")
+        self.assertEqual(third["written"], 0)
+
+    def test_real_v1_store_at_its_cap_leaves_entries_pending(self) -> None:
+        """End to end on a real V1 store: the cap refusal path in write_episodic."""
+
+        self._seed(3)
+        store = VectorMemoryStore(db_path=self.tmp / "memory.db", episodic_max=2)
+        store.init()
+        try:
+            with mock.patch.object(store, "backfill_missing_embeddings", return_value=0):
+                first = ledger_index.import_pending(store)
+                self.assertEqual(first["written"], 2)
+                store._episodic_max = 10
+                second = ledger_index.import_pending(store)
+            self.assertEqual(second["written"], 1, "the capacity-refused entry was retried")
+            self.assertEqual(first["skipped"], 0, "a capacity refusal is not a duplicate")
+        finally:
+            store.close()
+
+    def test_capacity_verdict_survives_a_cap_raise_racing_the_refusal(self) -> None:
+        """A refusal must be classified by the store's own verdict, not a later
+        probe. Here the cap is raised (as ``reconfigure`` does
+        from the watcher thread) the instant a write is refused; a post-hoc "is it
+        full?" probe then reads the NEW cap, misreads the capacity refusal as a
+        duplicate and cursors the entry for good."""
+
+        self._seed(3)
+        store = VectorMemoryStore(db_path=self.tmp / "memory.db", episodic_max=2)
+        store.init()
+
+        def raise_cap_after_refusal(original: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                result = original(*args, **kwargs)
+                if result is False or getattr(result, "value", None) not in (None, "written"):
+                    store._episodic_max = 10  # the concurrent reconfigure lands here
+                return result
+
+            return wrapper
+
+        for name in ("write_episodic_outcome", "write_episodic"):
+            if hasattr(store, name):
+                setattr(store, name, raise_cap_after_refusal(getattr(store, name)))
+        try:
+            with mock.patch.object(store, "backfill_missing_embeddings", return_value=0):
+                first = ledger_index.import_pending(store)
+                second = ledger_index.import_pending(store)
+            self.assertEqual(first["written"], 2)
+            self.assertEqual(first["skipped"], 0, "a capacity refusal is not a duplicate")
+            self.assertEqual(second["written"], 1, "the capacity-refused entry was retried")
+        finally:
+            store.close()
+
+    def test_capacity_pause_is_logged(self) -> None:
+        """A paused import is visible: its counts alone match a caught-up run."""
+        self._seed(4)
+        store = _CappedStore(cap=1)
+        with self.assertLogs(ledger_index.logger, level="WARNING") as logs:
+            result = ledger_index.import_pending(store)
+        self.assertEqual(result["written"], 1)
+        self.assertIn("3 ledger entries left pending", "\n".join(logs.output))
+
+
+class TestStoreContract(_Env):
+    def test_writes_are_merge_only_and_deferred(self) -> None:
+        """Both flags are load-bearing and easy to drop in a refactor.
+
+        `preserve_existing=False` would let an import tombstone a teammate's row;
+        `defer_embedding=False` would embed inline and turn a bulk import into an
+        hours-long stall.
+        """
+        self._seed(2)
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+
+        self.assertTrue(store.writes)
+        for call in store.writes:
+            self.assertTrue(call["preserve_existing"], "import must never tombstone")
+            self.assertTrue(call["defer_embedding"], "bulk import must not embed inline")
+
+    def test_rows_are_tagged_so_ops_search_stays_scoped(self) -> None:
+        self._seed(1)
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+        self.assertIn(ledger_index.SOURCE_TAG, store.writes[0]["tags"])
+
+    def test_text_carries_both_pattern_and_fix(self) -> None:
+        """Matching the right lesson and returning no remedy is a half-answer."""
+        ledger.upsert(LedgerEntry.create(pattern="DLQ fills up", fix="repair trust policy"))
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+        text = store.writes[0]["text"]
+        self.assertIn("DLQ fills up", text)
+        self.assertIn("repair trust policy", text)
+
+    def test_overlong_text_is_truncated_not_dropped(self) -> None:
+        """The store rejects >2000 chars; a truncated fix still points at the answer."""
+        ledger.upsert(LedgerEntry.create(pattern="p" * 1500, fix="f" * 1500))
+        store = _FakeStore()
+        result = ledger_index.import_pending(store)
+        self.assertEqual(result["written"], 1)
+        self.assertLessEqual(len(store.writes[0]["text"]), ledger_index.TEXT_MAX)
+
+    def test_importance_reflects_ledger_quality(self) -> None:
+        """Otherwise the index ranks by recency and throws away trust/confidence."""
+        weak = LedgerEntry.create(pattern="weak lesson here", fix="maybe this helps")
+        strong = LedgerEntry.create(
+            pattern="strong lesson here", fix="this definitely works", confidence="high"
+        )
+        strong.trust = "verified"
+        strong.use_count = 5
+        self.assertGreater(
+            ledger_index._importance(strong),
+            ledger_index._importance(weak),
+        )
+        self.assertLessEqual(ledger_index._importance(strong), 1.0)
+
+
+class TestNeverFatal(_Env):
+    def test_a_broken_store_is_survived(self) -> None:
+        self._seed(3)
+        result = ledger_index.import_pending(_FakeStore(fail_write=True))
+        self.assertEqual(result["written"], 0)
+
+    def test_a_failed_embedding_sweep_leaves_rows_written(self) -> None:
+        """Rows stay keyword-searchable; only vector search waits for the model."""
+        self._seed(2)
+        store = _FakeStore(fail_backfill=True)
+        result = ledger_index.import_pending(store)
+        self.assertEqual(result["written"], 2)
+        self.assertEqual(result["embedded"], 0)
+
+    def test_an_empty_ledger_is_a_quiet_noop(self) -> None:
+        store = _FakeStore()
+        result = ledger_index.import_pending(store)
+        self.assertEqual(result, {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0})
+        self.assertEqual(store.backfill_calls, 0)
+
+
+class TestSearch(_Env):
+    def test_search_is_scoped_to_ledger_rows(self) -> None:
+        """The index is shared with the rest of Kiro Crew; an ops query wants ops
+        knowledge, not unrelated conversational memories."""
+        store = _FakeStore()
+        ledger_index.search_similar(store, "DLQ AccessDenied")
+        self.assertEqual(store.last_search["tag_filter"], [ledger_index.SOURCE_TAG])
+
+    def test_blank_query_does_not_hit_the_store(self) -> None:
+        store = _FakeStore()
+        self.assertEqual(ledger_index.search_similar(store, "   "), [])
+        self.assertFalse(hasattr(store, "last_search"))
+
+    def test_search_failure_returns_empty_rather_than_raising(self) -> None:
+        """Semantic recall is additive to fingerprint matching, never a prerequisite."""
+
+        class _Broken:
+            def search_episodic(self, **kw: Any) -> list[dict]:
+                raise RuntimeError("faiss index corrupt")
+
+        self.assertEqual(ledger_index.search_similar(_Broken(), "anything"), [])
+
+
+class TestScale(_Env):
+    """The owner asked specifically about large volumes, so assert the shape of the
+    cost rather than just correctness."""
+
+    def test_ten_thousand_entries_import_incrementally(self) -> None:
+        self._seed(2000)
+        store = _FakeStore()
+
+        # Drain in bounded batches, as successive dispatch cycles would.
+        total = 0
+        for _ in range(4):
+            total += ledger_index.import_pending(store, limit=500)["written"]
+        self.assertEqual(total, 2000)
+        self.assertEqual(store.backfill_calls, 4, "one sweep per batch, not per row")
+
+        # The property that matters: a full re-import after everything is indexed
+        # costs zero embeddings.
+        again = ledger_index.import_pending(store, limit=500)
+        self.assertEqual(again["written"], 0)
+        self.assertEqual(store.backfill_calls, 4, "no extra sweep")
+
+    def test_cursor_stays_proportional_to_entry_count(self) -> None:
+        """The cursor is the scaling risk: it must hold ids, never texts."""
+        self._seed(500)
+        store = _FakeStore()
+        ledger_index.import_pending(store, limit=500)
+        size = ledger_index._cursor_path().stat().st_size
+        # 500 x 16-hex id + JSON overhead. A cursor that accidentally stored texts
+        # would be an order of magnitude larger.
+        self.assertLess(size, 500 * 40, f"cursor is {size} bytes for 500 entries")
+
+
+class TestSemanticRecallWiring(_Env):
+    """`attach_similar_lessons` is where the index finally reaches an investigation.
+
+    The property that matters most is the SEPARATION: a semantic hit must never be
+    presented, counted, or ranked as though the fingerprint had matched.
+    """
+
+    @staticmethod
+    def _claimed(title: str = "DLQ fills on AccessDenied", resource: str = "my-queue"):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import store as inc_store
+        from kiro_crew.apps.builtins.ops_mission_control.backend.dispatch import (
+            ClaimedIncident,
+        )
+        from kiro_crew.apps.builtins.ops_mission_control.backend.models import Signal
+
+        signal = Signal.create(
+            source="cloudwatch", native_id="alarm/x", title=title, resource=resource
+        )
+        incident = inc_store.claim(signal, operating_mode="observe")
+        assert incident is not None
+        return ClaimedIncident(incident=incident)
+
+    def test_similar_entries_are_attached(self) -> None:
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        self._seed(3)
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+
+        claimed = dispatch.attach_similar_lessons(self._claimed(), store, limit=2)
+        self.assertEqual(len(claimed.similar), 2, "capped at the requested limit")
+        self.assertEqual(claimed.matches, [], "semantic recall must not touch matches")
+
+    def _real_store_with_semantic_pair(self):
+        """One literal hit and one stronger cross-wording vector hit."""
+
+        literal = LedgerEntry.create(
+            pattern="database outage affected the primary service",
+            fix="restart the database service",
+        )
+        semantic = LedgerEntry.create(
+            pattern="sqlite writer lock exhausted the connection pool",
+            fix="serialize write transactions and release them promptly",
+        )
+        ledger._write_all([literal, semantic])
+
+        store = VectorMemoryStore(db_path=self.tmp / "memory.db", embedding_dim=2)
+        store.init()
+        # A failed write raises before the store is returned, so dispatch never runs its
+        # own close(); on Windows the still-open memory.db then makes tearDown's rmtree
+        # leak self.tmp.
+        try:
+            self.assertTrue(
+                store.write_episodic(
+                    ledger_index.entry_text(literal),
+                    embedding=[0.0, 1.0],
+                    tags=[ledger_index.SOURCE_TAG],
+                    source="ops-ledger",
+                )
+            )
+            self.assertTrue(
+                store.write_episodic(
+                    ledger_index.entry_text(semantic),
+                    embedding=[1.0, 0.0],
+                    tags=[ledger_index.SOURCE_TAG],
+                    source="ops-ledger",
+                )
+            )
+        finally:
+            store.close()
+        return store, literal, semantic
+
+    def test_production_dispatch_uses_a_bounded_query_vector(self) -> None:
+        """Different wording wins semantically without an unbounded queue wait."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+        from kiro_crew.embeddings import PRIORITY_INTERACTIVE, embedding_work
+
+        store, _literal, semantic = self._real_store_with_semantic_pair()
+        self.assertEqual(dispatch._SIMILAR_QUERY_TIMEOUT_SECS, 5.0)
+
+        def _query_vector(text: str, priority: int) -> list[float]:
+            work = embedding_work.get()
+            self.assertIsNotNone(work, "dispatch must carry an explicit embedding deadline")
+            assert work is not None
+            remaining = work.deadline - time.monotonic()
+            self.assertGreater(remaining, 0.0)
+            self.assertLessEqual(remaining, dispatch._SIMILAR_QUERY_TIMEOUT_SECS)
+            self.assertEqual(priority, PRIORITY_INTERACTIVE)
+            self.assertEqual(text, "database outage")
+            return [1.0, 0.0]
+
+        with mock.patch.object(store, "_try_embed", side_effect=_query_vector):
+            with mock.patch("kiro_crew.vector_memory.VectorMemoryStore", return_value=store):
+                claimed = self._claimed(title="database outage", resource="")
+                dispatch._attach_similar_safely(claimed)
+
+        self.assertTrue(claimed.similar)
+        self.assertEqual(claimed.similar[0].entry_id, semantic.entry_id)
+
+    def test_cold_embedder_keeps_keyword_fallback(self) -> None:
+        """No query vector is an ordinary bounded fallback, not a failed claim."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        store, literal, _semantic = self._real_store_with_semantic_pair()
+        with mock.patch.object(store, "_try_embed", return_value=None) as embed:
+            with mock.patch("kiro_crew.vector_memory.VectorMemoryStore", return_value=store):
+                claimed = self._claimed(title="database outage", resource="")
+                dispatch._attach_similar_safely(claimed)
+
+        embed.assert_called_once()
+        self.assertEqual([entry.entry_id for entry in claimed.similar], [literal.entry_id])
+
+    def test_a_fingerprint_match_is_never_repeated_as_similar(self) -> None:
+        """The brief must not list one entry twice under two confidence framings."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        self._seed(2)
+        entries = ledger.read_entries()
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+
+        claimed = self._claimed()
+        claimed.matches = [entries[0]]
+        dispatch.attach_similar_lessons(claimed, store, limit=5)
+
+        similar_ids = {e.entry_id for e in claimed.similar}
+        self.assertNotIn(entries[0].entry_id, similar_ids)
+
+    def test_recall_does_not_inflate_use_counts(self) -> None:
+        """A similar hit is a lead, not a use.
+
+        `use_count` decides `is_fast_path`, which is the one thing between a remembered
+        fix and a confidently-wrong one — so a near-miss must not increment it.
+        """
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        self._seed(2)
+        before = {e.entry_id: e.use_count for e in ledger.read_entries()}
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+
+        dispatch.attach_similar_lessons(self._claimed(), store, limit=5)
+
+        after = {e.entry_id: e.use_count for e in ledger.read_entries()}
+        self.assertEqual(before, after, "recall must not record a use")
+
+    def test_no_store_is_a_quiet_noop(self) -> None:
+        """An install with no vector store must dispatch exactly as before."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        self._seed(1)
+        claimed = dispatch.attach_similar_lessons(self._claimed(), None)
+        self.assertEqual(claimed.similar, [])
+
+    def test_a_broken_store_leaves_matches_intact(self) -> None:
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        self._seed(1)
+        entries = ledger.read_entries()
+
+        class _Broken:
+            def search_episodic(self, **kw: Any) -> list[dict]:
+                raise RuntimeError("index corrupt")
+
+        claimed = self._claimed()
+        claimed.matches = list(entries)
+        dispatch.attach_similar_lessons(claimed, _Broken())
+        self.assertEqual(claimed.similar, [])
+        self.assertEqual(len(claimed.matches), 1, "fingerprint matches survive")
+
+    def test_brief_frames_similar_as_leads_not_fixes(self) -> None:
+        """Wording is the control here: a ranked list invites applying the top hit."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        self._seed(2)
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+        claimed = dispatch.attach_similar_lessons(self._claimed(), store, limit=2)
+
+        brief = dispatch.investigation_brief(claimed)
+        self.assertIn("Related lessons", brief)
+        self.assertIn("fingerprints do NOT match", brief)
+        self.assertIn("never as a fix to apply", brief)
+
+    def test_brief_omits_the_section_when_there_is_nothing_similar(self) -> None:
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        claimed = self._claimed()
+        self.assertNotIn("Related lessons", dispatch.investigation_brief(claimed))
+
+    def test_similar_is_serialized_for_the_cron(self) -> None:
+        """The dispatch route returns this to the cron, which passes it to the agent."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        self._seed(1)
+        store = _FakeStore()
+        ledger_index.import_pending(store)
+        claimed = dispatch.attach_similar_lessons(self._claimed(), store, limit=1)
+
+        payload = claimed.to_dict()
+        self.assertIn("similar", payload)
+        self.assertEqual(len(payload["similar"]), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestLedgerMutationsAreLocked(_Env):
+    """Every read-modify-write of the ledger holds one exclusive file lock.
+
+    `hygiene` reads, dedupes/prunes, and calls `_write_all`, which OVERWRITES the file. A
+    `POST /ledger` (`upsert`) or a `record_use` landing between the pass's `read_entries` and
+    its write was silently erased — the ledger analogue of the incident-index race, and the
+    write half of the peek/ack lesson (a rewrite from a stale snapshot drops everything
+    appended since). The ledger had no lock at all. Found in review.
+    """
+
+    def test_hygiene_does_not_erase_an_append_that_races_its_read(self):
+        """Drive the exact interleaving deterministically: a new entry is appended DURING
+        hygiene's read, in the window `_write_all` would otherwise clobber.
+
+        A real thread race would be flaky; patching `read_entries_for_update` (the
+        mutation-path read hygiene starts from) to append-then-return reproduces it every
+        run. The lock does not prevent the interleaving here (same process, re-entrant
+        open) — the assertion is that the appended entry SURVIVES, which it cannot if
+        hygiene rewrites from a snapshot taken before it."""
+        from unittest import mock
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+
+        ledger.upsert(LedgerEntry.create(pattern="original", fix="f"))
+        latecomer = LedgerEntry.create(pattern="arrived during hygiene", fix="f2")
+
+        real_read = ledger.read_entries_for_update
+        fired = {"done": False}
+
+        def read_then_append():
+            rows = real_read()
+            if not fired["done"]:
+                fired["done"] = True
+                ledger._append(latecomer)  # the concurrent POST
+            return rows
+
+        with mock.patch.object(ledger, "read_entries_for_update", read_then_append):
+            ledger.hygiene()
+
+        patterns = {e.pattern for e in ledger.read_entries()}
+        self.assertIn(
+            "arrived during hygiene",
+            patterns,
+            "hygiene rewrote from a stale snapshot and erased a concurrent append",
+        )
+        self.assertIn("original", patterns)
+
+    def test_each_mutator_takes_the_lock(self):
+        """Structural: a behavioural cross-process race needs two processes inside one file
+        lock and produces a single winner in-process, so what is assertable is that every
+        read-modify-write path enters `_LedgerLock`."""
+        import inspect
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
+
+        for fn in (ledger.upsert, ledger.record_use, ledger.record_miss, ledger.remove,
+                   ledger.hygiene):
+            src = inspect.getsource(fn)
+            self.assertIn(
+                "_LedgerLock()",
+                src,
+                f"{fn.__name__} rewrites the ledger without holding _LedgerLock",
+            )

@@ -1,0 +1,2594 @@
+/**
+ * PierreWorkspaceTreeImpl — the wrapper's own logic around `@pierre/trees`.
+ *
+ * The trees runtime renders custom elements that never upgrade in the test DOM,
+ * so `@pierre/trees/react` is replaced by a recording fake (see
+ * `./__mocks__/pierreTreesReact`) and every assertion here is about what THIS
+ * file does: how it maps props onto the model, how it turns two differently
+ * anchored API payloads into one relative path set, and how it wires the
+ * model's selection event back out as an open.
+ *
+ * Conventions follow ActivityViewerCoverage.test.tsx (locally-built
+ * QueryClientProvider wrapper, an `api` module mock, small fixture makers).
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, waitFor, act, fireEvent, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { store } from '../store'
+import type { ReactNode } from 'react'
+
+vi.mock('@pierre/trees/react', async () => await import('./__mocks__/pierreTreesReact'))
+
+vi.mock('../api/client', () => ({
+  api: {
+    projectTree: vi.fn(),
+    projectGitStatus: vi.fn(),
+    // The contributed-row seam reads `['apps']` as a cache subscriber (never fetches)
+    // and dispatches an activation through `invokeFileMenuItem`.
+    listApps: vi.fn(),
+    invokeFileMenuItem: vi.fn().mockResolvedValue({}),
+  },
+}))
+vi.mock('../components/AppIcon', () => ({ default: () => null }))
+
+import { PierreWorkspaceTreeImpl, breakAtSlashes } from '../pierre/PierreWorkspaceTreeImpl'
+import { STATE_ROW_DECORATION, STATE_ROW_ICON, STATE_ROW_MARKER } from '../pierre/treeStateRows'
+import { api } from '../api/client'
+import {
+  recallExpandedPaths,
+  rememberExpandedPaths,
+  __resetTreeExpansionMemoryForTests,
+} from '../pierre/treeExpansionMemory'
+import { __resetTreeUnreadableDismissalsForTests, recallDismissedUnreadable, rememberDismissedUnreadable } from '../pierre/treeUnreadableDismissals'
+import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
+import { treeMock } from './__mocks__/pierreTreesReact'
+import type { MenuItem, MenuContext, VisibleRow } from './__mocks__/pierreTreesReact'
+
+const ROOT = '/repo/project'
+const PATHS = ['README.md', 'src/a/b.ts']
+// Every state row's synthetic segment ends in this (see `treeStateRows`).
+const M = STATE_ROW_MARKER
+
+type TreePayload = Awaited<ReturnType<typeof api.projectTree>>
+type StatusPayload = Awaited<ReturnType<typeof api.projectGitStatus>>
+type StatusFile = StatusPayload['files'][number]
+
+const mkTree = (over: Partial<TreePayload> = {}): TreePayload => ({
+  root: ROOT,
+  paths: PATHS,
+  repo: true,
+  ...over,
+})
+
+const mkStatus = (files: StatusFile[], over: Partial<StatusPayload> = {}): StatusPayload => ({
+  repo: true,
+  repoRoot: '/repo',
+  files,
+  ...over,
+})
+
+const mkFile = (path: string, status: string, staged = false): StatusFile => ({ path, status, staged })
+
+type Props = Parameters<typeof PierreWorkspaceTreeImpl>[0]
+
+function renderTree(props: Partial<Props> = {}) {
+  // structuralSharing off: with it on, a poll that returns deep-equal data
+  // reuses the previous `data` object, so the wrapper's own same-paths guard
+  // would never be exercised — react-query would be doing the work.
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, structuralSharing: false } },
+  })
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  )
+  const view = render(<PierreWorkspaceTreeImpl projectDir={ROOT} {...props} />, { wrapper })
+  return {
+    qc,
+    ...view,
+    update: (next: Partial<Props> = {}) =>
+      view.rerender(<PierreWorkspaceTreeImpl projectDir={ROOT} {...props} {...next} />),
+  }
+}
+
+/** Resolve once the first payload has been folded into the model. */
+const waitForTree = () => waitFor(() => expect(screen.getByTestId('file-tree')).toBeInTheDocument())
+
+beforeEach(() => {
+  treeMock.reset()
+  vi.mocked(api.projectTree).mockResolvedValue(mkTree())
+  vi.mocked(api.projectGitStatus).mockResolvedValue(mkStatus([]))
+})
+
+afterEach(() => {
+  vi.clearAllMocks()
+})
+
+describe('PierreWorkspaceTreeImpl — data loading', () => {
+  it('shows the shimmer skeleton until the first payload decides empty vs populated', async () => {
+    let resolveTree: (payload: TreePayload) => void = () => {}
+    vi.mocked(api.projectTree).mockReturnValue(new Promise<TreePayload>(r => { resolveTree = r }))
+
+    renderTree()
+
+    expect(screen.getByRole('status', { name: 'Loading workspace…' })).toBeInTheDocument()
+    expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+    // No path set may reach the model before the payload arrives, or the first
+    // visible frame would be an authoritative-looking empty tree.
+    expect(treeMock.last().calls.resetPaths).toEqual([])
+
+    await act(async () => { resolveTree(mkTree()) })
+
+    await waitForTree()
+    expect(screen.queryByRole('status', { name: 'Loading workspace…' })).not.toBeInTheDocument()
+    expect(treeMock.last().calls.resetPaths).toEqual([PATHS])
+  })
+
+  it('mounts the tree collapsed, with flattening on and the built-in search bar off', async () => {
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().options).toMatchObject({
+      initialExpansion: 'closed',
+      flattenEmptyDirectories: true,
+      search: false,
+    })
+    const props = treeMock.fileTreeProps.at(-1)!
+    expect(props.model).toBe(treeMock.last())
+    expect(props.className).toBe('pierre-tree')
+    expect(props.style).toMatchObject({ height: '100%', flex: 1, minHeight: 0 })
+  })
+
+  it('does not reset the model when a refetch returns the same path set', async () => {
+    const { qc } = renderTree()
+    await waitForTree()
+    expect(treeMock.last().calls.resetPaths).toHaveLength(1)
+
+    // Same paths, different payload object: a reset here would throw away
+    // expansion, focus and selection on every 10s poll.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: [...PATHS], truncated: false }))
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+
+    expect(treeMock.last().calls.resetPaths).toHaveLength(1)
+  })
+
+  it('resets the model when the path set actually changes', async () => {
+    const { qc } = renderTree()
+    await waitForTree()
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['only.ts'] }))
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+
+    // waitFor, not a bare expect: the refetch resolving and the effect that
+    // calls resetPaths are two separate ticks, so asserting straight after act()
+    // races the second one and intermittently sees only the initial reset. The
+    // sibling assertions above are safe because they check a COUNT that is
+    // already final; this one waits for the second entry to land.
+    await waitFor(() =>
+      expect(treeMock.last().calls.resetPaths).toEqual([PATHS, ['only.ts']]),
+    )
+  })
+
+  it('de-duplicates a workspace payload before it reaches the model', async () => {
+    // Egress redaction can collapse two different paths to the same string, so
+    // the API list may carry a duplicate. @pierre/trees throws 'Duplicate path'
+    // on adjacent identical entries — uncaught inside the resetPaths layout
+    // effect, it crashes the route — so the wrapper must de-dup, preserving
+    // first occurrence, before handing the set to the model.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md', 'src/a.ts', 'README.md'] }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'src/a.ts']])
+  })
+
+  it('keeps explicit directory rows and marks directories whose files were sampled', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['alpha/a.ts'],
+      directories: ['alpha', 'late', 'late/nested'],
+      truncatedDirectories: ['late'],
+      truncated: true,
+    }))
+    renderTree()
+    await waitForTree()
+
+    // `late/nested` holds nothing in this payload, so it carries the state row
+    // every childless folder gets (see the state-row block below).
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['alpha/a.ts', 'alpha/', 'late/', 'late/nested/', `late/nested/Empty folder${M}`],
+    ])
+    const decorate = treeMock.last().options.renderRowDecoration as (
+      context: { item: MenuItem; row: VisibleRow },
+    ) => { text: string; title?: string } | null
+    // `late` still has `nested` beneath it, so its badge stays whether or not
+    // it is expanded: no state row of its own says the same thing.
+    const late = { kind: 'directory', name: 'late', path: 'late' } as const
+    expect(decorate({ item: late, row: { ...late, isExpanded: false } })).toEqual({
+      text: 'files not shown',
+      title: 'files not shown',
+    })
+    expect(decorate({ item: late, row: { ...late, isExpanded: true } })).toEqual({
+      text: 'files not shown',
+      title: 'files not shown',
+    })
+    const alpha = { kind: 'directory', name: 'alpha', path: 'alpha' } as const
+    expect(decorate({ item: alpha, row: { ...alpha, isExpanded: true } })).toBeNull()
+    expect(screen.getByText(/all folders remain available/i)).toBeInTheDocument()
+  })
+
+  it('reports an empty workspace instead of an empty tree', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: [] }))
+    renderTree()
+
+    await waitFor(() => expect(screen.getByText('No files in this workspace yet')).toBeInTheDocument())
+    expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-tree-root-unreadable')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-tree-root-hidden-only')).not.toBeInTheDocument()
+  })
+
+  it('says which folder could not be read, with Refresh and the agent hand-off, instead of calling it empty', async () => {
+    // The server names the project root as `.` when its own `scandir` failed:
+    // the listing is empty because nothing READ it. One level down the state
+    // row sits under the folder it qualifies; here no folder row exists, so
+    // the notice names the folder itself and carries the same two actions as
+    // the host's failed-listing notice: Refresh re-asks the listing, the
+    // hand-off gives the agent the sentence with the path in it.
+    const errorReport = await import('../utils/errorReport')
+    errorReport.__resetErrorJournalForTests()
+    errorReport.__resetNavSeamForTests()
+    sessionStorage.clear()
+    errorReport.installSoftNavigate(() => {})
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: [],
+      directories: [],
+      repo: false,
+      unreadableDirectories: ['.'],
+    }))
+    try {
+      renderTree()
+
+      const state = await screen.findByTestId('workspace-tree-root-unreadable')
+      const notice = within(state).getByRole('alert')
+      // The sentence leads and the path is a span of its own; the path carries
+      // a break hint after each `/` so a narrow notice wraps it at a segment
+      // boundary, never mid-word. Hints are display only (stripped here).
+      expect(notice).toHaveTextContent('No permission to read the workspace folder')
+      const pathSpan = notice.querySelector('.font-mono')
+      expect(pathSpan?.textContent).toBe(breakAtSlashes(ROOT))
+      expect(pathSpan?.textContent?.replace(/\u200b/g, '')).toBe(ROOT)
+      expect(breakAtSlashes('/a/b')).toBe('/\u200ba/\u200bb')
+      // A Windows root keeps `\` separators, which would get no break point at
+      // all: it is shown in forward-slash form, every segment breakable. A
+      // POSIX name that merely contains a backslash is not Windows-shaped and
+      // stays as it is.
+      expect(breakAtSlashes('C:\\Users\\dev\\KiroCrew')).toBe('C:/\u200bUsers/\u200bdev/\u200bKiroCrew')
+      expect(breakAtSlashes('\\\\share\\team\\repo')).toBe('/\u200b/\u200bshare/\u200bteam/\u200brepo')
+      expect(breakAtSlashes('/home/dev/weird\\name')).toBe('/\u200bhome/\u200bdev/\u200bweird\\name')
+      // Reading order: sentence, path, then the hand-off -- never the hand-off
+      // between the sentence and its path.
+      const handoff = within(notice).getByRole('button', { name: 'Ask the agent' })
+      expect(pathSpan!.compareDocumentPosition(handoff) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(state).not.toHaveTextContent('Folder not readable')
+      expect(screen.queryByText('No files in this workspace yet')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+      expect(api.projectTree).toHaveBeenCalledTimes(1)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      await waitFor(() => expect(api.projectTree).toHaveBeenCalledTimes(2))
+
+      // The hand-off carries the REAL path, not the display copy with hints.
+      fireEvent.click(handoff)
+      const prompt = errorReport.consumeChatHandoff()
+      expect(prompt).toContain(`No permission to read the workspace folder ${ROOT}`)
+      expect(prompt).not.toContain('\u200b')
+    } finally {
+      errorReport.__resetErrorJournalForTests()
+      errorReport.__resetNavSeamForTests()
+      sessionStorage.clear()
+    }
+  })
+
+  it('says the root holds only skipped or hidden folders instead of calling the workspace empty', async () => {
+    // `.` in `hiddenOnlyDirectories`: the project directory's top level holds
+    // only folders the listing skips or hides (a `.kiro/`, a `node_modules/`),
+    // so the payload is empty the same way an empty workspace's is -- and the
+    // copy the state row uses one level down stands in for the empty notice.
+    // Not an error: nothing to refresh, nothing to hand off.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: [],
+      directories: [],
+      repo: false,
+      hiddenOnlyDirectories: ['.'],
+    }))
+    renderTree()
+
+    const state = await screen.findByTestId('workspace-tree-root-hidden-only')
+    expect(state).toHaveTextContent('This workspace contains only hidden items (dotfiles, caches)')
+    expect(screen.queryByText('No files in this workspace yet')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-tree-root-unreadable')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+  })
+
+  it('warns that a large workspace payload was truncated, in all mode only', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ truncated: true }))
+    const { unmount } = renderTree()
+    await waitForTree()
+    expect(screen.getByText(/Large workspace/)).toBeInTheDocument()
+    unmount()
+
+    // Changed mode renders the git-status set, which carries no WORKSPACE-level
+    // truncation notice -- that one is about the tree payload's own file budget.
+    // The git-status set has its own cap and its own notice, asserted below.
+    vi.mocked(api.projectGitStatus).mockResolvedValue(mkStatus([mkFile('project/a.ts', 'M')]))
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+    expect(screen.queryByText(/Large workspace/)).not.toBeInTheDocument()
+  })
+
+  // The server caps the changed-file listing at 500 and reports it. Without a
+  // notice of its own the tree simply ended at 500 rows, presenting a cut list
+  // as a complete one.
+  it('says the changed listing was cut when the git status was capped', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus(
+        Array.from({ length: 500 }, (_, i) => mkFile(`project/f${i}.ts`, 'M')),
+        { truncated: true },
+      ),
+    )
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+    const notice = await screen.findByTestId('workspace-tree-changed-truncated')
+    // The count names the rows THIS surface shows, not the payload length: the
+    // 500 listed files are filtered to those under the project root and
+    // de-duplicated across staged/unstaged first.
+    expect(notice).toHaveTextContent('first 500 shown')
+  })
+
+  it('leaves the changed tree unqualified when the git status was complete', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/a.ts', 'M')], { truncated: false }),
+    )
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+    expect(screen.queryByTestId('workspace-tree-changed-truncated')).not.toBeInTheDocument()
+  })
+
+  // The notice is gated on the mode it describes: `all` renders the tree payload,
+  // whose cap the workspace notice above already covers, so a capped git status
+  // must not put a changed-list claim over a full-workspace tree.
+  it('keeps the changed-listing notice out of all mode', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ truncated: false }))
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/a.ts', 'M')], { truncated: true }),
+    )
+    renderTree({ mode: 'all' })
+    await waitForTree()
+    // `all` mode gates the tree on the TREE payload, so it paints before the
+    // status lands -- asserting the notice's absence straight after
+    // `waitForTree` would pass with the mode gate deleted. Wait until the
+    // capped status has been folded into the model, so the absence below is
+    // about the gate rather than about timing.
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([{ path: 'a.ts', status: 'modified' }]),
+    )
+    expect(screen.queryByTestId('workspace-tree-changed-truncated')).not.toBeInTheDocument()
+  })
+})
+
+// The listing arrives whole -- there is no per-folder request -- so a folder
+// with nothing beneath it is decided by the payload, never by a fetch in
+// flight. Pierre has no slot for a status line under a row, so the wrapper
+// feeds each childless folder ONE synthetic child whose basename is the
+// label; these tests pin what reaches the model and how the wrapper keeps
+// that row inert.
+describe('PierreWorkspaceTreeImpl — state row under a childless folder', () => {
+  it('puts an "Empty folder" row under a folder the payload lists with nothing in it', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['empty'],
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['README.md', 'empty/', `empty/Empty folder${M}`],
+    ])
+  })
+
+  it('says "Contains only hidden items (dotfiles, caches)" when the folder holds only folders the listing skips or hides', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['HEARTBEAT.md'],
+      directories: ['_bg'],
+      hiddenOnlyDirectories: ['_bg'],
+      repo: false,
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['HEARTBEAT.md', '_bg/', `_bg/Contains only hidden items (dotfiles, caches)${M}`],
+    ])
+  })
+
+  it('says "Link to another folder: contents not listed" under a symlinked folder, and nothing under the folder holding it', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['HEARTBEAT.md'],
+      directories: ['deploy', 'deploy/current'],
+      linkedDirectories: ['deploy/current'],
+      repo: false,
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['HEARTBEAT.md', 'deploy/', 'deploy/current/', `deploy/current/Link to another folder: contents not listed${M}`],
+    ])
+  })
+
+  it('marks the row of a folder the server could not read as pointing to the notice, puts no state row under it, and keeps its parent populated', async () => {
+    // Nothing beneath the folder is KNOWN, so no row may make a claim about its
+    // contents -- and a failed read is an error, which is REPORTED only through
+    // the `ErrorNotice` above the tree (next test). The folder's own row is not
+    // silent, though: without a marker the reader cannot tell from the tree
+    // which of the folders that show nothing is the one the notice names. The
+    // marker points at the notice (an icon whose accessible label says "see
+    // the notice above"), it states no failure of its own, and it follows the
+    // same payload list the notice reads. The folder is still an ordinary row
+    // of its own, so its parent is not childless.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['vault', 'vault/locked'],
+      unreadableDirectories: ['vault/locked'],
+      repo: false,
+    }))
+    renderTree()
+    await waitForTree()
+
+    const model = treeMock.last()
+    expect(model.calls.resetPaths).toEqual([['README.md', 'vault/', 'vault/locked/']])
+    expect(model.calls.resetPaths[0].some(p => p.endsWith(M))).toBe(false)
+    const decorate = model.options.renderRowDecoration as (
+      context: { item: MenuItem; row: VisibleRow },
+    ) => unknown
+    const marker = { icon: { name: 'file-tree-icon-lock' }, title: 'Not readable — see the notice above' }
+    const locked = { kind: 'directory', name: 'locked', path: 'vault/locked' } as const
+    expect(decorate({ item: locked, row: { ...locked, isExpanded: false } })).toEqual(marker)
+    expect(decorate({ item: locked, row: { ...locked, isExpanded: true } })).toEqual(marker)
+    const vault = { kind: 'directory', name: 'vault', path: 'vault' } as const
+    expect(decorate({ item: vault, row: { ...vault, isExpanded: true } })).toBeNull()
+    // Pierre hands directory paths with the library's trailing slash too.
+    expect(decorate({ item: { ...locked, path: 'vault/locked/' }, row: { ...locked, path: 'vault/locked/', isExpanded: false } })).toEqual(marker)
+  })
+
+  it('names the folders the server could not read in a notice above the tree, with the agent hand-off', async () => {
+    // The row beneath the folder is a status line inside Pierre's shadow root:
+    // it can carry no button. The failure itself -- a `scandir` the server
+    // could not perform -- is an error the user may not be able to fix but the
+    // agent often can, so it also surfaces through `ErrorNotice` above the
+    // tree with the hand-off on (a listing holds no draft to lose). The root
+    // marker `.` has its own whole-panel state and never appears here.
+    const errorReport = await import('../utils/errorReport')
+    errorReport.__resetErrorJournalForTests()
+    errorReport.__resetNavSeamForTests()
+    sessionStorage.clear()
+    errorReport.installSoftNavigate(() => {})
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+      unreadableDirectories: ['vault/locked', 'ops/secrets'],
+      repo: false,
+    }))
+    try {
+      const { qc } = renderTree()
+      await waitForTree()
+
+      const notice = await screen.findByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveTextContent('Folders not readable: vault/locked, ops/secrets')
+      expect(notice).toHaveAttribute('role', 'alert')
+      fireEvent.click(screen.getByRole('button', { name: 'Ask the agent' }))
+      expect(errorReport.consumeChatHandoff()).toContain('Folders not readable: vault/locked, ops/secrets')
+
+      // The notice follows the payload: a poll that finds the folders readable
+      // again takes it down with the rows.
+      vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+        paths: ['README.md', 'vault/locked/inside.txt'],
+        directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+        unreadableDirectories: [],
+        repo: false,
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument())
+    } finally {
+      errorReport.__resetErrorJournalForTests()
+      errorReport.__resetNavSeamForTests()
+      sessionStorage.clear()
+    }
+  })
+
+  it('shows no not-readable notice when every folder was read', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['empty'],
+      unreadableDirectories: [],
+      repo: false,
+    }))
+    renderTree()
+    await waitForTree()
+    expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  describe('dismissing the not-readable notice', () => {
+    const DISMISS = 'Dismiss: hide this notice until the unreadable folders change'
+    const MARKER = 'Not readable — see the notice above'
+    const MARKER_DISMISSED = 'Not readable — notice dismissed'
+    const locked = (over: Partial<TreePayload> = {}) => mkTree({
+      paths: ['README.md'],
+      directories: ['vault', 'vault/locked'],
+      unreadableDirectories: ['vault/locked'],
+      repo: false,
+      ...over,
+    })
+    const lockedRow = { kind: 'directory', name: 'locked', path: 'vault/locked' } as const
+    const decorateLocked = () => {
+      const decorate = treeMock.last().options.renderRowDecoration as (
+        context: { item: MenuItem; row: VisibleRow },
+      ) => unknown
+      return decorate({ item: lockedRow, row: { ...lockedRow, isExpanded: true } })
+    }
+
+    beforeEach(() => {
+      __resetTreeUnreadableDismissalsForTests()
+      localStorage.removeItem('mc-files-tree-unreadable-dismissed')
+    })
+
+    it('hides the notice once dismissed and turns the row marker into "notice dismissed"', async () => {
+      // A folder that stays unreadable by design (a root-owned cache) would
+      // keep the red alert on every Files visit -- alarm as wallpaper. The
+      // dismiss control does what a ✕ promises: the notice goes. Until then it
+      // is the alert in the danger tone, never a toned-down status, and the
+      // control names its promise for hover as well as for the accessibility
+      // tree. The folder's row keeps its lock marker, whose label no longer
+      // sends the reader to a notice that is not there.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const notice = await screen.findByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice.className).toContain('text-danger')
+      expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER })
+      const control = screen.getByRole('button', { name: DISMISS })
+      expect(control).toHaveAttribute('title', DISMISS)
+
+      fireEvent.click(control)
+
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      // What stands in its place names the user's action, never the error: no
+      // toned-down copy of the folder list survives the dismissal.
+      expect(screen.getByRole('status')).not.toHaveTextContent(/vault\/locked|not readable/i)
+      expect(screen.queryByRole('button', { name: 'Ask the agent' })).not.toBeInTheDocument()
+      // The marker is fed by the payload, so it stays; its label follows the
+      // dismissal.
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER_DISMISSED })
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+    })
+
+    it('leaves a one-line "Notice dismissed — Undo" where the notice stood; Undo brings the notice back and clears the remembered set', async () => {
+      // The ✕ sits beside "Ask the agent" at the same weight, and a dismissal
+      // is remembered per project across reloads -- so a mis-click, or a click
+      // by a reader who did not take in the tooltip, needs a way back that is
+      // visible, not hover-only. The line names the action, not the error, and
+      // its Undo restores the alert and forgets the whole remembered set.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+
+      const line = screen.getByTestId('workspace-tree-unreadable-dismissed')
+      expect(line).toHaveAttribute('role', 'status')
+      // The line says what the ✕ did and did not do -- hidden, not fixed: how
+      // many folders are still unreadable (never which) and that the notice
+      // returns when they change -- so a reader who did not hover the ✕ is not
+      // left guessing whether the problem went away (UX lane).
+      expect(line).toHaveTextContent('Notice hidden — 1 folder still unreadable (shown again when it changes)')
+      expect(line.className).toContain('text-muted')
+      const undo = within(line).getByRole('button', { name: 'Undo' })
+      expect(undo).toHaveAccessibleDescription('Notice hidden — 1 folder still unreadable (shown again when it changes)')
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER_DISMISSED })
+
+      fireEvent.click(undo)
+
+      const notice = screen.getByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent('Folders not readable: vault/locked')
+      expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: DISMISS })).toBeInTheDocument()
+      expect(screen.queryByTestId('workspace-tree-unreadable-dismissed')).not.toBeInTheDocument()
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(decorateLocked()).toEqual({ icon: { name: 'file-tree-icon-lock' }, title: MARKER })
+      // Cleared, not merely hidden: the session map and the reload mirror both
+      // hold nothing for the project.
+      expect(recallDismissedUnreadable(ROOT)).toEqual([])
+      expect(JSON.parse(localStorage.getItem('mc-files-tree-unreadable-dismissed') ?? '{}')).toEqual({ [ROOT]: [] })
+    })
+
+    it('keeps the Undo offer for the undo window only; expiry leaves the dismissal as it was', async () => {
+      // Transient: the way back is offered while the mistake is fresh, on the
+      // product's one undo clock (the session-move bar's horizon). Expiry
+      // leaves the dismissal remembered and the notice hidden.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(2) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('status')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('holds the Undo window open while the pointer is over the spot or focus is inside it, and resumes where it stopped', async () => {
+      // The pointer is on the ✕ when the offer lands -- on the spot the line
+      // takes over -- so the offer holds a FULL window until it leaves; a focus
+      // inside it holds likewise, and the two are tracked apart so a pointer
+      // passing through cannot release a hold keyboard focus still owns.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      const spot = screen.getByTestId('workspace-tree-unreadable-notice').parentElement as HTMLElement
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.mouseEnter(spot) })
+        act(() => { fireEvent.click(dismiss) })
+        const undo = () => screen.queryByRole('button', { name: 'Undo' })
+        expect(screen.getByTestId('workspace-tree-unreadable-dismissed').parentElement).toBe(spot)
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { fireEvent.mouseLeave(spot) })
+        // Part of the window runs, then a focus hold freezes the remainder...
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1000) })
+        act(() => { fireEvent.focus(undo() as HTMLElement) })
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { fireEvent.mouseEnter(spot) })
+        act(() => { fireEvent.mouseLeave(spot) })
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo()).toBeInTheDocument()
+        // ...and the remainder, not a fresh window, runs once the hold lifts.
+        act(() => { fireEvent.blur(undo() as HTMLElement) })
+        act(() => { vi.advanceTimersByTime(999) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(2) })
+        expect(undo()).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('starts a FULL window for a second dismissal in the same mount: the new offer never inherits the remainder the previous one had spent', async () => {
+      // Every offer needs a key of its own. `undoOffer` is null between offers
+      // (expiry, Undo, the notice returning), so a key derived from it would
+      // come out the same each time, and the shared clock -- which tells a new
+      // offer from the old one by its key alone -- would hand the second
+      // dismissal the remainder frozen for the first (or, with the pointer
+      // parked on the spot at the click, a deadline already past: a window of
+      // nothing) and commit the remembered dismissal with no usable way back
+      // (Opus lane on `9f52681b54`).
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      const spot = screen.getByTestId('workspace-tree-unreadable-notice').parentElement as HTMLElement
+      vi.useFakeTimers()
+      try {
+        const undo = () => screen.queryByRole('button', { name: 'Undo' })
+        // First offer: most of its window runs, a pointer passing over the spot
+        // freezes the last second of it as the remainder on record, then Undo
+        // takes the dismissal back.
+        act(() => { fireEvent.click(dismiss) })
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1000) })
+        act(() => { fireEvent.mouseEnter(spot) })
+        act(() => { fireEvent.mouseLeave(spot) })
+        act(() => { fireEvent.click(undo() as HTMLElement) })
+        expect(screen.getByTestId('workspace-tree-unreadable-notice')).toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual([])
+        // Second offer, pointer and focus elsewhere: a full window, not the one
+        // second the first offer had left.
+        act(() => { fireEvent.click(screen.getByRole('button', { name: DISMISS })) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(1001) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1001 - 1) })
+        expect(undo()).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(2) })
+        expect(undo()).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('lands a keyboard dismissal on Undo and lets the window run once focus leaves it: the hold the ✕ set is not stuck on a control that is gone', async () => {
+      // Enter on the ✕ unmounts it. The spot's focus capture had set the hold
+      // when the ✕ took focus, and a removed element fires no focusout, so
+      // without the swap clearing it the offer would stay held for the life
+      // of the mount: the Undo line above the tree for as long, and every
+      // later offer born held (GPT and Opus lanes). Focus itself would fall to
+      // <body>, with the window running while the keyboard user tabs back
+      // from the top of the panel (UX lane) -- so the swap hands it to Undo,
+      // the way back, where it holds the window as any focus inside the spot
+      // does, and the window resumes the moment focus moves on.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      const elsewhere = document.createElement('button')
+      document.body.appendChild(elsewhere)
+      vi.useFakeTimers()
+      try {
+        // Enter on a focused button is a click in every browser; this DOM runs
+        // no default actions, so the click Enter would dispatch is fired by
+        // hand. What is under test is the FOCUSED control unmounting.
+        act(() => { dismiss.focus() })
+        expect(dismiss).toHaveFocus()
+        fireEvent.keyDown(dismiss, { key: 'Enter' })
+        act(() => { fireEvent.click(dismiss) })
+
+        const undo = screen.getByRole('button', { name: 'Undo' })
+        expect(undo).toHaveFocus()
+        // Held while focus is on Undo, as any focus inside the spot holds...
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(undo).toBeInTheDocument()
+        // ...and a full window runs once it leaves. Focus is moved by focusing
+        // ANOTHER element, which blurs only what really had focus: a hold left
+        // by the unmounted ✕ would get no focusout here and never lift.
+        act(() => { elsewhere.focus() })
+        expect(undo).not.toHaveFocus()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS - 1) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(2) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+        elsewhere.remove()
+      }
+    })
+
+    it('lands a keyboard Undo on the ✕, and the next dismissal is not born held by the hold Undo left behind', async () => {
+      // The other direction of the same swap: Enter on Undo unmounts it while
+      // it has focus. Focus goes to the control that reverses it, as the
+      // Auto-title Undo's does; and the hold is cleared here too, or the offer
+      // the NEXT ✕ creates would inherit a hold nothing is holding and never
+      // run out.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      renderTree()
+      await waitForTree()
+      const elsewhere = document.createElement('button')
+      document.body.appendChild(elsewhere)
+      vi.useFakeTimers()
+      try {
+        const first = screen.getByRole('button', { name: DISMISS })
+        act(() => { first.focus() })
+        act(() => { fireEvent.click(first) })
+        const undo = screen.getByRole('button', { name: 'Undo' })
+        expect(undo).toHaveFocus()
+        fireEvent.keyDown(undo, { key: 'Enter' })
+        act(() => { fireEvent.click(undo) })
+
+        const dismiss = screen.getByRole('button', { name: DISMISS })
+        expect(dismiss).toHaveFocus()
+        expect(screen.getByTestId('workspace-tree-unreadable-notice')).toHaveAttribute('role', 'alert')
+        expect(recallDismissedUnreadable(ROOT)).toEqual([])
+        // Focus moves on; a later click (a browser that focuses no pressed
+        // button moves no focus) creates an offer that must run out on the
+        // clock, not sit on a stale hold.
+        act(() => { elsewhere.focus() })
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Undo' })).not.toHaveFocus()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS + 1) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+        expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+      } finally {
+        vi.useRealTimers()
+        elsewhere.remove()
+      }
+    })
+
+    it('clears the focus hold when the payload swaps the spot under a focused Undo, so the next offer is not born held', async () => {
+      // The swap is not always the user's: the notice comes back on its own
+      // when a new folder fails, and Undo unmounts under the focus it holds.
+      // No control was activated, so there is nothing to hand focus to -- but
+      // the hold must still go with the element it described.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      const undo = screen.getByRole('button', { name: 'Undo' })
+      act(() => { undo.focus() })
+      expect(undo).toHaveFocus()
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+        unreadableDirectories: ['vault/locked', 'ops/secrets'],
+      }))
+      await act(async () => { await qc.invalidateQueries() })
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      expect(undo).not.toBeInTheDocument()
+
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        // Two folders remembered: the line counts them, in the plural.
+        expect(screen.getByTestId('workspace-tree-unreadable-dismissed')).toHaveTextContent(
+          'Notice hidden — 2 folders still unreadable (shown again when they change)',
+        )
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS + 1) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('retires the Undo offer for good once the notice has returned on its own, even if the payload settles again inside the window', async () => {
+      // Gone is one-way, as for every undo offer: the alert came back with a
+      // new folder, so the old dismissal is no longer what the user is looking
+      // at, and when that folder reads again the remembered set hides the
+      // notice WITHOUT resurrecting an Undo for a click made a payload ago.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+        unreadableDirectories: ['vault/locked', 'ops/secrets'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await screen.findByTestId('workspace-tree-unreadable-notice')
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument())
+      expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+    })
+
+    it('does not let a hold left by an unmounted spot pin a later offer open', async () => {
+      // The pointer parked on the spot gets no leave event when the spot goes
+      // (every folder read again). A later notice dismissed from the keyboard,
+      // pointer elsewhere, must still run its window out.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      await screen.findByRole('button', { name: DISMISS })
+      fireEvent.mouseEnter(screen.getByTestId('workspace-tree-unreadable-notice').parentElement as HTMLElement)
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({ unreadableDirectories: [] }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument())
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      const dismiss = await screen.findByRole('button', { name: DISMISS })
+      vi.useFakeTimers()
+      try {
+        act(() => { fireEvent.click(dismiss) })
+        expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(MOVE_UNDO_MS * 3) })
+        expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not carry the Undo offer across a remount: the dismissal is remembered, the offer is not', async () => {
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const first = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+      first.unmount()
+
+      treeMock.reset()
+      renderTree()
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+    })
+
+    it('remembers the dismissal across a remount and a page reload, per project', async () => {
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const first = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      first.unmount()
+
+      // The Files tab remounts on in-place tab navigation: the module map
+      // answers before the notice can flash red. The marker proves the payload
+      // (and the folder) landed, so the absence is the dismissal, not a tree
+      // that has not loaded yet.
+      treeMock.reset()
+      const second = renderTree()
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      second.unmount()
+
+      // A page reload drops the module map; the localStorage mirror answers.
+      __resetTreeUnreadableDismissalsForTests()
+      treeMock.reset()
+      const third = renderTree()
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      third.unmount()
+
+      // Another project's identical folder was never dismissed.
+      treeMock.reset()
+      vi.mocked(api.projectTree).mockResolvedValue(locked({ root: '/repo/other' }))
+      renderTree({ projectDir: '/repo/other' })
+      await waitForTree()
+      expect(await screen.findByTestId('workspace-tree-unreadable-notice')).toHaveAttribute('role', 'alert')
+      expect(decorateLocked()).toMatchObject({ title: MARKER })
+    })
+
+    it('brings the notice back when a folder outside the dismissed set becomes unreadable', async () => {
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+
+      vi.mocked(api.projectTree).mockResolvedValue(locked({
+        directories: ['vault', 'vault/locked', 'ops', 'ops/secrets'],
+        unreadableDirectories: ['vault/locked', 'ops/secrets'],
+      }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      const notice = await screen.findByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent('Folders not readable: vault/locked, ops/secrets')
+      // The alert is back on its own, so the Undo offer is retired: one way
+      // back at a time, never a live alert with an Undo line beside it.
+      expect(screen.queryByTestId('workspace-tree-unreadable-dismissed')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument()
+      // Both folders' markers point at the notice again.
+      expect(decorateLocked()).toMatchObject({ title: MARKER })
+      // Dismissing again covers the whole current list, with a fresh Undo.
+      fireEvent.click(screen.getByRole('button', { name: DISMISS }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked', 'ops/secrets'])
+    })
+
+    it('forgets a dismissed folder once it reads again, so the same folder failing anew alerts again', async () => {
+      // A dismissal covers the folder's CURRENT failure, not the folder
+      // forever: a folder that recovers and later breaks again is a new
+      // failure and must not inherit its old dismissal.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      const { qc } = renderTree()
+      await waitForTree()
+      fireEvent.click(await screen.findByRole('button', { name: DISMISS }))
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      // The folder reads again: nothing unreadable, and the dismissal is
+      // pruned to the payload -- in the store too, so a reload does not
+      // resurrect it.
+      vi.mocked(api.projectTree).mockResolvedValue(locked({ unreadableDirectories: [] }))
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      await waitFor(() => expect(recallDismissedUnreadable(ROOT)).toEqual([]))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(decorateLocked()).toBeNull()
+      expect(JSON.parse(localStorage.getItem('mc-files-tree-unreadable-dismissed') ?? '{}')).toEqual({ [ROOT]: [] })
+
+      // The same folder fails again: the alert is back, marker pointing at it.
+      vi.mocked(api.projectTree).mockResolvedValue(locked())
+      await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+      const notice = await screen.findByTestId('workspace-tree-unreadable-notice')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent('Folders not readable: vault/locked')
+      expect(decorateLocked()).toMatchObject({ title: MARKER })
+    })
+
+    it('does not forget a dismissal before the listing has answered', async () => {
+      // A mount that has not heard from the server yet knows nothing about the
+      // folders: pruning against that silence would forget every dismissal on
+      // every reload and re-alert the very visit the dismissal was for.
+      rememberDismissedUnreadable(ROOT, ['vault/locked'])
+      let answer: (payload: TreePayload) => void = () => {}
+      vi.mocked(api.projectTree).mockImplementation(() => new Promise(resolve => { answer = resolve }))
+      renderTree()
+      await act(async () => { await Promise.resolve() })
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+
+      await act(async () => { answer(locked()) })
+      await waitForTree()
+      await waitFor(() => expect(decorateLocked()).toMatchObject({ title: MARKER_DISMISSED }))
+      expect(screen.queryByTestId('workspace-tree-unreadable-notice')).not.toBeInTheDocument()
+      expect(recallDismissedUnreadable(ROOT)).toEqual(['vault/locked'])
+    })
+  })
+
+  it('says the files were not listed when a childless folder lost them to the file cap, once at a time', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['big'],
+      truncatedDirectories: ['big'],
+      truncated: true,
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['README.md', 'big/', `big/Files not shown: file limit of 10,000 reached${M}`],
+    ])
+    // The folder row's badge and the state row beneath it make the same claim,
+    // so the badge yields while the row is showing (the folder is expanded) and
+    // is back the moment the folder is collapsed and the row goes with it.
+    const decorate = treeMock.last().options.renderRowDecoration as (
+      context: { item: MenuItem; row: VisibleRow },
+    ) => { text: string; title?: string } | null
+    const big = { kind: 'directory', name: 'big', path: 'big/' } as const
+    expect(decorate({ item: big, row: { ...big, isExpanded: true } })).toBeNull()
+    expect(decorate({ item: big, row: { ...big, isExpanded: false } })).toEqual({
+      text: 'files not shown',
+      title: 'files not shown',
+    })
+  })
+
+  it('adds no state row under a folder that has a file or a subfolder', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['src/a/b.ts', 'docs/readme.md'],
+      // `src` holds a subfolder, `src/a` and `docs` hold a file, `pkg` holds a
+      // subfolder that is itself childless: only that leaf gets a row.
+      directories: ['src', 'src/a', 'docs', 'pkg', 'pkg/lib'],
+    }))
+    renderTree()
+    await waitForTree()
+
+    const [paths] = treeMock.last().calls.resetPaths
+    const stateRows = paths.filter(p => p.endsWith(M))
+    expect(stateRows).toEqual([`pkg/lib/Empty folder${M}`])
+  })
+
+  it('drops the row the moment a refetch brings real children', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md'], directories: ['empty'] }))
+    const { qc } = renderTree()
+    await waitForTree()
+    expect(treeMock.last().calls.resetPaths.at(-1)).toContain(`empty/Empty folder${M}`)
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md', 'empty/new.ts'], directories: ['empty'] }))
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+
+    await waitFor(() => expect(treeMock.last().calls.resetPaths).toHaveLength(2))
+    expect(treeMock.last().calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/new.ts', 'empty/'])
+  })
+
+  it('never reports a state row as a file open, and leaves it unselected', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md'], directories: ['empty'] }))
+    const onFileOpen = vi.fn()
+    renderTree({ onFileOpen })
+    await waitForTree()
+    const model = treeMock.last()
+
+    act(() => { model.simulateSelection(`empty/Empty folder${M}`) })
+
+    expect(onFileOpen).not.toHaveBeenCalled()
+    expect(model.calls.deselect).toEqual([`empty/Empty folder${M}`])
+    expect(model.getSelectedPaths()).toEqual([])
+  })
+
+  it('opens no context menu on a state row and closes the request Pierre already opened', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md'], directories: ['empty'] }))
+    renderTree({ onAddToContext: vi.fn() })
+    await waitForTree()
+
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close: vi.fn(),
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(
+      { kind: 'file', name: 'Empty folder', path: `empty/Empty folder${M}` },
+      context,
+    )
+    expect(node).toBeNull()
+    // Pierre flips into its menu-open state BEFORE asking for the content, and
+    // while that state holds it swallows every key but Escape. A null render
+    // alone would leave a keyboard user (Shift+F10 on the focused row) stuck
+    // behind an invisible menu, so the rejection must also close it -- after
+    // the render, since Pierre's close is a state update on its own root.
+    expect(context.close).not.toHaveBeenCalled()
+    await waitFor(() => expect(context.close).toHaveBeenCalledTimes(1))
+    expect(context.close).toHaveBeenCalledWith()
+  })
+
+  it('styles the state rows as a status line through the shadow stylesheet, keyed on the decoration the plan emits', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md'], directories: ['empty'] }))
+    renderTree()
+    await waitForTree()
+
+    const css = treeMock.last().options.unsafeCSS as string
+    // Selected by the decoration the wrapper emits for a PLANNED row, never by
+    // the marker suffix (a real file can end in it) and never by a label (the
+    // sheet is fixed at model construction while the labels follow the
+    // language, and a real file may carry a label's exact name).
+    expect(css).toContain(`[data-icon-name="${STATE_ROW_ICON}"]`)
+    expect(css).not.toContain('data-item-path')
+    expect(css).not.toContain('Empty folder')
+    expect(css).toContain('pointer-events:none')
+    const decorate = treeMock.last().options.renderRowDecoration as (
+      context: { item: MenuItem; row: VisibleRow },
+    ) => unknown
+    const planned = { kind: 'file', name: `Empty folder${M}`, path: `empty/Empty folder${M}` } as const
+    expect(decorate({ item: planned, row: { ...planned, isExpanded: false } })).toEqual(STATE_ROW_DECORATION)
+    const readme = { kind: 'file', name: 'README.md', path: 'README.md' } as const
+    expect(decorate({ item: readme, row: { ...readme, isExpanded: false } })).toBeNull()
+  })
+
+  it('leaves a real file whose name ends in the marker character alone', async () => {
+    // An agent or a cloned repository can write a file whose name ends in
+    // U+200B -- the external-content boundary. The marker is the planned row's
+    // identity in the path, not the styling hook: only a path in the plan gets
+    // the decoration the sheet keys on, so this file keeps its icon, its
+    // pointer and its open.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: [`notes/x${M}`, 'README.md'],
+      directories: ['notes', 'empty'],
+    }))
+    const onFileOpen = vi.fn()
+    renderTree({ onFileOpen })
+    await waitForTree()
+
+    const model = treeMock.last()
+    const [paths] = model.calls.resetPaths
+    expect(paths).toContain(`notes/x${M}`)
+    expect(paths).toContain(`empty/Empty folder${M}`)
+    const decorate = model.options.renderRowDecoration as (
+      context: { item: MenuItem; row: VisibleRow },
+    ) => unknown
+    const real = { kind: 'file', name: `x${M}`, path: `notes/x${M}` } as const
+    expect(decorate({ item: real, row: { ...real, isExpanded: false } })).toBeNull()
+    expect(model.options.unsafeCSS as string).not.toContain('data-item-path')
+    // And the wrapper's guards do not treat it as a state row: selecting it opens it.
+    act(() => { model.simulateSelection(`notes/x${M}`) })
+    expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/notes/x${M}`)
+    expect(model.calls.deselect).toEqual([])
+  })
+
+  it('leaves a real file that is named like a label alone', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['notes/Empty folder', 'README.md'],
+      directories: ['notes', 'empty'],
+    }))
+    const onFileOpen = vi.fn()
+    renderTree({ onFileOpen })
+    await waitForTree()
+
+    // The real file's path carries no marker, so the stylesheet leaves its icon
+    // and pointer; only the synthetic row under `empty` ends in it.
+    const [paths] = treeMock.last().calls.resetPaths
+    expect(paths.filter(p => p.endsWith(M))).toEqual([`empty/Empty folder${M}`])
+    expect(paths).toContain('notes/Empty folder')
+    // And the wrapper's guards do not treat it as a state row: selecting it opens it.
+    const model = treeMock.last()
+    act(() => { model.simulateSelection('notes/Empty folder') })
+    expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/notes/Empty folder`)
+    expect(model.calls.deselect).toEqual([])
+  })
+
+  it('re-plans the rows in the new language when the UI language switches at runtime', async () => {
+    // LanguageProvider repaints with cloneElement, so this component re-renders
+    // WITHOUT remounting: labels read once per mount would leave the state row
+    // as the one string in the panel still in the old language.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['README.md'], directories: ['empty'] }))
+    const { update } = renderTree()
+    await waitForTree()
+    expect(treeMock.last().calls.resetPaths.at(-1)).toContain(`empty/Empty folder${M}`)
+
+    const { i18next } = await import('../i18n/all')
+    try {
+      await act(async () => { await i18next.changeLanguage('fr') })
+      // The provider's repaint, which this harness has no provider to deliver.
+      update()
+      await waitFor(() =>
+        expect(treeMock.last().calls.resetPaths.at(-1)).toContain(`empty/${i18next.t('components.workspaceTree.row_empty')}${M}`),
+      )
+      expect(i18next.t('components.workspaceTree.row_empty')).not.toBe('Empty folder')
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
+  it('adds no state rows in changed mode, whose folders are all parents of a changed file', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(mkStatus([mkFile('project/src/a.ts', 'M')]))
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([['src/a.ts']])
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — git status lanes', () => {
+  it('re-anchors repo-root-relative status paths onto the project root', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['a.ts'] }))
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/a.ts', 'M'), mkFile('other/b.ts', 'M')]),
+    )
+    renderTree()
+    await waitForTree()
+
+    // 'other/b.ts' lives in the repo but outside the project dir: it has no row
+    // to paint, and left un-relativized it would land on an unrelated one.
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([{ path: 'a.ts', status: 'modified' }]),
+    )
+  })
+
+  it('anchors on the project root when the status payload has no repo root', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('README.md', 'M')], { repoRoot: undefined }),
+    )
+    renderTree()
+    await waitForTree()
+
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([{ path: 'README.md', status: 'modified' }]),
+    )
+  })
+
+  it('prefers the payload root over the requested project dir', async () => {
+    // The backend answers with the realpath; a symlinked project dir would
+    // otherwise fail the `startsWith` containment check and lose every lane.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ root: ROOT, paths: ['a.ts'] }))
+    vi.mocked(api.projectGitStatus).mockResolvedValue(mkStatus([mkFile('project/a.ts', 'M')]))
+    const onFileOpen = vi.fn()
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <PierreWorkspaceTreeImpl projectDir="/link/project" onFileOpen={onFileOpen} />
+      </QueryClientProvider>,
+    )
+    await waitForTree()
+
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([{ path: 'a.ts', status: 'modified' }]),
+    )
+    act(() => { treeMock.last().simulateSelection('a.ts') })
+    expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/a.ts`)
+  })
+
+  it('maps each porcelain letter onto a lane and drops the ones it has none for', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['m', 'a', 'd', 'r', 'c', 'u', 'x'] }))
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([
+        mkFile('project/m', 'M'), mkFile('project/a', 'A'), mkFile('project/d', 'D'),
+        mkFile('project/r', 'R'), mkFile('project/c', 'C'), mkFile('project/u', '?'),
+        mkFile('project/x', 'U'),
+      ]),
+    )
+    renderTree()
+    await waitForTree()
+
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([
+        { path: 'm', status: 'modified' },
+        { path: 'a', status: 'added' },
+        { path: 'd', status: 'deleted' },
+        { path: 'r', status: 'renamed' },
+        { path: 'c', status: 'added' },
+        { path: 'u', status: 'untracked' },
+      ]),
+    )
+  })
+
+  it('keeps the staged lane when a file is listed both staged and unstaged', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/README.md', 'A', true), mkFile('project/README.md', 'M')]),
+    )
+    renderTree()
+    await waitForTree()
+
+    // One row can only show one state; a second entry for it would overwrite
+    // the staged lane with the unstaged one.
+    await waitFor(() =>
+      expect(treeMock.last().calls.gitStatus.at(-1)).toEqual([{ path: 'README.md', status: 'added' }]),
+    )
+  })
+
+  it('leaves the lanes empty when the working tree is clean', async () => {
+    renderTree()
+    await waitForTree()
+    expect(treeMock.last().calls.gitStatus.every(entries => entries.length === 0)).toBe(true)
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — changed mode', () => {
+  it('renders only the changed files, expanded, gated on the status payload', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/src/a/b.ts', 'M'), mkFile('project/README.md', '?')]),
+    )
+    renderTree({ mode: 'changed' })
+    await waitForTree()
+
+    expect(treeMock.last().options).toMatchObject({ initialExpansion: 'open' })
+    expect(treeMock.last().calls.resetPaths).toEqual([['src/a/b.ts', 'README.md']])
+  })
+
+  it('reports a clean working tree instead of an empty tree', async () => {
+    renderTree({ mode: 'changed' })
+
+    await waitFor(() => expect(screen.getByText('Working tree clean')).toBeInTheDocument())
+    expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+  })
+
+  it('reports it without waiting for the unrelated project-tree query', async () => {
+    // In `changed` mode both the paths and the readiness signal come from the
+    // status query; the tree walk is far slower on a large workspace, and
+    // holding the notice until it lands renders an empty FileTree in its place.
+    vi.mocked(api.projectTree).mockReturnValue(new Promise(() => {}) as never)
+
+    renderTree({ mode: 'changed' })
+
+    await waitFor(() => expect(screen.getByText('Working tree clean')).toBeInTheDocument())
+    expect(screen.queryByTestId('file-tree')).not.toBeInTheDocument()
+  })
+
+  it('names a filter refusal instead of wearing the generic failed copy', async () => {
+    // Turning the refusal into a 503 made these two surfaces render their
+    // generic "failed" notice on every LFS-configured repository, forever, with
+    // no cause and no "retry won't help" -- the outage spelling this change
+    // exists to end, one panel over. Both must recognise the refusal code.
+    const errorReport = await import('../utils/errorReport')
+    const i18n = await import('../i18n/t')
+    const refusal = Object.assign(new Error('CHECKS-OFF'), {
+      status: 503,
+      code: 'git_status_filter_refused',
+      body: JSON.stringify({
+        error: 'CHECKS-OFF',
+        code: 'git_status_filter_refused',
+        cause: 'declared',
+      }),
+    })
+    errorReport.__resetErrorJournalForTests()
+    vi.mocked(api.projectGitStatus).mockRejectedValue(refusal)
+
+    const direct = renderTree({ mode: 'changed' })
+    const notice = await screen.findByTestId('workspace-tree-status-error')
+    expect(notice).toHaveTextContent(i18n.i18nT('components.gitPanel.filter_refused'))
+    expect(notice).not.toHaveTextContent(
+      i18n.i18nT('components.workspaceTree.status_failed'),
+    )
+    // And NO title. `inline` lays a title out as a flex sibling of the message,
+    // so at this width it stacks into two-word fragments -- the capture is what
+    // showed that. The panel needs the title to separate two coexisting notices;
+    // nothing renders beside this one.
+    expect(notice.querySelector('strong')).toBeNull()
+
+    direct.unmount()
+    const { default: FileBrowserRail } = await import('../pages/chat/FileBrowserRail')
+    const railClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={railClient}>
+        <FileBrowserRail projectDir={ROOT} onFileOpen={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    // All mode, which is where the rail owns the notice.
+    const railNotice = await screen.findByText(
+      i18n.i18nT('components.gitPanel.filter_refused'),
+    )
+    expect(railNotice).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18n.i18nT('pages.chat.fileBrowserRail.git_status_failed')),
+    ).toBeNull()
+    errorReport.__resetErrorJournalForTests()
+  })
+
+  it('reports a changed-mode 503 once with its own copy and structured agent handoff', async () => {
+    const errorReport = await import('../utils/errorReport')
+    const serverMessage = 'server-only workspace status detail'
+    errorReport.__resetErrorJournalForTests()
+    errorReport.__resetNavSeamForTests()
+    sessionStorage.clear()
+    errorReport.installSoftNavigate(() => {})
+
+    try {
+      errorReport.recordError({
+        source: 'api',
+        message: serverMessage,
+        status: 503,
+        code: 'git_status_unavailable',
+        endpoint: '/api/project/git/status',
+      })
+      vi.mocked(api.projectGitStatus).mockRejectedValue(
+        Object.assign(new Error(serverMessage), {
+          status: 503,
+          code: 'git_status_unavailable',
+        }),
+      )
+
+      const direct = renderTree({ mode: 'changed' })
+
+      const notice = await screen.findByTestId('workspace-tree-status-error')
+      expect(notice).toHaveTextContent('Couldn’t read the repository status.')
+      expect(notice).not.toHaveTextContent('Commit history may be out of date.')
+      expect(screen.queryByRole('status', { name: 'Loading workspace…' })).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Ask the agent' }))
+      const prompt = errorReport.consumeChatHandoff()
+      expect(prompt).toContain('- Request: /api/project/git/status -> HTTP 503')
+      expect(prompt).toContain('- Code: git_status_unavailable')
+      expect(prompt).toContain(`- Message: ${serverMessage}`)
+
+      direct.unmount()
+      const { default: FileBrowserRail } = await import('../pages/chat/FileBrowserRail')
+      const railClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      render(
+        <QueryClientProvider client={railClient}>
+          <FileBrowserRail projectDir={ROOT} onFileOpen={vi.fn()} />
+        </QueryClientProvider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Changed' }))
+
+      const hostedNotice = await screen.findByTestId('workspace-tree-status-error')
+      expect(hostedNotice).toHaveTextContent('Couldn’t read the repository status.')
+      expect(screen.getAllByRole('alert')).toHaveLength(1)
+    } finally {
+      errorReport.__resetErrorJournalForTests()
+      errorReport.__resetNavSeamForTests()
+      sessionStorage.clear()
+    }
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — selection wiring', () => {
+  it('reports a selected file row as an open, with the absolute path', async () => {
+    const onFileOpen = vi.fn()
+    renderTree({ onFileOpen })
+    await waitForTree()
+
+    act(() => { treeMock.last().simulateSelection('src/a/b.ts') })
+
+    expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`)
+  })
+
+  it('ignores a directory row, a multi-row selection, and a selection off the focused row', async () => {
+    const onFileOpen = vi.fn()
+    renderTree({ onFileOpen })
+    await waitForTree()
+    const model = treeMock.last()
+
+    act(() => { model.simulateSelection('src') })
+    act(() => { model.simulateSelection('README.md', ['README.md', 'src/a/b.ts']) })
+    act(() => { model.simulateSelection('README.md', ['src/a/b.ts']) })
+    expect(onFileOpen).not.toHaveBeenCalled()
+
+    act(() => { model.simulateSelection('README.md') })
+    expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/README.md`)
+  })
+
+  it('picks up an onFileOpen handler swapped in after mount', async () => {
+    const first = vi.fn()
+    const second = vi.fn()
+    const { update } = renderTree({ onFileOpen: first })
+    await waitForTree()
+
+    update({ onFileOpen: second })
+    act(() => { treeMock.last().simulateSelection('README.md') })
+
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledWith(`${ROOT}/README.md`)
+  })
+
+  it('stops listening on unmount', async () => {
+    const { unmount } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    expect(model.subscriberCount()).toBe(1)
+
+    unmount()
+
+    expect(model.subscriberCount()).toBe(0)
+    expect(model.calls.unsubscribes).toBe(1)
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — host selection echo', () => {
+  it('focuses, selects and reveals the file the host has open', async () => {
+    renderTree({ selectedPath: `${ROOT}/src/a/b.ts` })
+    await waitForTree()
+    const model = treeMock.last()
+
+    expect(model.calls.focusPath).toEqual(['src/a/b.ts'])
+    expect(model.calls.select).toEqual(['src/a/b.ts'])
+    // A row under a collapsed ancestor is not on screen, so the highlight would
+    // be invisible without expanding the chain root-down.
+    expect(model.calls.expand).toEqual(['src', 'src/a'])
+  })
+
+  it('clears the previous row when the host switches files', async () => {
+    const { update } = renderTree({ selectedPath: `${ROOT}/README.md` })
+    await waitForTree()
+    const model = treeMock.last()
+    expect(model.getSelectedPaths()).toEqual(['README.md'])
+
+    update({ selectedPath: `${ROOT}/src/a/b.ts` })
+
+    expect(model.calls.deselect).toEqual(['README.md'])
+    expect(model.getSelectedPaths()).toEqual(['src/a/b.ts'])
+  })
+
+  it('never re-reports the file the host already has open', async () => {
+    const onFileOpen = vi.fn()
+    renderTree({ onFileOpen, selectedPath: `${ROOT}/README.md` })
+    await waitForTree()
+    const model = treeMock.last()
+
+    // The echo above selects the row; clicking the already-open row lands here
+    // too. Neither is a new open.
+    act(() => { model.simulateSelection('README.md') })
+    expect(onFileOpen).not.toHaveBeenCalled()
+
+    act(() => { model.simulateSelection('src/a/b.ts') })
+    expect(onFileOpen).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`)
+  })
+
+  it('leaves the model alone when the open file is not in the rendered path set', async () => {
+    // Changed mode renders only the git-status set, so the host's open file is
+    // routinely absent — no ancestor rows exist to expand and no row to select.
+    renderTree({ selectedPath: `${ROOT}/vendor/deep/x.ts` })
+    await waitForTree()
+    const model = treeMock.last()
+
+    expect(model.calls.focusPath).toEqual(['vendor/deep/x.ts'])
+    expect(model.calls.expand).toEqual([])
+    expect(model.calls.select).toEqual([])
+  })
+
+  it('ignores a selectedPath that is not inside the project root', async () => {
+    renderTree({ selectedPath: '/elsewhere/x.ts' })
+    await waitForTree()
+
+    expect(treeMock.last().calls.focusPath).toEqual([])
+    expect(treeMock.last().calls.select).toEqual([])
+  })
+
+  it('ignores a null selectedPath', async () => {
+    renderTree({ selectedPath: null })
+    await waitForTree()
+
+    expect(treeMock.last().calls.focusPath).toEqual([])
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — search forwarding', () => {
+  it('forwards the rail search box into the tree search session and clears it when emptied', async () => {
+    const { update } = renderTree()
+    await waitForTree()
+
+    update({ searchQuery: 'rail' })
+    update({ searchQuery: '' })
+    update({ searchQuery: null })
+
+    // '' and null both mean "no search"; the model only accepts null for that.
+    expect(treeMock.last().calls.search).toEqual([null, 'rail', null, null])
+  })
+
+  it('feeds only the state rows of the folders the filter matches, and all of them back when it clears', async () => {
+    // A state row is a status line, not a name: typing "empty" must not list
+    // every empty folder's row as a result, so a row is never fed on a match of
+    // its label alone. But Pierre force-expands every folder the query matches
+    // (hide-non-matches re-applies that on every store event, so the folder
+    // cannot be kept closed), and a childless folder open over nothing is a
+    // down-chevron with no row beneath it -- the shape the row exists to
+    // prevent. So the row is fed exactly when its folder matches; a truncated
+    // childless folder that does not match keeps its badge, since no row says it.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['empty', 'big'],
+      truncatedDirectories: ['big'],
+    }))
+    const { update } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    const bigRow = `big/Files not shown: file limit of 10,000 reached${M}`
+    expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', `empty/Empty folder${M}`, bigRow])
+    const decorate = model.options.renderRowDecoration as (
+      context: { item: MenuItem; row: VisibleRow },
+    ) => { text: string } | null
+    const big = { kind: 'directory', name: 'big', path: 'big' } as const
+
+    // "emp" matches the folder `empty/`: its row rides along; `big/` does not match.
+    update({ searchQuery: 'emp' })
+    expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', `empty/Empty folder${M}`])
+    expect(model.calls.search.at(-1)).toBe('emp')
+    expect(decorate({ item: big, row: { ...big, isExpanded: true } })).toMatchObject({ text: 'files not shown' })
+
+    // "folder" matches every label and no folder: no row is fed.
+    update({ searchQuery: 'folder' })
+    expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/'])
+
+    // "big" matches the truncated folder: its row is fed and the badge yields
+    // to it while the folder is open, as outside a filter.
+    update({ searchQuery: 'big' })
+    expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', bigRow])
+    expect(decorate({ item: big, row: { ...big, isExpanded: true } })).toBeNull()
+    expect(decorate({ item: big, row: { ...big, isExpanded: false } })).toMatchObject({ text: 'files not shown' })
+
+    update({ searchQuery: null })
+    expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', `empty/Empty folder${M}`, bigRow])
+    expect(model.calls.search.at(-1)).toBeNull()
+  })
+
+  it('moves the search focus off a state row onto its folder, so the first result is never a status line', async () => {
+    // Pierre focuses the first match when a query is set, and a fed state row
+    // sorts right under its folder -- so for "emp" the first match is the
+    // `empty/Empty folder` line. The focus ring on an inert status line reads
+    // as a selectable result; the wrapper hands the focus to the folder the
+    // row qualifies. A focused real row is left alone.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['empty'],
+    }))
+    const { update } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    expect(model.calls.focusPath).toEqual([])
+
+    // Pierre's search session lands the focus on the row (the stand-in only
+    // records `setSearch`, so the focus is installed the way the tree would).
+    model.simulateSelection(`empty/Empty folder${M}`, [])
+    update({ searchQuery: 'emp' })
+    expect(model.calls.focusPath).toEqual(['empty/'])
+
+    model.simulateSelection('README.md', [])
+    update({ searchQuery: 'read' })
+    expect(model.calls.focusPath).toEqual(['empty/'])
+  })
+
+  it('carries the expansion across the filter toggle in a host that does not persist it', async () => {
+    // Filter on and filter off are each a path reset. Without an
+    // `initialExpandedPaths` the reset collapses the tree -- and Pierre's own
+    // filter snapshot, taken right after, would then restore a collapsed tree
+    // as the pre-filter state. A payload change is not a filter toggle and
+    // keeps the host's plain reset.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['notes/a.md', 'src/b.ts'],
+      directories: ['notes', 'src', 'empty'],
+    }))
+    const { update, qc } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    expect(model.calls.resetPathsOptions.at(-1)).toBeUndefined()
+
+    model.simulateExpanded(['notes'])
+    update({ searchQuery: 'a' })
+    expect(model.calls.resetPathsOptions.at(-1)).toEqual({ initialExpandedPaths: ['notes'] })
+
+    model.simulateExpanded(['notes', 'src'])
+    update({ searchQuery: null })
+    expect(model.calls.resetPathsOptions.at(-1)).toEqual({ initialExpandedPaths: ['notes', 'src'] })
+
+    // A poll that changes the path set with no filter toggle: plain reset, as before.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['notes/a.md', 'src/b.ts', 'src/c.ts'],
+      directories: ['notes', 'src', 'empty'],
+    }))
+    const before = model.calls.resetPaths.length
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT] }) })
+    await waitFor(() => expect(model.calls.resetPaths.length).toBe(before + 1))
+    expect(model.calls.resetPathsOptions.at(-1)).toBeUndefined()
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — row context menu', () => {
+  // Baseline composition the wrapper hands `useFileTree`: the `<FileTree>`
+  // renderContextMenu wiring forces `enabled: true` on top of this, but the
+  // trigger config here is what survives.
+  it('enables both right-click and the hover button as context-menu triggers', async () => {
+    renderTree()
+    await waitForTree()
+    expect(treeMock.last().options).toMatchObject({
+      composition: { contextMenu: { triggerMode: 'both', buttonVisibility: 'when-needed' } },
+    })
+  })
+
+  it('always wires renderContextMenu, since a file row always has Download', async () => {
+    // A file row is downloadable on its own, so the menu is wired
+    // unconditionally. The per-node component still renders nothing on a node
+    // with no action (asserted in the Download suite).
+    const { update } = renderTree()
+    await waitForTree()
+    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+
+    update({ onAddToContext: vi.fn() })
+    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+  })
+
+  const openMenu = (item: MenuItem, anchorRect?: Partial<DOMRect>, anchorElement?: HTMLElement) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: anchorElement ?? document.createElement('div'),
+      anchorRect: { ...document.createElement('div').getBoundingClientRect(), ...anchorRect } as DOMRect,
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return { close, ...render(<>{node}</>) }
+  }
+
+  it('offers a single Add to chat action on a file, wired to the absolute path', async () => {
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    const { close } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+
+    // Row click already opens a file, so the menu carries no Open duplicate.
+    expect(screen.queryByRole('menuitem', { name: 'Open' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('focuses the first item on open so the keyboard path can activate it', async () => {
+    // Pierre focuses the tree ROW when it opens the menu, never this slotted
+    // content, so without an explicit focus a Shift+F10 user would sit on the
+    // row: the item's own Enter/Space handler could never fire.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const menuitem = screen.getByRole('menuitem', { name: 'Add to chat' })
+    expect(menuitem).toHaveFocus()
+
+    // And the focused item actually activates on Enter.
+    fireEvent.keyDown(menuitem, { key: 'Enter' })
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
+  })
+
+  it('portals the menu to document.body, outside the clipping tree root (#10100)', async () => {
+    // Pierre's default slot placement hangs the menu in a width-0 slot at the
+    // row's trailing edge INSIDE the tree root, whose `overflow: hidden` plus
+    // this app's zero inline padding clipped it to a sliver flush against the
+    // panel's right border at every panel width -- an unreachable "..." menu.
+    // The portal (marked with the library's documented
+    // `data-file-tree-context-menu-root` attribute so outside-click and Escape
+    // still treat it as inside) is what escapes that clipping boundary.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const menu = screen.getByRole('menu')
+    expect(menu.parentElement).toBe(document.body)
+    expect(menu).toHaveAttribute('data-file-tree-context-menu-root', 'true')
+    // Fixed positioning is what places it from the open context's anchorRect
+    // instead of the slot's in-flow (clipped) position.
+    expect(menu.className).toContain('fixed')
+  })
+
+  it("dismisses on a scroll inside the tree's own root, not on an outside scroll", async () => {
+    // The portaled menu is position: fixed, so if the virtualized tree scrolls
+    // under it the menu would hover an unrelated row while still acting on the
+    // original node. The tree renders in a SHADOW ROOT and scroll is a
+    // non-composed event, so the dismiss listener sits capture-phase on the
+    // anchor's own root: it sees every scroll container inside the tree and
+    // nothing outside it -- a chat transcript auto-scrolling beside the rail
+    // must NOT snatch a just-opened menu.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    try {
+      const shadow = host.attachShadow({ mode: 'open' })
+      const scroller = document.createElement('div')
+      const anchor = document.createElement('div')
+      scroller.appendChild(anchor)
+      shadow.appendChild(scroller)
+
+      const { close } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' }, undefined, anchor)
+      fireEvent.scroll(document.body) // outside the tree: keep the menu
+      expect(close).not.toHaveBeenCalled()
+      fireEvent.scroll(scroller) // the tree's own scroller: rows moved, dismiss
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally {
+      host.remove()
+    }
+  })
+
+  it('clamps into the viewport and flips above when the bottom would overflow', async () => {
+    // jsdom rects are zeros by default, so stub the menu measurement and hand
+    // the open context a bottom-right anchor: the horizontal clamp and the
+    // vertical flip are exactly the branches the clipped-slot defect was about.
+    const rect = { width: 176, height: 200, top: 0, bottom: 200, left: 0, right: 176, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect)
+    try {
+      const onAddToContext = vi.fn()
+      renderTree({ onAddToContext })
+      await waitForTree()
+
+      // window.innerWidth = 1024, innerHeight = 768 in jsdom.
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' }, { width: 18, height: 28, left: 998, right: 1016, top: 700, bottom: 728 })
+      const menu = screen.getByRole('menu')
+      await waitFor(() => expect(menu.style.left).toBe('840px')) // 1016 - 176, at the 1024-176-8 clamp
+      expect(menu.style.top).toBe('498px') // flipped above: 700 - 200 - 2
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('reports a directory as a dir add', async () => {
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    const { close } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a`, 'dir')
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('normalizes a native-Windows mixed-separator path to forward slashes', async () => {
+    // On native Windows the tree root is backslash-separated while Pierre paths
+    // are POSIX, so a raw join is `C:\repo\project/src/a/b.ts`. Left mixed, the
+    // mention host's makeRelative cannot relativize it (absolute token +
+    // duplicate attachment); the reported path must be forward-slash throughout.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ root: 'C:\\repo\\project' }))
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith('C:/repo/project/src/a/b.ts', 'file')
+  })
+
+  it('does not double a separator when the project root is a Windows drive root', async () => {
+    // A drive-root project (`D:\`) normalizes to `D:/`, which ALREADY ends in
+    // a separator. Left un-stripped, the join produces `D://item.path` -- a
+    // double slash the mention host's makeRelative prefix-strip then consumes
+    // only ONE of, leaving a stray leading `/` on the relativized result.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ root: 'D:\\' }))
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith('D:/src/a/b.ts', 'file')
+  })
+
+  it('leaves a POSIX filename containing a backslash untouched', async () => {
+    // `\` is a legal character in a POSIX filename. Only a Windows-shaped ROOT
+    // is separator-normalized; the row's own path must pass through verbatim,
+    // or the staged mention would point at a nonexistent nested path.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'weird\\name.txt', path: 'src/weird\\name.txt' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Add to chat' }))
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/weird\\name.txt`, 'file')
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
+  // Download streams the file's bytes through /api/file-download — the SAME
+  // credential-gated endpoint the viewer's Download uses — then hands the blob
+  // to the browser as a save-to-disk. These tests pin: the row is file-only,
+  // the fetch hits that endpoint (so the gate is in front of it), a refusal is
+  // surfaced not bypassed, and the menu offers Download even with no host.
+  const openMenu = (item: MenuItem) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return { close, ...render(<>{node}</>) }
+  }
+
+  /** Stub fetch, URL.createObjectURL/revoke and the anchor click so the
+   *  download can be observed without a real network or DOM navigation.
+   *  `code` populates the JSON body the helper reads to tell a credential
+   *  refusal (`content_redacted`) apart from any other 400. */
+  function captureDownload(response: { ok: boolean; status?: number; code?: string }) {
+    const names: string[] = []
+    const origFetch = global.fetch
+    const origCreate = URL.createObjectURL
+    const origRevoke = URL.revokeObjectURL
+    const body = response.code ? { error: 'refused', code: response.code } : { error: 'refused' }
+    const mkRes = () => ({
+      ok: response.ok,
+      status: response.status ?? (response.ok ? 200 : 400),
+      statusText: response.ok ? 'OK' : 'Bad Request',
+      blob: async () => new Blob(['bytes'], { type: 'application/octet-stream' }),
+      json: async () => body,
+      clone() { return mkRes() },
+    })
+    const fetchMock = vi.fn().mockImplementation(async () => mkRes())
+    global.fetch = fetchMock as unknown as typeof fetch
+    URL.createObjectURL = vi.fn(() => 'blob:dl') as typeof URL.createObjectURL
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function mockClick(this: HTMLAnchorElement) { names.push(this.download) })
+    return {
+      fetchMock, names,
+      restore: () => {
+        clickSpy.mockRestore()
+        global.fetch = origFetch
+        URL.createObjectURL = origCreate
+        URL.revokeObjectURL = origRevoke
+      },
+    }
+  }
+
+  it('offers Download on a file row and streams the bytes through /api/file-download', async () => {
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      // The absolute path goes to the credential-gated endpoint; absolute paths
+      // carry no resolve=1.
+      await waitFor(() => expect(cap.fetchMock).toHaveBeenCalledTimes(1))
+      expect(cap.fetchMock).toHaveBeenCalledWith(
+        `/api/file-download?path=${encodeURIComponent(`${ROOT}/src/a/b.ts`)}`,
+      )
+      // The saved file keeps its basename.
+      await waitFor(() => expect(cap.names).toEqual(['b.ts']))
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('offers no Download on a directory row', async () => {
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+      // The ask is file rows only, and /api/file-download serves one file.
+      expect(screen.queryByRole('menuitem', { name: 'Download' })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: 'Add to chat' })).toBeInTheDocument()
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('surfaces the gate refusal as a distinct credential message and reaches no bytes', async () => {
+    // The credential gate aborts a flagged file with `code: content_redacted`.
+    // The row names that specifically -- not a generic failure a user would
+    // retry forever -- reports it through the tree notice, never falls back to
+    // another transport, and creates no blob.
+    const cap = captureDownload({ ok: false, status: 400, code: 'content_redacted' })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('flagged by the credential scan')
+      expect(URL.createObjectURL).not.toHaveBeenCalled()
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('does not read a non-credential 400 as a credential refusal', async () => {
+    // /api/file-download also answers 400 for an invalid or out-of-project path
+    // (no `content_redacted` code). Keying on the bare status would falsely tell
+    // the user their file holds secrets; keying on the body code shows generic.
+    const cap = captureDownload({ ok: false, status: 400 })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('Download failed')
+      expect(notice).not.toHaveTextContent('credential scan')
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('surfaces a non-400 failure as the generic Download failed, not the credential message', async () => {
+    // Any other non-ok status (a 500, a gone file) is an ordinary failure the
+    // user may retry -- it must NOT read as a credential refusal.
+    const cap = captureDownload({ ok: false, status: 500 })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('Download failed')
+      expect(notice).not.toHaveTextContent('credential scan')
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('offers Download on a file row even with no host onAddToContext', async () => {
+    // A file row is downloadable on its own, so the menu is wired and focused
+    // on Download with no Add-to-chat row above it to own focus entry.
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree()
+      await waitForTree()
+      expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      const row = screen.getByRole('menuitem', { name: 'Download' })
+      expect(row).toHaveFocus()
+      fireEvent.keyDown(row, { key: 'Enter' })
+
+      await waitFor(() => expect(cap.fetchMock).toHaveBeenCalledTimes(1))
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('shows Download as the ONLY row on a file with no host onAddToContext', async () => {
+    // The reachable shape on a hostless render site (e.g. the Members DM file
+    // tree, which mounts the panel with no onAddToContext): the file row menu
+    // holds Download alone -- no Add to chat above it. This is shipped UI, not a
+    // defensive dead path, so the single-row Download layout must render.
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree()
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      const items = screen.getAllByRole('menuitem')
+      expect(items).toHaveLength(1)
+      expect(items[0]).toHaveTextContent('Download')
+      expect(screen.queryByRole('menuitem', { name: 'Add to chat' })).not.toBeInTheDocument()
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('renders no menu on a directory row with no host and no app rows', async () => {
+    // The wiring is now unconditional, but a directory node with nothing to
+    // offer must still render nothing rather than an empty popup.
+    renderTree()
+    await waitForTree()
+
+    const { node } = (() => {
+      const context: MenuContext = {
+        anchorElement: document.createElement('div'),
+        anchorRect: document.createElement('div').getBoundingClientRect(),
+        close: vi.fn(),
+        restoreFocus: vi.fn(),
+      }
+      return { node: treeMock.fileTreeProps.at(-1)!.renderContextMenu!({ kind: 'directory', name: 'a', path: 'src/a' }, context) }
+    })()
+    render(<>{node}</>)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)', () => {
+  // The DEGENERATE case of the shared `role="menu"` contract: this menu hosts
+  // exactly ONE menuitem, so every focus-move assertion is vacuously true —
+  // "focus lands on the next item" and "focus does not move" are the same
+  // observation. What the contract still owes a keyboard user is CONSUMPTION:
+  // an arrow inside an open menu must not scroll the page behind it, and a Tab
+  // must not drop the user out of a menu they were just told is open (#2533).
+  // These tests therefore assert on `fireEvent`'s return value — false means
+  // `preventDefault()` was called, i.e. the contract claimed the key — which is
+  // the only signal that distinguishes wired from unwired on a one-item menu.
+  const openMenu = (item: MenuItem) => {
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close: vi.fn(),
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return render(<>{node}</>)
+  }
+
+  /** Open the row menu and hand back its single item, focused (the
+   *  component's own firstItemRef effect owns that focus entry). A DIRECTORY
+   *  row is the one-item case: it carries Add to chat but no Download (which is
+   *  file-only), so the degenerate single-menuitem contract still holds. */
+  const openSingleItemMenu = async () => {
+    renderTree({ onAddToContext: vi.fn() })
+    await waitForTree()
+    openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    const menuitem = screen.getByRole('menuitem', { name: 'Add to chat' })
+    expect(menuitem).toHaveFocus()
+    return menuitem
+  }
+
+  it.each(['ArrowDown', 'ArrowUp', 'Home', 'End'])(
+    'consumes %s rather than letting it scroll the page behind the open menu',
+    async key => {
+      const menuitem = await openSingleItemMenu()
+
+      // false = preventDefault() was called: the menu contract claimed the key.
+      expect(fireEvent.keyDown(menuitem, { key })).toBe(false)
+      // One item, so navigation is a no-op — but it is a no-op that STAYS
+      // inside the menu rather than moving focus nowhere useful.
+      expect(menuitem).toHaveFocus()
+    },
+  )
+
+  it.each([
+    ['Tab', false],
+    ['Shift+Tab', true],
+  ] as const)('contains %s within the menu instead of dropping focus behind it', async (_label, shiftKey) => {
+    const menuitem = await openSingleItemMenu()
+
+    // The single item is simultaneously the first and the last item, so both
+    // Tab directions sit on a containment boundary and must wrap onto it.
+    expect(fireEvent.keyDown(menuitem, { key: 'Tab', shiftKey })).toBe(false)
+    expect(menuitem).toHaveFocus()
+  })
+
+  it('leaves a key the menu contract does not own alone', async () => {
+    // Regression PIN, not new behaviour: Enter still belongs to the item's own
+    // activation handler, and the contract must not swallow it on the way.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const menuitem = screen.getByRole('menuitem', { name: 'Add to chat' })
+
+    fireEvent.keyDown(menuitem, { key: 'Enter' })
+    expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
+  })
+
+  it('moves focus between Add to chat and Download with ArrowDown/ArrowUp', async () => {
+    // The real two-item case: a FILE row with a host holds Add to chat AND
+    // Download, so the arrows do actual roving focus (not the degenerate
+    // one-item no-op above). ArrowDown steps to the next item and ArrowUp wraps
+    // back, both consumed so neither scrolls the tree behind the open menu.
+    renderTree({ onAddToContext: vi.fn() })
+    await waitForTree()
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+
+    const add = screen.getByRole('menuitem', { name: 'Add to chat' })
+    const download = screen.getByRole('menuitem', { name: 'Download' })
+    // Focus enters on the first row.
+    expect(add).toHaveFocus()
+
+    // ArrowDown -> Download, claimed (false = preventDefault called).
+    expect(fireEvent.keyDown(add, { key: 'ArrowDown' })).toBe(false)
+    expect(download).toHaveFocus()
+
+    // ArrowUp -> back to Add to chat, claimed.
+    expect(fireEvent.keyDown(download, { key: 'ArrowUp' })).toBe(false)
+    expect(add).toHaveFocus()
+
+    // ArrowUp from the first item wraps to the last (Download).
+    expect(fireEvent.keyDown(add, { key: 'ArrowUp' })).toBe(false)
+    expect(download).toHaveFocus()
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
+  const DECL = {
+    id: 'send',
+    label: 'Send to store',
+    icon: 'Package',
+    endpoint: '/api/apps/doc-store/send',
+    surfaces: ['tree-context'],
+  }
+  const appsWith = (over: Record<string, unknown> = {}) => [
+    { name: 'doc-store', enabled: true, manifest: { contributes: { fileMenuItems: [DECL] } }, ...over },
+  ]
+
+  /** Seed the shared `['apps']` cache the seam subscribes to (it never fetches). */
+  const seed = (qc: QueryClient, apps: unknown) => act(() => { qc.setQueryData(['apps'], apps) })
+
+  const openMenu = (item: MenuItem) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const render_ = treeMock.fileTreeProps.at(-1)!.renderContextMenu
+    return { close, node: render_ ? render_(item, context) : null }
+  }
+
+  it('reaches an app row with no host onAddToContext, on a node with no built-in row', async () => {
+    // A directory node has no host row and no Download, so before an app
+    // contributes, its menu renders nothing; a contributed row is what makes it
+    // reachable. (A file node is always reachable now — it has Download — so a
+    // directory is the node that isolates app-row reachability.)
+    const { qc, update } = renderTree()
+    await waitForTree()
+
+    const dir = { kind: 'directory', name: 'a', path: 'src/a' } as const
+    const before = openMenu(dir)
+    render(<>{before.node}</>)
+    expect(screen.queryByRole('menuitem')).toBeNull()
+
+    seed(qc, appsWith())
+    update()
+    const after = openMenu(dir)
+    render(<>{after.node}</>)
+    expect(screen.getByRole('menuitem', { name: /^Send to store\b/ })).toBeInTheDocument()
+  })
+
+  it('renders the app row, POSTs the path and root, and never the file content', async () => {
+    const { qc, update } = renderTree({ onAddToContext: vi.fn() })
+    await waitForTree()
+    seed(qc, appsWith())
+    update()
+
+    const { close, node } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    render(<>{node}</>)
+
+    // The dispatcher reads the owning slot from the store, so name one for this case.
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-pierre' })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+    expect(api.invokeFileMenuItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'send', app: 'doc-store' }),
+      { surface: 'tree-context', path: `${ROOT}/src/a/b.ts`, kind: 'file', root: ROOT },
+      // The owning slot, so a restricted slot's dispatch is gated here too. Asserted on
+      // every surface: the `dashboard:ui` placeholder it replaces fails open.
+      'dashboard:slot-pierre',
+    )
+    expect(vi.mocked(api.invokeFileMenuItem).mock.calls[0][1]).not.toHaveProperty('content')
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders NOTHING rather than an empty popup when no row survives `when`', async () => {
+    // The gate counts registered rows; `when` then filters per node. A row scoped to
+    // markdown files does not match a directory node, which also has no Download
+    // (file-only) and no host row — so the menu is an empty bordered box with no
+    // menuitem for the focus effect to land on.
+    const { qc, update } = renderTree()
+    await waitForTree()
+    seed(qc, appsWith({
+      manifest: { contributes: { fileMenuItems: [{ ...DECL, when: { extensions: ['md'] } }] } },
+    }))
+    update()
+
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    // Assert on the RENDERED output, not on `node`: Pierre's slot always receives a
+    // `<TreeContextMenu/>` element, and the component's own empty-menu guard is what
+    // renders nothing — so an element-identity check would pass whatever it renders.
+    render(<>{node}</>)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+  })
+
+  it('focuses the first app row when there is no built-in row to focus', async () => {
+    // `firstItemRef` hangs off the built-in rows (Add to chat, Download); on a
+    // directory node with no host neither exists, and the querySelector fallback
+    // is what gives an app-only menu a focus target.
+    const { qc, update } = renderTree()
+    await waitForTree()
+    seed(qc, appsWith())
+    update()
+
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    render(<>{node}</>)
+    const row = screen.getByRole('menuitem', { name: /^Send to store\b/ })
+    expect(row).toHaveFocus()
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(api.invokeFileMenuItem).toHaveBeenCalled()
+  })
+
+  it('contributes nothing from a disabled app', async () => {
+    const { qc, update } = renderTree()
+    await waitForTree()
+    seed(qc, appsWith({ enabled: false }))
+    update()
+    // A directory node has no built-in row, so a disabled app contributing
+    // nothing leaves the menu empty.
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    render(<>{node}</>)
+    expect(screen.queryByRole('menuitem')).toBeNull()
+  })
+
+  it('surfaces a rejected dispatch on the TREE, which outlives the menu', async () => {
+    // `errors-use-error-notice`. Activating a row closes the context menu, so the notice
+    // cannot live inside it: the state and the ErrorNotice belong to the tree.
+    vi.mocked(api.invokeFileMenuItem).mockRejectedValueOnce(new Error('endpoint refused'))
+    const { qc, update } = renderTree()
+    await waitForTree()
+    seed(qc, appsWith())
+    update()
+
+    const { node } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    render(<>{node}</>)
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+
+    const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+    expect(notice).toHaveTextContent('endpoint refused')
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — expansion persistence', () => {
+  // The Files tab mounts only while active, so opening a file remounts the
+  // whole tree; `persistExpansion` remembers the expanded directories (keyed
+  // by projectDir) and restores them through `resetPaths`'
+  // `initialExpandedPaths`. Off by default: the other hosts of this shared
+  // tree keep their collapsed-by-default behavior.
+  const TREE_PATHS = ['src/a.ts', 'src/lib/b.ts', 'README.md']
+  // `@pierre/trees` materializes DIRECTORY row paths with a trailing slash
+  // (`src/`, not `src`); the helper emits that canonical shape so these tests
+  // exercise what the real library hands the capture. Shape verified against
+  // @pierre/trees 1.0.0-beta.6 (path-store materializeNodePath appends `/`
+  // to directory nodes) — re-verify on an upgrade.
+  const expandedDir = (path: string) => ({ kind: 'directory' as const, path: path + '/', isExpanded: true })
+
+  beforeEach(() => {
+    __resetTreeExpansionMemoryForTests()
+    localStorage.clear()
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: TREE_PATHS }))
+  })
+
+  it('passes no expansion options on a first mount with nothing remembered', async () => {
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([TREE_PATHS])
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('restores the expanded directories on a remount of the same projectDir', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => {
+      treeMock.last().simulateVisibleRows([
+        expandedDir('src'),
+        expandedDir('src/lib'),
+        { kind: 'file', path: 'src/a.ts', isExpanded: false },
+      ])
+    })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src', 'src/lib'] },
+    ])
+  })
+
+  it('gives a different projectDir nothing', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true, projectDir: '/repo/other' })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('drops remembered directories absent from the new payload', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    unmount()
+
+    // `src/lib` no longer exists in the new payload: a stale path must be
+    // filtered out rather than handed to the controller.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['src/a.ts'] }))
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('snapshots nothing while a search is active', async () => {
+    // The search session expands matches transiently; persisting that would
+    // restore an unrelated expansion after the filter is cleared.
+    const { unmount } = renderTree({ persistExpansion: true, searchQuery: 'lib' })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('neither reads nor writes the memory in changed mode', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/src/a.ts', 'M')]),
+    )
+    rememberExpandedPaths(ROOT, ['src'])
+
+    const { unmount } = renderTree({ persistExpansion: true, mode: 'changed' })
+    await waitForTree()
+    // Changed mode starts fully open by design: the remembered set must not
+    // narrow it.
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/x')]) })
+    unmount()
+
+    // And the changed-mode notification must not have overwritten the memory.
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('carries a remembered directory through a payload that temporarily lacks it', async () => {
+    // The backend truncates large payloads and a branch switch can drop a
+    // subtree: a remembered directory absent from the current payload is not
+    // evidence of a collapse, so a capture during that window must not erase
+    // it, and it must restore once the payload carries it again.
+    const first = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    first.unmount()
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['src/a.ts'] }))
+    const second = renderTree({ persistExpansion: true })
+    await waitForTree()
+    // Only the still-present directory is passed to the controller…
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+    // …and a capture during this window keeps the absent one remembered.
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    second.unmount()
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: TREE_PATHS }))
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src', 'src/lib'] },
+    ])
+  })
+
+  it('does not erase the memory when the model transiently holds no rows', async () => {
+    // A `project-tree` poll can answer with an empty payload (re-indexing,
+    // transient backend miss); the resulting empty visible set must not
+    // overwrite the remembered expansion.
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    act(() => { treeMock.last().simulateVisibleRows([]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('evicts the least recently written project from storage past the dir cap', () => {
+    // One storage key holds every project's entry; without eviction a long
+    // session would grow the origin's quota use without bound.
+    for (let i = 0; i <= 20; i++) rememberExpandedPaths(`/repo/p${i}`, ['src'])
+    __resetTreeExpansionMemoryForTests()
+
+    expect(recallExpandedPaths('/repo/p0')).toEqual([])
+    expect(recallExpandedPaths('/repo/p1')).toEqual(['src'])
+    expect(recallExpandedPaths('/repo/p20')).toEqual(['src'])
+  })
+
+  it('restores from the localStorage mirror after a page reload', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    unmount()
+
+    // A page reload drops the module-scope session map; the localStorage
+    // mirror is what carries the expansion across it.
+    __resetTreeExpansionMemoryForTests()
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('tolerates localStorage throwing on both write and read', async () => {
+    // Private mode / quota: storage access is best-effort, the module-scope
+    // session map still covers the remount case.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    try {
+      const first = renderTree({ persistExpansion: true })
+      await waitForTree()
+      act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+      first.unmount()
+
+      const second = renderTree({ persistExpansion: true })
+      await waitForTree()
+      expect(treeMock.last().calls.resetPathsOptions).toEqual([
+        { initialExpandedPaths: ['src'] },
+      ])
+      second.unmount()
+
+      // With the session map gone (a fresh page load) the throwing read falls
+      // back to nothing remembered rather than crashing.
+      __resetTreeExpansionMemoryForTests()
+      const third = renderTree({ persistExpansion: true })
+      await waitForTree()
+      expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+      third.unmount()
+    } finally {
+      setItem.mockRestore()
+      getItem.mockRestore()
+    }
+  })
+
+  it('leaves the memory alone when persistExpansion is off (the default)', async () => {
+    rememberExpandedPaths(ROOT, ['src'])
+
+    const { unmount } = renderTree()
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/x')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+})

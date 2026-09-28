@@ -1,0 +1,27 @@
+{
+  "kind": "crew-companion-pack",
+  "version": 1,
+  "id": "sample-svg",
+  "manifest": {
+    "meta": {
+      "id": "sample-svg",
+      "name": "Sample SVG",
+      "author": "Kiro Crew fixtures",
+      "description": "A svg test pack for the crew appearance library.",
+      "type": "custom",
+      "format": "svg",
+      "thumbnail": ""
+    },
+    "states": {
+      "idle": "idle.svg",
+      "working": "working.svg",
+      "done": "done.svg"
+    },
+    "moods": {}
+  },
+  "files": {
+    "idle.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" rx=\"14\" fill=\"#6d5ce7\"/><circle cx=\"24\" cy=\"27\" r=\"4\" fill=\"#fff\"><animate attributeName=\"r\" values=\"4;1.2;4\" dur=\"3.2s\" repeatCount=\"indefinite\"/></circle><circle cx=\"40\" cy=\"27\" r=\"4\" fill=\"#fff\"><animate attributeName=\"r\" values=\"4;1.2;4\" dur=\"3.2s\" repeatCount=\"indefinite\"/></circle><path d=\"M24 42 Q32 47 40 42\" stroke=\"#fff\" stroke-width=\"3\" fill=\"none\" stroke-linecap=\"round\"/></svg>",
+    "working.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" rx=\"14\" fill=\"#1f9d6b\"/><circle cx=\"24\" cy=\"27\" r=\"4\" fill=\"#fff\"><animate attributeName=\"r\" values=\"4;1.2;4\" dur=\"0.5s\" repeatCount=\"indefinite\"/></circle><circle cx=\"40\" cy=\"27\" r=\"4\" fill=\"#fff\"><animate attributeName=\"r\" values=\"4;1.2;4\" dur=\"0.5s\" repeatCount=\"indefinite\"/></circle><path d=\"M24 43 Q32 38 40 43\" stroke=\"#fff\" stroke-width=\"3\" fill=\"none\" stroke-linecap=\"round\"/></svg>",
+    "done.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" width=\"64\" height=\"64\"><rect width=\"64\" height=\"64\" rx=\"14\" fill=\"#c9761a\"/><circle cx=\"24\" cy=\"27\" r=\"4\" fill=\"#fff\"><animate attributeName=\"r\" values=\"4;1.2;4\" dur=\"2s\" repeatCount=\"indefinite\"/></circle><circle cx=\"40\" cy=\"27\" r=\"4\" fill=\"#fff\"><animate attributeName=\"r\" values=\"4;1.2;4\" dur=\"2s\" repeatCount=\"indefinite\"/></circle><path d=\"M23 41 Q32 50 41 41\" stroke=\"#fff\" stroke-width=\"3\" fill=\"none\" stroke-linecap=\"round\"/></svg>"
+  }
+}

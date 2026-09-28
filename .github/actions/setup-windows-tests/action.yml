@@ -1,0 +1,51 @@
+name: Prepare the Windows test runner
+description: Inspect the CodeBuild image, select installed native Git Bash, and set up Node for test parity.
+runs:
+  using: composite
+  steps:
+    # Checkout is a JavaScript action. This is the first shell step, before
+    # setup-python/setup-uv or any default-pwsh run. Hosted stays unchanged.
+    - name: Inventory installed Windows tools (CodeBuild only)
+      if: runner.os == 'Windows' && runner.environment == 'self-hosted'
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Write-Host "Windows $([Environment]::OSVersion.Version); PowerShell $($PSVersionTable.PSVersion)"
+        $memory = Get-CimInstance Win32_OperatingSystem
+        Write-Host "memory: totalKiB=$($memory.TotalVisibleMemorySize) freeKiB=$($memory.FreePhysicalMemory)"
+        Write-Host "workspace=$env:GITHUB_WORKSPACE temp=$env:RUNNER_TEMP toolcache=$env:RUNNER_TOOL_CACHE"
+        foreach ($name in @('powershell', 'pwsh', 'git', 'bash', 'python', 'uv', 'jq', 'node')) {
+          $commands = @(Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue)
+          if ($commands.Count -eq 0) { Write-Host "${name}: not installed/on PATH" }
+          foreach ($command in $commands) { Write-Host "${name}: $($command.Source) version=$($command.Version)" }
+        }
+        $git = Get-Command git -CommandType Application -ErrorAction Stop
+        $pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop
+        # Mirror test/conftest.py's native Git Bash candidates. Never select
+        # System32/bash.exe: that is the WSL launcher, not a Windows shell.
+        $gitRoot = Split-Path (Split-Path $git.Source -Parent) -Parent
+        $candidates = @((Join-Path $gitRoot 'bin\bash.exe'))
+        foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+          if ($root) { $candidates += Join-Path $root 'Git\bin\bash.exe' }
+        }
+        $bash = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if (-not $bash) { throw 'Native Git Bash is required; WSL is not a substitute' }
+        # Pass one unquoted command token: no nested quotes or encoded stdin script.
+        # Keep the native verdict in PowerShell, including on Windows PowerShell 5.1.
+        $system = @(& $bash --noprofile --norc -c uname)
+        if ($LASTEXITCODE -ne 0 -or $system.Count -ne 1 -or $system[0] -cnotmatch '^(MINGW|MSYS)') {
+          throw 'Git Bash did not report a native Windows environment'
+        }
+        & $pwsh.Source -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+        if ($LASTEXITCODE -ne 0) { throw 'Installed pwsh cannot execute setup/test steps' }
+        # Only expose the installed native shell directory, not an environment dump.
+        $bin = Split-Path $bash -Parent
+        [IO.File]::AppendAllText($env:GITHUB_PATH, "$bin`n", [Text.UTF8Encoding]::new($false))
+        Write-Host "selected native Git Bash: $bash"
+
+    - name: Set up Node for Windows test parity (CodeBuild only)
+      if: runner.os == 'Windows' && runner.environment == 'self-hosted'
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24
+        package-manager-cache: false

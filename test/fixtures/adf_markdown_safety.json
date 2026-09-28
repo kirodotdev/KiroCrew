@@ -1,0 +1,106 @@
+{
+  "_comment": [
+    "Shared contract for the Jira ADF -> markdown converter's safety claims.",
+    "The BACKEND test (test/test_source_providers.py) asserts that the converter",
+    "turns each `adf` into exactly `markdown`, so this file cannot drift from the",
+    "converter. The FRONTEND test (website/src/test/MarkdownRenderer.adfSafety",
+    ".test.tsx) renders each `markdown` through the real MarkdownRenderer plugin",
+    "stack and asserts the selectors, so the escape set is checked against the",
+    "renderer that actually runs rather than against a comment describing it.",
+    "Adding a case here makes BOTH sides assert it. If the frontend side starts",
+    "failing, the escape set in source_providers.py is what needs to change --",
+    "not this file."
+  ],
+  "cases": [
+    {
+      "name": "literal emphasis stays text",
+      "adf": {
+        "type": "doc",
+        "content": [
+          {"type": "paragraph", "content": [{"type": "text", "text": "**bold** _it_"}]}
+        ]
+      },
+      "markdown": "\\*\\*bold\\*\\* \\_it\\_",
+      "expectText": "**bold** _it_",
+      "forbidSelectors": ["strong", "em"]
+    },
+    {
+      "name": "literal html stays text",
+      "adf": {
+        "type": "doc",
+        "content": [
+          {"type": "paragraph", "content": [{"type": "text", "text": "<b>x</b> & <img src=y>"}]}
+        ]
+      },
+      "markdown": "\\<b\\>x\\</b\\> \\& \\<img src=y\\>",
+      "expectText": "<b>x</b> & <img src=y>",
+      "forbidSelectors": ["b", "img"]
+    },
+    {
+      "name": "literal math stays text",
+      "adf": {
+        "type": "doc",
+        "content": [
+          {"type": "paragraph", "content": [{"type": "text", "text": "$$x^2$$"}]}
+        ]
+      },
+      "markdown": "\\$\\$x^2\\$\\$",
+      "expectText": "$$x^2$$",
+      "forbidSelectors": [".katex", ".katex-display", "math"]
+    },
+    {
+      "name": "literal image syntax stays text",
+      "adf": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [{"type": "text", "text": "![a](http://e.com/i.png)"}]
+          }
+        ]
+      },
+      "markdown": "\\!\\[a\\](http://e.com/i.png)",
+      "expectText": "![a](http://e.com/i.png)",
+      "forbidSelectors": ["img"]
+    },
+    {
+      "name": "external media is a link not an image",
+      "adf": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "media",
+                "attrs": {"type": "external", "url": "http://e.com/i.png", "alt": "shot"}
+              }
+            ]
+          }
+        ]
+      },
+      "markdown": "[shot](http://e.com/i.png)",
+      "forbidSelectors": ["img"],
+      "requireSelector": "a[href=\"http://e.com/i.png\"]"
+    },
+    {
+      "name": "a credential split across marks is redacted",
+      "adf": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {"type": "text", "text": "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4"},
+              {"type": "text", "text": "Yz7Bc0Ef3Gh6", "marks": [{"type": "strong"}]}
+            ]
+          }
+        ]
+      },
+      "markdown": "\\[REDACTED: credential\\]",
+      "expectText": "[REDACTED: credential]",
+      "forbidSelectors": ["strong"],
+      "forbidText": "ghp_Ab3Df6Hj9Kl2Np5Qr8Tv1Wx4Yz7Bc0Ef3Gh6"
+    }
+  ]
+}

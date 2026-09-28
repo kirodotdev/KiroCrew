@@ -1,0 +1,647 @@
+"""WebSocket client registry, authorization, serialization, and fan-out."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from collections.abc import Callable
+from typing import Any, Protocol
+
+from aiohttp import web
+
+#: Capability a dashboard tab declares in the ``caps`` query parameter of
+#: ``/api/ws`` when its bundle applies ``slot_patch`` frames.
+SLOT_PATCH_CAPABILITY = "slot_patch"
+
+#: Socket attribute recording that declaration. Only a dashboard-user socket
+#: carries it; every other socket keeps receiving the full ``slots`` list.
+SLOT_PATCH_WS_FLAG = "_slot_patch"
+
+
+class WebSocketHubOwner(Protocol):
+    """The mutable facade-owned state the hub operates on.
+
+    These collections intentionally remain owned by ``DashboardState``. Existing
+    handlers and tests inspect or replace them directly, so copying them into the
+    hub would create two registries and make disconnect cleanup depend on which
+    reference a caller happened to mutate.
+    """
+
+    _ws_clients: list[web.WebSocketResponse]
+    _owner_ws_clients: set[web.WebSocketResponse]
+    _ws_log_subscribers: set[web.WebSocketResponse]
+    _ws_subagent_subscribers: set[web.WebSocketResponse]
+    _background_tasks: set[asyncio.Task[Any]]
+    _flush_task: asyncio.Task[Any] | None
+
+
+Redactor = Callable[[str], tuple[str, Any]]
+
+
+class WebSocketHub:
+    """Coordinate WebSocket clients without owning dashboard domain state.
+
+    The owner and providers are injected so this module never imports the state
+    facade. Providers are resolved at call time, preserving monkeypatch seams and
+    the serving-loop value bound after construction.
+    """
+
+    def __init__(
+        self,
+        owner: WebSocketHubOwner,
+        *,
+        serving_loop_provider: Callable[[], asyncio.AbstractEventLoop | None],
+        logger_provider: Callable[[], logging.Logger],
+        redact_credentials_provider: Callable[[], Redactor],
+        redact_exfiltration_urls_provider: Callable[[], Redactor],
+        scope_state_provider: Callable[[], Any] | None = None,
+        running_loop_provider: Callable[[], asyncio.AbstractEventLoop | None] | None = None,
+    ) -> None:
+        self._owner = owner
+        self._serving_loop_provider = serving_loop_provider
+        self._logger_provider = logger_provider
+        self._redact_credentials_provider = redact_credentials_provider
+        self._redact_exfiltration_urls_provider = redact_exfiltration_urls_provider
+        self._scope_state_provider: Callable[[], Any] = (
+            scope_state_provider if scope_state_provider is not None else lambda: owner
+        )
+        self._running_loop_provider = running_loop_provider or self._running_loop
+
+    @property
+    def _log(self) -> logging.Logger:
+        return self._logger_provider()
+
+    def _owner_method(self, name: str, fallback: Callable[..., Any]) -> Callable[..., Any]:
+        """Resolve a facade seam at call time, falling back for standalone use.
+
+        Dashboard tests and integrations replace several of these methods on an
+        individual ``DashboardState`` instance. Looking them up for each fan-out
+        keeps those seams live after the implementation moves behind this hub.
+        The normal facade wrappers delegate back to the matching hub method, so
+        the lookup does not transfer ownership of any collection.
+        """
+        method = getattr(self._owner, name, None)
+        return method if callable(method) else fallback
+
+    @staticmethod
+    def _running_loop() -> asyncio.AbstractEventLoop | None:
+        """Return the running loop, or None when called off the event loop."""
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+    def _spawn_ws_send(self, ws: web.WebSocketResponse, msg: str) -> None:
+        """Fire-and-forget a WS send while retaining a strong task reference.
+
+        A fan-out may originate on a worker thread. In that case the send hops to
+        the dashboard serving loop and creates its coroutine there. Only a
+        synchronous refusal from ``send_str`` escapes; scheduling failures are a
+        process condition and must not unregister an otherwise healthy peer.
+        """
+        loop = self._running_loop_provider()
+        if loop is None:
+            target = self._serving_loop_provider()
+            if target is not None and not target.is_closed():
+                try:
+                    spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
+                    target.call_soon_threadsafe(spawn, ws, msg)
+                    return
+                except RuntimeError:
+                    self._log.debug("WS send: serving loop is shutting down")
+            # Still call send_str so a synchronous peer refusal reaches the
+            # fan-out. Close a returned coroutine because there is no loop on
+            # which it can run.
+            coro = ws.send_str(msg)
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            self._log.debug("WS send dropped: no serving loop to run it on")
+            return
+
+        # Resolve the provider on-loop as well. DashboardState's provider latches
+        # this loop only when startup has not already bound an authoritative one.
+        self._serving_loop_provider()
+        task = asyncio.ensure_future(ws.send_str(msg))
+        self._owner._background_tasks.add(task)
+        done = self._owner_method("_on_ws_send_done", self._on_ws_send_done)
+        task.add_done_callback(done)
+
+    def _on_ws_send_done(self, task: asyncio.Task[Any]) -> None:
+        """Release a completed send task and surface asynchronous failures."""
+        self._owner._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._log.debug("WS send failed (client likely disconnected): %s", exc)
+
+    def _ws_client_allowed(
+        self,
+        ws: web.WebSocketResponse,
+        msg_type: str,
+        data: object,
+    ) -> bool:
+        """Apply the deny-by-default event-scope gate for one client."""
+        # Checked BEFORE the dashboard-user short-circuit, and gated on a plain
+        # dict lookup because this predicate runs for every frame on every socket:
+        # the mark is absent for all but a socket still awaiting its
+        # members_subscribed baseline, so the common path costs one `get`.
+        #
+        # A projection delivered before that baseline is worse than a projection
+        # delayed: the baseline's lastSeqs is computed before the append, so the
+        # client's prune rule reads the newer row as stale and deletes it, and
+        # nothing corrects it until that slug next changes. Hold it back here and
+        # record the slug; send_members_subscribed replays the current value once
+        # the baseline is out.
+        pending = ws.get("_members_baseline_pending")
+        if pending is not None:
+            from kiro_crew.eventlog import types as eventlog_types
+
+            if msg_type == eventlog_types.WS_MEMBER_PROJECTION:
+                slug = data.get("slug") if isinstance(data, dict) else None
+                if isinstance(slug, str) and slug:
+                    pending.add(slug)
+                return False
+        if ws.get("_is_dashboard_user", False):
+            # Granted, and the grant is a permission decision like any other:
+            # ``AUTOSDE.yaml`` wants an SEL record for it, not only for the
+            # refusals below. Recorded HERE, at the chokepoint every dashboard
+            # frame passes (live broadcast via ``_send_ws_all``, the log
+            # fan-out's per-send recheck, and the subagent reconnect replay in
+            # ``ws.py`` all funnel through this predicate), rather than at each
+            # sender, so a send path added later is covered by construction --
+            # the same reasoning ``ws_event_allowed`` gives for app tokens.
+            # Under a reserved auditee rather than the empty app claim, so the
+            # operator can tell their own socket's grants from an unnamed
+            # app's. Never raises: a failing audit sink must not withhold a
+            # frame the owner is entitled to.
+            try:
+                from kiro_crew.dashboard.ws_event_scope import (
+                    DASHBOARD_USER_AUDITEE,
+                    _audit_allow,
+                )
+
+                _audit_allow(DASHBOARD_USER_AUDITEE, msg_type)
+            except Exception:
+                self._log.debug(
+                    "state: SEL audit for dashboard-user grant %s failed",
+                    msg_type,
+                    exc_info=True,
+                )
+            return True
+        ws_app: str = ws.get("_app", "")
+        snapshot: frozenset[str] = ws.get("_allowed_events", frozenset())
+        data_dict: dict[Any, Any] = data if isinstance(data, dict) else {}
+        try:
+            from kiro_crew.dashboard.ws_event_scope import (
+                _audit_deny,
+                effective_allowed_events,
+                ws_event_allowed,
+            )
+
+            allowed = effective_allowed_events(ws_app, snapshot)
+            return ws_event_allowed(
+                msg_type,
+                data_dict,
+                app=ws_app,
+                allowed_events=allowed,
+                state=self._scope_state_provider(),
+            )
+        except Exception:
+            try:
+                _audit_deny(ws_app or "<unknown>", msg_type, "scope_check_exception")
+            except Exception as inner_exc:
+                self._log.debug(
+                    "state: audit for scope_check_exception failed for %s/%s: %s",
+                    ws_app,
+                    msg_type,
+                    inner_exc,
+                )
+            return False
+
+    def _serialize_for_client(
+        self,
+        ws: web.WebSocketResponse,
+        msg_type: str,
+        data: object,
+        default_msg: str,
+    ) -> str:
+        """Return a payload filtered for one dashboard or app client."""
+        if ws.get("_is_dashboard_user", False):
+            return default_msg
+        if msg_type in ("subagent_batch_update", "subagent_batch_chunks"):
+            serialize_batch = self._owner_method(
+                "_serialize_subagent_batch", self._serialize_subagent_batch
+            )
+            return serialize_batch(ws, msg_type, data, default_msg)
+        if msg_type != "slots":
+            return default_msg
+        if not isinstance(data, dict) or "slots" not in data:
+            return default_msg
+
+        snapshot: frozenset[str] = ws.get("_allowed_events", frozenset())
+        ws_app: str = ws.get("_app", "")
+        try:
+            from kiro_crew.dashboard.ws_event_scope import (
+                effective_allowed_events,
+                filter_slots_for_app,
+                slots_envelope_extras,
+            )
+
+            allowed = effective_allowed_events(ws_app, snapshot)
+            scope_state = self._scope_state_provider()
+            filtered = filter_slots_for_app(data["slots"], ws_app, allowed, scope_state)
+            extras = slots_envelope_extras(allowed, yolo=bool(data.get("yolo", False)))
+        except Exception:
+            # The safe fallback is an empty slot list with no global posture
+            # fields; defaulting those fields to false still reveals state.
+            filtered = []
+            extras = {}
+        return json.dumps({"type": "slots", "data": filtered, **extras})
+
+    def _serialize_subagent_batch(
+        self,
+        ws: web.WebSocketResponse,
+        msg_type: str,
+        data: object,
+        default_msg: str,
+    ) -> str:
+        """Filter every item in a coalesced subagent frame for one app."""
+        from kiro_crew.dashboard.ws_event_scope import (
+            _SUBAGENT_BATCH_ITEM_KEY,
+            filter_subagent_batch_for_app,
+        )
+
+        key = _SUBAGENT_BATCH_ITEM_KEY.get(msg_type, "")
+        if not key or not isinstance(data, dict) or not isinstance(data.get(key), list):
+            return json.dumps({"type": msg_type, "data": {key or "items": []}})
+        snapshot: frozenset[str] = ws.get("_allowed_events", frozenset())
+        ws_app: str = ws.get("_app", "")
+        try:
+            from kiro_crew.dashboard.ws_event_scope import effective_allowed_events
+
+            allowed = effective_allowed_events(ws_app, snapshot)
+            items = filter_subagent_batch_for_app(
+                data[key],
+                ws_app,
+                allowed,
+                self._scope_state_provider(),
+                msg_type=msg_type,
+            )
+        except Exception:
+            # Preserve the facade's historical ``_log`` seam when a harness or
+            # embedding supplies it; ordinary DashboardState instances fall
+            # back to the module logger provider used by every other hub path.
+            batch_log = getattr(self._owner, "_log", self._log)
+            batch_log.warning("subagent batch filter failed; dropping items", exc_info=True)
+            items = []
+        return json.dumps({"type": msg_type, "data": {key: items}})
+
+    def _send_ws_all(self, msg_type: str, data: object, msg: str) -> None:
+        """Send one typed frame through the per-client authorization chokepoint."""
+        dead: list[web.WebSocketResponse] = []
+        skip_owners = msg_type == "slots"
+        # A legacy-only slots frame repeats a change every patch-capable socket
+        # already applied from its ``slot_patch`` frame.
+        skip_patch_clients = (
+            skip_owners and isinstance(data, dict) and bool(data.get("_legacy_only", False))
+        )
+        owners = getattr(self._owner, "_owner_ws_clients", None) or set()
+        client_allowed = self._owner_method("_ws_client_allowed", self._ws_client_allowed)
+        serialize = self._owner_method("_serialize_for_client", self._serialize_for_client)
+        spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        for ws in list(self._owner._ws_clients):
+            if ws.closed:
+                dead.append(ws)
+                continue
+            if skip_owners and ws in owners:
+                continue
+            if skip_patch_clients and ws.get(SLOT_PATCH_WS_FLAG, False):
+                continue
+            if not client_allowed(ws, msg_type, data):
+                continue
+            try:
+                payload = serialize(ws, msg_type, data, msg)
+            except Exception:
+                # Payload shaping is our failure, not evidence that the peer is
+                # dead. Keep the registration so later frames can recover.
+                self._log.warning(
+                    "WS payload shaping failed for %s; keeping the client registered",
+                    msg_type,
+                    exc_info=True,
+                )
+                continue
+            try:
+                spawn(ws, payload)
+            except Exception:
+                # Only a synchronous send_str refusal reaches here.
+                dead.append(ws)
+        for ws in dead:
+            remove(ws)
+
+    def _send_ws_owners(self, msg: str, *, skip_slot_patch_clients: bool = False) -> None:
+        """Send a pre-serialized message only to owner-authenticated clients."""
+        dead: list[web.WebSocketResponse] = []
+        spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        for ws in list(self._owner._owner_ws_clients):
+            if ws.closed:
+                dead.append(ws)
+                continue
+            if skip_slot_patch_clients and ws.get(SLOT_PATCH_WS_FLAG, False):
+                continue
+            try:
+                spawn(ws, msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            remove(ws)
+
+    def send_ws_slot_patch(self, msg: str) -> int:
+        """Send a pre-serialized ``slot_patch`` frame to patch-capable sockets.
+
+        Returns how many sockets it was handed to. Only dashboard-user sockets
+        are ever flagged (see ``api_ws``), so no scope gate applies here: the
+        frame carries fields of the dashboard-user slot projection, which those
+        sockets already receive in full.
+        """
+        dead: list[web.WebSocketResponse] = []
+        sent = 0
+        spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        for ws in list(self._owner._ws_clients):
+            if ws.closed:
+                dead.append(ws)
+                continue
+            if not ws.get(SLOT_PATCH_WS_FLAG, False):
+                continue
+            try:
+                spawn(ws, msg)
+                sent += 1
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            remove(ws)
+        return sent
+
+    def broadcast_ws(self, msg_type: str, data: object) -> None:
+        """Send a typed message to every authorized WS client."""
+        if not self._owner._ws_clients:
+            return
+        msg = json.dumps({"type": msg_type, "data": data})
+        send_all = self._owner_method("_send_ws_all", self._send_ws_all)
+        send_all(msg_type, data, msg)
+
+    async def deliver_ws_owners(self, msg_type: str, data: object) -> int:
+        """Await owner-only sends and return the number that completed."""
+        targets = [ws for ws in list(self._owner._owner_ws_clients) if not ws.closed]
+        if not targets:
+            return 0
+        msg = json.dumps({"type": msg_type, "data": data})
+        results = await asyncio.gather(
+            *(ws.send_str(msg) for ws in targets),
+            return_exceptions=True,
+        )
+        delivered = 0
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        for ws, result in zip(targets, results):
+            if isinstance(result, BaseException):
+                self._log.debug("Owner WS send failed (client likely disconnected): %s", result)
+                remove(ws)
+            else:
+                delivered += 1
+        for ws in list(self._owner._owner_ws_clients):
+            if ws.closed:
+                remove(ws)
+        return delivered
+
+    def broadcast_ws_owners(self, msg_type: str, data: object) -> None:
+        """Send a typed message only to owner-authorized clients."""
+        if not getattr(self._owner, "_owner_ws_clients", None):
+            return
+        msg = json.dumps({"type": msg_type, "data": data})
+        send_owners = self._owner_method("_send_ws_owners", self._send_ws_owners)
+        send_owners(msg)
+
+    def ws_client_count(self) -> int:
+        return len(self._owner._ws_clients)
+
+    def dashboard_user_ws_count(self) -> int:
+        """Count open sockets belonging to a dashboard USER, not an app token.
+
+        ``ws_client_count`` counts every ``/api/ws`` registration, and an app
+        token is one of them (``_is_dashboard_user`` False, set from the auth
+        middleware in ``dashboard/ws.py``). Such a socket does not receive an
+        owner-surface frame unless its manifest declared that event -- the same
+        ``_is_dashboard_user`` gate ``_ws_client_allowed`` applies -- so a caller
+        asking "is a human watching?" must not count it.
+
+        Closed-but-not-yet-pruned sockets are skipped: the registry prunes
+        lazily, on the next broadcast.
+        """
+        return sum(
+            1
+            for ws in list(self._owner._ws_clients)
+            if not ws.closed and ws.get("_is_dashboard_user", False)
+        )
+
+    def broadcast_browser_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Redact and broadcast a browser activity event."""
+        redact_credentials = self._redact_credentials_provider()
+        redact_exfiltration_urls = self._redact_exfiltration_urls_provider()
+        safe_data: dict[str, Any] = {}
+        for key, value in data.items():
+            if isinstance(value, str):
+                value, _ = redact_credentials(value)
+                value, _ = redact_exfiltration_urls(value)
+            safe_data[key] = value
+        payload: dict[str, Any] = {
+            "type": "browser_event",
+            "event": event_type,
+            "ts": time.time(),
+        }
+        for key, value in safe_data.items():
+            if key not in ("type", "event", "ts"):
+                payload[key] = value
+        broadcast = self._owner_method("broadcast_ws", self.broadcast_ws)
+        broadcast("browser_event", payload)
+
+    def register_ws(self, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
+        """Register a client and latch the serving loop before its first frame."""
+        self._owner._ws_clients.append(ws)
+        if owner:
+            self._owner._owner_ws_clients.add(ws)
+        self._serving_loop_provider()
+
+    async def send_members_subscribed(self, ws: web.WebSocketResponse) -> None:
+        """Send the one-shot ``members_subscribed`` frame to a NEW owner socket.
+
+        Carries ``{"lastSeqs": {slug: last_seq}}`` from the per-member event-log
+        service, so the client can drop any held member_projection frame whose
+        seq is newer than this baseline (a replay/stale-frame guard). Sent to
+        THIS socket alone, right after the connect-time snapshot. The snapshot is
+        the first frame a socket receives by contract, so the baseline cannot
+        precede it: ``test_chat_send_echo_scope`` reads that first frame and treats
+        its arrival as proof the socket is registered for echoes.
+
+        THE WINDOW IS CLOSED BY SUPPRESSION, NOT BY ORDERING: the read below awaits
+        a thread and the socket is already registered for owner broadcasts, so a
+        ``member_projection`` append landing in that window would be delivered
+        ahead of a baseline computed before it and the client would prune the newer
+        row. So the socket is marked pending before that await, and
+        ``_ws_client_allowed`` -- the predicate the fan-out already consults per
+        socket -- holds ``member_projection`` back from a marked socket and records
+        its slug. Once the baseline is out the mark is cleared and each recorded
+        slug's CURRENT projection is replayed. Reordering instead is not available:
+        the connect snapshot must stay the first frame a socket receives.
+
+        Owner-only: the caller must gate on a dashboard-user connection and skip
+        app-token connections (``member_projection`` / ``members_subscribed`` are
+        classified owner-only in ``ws_event_scope``). Best-effort — a serialize
+        or send fault is logged and swallowed so it never fails the connection.
+        """
+        # Marked BEFORE the await below, because the socket is already in the owner
+        # broadcast set: any member_projection published while this coroutine waits
+        # would otherwise reach the client ahead of a baseline computed before it,
+        # and the client's prune rule deletes the newer row. _ws_client_allowed
+        # holds those frames back and records their slugs here; the release at the
+        # end of this method sends each one's CURRENT value instead.
+        pending: set[str] = set()
+        ws["_members_baseline_pending"] = pending
+        try:
+            from kiro_crew.eventlog.service import get_service
+
+            # last_seqs() iterates and parses every uncached member log on first
+            # dashboard connect -- synchronous file I/O that would stall the serving
+            # loop. Offload it, matching the sibling _handle_eventlog_frame read.
+            last_seqs = await asyncio.to_thread(get_service().last_seqs)
+        except Exception:
+            self._log.debug("members_subscribed: last_seqs read failed", exc_info=True)
+            # Release on the failure path too. A socket left marked is suppressed
+            # for the rest of its life, which turns a missed baseline into a
+            # permanently blank Members page.
+            ws.pop("_members_baseline_pending", None)
+            return
+        try:
+            msg = json.dumps({"type": "members_subscribed", "data": {"lastSeqs": last_seqs}})
+            await ws.send_str(msg)
+        except Exception:
+            self._log.debug("members_subscribed send failed", exc_info=True)
+        finally:
+            # Cleared before the replay, so the replayed frames are not themselves
+            # suppressed, and so a fault in the replay cannot leave the socket
+            # permanently held back.
+            ws.pop("_members_baseline_pending", None)
+        await self._replay_suppressed_projections(ws, pending)
+
+    async def _replay_suppressed_projections(
+        self, ws: web.WebSocketResponse, slugs: set[str]
+    ) -> None:
+        """Send each held-back slug's CURRENT projection to one socket.
+
+        Whole-value frames plus the client's higher-seq-wins rule make the replay
+        safe to run after the baseline: a value newer than what was suppressed is
+        simply the one the client keeps.
+
+        Routed through the service's ``redacted_snapshot`` rather than serializing
+        ``snapshot`` directly, because the broadcast redacts every projection before
+        it leaves the process and a second egress path that skipped that would put
+        an unredacted view on the wire.
+        """
+        if not slugs:
+            return
+        try:
+            from kiro_crew.eventlog import types as eventlog_types
+            from kiro_crew.eventlog.service import get_service
+
+            service = get_service()
+            for slug in sorted(slugs):
+                snap = await asyncio.to_thread(service.redacted_snapshot, slug)
+                seq = snap.get("asOfSeq", -1)
+                for key, view in (snap.get("values") or {}).items():
+                    # Same type constant and same payload keys as the service's own
+                    # broadcast, so a change to the frame moves both together.
+                    frame = {
+                        "type": eventlog_types.WS_MEMBER_PROJECTION,
+                        "data": {"slug": slug, "key": key, "value": view, "seq": seq},
+                    }
+                    await ws.send_str(json.dumps(frame))
+        except Exception:
+            self._log.debug("members_subscribed: replay failed", exc_info=True)
+
+    def unregister_ws(self, ws: web.WebSocketResponse) -> None:
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        remove(ws)
+
+    def _remove_ws(self, ws: web.WebSocketResponse) -> None:
+        """Remove a client from the registry and every subscriber subset."""
+        try:
+            self._owner._ws_clients.remove(ws)
+        except ValueError:
+            pass
+        self._owner._owner_ws_clients.discard(ws)
+        self._owner._ws_log_subscribers.discard(ws)
+        self._owner._ws_subagent_subscribers.discard(ws)
+
+    def subscribe_logs(self, ws: web.WebSocketResponse) -> None:
+        self._owner._ws_log_subscribers.add(ws)
+
+    def unsubscribe_logs(self, ws: web.WebSocketResponse) -> None:
+        self._owner._ws_log_subscribers.discard(ws)
+
+    def subscribe_subagents(self, ws: web.WebSocketResponse) -> None:
+        self._owner._ws_subagent_subscribers.add(ws)
+
+    def unsubscribe_subagents(self, ws: web.WebSocketResponse) -> None:
+        self._owner._ws_subagent_subscribers.discard(ws)
+
+    def broadcast_ws_subagent_subscribers(self, msg_type: str, data: object) -> None:
+        """Fan out heavy subagent data only to subscribed, authorized clients."""
+        if not self._owner._ws_subagent_subscribers:
+            return
+        msg = json.dumps({"type": msg_type, "data": data})
+        dead: list[web.WebSocketResponse] = []
+        client_allowed = self._owner_method("_ws_client_allowed", self._ws_client_allowed)
+        serialize = self._owner_method("_serialize_for_client", self._serialize_for_client)
+        spawn = self._owner_method("_spawn_ws_send", self._spawn_ws_send)
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        for ws in list(self._owner._ws_subagent_subscribers):
+            if ws.closed:
+                dead.append(ws)
+                continue
+            if not client_allowed(ws, msg_type, data):
+                continue
+            try:
+                payload = serialize(ws, msg_type, data, msg)
+            except Exception:
+                self._log.warning(
+                    "WS subagent payload shaping failed for %s; keeping the client registered",
+                    msg_type,
+                    exc_info=True,
+                )
+                continue
+            try:
+                spawn(ws, payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            remove(ws)
+
+    async def close_all_ws(self) -> None:
+        """Cancel the flush loop, close sockets in order, then clear registries."""
+        if self._owner._flush_task:
+            self._owner._flush_task.cancel()
+            self._owner._flush_task = None
+        for ws in list(self._owner._ws_clients):
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        self._owner._ws_clients.clear()
+        self._owner._owner_ws_clients.clear()
+        self._owner._ws_log_subscribers.clear()
+        self._owner._ws_subagent_subscribers.clear()

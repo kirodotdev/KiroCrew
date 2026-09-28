@@ -1,0 +1,353 @@
+/**
+ * Row model for the Sessions table — the pure half, with no React in it.
+ *
+ * The atom is a SESSION. Everything that consumes resources on behalf of a user
+ * is one: dashboard chat, Slack, Discord, an agent cron, and a subagent task. A
+ * task is not a different kind of thing, it is a session that has a parent, so
+ * it nests via `subRows` and that edge survives every grouping choice. A session
+ * opened by another session through `session_create` has a parent too — its own
+ * crew log names the creator — and it nests under that creator the same way, to
+ * whatever depth the creating went.
+ *
+ * Sorting, filtering, grouping, aggregation and expansion all belong to
+ * `@tanstack/react-table`, which is why this module builds a tree and stops.
+ * The comparator, the collapsed-key set and the per-view column map that used to
+ * live here were a hand-rolled reimplementation of exactly those row models.
+ */
+import { api } from '../../api/client'
+import { fmtDuration, fmtNumber, fmtPercent, fmtUnit, type FormatUnit } from '../../i18n/format'
+import { nestsUnder } from '../../lib/sessionLineage'
+
+type Payload = Awaited<ReturnType<typeof api.sessionsMemory>>
+export type SessionPayloadRow = Payload['sessions'][number]
+export type TaskPayloadRow = Payload['tasks'][number]
+export type SessionParent = NonNullable<SessionPayloadRow['parent']>
+
+/** One table row. Tasks and created sessions hang off their session in `subRows`. */
+export interface SessionRow {
+  kind: 'session' | 'task'
+  id: string
+  name: string
+  agent: string
+  channel: string
+  rssMb: number | null
+  peakMb: number | null
+  cpuCores: number | null
+  procs: number | null
+  mcp: number | null
+  credits: number | null
+  turns: number | null
+  uptimeS: number | null
+  pid: number | null
+  /** Runtime is multiplexed, so this row's numbers are an attributed share. */
+  shared: boolean
+  /**
+   * How many live sessions share this row's runtime; 1 when exclusive.
+   *
+   * The de-duplication key for any column whose per-row value is the RUNTIME's
+   * figure rather than the session's (`procs`, `mcp`): a group total must add
+   * such a column once per runtime, not once per co-tenant.
+   */
+  sharers: number
+  /** Route to the row's chat window, or null when it has none to open. */
+  href: string | null
+  /**
+   * The creator this session's crew log cites, or null for one nobody created.
+   * Kept on the row whether or not the tree could nest it: an orphan (creator
+   * not running) is a top-level row that still knows who opened it.
+   */
+  parent: SessionParent | null
+  /**
+   * True when `buildTree` placed this session under its creator's row. The one
+   * grouping-proof answer to "does the row's place already say who opened it":
+   * under a fold a top-level row's parent row is a synthetic group row, so the
+   * table cannot read nesting off the row tree.
+   */
+  nested: boolean
+  subRows?: SessionRow[]
+}
+
+/**
+ * Route that opens a session's chat window, or null when there is none.
+ *
+ * Only dashboard sessions have one. `_bg`, cron and Slack sessions are real
+ * sessions with real memory but nothing to navigate to; returning null keeps
+ * them in the table as non-interactive rows rather than shipping a click that
+ * silently does nothing.
+ *
+ * ChatPage resolves the session from `?sid=` and dispatches `switchSlot` itself,
+ * so navigation alone suffices. The param takes the BARE slot key: the
+ * `dashboard:` prefix belongs to the backend session key.
+ */
+export function sessionChatPath(sessionKey: string): string | null {
+  if (!sessionKey.startsWith('dashboard:')) return null
+  const slotKey = sessionKey.slice('dashboard:'.length)
+  if (!slotKey) return null
+  return `/chat?sid=${encodeURIComponent(slotKey)}`
+}
+
+/** `3238` -> `"3,238.0MB"` in the active locale; null/unsampled -> em dash. */
+export function fmtMb(mb: number | null | undefined): string {
+  if (mb == null || !Number.isFinite(mb)) return '—'
+  return fmtUnit(mb, 'megabyte', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
+/**
+ * Host-scale totals as a bare number of GB. Per-row cells stay in MB so the
+ * column is directly comparable, but host totals in MB read as six digits.
+ *
+ * Deliberately unit-LESS: the unit belongs in the label's catalog string.
+ * `fmtUnit(x, 'gigabyte')` emits a literal "GB" that no catalog owns, so under
+ * the pseudolocale it renders as untranslated Latin glued to its label — which
+ * is what the i18n render gate flags as latin-leak/untranslated-text.
+ */
+export function fmtGb(mb: number | null | undefined): string {
+  if (mb == null || !Number.isFinite(mb)) return '—'
+  return fmtNumber(mb / 1024, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** Share of host RAM. Takes MB on both sides and hands the RATIO to Intl. */
+export function fmtHostPct(mb: number | null | undefined, hostMb: number | null): string {
+  if (mb == null || !hostMb) return '—'
+  return fmtPercent(mb / hostMb, { maximumFractionDigits: 2 })
+}
+
+/** Cumulative credits as a 2dp number; null (not measured) renders as em dash. */
+export function fmtCredits(credits: number | null | undefined): string {
+  if (credits == null || !Number.isFinite(credits)) return '—'
+  return fmtNumber(credits, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+}
+
+/** Turn count; null (not measured) renders as em dash. */
+export function fmtTurns(turns: number | null | undefined): string {
+  if (turns == null) return '—'
+  return fmtNumber(turns)
+}
+
+/**
+ * Uptime as a compound duration. Coarse on purpose: once a session is days old
+ * its seconds are noise, and a fixed `HH:MM:SS` clock is not a duration format
+ * any locale agrees on.
+ */
+export function fmtUptime(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—'
+  const s = Math.floor(seconds)
+  const parts: Array<[number, FormatUnit]> = [
+    [Math.floor(s / 86400), 'day'],
+    [Math.floor((s % 86400) / 3600), 'hour'],
+    [Math.floor((s % 3600) / 60), 'minute'],
+  ]
+  return fmtDuration(parts, { dropZero: true, maximumFractionDigits: 0 })
+}
+
+/**
+ * History samples -> one bar height per sample, as a percentage of the host
+ * total.
+ *
+ * The y-axis is scaled to the host total rather than the series max, so a bar's
+ * height means "share of this machine" instead of "share of its own peak" — a
+ * self-scaled trace makes 200 MB of churn look like a crisis. A flat row of
+ * short bars is the correct picture of an idle machine.
+ */
+export function sparklineBars(
+  history: Array<{ t: number; mb: number }>,
+  hostMb: number | null,
+): number[] {
+  if (history.length < 2) return []
+  const ceiling = hostMb && hostMb > 0 ? hostMb : Math.max(...history.map(h => h.mb)) || 1
+  return history.map(h => Math.min(100, Math.max(0, (h.mb / ceiling) * 100)))
+}
+
+/**
+ * A session with no generated title yet must still be distinguishable — every
+ * such row would otherwise read identically — so the slot key disambiguates it.
+ */
+export function rowName(row: SessionPayloadRow): string {
+  if (row.untitled && row.slot_key) return `${row.title} ${row.slot_key}`
+  return row.title || row.key
+}
+
+/** Cell heat, as a fraction of the largest value in the column. */
+export function heatLevel(value: number | null, max: number | null): 0 | 1 | 2 | 3 {
+  if (value == null || !max || max <= 0) return 0
+  const share = value / max
+  if (share >= 0.66) return 3
+  if (share >= 0.33) return 2
+  if (share >= 0.1) return 1
+  return 0
+}
+
+function taskRow(t: TaskPayloadRow): SessionRow {
+  return {
+    kind: 'task',
+    id: t.id,
+    name: t.task,
+    agent: t.agent,
+    // A task inherits nothing about where it came from: it was spawned by an
+    // agent, not by a user on a channel. Grouping by channel therefore folds it
+    // under its own bucket rather than misreporting its parent's origin.
+    channel: 'subagent',
+    rssMb: t.sampled ? t.rss_mb : null,
+    peakMb: t.sampled ? t.peak_rss_mb : null,
+    cpuCores: t.sampled ? t.cpu_cores : null,
+    // Already null until the sweep has counted them, so no `sampled` gate: a
+    // count of 0 processes for a live task would be a lie, and the payload
+    // distinguishes "not measured yet" from zero on its own.
+    procs: t.procs ?? null,
+    mcp: t.mcp ?? null,
+    credits: null,
+    turns: null,
+    uptimeS: t.started_at ? Date.now() / 1000 - t.started_at : null,
+    pid: t.pid,
+    shared: t.shared,
+    // A shared task rides its parent's runtime, so it is one of at least two
+    // tenants. The exact count is not on the task payload; 2 is enough for the
+    // only thing this feeds, which is de-duplicating by pid.
+    sharers: t.shared ? 2 : 1,
+    href: null,
+    parent: null,
+    nested: false,
+  }
+}
+
+function sessionRow(s: SessionPayloadRow): SessionRow {
+  return {
+    kind: 'session',
+    id: s.key,
+    name: rowName(s),
+    agent: s.agent,
+    channel: s.channel,
+    rssMb: s.rss_mb,
+    peakMb: null,
+    cpuCores: s.cpu_cores,
+    procs: s.procs,
+    mcp: s.mcp,
+    credits: s.credits ?? null,
+    turns: s.turns ?? null,
+    uptimeS: s.uptime_s,
+    pid: s.pid,
+    // From the COUNT, not from `owns_runtime`: that flag is false only on the
+    // joiners, so it left the founder's row claiming an exclusive process.
+    shared: (s.sharers ?? 1) > 1,
+    sharers: s.sharers ?? 1,
+    href: sessionChatPath(s.key),
+    parent: s.parent ?? null,
+    nested: false,
+  }
+}
+
+/**
+ * The session a row nests under, or null when it is a top-level row.
+ *
+ * `nestsUnder` itself now lives in `../../lib/sessionLineage` and is shared with the
+ * chat sidebar's conductor lane, which nests on the same edge from a different payload
+ * (bare slot keys off the slots broadcast, rather than `dashboard:` session keys from
+ * `/api/sessions/memory`). Two copies would let the two views nest the same gateway
+ * differently, and a reader comparing them would have no way to tell which was right.
+ * See that module for the cycle and unknown-key rules.
+ */
+
+/**
+ * Sessions + tasks -> the tree TanStack Table consumes.
+ *
+ * Order is not decided here: the table owns sorting, so imposing one would make
+ * the first paint disagree with every subsequent one.
+ *
+ * A session whose crew log names a running creator nests under that creator, and
+ * a task nests under the session that spawned it wherever THAT session sits, so
+ * a worker's tasks show under the worker, under the conductor that opened it.
+ *
+ * A task whose `parent` matches no session is emitted as a TOP-LEVEL row rather
+ * than dropped. Dropping it is the contradiction this page exists to remove: the
+ * footer counts `tasks.length`, so an unmatched task would be counted in
+ * "Task sessions" and be absent from the table above it. An orphan happens for
+ * real — an app-spawned task can carry an empty parent key, and a task can
+ * outlive the session that spawned it — and it is still a live runtime the
+ * reader may need to act on. A created session whose creator is gone is a
+ * top-level row for the same reason, and its row still carries the citation.
+ */
+export function buildTree(sessions: SessionPayloadRow[], tasks: TaskPayloadRow[]): SessionRow[] {
+  const byKey = new Map(sessions.map(s => [s.key, s] as const))
+  const rows = new Map(sessions.map(s => [s.key, sessionRow(s)] as const))
+  const roots: SessionRow[] = []
+  for (const s of sessions) {
+    const row = rows.get(s.key)!
+    const under = nestsUnder(s, byKey)
+    if (under == null) {
+      roots.push(row)
+      continue
+    }
+    const owner = rows.get(under)!
+    row.nested = true
+    ;(owner.subRows ??= []).push(row)
+  }
+  for (const t of tasks) {
+    const owner = rows.get(t.parent)
+    if (owner == null) continue
+    ;(owner.subRows ??= []).push(taskRow(t))
+  }
+  const orphans = tasks.filter(t => !byKey.has(t.parent)).map(taskRow)
+  return orphans.length > 0 ? [...roots, ...orphans] : roots
+}
+
+/** The largest value per numeric column, for the heat tint. Tasks included. */
+export function columnMaxima(rows: SessionRow[]): { rssMb: number | null; cpuCores: number | null } {
+  let rssMb: number | null = null
+  let cpuCores: number | null = null
+  const visit = (r: SessionRow): void => {
+    if (r.rssMb != null && (rssMb == null || r.rssMb > rssMb)) rssMb = r.rssMb
+    if (r.cpuCores != null && (cpuCores == null || r.cpuCores > cpuCores)) cpuCores = r.cpuCores
+    for (const c of r.subRows ?? []) visit(c)
+  }
+  for (const r of rows) visit(r)
+  return { rssMb, cpuCores }
+}
+
+/**
+ * Sum of a RUNTIME-level count over grouped rows, adding each runtime once.
+ *
+ * `procs` and `mcp` are the runtime's own totals, reported whole on every
+ * co-tenant row (dividing a count of 3 processes between 3 sessions describes
+ * nothing). A plain sum therefore multiplies a shared runtime by its tenant
+ * count: 23 co-tenants of one 9-process runtime added to 207 processes that do
+ * not exist. De-duplicating on the pid makes the group total the number of real
+ * objects, which is what the column claims to be.
+ *
+ * Only for these two columns. `rssMb`/`cpuCores` arrive already divided by the
+ * sharer count, so their plain sum is correct and de-duplicating them would
+ * UNDER-count — it would keep one co-tenant's share and drop the rest.
+ * `credits`/`turns` are genuinely per session and additive.
+ *
+ * A row with no pid cannot be de-duplicated, so it is counted on its own: an
+ * unmeasured runtime is not evidence of a shared one. Returns null when no row
+ * carries a value, keeping "not measured" distinct from zero.
+ *
+ * Takes `(pid, value)` pairs rather than rows so the column's group aggregate
+ * and the table footer's own total share ONE implementation: both read the same
+ * figure, and a second copy of this rule is a second place to forget it.
+ */
+export function sumOncePerRuntime(
+  entries: Iterable<readonly [number | null | undefined, number | null | undefined]>,
+): number | null {
+  let total = 0
+  let measured = false
+  const countedPids = new Set<number>()
+  for (const [pid, value] of entries) {
+    if (value == null) continue
+    if (pid != null) {
+      if (countedPids.has(pid)) continue
+      countedPids.add(pid)
+    }
+    total += value
+    measured = true
+  }
+  return measured ? total : null
+}
+
+/** {@link sumOncePerRuntime} over grouped table rows, for a column aggregate. */
+export function aggregateOncePerRuntime(
+  columnId: 'procs' | 'mcp',
+  leafRows: { original: SessionRow }[],
+): number | null {
+  return sumOncePerRuntime(leafRows.map(r => [r.original.pid, r.original[columnId]] as const))
+}

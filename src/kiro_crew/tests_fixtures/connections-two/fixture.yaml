@@ -1,0 +1,11 @@
+schema-version: 2026-04-28
+fixture-name: connections-two
+description: |
+  Two KIROCREW_HOME-scoped MCP declarations model one durable stdio no-op and one disabled broken server without real credentials.
+  The nominal server stays alive by reading stdin until its client closes the
+  stream; it is intentionally a no-op and is not spawned by the consumer test.
+  The broken server is disabled, points at a nonexistent command, and carries an
+  obviously-fake placeholder credential where a real one would sit.
+
+  Only the KIROCREW_HOME mcp.json scope is seeded. The kiro-global scope
+  (~/.kiro/settings/mcp.json) is outside a fixture tree by definition.

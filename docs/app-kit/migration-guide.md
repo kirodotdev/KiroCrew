@@ -1,0 +1,234 @@
+# Migration Guide — Adopting the App SDK
+
+For apps that already talk to the Kiro Crew Gateway via raw `fetch()`,
+`urllib`, or custom HTTP wrappers, this guide shows how to migrate to the
+supported integration paths step by step:
+
+- **Dashboard UI pages (TypeScript/React)** → the host-provided
+  `@kirocrew/app-sdk` hooks (`useAppApi`, `useAppEvents`, …).
+- **Python apps / external CLI tools** → the source-only standalone
+  `kirocrew-client` package under `packages/kirocrew-client-py/`.
+
+## Why Migrate
+
+- No more guessing endpoint paths and response shapes
+- Permission-scoped API access declared in `app.json` (UI hooks)
+- Built-in retry with exponential backoff (5xx, 429, network errors) — `kirocrew-client`
+- Auth handling (localhost skip, token injection, explicit app-secret exchange)
+- Host-managed WebSocket subscriptions for dashboard UI apps
+- Context injection with local buffering
+- Structured errors instead of raw HTTP status codes
+- Less hand-rolled HTTP/WS code
+
+## Migration is Incremental
+
+These paths call the same Gateway endpoints your code already uses.
+You can replace one `fetch()` call at a time — no big-bang rewrite needed.
+
+## TypeScript / Dashboard UI Apps
+
+Dashboard UI pages use the `@kirocrew/app-sdk` hooks, which the dashboard host
+provides at runtime via its import map — there is **no `npm install`** and no
+published gateway-client npm package. Mark `@kirocrew/app-sdk` (and React,
+ReactDOM, lucide-react) as build externals.
+
+### Shared transport and host interaction contracts
+
+Use `api.raw(path, init)` for a binary download or stream: successful responses
+are not parsed or consumed. HTTP errors retain the SDK's status/body contract.
+Keep abort and stream-reader cleanup in the component that owns the request.
+
+Declared API patterns follow the backend's matcher, including trailing `/*` and
+`*`. Use `/api/example/*` rather than a bare trailing slash when declaring a
+subtree. This makes previously client-rejected declared wildcards usable; it
+neither changes app-token authorization nor adds manifest grants. Review broad
+trailing `*` declarations because they deliberately match sibling string prefixes.
+
+Replace direct Redux chat handoff with `useChatLauncher`: pass `slotKey` for an
+existing session and `autoSend: false` for a draft. Do not replace a draft handoff
+with the default automatic send. `agent` applies only to a newly created session.
+The host remains responsible for session activation and backend authorization.
+
+Python cron callers use `set_enabled` / `set_enabled_async` for pause and resume.
+Passing `enabled` to an update method raises instead of silently doing nothing.
+Only owned tasks can be toggled; IDs, history and existing execution gates remain.
+
+### Step 1: Import the hooks
+
+```typescript
+import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'
+```
+
+### Step 2: Create the client
+
+```tsx
+import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'
+
+function MyPage() {
+  const api = useAppApi()   // permission-scoped GET/POST/PUT/PATCH/DELETE
+  // ...
+}
+```
+
+The host injects auth automatically and scopes requests to the `permissions.api`
+paths declared in your `app.json` — accessing an undeclared path throws.
+
+### Step 3: Declare permissions
+
+Add the API paths and WebSocket events your app uses to `app.json`:
+
+```json
+{
+  "permissions": {
+    "api": ["/api/status", "/api/chat/slots", "/api/crons", "/api/lessons"],
+    "events": ["chat_chunk", "chat_done", "notification"]
+  }
+}
+```
+
+### Step 4: Replace HTTP calls
+
+| Before (raw fetch) | After (`useAppApi`) |
+|---------------------|-------------|
+| `fetch('/api/status').then(r => r.json())` | `api.get('/api/status')` |
+| `fetch('/api/chat/slots', { method: 'POST', body: JSON.stringify({name, agent}) })` | `api.post('/api/chat/slots', {name, agent})` |
+| `fetch('/api/chat/slots').then(r => r.json())` | `api.get('/api/chat/slots')` |
+| `fetch('/api/chat/slots/' + id, { method: 'DELETE' })` | `api.del('/api/chat/slots/' + id)` |
+| `fetch('/api/chat', { method: 'POST', body: JSON.stringify({message, slot}) })` | `api.post('/api/chat', {message, slot})` |
+| `fetch('/api/spawn', { method: 'POST', body: JSON.stringify({task}) })` | `api.post('/api/spawn', {task})` |
+| `fetch('/api/crons').then(r => r.json())` | `api.get('/api/crons')` |
+| `fetch('/api/lessons').then(r => r.json())` | `api.get('/api/lessons')` |
+
+For raw request bodies (such as `FormData`), use `api.request(path, init)`.
+JSON helpers also accept request options: `api.post(path, body, { signal })`.
+All responses are still parsed as JSON; use the `status` and unparsed `body`
+fields on an HTTP `AppApiError` to handle an endpoint's conflict response rather
+than parsing its error message. See the [API reference](api-reference.md#app-sdk-hooks-dashboard-ui).
+Do not copy a session header into app code: the host supplies it, and a chat-bound
+host always overrides caller-supplied identity.
+
+### Step 5: Replace WebSocket code
+
+```tsx
+// Before — custom WS with manual reconnect
+const ws = new WebSocket(wsUrl)
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data)
+  if (msg.type === 'chat_chunk' && msg.data?.slot === mySlot) {
+    handleChunk(msg.data.content)
+  }
+}
+
+// After — useAppEvents subscribes via the host's shared WebSocket and
+// auto-unsubscribes on unmount (no manual reconnect or connection management)
+useAppEvents('chat_chunk', (data) => {
+  if (data.slot === mySlot) handleChunk(data.content)
+})
+useAppEvents('chat_done', () => handleDone())
+```
+
+### Step 6: Delete old auth + wrapper code
+
+The host injects auth (cookies, app-secret token exchange, refresh) — you no
+longer read secrets or build headers. Once all calls are migrated, remove your
+custom HTTP client, WS manager, and auth helper files.
+
+## Python Apps
+
+### Step 1: Install
+
+The package is not published to PyPI or included in the main wheel. Install it
+from a Kiro Crew source checkout:
+
+```bash
+python -m pip install -e /path/to/KiroCrew/packages/kirocrew-client-py
+```
+
+### Step 2: Replace sync calls with async
+
+```python
+# Before — kiro_crew.apps.sdk (removed; was a sync client embedded in the main package)
+from kiro_crew.apps.sdk import KiroCrewClient
+mc = KiroCrewClient(app_name="my-tool")
+result = mc.dispatch_agent("my-agent", "Do something")
+mc.cron_add("refresh", every=3600, message="Check updates")
+
+# After — kirocrew_client (async, standalone)
+from kirocrew_client import KiroCrewClient
+async with KiroCrewClient(app_name="my-tool") as mc:
+    task_id = await mc.dispatch_agent_async("my-agent", "Do something")
+    result = await mc.get_task_result(task_id)
+    await mc.add_cron("refresh", message="Check updates", every=3600)
+```
+
+Key differences:
+
+> **Note:** `kiro_crew.apps.sdk` no longer ships — it was removed in a prior
+> release. Do not try to import it; use `kirocrew_client` for all Python apps.
+
+| | Old (`kiro_crew.apps.sdk`, removed) | New (`kirocrew_client`) |
+|---|---|---|
+| I/O model | Sync (`urllib`) | Async (`aiohttp`) |
+| Dependencies | Requires `kiro_crew` package | Standalone (only `aiohttp`) |
+| Errors | `{"_error": True}` dicts | `KiroCrewError` exceptions |
+| Retry | None | Built-in (exponential backoff) |
+| Auth | Localhost only | Localhost + remote with app-secret auto-exchange |
+
+### When to use which
+
+| Scenario | Recommended |
+|----------|-------------|
+| App backend managed by Kiro Crew (behind the gateway reverse proxy) | `kirocrew_client` (async) for outbound calls |
+| External CLI tool or service (Python) | `kirocrew_client` (async, standalone) |
+| Dashboard UI page (TypeScript/React) | `@kirocrew/app-sdk` hooks (host-provided) |
+| Electron / Node.js app | Call the Gateway REST/WS endpoints directly via `fetch()` / a WebSocket |
+
+## Compatibility with older Gateways
+
+Compatibility is endpoint-by-endpoint; the current project is pre-1.0, so there
+is no blanket “since 1.0” floor. Set `minKiroCrewVersion` for a feature your app
+requires. For an optional newer endpoint, handle a structured 404:
+
+```tsx
+import type { AppApiError } from '@kirocrew/app-sdk'
+
+const api = useAppApi()
+try {
+  await api.post(`/api/chat/slots/${slotId}/context`, {
+    content: backgroundInfo,
+    source: 'watch',
+  })
+} catch (err) {
+  if ((err as AppApiError).status === 404) {
+    fallbackMethod(backgroundInfo)
+  } else {
+    throw err
+  }
+}
+```
+
+```python
+from kirocrew_client import KiroCrewError
+
+try:
+    await mc.inject_context(slot_id, background_info, source="watch")
+except KiroCrewError as e:
+    if e.code.value == "NOT_FOUND":
+        fallback_method(background_info)
+    else:
+        raise
+```
+
+Use a fallback only when the feature is genuinely optional. If it is required,
+fail clearly and enforce the version floor in `app.json`.
+
+## Migration Checklist
+
+- [ ] Choose the path: `@kirocrew/app-sdk` hooks (dashboard UI) or `kirocrew-client` (Python / external)
+- [ ] Python: install `packages/kirocrew-client-py/` from a source checkout and create `KiroCrewClient` at startup
+- [ ] UI: import `useAppApi` / `useAppEvents` and declare `permissions.api` / `permissions.events` in `app.json`
+- [ ] Replace raw HTTP calls (one at a time) with `api.get/post/...` or supported `kirocrew-client` methods
+- [ ] UI: replace custom WebSocket code with `useAppEvents`; Python: keep a direct WebSocket implementation because the client has no `on*()` methods
+- [ ] Add try/catch fallbacks for optional newer endpoints, or set `minKiroCrewVersion`
+- [ ] Remove old HTTP/WS wrapper code
+- [ ] Test against your target Gateway version

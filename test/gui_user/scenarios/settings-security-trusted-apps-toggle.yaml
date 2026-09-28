@@ -1,0 +1,40 @@
+# Smoke: the blanket third-party trust switch on Settings > Security > Apps.
+# "Trust every third-party app" is the `agent.apps_allow_third_party` escape
+# hatch: off by default, and turning it ON is the dangerous direction, so the
+# switch does not flip on a click -- a confirm dialog opens with a body
+# explaining the blast radius and an "I understand ..." acknowledgement
+# checkbox that gates its confirm button. Once on, a warning paragraph
+# ("This trusts every third-party app, including ones you install later ...")
+# appears under the switch. Turning it OFF is the safe direction and takes
+# effect at once with no dialog. The flow is on -> read -> off, so the scenario
+# leaves the flag as it found it (off on a seeded target). Both switch steps
+# name the position to leave the switch in rather than "click it", so a retry
+# against a target left half-finished (switch on) converges on the same final
+# state instead of inverting it. The "on" evidence is read from the screenshot
+# right after the first switch step, the "off" evidence from the last one.
+name: settings-security-trusted-apps-toggle
+tier: smoke
+feature: security
+user_story: >-
+  As a user, I want to turn on blanket trust for third-party apps in Settings >
+  Security and see the warning that explains what that grants, so that I can
+  make the choice knowingly and turn it back off.
+docs_url: docs/system-specs/modules/security.md
+summary: Turn "Trust every third-party app" on through its confirm dialog, read the warning, then turn it off again
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/security/apps
+steps:
+  - You are on the Settings page with its Security tab selected and the "Third-party apps" pane open. The card has a row labelled "Trust every third-party app" with a switch. If the switch is already ON, do nothing. If it is off, click it once; a dialog titled "Trust every third-party app" opens.
+  - If that dialog is open, tick the checkbox that starts "I understand every third-party app I install", then press the dialog's confirm button (labelled "Trust", not "Cancel"). The dialog closes and the switch is now ON. If no dialog is open because the switch was already on, do nothing.
+  - Read what changed, without clicking anything. Under the switch a warning paragraph now reads that this trusts every third-party app, including ones installed later, and that a trusted app runs with the same access as the product has (files, saved credentials, the internet).
+  - Now make sure the same "Trust every third-party app" switch is OFF -- click it once if it is on. No dialog appears for this direction.
+  - Wait a second.
+expectations:
+  - The "Trust every third-party app" switch is off, and the warning paragraph that begins "This trusts every third-party app" is no longer shown under it.
+  - The pane still shows the "Third-party apps" heading and, under the switch, the note beginning "Takes effect immediately".
+  - In the screenshot taken right after you set the switch to ON, the switch was on and the warning paragraph beginning "This trusts every third-party app, including ones you install later" was visible under it.
+  - No confirm dialog is left open and no red error banner is visible.
+max_steps: 10
+max_seconds: 300

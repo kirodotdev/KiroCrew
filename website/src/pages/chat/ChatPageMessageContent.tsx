@@ -1,0 +1,692 @@
+import { useMemo, useState } from 'react'
+import type React from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { BookOpen, ChevronDown, ChevronRight, Folder, Paperclip, Plug } from 'lucide-react'
+
+import { api } from '../../api/client'
+import Clickable from '../../components/Clickable'
+import ErrorNotice from '../../components/ErrorNotice'
+import { revealOrOpen, useRevealFailure } from '../../components/FilePathMenu'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
+import MessageErrorBoundary from '../../components/MessageErrorBoundary'
+import PastedChip from '../../components/PastedChip'
+import SessionActionsMenu from '../../components/SessionActionsMenu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '../../components/ui/dropdown-menu'
+import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
+import { deriveLoadedMcpTools } from '../../lib/mcpLoadedTools'
+import { useAppSelector } from '../../store'
+import type { ChatMessage, McpServer } from '../../types'
+import {
+  buildFileLabels,
+  findUnreferencedAttachments,
+  leadingMentionBoundary,
+  MENTION_LINE_SUFFIX,
+  mentionBoundary,
+  mentionTokenRegex,
+  parseDirs,
+  parseFiles,
+  resolveDirSegment,
+  resolveFileSegment,
+  restoreUnreferencedImages,
+} from '../../utils/fileTokens'
+import { findTokenRanges, recollapsePastes, type PasteBlock } from '../../utils/pasteTokens'
+import McpToolsPanel from './McpToolsPanel'
+
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTitle, mode, sidebarOnScreen, omitPopout, triggerLabel }: {
+  activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; onAutoTitle?: () => void; mode?: string
+  /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
+  sidebarOnScreen?: boolean
+  /** See SessionActionsMenu: the phone bar's ⋯ menu owns the pop-out rows. */
+  omitPopout?: boolean
+  /** Phone single top bar: render the session TITLE inside the trigger, ahead of
+   *  the chevron, so title and menu are one control (one tap target, chevron
+   *  flush after the last character). Absent, the trigger is the bare chevron
+   *  the desktop title row places beside its own rename control. */
+  triggerLabel?: React.ReactNode
+}) {
+  // Controlled open state: lets the colour-swatch row (not a Radix menu item)
+  // close the menu after a pick, via the onColorPicked hook passed below.
+  const [open, setOpen] = useState(false)
+  // MCP server list is fetched lazily when its submenu opens (driven by the
+  // Radix Sub's open state).
+  const [mcpOpen, setMcpOpen] = useState(false)
+  const { data: servers = [] } = useQuery<{ name: string; enabled?: boolean }[]>({
+    queryKey: ['mcp-servers', agent],
+    queryFn: () => api.mcpActive(agent || undefined),
+    enabled: mcpOpen,
+  })
+  // Tool Search mode for this session's MCP tools (shared ['kirocrewConfig']
+  // cache). When on, tool specs are deferred (search-and-call), so every server
+  // shows as connected but its tools load only when used; when off, every spec
+  // is sent each turn. Explains the "why are they all loaded?" question.
+  const { data: toolSearchOn = true } = useQuery<{ agent?: { tool_search?: boolean } }, Error, boolean>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    select: (c) => c.agent?.tool_search ?? true,
+    enabled: mcpOpen,
+  })
+  // Per-tool loaded/deferred state is derived client-side (no endpoint): the
+  // full server list carries each server's tool names + disabledTools, and the
+  // "loaded this session" set comes from scanning this slot's tool_search
+  // results in the chat store. See deriveLoadedMcpTools for the caveats.
+  const { data: fullServers = [] } = useQuery<McpServer[]>({
+    queryKey: ['mcp-servers-full'],
+    queryFn: () => api.mcpServers(),
+    enabled: mcpOpen,
+  })
+  const toolsByServer = useMemo(
+    () => Object.fromEntries(fullServers.map(s => [s.name, { tools: s.tools, disabledTools: s.disabledTools }])),
+    [fullServers],
+  )
+  const sessionMessages = useAppSelector(s => s.chat.messages)
+  const loadedTools = useMemo(() => deriveLoadedMcpTools(sessionMessages), [sessionMessages])
+  // What this slot's session actually reported about its MCP servers. Pushed by
+  // the gateway onto the same `slots` array the snapshot rehydrates, so it needs
+  // no query of its own — and unlike the ['mcp-servers'] query above it is keyed
+  // by SLOT, which is the whole point: that query answers a question about the
+  // agent's configuration and this answers one about this session.
+  const sessionReport = useAppSelector(
+    s => (activeSlot ? s.dashboard.slots?.find(sl => sl.key === activeSlot)?.mcp_report : null) ?? null,
+  )
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        {triggerLabel !== undefined ? (
+          /* No aria-label here: the visible title IS the accessible name, and the
+             menu's role is appended as sr-only text -- an aria-label would replace
+             the title, which on the phone this trigger is the only copy of. */
+          <button data-testid="session-title-menu" className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
+            <span className="session-header-title text-[15px] font-semibold truncate min-w-0">{triggerLabel}</span>
+            <span className="sr-only">, {i18nT('pages.chatPage.session_options')}</span>
+            <ChevronDown size={16} className="shrink-0 text-muted" />
+          </button>
+        ) : (
+          <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
+            <ChevronDown size={14} />
+          </button>
+        )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[180px]">
+        {activeSlot && (
+        <SessionActionsMenu
+          variant="dropdown"
+          slotKey={activeSlot}
+          mode={mode}
+          sidebarOnScreen={sidebarOnScreen}
+          omitPopout={omitPopout}
+          // MCP servers: stateful (lazy fetch gated on the sub's open state), so
+          // it stays here as an info slot rather than a generic capability.
+          infoSlots={[
+            <DropdownMenuSub key="mcp" onOpenChange={setMcpOpen}>
+              <DropdownMenuSubTrigger>
+                <Plug size={13} className="shrink-0 text-muted" />
+                <span className="flex-1">{i18nT('pages.chatPage.mcp_servers')}</span>
+                <ChevronRight size={12} className="text-muted" />
+              </DropdownMenuSubTrigger>
+              {/* Intentional tighter cap composed via min() with the primitive's
+                  available-height var: 340px keeps the MCP tools submenu compact
+                  while preserving the viewport never-clip floor (a bare max-h
+                  would override the primitive, since cn()'s tailwind-merge dedupes
+                  max-h-*). overflow is left to the primitive. */}
+              <DropdownMenuSubContent className="min-w-[240px] max-w-[300px] max-h-[min(340px,var(--radix-dropdown-menu-content-available-height))] px-3 py-2">
+                <McpToolsPanel
+                  servers={servers}
+                  toolsByServer={toolsByServer}
+                  loaded={loadedTools}
+                  toolSearchOn={toolSearchOn}
+                  loading={servers.length === 0}
+                  sessionReport={sessionReport}
+                />
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>,
+          ]}
+          onReveal={onReveal}
+          onAutoTitle={onAutoTitle}
+          onRename={onRename}
+          // The header controls its own menu, so close it after a colour pick.
+          onColorPicked={() => setOpen(false)}
+        />
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+/** Per-message identity key with row-id tie-break. `msgKey` alone is NOT
+ *  unique — a coarse OS clock can stamp two rows appended in one tick with the
+ *  same `ts` (see isRedeliveredMessage in chatSlice on why row identity is
+ *  `meta.mid`, not a ts tuple). `mid` is stamped once per row and survives
+ *  every delivery door (HTTP rebuild, WS broadcast, JSONL round trip), so the
+ *  suffix is as reload-stable as the key it disambiguates. Rows without a
+ *  `mid` (locally-minted streaming/optimistic bubbles) fall back to `msgKey`
+ *  alone, which is exactly the uniqueness they had before. */
+/** Client-generated one-shot correlation id for an optimistic user bubble; see
+ *  `mintSendId` in `utils/sendDelivery`. Re-exported so the page and the tests
+ *  keep their import path. */
+export { mintSendId } from '../../utils/sendDelivery'
+
+/** Row-identity builders live in chat-core (P5-e); re-exported here so the
+ *  page, the store, and the tests keep their import path. */
+export {
+  msgIdentityKey,
+  turnLeadKey,
+  virtualKeyFor,
+  uniqueRowKeys,
+  stableAnchorIdFor,
+  anchorAltIdFor,
+} from '../../chat-core/transcript/rowKeys'
+
+/** React key for a message row's INNER bubble (the virtualizer row key is
+ *  virtualKeyFor). Prefer the optimistic client ts (stashed by the steer-echo
+ *  reconcile, and stamped at birth on streaming/thinking messages) over the
+ *  server ts, so a mid-stream ts overwrite never remounts the bubble.
+ *
+ *  Role-prefixed for cross-role uniqueness, EXCEPT that 'streaming' normalizes
+ *  to 'assistant': finalization (`_done` / `_segment`) mutates the SAME logical
+ *  message's role from streaming to assistant, and a role-sensitive key
+ *  remounted the bubble at end-of-turn — destroying useSmoothStream's drain
+ *  state, so the trailing unrevealed text (a standing ~LAG_SECS of it under the
+ *  constant-latency controller) snapped into view instead of finishing its
+ *  reveal. Exported for tests. */
+export function messageRowKey(m: ChatMessage, i: number): string {
+  const keyTs = (m.meta?.clientTs as string | undefined) || m.ts
+  const role = m.role === 'streaming' ? 'assistant' : m.role
+  return keyTs ? `${role}-${keyTs}` : `${role}-${i}`
+}
+
+
+/** Render user message content with file chips and image markdown. Handles:
+ *  - Fresh messages: meta.files present, displayTxt has @relative/path tokens
+ *  - Replayed history: no meta.files, content has [attached_file N] /full/path
+ *  - Mixed content: images + file attachments in the same message */
+export function KnowledgeBubbleChip({ knowledge }: { knowledge: { items: number; tokens: number; titles: string[]; content?: { title: string; text: string }[] } }) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <span className="block mb-1">
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="inline-flex items-center gap-1 text-[11px] text-accent bg-accent/10 rounded px-1.5 py-0.5 border-none cursor-pointer hover:bg-accent/20 transition-colors"
+        aria-expanded={expanded}
+        aria-label={expanded ? i18nT('pages.chatPage.collapse_knowledge_context') : i18nT('pages.chatPage.expand_knowledge_context')}
+      >
+        <BookOpen size={12} className="shrink-0" /> {i18nT('pages.chatPage.knowledge_item', { count: knowledge.items })} · {fmtNumber(knowledge.tokens)} {i18nT('pages.chatPage.tokens')}
+      </button>
+      {expanded && knowledge.content && (
+        <div className="mt-1 max-h-[300px] overflow-auto rounded border border-border bg-bg-elevated p-2 text-[11px]">
+          {knowledge.content.map((item, i) => (
+            <div key={i} className="mb-2 last:mb-0">
+              <div className="font-medium text-text-strong">{item.title}</div>
+              <pre className="mt-0.5 whitespace-pre-wrap text-muted font-mono leading-[1.4]" style={{ wordBreak: 'break-word' }}>{item.text}</pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
+  )
+}
+
+/** One options object for the user-message render helpers (renderUserContent →
+ *  renderUserContentInner → renderFileSegment) instead of ever-growing
+ *  positional signatures. The optional session triple mirrors what the
+ *  assistant / note rows hand MarkdownRenderer, so a `/chat?sid=…` link in a
+ *  USER message switches session in place exactly like every other row kind
+ *  (#8253) instead of falling into the external-link branch and gaining
+ *  `target="_blank"`.
+ *
+ *  Shared by every dashboard surface that draws a user row: ChatPage hands
+ *  it directly, and the app-sdk registry's default `user` entry (ChatPane,
+ *  member DMs, embeds) calls it too, so the two can no longer drift on how an
+ *  attachment renders. `onFileOpen` is therefore optional: a host without a
+ *  file viewer (the pane) still shows every attachment — an image inline, a
+ *  file as a card with its path in the tooltip — it just cannot open one. */
+export type UserContentRenderOpts = {
+  content: string
+  meta?: Record<string, unknown>
+  onFileOpen?: (path: string) => void
+  onFolderOpen?: (path: string) => void
+  linkPreviews?: boolean
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
+  /** When this row was written, ISO. Only the session chip's SHORT-name form uses
+   *  it, to refuse a slot minted after the text naming it; absent, no short name
+   *  resolves here (the full key still does). */
+  messageTs?: string
+}
+
+/** renderFileSegment's own two knobs live on a private extension, not on the
+ *  exported type: renderUserContentInner sets both unconditionally, so a
+ *  caller-supplied value would type-check and silently do nothing. */
+type FileSegmentOpts = UserContentRenderOpts & {
+  /** React key namespace for the segment. */
+  keyBase?: string
+  /** Folder-token label → path map. */
+  dirMap?: Map<string, string>
+}
+
+export function renderUserContent(opts: UserContentRenderOpts) {
+  // Per-message containment (defense-in-depth): a render crash in a
+  // user/inject bubble must degrade to a per-message fallback, not unwind to
+  // the root boundary and blank the whole dashboard.
+  //
+  // Sent-prompt images render small: renderFileSegment passes `compactImages`
+  // to MarkdownRenderer, which owns the CompactImagesCtx provider internally.
+  // (Done there, not here, so tests that mock MarkdownRenderer don't need the
+  // context export.)
+  return (
+    <MessageErrorBoundary rawContent={opts.content}>
+      {renderUserContentInner(opts)}
+    </MessageErrorBoundary>
+  )
+}
+
+function renderUserContentInner(opts: UserContentRenderOpts) {
+  const { meta, onFileOpen, onFolderOpen } = opts
+  // An image that only `meta.files` knows about (a split-pane / member-DM row
+  // written before the pane serialized attachments the way the main chat
+  // does) is re-emitted as its `![image](dest)` line FIRST, so everything
+  // below sees the one content shape every surface has always produced.
+  let content = restoreUnreferencedImages(opts.content, meta)
+  const pastes = (meta?.pastes as PasteBlock[] | undefined) || []
+  const knowledge = meta?.knowledge as { items: number; tokens: number; titles: string[]; content?: { title: string; text: string }[] } | undefined
+
+  // Folder references resolve FIRST, on the whole message: `[attached_dir N]
+  // /path` markers (history replay / steer echo) rewrite to `@label/` display
+  // tokens, and fresh `@rel/` tokens map to their meta.dirs path. One pass
+  // here — before the paste split — so every segment renderer below sees the
+  // token form and one shared label->path map. Dir markers never appear
+  // inside paste blocks (they serialize from the typed text only), so the
+  // rewrite cannot break paste-token ranges recomputed on the result.
+  const { display: dirResolved, dirMentionMap } = resolveDirSegment(content, parseDirs(content, meta))
+  content = dirResolved
+
+  const knowledgeBadge = knowledge ? (
+    <KnowledgeBubbleChip knowledge={knowledge} />
+  ) : null
+
+  if (!pastes.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content, keyBase: 'seg', dirMap: dirMentionMap })}</>
+
+
+  // History load re-serves the fully-EXPANDED content (what the LLM saw), so a
+  // message whose bubble was a `[ Paste #N ]` chip when sent comes back as the
+  // raw paste text with no token in it. If mergePreservedPastes couldn't
+  // re-collapse it (no optimistic bubble, side-table entry evicted/missing),
+  // handing that raw text — potentially hundreds of KB / tens of thousands of
+  // lines — to renderFileSegment → MarkdownRenderer parses and lays it out on
+  // the main thread and freezes the tab. Re-collapse deterministically from the
+  // blocks that travel with the message so the chip is restored regardless of
+  // external state. See recollapsePastes.
+  let text = content
+  let ranges = findTokenRanges(text, pastes)
+  if (!ranges.length) {
+    const collapsed = recollapsePastes(content, pastes)
+    if (collapsed !== content) {
+      text = collapsed
+      ranges = findTokenRanges(text, pastes)
+    }
+  }
+  if (!ranges.length) return <>{knowledgeBadge}{renderFileSegment({ ...opts, content: text, keyBase: 'seg', dirMap: dirMentionMap })}</>
+
+  // Paste chips are inline by nature, so to keep them flowing with the
+  // surrounding text (e.g. "hey [chip] thanks"), render each text segment
+  // inline — preserves whitespace and doesn't wrap text in a <p> the way
+  // MarkdownRenderer does. Trade-off: block-level markdown (lists, code
+  // blocks, headings) inside a message that also contains a paste will
+  // render as literal text. That's a rare combination for user messages.
+  const out: React.ReactNode[] = []
+  let lastIdx = 0
+  ranges.forEach((r, i) => {
+    // Consume one newline on each side of the token so the chip (inline) and
+    // its expanded block absorb the line-break that ChatInput.handlePaste
+    // forces around the token. Without this, expanding the chip adds an extra
+    // visible line (its own block-level display + the still-rendered \n).
+    const trimStart = text[r.start - 1] === '\n' ? r.start - 1 : r.start
+    const trimEnd = text[r.end] === '\n' ? r.end + 1 : r.end
+    if (trimStart > lastIdx) {
+      const seg = text.slice(lastIdx, trimStart)
+      if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, `t${i}`, dirMentionMap, onFolderOpen))
+    }
+    out.push(<PastedChip key={`p${i}-${r.block.id}`} block={r.block} />)
+    lastIdx = trimEnd
+  })
+  if (lastIdx < text.length) {
+    const seg = text.slice(lastIdx)
+    if (seg) out.push(renderInlineSegment(seg, meta, onFileOpen, 'tend', dirMentionMap, onFolderOpen))
+  }
+
+  // Attachments never referenced by any segment (e.g. an upload with no inline
+  // token in the caption) belong to the MESSAGE, not any one segment — render
+  // them once here as cards so a multi-segment paste message can't duplicate
+  // them (see resolveFileSegment: cardPaths is deliberately segment-scoped).
+  // findUnreferencedAttachments owns the referenced/unreferenced decision with
+  // the SAME original-list token indexing resolveFileSegment uses (single
+  // source of truth; token N indexes the original list, not image-filtered).
+  const orderedFiles = parseFiles(text, meta)
+  const unreferenced = orderedFiles.length ? findUnreferencedAttachments(text, orderedFiles) : []
+  if (unreferenced.length) {
+    const labels = buildFileLabels(unreferenced)
+    out.push(
+      <div key="msg-cards" className="flex flex-col gap-1.5 mt-1">
+        {unreferenced.map((p, i) => (
+          <FileAttachmentCard key={`msg-c${i}`} fullPath={p} label={labels.get(p) || p} onFileOpen={onFileOpen} />
+        ))}
+      </div>,
+    )
+  }
+  return knowledgeBadge ? <>{knowledgeBadge}{out}</> : out
+}
+
+/** Boundary-checked presence of an `@token` in a text segment — the same rule
+ *  the split regex uses, so a key is only offered to a segment that can
+ *  actually match it. The SHARED matcher, not a local pattern: the send path
+ *  widened to the leadingMentionBoundary/mentionBoundary contract, and a
+ *  renderer still splitting on whitespace-only turned every punctuated or
+ *  wrapped mention's attachment invisible — no chip AND no card, where base
+ *  drew a card (fork Opus review). */
+function tokenPresent(text: string, token: string): boolean {
+  return mentionTokenRegex(token).test(text)
+}
+
+/** Inline chip for a folder reference in a sent message. Clicking opens the
+ *  directory in the side panel's file tree — the SAME handler assistant-message
+ *  directory chips use (handleFolderOpen -> tabsCtl.openFolder), so a folder is
+ *  equally actionable whichever side of the conversation names it. Shift-click
+ *  reveals in the OS file manager, mirroring MarkdownRenderer's activatePath.
+ *  Without a handler (export used outside ChatPage) it degrades to an inert
+ *  span with the path in the tooltip. */
+function DirChip({ label, fullPath, onOpen }: { label: string; fullPath: string; onOpen?: (path: string) => void }) {
+  // A failed Shift+click reveal renders beside the chip (askAgent on: a sent
+  // message's chip holds no draft; the composer draft is persisted per slot).
+  const reveal = useRevealFailure(fullPath)
+  const body = (
+    <>
+      <Folder size={11} aria-hidden="true" className="shrink-0 lucide-inline" />@{label}
+    </>
+  )
+  if (!onOpen) {
+    return (
+      // `title` reaches a pointer only, and the visible text is just the short
+      // label, so the full path is also carried as visually-hidden text. A
+      // screen reader reads it wherever it reads the chip, including browse
+      // mode. It is text rather than a name on the span, because naming needs a
+      // role and a named non-interactive role is announced reliably only once
+      // something moves focus into it -- which nothing here ever does, since an
+      // inert chip has no action to reach and the transcript must not grow a tab
+      // stop per chip. FileHeaderBreadcrumb names a FOCUSABLE region instead.
+      // The visible label is aria-hidden so the path is spoken ONCE and whole,
+      // rather than the basename twice; the path already contains it.
+      // `select-none` keeps the hidden path out of a copied selection: `sr-only`
+      // hides text visually but leaves it in the DOM, so selecting the bubble
+      // would otherwise paste the path alongside the label a reader sees.
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded border border-accent/25 bg-accent/10 text-accent text-[12px] font-mono" title={fullPath}>
+        <span aria-hidden="true" className="inline-flex items-center gap-1">{body}</span>
+        <span className="sr-only select-none">{fullPath}</span>
+      </span>
+    )
+  }
+  return (
+    <>
+    <Clickable
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono cursor-pointer hover:bg-accent/25 transition-colors"
+      title={fullPath}
+      aria-label={i18nT('pages.chatPage.open_folder', { path: fullPath })}
+      onClick={e => {
+        // Shift+click copies the path on a remote session. Route through the
+        // shared helper, not bare `api.revealPath`: the transport call is
+        // side-effect-free, so the helper is what writes the clipboard (and,
+        // locally, drives the file manager). A bare call would silently copy
+        // nothing and break the chip's hover promise.
+        if (e && 'shiftKey' in e && e.shiftKey) { void revealOrOpen(fullPath, 'reveal', reveal); return }
+        onOpen(fullPath)
+      }}
+    >
+      {body}
+    </Clickable>
+    {reveal.error && (
+      <ErrorNotice variant="inline" className="ml-1 align-baseline" message={reveal.error} askAgent onDismiss={reveal.clear} testId="dir-chip-reveal-error" />
+    )}
+    </>
+  )
+}
+
+/** Inline-flow renderer for a text segment adjacent to a paste chip.
+ *  Handles @-file tokens as inline chips; other text is rendered as a
+ *  whitespace-preserving span (no markdown). */
+function renderInlineSegment(content: string, meta: Record<string, unknown> | undefined, onFileOpen: ((path: string) => void) | undefined, keyBase: string, dirMap?: Map<string, string>, onFolderOpen?: (path: string) => void) {
+  const parsedFiles = parseFiles(content, meta)
+  const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
+  if (!parsedFiles.length && !dirKeys.length) {
+    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
+  }
+  // Inline-flow variant (adjacent to a paste chip): keep everything inline.
+  // Non-image attachments referenced in the text render as inline chips; any
+  // standalone-token upload in this segment also renders as an inline chip
+  // appended to it (this path can't host block cards without breaking the
+  // inline flow). Never-referenced attachments are handled once at message
+  // level. Pass the ORIGINAL ordered list so token indices line up.
+  const { display, mentionMap, cardPaths, labels } = resolveFileSegment(content, parsedFiles)
+  if (!mentionMap.size && !cardPaths.length && !dirKeys.length) {
+    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
+  }
+
+  // Folder tokens join the same split as file mentions. A dir key always ends
+  // in `/` and a file key never does, so classification below is unambiguous.
+  // Longest-first so a staged `report,` is tried before `report` at the same
+  // position (ordered alternation); the shared boundary pair keeps the drawing
+  // in lockstep with the send path and findUnreferencedAttachments' decision.
+  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
+  const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const parts = tokPattern
+    ? display.split(mentionSplitRe(tokPattern))
+    : [display]
+  return (
+    <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>
+      {parts.map((part, i) => {
+        const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
+        const tok = hit?.key
+        const dirPath = tok && dirMap?.get(tok)
+        if (dirPath) {
+          return <DirChip key={`${keyBase}-d${i}`} label={tok} fullPath={dirPath} onOpen={onFolderOpen} />
+        }
+        const fullPath = tok && mentionMap.get(tok)
+        if (hit && fullPath) {
+          return <FileMentionChip key={`${keyBase}-f${i}`} label={hit.label} fullPath={fullPath} onOpen={onFileOpen} />
+        }
+        return <span key={`${keyBase}-p${i}`}>{part}</span>
+      })}
+      {cardPaths.map((p, i) => (
+        <FileMentionChip key={`${keyBase}-uc${i}`} label={labels.get(p) || p} fullPath={p} onOpen={onFileOpen} />
+      ))}
+    </span>
+  )
+}
+
+/** Inline chip for a file reference in a sent message: `@label`, the full path
+ *  in the tooltip. With a handler it opens the file (ChatPage's side-panel
+ *  viewer); without one — a host that has no file viewer, such as a split
+ *  pane or a member DM — it is an inert span, the same degrade DirChip makes,
+ *  so a chip never LOOKS clickable on a surface where clicking does nothing. */
+/** The transcript's mention split. A `:line` suffix rides INSIDE its pill
+ *  (fork UX review): `(@src/main.ts:42)` draws `(` + pill `@src/main.ts:42` +
+ *  `)`, one reference as the user typed it, instead of stranding `:42` as
+ *  text beside the pill. The suffix grammar is the shared MENTION_LINE_SUFFIX
+ *  (anchored for its exec() consumers, so the `^` is sliced off here), and
+ *  the trailing boundary is the same one send serialization uses. */
+function mentionSplitRe(tokPattern: string): RegExp {
+  return new RegExp(`(${leadingMentionBoundary})(@(?:${tokPattern})(?:${MENTION_LINE_SUFFIX.source.slice(1)})?)(?=${mentionBoundary})`, 'g')
+}
+
+/** Resolve one split part to its map key and the label to draw: `@tok`, or
+ *  `@tok:42` whose key is `tok`. A key that itself ends in `:digits` is
+ *  tried whole first, so it is never cut. */
+function mentionPart(part: string, known: (key: string) => boolean): { key: string; label: string } | null {
+  const whole = part.match(/^@(.+)$/)?.[1]
+  if (!whole) return null
+  if (known(whole)) return { key: whole, label: whole }
+  const split = whole.match(/^(.+)(:\d+)$/)
+  return split && known(split[1]) ? { key: split[1], label: whole } : null
+}
+
+function FileMentionChip({ label, fullPath, onOpen }: { label: string; fullPath: string; onOpen?: (path: string) => void }) {
+  const base = 'inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent/15 text-accent text-[12px] font-mono'
+  if (!onOpen) {
+    // Same reason as DirChip's inert branch: `title` is pointer-only, so the
+    // full path rides along as visually-hidden text, the visible label is
+    // aria-hidden so the basename is not spoken twice, and `select-none` keeps
+    // the path out of a copied selection.
+    return <span className={base} title={fullPath}><span aria-hidden="true">@{label}</span><span className="sr-only select-none">{fullPath}</span></span>
+  }
+  return (
+    <Clickable className={`${base} cursor-pointer hover:bg-accent/25 transition-colors`} title={fullPath} onClick={() => onOpen(fullPath)} aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}>@{label}</Clickable>
+  )
+}
+
+/** Block card for a single user-attached (non-image) file. Clickable to open
+ *  the file via the shared onFileOpen callback; without a handler it is an
+ *  inert card (see FileMentionChip for why). Styled after the agent-side
+ *  download card (see components/FileCard.tsx) but carries no size/mime — a
+ *  user attachment only has a path here. */
+function FileAttachmentCard({ fullPath, label, onFileOpen }: { fullPath: string; label: string; onFileOpen?: (path: string) => void }) {
+  const base = 'flex items-center gap-2.5 max-w-full bg-card border border-border rounded-lg px-3 py-2 text-sm no-underline text-text animate-scale-in'
+  const body = (
+    <>
+      <Paperclip size={15} className="shrink-0 text-muted" />
+      <span className="font-medium truncate">{label}</span>
+    </>
+  )
+  if (!onFileOpen) {
+    // The tooltip says WHERE the file opens, because the card looks exactly
+    // like the main chat's clickable one and a click here answers nothing.
+    // The same sentence rides along as visually-hidden text, since `title`
+    // opens on pointer hover only. The visible body is aria-hidden: the
+    // sentence already contains the path, so reading both would say the
+    // filename twice per card. `select-none` keeps it out of a copied selection.
+    const inert = i18nT('pages.chatPage.attached_file_inert', { path: fullPath })
+    return (
+      <span className={base} title={inert}>
+        <span aria-hidden="true" className="flex items-center gap-2.5 min-w-0">{body}</span>
+        <span className="sr-only select-none">{inert}</span>
+      </span>
+    )
+  }
+  return (
+    <Clickable
+      className={`${base} hover:border-accent transition-colors cursor-pointer`}
+      title={fullPath}
+      onClick={() => onFileOpen(fullPath)}
+      aria-label={i18nT('pages.chatPage.open_file', { path: fullPath })}
+    >
+      {body}
+    </Clickable>
+  )
+}
+
+/** File-card + markdown rendering for a text segment (no paste tokens inside).
+ *
+ *  Attachment display is resolved by the shared resolveFileSegment helper
+ *  (utils/fileTokens.ts), the single owner of attachment-marker knowledge —
+ *  the same helper backs renderInlineSegment, so the two paths never diverge.
+ *  It ALWAYS rewrites the LLM-facing `[attached_file N] /path` plumbing to an
+ *  `@label` token (so raw tokens never leak as text) and recovers pre-existing
+ *  `@relative` mentions. This handles the persisted-message shape where the
+ *  server stores the token form in `content` AND keeps `meta.files` at once.
+ *  Files referenced inline stay inline chips; the rest become block cards.
+ *  Images keep their inline `![image](path)` markdown and are excluded here. */
+function renderFileSegment(opts: FileSegmentOpts) {
+  const { content, meta, onFileOpen, keyBase = 'seg', dirMap, onFolderOpen, linkPreviews, onSessionOpen, sessions, activeSession, messageTs } = opts
+  const parsedFiles = parseFiles(content, meta)
+  const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
+
+  // No attachments — plain markdown (bold, code, links, etc.).
+  // softBreaks: preserve Shift+Enter line breaks as <br> (see MarkdownRenderer).
+  // compactImages: this is user-message content, so attached images render small.
+  // linkPreviews: mirrors the assistant path — a URL the user pasted unfurls
+  // under the same opt-in gate as one the model wrote (issue #2580).
+  // The session triple mirrors the assistant path too, so a `/chat?sid=…`
+  // link switches session in place instead of opening a new tab (#8253).
+  //
+  // A folder token routes the message into the inline chip-split body below,
+  // which renders surrounding text as plain whitespace-preserving spans — so
+  // markdown in a folder-referencing message shows literally. This is the
+  // same trade-off inline file mentions already make, accepted here because
+  // the chip must sit inline in the sentence and MarkdownRenderer has no
+  // inline-widget seam; a folder-referencing prompt with block markdown is
+  // the uncommon combination.
+  if (!parsedFiles.length && !dirKeys.length) {
+    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
+  }
+
+  // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
+  // indices line up; resolveFileSegment filters images out of its output.
+  const { display, mentionMap, cardPaths, labels } = resolveFileSegment(content, parsedFiles)
+
+  // renderFileSegment handles the WHOLE message (non-paste path), so every
+  // attachment belongs to this segment. Cards = standalone-upload tokens in the
+  // text PLUS any attachment never referenced at all (e.g. optimistic
+  // empty-caption bubble whose content carries no token yet). The
+  // never-referenced set is computed by the shared findUnreferencedAttachments
+  // (same original-list indexing), deduped against tokens already carded here.
+  // Folder references never card: a folder is a path reference, not an upload,
+  // and its token is by construction present in the text.
+  const carded = new Set(cardPaths)
+  const allCardPaths = [
+    ...cardPaths,
+    ...findUnreferencedAttachments(display, parsedFiles).filter(p => !carded.has(p)),
+  ]
+
+  const cards = allCardPaths.length ? (
+    <div key={`${keyBase}-cards`} className="flex flex-col gap-1.5 mt-1 first:mt-0">
+      {allCardPaths.map((p, i) => (
+        <FileAttachmentCard key={`${keyBase}-c${i}`} fullPath={p} label={labels.get(p) || p} onFileOpen={onFileOpen} />
+      ))}
+    </div>
+  ) : null
+
+  // No inline @-mentions of either kind: caption (if any) is plain markdown,
+  // then the cards.
+  if (!mentionMap.size && !dirKeys.length) {
+    const caption = display.trim()
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
+  }
+
+  // Inline-mention path: the caption keeps files inline, so render it as a
+  // single inline flow — text runs as whitespace-preserving spans (NOT block
+  // MarkdownRenderer, which wraps each run in a <p> and would break the line
+  // around the chip) and each @token as an inline chip. Block markdown (bold,
+  // lists) inside a caption that also carries an inline mention renders as
+  // literal text — a rare combination, same trade-off as renderInlineSegment.
+  // Cap tokens to prevent ReDoS from many alternations. Folder tokens join
+  // the same split; a dir key always ends in `/` and a file key never does,
+  // so classification below is unambiguous.
+  const keys = [...[...mentionMap.keys()].slice(0, 20), ...dirKeys].sort((a, b) => b.length - a.length)
+  const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+  const parts = display.split(mentionSplitRe(tokPattern))
+  const body = (
+    <span key={`${keyBase}-body`} style={{ whiteSpace: 'pre-wrap' }}>
+      {parts.map((part, i) => {
+        const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
+        const tok = hit?.key
+        const dirPath = tok && dirMap?.get(tok)
+        if (dirPath) {
+          return <DirChip key={`${keyBase}-d${i}`} label={tok} fullPath={dirPath} onOpen={onFolderOpen} />
+        }
+        const fullPath = tok && mentionMap.get(tok)
+        if (hit && fullPath) {
+          return <FileMentionChip key={`${keyBase}-f${i}`} label={hit.label} fullPath={fullPath} onOpen={onFileOpen} />
+        }
+        return part ? <span key={`${keyBase}-p${i}`}>{part}</span> : null
+      })}
+    </span>
+  )
+  return <>{body}{cards}</>
+}

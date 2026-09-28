@@ -1,0 +1,383 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudFormationStackMutate",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources"
+      ],
+      "Resource": "arn:aws:cloudformation:*:*:stack/kirocrew-*/*"
+    },
+    {
+      "Sid": "CloudFormationChangeSet",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:DeleteChangeSet"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:*:*:changeSet/kirocrew-*/*",
+        "arn:aws:cloudformation:*:*:stack/kirocrew-*/*"
+      ]
+    },
+    {
+      "Sid": "CloudFormationRead",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:ListStacks",
+        "cloudformation:GetTemplateSummary"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "TagDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "tag:GetResources"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Ec2Discovery",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeImages",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeKeyPairs",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeInstanceTypeOfferings"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53DnsPreflight",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZonesByVPC"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Ec2RunInstancesTaggedInstance",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2RunInstancesSupportingResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:*:*:volume/*",
+        "arn:aws:ec2:*:*:network-interface/*",
+        "arn:aws:ec2:*:*:subnet/*",
+        "arn:aws:ec2:*:*:security-group/*",
+        "arn:aws:ec2:*:*:key-pair/*",
+        "arn:aws:ec2:*:*:elastic-ip/*",
+        "arn:aws:ec2:*::image/*",
+        "arn:aws:ec2:*::snapshot/*"
+      ]
+    },
+    {
+      "Sid": "Ec2CreateSecurityGroupTagged",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup"
+      ],
+      "Resource": "arn:aws:ec2:*:*:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2CreateSecurityGroupVpc",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup"
+      ],
+      "Resource": "arn:aws:ec2:*:*:vpc/*"
+    },
+    {
+      "Sid": "Ec2SecurityGroupRulesTagged",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2TagOnCreate",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateSecurityGroup"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Ec2DestructiveTagged",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:DeleteSecurityGroup",
+        "ec2:DeleteTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2LifecycleTagged",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StopInstances",
+        "ec2:StartInstances",
+        "ec2:TerminateInstances",
+        "ec2:RebootInstances"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "IamCreateRoleWithBoundary",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole"
+      ],
+      "Resource": "arn:aws:iam::*:role/kirocrew-ec2-*",
+      "Condition": {
+        "ArnLike": {
+          "iam:PermissionsBoundary": "arn:aws:iam::*:policy/kirocrew-ec2-boundary"
+        }
+      }
+    },
+    {
+      "Sid": "IamPutRolePolicyForInstance",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PutRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:role/kirocrew-ec2-*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "IamRoleForInstance",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/kirocrew-ec2-*",
+        "arn:aws:iam::*:instance-profile/kirocrew-ec2-*"
+      ]
+    },
+    {
+      "Sid": "IamTagRoleOnManaged",
+      "Effect": "Allow",
+      "Action": [
+        "iam:TagRole"
+      ],
+      "Resource": "arn:aws:iam::*:role/kirocrew-ec2-*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "IamInstanceBoundaryCreateOnce",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:policy/kirocrew-ec2-boundary",
+        "arn:aws:iam::*:policy/kirocrew-crew-boundary",
+        "arn:aws:iam::*:policy/kirocrew-crew-exec-boundary"
+      ]
+    },
+    {
+      "Sid": "IamAttachManagedPolicyForInstance",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:role/kirocrew-ec2-*",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        }
+      }
+    },
+    {
+      "Sid": "IamPassRoleToEc2",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::*:role/kirocrew-ec2-*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com",
+          "aws:ResourceTag/kirocrew:managed": "true"
+        },
+        "ArnLike": {
+          "iam:AssociatedResourceArn": "arn:aws:ec2:*:*:instance/*"
+        }
+      }
+    },
+    {
+      "Sid": "SsmSessionOnManagedInstances",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession",
+        "ssm:SendCommand"
+      ],
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ssm:resourceTag/kirocrew:managed": "true"
+        }
+      }
+    },
+    {
+      "Sid": "SsmSessionDocuments",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession",
+        "ssm:SendCommand"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*::document/AWS-StartPortForwardingSession",
+        "arn:aws:ssm:*::document/AWS-RunShellScript",
+        "arn:aws:ssm:*:*:session/*"
+      ]
+    },
+    {
+      "Sid": "SsmSessionOnCrewTasks",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession"
+      ],
+      "Resource": "arn:aws:ecs:*:*:task/kirocrew-crew-*/*"
+    },
+    {
+      "Sid": "DenyStartSessionOutsideTheLane",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:StartSession"
+      ],
+      "NotResource": [
+        "arn:aws:ssm:*::document/AWS-StartPortForwardingSession",
+        "arn:aws:ec2:*:*:instance/*",
+        "arn:aws:ecs:*:*:task/kirocrew-crew-*/*",
+        "arn:aws:ssm:*:*:session/*"
+      ]
+    },
+    {
+      "Sid": "SsmSessionControlAndRead",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeInstanceInformation",
+        "ssm:DescribeSessions",
+        "ssm:GetConnectionStatus",
+        "ssm:GetCommandInvocation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SsmAmiParameter",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters"
+      ],
+      "Resource": "arn:aws:ssm:*::parameter/aws/service/*"
+    },
+    {
+      "Sid": "SourceBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::kirocrew-src-*",
+        "arn:aws:s3:::kirocrew-src-*/*"
+      ]
+    },
+    {
+      "Sid": "Identity",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

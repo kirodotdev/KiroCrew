@@ -1,0 +1,1107 @@
+"""Tests for posture-gated admission control.
+
+Covers :func:`kiro_crew.resource_status.admission_check` (critical refuses;
+ample/tight/unknown admit; off-switch; fail-open), the cron scheduler's
+critical-posture deferral in ``_on_timer`` (deferred jobs are not marked
+failed, fire on recovery, one INFO per episode; manual triggers are never
+deferred), the subagent spawn refusal (typed SEL outcome + retry-later error),
+and the ``agent.admission_gate`` config key.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+import time
+import unittest.mock
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from kiro_crew import resource_status as rs
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.cron import CronService
+
+
+def _cfg(pressure: float = 4.0, critical: float = 2.0, gate: bool = True) -> SimpleNamespace:
+    """Minimal stand-in for KiroCrewConfig exposing the gate's config surface."""
+    return SimpleNamespace(
+        agent=SimpleNamespace(
+            resource_pressure_gb=pressure,
+            resource_critical_gb=critical,
+            admission_gate=gate,
+        )
+    )
+
+
+def _refused() -> rs.AdmissionDecision:
+    return rs.AdmissionDecision(
+        admitted=False,
+        posture=rs.POSTURE_CRITICAL,
+        available_gb=1.2,
+        reason=(
+            "host memory is critical (~1.2 GB free, critical \u2264 2 GB) — "
+            "retry when memory frees"
+        ),
+    )
+
+
+def _admitted() -> rs.AdmissionDecision:
+    return rs.AdmissionDecision(
+        admitted=True, posture=rs.POSTURE_AMPLE, available_gb=16.0
+    )
+
+
+async def _wait_for(predicate, timeout=5.0, interval=0.05):
+    """Poll until predicate is true or timeout."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("Timed out waiting for predicate")
+        await asyncio.sleep(interval)
+
+
+# ── admission_check ──────────────────────────────────────────────────────────
+
+
+class TestAdmissionCheck:
+    def test_critical_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+        decision = rs.admission_check(_cfg())
+        assert decision.admitted is False
+        assert decision.posture == rs.POSTURE_CRITICAL
+        assert "critical" in decision.reason
+        assert "retry" in decision.reason
+
+    @pytest.mark.parametrize(
+        "avail,posture",
+        [
+            (3.0, rs.POSTURE_TIGHT),
+            (32.0, rs.POSTURE_AMPLE),
+            (-1.0, rs.POSTURE_UNKNOWN),  # unreadable probe → fail open
+        ],
+    )
+    def test_non_critical_admits(
+        self, monkeypatch: pytest.MonkeyPatch, avail: float, posture: str
+    ) -> None:
+        monkeypatch.setattr(rs, "_read_available_gb", lambda: avail)
+        decision = rs.admission_check(_cfg())
+        assert decision.admitted is True
+        assert decision.posture == posture
+        assert decision.reason == ""
+
+    def test_off_switch_admits_even_when_critical(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+        decision = rs.admission_check(_cfg(gate=False))
+        assert decision.admitted is True
+        # The posture is still reported truthfully — only enforcement is off.
+        assert decision.posture == rs.POSTURE_CRITICAL
+
+    def test_fail_open_on_probe_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(cfg: object | None = None) -> rs.ResourceStatus:
+            raise RuntimeError("probe exploded")
+
+        monkeypatch.setattr(rs, "probe", _boom)
+        decision = rs.admission_check(_cfg())
+        assert decision.admitted is True
+        assert decision.posture == rs.POSTURE_UNKNOWN
+
+    def test_fail_open_on_config_load_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unreadable config must ADMIT (fail-open), never gate work on
+        # default thresholds it could not actually read.
+        monkeypatch.setattr(
+            rs.KiroCrewConfig,
+            "load",
+            MagicMock(side_effect=RuntimeError("config unreadable")),
+        )
+        probe_mock = MagicMock()
+        monkeypatch.setattr(rs, "probe", probe_mock)
+        decision = rs.admission_check(None)
+        assert decision.admitted is True
+        assert decision.posture == rs.POSTURE_UNKNOWN
+        probe_mock.assert_not_called()  # returned before probing
+
+    def test_gate_defaults_on_when_config_lacks_the_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(resource_pressure_gb=4.0, resource_critical_gb=2.0)
+        )
+        assert rs.admission_check(cfg).admitted is False
+
+    def test_non_bool_gate_value_defaults_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+        cfg = _cfg()
+        cfg.agent.admission_gate = "yes"  # malformed → treated as enabled
+        assert rs.admission_check(cfg).admitted is False
+
+
+# ── cron deferral ────────────────────────────────────────────────────────────
+
+
+class TestCronAdmissionDeferral:
+    @pytest.mark.asyncio
+    async def test_critical_defers_then_runs_on_recovery(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("gated", "msg", every_secs=60)
+        job = svc._jobs[0]
+        job.last_run_ts = time.time() - 120
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.cron"):
+            with patch("kiro_crew.cron.admission_check", return_value=_refused()):
+                await svc._on_timer()
+                await svc._on_timer()
+
+        # Deferred: never fired, not marked failed, still due next tick.
+        assert executed == []
+        assert job.last_status is None
+        assert job.id not in svc._claims
+        infos = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "deferring" in r.getMessage()
+        ]
+        assert len(infos) == 1  # one INFO per episode, not per tick
+
+        # Recovery: the same job fires on the next admitted tick.
+        with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
+            await svc._on_timer()
+        await _wait_for(lambda: "gated" in executed)
+
+        # A NEW critical episode logs its own INFO line.
+        job.last_run_ts = time.time() - 120
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="kiro_crew.cron"):
+            with patch("kiro_crew.cron.admission_check", return_value=_refused()):
+                await svc._on_timer()
+        assert any(
+            "deferring" in r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.INFO
+        )
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_runs_despite_critical(self, tmp_path: Path) -> None:
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("manual", "msg", every_secs=3600)
+        job_id = svc._jobs[0].id
+
+        with patch("kiro_crew.cron.admission_check", return_value=_refused()):
+            ran = await svc.run_job(job_id)
+
+        assert ran is True
+        assert executed == ["manual"]
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_admitted_tick_fires_normally(self, tmp_path: Path) -> None:
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("open", "msg", every_secs=60)
+        svc._jobs[0].last_run_ts = time.time() - 120
+
+        with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
+            await svc._on_timer()
+        await _wait_for(lambda: "open" in executed)
+        await svc.stop()
+
+
+# ── spawn refusal ────────────────────────────────────────────────────────────
+
+
+class TestSpawnAdmissionGate:
+    def _mgr(self):
+        from kiro_crew.subagent import SubagentManager
+
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
+        return SubagentManager(
+            sessions=sessions,
+            ctx_builder=MagicMock(),
+            on_done=MagicMock(),
+            max_concurrent=3,
+        )
+
+    def test_spawn_deferred_when_critical(self) -> None:
+        """spawn() keeps the accepted row queued (next_run_at set) instead of refusing.
+
+        The durable task queue turns the posture gate from a verdict into a
+        scheduling fact: the caller gets a queued id, nothing is registered or
+        started, and the pump re-checks after the admit wait.
+        """
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is False and info.queued is True and info.error == ""
+        assert info.id not in mgr._agents and mgr._running_count == 0
+        row = mgr._taskq.get(info.id)
+        assert row is not None and row.state == "queued"
+        assert row.next_run_at is not None and row.next_run_at > mgr._taskq.now()
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "deferred_memory_critical"
+        assert call_kwargs["metadata"]["posture"] == rs.POSTURE_CRITICAL
+
+    def test_spawn_refused_when_critical_without_durable_queue(self) -> None:
+        """Legacy path (agent.task_queue_enabled=false): still a done info with a
+        retry-later error, because there is nothing durable to park the row in."""
+        mgr = self._mgr()
+        mgr._taskq = None
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is True
+        assert "critical" in info.error
+        assert "retry" in info.error
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "refused_memory_critical"
+        assert call_kwargs["metadata"]["posture"] == rs.POSTURE_CRITICAL
+
+    def test_spawn_proceeds_past_gate_when_admitted(self) -> None:
+        """An admitted decision falls through to the next guard (cwd here)."""
+        mgr = self._mgr()
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
+        ), patch(
+            "kiro_crew.subagent.validate_cwd", return_value=("", "not allowed")
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cwd_allowed_roots = []
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1", cwd="/x")
+
+        assert info is not None
+        assert info.done is True
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "rejected_invalid_cwd"
+
+    def test_unmeasurable_memory_proceeds_but_is_logged(self) -> None:
+        """(True, -1.0) means the guard did not run: spawn proceeds, SEL logs it.
+
+        The cwd gate runs BEFORE the memory guard here (a bad path is refused
+        before a row is persisted), so the guard's fall-through is observed at
+        the next gate after it: the posture gate, which defers the row.
+        """
+        mgr = self._mgr()
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, -1.0)
+        ), patch("kiro_crew.platform_compat.IS_LINUX", True), patch(
+            "kiro_crew.subagent.KiroCrewConfig"
+        ) as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        # The spawn proceeded past the memory guard (it reached the posture
+        # gate, which parked the row), so the fail-open contract held...
+        assert info is not None
+        assert info.done is False and info.queued is True
+        outcomes = [
+            c[1]["outcome"]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        assert outcomes[-1] == "deferred_memory_critical"
+        # ...and the guard-did-not-run case was made observable.
+        assert "memory_check_unavailable" in outcomes
+        unavailable = next(
+            c[1]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            if c[1]["outcome"] == "memory_check_unavailable"
+        )
+        assert unavailable["tool_name"] == "spawn_run"
+        assert unavailable["metadata"]["min_gb"] == 4.5  # floor plus the pending process
+        assert unavailable["metadata"]["task"] == "test task"
+
+    @pytest.mark.parametrize(
+        ("configured", "learned", "expected_min_gb"),
+        [
+            (0.5, 6.0, 10.0),  # learned p90 outranks the first-boot fallback
+            (0.5, None, 4.5),  # nothing learned yet: the fallback stands
+            (2.0, 1.0, 6.0),  # an operator pin above the learned value still holds
+        ],
+    )
+    def test_startup_reserve_prices_the_pending_start_at_the_learned_cost(
+        self, configured, learned, expected_min_gb
+    ) -> None:
+        """The per-spawn reserve must use the same learned cost the cap is sized from.
+
+        A dedicated runtime takes tens of seconds to reach its resident size and
+        the reaper samples RSS only every 60 s, so every start admitted inside
+        that window is priced purely by this reserve. Pricing it at the 0.5 GB
+        first-boot fallback while the cost store already holds a 6 GB p90 let a
+        burst of starts each pass a raw free-memory check and then grow into
+        the same headroom together (the ~5 GB/session fan-out that exhausted a
+        64 GB host).
+        """
+        mgr = self._mgr()
+        # What the reaper's off-loop refresh publishes; the gate never reads
+        # the cost log itself.
+        mgr._learned_costs_gb = {} if learned is None else {"kirocrew": learned}
+        seen: list[float] = []
+
+        def memory_check(*, min_gb, **_kw):
+            seen.append(min_gb)
+            return True, -1.0  # unmeasurable: the SEL record carries min_gb too
+
+        with (
+            patch("kiro_crew.subagent.check_memory_available", side_effect=memory_check),
+            patch("kiro_crew.platform_compat.IS_LINUX", True),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = configured
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None
+        assert seen == [pytest.approx(expected_min_gb)]
+        unavailable = next(
+            c[1]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            if c[1]["outcome"] == "memory_check_unavailable"
+        )
+        assert unavailable["metadata"]["min_gb"] == pytest.approx(expected_min_gb)
+
+    def test_low_memory_deferral_names_the_learned_price(self) -> None:
+        """A deferral says what one start was priced at and where that came from.
+
+        A learned p90 can outlive the roster it was measured on and hold the
+        bar above what the host will ever clear, while deferred runs record no
+        new samples to correct it; the operator has to be able to see that from
+        the deferral itself.
+        """
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._learned_costs_gb = {"kirocrew": 6.0}
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None and info.queued is True
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "deferred_low_memory"
+        assert call_kwargs["metadata"]["startup_cost_gb"] == pytest.approx(6.0)
+        assert call_kwargs["metadata"]["learned_cost_gb"] == pytest.approx(6.0)
+        assert call_kwargs["metadata"]["min_gb"] == pytest.approx(10.0)
+        deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
+        reason = str(deferred[-1].data.get("reason")) if deferred else ""
+        assert "6.0 GB per warming start, from the learned per-run p90" in reason
+
+    def test_low_memory_deferral_reports_the_live_peak_that_set_the_price(self) -> None:
+        """A live dedicated peak above the learned figure IS the next start's price."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._learned_costs_gb = {"kirocrew": 6.0}
+        heavy = SubagentInfo(
+            id="heavy", task="w", peak_rss_gb=7.5, last_rss_gb=7.0, _rss_samples=2, _pid=4242
+        )
+        mgr._agents["heavy"] = heavy
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None and info.queued is True
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["metadata"]["startup_cost_gb"] == pytest.approx(7.5)
+        # floor 4 + next start 7.5 + the settled heavy worker's own gap 0.5
+        assert call_kwargs["metadata"]["min_gb"] == pytest.approx(12.0)
+        deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
+        reason = str(deferred[-1].data.get("reason")) if deferred else ""
+        assert "7.5 GB per warming start, from the live dedicated peak RSS" in reason
+
+    def test_a_lightweight_agent_is_priced_by_its_own_history(self) -> None:
+        """One build-heavy agent's p90 must not hold every other spawn to its price."""
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._learned_costs_gb = {"kirocrew": 9.0, "light": 1.0}
+        seen: list[float] = []
+
+        def memory_check(*, min_gb, **_kw):
+            seen.append(min_gb)
+            return True, 32.0
+
+        with (
+            patch("kiro_crew.subagent.check_memory_available", side_effect=memory_check),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent._validate_agent", return_value=("light", "", "")),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            mgr.spawn(task="test task", parent_session_key="sess-1", agent="light")
+            mgr.spawn(task="test task", parent_session_key="sess-1", agent="brand-new")
+
+        # light: floor 4 + its own 1.0. brand-new: no dedicated history of its
+        # own -> the configured 0.5, never the heavy agent's 9.0.
+        assert seen == [pytest.approx(5.0), pytest.approx(4.5)]
+
+    def test_an_agentless_spawn_is_priced_by_the_template_it_inherits(self) -> None:
+        """The lookup keys the way samples are written: explicit agent, else template."""
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._sessions.get_agent_selection.return_value = ("template", "heavy")
+        mgr._learned_costs_gb = {"kirocrew": 1.0, "heavy": 6.0}
+        seen: list[float] = []
+
+        def memory_check(*, min_gb, **_kw):
+            seen.append(min_gb)
+            return True, 32.0
+
+        with patch(
+            "kiro_crew.subagent.check_memory_available", side_effect=memory_check
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert seen == [pytest.approx(10.0)]  # floor 4 + the inherited template's 6
+
+    def test_low_memory_deferral_names_the_configured_price_when_nothing_is_learned(
+        self,
+    ) -> None:
+        """With no learned figure the deferral must not claim one."""
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        assert mgr._learned_costs_gb == {}
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 3.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None and info.queued is True
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["metadata"]["startup_cost_gb"] == pytest.approx(0.5)
+        assert call_kwargs["metadata"]["learned_cost_gb"] is None
+        deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
+        reason = str(deferred[-1].data.get("reason")) if deferred else ""
+        assert "0.5 GB per warming start, from the configured agent.subagent_cost_gb" in reason
+        assert "learned" not in reason
+
+    # ── the deferral reason reaches the UI event and the caller ──────────────
+    #
+    # ``subagent_queued`` carried only a count, so every UI reading it rendered
+    # "queued behind the concurrency limit" for a row the MEMORY guard parked,
+    # and ``POST /api/spawn`` answered ``spawned`` for it. The gate's verdict is
+    # unchanged here; only what it tells the caller is.
+
+    def _spawn_capturing_queued(
+        self, mgr, *, memory: tuple[bool, float], admission: rs.AdmissionDecision
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Run ``spawn`` on a live loop and collect every ``subagent_queued`` extra."""
+        events: list[dict[str, Any]] = []
+
+        async def on_event(etype: str, info: Any, extra: dict[str, Any]) -> None:
+            if etype == "subagent_queued":
+                events.append(dict(extra))
+
+        async def run() -> Any:
+            mgr._on_event = on_event
+            with (
+                patch("kiro_crew.subagent.check_memory_available", return_value=memory),
+                patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+                patch("kiro_crew.subagent.cached_admission_check", return_value=admission),
+                patch("kiro_crew.subagent.sel") as mock_sel,
+            ):
+                mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+                mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+                mock_sel.return_value.log_tool_invocation = MagicMock()
+                info = mgr.spawn(task="test task", parent_session_key="sess-1")
+            deadline = time.monotonic() + 2.0
+            while not events and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            return info
+
+        info = asyncio.run(run())
+        return info, events
+
+    def test_low_memory_deferral_names_its_reason_on_the_queued_event(self) -> None:
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        info, events = self._spawn_capturing_queued(
+            mgr, memory=(False, 3.2), admission=_admitted()
+        )
+        assert info is not None and info.queued is True and info.done is False
+        assert info.queued_reason == "low_memory"
+        assert "3.2 GB available" in info.queued_reason_detail
+        assert events, "the deferral must still emit the advisory queued count"
+        last = events[-1]
+        assert last["queued"] == 1
+        assert last["reason"] == "low_memory"
+        assert last["available_gb"] == pytest.approx(3.2)
+        # spawn_min_memory_gb 4.0 + one warming start at the configured 0.5.
+        assert last["required_gb"] == pytest.approx(4.5)
+
+    def test_posture_critical_deferral_names_its_reason_on_the_queued_event(self) -> None:
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        info, events = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_refused()
+        )
+        assert info is not None and info.queued is True
+        assert info.queued_reason == "posture_critical"
+        assert info.queued_reason_detail == _refused().reason
+        assert events and events[-1]["reason"] == "posture_critical"
+        assert events[-1]["available_gb"] == pytest.approx(_refused().available_gb)
+        assert "required_gb" not in events[-1]
+
+    def test_parked_defer_publishes_the_label_only_after_the_write_succeeds(self) -> None:
+        """The coroutine dispatcher writes the defer off the loop, after the gate
+        returned. The label must ride on THAT emit: published earlier, a row the
+        store turned out not to hold (refused, not queued) would leave a memory
+        label on the parent for its other, capacity-queued rows to wear."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        store = mgr._taskq
+        assert store is not None
+        events: list[dict[str, Any]] = []
+
+        async def on_event(etype: str, info: Any, extra: dict[str, Any]) -> None:
+            if etype == "subagent_queued":
+                events.append(dict(extra))
+
+        mgr._on_event = on_event
+        wait = {"reason": "low_memory", "available_gb": 3.2, "required_gb": 4.5}
+
+        def _park(agent_id: str) -> SubagentInfo:
+            queued = SubagentInfo(
+                id=agent_id, task="t", parent_session_key="sess-1", queued=True
+            )
+            refused = SubagentInfo(
+                id=agent_id, task="t", parent_session_key="sess-1", done=True, error="refused"
+            )
+            mgr._admission.park_defer(
+                agent_id,
+                reason="low memory: 3.2 GB available, need 4 GB",
+                parent_session_key="sess-1",
+                batch_id="",
+                queued=queued,
+                refused=refused,
+                wait=wait,
+            )
+            return queued
+
+        async def run() -> tuple[Any, Any]:
+            with patch.object(type(mgr), "_announce_rejection", lambda self, info: info):
+                # No row behind this id: the write reports none and the row is
+                # refused -- no label may be left behind.
+                missing = await mgr._admission.finish_parked_defer(_park("ghost"))
+                no_label_after_refusal = dict(mgr._queue_wait)
+                # A real row: the write succeeds and the label rides the emit.
+                rec = mgr._admission.taskq_build_record(
+                    "row1",
+                    {"task": "t", "parent_session_key": "sess-1"},
+                    parent_session_key="sess-1",
+                    memory_store="",
+                    app="",
+                    model="",
+                    allowed_tools=None,
+                    approval_mode=None,
+                )
+                store.accept([rec])
+                held = await mgr._admission.finish_parked_defer(_park("row1"))
+            deadline = time.monotonic() + 2.0
+            while not events and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            return (missing, no_label_after_refusal), held
+
+        (missing, no_label_after_refusal), held = asyncio.run(run())
+        assert missing.done is True and missing.error == "refused"
+        assert no_label_after_refusal == {}
+        assert held.queued is True and held.done is False
+        assert mgr._queue_wait.get("sess-1", {}).get("reason") == "low_memory"
+        assert events and events[-1]["reason"] == "low_memory"
+
+
+# ── config key ───────────────────────────────────────────────────────────────
+
+
+def _load_from_dict(data: dict, tmp_path: Path) -> KiroCrewConfig:
+    """Write *data* to a config file under *tmp_path* and load it."""
+    tmp = tmp_path / "config.json"
+    tmp.write_text(json.dumps(data))
+    with unittest.mock.patch(
+        "kiro_crew.config.loader.config_path", return_value=tmp
+    ):
+        return KiroCrewConfig.load()
+
+
+class TestAdmissionGateConfig:
+    def test_defaults_on(self, tmp_path: Path) -> None:
+        cfg = _load_from_dict({}, tmp_path)
+        assert cfg.agent.admission_gate is True
+
+    def test_off_switch(self, tmp_path: Path) -> None:
+        cfg = _load_from_dict({"agent": {"admission_gate": False}}, tmp_path)
+        assert cfg.agent.admission_gate is False
+
+    def test_non_bool_value_falls_back_to_default(self, tmp_path: Path) -> None:
+        cfg = _load_from_dict({"agent": {"admission_gate": "nope"}}, tmp_path)
+        assert cfg.agent.admission_gate is True
+
+
+class TestCachedAdmissionCheck:
+    """cached_admission_check() — the non-blocking verdict for event-loop
+    callers: no inline I/O, background refresh, bounded staleness."""
+
+    def _reset(self) -> None:
+        rs._cached_decision = None
+        rs._cached_at = 0.0
+
+    def test_first_call_fails_open_and_kicks_refresh(self, monkeypatch) -> None:
+        self._reset()
+        gate = threading.Event()
+        verdict = _refused()
+
+        def fake_check(cfg: object | None = None) -> rs.AdmissionDecision:
+            gate.wait(5.0)  # hold the refresh until fail-open is asserted
+            return verdict
+
+        monkeypatch.setattr(rs, "admission_check", fake_check)
+        try:
+            first = rs.cached_admission_check()
+            assert first.admitted  # fail-open before the first refresh lands
+            gate.set()
+            for _ in range(200):  # refresh thread publishes shortly after
+                if rs._cached_decision is not None:
+                    break
+                time.sleep(0.01)
+            assert rs.cached_admission_check() is verdict  # fresh cache served
+        finally:
+            # A refused verdict left in the module-global cache would poison
+            # every spawn-exercising test in this worker for the TTL window.
+            self._reset()
+
+    def test_fresh_cache_is_served_without_probing(self, monkeypatch) -> None:
+        self._reset()
+        verdict = _refused()
+        rs._cached_decision = verdict
+        rs._cached_at = time.monotonic()
+        probes: list[int] = []
+        monkeypatch.setattr(rs, "admission_check", lambda cfg=None: probes.append(1))
+        try:
+            assert rs.cached_admission_check() is verdict
+            time.sleep(0.05)
+            assert probes == []  # fresh cache => no background refresh either
+        finally:
+            self._reset()
+
+
+class TestCronExprPassthrough:
+    """Cron-expression jobs run normally even under critical posture: they
+    cannot be deferred statelessly (in-memory markers lose the occurrence on
+    restart; dropping loses it outright), so only ``every``/``at`` jobs —
+    which stay due on their own — are deferred."""
+
+    @pytest.mark.asyncio
+    async def test_job_claimed_during_admission_await_is_not_double_fired(
+        self, tmp_path: Path
+    ) -> None:
+        # The admission await yields the loop; a manual run can claim the job
+        # meanwhile. The timer must revalidate and skip it, never start a
+        # duplicate execution over the in-flight run.
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("claimed", "msg", every_secs=60)
+        job = svc._jobs[0]
+        job.last_run_ts = time.time() - 120
+
+        def claiming_check(cfg: object | None = None):
+            svc._claim_run(job.id, "manual")  # simulate a manual run claiming it
+            return _admitted()
+
+        with patch("kiro_crew.cron.admission_check", side_effect=claiming_check):
+            await svc._on_timer()
+        assert executed == []  # revalidated away, no duplicate
+        svc._claims.pop(job.id, None)
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_manual_run_completed_during_await_is_not_double_fired(
+        self, tmp_path: Path
+    ) -> None:
+        # Harder variant: the manual run starts AND FINISHES during the
+        # admission await, so the job holds no claim. An id-only
+        # revalidation would double-fire; the live-object _is_due re-check
+        # (advanced last_run_ts) must catch it.
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("finished", "msg", every_secs=60)
+        job = svc._jobs[0]
+        job.last_run_ts = time.time() - 120
+
+        def completing_check(cfg: object | None = None):
+            job.last_run_ts = time.time()  # manual run ran to completion
+            return _admitted()
+
+        with patch("kiro_crew.cron.admission_check", side_effect=completing_check):
+            await svc._on_timer()
+        await asyncio.sleep(0.05)
+        assert executed == []  # not re-fired against the stale snapshot
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_job_edited_during_await_dispatches_live_object(
+        self, tmp_path: Path
+    ) -> None:
+        # A job replaced during the await must execute its LIVE definition,
+        # not the stale snapshot's.
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.message)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("edited", "old-message", every_secs=60)
+        job = svc._jobs[0]
+        job.last_run_ts = time.time() - 120
+
+        def editing_check(cfg: object | None = None):
+            job.message = "new-message"
+            return _admitted()
+
+        with patch("kiro_crew.cron.admission_check", side_effect=editing_check):
+            await svc._on_timer()
+        await _wait_for(lambda: len(executed) == 1)
+        assert executed == ["new-message"]
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_cron_expr_job_runs_normally_under_critical(
+        self, tmp_path: Path
+    ) -> None:
+        # A cron-expression job whose minute matches during a critical
+        # episode fires anyway — the occurrence is neither dropped nor
+        # remembered in state that a restart would lose.
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("expr-job", "msg", cron_expr="* * * * *")
+
+        with (
+            patch("kiro_crew.cron.admission_check", return_value=_refused()),
+            patch("kiro_crew.cron.cron_expr_matches", return_value=True),
+        ):
+            await svc._on_timer()
+        await _wait_for(lambda: "expr-job" in executed)
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_mixed_due_defers_interval_but_fires_expr(
+        self, tmp_path: Path
+    ) -> None:
+        # One tick, both kinds due, critical posture: the interval job is
+        # deferred (stays due, untouched), the cron-expression job fires.
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("interval", "msg", every_secs=60)
+        svc.add_job("expr", "msg", cron_expr="* * * * *")
+        interval_job = next(j for j in svc._jobs if j.name == "interval")
+        interval_job.last_run_ts = time.time() - 120
+
+        with (
+            patch("kiro_crew.cron.admission_check", return_value=_refused()),
+            patch("kiro_crew.cron.cron_expr_matches", return_value=True),
+        ):
+            await svc._on_timer()
+        await _wait_for(lambda: "expr" in executed)
+        assert executed == ["expr"]  # interval deferred, not fired
+        assert interval_job.last_status is None  # untouched: still due
+
+        # Recovery: the deferred interval job fires on its own.
+        with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
+            await svc._on_timer()
+        await _wait_for(lambda: "interval" in executed)
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_deferral_episode_floors_timer_delay(
+        self, tmp_path: Path
+    ) -> None:
+        # A deferred (overdue) interval job would otherwise re-arm the timer
+        # at zero delay — a busy loop of scans and admission probes on a host
+        # already under memory pressure. During an episode the re-arm delay
+        # is floored at the poll cadence.
+        from kiro_crew.cron import _TIMER_POLL_SECS
+
+        svc = CronService(base_dir=tmp_path, on_job=AsyncMock())
+        await svc.start()
+        svc.add_job("overdue", "msg", every_secs=60)
+        svc._jobs[0].last_run_ts = time.time() - 120
+
+        assert svc._effective_delay() < 1.0  # overdue: due immediately
+
+        with patch("kiro_crew.cron.admission_check", return_value=_refused()):
+            await svc._on_timer()  # opens the episode, defers the job
+        assert svc._admission_deferring is True
+        assert svc._effective_delay() == _TIMER_POLL_SECS  # floored
+
+        with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
+            await svc._on_timer()  # recovery closes the episode
+        assert svc._admission_deferring is False
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_interval_edited_to_cron_during_await_still_fires(
+        self, tmp_path: Path
+    ) -> None:
+        # An interval job edited into a matching cron expression during the
+        # admission await must be classified by its LIVE kind: partitioning
+        # the stale snapshot would defer-and-drop the occurrence.
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("morph", "msg", every_secs=60)
+        job = svc._jobs[0]
+        job.last_run_ts = time.time() - 120
+
+        from kiro_crew.cron import CronSchedule
+
+        def editing_check(cfg: object | None = None):
+            job.schedule = CronSchedule(kind="cron", cron_expr="* * * * *")
+            job.last_run_ts = None  # cron kind: same-minute guard off
+            return _refused()
+
+        with (
+            patch("kiro_crew.cron.admission_check", side_effect=editing_check),
+            patch("kiro_crew.cron.cron_expr_matches", return_value=True),
+        ):
+            await svc._on_timer()
+        await _wait_for(lambda: "morph" in executed)  # fired, not deferred
+        await svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_queued_nonbatch_rejection_announced_exactly_once(self) -> None:
+        # A queued single spawn rejected at drain time (here: by the admission
+        # gate) must produce EXACTLY ONE completion announcement. The drain
+        # loop announces it off the returned info; spawn's own
+        # _announce_rejection must stay batch-only, or the requester gets a
+        # duplicate completion injection and wave/orchestration counters
+        # double-count the failure. Exercises the REAL spawn path (no stubs)
+        # so both potential announce sites are live.
+        from kiro_crew.subagent import SubagentManager
+
+        announced: list = []
+
+        async def _on_done(info) -> None:
+            announced.append(info)
+
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
+        mgr = SubagentManager(
+            sessions=sessions,
+            ctx_builder=MagicMock(),
+            on_done=_on_done,
+            max_concurrent=3,
+        )
+        mgr._queue = [
+            {
+                "task": "queued then refused",
+                "parent_session_key": "sess-1",
+                "_preassigned_id": "q1",
+            }
+        ]
+        mgr._running_count = 0
+        mgr._spawn_stagger_secs = 0.0
+        mgr._last_spawn_ts = 0.0
+        mgr._emit_queue_depth = MagicMock()
+
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            # On a running loop the pump is a coroutine (its store reads run
+            # off-loop); await one pass directly.
+            await mgr._drain_queue_async()
+            # Flush every announce coroutine scheduled via ensure_future —
+            # a duplicate would surface as a second on_done call here.
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+        assert [i.id for i in announced] == ["q1"], (
+            f"expected exactly one announcement, got {len(announced)}"
+        )
+        assert "critical" in announced[0].error
+
+    @pytest.mark.asyncio
+    async def test_interval_job_not_replayed_after_manual_run(
+        self, tmp_path: Path
+    ) -> None:
+        # An ``every`` job stays due on its own during a critical episode;
+        # a manual trigger that completes the work must not be replayed on
+        # recovery (deferral keeps no per-job state that could replay it).
+        executed: list[str] = []
+
+        async def callback(job) -> None:
+            executed.append(job.name)
+
+        svc = CronService(base_dir=tmp_path, on_job=callback)
+        await svc.start()
+        svc.add_job("interval", "msg", every_secs=3600)
+        job = svc._jobs[0]
+        job.last_run_ts = time.time() - 7200
+
+        with patch("kiro_crew.cron.admission_check", return_value=_refused()):
+            await svc._on_timer()
+        assert executed == []  # deferred
+
+        # Manual run during the episode completes the work.
+        with patch("kiro_crew.cron.admission_check", return_value=_refused()):
+            assert await svc.run_job(job.id) is True
+        await _wait_for(lambda: executed == ["interval"])
+        job.last_run_ts = time.time()  # manual run marked it
+
+        with patch("kiro_crew.cron.admission_check", return_value=_admitted()):
+            await svc._on_timer()
+        await asyncio.sleep(0.1)
+        assert executed == ["interval"]  # no replay
+        await svc.stop()
+
+    def test_refresh_thread_start_failure_fails_open(self, monkeypatch) -> None:
+        rs._cached_decision = None
+        rs._cached_at = 0.0
+        monkeypatch.setattr(
+            rs.threading,
+            "Thread",
+            MagicMock(side_effect=RuntimeError("can't start new thread")),
+        )
+        verdict = rs.cached_admission_check()  # must not raise
+        assert verdict.admitted  # fail-open
+        # The refresh lock was released, not leaked:
+        assert rs._cache_refresh_inflight.acquire(blocking=False)
+        rs._cache_refresh_inflight.release()

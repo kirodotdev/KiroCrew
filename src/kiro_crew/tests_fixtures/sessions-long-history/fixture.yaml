@@ -1,0 +1,34 @@
+schema-version: 2026-04-28
+fixture-name: sessions-long-history
+description: |
+  One chat session whose oldest messages sit below a size-rotation boundary, so
+  the dashboard's initial slot load answers has_more=true and "load earlier"
+  reaches a real second page.
+
+  Seed this to verify anything on the history paging seam: cursor handling,
+  next_before arithmetic, the archive read path, or a paging regression. Every
+  other scenario ships sessions of a handful of messages, and the slot-detail
+  fast path hardcodes has_more=false unless a session has rotate-archived
+  segments, so on those scenarios the "load earlier" affordance is structurally
+  unreachable and a paging trace cannot be performed through the real routes.
+
+  Layout: sessions/dashboard_long-history.jsonl holds the 8 live rows, and
+  sessions/archive/dashboard_long-history__*.jsonl holds the 60 rotated-away
+  rows. Reading the slot returns the 8 live rows with has_more=true and
+  next_before=60; paging with before=60 returns rows out of the archive. The
+  session is pinned so it restores as a slot whatever the mtime restore window
+  is when the home is seeded.
+
+  Both files are real ConversationLog output, not hand-authored bytes: the
+  segment is _maybe_rotate output at the production budgets (10 MiB,
+  200 retained lines). Regenerate by driving the writer, not by editing the
+  JSONL - append the 60 head rows, append 199 oversized filler rows while
+  staying under the byte budget, append one more sized so the file crosses
+  10 MiB while the surviving 200 lines still fit it (that rotation archives
+  exactly the 60 head rows), rewrite the transcript to empty through the
+  compaction path so the filler leaves as a compact segment this fixture does
+  not ship, then append the 8 live rows and set the title. The omitted compact
+  segment is the state a home reaches once archive retention reclaims it.
+
+  SQLite stores are omitted for the same reason as every other scenario (see
+  the SQLite deferral in ``rich/README.md``); nothing here depends on them.

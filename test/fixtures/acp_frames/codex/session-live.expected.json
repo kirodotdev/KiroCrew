@@ -1,0 +1,257 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {}
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "acp": false,
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "subagents": {}
+      }
+    },
+    "agent_version": "1.11.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "detail": "ollama",
+        "kind": "gateway",
+        "label": "Custom model gateway"
+      }
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "agent",
+        "description": "Approval and sandboxing preset for the session",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "_meta": {
+              "kind": "standard"
+            },
+            "description": "Always ask to edit external files and use the internet",
+            "name": "Ask for approval",
+            "value": "read-only"
+          },
+          {
+            "_meta": {
+              "kind": "auto_review"
+            },
+            "description": "Only ask for actions detected as potentially unsafe",
+            "name": "Approve for me",
+            "value": "agent"
+          },
+          {
+            "_meta": {
+              "kind": "full_access"
+            },
+            "description": "Unrestricted access to the internet and any file on your computer",
+            "name": "Full access",
+            "value": "agent-full-access"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "collaboration_mode",
+        "currentValue": "default",
+        "description": "How Codex collaborates for subsequent turns",
+        "id": "collaboration_mode",
+        "name": "Collaboration mode",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "",
+        "description": "Model Codex uses for the session",
+        "id": "model",
+        "name": "Model",
+        "options": [],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "agent",
+      "ids": [
+        "read-only",
+        "agent",
+        "agent-full-access"
+      ]
+    },
+    "session_id": "01a09463-c776-7020-8aeb-2939368590f1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "available_commands_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Warning: Model metadata for `llama32-32k:latest` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Warning: Model metadata for `llama32-32k:latest` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      5520,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "P"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "P",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "reamble"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "reamble",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": ":\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": ":\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "```",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      4096,
+      258400
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      4060,
+      36,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

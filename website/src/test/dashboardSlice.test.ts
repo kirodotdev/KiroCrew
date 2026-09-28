@@ -1,0 +1,685 @@
+import { describe, it, expect, vi } from 'vitest'
+import reducer, {
+  sseStatus,
+  setYoloDuration,
+  sseConnected,
+  sseDisconnected,
+  sseSlots,
+  touchSlotActivity,
+  sseSlotTitle,
+  addSlotOptimistic,
+  removeSlotOptimistic,
+  triggerRefresh,
+  markSlotUnread,
+  markSlotRead,
+  fetchSlots,
+  selectUnreadByMode,
+  sseSubagentStatus,
+  sseSubagentText,
+  patchSlotLink,
+  dropSlotLinks,
+} from '../store/dashboardSlice'
+import type { StatusData, ChatSlot } from '../types'
+
+vi.mock('../api/client', () => ({
+  api: { chatSlots: vi.fn(), chatMode: vi.fn() },
+}))
+
+const slot1: ChatSlot = { key: 'chat-1', title: 'Chat 1', messages: 5, running: false, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }
+const slot2: ChatSlot = { key: 'chat-2', title: 'Chat 2', messages: 3, running: true, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }
+
+describe('dashboardSlice', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+
+  it('has correct initial state', () => {
+    expect(initial.status).toBeNull()
+    expect(initial.connected).toBe(false)
+    expect(initial.slots).toEqual([])
+    expect(initial.approvalMode).toBe('normal')
+    expect(initial.refreshTrigger).toBe(0)
+    expect(initial.unreadSlots).toEqual([])
+  })
+
+  describe('sseStatus', () => {
+    it('sets status and connected', () => {
+      const status = { uptime: '1h', sessions: 2, messages: 10, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      const state = reducer(initial, sseStatus(status))
+      expect(state.status).toEqual(status)
+      expect(state.connected).toBe(true)
+    })
+
+    it('syncs yolo mode from backend', () => {
+      const status = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo: true } as StatusData
+      const state = reducer(initial, sseStatus(status))
+      expect(state.approvalMode).toBe('yolo')
+    })
+
+    it('reverts from yolo when backend says false', () => {
+      const yoloState = { ...initial, approvalMode: 'yolo' }
+      const status = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo: false } as StatusData
+      const state = reducer(yoloState, sseStatus(status))
+      expect(state.approvalMode).toBe('normal')
+    })
+
+    it('carries the config-derived grant keys across a WebSocket frame that omits them', () => {
+      const http = {
+        uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
+        yolo_duration: '1h', yolo_until_shutdown_permitted: false,
+      } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 3, messages: 5, cron_jobs: 1, subagents: 0, lessons: 2 } as StatusData
+      const state = reducer(reducer(initial, sseStatus(http)), sseStatus(wsFrame))
+      expect(state.status).toEqual({ ...wsFrame, yolo_duration: '1h', yolo_until_shutdown_permitted: false })
+    })
+
+    it('still replaces every other key a frame omits (an omitted key is an answer)', () => {
+      const http = {
+        uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
+        version_display: '0.4.0', yolo_expires_at: '2026-01-01T00:00:00Z', yolo_until_shutdown: true,
+      } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      const state = reducer(reducer(initial, sseStatus(http)), sseStatus(wsFrame))
+      expect(state.status).toEqual(wsFrame)
+    })
+
+    it('lets a frame that carries a grant key overwrite the retained value', () => {
+      const first = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo_duration: '1h' } as StatusData
+      const second = { ...first, yolo_duration: '24h' } as StatusData
+      const state = reducer(reducer(initial, sseStatus(first)), sseStatus(second))
+      expect(state.status?.yolo_duration).toBe('24h')
+    })
+
+    it('setYoloDuration writes the saved value and it outranks later frames and replies', () => {
+      const http = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo_duration: '30m' } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      let state = reducer(initial, sseStatus(http))
+      state = reducer(state, setYoloDuration('24h'))
+      expect(state.status?.yolo_duration).toBe('24h')
+      // A frame without the key carries the save; a stale reply WITH the old
+      // key (a request that began before the save) does not roll it back.
+      state = reducer(state, sseStatus(wsFrame))
+      expect(state.status?.yolo_duration).toBe('24h')
+      state = reducer(state, sseStatus(http))
+      expect(state.status?.yolo_duration).toBe('24h')
+    })
+
+    it('a save recorded before any status arrives is applied to the first status', () => {
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      let state = reducer(initial, setYoloDuration('1h'))
+      expect(state.status).toBeNull()
+      state = reducer(state, sseStatus(wsFrame))
+      expect(state.status?.yolo_duration).toBe('1h')
+    })
+  })
+
+  it('sseConnected sets connected true', () => {
+    expect(reducer(initial, sseConnected()).connected).toBe(true)
+  })
+
+  it('sseDisconnected sets connected false', () => {
+    const connected = { ...initial, connected: true }
+    expect(reducer(connected, sseDisconnected()).connected).toBe(false)
+  })
+
+  it('sseSlots replaces slots', () => {
+    const state = reducer(initial, sseSlots([slot1, slot2]))
+    expect(state.slots).toHaveLength(2)
+  })
+
+  it('sseSlotTitle updates matching slot title', () => {
+    const withSlots = reducer(initial, sseSlots([slot1, slot2]))
+    const state = reducer(withSlots, sseSlotTitle({ key: 'chat-1', title: 'Renamed' }))
+    expect(state.slots[0].title).toBe('Renamed')
+    expect(state.slots[1].title).toBe('Chat 2')
+  })
+
+  describe('touchSlotActivity', () => {
+    it('bumps the matching slot last_ts to the supplied timestamp', () => {
+      const withSlots = reducer(initial, sseSlots([slot1, slot2]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T22:00:00Z' }))
+      expect(state.slots.find(s => s.key === 'chat-1')?.last_ts).toBe('2026-07-09T22:00:00Z')
+      expect(state.slots.find(s => s.key === 'chat-2')?.last_ts).toBeUndefined()
+    })
+
+    it('leaves the ORDERING key alone for un-settled activity', () => {
+      // Agent output moves last_ts but must not re-rank the sidebar: a session
+      // streaming tool calls would otherwise climb over its neighbours on every
+      // event, swapping rows under the pointer while several agents work.
+      const withSlots = reducer(initial, sseSlots([slot1]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T22:00:00Z' }))
+      expect(state.slots[0].last_turn_ts).toBeUndefined()
+    })
+
+    it('bumps last_turn_ts too when the activity is settled', () => {
+      // An inbound prompt SHOULD move the session to the top immediately — the
+      // user just acted on it.
+      const withSlots = reducer(initial, sseSlots([slot1]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T22:00:00Z', settled: true }))
+      expect(state.slots[0].last_turn_ts).toBe('2026-07-09T22:00:00Z')
+      expect(state.slots[0].last_ts).toBe('2026-07-09T22:00:00Z')
+    })
+
+    it('is a no-op for an unknown slot key', () => {
+      const withSlots = reducer(initial, sseSlots([slot1]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'missing', ts: '2026-07-09T22:00:00Z' }))
+      expect(state.slots).toHaveLength(1)
+      expect(state.slots[0].last_ts).toBeUndefined()
+    })
+
+    it('never moves either field backwards', () => {
+      // An authoritative slots snapshot can land between an event being buffered
+      // and dispatched; an older arrival time must not undo it.
+      const withSlots = reducer(initial, sseSlots([
+        { ...slot1, last_ts: '2026-07-09T22:00:00Z', last_turn_ts: '2026-07-09T21:00:00Z' },
+      ]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T20:00:00Z', settled: true }))
+      expect(state.slots[0].last_ts).toBe('2026-07-09T22:00:00Z')
+      expect(state.slots[0].last_turn_ts).toBe('2026-07-09T21:00:00Z')
+    })
+
+    it('applies a settling bump that is older than last_ts but newer than last_turn_ts', () => {
+      // Mid-turn the two fields diverge: last_ts is a streamed tool row, so a
+      // prompt arriving behind it is still the newest SETTLED instant. A shared
+      // monotonic check would silently drop it.
+      const withSlots = reducer(initial, sseSlots([
+        { ...slot1, last_ts: '2026-07-09T22:00:00Z', last_turn_ts: '2026-07-09T20:00:00Z' },
+      ]))
+      const state = reducer(withSlots, touchSlotActivity({ key: 'chat-1', ts: '2026-07-09T21:00:00Z', settled: true }))
+      expect(state.slots[0].last_ts).toBe('2026-07-09T22:00:00Z')
+      expect(state.slots[0].last_turn_ts).toBe('2026-07-09T21:00:00Z')
+    })
+  })
+
+  it('addSlotOptimistic adds if not present', () => {
+    const state = reducer(initial, addSlotOptimistic(slot1))
+    expect(state.slots).toHaveLength(1)
+    // Adding same key again should not duplicate
+    const state2 = reducer(state, addSlotOptimistic(slot1))
+    expect(state2.slots).toHaveLength(1)
+  })
+
+  it('removeSlotOptimistic removes by key', () => {
+    const withSlots = reducer(initial, sseSlots([slot1, slot2]))
+    const state = reducer(withSlots, removeSlotOptimistic('chat-1'))
+    expect(state.slots).toHaveLength(1)
+    expect(state.slots[0].key).toBe('chat-2')
+  })
+
+  it('removeSlotOptimistic also clears unread for removed slot', () => {
+    let state = reducer(initial, sseSlots([slot1, slot2]))
+    state = reducer(state, markSlotUnread('chat-1'))
+    state = reducer(state, removeSlotOptimistic('chat-1'))
+    expect(state.unreadSlots).toEqual([])
+  })
+
+  it('fetchSlots.fulfilled reconciles unreadSlots against live slots', () => {
+    let state = reducer(initial, sseSlots([slot1, slot2]))
+    state = reducer(state, markSlotUnread('chat-1'))
+    state = reducer(state, markSlotUnread('chat-2'))
+    // Simulate fetchSlots returning only slot2 (slot1 was deleted remotely)
+    state = reducer(state, fetchSlots.fulfilled([slot2], 'requestId'))
+    expect(state.unreadSlots).toEqual(['chat-2'])
+  })
+
+  it('triggerRefresh increments counter', () => {
+    const state = reducer(initial, triggerRefresh())
+    expect(state.refreshTrigger).toBe(1)
+    const state2 = reducer(state, triggerRefresh())
+    expect(state2.refreshTrigger).toBe(2)
+  })
+
+  describe('unread slots', () => {
+    it('markSlotUnread adds slot key', () => {
+      const state = reducer(initial, markSlotUnread('chat-1'))
+      expect(state.unreadSlots).toEqual(['chat-1'])
+    })
+
+    it('markSlotUnread does not duplicate', () => {
+      let state = reducer(initial, markSlotUnread('chat-1'))
+      state = reducer(state, markSlotUnread('chat-1'))
+      expect(state.unreadSlots).toEqual(['chat-1'])
+    })
+
+    it('markSlotRead removes slot key', () => {
+      let state = reducer(initial, markSlotUnread('chat-1'))
+      state = reducer(state, markSlotUnread('chat-2'))
+      state = reducer(state, markSlotRead('chat-1'))
+      expect(state.unreadSlots).toEqual(['chat-2'])
+    })
+
+    it('markSlotRead is a no-op for unknown key', () => {
+      const state = reducer(initial, markSlotRead('nonexistent'))
+      expect(state.unreadSlots).toEqual([])
+    })
+
+    // The shared unread record is written by an ordinary arrival, and that write
+    // is on the websocket `onmessage` -> Redux dispatch -> re-render path. A
+    // QuotaExceededError raised there is swallowed by the surrounding try/catch,
+    // so the record is silently lost while megabytes of re-derivable cache sit
+    // next to it. `safeSetItem` reclaims a disposable tier and retries; the raw
+    // write does not. This pins the reclaim so the record survives a full quota.
+    it('markSlotUnread reclaims disposable cache and still persists when the quota is full', () => {
+      const quota = () => {
+        const e = new DOMException('quota', 'QuotaExceededError')
+        Object.defineProperty(e, 'code', { value: 22, configurable: true })
+        return e
+      }
+      // Disposable cache the reclaim tiers are allowed to drop.
+      localStorage.setItem('vc_heights_session-A', '{"a":1}')
+      localStorage.setItem('keep-me', 'important')
+
+      const real = Storage.prototype.setItem
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        // Fail only while the reclaimable cache is still present, so a retry
+        // after reclaim succeeds and a non-reclaiming writer never does.
+        if (this.getItem('vc_heights_session-A') !== null && !key.startsWith('vc_heights_')) {
+          throw quota()
+        }
+        real.call(this, key, value)
+      })
+
+      try {
+        reducer(initial, markSlotUnread({ slot: 'chat-1', ts: '2026-01-01T00:00:00Z' }))
+      } finally {
+        spy.mockRestore()
+      }
+
+      // The shared record survived because the write reclaimed space first.
+      expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toEqual({
+        'chat-1': '2026-01-01T00:00:00Z',
+      })
+      // Disposable cache was the thing sacrificed, not the record.
+      expect(localStorage.getItem('vc_heights_session-A')).toBeNull()
+      expect(localStorage.getItem('keep-me')).toBe('important')
+    })
+
+    // `mc-unread-slots` is a PROJECTION of the shared record's keys, so the two
+    // must not disagree. The projection is strictly smaller than the record
+    // (keys only, no timestamps), so writing it can free space and succeed on a
+    // quota where the record's own write just failed. The old code could not
+    // reach that state: the raw setItem THREW, the surrounding catch swallowed
+    // it, and the projection line never ran. A helper that reports failure by
+    // return value instead of throwing silently removed that protection, which
+    // is the whole risk of converting a throwing call in a try/catch body.
+    it('leaves the projection alone when the shared record write fails', () => {
+      const quota = () => {
+        const e = new DOMException('quota', 'QuotaExceededError')
+        Object.defineProperty(e, 'code', { value: 22, configurable: true })
+        return e
+      }
+      // This file has no storage-clearing beforeEach, so start from a known
+      // state rather than whatever the previous case left behind.
+      localStorage.clear()
+      // A stale, larger projection than the one this dispatch would write, so a
+      // projection write would shrink it and find room.
+      localStorage.setItem('mc-unread-slots', JSON.stringify(['chat-1', 'chat-2', 'chat-3']))
+
+      const real = Storage.prototype.setItem
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        // The authoritative record cannot be written; the projection still can.
+        if (key === 'mc-unread-shared') throw quota()
+        real.call(this, key, value)
+      })
+
+      try {
+        reducer(initial, markSlotUnread({ slot: 'chat-1', ts: '2026-01-01T00:00:00Z' }))
+      } finally {
+        spy.mockRestore()
+      }
+
+      // The record did not land, so the projection must not have been advanced
+      // past it. Two persisted records that disagree is worse than neither
+      // being written: `restoreUnreadSince` trusts the record while older tabs
+      // and the hub relay read the projection.
+      expect(localStorage.getItem('mc-unread-shared')).toBeNull()
+      expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toEqual([
+        'chat-1',
+        'chat-2',
+        'chat-3',
+      ])
+    })
+  })
+
+  describe('selectUnreadByMode', () => {
+    // The bigger surface-level coverage (orchestrator-leaks-into-Chat
+    // regression, orphan-key fallback, appOnly visibility) lives in
+    // src/test/surfaces.test.tsx where the registry under test is.
+    // Here we pin the underlying factory's contract: surface-key resolution
+    // (slot.surface ?? slot.mode) and per-mode memoization.
+    const buildState = (slots: ChatSlot[], unread: string[]) =>
+      ({ dashboard: { ...initial, slots, unreadSlots: unread } } as unknown as Parameters<ReturnType<typeof selectUnreadByMode>>[0])
+
+    it('honors slot.surface over slot.mode when both are present', () => {
+      // Forward-compat: backend now emits an explicit `surface` field that
+      // mirrors `mode` today but is allowed to diverge later. A slot whose
+      // `mode === ''` but `surface === 'orchestrator'` counts toward the
+      // unified chat badge (both '' and 'orchestrator' are chat-like).
+      const slot: ChatSlot = { key: 'orch-1', title: 'O', messages: 0, running: false, mode: '', surface: 'orchestrator' }
+      const state = buildState([slot], ['orch-1'])
+      // Unified: chat badge includes orchestrator slots
+      expect(selectUnreadByMode('')(state)).toBe(1)
+      expect(selectUnreadByMode('orchestrator')(state)).toBe(1)
+    })
+
+    it('falls back to slot.mode when slot.surface is absent (back-compat)', () => {
+      // Older backend payloads without a `surface` field must still route
+      // via `mode` so a `surface`-aware client doesn't require a coupled deploy.
+      const slot: ChatSlot = { key: 'orch-1', title: 'O', messages: 0, running: false, mode: 'orchestrator' }
+      const state = buildState([slot], ['orch-1'])
+      // Unified: chat badge includes orchestrator slots
+      expect(selectUnreadByMode('')(state)).toBe(1)
+      expect(selectUnreadByMode('orchestrator')(state)).toBe(1)
+    })
+
+    it('returns the same selector instance on repeated calls (memoization)', () => {
+      // Stable reference matters because consumers (selectSurfaceBadgeCount,
+      // selectAllSurfacesAttention) call this on every render — recreating
+      // the selector would defeat both useAppSelector's referential-equality
+      // fast path and reselect's input-equality memoization.
+      expect(selectUnreadByMode('orchestrator')).toBe(selectUnreadByMode('orchestrator'))
+    })
+  })
+
+  describe('reconnect unread suppression', () => {
+    // The useWebSocket hook uses a reconnectingRef (set directly in onopen,
+    // cleared on fetchSlots resolve) to suppress markSlotUnread during the
+    // post-reconnect catch-up window. These reducer-level tests verify the
+    // store invariants the hook relies on; the actual guard is pinned by
+    // useWebSocketReconnect.test.ts at the hook level.
+    it('sseConnected resets slotsLoaded to false (reconnect signal)', () => {
+      let state = reducer(initial, sseSlots([slot1, slot2]))
+      expect(state.slotsLoaded).toBe(true)
+      state = reducer(state, sseConnected())
+      expect(state.slotsLoaded).toBe(false)
+    })
+
+    it('fetchSlots.fulfilled after reconnect does not spuriously add unreads', () => {
+      // Simulates: reconnect → fetchSlots returns slots → no unreads added
+      // (markSlotUnread is guarded by reconnectingRef in the hook, not reducer)
+      let state = reducer(initial, markSlotUnread('chat-1'))
+      state = reducer(state, sseConnected()) // reconnect
+      state = reducer(state, fetchSlots.fulfilled([slot1, slot2], 'requestId'))
+      // Existing unread preserved, no new ones spuriously added
+      expect(state.unreadSlots).toEqual(['chat-1'])
+      expect(state.slotsLoaded).toBe(true)
+    })
+  })
+
+  describe('subagent SSE prototype-pollution guards', () => {
+    // Both `slot` and `id` are untrusted keys from the SSE payload. A value of
+    // __proto__/constructor/prototype must never reach an assignment that would
+    // write through Object.prototype. Note the subagentRunning[slot] check does
+    // NOT stop slot="__proto__" on its own — it resolves truthily through the
+    // prototype chain — so isUnsafeKey(slot) is the real guard.
+    const polluted = () => ({} as Record<string, unknown>).polluted
+
+    it('sseSubagentStatus ignores a __proto__ slot without polluting the prototype', () => {
+      const state = reducer(
+        initial,
+        sseSubagentStatus({ slot: '__proto__', running: 1, agents: [] }),
+      )
+      // `['__proto__']` always returns the prototype object; the real check is
+      // that no OWN property was created and the prototype was not polluted.
+      expect(Object.prototype.hasOwnProperty.call(state.subagentRunning, '__proto__')).toBe(false)
+      expect(polluted()).toBeUndefined()
+    })
+
+    it('sseSubagentText ignores a __proto__ slot and does not pollute', () => {
+      // Prime a legit slot so the reducer would otherwise proceed.
+      const primed = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
+      reducer(primed, sseSubagentText({ slot: '__proto__', id: 'a', text: 'x' }))
+      expect(({} as Record<string, unknown>)['a']).toBeUndefined()
+      expect(polluted()).toBeUndefined()
+    })
+
+    it('sseSubagentText ignores a __proto__ id and does not pollute', () => {
+      let state = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
+      state = reducer(state, sseSubagentText({ slot: 'chat-1', id: '__proto__', text: 'x' }))
+      expect(state.subagentText['chat-1']?.['__proto__']).toBeUndefined()
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+    })
+
+    it('sseSubagentText still stores text for a normal slot+id', () => {
+      let state = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
+      state = reducer(state, sseSubagentText({ slot: 'chat-1', id: 'sub-1', text: 'hello' }))
+      expect(state.subagentText['chat-1']['sub-1']).toBe('hello')
+    })
+  })
+
+  /** One channel can carry TWO rows — the conversation a session was born in AND
+   *  an explicit mirror to that same channel — and they disconnect independently.
+   *  Matching on `channel` alone patched whichever row came first in the array, so
+   *  acting on the mirror moved the origin row's `paused` instead. The row the user
+   *  clicked never changed, which reads as a dead control: it renders connected and
+   *  cannot be reconnected.
+   */
+  describe('patchSlotLink disambiguates two rows on one channel', () => {
+    const twoDiscordRows = (): ChatSlot => ({
+      key: 'chat-1',
+      title: 'Chat 1',
+      messages: 1,
+      running: false,
+      pending_approval: false,
+      waiting_for_input: false,
+      last_activity_ts: undefined,
+      links: [
+        { channel: 'discord', label: 'Discord', target: 'dm-1', direction: 'origin', live: true, paused: false },
+        { channel: 'discord', label: 'Discord', target: 'chan-2', direction: 'out', live: true, paused: false },
+      ],
+    })
+    const rows = (s: ReturnType<typeof reducer>) => s.slots[0].links!
+
+    it('patches the mirror row and leaves the origin row alone', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', origin: false, patch: { paused: true },
+      }))
+      expect(rows(state)[1].paused).toBe(true)
+      expect(rows(state)[0].paused).toBe(false)
+    })
+
+    it('patches the origin row and leaves the mirror row alone', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', origin: true, patch: { paused: true },
+      }))
+      expect(rows(state)[0].paused).toBe(true)
+      expect(rows(state)[1].paused).toBe(false)
+    })
+
+    // Classified by origin-ness, not by equality against `direction`, so this
+    // lands the same side here as the flag the endpoint was called with.
+    it('treats a `both` row as the mirror, like the endpoint flag does', () => {
+      const slot = twoDiscordRows()
+      slot.links![1].direction = 'both'
+      let state = reducer(initial, sseSlots([slot]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', origin: false, patch: { paused: true },
+      }))
+      expect(rows(state)[1].paused).toBe(true)
+      expect(rows(state)[0].paused).toBe(false)
+    })
+
+    // Slack has exactly one row, so its callers omit the flag.
+    it('falls back to channel-only matching when origin is omitted', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', patch: { paused: true },
+      }))
+      expect(rows(state)[0].paused).toBe(true)
+    })
+  })
+
+  describe('dropSlotLinks removes the rows of ONE binding in place', () => {
+    const twoDiscordRows = (): ChatSlot => ({
+      key: 'chat-1',
+      title: 'Chat 1',
+      messages: 1,
+      running: false,
+      pending_approval: false,
+      waiting_for_input: false,
+      last_activity_ts: undefined,
+      slack_linked: true,
+      slack_channel: 'C-1',
+      slack_thread_ts: '1.2',
+      links: [
+        { channel: 'discord', label: 'Discord', target: 'dm-1', binding: 'b-o', direction: 'origin', live: true, paused: false },
+        { channel: 'discord', label: 'Discord', target: 'chan-2', binding: 'b-a', direction: 'both', live: true, paused: true },
+        { channel: 'telegram', label: 'Telegram', target: 'tg-1', binding: 'b-t', direction: 'out', live: true, paused: false },
+        { channel: 'slack', label: 'Slack', target: 'C-1', binding: 'b-s', direction: 'out', live: true, paused: false },
+      ],
+    })
+    const rows = (s: ReturnType<typeof reducer>) => s.slots[0].links!
+
+    // The Unlink action's write: the named binding is gone server-side, the
+    // origin row (the conversation the session was born in) is not a binding
+    // anyone severed, and every other row is untouched.
+    it('drops the rows carrying the named binding and keeps the origin row', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'discord', binding: 'b-a' }))
+      expect(rows(state).map(l => `${l.channel}:${l.direction}`)).toEqual([
+        'discord:origin', 'telegram:out', 'slack:out',
+      ])
+    })
+
+    it('leaves a same-channel row with a DIFFERENT binding alone', () => {
+      // The race the token exists for: Unlink A, another tab links B on the same
+      // channel before A's response lands, B's slots push arrives first. The
+      // server deleted exactly A, so a completion keyed on the channel would
+      // erase B — a binding the server still holds — and the tab would read as
+      // disconnected. Keyed on the binding, B stays and nothing is stamped.
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      const before = state
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'discord', binding: 'b-gone' }))
+      expect(rows(state)).toHaveLength(4)
+      expect(state.slots).toEqual(before.slots)
+    })
+
+    it('clears the Slack fields only with the Slack thread row it matched', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      // A stale token for the thread: no row matches, the fields stay.
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'slack', binding: 'b-stale' }))
+      expect(state.slots[0].slack_linked).toBe(true)
+      expect(state.slots[0].slack_channel).toBe('C-1')
+      expect(rows(state)).toHaveLength(4)
+      // The current token: the row goes and the fields go with it, one write.
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'slack', binding: 'b-s' }))
+      expect(rows(state).map(l => l.channel)).toEqual(['discord', 'discord', 'telegram'])
+      expect(state.slots[0].slack_linked).toBe(false)
+      expect(state.slots[0].slack_channel).toBeUndefined()
+      expect(state.slots[0].slack_thread_ts).toBeUndefined()
+    })
+
+    it('is a no-op for a channel with no rows and for an unknown slot', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      const before = state
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'imessage', binding: 'b-a' }))
+      expect(rows(state)).toHaveLength(4)
+      state = reducer(state, dropSlotLinks({ key: 'chat-404', channel: 'discord', binding: 'b-a' }))
+      expect(state.slots).toEqual(before.slots)
+    })
+  })
+})
+
+describe('dashboardSlice per-slot sub-agent teardown', () => {
+  const seeded = () => {
+    const base = reducer(undefined, { type: '@@INIT' })
+    return {
+      ...base,
+      slots: [{ key: 'chat-1', messages: 0, running: false }, { key: 'chat-2', messages: 0, running: false }] as ChatSlot[],
+      subagentRunning: { 'chat-1': 1, 'chat-2': 2 },
+      subagentDetails: { 'chat-1': [], 'chat-2': [] },
+      subagentText: { 'chat-1': {}, 'chat-2': {} },
+    }
+  }
+
+  it('drains unread state for a slot that vanished from the authoritative list', () => {
+    // Persisted state lives in the ONE shared record; 'mc-unread-slots' is a
+    // write-only projection of its keys. Seed the record the way arrivals do.
+    localStorage.setItem('mc-unread-shared', JSON.stringify({ 'chat-1': '', 'chat-2': '' }))
+    const before = { ...seeded(), unreadSlots: ['chat-1', 'chat-2'] }
+
+    const next = reducer(before, sseSlots([{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]))
+
+    expect(next.unreadSlots).toEqual(['chat-1'])
+    expect(Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}'))).toEqual(['chat-1'])
+    expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toEqual(['chat-1'])
+  })
+
+  it('leaves unread state alone when the frame still lists every unread slot', () => {
+    localStorage.removeItem('mc-unread-slots')
+    const before = { ...seeded(), unreadSlots: ['chat-1', 'chat-2'] }
+
+    const next = reducer(before, sseSlots([
+      { key: 'chat-1', messages: 0, running: false },
+      { key: 'chat-2', messages: 0, running: false },
+    ] as ChatSlot[]))
+
+    expect(next.unreadSlots).toEqual(['chat-1', 'chat-2'])
+    // Not rewritten, because this reducer runs on every slots frame.
+    expect(localStorage.getItem('mc-unread-slots')).toBeNull()
+  })
+
+  /** Optimistic removal runs before the delete is confirmed, and a slot whose
+   *  delete fails comes back via the next authoritative frame. Evicting here
+   *  would leave it alive but mute, because sseSubagentText drops frames for a
+   *  slot with no subagentRunning entry. */
+  it('keeps sub-agent state on optimistic removal, before the delete is confirmed', () => {
+    const next = reducer(seeded(), removeSlotOptimistic('chat-2'))
+    expect(next.subagentRunning['chat-2']).toBe(2)
+    expect(next.subagentDetails['chat-2']).toBeDefined()
+    expect(next.subagentText['chat-2']).toBeDefined()
+  })
+
+  it('drops a slot the live slots frame no longer carries', () => {
+    const next = reducer(seeded(), sseSlots([{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]))
+    expect(next.subagentRunning['chat-2']).toBeUndefined()
+    expect(next.subagentDetails['chat-2']).toBeUndefined()
+    expect(next.subagentText['chat-2']).toBeUndefined()
+    expect(next.subagentRunning['chat-1']).toBe(1)
+  })
+
+  it('treats an empty slots frame as a no-op before the list has loaded, since a reconnect delivers one first', () => {
+    const next = reducer(seeded(), sseSlots([]))
+    expect(next.subagentRunning['chat-1']).toBe(1)
+    expect(next.subagentRunning['chat-2']).toBe(2)
+  })
+
+  it('reconciles an empty frame once loaded, which is the last slot being deleted', () => {
+    const loaded = { ...seeded(), slotsLoaded: true, unreadSlots: ['chat-1', 'chat-2'] }
+
+    const next = reducer(loaded, sseSlots([]))
+
+    expect(next.subagentRunning['chat-1']).toBeUndefined()
+    expect(next.subagentRunning['chat-2']).toBeUndefined()
+    expect(next.unreadSlots).toEqual([])
+  })
+
+  it('withholds eviction from a fetch reply once the stream is live, but still drains unread', () => {
+    // The reply can be older than the live frames it raced, so eviction (not
+    // recoverable) is withheld while the unread drain (self-healing) still runs.
+    const loaded = { ...seeded(), slotsLoaded: true, unreadSlots: ['chat-1', 'chat-2'] }
+    const payload = [{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]
+
+    const next = reducer(loaded, { type: fetchSlots.fulfilled.type, payload })
+
+    expect(next.subagentRunning['chat-2']).toBe(2)
+    expect(next.unreadSlots).toEqual(['chat-1'])
+  })
+
+  it('drops a slot the authoritative refetch no longer carries', () => {
+    const payload = [{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]
+    const next = reducer(seeded(), { type: fetchSlots.fulfilled.type, payload })
+    expect(next.subagentRunning['chat-2']).toBeUndefined()
+    expect(next.subagentDetails['chat-2']).toBeUndefined()
+    expect(next.subagentText['chat-2']).toBeUndefined()
+    expect(next.subagentRunning['chat-1']).toBe(1)
+  })
+})

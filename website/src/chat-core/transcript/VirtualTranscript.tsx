@@ -1,0 +1,315 @@
+/**
+ * VirtualTranscript — the virtualized transcript unit every chat surface can
+ * mount (chat-core P5-e): `useVirtualChat` over grouped `DisplayItem`s, the
+ * shared scroller skeleton (`TranscriptScrollShell`), ChatPage's row-identity
+ * rules (`rowKeys`), and the earlier-history paging bar, behind one component
+ * with an imperative handle.
+ *
+ * What the host still owns: the rows themselves (`renderRow` — ChatMessageList
+ * supplies the shared renderer), the data (what `items` holds, how much history
+ * is loaded, how "load earlier" widens it), and the chrome around the scroller
+ * (edge fades, the jump-to-bottom pill, footers via `belowRows`). What the host
+ * no longer owns: the scroll container, stick-to-bottom follow, and the DOM
+ * cost of a long transcript — only the viewport window (plus overscan) is
+ * mounted, so a 3000-row thread costs the same DOM as a 30-row one.
+ *
+ * The main chat page still wires `useVirtualChat` inline; this component now
+ * carries the surface that migration needs (the level-triggered older-history
+ * walk via `onTopReached`/`prefetchStartIndex`, and `getFollow`/
+ * `farmIsMeasured`/`restoreGate` on the handle), so it is the same recipe with
+ * the page's private state removed.
+ */
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { useVirtualChat } from '../../hooks/virtualizer/useVirtualChat'
+import EarlierMessagesBar from '../../pages/chat/EarlierMessagesBar'
+import TranscriptScrollShell from '../../pages/chat/TranscriptScrollShell'
+import type { DisplayItem } from '../../pages/chat/types'
+import { anchorAltIdFor, stableAnchorIdFor, uniqueRowKeys, virtualKeyFor } from './rowKeys'
+import { useStableMessageKey } from './useStableMessageKey'
+
+/** The host's earlier-history paging state, rendered as the bar above the rows. */
+export interface TranscriptEarlierPaging {
+  /** Older rows exist beyond what `items` holds; the bar renders only when true. */
+  hasMore: boolean
+  loading: boolean
+  failed: boolean
+  onLoad: () => void
+  /** Offer the failure's ask-the-agent hand-off (default on). Off for a host
+   *  whose unsaved composer draft the hand-off's navigation would discard. */
+  handOff?: boolean
+}
+
+/** Imperative surface hosts use for bottom pins and virtualized row steering. */
+export interface VirtualTranscriptHandle {
+  scrollToBottom: (behavior?: ScrollBehavior) => void
+  /** Ensure a row is mounted without scrolling; `unionOnly` preserves a far window. */
+  mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
+  /** Estimate a row's scroller-coordinate top while it is unmounted. */
+  estimateRowTop: (index: number) => number | null
+  /** Current stick-to-bottom state, read imperatively by host scroll effects
+   *  that must not force a render (the main page mirrors it into a ref to gate
+   *  its older-history walk). */
+  getFollow: () => boolean
+  /** Whether the measure farm has recorded a real height for a row, so a host
+   *  gate can wait for measurement instead of trusting an estimate. */
+  farmIsMeasured: (index: number) => boolean
+  /** True while an anchored entry is still waiting for its row to hydrate: the
+   *  host covers the transcript with a skeleton for exactly this window (see
+   *  `useVirtualChat`'s own `restoreGate`). */
+  restoreGate: boolean
+}
+
+export interface VirtualTranscriptProps {
+  /** Grouped display rows in display order (the list `ChatMessageList` computes). */
+  items: readonly DisplayItem[]
+  /** Renders one row's content; the component supplies the measured wrapper. */
+  renderRow: (item: DisplayItem, index: number) => React.ReactNode
+  /** Partitions the persisted height cache and scroll anchor. Prefix it per
+   *  host (`pane:`, `side:`, `embed:`) so a split pane and the main page never
+   *  restore each other's anchor for the same slot. */
+  sessionId: string
+  /** A turn is producing output: gates the automatic bottom pin. */
+  running?: boolean
+  /** Index of the row receiving live growth, so its height changes apply
+   *  immediately instead of through the debounced sync. */
+  streamingIndex?: number
+  /** Pin to the bottom on appends (chat contract). Default true. */
+  followOutput?: boolean
+  /** Where the list opens with no saved anchor. Default 'bottom'. */
+  initialPlacement?: 'top' | 'bottom'
+  /** Share the scroll container with a host hook that reads it (usePinnedPrompt). */
+  scrollerRef?: React.MutableRefObject<HTMLDivElement | null>
+  /** Host scroll listener, composed after the virtualizer's own. */
+  onScroll?: () => void
+  /** Fires when the rendered at-bottom state flips (drives a jump pill). */
+  onAtBottomChange?: (atBottom: boolean) => void
+  /** Host padding and geometry merged onto the scroller. */
+  scrollerStyle?: React.CSSProperties
+  /** Content above the rows (empty states, hydrate errors). The paging bar
+   *  from `earlier` renders first. */
+  aboveRows?: React.ReactNode
+  /** Content below the rows (footers, working indicators). */
+  belowRows?: React.ReactNode
+  earlier?: TranscriptEarlierPaging
+  /** Level-triggered older-history walk: fires while the reader is parked near
+   *  the top with more history to load. An alternative to the `earlier` bar for
+   *  a host (the main page) that drives an automatic walk rather than an
+   *  explicit "Load earlier" button — supply one model, not both. */
+  onTopReached?: () => void
+  /** Prefetch lead for the older-history walk (rows from the top at which to
+   *  begin fetching). Only meaningful alongside `onTopReached`. */
+  prefetchStartIndex?: number
+  /** Rows to hide by `visibility` (a bubble the pinned banner stands in for). */
+  isRowHidden?: (item: DisplayItem, index: number) => boolean
+  /** The hidden row's action strip is still uncovered — on screen below the
+   *  card standing in for the row's bubble. Written as the `folding` value of
+   *  the row's `data-pinned-standin` marker — what index.css keys the row's
+   *  re-shown action strip on. Not "the fold is in progress": the card reaches
+   *  its clamp while the strip, hanging under the bubble, is still sliding under
+   *  it, and the strip has to stay shown until it has. A sibling flag rather
+   *  than a richer `isRowHidden` answer: at most one row is hidden, so this is a
+   *  property of the pin, not of a row. */
+  hiddenRowStripUncovered?: boolean
+}
+
+/** Virtualizer tuning shared with the main chat page. */
+const ESTIMATED_ROW_HEIGHT = 100
+const OVERSCAN = 6
+/** Widest bucket: the 900px column plus its row padding, so every wider
+ *  scroller shares one height scope. */
+const WIDTH_BUCKET_MAX = 944
+const WIDTH_BUCKET_STEP = 16
+const WIDTH_SETTLE_MS = 200
+
+function bucketWidth(px: number): number {
+  return Math.min(Math.round(px / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP, WIDTH_BUCKET_MAX)
+}
+
+/** Row heights depend on the column width, so the height cache is scoped by a
+ *  width bucket: a pane dragged narrower re-measures instead of trusting
+ *  heights recorded at the old width. Debounced — a resize drag must not thrash
+ *  the height index. */
+function useScrollerWidthBucket(scrollerRef: React.RefObject<HTMLDivElement | null>): number {
+  const [bucket, setBucket] = useState(() =>
+    bucketWidth(typeof window !== 'undefined' ? window.innerWidth : WIDTH_BUCKET_MAX))
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const measure = () => setBucket(bucketWidth(el.clientWidth))
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const observer = new ResizeObserver(() => {
+      clearTimeout(timer)
+      timer = setTimeout(measure, WIDTH_SETTLE_MS)
+    })
+    observer.observe(el)
+    return () => {
+      observer.disconnect()
+      clearTimeout(timer)
+    }
+  }, [scrollerRef])
+  return bucket
+}
+
+const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptProps>(
+  function VirtualTranscript({
+    items,
+    renderRow,
+    sessionId,
+    running,
+    streamingIndex,
+    followOutput,
+    initialPlacement,
+    scrollerRef: externalScrollerRef,
+    onScroll,
+    onAtBottomChange,
+    scrollerStyle,
+    aboveRows,
+    belowRows,
+    earlier,
+    onTopReached,
+    prefetchStartIndex,
+    isRowHidden,
+    hiddenRowStripUncovered,
+  }, ref) {
+    const ownScrollerRef = useRef<HTMLDivElement | null>(null)
+    const scrollerRef = externalScrollerRef ?? ownScrollerRef
+    const msgKey = useStableMessageKey()
+    const widthBucket = useScrollerWidthBucket(scrollerRef)
+
+    // Keys are computed list-wide (collision tie-break), then served per row.
+    const rowKeys = useMemo(() => uniqueRowKeys(items, msgKey), [items, msgKey])
+    const getKey = useCallback(
+      (it: DisplayItem, i: number) => rowKeys[i] ?? virtualKeyFor(it, i, msgKey),
+      [rowKeys, msgKey],
+    )
+    const getStableId = useCallback(
+      (it: DisplayItem, i: number) => stableAnchorIdFor(it, i, msgKey),
+      [msgKey],
+    )
+    const getAltId = useCallback(
+      (it: DisplayItem, i: number) => anchorAltIdFor(it, i, msgKey),
+      [msgKey],
+    )
+
+    const virt = useVirtualChat<DisplayItem>({
+      items: items as DisplayItem[],
+      getKey,
+      getStableId,
+      getAltId,
+      sessionId,
+      heightScopeKey: `${sessionId}@w${widthBucket}`,
+      estimatedHeight: ESTIMATED_ROW_HEIGHT,
+      overscan: OVERSCAN,
+      eagerFirstMeasure: true,
+      externalScrollerRef: scrollerRef,
+      streamingIndex,
+      runActive: running,
+      followOutput,
+      initialPlacement,
+      onTopReached,
+      prefetchStartIndex,
+    })
+
+    // Two older-history models must not run on one mount: the `earlier` bar's
+    // onLoad and the level-triggered onTopReached walk would both fetch the
+    // same older slice, racing two prepends into `items`. The prop docs say
+    // "supply one model, not both"; warn a host that wired both, at author time.
+    if (import.meta.env.DEV && onTopReached && earlier?.hasMore) {
+      // eslint-disable-next-line no-console -- intentional dev-only author-time diagnostic
+      console.warn(
+        'VirtualTranscript: both older-history models are wired (onTopReached AND earlier.hasMore). '
+        + 'Supply one, not both — they will double-fetch older history.',
+      )
+    }
+
+    useImperativeHandle(ref, () => ({
+      scrollToBottom: virt.scrollToBottom,
+      mountIndex: virt.mountIndex,
+      estimateRowTop: virt.estimateRowTop,
+      getFollow: virt.getFollow,
+      farmIsMeasured: virt.farmIsMeasured,
+      restoreGate: virt.restoreGate,
+    }), [
+      virt.scrollToBottom,
+      virt.mountIndex,
+      virt.estimateRowTop,
+      virt.getFollow,
+      virt.farmIsMeasured,
+      virt.restoreGate,
+    ])
+
+    const { isAtBottom } = virt
+    useEffect(() => { onAtBottomChange?.(isAtBottom) }, [isAtBottom, onAtBottomChange])
+
+    // The virtualizer listens on the element it owns; the shell's onScroll is
+    // the host's slot (pinned-prompt tracking), so nothing here double-handles.
+    const handleScroll = useCallback(() => { onScroll?.() }, [onScroll])
+
+    const releaseFocusToScroller = useCallback(() => { scrollerRef.current?.focus() }, [scrollerRef])
+
+    return (
+      <TranscriptScrollShell
+        scrollerRef={scrollerRef}
+        onScroll={handleScroll}
+        virt={virt}
+        loadingOlder={earlier?.loading ?? false}
+        // The bar carries its own busy state; the header-pinned overlay
+        // belongs to the page's overlay header, which these hosts do not have.
+        spinnerNearTop={false}
+        headerSpacer={false}
+        scrollerStyle={scrollerStyle}
+        aboveRows={<>
+          {earlier?.hasMore && (
+            <EarlierMessagesBar
+              loading={earlier.loading}
+              failed={earlier.failed}
+              onLoad={earlier.onLoad}
+              onFocusRelease={releaseFocusToScroller}
+              handOff={earlier.handOff}
+            />
+          )}
+          {aboveRows}
+        </>}
+        belowRows={belowRows}
+      >
+        {virt.virtualItems.map((vi) => {
+          // Unmounted rows are the spacers' job; a placeholder here would be
+          // a second copy of that height.
+          if (!vi.mounted) return null
+          const hidden = isRowHidden?.(vi.data, vi.index) === true
+          // A plain block wrapper: it takes the row's own box (padding
+          // included), so its rect IS the row's rect for the geometry that
+          // reads `data-display-index`, and it adds no class of its own so the
+          // theming contract on the inner row is untouched. `data-pinned-standin`
+          // marks the hidden row for index.css, which re-shows the message's
+          // action strip beneath the card standing in for its bubble — only
+          // while the value is `folding`, i.e. while that strip is still uncovered.
+          return (
+            <div
+              key={vi.key}
+              ref={virt.measureRef(vi.index)}
+              data-display-index={vi.index}
+              data-pinned-standin={hidden ? (hiddenRowStripUncovered ? 'folding' : '') : undefined}
+              style={hidden ? { visibility: 'hidden' } : undefined}
+            >
+              {renderRow(vi.data, vi.index)}
+            </div>
+          )
+        })}
+      </TranscriptScrollShell>
+    )
+  },
+)
+
+export default VirtualTranscript

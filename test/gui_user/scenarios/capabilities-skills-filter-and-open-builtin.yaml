@@ -1,0 +1,57 @@
+# Smoke: moving between two tabs of the Agent Capabilities panel and reading a
+# skill's files. The panel groups its tabs in a left rail (Agent: Agents,
+# Skills, Connections; Knowledge & instructions; Automation) and remembers the
+# last tab per browser session, so the flow names each tab it clicks instead of
+# assuming which one is showing. The backlog record that this scenario ships
+# for named an "Agent Templates" tab; templates now live inside an agent's
+# editor (its "Agent Template" pane), not as a panel tab, so the tab walk here
+# is Agents -> Skills.
+#
+# The Skills list is deterministic on the fake target: the gateway copies its
+# packaged built-in skills into the seeded home's skills directory at start
+# (a background sync that finishes long before the tester arrives), and the
+# `rich` seed adds none of its own. `widgets` is one of those built-ins -- a
+# single SKILL.md whose first heading reads "Inline widgets" -- so filtering
+# the list to it and opening it reads the same on every run. Nothing is edited:
+# the detail pane is read-only until "Edit" is pressed, and it is not pressed.
+name: capabilities-skills-filter-and-open-builtin
+tier: smoke
+feature: capabilities
+user_story: >-
+  As a user, I want to manage crews, agent templates, and skills in one panel,
+  so that agent configuration is centralized.
+docs_url: docs/feature-map/README.md
+summary: Switch from the Agents tab to Skills, filter the list to the widgets skill and open its SKILL.md
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /capabilities
+steps:
+  - >-
+    You are on the Agent Capabilities page, which has a rail of tabs on the left grouped under
+    "Agent", "Knowledge & instructions" and "Automation". Under "Agent", click the tab labelled
+    "Agents" (people icon). The pane shows the agent roster (one card, "nova-sky") with an
+    "Add crew member" button.
+  - >-
+    In the same rail, click the tab labelled "Skills" (book icon, directly under "Agents"). The
+    pane header now reads "Skills" followed by a count in parentheses, and below it a card
+    holds a filter box whose placeholder reads "Filter skills…", a list of skills on the left
+    and a pane on the right that reads "Select a skill to view its files".
+  - >-
+    Click into the "Filter skills…" box and type exactly "widgets". The list on the left
+    narrows to the row whose name is "widgets" (its second line, in monospace, also reads
+    "widgets").
+  - >-
+    Click that "widgets" row. The right-hand pane fills with the skill -- a header naming
+    "widgets" with "Edit" and "Delete" buttons at its right, and below it a small file tree and
+    the contents of its SKILL.md file.
+  - Wait a second for the file contents to finish loading.
+expectations:
+  - The "Skills" tab is highlighted in the panel's left rail and the pane header starts with "Skills (".
+  - The skill list on the left shows the "widgets" row highlighted as selected, and the filter box still contains "widgets".
+  - >-
+    The right-hand pane names "widgets" in its header with "Edit" and "Delete" buttons, and
+    shows file content that contains the heading "Inline widgets" and the word "mcwidget".
+  - No red error notice is visible on the pane.
+max_steps: 12
+max_seconds: 300

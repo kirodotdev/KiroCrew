@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Choose your companion</title>
+    <style>
+      /*
+       * The Avatars window is a normal OPAQUE window holding real UI, so unlike
+       * the pet overlay it keeps a solid background.
+       *
+       * Brought to parity with the original gallery entry (src/renderer/
+       * gallery.html): the root FILLS the window with no padding and no
+       * centring, and the background comes from --bg rather than a hardcoded
+       * hex. The previous 28px padded, centred root was written for the
+       * first-run avatar PICKER card; now that this entry renders the
+       * full-window gallery (sticky header + scrolling body), that padding
+       * showed up as a thick dark frame around the whole panel.
+       *
+       * The toastIn / toastOut keyframes are the original's too — the gallery's
+       * toast references them, so without them it appears without animation.
+       */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg, #0f1117);
+        color: var(--text, #e6e8ee);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      #root {
+        width: 100%;
+        height: 100%;
+      }
+      @keyframes toastIn {
+        from {
+          opacity: 0;
+          transform: translateY(-8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @keyframes toastOut {
+        from {
+          opacity: 1;
+        }
+        to {
+          opacity: 0;
+        }
+      }
+      ::-webkit-scrollbar {
+        width: 5px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--scrollbar, rgba(255, 255, 255, 0.06));
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--scrollbar-hover, rgba(255, 255, 255, 0.12));
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/apps/mochi/avatar/main.tsx"></script>
+  </body>
+</html>

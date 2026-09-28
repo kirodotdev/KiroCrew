@@ -1,0 +1,221 @@
+name: Crew Image Build
+
+# PR gate for the AWS Control crew container images: it RUNS `docker build` for
+# every image recipe in the crew runtime tree, through the same producer scripts
+# a human would run.
+#
+# WHAT WAS MISSING. `backend-test-crew-container` imports the image's Python
+# modules and runs them on the HOST. It never builds the image, so the recipes
+# that merged in #9223 named two producer scripts that did not exist in the tree
+# at all and every check stayed green -- the image could not be built from a
+# clean checkout, and nothing said so. #10711 wrote the scripts; this lane is
+# what makes their absence, or a recipe they can no longer build, fail here
+# instead of on a maintainer's laptop.
+#
+# WHY IT DISCOVERS THE RECIPES. Naming `Dockerfile` and `Dockerfile.crew` here
+# would reproduce the defect one level up: a third recipe added later would be
+# as uncovered as these two were. scripts/crew_image_build_plan.py asks the tree
+# which recipes exist and derives each one's role and producer from the recipe's
+# own text, and REFUSES anything it cannot account for. So a new recipe is
+# either built by this lane or reds it.
+#
+# WHY A LOOPBACK REGISTRY. The crew layer's base is referenced BY DIGEST, and a
+# locally-built image has no repository digest -- only a push produces one. A
+# throwaway registry on 127.0.0.1 produces a real one and needs no credentials,
+# which is what keeps this lane runnable on a fork PR with no secrets at all.
+#
+# WHY IT IS NOT IN `PR Readiness`. pr-readiness.yml resolves lanes by workflow
+# FILE, and a lane that reads "(not started)" freezes its verdict at pending
+# (see the stacked-PR carve-out at pr-readiness.yml:548). This lane is
+# paths-filtered, so on most PRs it does not start. It blocks the way
+# docker-smoke.yml does -- a red X on the PR plus code-owner review -- and
+# docker-smoke.yml is absent from that allowlist for the same reason.
+
+on:
+  pull_request:
+    paths:
+      # The recipes themselves, their .dockerignore, container/requirements.txt,
+      # the container/ tree the base image COPYs, and the supervisor module the
+      # layer producer imports to recompute a bundle digest -- all under here.
+      - "src/kiro_crew/apps/builtins/aws_control/crew/runtime/**"
+      # The producers this lane invokes, and the file that decides what to
+      # invoke them with. A glob rather than a list of names on purpose: which
+      # scripts get run is DERIVED from what the recipes cite, so a name written
+      # here would let a renamed -- or simply differently-named -- producer stop
+      # firing the lane that runs it. `build*image*.sh` covers every producer the
+      # recipes cite and stops short of `scripts/**`, so an unrelated script does
+      # not drag a 1.5 GB build onto a pull request that cannot affect it.
+      # test_crew_image_build_plan.py holds every cited producer to being matched
+      # by one of these patterns, and an unrelated script to NOT being matched.
+      - "scripts/build*image*.sh"
+      - "scripts/crew_image_build_plan.py"
+      # The wheel the base image installs is built from a checkout by its
+      # producer, so the packaging surface can break the build: what gets built
+      # (pyproject.toml, setup.py), what ships in it (MANIFEST.in), and the
+      # dependency set pip resolves against container/requirements.txt
+      # (pyproject.toml again). setup.cfg carries the packaging config beside
+      # them.
+      - "pyproject.toml"
+      - "setup.py"
+      - "setup.cfg"
+      - "MANIFEST.in"
+      - ".github/workflows/crew-image-build.yml"
+  # The paths above are NOT provably complete, and this is the honest backstop
+  # rather than a claim that they are. The build reaches outside the repository
+  # -- a Debian package set, PyPI, and the pinned kiro-cli tarball -- and the
+  # image's own `import kiro_crew.cli` can be broken by any module in that
+  # import graph. That last one is already exercised by every backend lane on
+  # every PR, so widening the trigger to `src/kiro_crew/**` would run a
+  # ~3-minute build on nearly every pull request to re-check something already
+  # covered. A weekly run catches the rest without that cost.
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crew-image-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build every crew image recipe
+    runs-on: ubuntu-latest
+    # A fork that enables Actions should not spend its own minutes on a weekly
+    # lane it never asked for; a fork's pull_request runs are unaffected.
+    if: github.event_name != 'schedule' || github.repository == 'kirodotdev/KiroCrew'
+    timeout-minutes: 30
+    env:
+      # Loopback only. The registry exists to mint a repository digest for a
+      # base image that has never been published, so nothing outside this runner
+      # ever needs to reach it -- and a push that could be reached from outside
+      # would need credentials this lane does not have. Not left to this comment:
+      # test_crew_image_build_plan.py resolves every image reference this file
+      # pushes to or tags into and holds each one to a loopback address, so a
+      # later edit here, or a third write site, is caught rather than trusted.
+      REGISTRY: 127.0.0.1:5000
+      REGISTRY_CONTAINER: crew-image-build-registry
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # The base image's producer builds the wheel with `python -m build`. The
+      # dashboard SPA is deliberately not built: this image is headless and its
+      # producer skips the frontend, so no npm toolchain is needed here.
+      - name: Install the wheel build frontend
+        run: pip install --upgrade build
+
+      # Fails closed. A recipe with no producer, an absent or non-executable
+      # producer, a FROM that interpolates an out-of-scope ARG, and a layer whose
+      # base cannot be identified all stop the lane here with the property that
+      # was violated -- which is the check this subtree did not have.
+      - name: Derive the build plan from the tree
+        run: |
+          set -euo pipefail
+          python3 scripts/crew_image_build_plan.py
+          python3 scripts/crew_image_build_plan.py --tsv > plan.tsv
+          echo "recipes discovered: $(wc -l < plan.tsv)"
+
+      - name: Start the loopback registry
+        run: |
+          set -euo pipefail
+          # Tag AND digest, like the crew base image's own FROM: the digest is
+          # what pins it, the tag is what tells a reader which image it is. This
+          # names the multi-arch INDEX, so the runner still selects its own
+          # architecture. To bump: `docker buildx imagetools inspect registry:2`.
+          docker run -d --name "$REGISTRY_CONTAINER" -p "${REGISTRY}:5000" \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for i in $(seq 1 30); do
+            if curl -fsS "http://${REGISTRY}/v2/" > /dev/null 2>&1; then
+              echo "registry ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the loopback registry never became ready"
+          docker logs "$REGISTRY_CONTAINER"
+          exit 1
+
+      - name: Write the probe bundle a layer recipe is built from
+        run: |
+          set -euo pipefail
+          BUNDLE_DIGEST=$(python3 scripts/crew_image_build_plan.py --make-bundle "${RUNNER_TEMP}/bundle")
+          echo "probe bundle digest: ${BUNDLE_DIGEST}"
+
+      # One loop over the discovered plan, bases first. A base is built, pushed
+      # to the loopback registry, and its resolved repository digest recorded; a
+      # layer is built on the most recent such digest. An unhandled role stops
+      # the lane rather than being skipped.
+      - name: Build every recipe
+        run: |
+          set -euo pipefail
+          BASE_DIGEST=""
+          BUILT=0
+          while IFS=$'\t' read -r role path producer base_arg; do
+            echo "::group::${role} ${path} via ${producer}"
+            case "$role" in
+              base)
+                TAG="${REGISTRY}/kirocrew-crew-base:ci"
+                # The producer builds the wheel, stages it, builds the image and
+                # cross-checks that the image does not lie about its own
+                # architecture. All of that is coverage this lane gets for free
+                # by invoking the documented command instead of docker build.
+                "./${producer}" --tag "$TAG"
+                docker push "$TAG"
+                # The digest only exists after the push. Read it back from the
+                # daemon rather than parsing the push output.
+                BASE_DIGEST=$(docker image inspect "$TAG" --format '{{index .RepoDigests 0}}')
+                case "$BASE_DIGEST" in
+                  *@sha256:*) ;;
+                  *) echo "::error::no repository digest for ${TAG} after push"; exit 1 ;;
+                esac
+                echo "base digest: ${BASE_DIGEST}"
+                ;;
+              layer)
+                if [ -z "$BASE_DIGEST" ]; then
+                  echo "::error::${path} needs a digest-pinned base (ARG ${base_arg}) and no base was built first"
+                  exit 1
+                fi
+                "./${producer}" --base "$BASE_DIGEST" --bundle "${RUNNER_TEMP}/bundle"
+                ;;
+              *)
+                echo "::error::${path} has role '${role}', which this lane cannot build. Teach scripts/crew_image_build_plan.py and this workflow together."
+                exit 1
+                ;;
+            esac
+            BUILT=$((BUILT + 1))
+            echo "::endgroup::"
+          done < plan.tsv
+          echo "BUILT=${BUILT}" >> "$GITHUB_ENV"
+
+      # Guard the guard. The loop above reads a file, and a truncated or empty
+      # one would make every assertion above vacuous while the lane reported
+      # success -- the failure shape this whole change exists to retire.
+      - name: Assert every discovered recipe was built
+        run: |
+          set -euo pipefail
+          PLANNED=$(wc -l < plan.tsv)
+          if [ "$PLANNED" -lt 1 ]; then
+            echo "::error::the plan was empty, so this lane built nothing and proved nothing"
+            exit 1
+          fi
+          if [ "$BUILT" != "$PLANNED" ]; then
+            echo "::error::planned ${PLANNED} recipes but built ${BUILT}"
+            exit 1
+          fi
+          echo "built all ${BUILT} discovered recipe(s)"
+
+      - name: Images and disk (post-mortem aid)
+        if: always()
+        run: |
+          docker images || true
+          df -h / || true
+          docker logs "$REGISTRY_CONTAINER" 2>&1 | tail -20 || true

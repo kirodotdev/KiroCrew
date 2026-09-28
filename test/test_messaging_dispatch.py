@@ -1,0 +1,1978 @@
+"""Finalization contract of the shared channel turn pipeline.
+
+``drive_turn`` owns the semaphore lifetime for every adopted channel, so a bug
+in its ``finally`` is a bug in all of them at once. These tests pin the part
+that is invisible on the happy path: what happens to ``release()`` when
+finalization itself fails.
+"""
+
+from __future__ import annotations
+
+import ast
+import asyncio
+import re
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+
+from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_COMPACTION_FAILED
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+from kiro_crew.messaging import dispatch as D
+from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
+from kiro_crew.messaging.renderer import COMPACTION, THINKING, SilentRenderer
+from kiro_crew.session_allocation import SessionClosingError
+
+
+class _Sessions:
+    """Minimal stand-in that counts the calls this contract is about."""
+
+    def __init__(self, raise_on_acquire: bool = False, closing: bool = False):
+        self.released = 0
+        self.successes = 0
+        self.failures = 0
+        self.resets = 0
+        self._raise_on_acquire = raise_on_acquire
+        #: Mirrors SessionManager._closing. When set, begin_turn refuses the
+        #: dispatch exactly as the real gate does once close_all has run.
+        self.closing = closing
+        self.begin_turns = 0
+        #: ``(key, agent)`` of every acquire, and the agent an existing session is
+        #: bound to (``None`` = the session is new and takes the agent asked for).
+        self.acquired: list[tuple[str, Any]] = []
+        self.acquire_extra: list[dict[str, Any]] = []
+        self.bound_agent: str | None = None
+        #: The ACP backend the returned provider reports, read the way the real
+        #: pipeline reads it (``provider.client.backend``).
+        self.backend: str | None = ACP_BACKEND_KIRO
+
+    async def get_or_create(self, key, agent=None, channel_id=None, **extra):
+        if self._raise_on_acquire:
+            raise RuntimeError("cold start failed")
+        self.acquired.append((key, agent))
+        self.acquire_extra.append(dict(extra))
+        if self.bound_agent is None:
+            self.bound_agent = agent
+        return SimpleNamespace(client=SimpleNamespace(backend=self.backend)), False, False
+
+    def get_agent(self, key):
+        return self.bound_agent or ""
+
+    def begin_turn(self, key):
+        """The real manager's synchronous pre-dispatch closing gate."""
+        self.begin_turns += 1
+        if self.closing:
+            raise SessionClosingError("SessionManager is closing")
+
+    async def set_channel(self, key, channel_id):
+        pass
+
+    def record_success(self, key):
+        self.successes += 1
+
+    async def reset(self, key):
+        self.resets += 1
+
+    async def record_failure(self, key):
+        self.failures += 1
+
+    def release(self, key):
+        self.released += 1
+
+    def get_provider(self, key):
+        return object()
+
+
+class _Renderer:
+    """Renderer whose ``close`` can fail the way a real one can mid-flush."""
+
+    def __init__(self, close_raises: bool = False):
+        self.close_raises = close_raises
+        self.closed = 0
+        self.notes: list[str] = []
+
+    async def on_turn_start(self):
+        pass
+
+    async def on_text_chunk(self, text):
+        self.notes.append(text)
+
+    async def on_done(self):
+        pass
+
+    async def close(self):
+        self.closed += 1
+        if self.close_raises:
+            raise RuntimeError("renderer finalization failed")
+
+
+class _CtxBuilder:
+    def build_message(self, text, is_new, session_key, **kw):
+        return text, None
+
+
+class _Driver:
+    last_stop_reason = ""
+    completion_observed = True
+
+    def __init__(self, *a, **kw):
+        # Mirrors the real TurnDriver: the shutdown gate is supplied at
+        # construction and invoked by run(), immediately before the provider
+        # stream would open. A stand-in that swallowed it would let these tests
+        # pass while the gate was wired nowhere.
+        self._closing_gate = kw.get("closing_gate")
+
+    async def run(self, message):
+        if self._closing_gate is not None:
+            self._closing_gate()
+        return "the reply"
+
+
+def _turn(renderer: Any) -> ChannelTurn:
+    return ChannelTurn(
+        channel_type="weixin",
+        session_key="weixin:agentA:direct:userA",
+        conversation_id="weixin:userA",
+        agent="agentA",
+        user_text="hi",
+        renderer=renderer,
+        approval_mode="auto",
+    )
+
+
+class TestDenyAllToolsRunsToolLess:
+    """``deny_all_tools`` has to hold for a tool no permission request ever
+    announces: on the kiro backend a tool named in the agent spec's
+    ``allowedTools`` runs without asking, so the driver's refusal never sees it.
+    The pipeline therefore drives such a turn on the tool-less agent, whose spec
+    mounts no tools at all, and refuses the turn outright when its session is
+    already bound to an agent that has them.
+    """
+
+    def _untrusted_turn(self, renderer: Any) -> ChannelTurn:
+        return ChannelTurn(
+            channel_type="weixin",
+            session_key=f"weixin:{D.TOOLLESS_TURN_AGENT}:direct:peerB",
+            conversation_id="weixin:peerB",
+            agent="agentA",
+            user_text="hi",
+            renderer=renderer,
+            approval_mode="interactive",
+            deny_all_tools=True,
+        )
+
+    def test_the_session_is_acquired_on_the_tool_less_agent(self, monkeypatch, tmp_path) -> None:
+        _patch_pipeline(monkeypatch)
+        monkeypatch.setenv("KIROCREW_WORKSPACE", str(tmp_path / "ws"))
+        sessions = _Sessions()
+        renderer = _Renderer()
+        asyncio.run(
+            drive_turn(self._untrusted_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder())
+        )
+        assert sessions.acquired == [
+            (f"weixin:{D.TOOLLESS_TURN_AGENT}:direct:peerB", D.TOOLLESS_TURN_AGENT)
+        ]
+        # The name must resolve to the TEMPLATE: an enrolled crew that happens to
+        # share it would otherwise be made canonical and start its tooled spec.
+        assert sessions.acquire_extra[0].get("crew_agent") == ""
+        # And the process must be a cold start in the session's own directory,
+        # never a warm-pool process spawned in the operator's project cwd, where
+        # a project-local spec under the same name would shadow the generated one.
+        cwd = sessions.acquire_extra[0].get("cwd")
+        assert cwd and Path(cwd).is_dir() and Path(cwd).is_relative_to(tmp_path.resolve())
+        assert "weixin_" in Path(cwd).name and D.TOOLLESS_TURN_AGENT in Path(cwd).name
+        assert sessions.successes == 1 and sessions.failures == 0
+
+    def test_a_trusted_turn_keeps_its_own_agent(self, monkeypatch) -> None:
+        _patch_pipeline(monkeypatch)
+        sessions = _Sessions()
+        asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+        assert sessions.acquired == [("weixin:agentA:direct:userA", "agentA")]
+        assert "crew_agent" not in sessions.acquire_extra[0]
+        assert "cwd" not in sessions.acquire_extra[0]
+
+    def test_a_session_bound_to_a_tooled_agent_refuses_the_turn(self, monkeypatch) -> None:
+        """``get_or_create`` keeps an existing session's agent, so a key shared
+        with the operator's session would run the sender on the operator's tools.
+        The pipeline reads the binding back and never opens the prompt."""
+        _patch_pipeline(monkeypatch)
+        ran: list[str] = []
+
+        class _SpyDriver(_Driver):
+            async def run(self, message):
+                ran.append(message)
+                return await super().run(message)
+
+        monkeypatch.setattr(D, "TurnDriver", _SpyDriver)
+        sessions = _Sessions()
+        sessions.bound_agent = "agentA"  # the operator's session already exists
+        renderer = _Renderer()
+        asyncio.run(
+            drive_turn(self._untrusted_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder())
+        )
+        assert ran == [], "the untrusted turn ran on a tooled session"
+        # A configuration refusal is not a provider failure: the breaker is untouched.
+        assert sessions.failures == 0 and sessions.successes == 0
+        assert sessions.released == 1 and renderer.closed == 1
+        assert renderer.notes == [D.TOOLLESS_TURN_REFUSAL_NOTE]
+
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, None])
+    def test_a_backend_that_reads_no_agent_spec_refuses_the_turn(self, monkeypatch, backend):
+        """``tools: []`` is a SPEC. A harness that reads no agent spec keeps its
+        native tools, and a project-preapproved one raises no permission request
+        for the driver to refuse, so the turn never opens there. An unreadable
+        backend (``None``, never ``""``: the empty string is the kiro id) fails
+        closed the same way."""
+        _patch_pipeline(monkeypatch)
+        ran: list[str] = []
+
+        class _SpyDriver(_Driver):
+            async def run(self, message):
+                ran.append(message)
+                return await super().run(message)
+
+        monkeypatch.setattr(D, "TurnDriver", _SpyDriver)
+        sessions = _Sessions()
+        sessions.backend = backend
+        renderer = _Renderer()
+        asyncio.run(
+            drive_turn(self._untrusted_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder())
+        )
+        assert ran == [], "the untrusted turn ran on a backend that keeps native tools"
+        # A configuration refusal is not a provider failure: the breaker is untouched.
+        assert sessions.failures == 0 and sessions.successes == 0
+        assert sessions.released == 1 and renderer.closed == 1
+        assert renderer.notes == [D.TOOLLESS_TURN_REFUSAL_NOTE]
+
+    def test_an_unprompted_refused_turn_posts_nothing(self, monkeypatch) -> None:
+        """A rules-mode group message nobody addressed to the agent is refused
+        SILENTLY: the note would be an unsolicited post into the room, and it
+        would start the unprompted cooldown for a turn that never ran."""
+        _patch_pipeline(monkeypatch)
+        sessions = _Sessions()
+        sessions.backend = ACP_BACKEND_CLAUDE
+        renderer = _Renderer()
+        turn = self._untrusted_turn(renderer)
+        turn.unprompted = True
+        asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+        assert renderer.notes == [] and renderer.closed == 1
+        assert sessions.successes == 0 and sessions.failures == 0
+
+    def test_a_trusted_turn_is_not_backend_gated(self, monkeypatch) -> None:
+        _patch_pipeline(monkeypatch)
+        sessions = _Sessions()
+        sessions.backend = ACP_BACKEND_CLAUDE
+        asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+        assert sessions.successes == 1 and sessions.failures == 0
+
+
+def _patch_pipeline(monkeypatch, *, permitted: bool = True):
+    """Stub everything drive_turn touches except the finalization under test."""
+
+    async def _permitted(_channel_type):
+        return permitted
+
+    async def _publish(_sessions, _key):
+        pass
+
+    async def _embed(fn, *args, **kw):
+        return fn(*args, **kw)
+
+    monkeypatch.setattr(D, "inbound_permitted", _permitted)
+    monkeypatch.setattr(D, "publish_turn_identity", _publish)
+    monkeypatch.setattr(D, "run_in_embed_pool", _embed)
+    monkeypatch.setattr(D, "TurnDriver", _Driver)
+
+
+def test_release_still_runs_when_renderer_close_fails(monkeypatch) -> None:
+    """A failed renderer.close must NOT strand the session semaphore.
+
+    The semaphore is keyed by SESSION, so leaking it does not merely lose this
+    turn -- every later message for that conversation blocks forever and any
+    queued turn never drains, until the gateway restarts.
+    """
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+    renderer = _Renderer(close_raises=True)
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert renderer.closed == 1, "close should still be attempted"
+    assert sessions.released == 1, (
+        "renderer.close raised and the session was never released -- the "
+        "conversation is now permanently busy"
+    )
+
+
+def test_a_failing_close_does_not_escape_drive_turn(monkeypatch) -> None:
+    """The failure is logged and swallowed, not raised at the caller.
+
+    Adopters call drive_turn from a per-message task; letting finalization
+    raise would surface as an unhandled task exception for a turn that already
+    delivered its reply.
+    """
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+
+    # asyncio.run re-raises anything drive_turn lets escape.
+    asyncio.run(
+        drive_turn(
+            _turn(_Renderer(close_raises=True)),
+            sessions=sessions,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+
+    assert sessions.successes == 1, "the turn itself succeeded"
+
+
+def test_release_is_not_called_when_the_semaphore_was_never_acquired(monkeypatch) -> None:
+    """The _acquired gate must survive the new guard.
+
+    A cold-start failure raises before get_or_create returns, so nothing was
+    ever held -- releasing here would hand back a permit that does not exist.
+    """
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions(raise_on_acquire=True)
+    renderer = _Renderer(close_raises=True)
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert renderer.closed == 1, "finalization still runs on the failure path"
+    assert sessions.released == 0, "nothing was acquired, so nothing may be released"
+    assert sessions.failures == 0, "record_failure is also gated on _acquired"
+
+
+def test_the_happy_path_releases_exactly_once(monkeypatch) -> None:
+    """Guard rail: the new try/except must not double-release."""
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+    renderer = _Renderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert renderer.closed == 1
+    assert sessions.released == 1
+    assert sessions.successes == 1
+    # Pins that the gate is actually consulted on the normal path, so it cannot
+    # be dropped or renamed into a no-op without a test noticing.
+    assert sessions.begin_turns == 1
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/alice/memory.db",
+        "/Users/alice/memory.db",
+        r"C:\Users\alice\memory.db",
+    ],
+)
+def test_private_memory_refusal_hides_paths_and_credentials_before_channel_output(
+    monkeypatch, path
+):
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    _patch_pipeline(monkeypatch)
+    secret = "ghp_" + "x" * 36
+    refuse = AsyncMock(
+        side_effect=UnknownMemoryStore(
+            f"Member memory unavailable: cannot read {path}; token={secret}. "
+            "Repair this member's memory. Global Memory V1 was not used."
+        )
+    )
+    monkeypatch.setattr(D, "session_store_for_turn", refuse)
+    sessions = _Sessions()
+    sessions.get_or_create = AsyncMock()
+    renderer = _Renderer()
+    renderer.on_text_chunk = AsyncMock()
+    renderer.on_done = AsyncMock()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    renderer.on_text_chunk.assert_awaited_once()
+    visible = renderer.on_text_chunk.call_args.args[0]
+    assert "Repair this member's memory" in visible
+    assert "Global Memory V1 was not used" in visible
+    assert path not in visible and "alice" not in visible and secret not in visible
+    assert len(visible) <= 1000
+    renderer.on_done.assert_awaited_once()
+    assert renderer.closed == 1
+    sessions.get_or_create.assert_not_awaited()
+    assert sessions.released == 0
+
+
+def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
+    """Ratchet: the shutdown gate is wired at every site AND placed atomically.
+
+    Two halves, because either alone is satisfiable while the race stays open.
+
+    A gate at the CALL SITE is not enough, which is what the first version of
+    this change got wrong: ``TurnDriver.run`` awaits ``renderer.on_turn_start()``
+    -- a platform round-trip -- before opening the provider stream, so a restart
+    landing there still let the prompt register behind ``close_all``'s drain
+    snapshot. The only atomic placement is inside ``run()``, immediately before
+    the stream, so the gate lives there and each dispatcher passes it in.
+
+    So: every ``TurnDriver(...)`` construction must pass ``closing_gate``, and in
+    the driver no await may occur between the gate and provider stream. A
+    structured monitor may synchronously mark its claim accepted in that span;
+    because it cannot yield, shutdown still cannot take a drain snapshot there.
+    """
+    src = Path(D.__file__).resolve().parent.parent
+
+    # Half 1 -- every construction wires a gate.
+    unwired: list[str] = []
+    sites = 0
+    for path in sorted(src.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "TurnDriver(" not in text:
+            continue
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "TurnDriver"
+            ):
+                continue
+            sites += 1
+            if not any(keyword.arg == "closing_gate" for keyword in node.keywords):
+                unwired.append(f"{path.relative_to(src)}:{node.lineno}")
+    assert not unwired, "TurnDriver built without a shutdown gate:\n" + "\n".join(unwired)
+    assert sites >= 4, f"expected the known TurnDriver sites, found {sites}"
+
+    # Half 2 -- the gate is atomic with the stream the driver opens.
+    driver_lines = (src / "messaging" / "driver.py").read_text(encoding="utf-8").splitlines()
+    opens = [i for i, ln in enumerate(driver_lines) if "self.provider.stream(" in ln]
+    assert opens, "could not find the provider stream in the driver"
+    for idx in opens:
+        window = driver_lines[max(0, idx - 12) : idx]
+        gates = [i for i, line in enumerate(window) if "self.closing_gate()" in line]
+        assert gates, f"messaging/driver.py:{idx + 1} opens a turn without the gate"
+        after_gate = window[gates[-1] + 1 :]
+        assert not any(
+            "await " in line for line in after_gate
+        ), f"messaging/driver.py:{idx + 1} yields between the gate and stream"
+
+
+def test_a_shutdown_between_the_claim_and_the_dispatch_never_opens_the_turn(
+    monkeypatch,
+) -> None:
+    """The lease-dispatch race gate.
+
+    ``get_or_create`` guards the CLAIM, but the turn only opens at
+    ``driver.run``, and everything between them awaits: ``set_channel``, the
+    origin/mirror bind's thread hop, ``publish_turn_identity``, and the whole
+    context build. A restart landing in that span can leave this pipeline
+    opening a turn that ``close_all`` had already taken its drain snapshot
+    without -- killed mid-flight holding its native lock, which reaches the user
+    as an empty response. The dashboard runner and the Slack handler each carry
+    this gate already; every channel on the shared pipeline had no equivalent.
+    """
+    ran: list[str] = []
+
+    class _RecordingDriver(_Driver):
+        async def run(self, message):
+            # Gate first, then record -- the real driver runs the gate
+            # immediately BEFORE the provider stream opens, so a refused turn
+            # must never reach the recording below.
+            if self._closing_gate is not None:
+                self._closing_gate()
+            ran.append(message)
+            return "the reply"
+
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _RecordingDriver)
+    sessions = _Sessions()
+    renderer = _Renderer()
+    # The fake's get_or_create deliberately does NOT consult ``closing``, so the
+    # claim still succeeds here. That is the race being pinned: a refused CLAIM
+    # was already handled, an accepted claim whose DISPATCH races the shutdown
+    # was not.
+    sessions.closing = True
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert ran == [], "the turn must not open behind close_all's drain snapshot"
+    assert sessions.begin_turns == 1
+    # Refused is not leaked: the renderer is still finalized (so the user gets
+    # this channel's notice rather than a hanging placeholder) and the
+    # session-keyed semaphore is still given back.
+    assert renderer.closed == 1
+    assert sessions.released == 1
+    # A restart is not a session fault. Charging it to the circuit breaker via
+    # record_failure would count toward tripping a reset on a session that never
+    # misbehaved, and it is not a success either.
+    assert sessions.failures == 0
+    assert sessions.successes == 0
+
+
+def test_a_restricted_shutdown_refusal_never_spools(monkeypatch) -> None:
+    """A resolved temporary/incognito turn leaves no durable refusal record."""
+    _patch_pipeline(monkeypatch)
+    spool = AsyncMock(return_value=True)
+    monkeypatch.setattr(D, "spool_refused_turn", spool)
+    sessions = _Sessions(closing=True)
+    renderer = _Renderer()
+    turn = _turn(renderer)
+    turn.inbound_route = D.InboundRoute(conversation_id="conv", text="secret", user_id="u")
+    turn.inbound_restricted = True
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    spool.assert_not_awaited()
+    assert sessions.released == 1
+
+
+def test_a_compaction_failed_terminal_resets_the_session(monkeypatch) -> None:
+    """A COMPACTION_FAILED terminal is synthetic — the backend abandoned the
+    turn after a failed auto-compaction and never sent end_turn, so it still
+    counts the prompt as in progress. The dispatcher must reset the session
+    or this channel's NEXT message collides with "prompt already in
+    progress". With no transient verdict recorded there is no replay either:
+    the driver here delivers no completion the guard could hold."""
+    from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+
+    class _AbandonedDriver(_Driver):
+        last_stop_reason = STOP_REASON_COMPACTION_FAILED
+
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _AbandonedDriver)
+    sessions = _Sessions()
+    renderer = _Renderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.resets == 1
+    assert sessions.released == 1
+
+
+def test_a_driver_without_a_stop_reason_still_finishes_the_turn(monkeypatch) -> None:
+    """The stop-reason read is defensive, like every other attribute read on
+    this seam. ``TurnDriver`` is resolved through the module attribute, so a
+    stand-in that predates the field must mean "no synthetic completion" — not
+    an AttributeError raised at a real inbound message AFTER the turn already
+    ran and the user already got the answer."""
+
+    class _FieldlessDriver:
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        async def run(self, message: str) -> str:
+            return "the answer"
+
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _FieldlessDriver)
+    sessions = _Sessions()
+    renderer = _Renderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.resets == 0
+    assert sessions.released == 1
+
+
+def test_an_ordinary_terminal_does_not_reset_the_session(monkeypatch) -> None:
+    """The reset is scoped to the compaction-failed terminal — an ordinary
+    end_turn keeps the session alive (resetting it would pay a cold start on
+    every message)."""
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+    renderer = _Renderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.resets == 0
+
+
+# ── Transient compaction failure: replay inside the same turn ─────────────────
+#
+# The shared pipeline has no queue of its own, and the channel renderer is one
+# message's output surface that finalizes on its first DONE. So the replay of a
+# turn abandoned after a TRANSIENT compaction failure happens inside drive_turn:
+# the guard the driver renders through holds that one completion back, the
+# session is reset, and the message runs again into the same still-open
+# renderer. A permanent verdict keeps the old give-up behaviour.
+
+_COMPACTION_FAILED = STOP_REASON_COMPACTION_FAILED
+
+
+class _Provider:
+    def __init__(self, transient: bool | None) -> None:
+        # ``None`` models a provider that predates the verdict attribute.
+        if transient is not None:
+            self.last_compaction_transient = transient
+
+
+class _RetrySessions(_Sessions):
+    """Counts acquisitions and hands out a provider carrying the verdict.
+
+    Also models the manager's user-Stop record: ``stop_in_gap`` makes a Stop
+    land while the session is reset (the window with no live session), which
+    the real manager records only while the turn's replay gap is open.
+    """
+
+    def __init__(
+        self,
+        *,
+        transient: bool | None,
+        reset_raises: bool = False,
+        stop_in_gap: bool = False,
+        new_in_gap: bool = False,
+    ) -> None:
+        super().__init__()
+        self.transient = transient
+        self.reset_raises = reset_raises
+        self.stop_in_gap = stop_in_gap
+        self.new_in_gap = new_in_gap
+        self.acquired = 0
+        self.stops = 0
+        #: The conversation's persisted generation, as ``/new`` would advance it.
+        self.generation = 0
+        self.generation_reads: list[str] = []
+        self.gap_open = False
+        self.gap_events: list[str] = []
+
+    async def get_or_create(self, key, agent=None, channel_id=None):
+        self.acquired += 1
+        # The conversation exists (first acquire: not new); a reacquire after a
+        # reset cold-starts a runtime and reports ``is_new=True``, exactly what
+        # the real manager does for a conversation that has existed for hours.
+        return _Provider(self.transient), self.acquired > 1, False
+
+    async def reset(self, key):
+        self.resets += 1
+        if self.reset_raises:
+            raise RuntimeError("reset failed")
+        if self.stop_in_gap and self.gap_open:
+            self.stops += 1
+        if self.new_in_gap and self.gap_open:
+            self.generation += 1
+
+    def stop_generation(self, key):
+        return self.stops
+
+    def max_generation(self, bucket):
+        self.generation_reads.append(bucket)
+        return self.generation
+
+    def open_replay_gap(self, key):
+        # Idempotent like the real manager: reopening an open gap keeps it.
+        if not self.gap_open:
+            self.gap_events.append("open")
+        self.gap_open = True
+
+    def release(self, key):
+        super().release(key)
+        self.gap_events.append("release")
+
+    def close_replay_gap(self, key):
+        self.gap_open = False
+        # Recorded IN SEQUENCE with the release: the gap must close only after
+        # the whole turn settled and gave its permit back, or a newer message
+        # admitted earlier would park on a semaphore a later reset could pop.
+        self.gap_events.append("close")
+        self.acquired_at_close = self.acquired
+
+
+class _RecordingRenderer(_Renderer):
+    """Records every event the driver's renderer forwards into the channel."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[D.OutputEvent] = []
+        self.started = 0
+
+    async def on_turn_start(self):
+        self.started += 1
+
+    async def dispatch(self, event):
+        self.events.append(event)
+
+    async def on_done(self, stop_reason=""):
+        self.events.append(D.OutputEvent(kind=D.DONE, stop_reason=stop_reason))
+
+
+def _abandoning_driver(
+    abandon_first: int, *, emit_before: bool = False, emit_kind: str = D.TEXT_CHUNK
+) -> type:
+    """A driver whose first ``abandon_first`` runs end in a COMPACTION_FAILED
+    completion (delivered through the renderer, as the real driver does), and
+    whose next run answers normally."""
+    runs: list[str] = []
+
+    class _Abandoning(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            super().__init__(**kw)
+            self.renderer = renderer
+
+        async def run(self, message):
+            runs.append(message)
+            if len(runs) <= abandon_first:
+                if emit_before:
+                    await self.renderer.dispatch(D.OutputEvent(kind=emit_kind, text="part"))
+                self.last_stop_reason = _COMPACTION_FAILED
+                await self.renderer.dispatch(
+                    D.OutputEvent(kind=D.DONE, stop_reason=_COMPACTION_FAILED)
+                )
+                return ""
+            self.last_stop_reason = "end_turn"
+            await self.renderer.dispatch(D.OutputEvent(kind=D.TEXT_CHUNK, text="the reply"))
+            await self.renderer.dispatch(D.OutputEvent(kind=D.DONE, stop_reason="end_turn"))
+            return "the reply"
+
+    _Abandoning.runs = runs  # type: ignore[attr-defined]
+    return _Abandoning
+
+
+def _dones(renderer: _RecordingRenderer) -> list[str]:
+    return [e.stop_reason for e in renderer.events if e.kind == D.DONE]
+
+
+def test_a_transient_compaction_failure_replays_the_message_once(monkeypatch) -> None:
+    """Transient verdict, nothing emitted, budget unspent: the abandoned message
+    runs again on a fresh session and the ONE completion the channel sees is the
+    replay's. The abandoned attempt's DONE never reaches the renderer, or it
+    would have finalized the reply before the answer existed."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+    persisted: list[tuple[str, str, bool]] = []
+    after_persist_calls = 0
+    turn = _turn(renderer)
+    turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+    async def _after_persist() -> None:
+        nonlocal after_persist_calls
+        after_persist_calls += 1
+
+    turn.after_persist = _after_persist
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi", "hi"], "the same message is replayed verbatim"
+    assert sessions.resets == 1, "the abandoned runtime is torn down before the replay"
+    assert sessions.acquired == 2, "the replay runs on a freshly acquired session"
+    # The gap opens before the reset and closes only when the whole turn has
+    # settled and its permit is released -- never at the successor claim, where
+    # an admitted waiter would park on a semaphore a later reset could pop.
+    assert sessions.gap_events == ["open", "release", "close"]
+    assert sessions.gap_open is False
+    assert sessions.acquired_at_close == 2
+    assert _dones(renderer) == ["end_turn"], "only the replay's completion reaches the channel"
+    assert [e.text for e in renderer.events if e.kind == D.TEXT_CHUNK] == ["the reply"]
+    # Post-turn bookkeeping happens once, for the turn that actually landed,
+    # and with the FIRST acquire's newness: the replay's reacquire reported a
+    # new runtime, which must not re-run the new-conversation work (title,
+    # dashboard surfacing) over an existing conversation.
+    assert sessions.successes == 1
+    assert sessions.released == 1
+    assert renderer.closed == 1
+    assert persisted == [("hi", "the reply", False)]
+    assert after_persist_calls == 0
+
+
+def test_a_permanent_compaction_failure_keeps_the_give_up_behaviour(monkeypatch) -> None:
+    """A compaction that overflowed the window fails again identically, so the
+    message is NOT replayed: one run, the reset, and the abandoned attempt's own
+    completion finalizes the channel's reply as before."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=False)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.resets == 1
+    assert sessions.acquired == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+    assert sessions.released == 1
+    assert "open" not in sessions.gap_events, "no replay owed, so no gap is opened"
+    assert sessions.gap_events == ["release", "close"], "the idempotent close still runs"
+
+
+def test_a_stop_during_the_reset_gap_keeps_the_message_dropped(monkeypatch) -> None:
+    """The user's intent wins over the recovery. A ``/stop`` that lands while
+    the abandoned session is being reset finds nothing to cancel -- no session
+    exists yet -- so without a record of it the replay would run the very prompt
+    the user stopped, and a destructive prompt would run twice-asked-once. The
+    manager records the Stop inside the replay gap the pipeline opens; the
+    pipeline re-reads the count right before the replay would open a prompt and
+    delivers the held completion instead."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True, stop_in_gap=True)
+    renderer = _RecordingRenderer()
+    persisted: list[tuple[str, str, bool]] = []
+    turn = _turn(renderer)
+    turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"], "the stopped message must not run again"
+    assert sessions.resets == 1
+    assert sessions.acquired == 2, "the successor was acquired (and is released by the finally)"
+    assert _dones(renderer) == [_COMPACTION_FAILED], "the held completion finalizes the reply"
+    assert sessions.released == 1
+    assert renderer.closed == 1
+    assert sessions.gap_open is False
+    # Nothing ran, so nothing is recorded: a cancelled message must not be
+    # filed as a completed turn with an empty reply.
+    assert sessions.successes == 0
+    assert persisted == []
+
+
+def test_a_new_conversation_during_the_reset_gap_keeps_the_message_dropped(
+    monkeypatch,
+) -> None:
+    """``/new`` retires the conversation the abandoned message belonged to. Every
+    channel on this pipeline persists the new generation before acknowledging,
+    so the pipeline reads the bucket's highest generation at entry and again
+    right before the replay would open a prompt; a change means the retired
+    prompt must not run and post its reply after the fresh-conversation ack."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True, new_in_gap=True)
+    renderer = _RecordingRenderer()
+    persisted: list[tuple[str, str, bool]] = []
+    turn = _turn(renderer)
+    turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"], "the retired message must not run again"
+    assert sessions.resets == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED], "the held completion finalizes the reply"
+    assert sessions.released == 1
+    assert sessions.successes == 0 and persisted == [], "a retired message is not filed as a turn"
+    # Read against the BUCKET (generation stripped), which is what ``/new`` marks.
+    assert set(sessions.generation_reads) == {"weixin:agentA:direct:userA"}
+
+
+def test_a_hook_reply_persists_only_after_the_replay_gap_resolves(monkeypatch) -> None:
+    """A hook auto-reply acquires no session, so ``get_or_create``'s wait on the
+    replay gap never fences it. Arriving while an older message on the key sits
+    between its reset and its replay, its persist would file the exchange AHEAD
+    of the replayed turn the reader actually saw first. The reply itself still
+    goes out at once -- a canned answer must not wait on a model turn -- but the
+    record is written only once the gap owner has settled."""
+    from kiro_crew.hooks import HookResult
+
+    _patch_pipeline(monkeypatch)
+
+    class _GapSessions(_Sessions):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gap = asyncio.Event()
+            self.waited: list[str] = []
+
+        async def await_replay_gap(self, key):
+            self.waited.append(key)
+            await self.gap.wait()
+
+    class _Hooks:
+        auto_approve_subagent_spawn = False
+
+        def on_message(self, text):
+            return HookResult.reply("pong")
+
+    class _HookCtx(_CtxBuilder):
+        hooks = _Hooks()
+
+    class _HookRenderer(_RecordingRenderer):
+        async def on_text_chunk(self, text):
+            self.events.append(D.OutputEvent(kind=D.TEXT_CHUNK, text=text))
+
+    async def scenario() -> None:
+        sessions = _GapSessions()
+        renderer = _HookRenderer()
+        persisted: list[tuple[str, str, bool]] = []
+        turn = _turn(renderer)
+        turn.persist = lambda text, reply, is_new: persisted.append((text, reply, is_new))
+
+        task = asyncio.create_task(drive_turn(turn, sessions=sessions, ctx_builder=_HookCtx()))
+        for _ in range(200):
+            if sessions.waited:
+                break
+            await asyncio.sleep(0.01)
+        # The reply is out and the turn is parked on the gap, record unwritten.
+        assert sessions.waited == [turn.session_key]
+        assert [e.kind for e in renderer.events] == [D.TEXT_CHUNK, D.DONE]
+        assert persisted == [], "the record must wait for the replay to settle"
+        assert not task.done()
+
+        sessions.gap.set()
+        await asyncio.wait_for(task, 5)
+        assert persisted == [("hi", "pong", False)]
+        assert sessions.released == 0, "no session was acquired, so none is released"
+
+    asyncio.run(scenario())
+
+
+def test_the_generation_reader_is_a_noop_for_keys_without_one() -> None:
+    """A Slack thread key has no generation grammar and a double may lack the
+    reader; neither can manufacture a supersession."""
+
+    class _NoReader:
+        pass
+
+    class _Reader:
+        def max_generation(self, bucket):
+            return 7
+
+    assert D.session_conversation_generation(_Reader(), "slack:1700000000.000100") == 0
+    assert D.session_conversation_generation(_NoReader(), "weixin:agentA:direct:userA") == 0
+    assert D.session_conversation_generation(_Reader(), "weixin:agentA:direct:userA:gen3") == 7
+
+
+def test_a_provider_without_a_verdict_is_not_read_as_transient(monkeypatch) -> None:
+    """The retry requires a real ``True``: a provider that never set the
+    attribute must not be replayed by accident."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=None)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+
+
+def test_a_consumed_steer_is_not_replayed_even_when_transient(monkeypatch) -> None:
+    """A folded mid-turn steer is a correction the replayed ``user_text`` does
+    not carry. Re-running the original prompt would silently drop what the user
+    was told was accepted, so a steered turn keeps the give-up behaviour."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1, emit_before=True, emit_kind=D.STEER_CONSUMED)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.resets == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+
+
+def test_an_emitted_turn_is_not_replayed_even_when_transient(monkeypatch) -> None:
+    """Verbatim replay is only safe before anything landed in the chat: once a
+    chunk has been rendered, re-sending the message could repeat a side effect,
+    so the turn keeps the give-up behaviour and its completion goes through."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1, emit_before=True)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.resets == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+
+
+def test_the_replay_budget_is_bounded_per_turn(monkeypatch) -> None:
+    """A throttle that keeps firing gets exactly ``_COMPACTION_FAILED_RETRIES``
+    replays; the attempt after the last one gives up and its completion is the
+    one the channel sees, so the reply is finalized rather than left hanging."""
+    _patch_pipeline(monkeypatch)
+    budget = D._COMPACTION_FAILED_RETRIES
+    driver_cls = _abandoning_driver(budget + 5)  # never recovers
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert len(driver_cls.runs) == budget + 1
+    assert sessions.resets == budget + 1, "every abandoned attempt still resets its runtime"
+    assert sessions.acquired == budget + 1
+    assert _dones(renderer) == [_COMPACTION_FAILED], "the last attempt's completion goes through"
+    assert sessions.released == 1
+    assert renderer.closed == 1
+    # ONE gap spans every retry: a waiter admitted between retries would have
+    # parked on a semaphore the next reset pops.
+    assert sessions.gap_events == ["open", "release", "close"]
+
+
+def test_a_failed_reset_releases_the_held_completion_instead_of_replaying(
+    monkeypatch,
+) -> None:
+    """When the reset itself fails the runtime still counts the prompt as in
+    progress, so a replay would collide with it. The guard's held completion is
+    delivered so the channel finalizes the reply, and nothing runs again."""
+    _patch_pipeline(monkeypatch)
+    driver_cls = _abandoning_driver(1)
+    monkeypatch.setattr(D, "TurnDriver", driver_cls)
+    sessions = _RetrySessions(transient=True, reset_raises=True)
+    renderer = _RecordingRenderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert driver_cls.runs == ["hi"]
+    assert sessions.acquired == 1
+    assert _dones(renderer) == [_COMPACTION_FAILED]
+    assert sessions.released == 1
+
+
+def test_the_guard_forwards_whole_events_through_the_inner_dispatch() -> None:
+    """Events reach the channel through the inner renderer's own ``dispatch``,
+    so the bookkeeping that method does (``current_tool_name``) lands on the
+    object whose handlers read it; and the guard marks the turn as emitted for
+    exactly the kinds whose replay could repeat a side effect."""
+    inner = _RecordingRenderer()
+    guard = D._TransientCompactionRetryGuard(inner)
+    guard.provider = _Provider(True)
+
+    async def scenario():
+        await guard.dispatch(D.OutputEvent(kind=THINKING, text="hmm"))
+        assert guard.emitted is False, "thinking renders, but replaying after it repeats nothing"
+        await guard.dispatch(D.OutputEvent(kind=COMPACTION, context_usage_pct=90.0))
+        assert guard.emitted is False
+        await guard.dispatch(D.OutputEvent(kind=D.TOOL_CALL, tool_call_id="t1", title="Run"))
+        assert guard.emitted is True
+
+    asyncio.run(scenario())
+    assert [e.kind for e in inner.events] == [THINKING, COMPACTION, D.TOOL_CALL]
+    # Every kind after which a verbatim replay is unsafe, and only those.
+    assert D._EMITTED_KINDS == {D.TEXT_CHUNK, D.TOOL_CALL, D.PROMPT_CHOICE, D.STEER_CONSUMED}
+
+
+def test_every_pipeline_channel_stop_path_records_the_stop() -> None:
+    """Discovery tripwire, not a hand-kept list. Every channel dispatcher that
+    rides ``drive_turn`` and offers a Stop must record it on the session
+    manager BEFORE its busy check -- through ``stop_turn`` or
+    ``stop_running_turn`` (which record on their own) or by calling
+    ``note_user_stop`` next to a direct ``provider.cancel``. A channel that
+    cancels the provider directly without recording leaves the transient
+    compaction replay blind to a Stop issued in the reset gap."""
+    root = Path(__file__).resolve().parents[1] / "src/kiro_crew"
+    checked: list[str] = []
+    for path in sorted(root.glob("*/transport_dispatch.py")):
+        source = path.read_text(encoding="utf-8")
+        if "drive_turn(" not in source:
+            continue
+        cancels_directly = "cancel(wait_ack_timeout=0)" in source
+        records = (
+            ".stop_turn(" in source or "stop_running_turn(" in source or "note_user_stop(" in source
+        )
+        if cancels_directly:
+            assert "note_user_stop(" in source or ".stop_turn(" in source, path
+            checked.append(path.parent.name)
+        elif records:
+            checked.append(path.parent.name)
+    # Non-vacuity: the channels known to cancel directly are all covered.
+    assert {"webex", "wecom", "weixin", "teams", "whatsapp"} <= set(checked), checked
+
+
+def test_the_driver_reaches_its_renderer_only_through_the_guarded_surface() -> None:
+    """Tripwire for the wrapper: the guard subclasses ``Renderer`` and forwards
+    every declared handler, but the two methods the driver itself calls are the
+    ones that carry the hold logic. A driver that starts calling something else
+    must widen the guard on purpose, not silently bypass it."""
+    source = (Path(__file__).resolve().parents[1] / "src/kiro_crew/messaging/driver.py").read_text(
+        encoding="utf-8"
+    )
+    used = set(re.findall(r"self\.renderer\.([a-z_]+)", source))
+    assert used == {"dispatch", "on_turn_start"}, used
+    for name in used:
+        assert name in D._TransientCompactionRetryGuard.__dict__, name
+
+
+def test_a_denied_turn_neither_renders_nor_releases(monkeypatch) -> None:
+    """Governance backstop returns before any side effect."""
+    _patch_pipeline(monkeypatch, permitted=False)
+    sessions = _Sessions()
+    renderer = _Renderer()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert renderer.closed == 0
+    assert sessions.released == 0
+    assert sessions.successes == 0
+
+
+class _PauseSessions(_Sessions):
+    """Interface parity with the real SessionManager for the pause lookup.
+
+    Extended here rather than leaning on production's fail-open: that fallback
+    exists for the bare ``MagicMock`` managers elsewhere in the suite, and a test
+    about the gate must not be silently exercising the fallback instead.
+    """
+
+    def __init__(self, paused: bool = False):
+        super().__init__()
+        self.paused = paused
+        self.pause_calls: list[tuple[str, bool]] = []
+
+    def is_mirror_paused(self, key, *, origin=False):
+        self.pause_calls.append((key, origin))
+        return self.paused
+
+
+class _CountingRenderer(_Renderer):
+    """Records the turn-start the user would SEE as a typing indicator."""
+
+    def __init__(self):
+        super().__init__()
+        self.started = 0
+
+    async def on_turn_start(self):
+        self.started += 1
+
+
+def _capture_driver(box: list) -> type:
+    class _Capturing(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            super().__init__()
+            box.append(renderer)
+
+    return _Capturing
+
+
+def _turn_with_key(renderer: Any, session_key: str) -> ChannelTurn:
+    return ChannelTurn(
+        channel_type="weixin",
+        session_key=session_key,
+        conversation_id="weixin:userA",
+        agent="agentA",
+        user_text="hi",
+        renderer=renderer,
+        approval_mode="auto",
+    )
+
+
+def test_a_disconnected_conversation_is_silenced(monkeypatch) -> None:
+    """Disconnect stops the replies, which for a non-Slack channel happens HERE.
+
+    Slack enforces a disconnect on its own streaming mirror. Every other channel
+    answers through this pipeline, so before this gate a disconnected channel
+    kept replying and the dashboard control changed nothing but its own label.
+
+    The turn still runs and the semaphore is still released: the binding is
+    retained by design, so the inbound message must still land in the session.
+    """
+    box: list[Any] = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver(box))
+    sessions = _PauseSessions(paused=True)
+    renderer = _CountingRenderer()
+
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(renderer, "weixin:agentA:direct:userA"),
+            sessions=sessions,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+
+    # The driver streams through the pipeline's retry guard; what the guard
+    # forwards into is the object under test.
+    assert isinstance(box[0], D._TransientCompactionRetryGuard)
+    assert isinstance(box[0].inner, SilentRenderer), "the driver must stream into the silent one"
+    assert renderer.started == 0, "a disconnected conversation must not even show typing"
+    assert renderer.closed == 0, "the real renderer was never used, so it has nothing to close"
+    assert sessions.successes == 1, "the turn still ran"
+    assert sessions.released == 1, "and the session semaphore was still released"
+
+
+def test_a_connected_conversation_keeps_its_real_renderer(monkeypatch) -> None:
+    """The non-vacuity half: without it, deleting the gate would still pass above."""
+    box: list[Any] = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver(box))
+    sessions = _PauseSessions(paused=False)
+    renderer = _CountingRenderer()
+
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(renderer, "weixin:agentA:direct:userA"),
+            sessions=sessions,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+
+    assert isinstance(box[0], D._TransientCompactionRetryGuard)
+    assert box[0].inner is renderer
+    assert renderer.started == 1
+    assert renderer.closed == 1
+
+
+def test_the_pause_is_read_for_the_role_the_turn_arrived_on(monkeypatch) -> None:
+    """Two non-Slack deliveries mute independently, so the ROLE decides the flag.
+
+    A channel-BORN session's key IS its conversation, so a turn arriving in that
+    namespace is the origin. Anything else reaching this pipeline came over a
+    mirror/resume binding. Reading the wrong flag would let one row's disconnect
+    silence the other's conversation.
+    """
+    _patch_pipeline(monkeypatch)
+
+    born = _PauseSessions(paused=False)
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(_CountingRenderer(), "weixin:agentA:direct:userA"),
+            sessions=born,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+    assert born.pause_calls == [("weixin:agentA:direct:userA", True)], "born-in reads origin"
+
+    mirrored = _PauseSessions(paused=False)
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(_CountingRenderer(), "dashboard:chat-1"),
+            sessions=mirrored,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+    assert mirrored.pause_calls == [("dashboard:chat-1", False)], "a mirror reads the mirror flag"
+
+
+def _capture_driver_kwargs(box: list) -> type:
+    """A driver stand-in recording the kwargs the pipeline constructs it with."""
+
+    class _Capturing(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            super().__init__()
+            box.append(kw)
+
+    return _Capturing
+
+
+# ---------------------------------------------------------------------------
+# What the pipeline forwards to the driver, and what it binds per turn.
+#
+# Both of these were asymmetries rather than missing features: the field existed
+# on the driver and the helper existed in ``link``, but the shared pipeline never
+# passed them, so every channel riding ``drive_turn`` (webex, wecom, teams,
+# weixin, imessage) silently lost a capability the forked channels had.
+# ---------------------------------------------------------------------------
+
+
+class _MirrorSessions(_Sessions):
+    """Adds the origin/mirror surface ``drive_turn`` binds through."""
+
+    def __init__(self, *, opt_out: bool = False, existing=None, raises: bool = False):
+        super().__init__()
+        self.origin_links: dict = {}
+        self.mirror_links: dict = {} if existing is None else dict(existing)
+        self._opt_out = opt_out
+        self._raises = raises
+
+    def set_origin_link(self, key, link):
+        if self._raises:
+            raise RuntimeError("session map unavailable")
+        self.origin_links[key] = link
+
+    def mirror_opt_out(self, key) -> bool:
+        return self._opt_out
+
+    def get_mirror_link(self, key):
+        return self.mirror_links.get(key)
+
+    def set_mirror_link(self, key, link, *, reason=""):
+        self.mirror_links[key] = link
+
+
+def _capture_turn_driver(box: dict) -> type:
+    class _Capturing(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            box.update(kw)
+            super().__init__(provider, renderer, **kw)
+
+    return _Capturing
+
+
+def test_auto_approve_session_reaches_the_driver(monkeypatch) -> None:
+    """A channel with no approve/deny buttons needs an out-of-band trust grant.
+
+    Teams renders no widget, so under INTERACTIVE the ladder denies every tool and
+    the agent can only talk. ``ChannelTurn.auto_approve_session`` is how such a
+    channel grants trust; if the pipeline drops it, the grant silently does
+    nothing and the channel looks like the feature does not exist.
+    """
+    box: list = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver_kwargs(box))
+    turn = _turn(_CountingRenderer())
+    turn.auto_approve_session = lambda: True
+
+    asyncio.run(drive_turn(turn, sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+
+    assert box, "the driver was never constructed"
+    predicate = box[0].get("auto_approve_session")
+    assert predicate is not None and predicate() is True
+
+
+def test_omitting_auto_approve_session_keeps_the_deny_default(monkeypatch) -> None:
+    """The field is additive: a channel that does not set it is unaffected.
+
+    Four other channels ride this pipeline, so a None default that leaked through
+    as something truthy would hand them an auto-approve nobody granted.
+    """
+    box: list = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver_kwargs(box))
+
+    asyncio.run(
+        drive_turn(_turn(_CountingRenderer()), sessions=_Sessions(), ctx_builder=_CtxBuilder())
+    )
+
+    assert box[0].get("auto_approve_session") is None
+
+
+class _RecordingCtxBuilder:
+    """Captures the kwargs the pipeline hands ``build_message``.
+
+    The signature is spelled out rather than swallowed into ``**kw`` for
+    ``minimal_context`` and ``needs_reinjection``, so a pipeline that stops
+    forwarding either fails here instead of quietly falling back to the
+    builder's own default.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def build_message(
+        self,
+        text,
+        is_new,
+        session_key,
+        *,
+        minimal_context=False,
+        needs_reinjection,
+        **kw,
+    ):
+        self.calls.append(
+            {"minimal_context": minimal_context, "needs_reinjection": needs_reinjection, **kw}
+        )
+        return text, None
+
+
+def _turn_minimal(renderer: Any, *, minimal_context: bool) -> ChannelTurn:
+    return ChannelTurn(
+        channel_type="weixin",
+        session_key="weixin:agentA:direct:userA",
+        conversation_id="weixin:userA",
+        agent="agentA",
+        user_text="hi",
+        renderer=renderer,
+        approval_mode="auto",
+        minimal_context=minimal_context,
+    )
+
+
+def test_minimal_context_reaches_build_message(monkeypatch) -> None:
+    """A non-operator's turn must be assembled WITHOUT the operator's context.
+
+    The exposure is in the PROMPT: memory, lessons, skills and prior history are
+    injected before any tool runs, so denying the sender's tools does not stop the
+    operator's private notes from being quoted back to an admitted peer. The
+    pipeline is the only place that calls ``build_message``, so a flag it drops is
+    a flag no channel can set.
+    """
+    _patch_pipeline(monkeypatch)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(
+        drive_turn(
+            _turn_minimal(_Renderer(), minimal_context=True),
+            sessions=_Sessions(),
+            ctx_builder=ctx,
+        )
+    )
+
+    assert ctx.calls, "build_message was never called"
+    assert ctx.calls[0]["minimal_context"] is True, (
+        "the pipeline dropped minimal_context, so the peer's turn was built with "
+        "the operator's memory, lessons, skills and history"
+    )
+
+
+def test_the_default_turn_still_gets_full_context(monkeypatch) -> None:
+    """The non-vacuity half: the default must stay byte-identical for adopters.
+
+    Without this, hardcoding ``minimal_context=True`` in the pipeline would pass
+    the test above while stripping every existing channel's context.
+    """
+    _patch_pipeline(monkeypatch)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(
+        drive_turn(
+            _turn(_Renderer()),  # constructed without naming the field at all
+            sessions=_Sessions(),
+            ctx_builder=ctx,
+        )
+    )
+
+    assert ctx.calls[0]["minimal_context"] is False
+
+
+def test_compaction_reinjection_reaches_build_message(monkeypatch) -> None:
+    """A channel turn consumes and forwards its one-shot reinjection marker."""
+
+    class _ReinjectingSessions(_Sessions):
+        def __init__(self) -> None:
+            super().__init__()
+            self.consumed_keys: list[str] = []
+
+        def consume_needs_reinjection(self, key: str) -> bool:
+            self.consumed_keys.append(key)
+            return True
+
+    _patch_pipeline(monkeypatch)
+    sessions = _ReinjectingSessions()
+    ctx = _RecordingCtxBuilder()
+    turn = _turn(_Renderer())
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=ctx))
+
+    assert sessions.consumed_keys == [turn.session_key]
+    assert ctx.calls[0]["needs_reinjection"] is True
+
+
+def test_missing_reinjection_consumer_keeps_turn_running(monkeypatch) -> None:
+    """A session stand-in without the new method gets the safe false default."""
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(
+        drive_turn(
+            _turn(_Renderer()),
+            sessions=sessions,
+            ctx_builder=ctx,
+        )
+    )
+
+    assert ctx.calls[0]["needs_reinjection"] is False
+    assert sessions.successes == 1
+
+
+class _RearmSessions(_Sessions):
+    """Records the one-shot flag's consume/mark traffic, like the real manager."""
+
+    def __init__(self, *, armed: bool = True) -> None:
+        super().__init__()
+        self.armed = armed
+        self.marks = 0
+
+    def consume_needs_reinjection(self, key: str) -> bool:
+        was = self.armed
+        self.armed = False
+        return was
+
+    def mark_needs_reinjection(self, key: str) -> None:
+        self.marks += 1
+        self.armed = True
+
+
+class _FailingDriver(_Driver):
+    async def run(self, message):
+        raise RuntimeError("provider fell over")
+
+
+def test_failed_consuming_turn_rearms_reinjection(monkeypatch) -> None:
+    """The turn cleared the flag, then died before landing: the flag comes back.
+
+    Without the re-arm the compacted session runs without its skills index (and
+    a member DM without its rules) until the NEXT compaction. Same rule as the
+    dashboard runner's finally.
+    """
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _FailingDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True, "the flag was consumed by this turn"
+    assert sessions.failures == 1
+    assert (
+        sessions.marks == 1 and sessions.armed is True
+    ), "a consuming turn that never landed must put the one-shot flag back"
+
+
+def test_landed_consuming_turn_does_not_rearm(monkeypatch) -> None:
+    """Non-vacuity: a turn that landed keeps the flag consumed (exactly once)."""
+    _patch_pipeline(monkeypatch)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.successes == 1
+    assert sessions.marks == 0 and sessions.armed is False
+
+
+class _CancelledDriver(_Driver):
+    """``run`` returns normally, as it does on ``/stop``, with the cancel stop reason."""
+
+    last_stop_reason = STOP_REASON_CANCELLED
+
+
+def test_cancelled_consuming_turn_rearms_reinjection(monkeypatch) -> None:
+    """A user cancel completes the turn normally, yet the backend drops that turn
+    from its transcript -- the re-injected context goes with it, so the flag
+    must come back exactly as for a raised turn."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _CancelledDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.successes == 1, "the pipeline still records the cancelled turn as it did"
+    assert sessions.marks == 1 and sessions.armed is True
+
+
+class _StaleRecoverDriver(_Driver):
+    """``run`` returns normally on the synthetic completion for a wedged turn."""
+
+    last_stop_reason = "stale_recover"
+
+
+def test_synthetic_completion_for_a_wedged_turn_rearms_reinjection(monkeypatch) -> None:
+    """Landed is an allowlist (``succeeded``), not "anything but cancelled".
+
+    ``stale_recover`` and ``error: tool stall`` are the backend's synthetic
+    terminals for a turn it never completed; scoring them landed would drop the
+    re-injected context silently until the next compaction.
+    """
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _StaleRecoverDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.marks == 1 and sessions.armed is True
+
+
+def test_stop_reason_landed_is_a_success_allowlist() -> None:
+    assert D.stop_reason_landed("end_turn") is True
+    assert (
+        D.stop_reason_landed("") is True
+    ), "a completion from a provider that never sets the field"
+    assert D.stop_reason_landed(None) is False, "no completion observed at all"
+    for reason in ("cancelled", "stale_recover", "error: tool stall", "refusal", "error: boom"):
+        assert D.stop_reason_landed(reason) is False, reason
+
+
+class _NoCompletionDriver(_Driver):
+    """``run`` returned because the stream ended, with no EVENT_COMPLETE seen."""
+
+    completion_observed = False
+
+
+def test_a_stream_that_ends_without_a_completion_rearms_reinjection(monkeypatch) -> None:
+    """An empty stop reason means two opposite things -- "no completion yet" and
+    "a completion with no reason" -- so the driver records the presence apart,
+    and only an observed completion can land."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _NoCompletionDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.marks == 1 and sessions.armed is True
+
+
+def test_failed_turn_without_a_consumed_flag_does_not_arm_one(monkeypatch) -> None:
+    """A plain failure on a never-compacted session must not invent a re-injection."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _FailingDriver)
+    sessions = _RearmSessions(armed=False)
+
+    asyncio.run(
+        drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_RecordingCtxBuilder())
+    )
+
+    assert sessions.failures == 1
+    assert sessions.marks == 0 and sessions.armed is False
+
+
+class _GovernanceStub:
+    """Records what the shared gate asked governance, and answers a fixed verdict."""
+
+    def __init__(self, permitted: bool) -> None:
+        self.permitted = permitted
+        self.asked: list[str] = []
+
+    async def __call__(self, channel_type: str) -> bool:
+        self.asked.append(channel_type)
+        return self.permitted
+
+
+def _gate(monkeypatch, *, permitted: bool) -> _GovernanceStub:
+    stub = _GovernanceStub(permitted)
+    monkeypatch.setattr(D, "channel_inbound_permitted", stub)
+    return stub
+
+
+class TestPureCancelPredicate:
+    """PURE is what makes the governance exemption safe to grant."""
+
+    def test_every_channel_spelling_is_recognised(self) -> None:
+        # 停止 is WeCom's, and it is the one that was missing: the ASCII spellings
+        # are not reachable for a user whose whole surface is Chinese.
+        for text in ("/stop", "/cancel", "!stop", "!cancel", "停止"):
+            assert D.is_pure_cancel(text), text
+            assert D.is_pure_cancel(f"  {text.upper()}  "), text
+
+    def test_an_attachment_makes_it_impure(self) -> None:
+        """The channel fetches media AFTER authorizing, so this is the leak edge."""
+        assert D.is_pure_cancel("/stop", has_attachments=True) is False
+
+    def test_anything_beyond_the_word_is_an_ordinary_message(self) -> None:
+        for text in (
+            "/stop please",
+            "please /stop",
+            "/stopwatch",
+            "/restart",
+            "!restart",
+            "stop",
+            "",
+        ):
+            assert D.is_pure_cancel(text) is False, text
+
+    def test_the_shared_set_covers_the_channel_command_tables(self) -> None:
+        """Drift tripwire: a channel alias the shared gate does not know is a hole.
+
+        DISCOVERED rather than listed. The first version of this test imported
+        Discord's and Telegram's tables by name, which made it blind in exactly
+        the way the mirror it guards is blind: WeCom, Teams and WhatsApp each
+        declare their own stop spellings, and WeCom's ``停止`` reached its
+        ``/help`` card while the shared exemption did not know the word. A test
+        that hand-lists the channels is the same mirror one level up, so this
+        walks the packages instead and a new channel is covered by existing.
+
+        The three shapes below are the ones in the tree. An unrecognised shape
+        FAILS rather than being skipped: a channel whose table this cannot read
+        is a channel whose drift it cannot see, and silence there is the whole
+        defect being re-created.
+        """
+        import importlib
+        import pkgutil
+
+        import kiro_crew
+
+        found: dict[str, set[str]] = {}
+        unreadable: list[str] = []
+        for mod in pkgutil.iter_modules(kiro_crew.__path__):
+            # `messaging` is the shared layer that OWNS the union rather than a
+            # channel that contributes to it, so it is not a mirror of anything.
+            if not mod.ispkg or mod.name == "messaging":
+                continue
+            try:
+                commands = importlib.import_module(f"kiro_crew.{mod.name}.commands")
+            except ModuleNotFoundError:
+                continue
+            aliases: set[str] = set()
+            # Shape 1: a private frozenset (discord, telegram, wecom).
+            stop_set = getattr(commands, "_STOP_ALIASES", None)
+            if stop_set is not None:
+                aliases |= set(stop_set)
+            # Shape 2: ``(canonical, aliases, description)`` rows (teams).
+            for row in getattr(commands, "COMMAND_SPEC", ()) or ():
+                if len(row) == 3 and row[0] == "stop" and isinstance(row[1], tuple):
+                    aliases |= set(row[1])
+            # Shape 3: dataclass rows carrying ``.name`` / ``.aliases`` (whatsapp).
+            for row in getattr(commands, "COMMANDS", ()) or ():
+                if getattr(row, "name", "") == "stop":
+                    aliases |= set(getattr(row, "aliases", ()))
+            if aliases:
+                found[mod.name] = aliases
+                continue
+            # No stop spellings read. That is legitimate for a channel with no
+            # cancel command at all, but suspicious if the module mentions one.
+            source = getattr(commands, "__doc__", "") or ""
+            if "/stop" in source or "/cancel" in source:
+                unreadable.append(mod.name)
+
+        assert not unreadable, (
+            "channel command tables this tripwire could not parse, so their drift "
+            f"is invisible to it: {unreadable}"
+        )
+        # The channels known to ship a cancel today. A channel dropping out of
+        # this set means the discovery above silently stopped seeing it.
+        assert {"discord", "telegram", "wecom", "teams", "whatsapp"} <= set(found), found
+
+        union = set().union(*found.values())
+        missing = union - D._CANCEL_ALIASES
+        assert not missing, f"cancel spellings the shared exemption would gate: {missing}"
+        # And the reverse: a spelling in the shared set that no channel accepts is
+        # a governance exemption granted to a word nothing can act on.
+        assert not D._CANCEL_ALIASES - union, D._CANCEL_ALIASES - union
+
+
+class TestCancellationSurvivesAGovernanceDeny:
+    """A denied channel must still be able to halt the session it started.
+
+    ``max_buttons=0`` channels have no Reject button to press, so the typed cancel
+    is the only cancel affordance there is: gating it strands a runaway turn with
+    no way to stop it, which is the opposite of what a deny is for.
+    """
+
+    def test_a_pure_cancel_is_permitted_on_a_denied_channel(self, monkeypatch) -> None:
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="/stop")) is True
+
+    def test_an_ordinary_message_is_still_dropped(self, monkeypatch) -> None:
+        """Non-vacuity: the deny must still deny everything that is not a cancel."""
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="summarise my inbox")) is False
+
+    def test_a_restart_is_not_a_cancellation(self, monkeypatch) -> None:
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="/restart")) is False
+
+    def test_an_attachment_bearing_cancel_is_gated(self, monkeypatch) -> None:
+        """Otherwise the denied channel still pays for the download."""
+        _gate(monkeypatch, permitted=False)
+        assert (
+            asyncio.run(D.inbound_permitted("whatsapp", text="/stop", has_attachments=True))
+            is False
+        )
+
+    def test_the_argument_less_call_stays_strict(self, monkeypatch) -> None:
+        """``drive_turn``'s backstop names no text, so nothing is exempt there."""
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp")) is False
+
+    def test_a_permitted_channel_still_short_circuits(self, monkeypatch) -> None:
+        stub = _gate(monkeypatch, permitted=True)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="anything")) is True
+        assert stub.asked == ["whatsapp"], "governance must be consulted first, once"
+
+
+def test_the_origin_conversation_is_recorded_and_bound(monkeypatch) -> None:
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions()
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.origin_links[turn.session_key].channel_id == "ROOM"
+    assert sessions.mirror_links[turn.session_key].channel_id == "ROOM"
+
+
+def test_a_unified_key_records_no_origin_conversation(monkeypatch) -> None:
+    """``dm_scope="unified"`` collapses every allowed user's DM into one bucket.
+
+    So "the conversation this session is read in" has no single answer: recording
+    one points the session's origin at whichever human spoke LAST, and a later
+    notice (a cron result, a subagent completion) lands in that person's chat
+    regardless of whose turn produced it. ``bind_origin_mirror`` already declines
+    for exactly this reason, so the sibling ``set_origin_link`` must not be the
+    hole that reopens it.
+    """
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions()
+    turn = _turn(_Renderer())
+    turn.session_key = "unified:agentA"
+    turn.origin_conversation = ChannelLink("webex", channel_id="ROOM_A", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.origin_links == {}
+    assert sessions.mirror_links == {}
+
+
+def test_a_turn_that_omits_the_origin_conversation_binds_nothing(monkeypatch) -> None:
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.origin_links == {}
+    assert sessions.mirror_links == {}
+
+
+def test_the_persisted_opt_out_is_honoured(monkeypatch) -> None:
+    """An in-channel unlink has to survive the user's next message.
+
+    The bind is re-asserted every turn, so without reading the opt-out "off"
+    would last exactly until they typed again.
+    """
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions(opt_out=True)
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.mirror_links == {}
+
+
+def test_a_binding_aimed_elsewhere_is_not_repointed(monkeypatch) -> None:
+    # The dashboard can aim a session's mirror at any surface; overwriting it
+    # would silently redirect the user's replies into this conversation.
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    elsewhere = ChannelLink("discord", channel_id="99", thread_id=None)
+    sessions = _MirrorSessions(existing={"weixin:agentA:direct:userA": elsewhere})
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.mirror_links["weixin:agentA:direct:userA"] is elsewhere
+
+
+def test_a_bind_failure_does_not_drop_the_turn(monkeypatch) -> None:
+    """This is the widest call site in the codebase — five channels route here.
+
+    Losing the mirror costs a dashboard convenience; raising costs the user the
+    answer they are waiting for.
+    """
+    from kiro_crew.messaging.link import ChannelLink
+
+    _patch_pipeline(monkeypatch)
+    sessions = _MirrorSessions(raises=True)
+    turn = _turn(_Renderer())
+    turn.origin_conversation = ChannelLink("weixin", channel_id="ROOM", thread_id=None)
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.successes == 1
+    assert sessions.released == 1
+
+
+class _KnownProviderSessions(_Sessions):
+    """Returns an identifiable provider, so the hook's argument can be asserted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.provider = object()
+
+    async def get_or_create(self, key, agent=None, channel_id=None, **kw):
+        return self.provider, False, False
+
+
+def test_the_live_provider_is_handed_to_the_channel(monkeypatch) -> None:
+    """A channel that uploads local files needs the provider's own cwd as the
+    extraction root, and that is unknowable until ``get_or_create`` returns.
+
+    Reading it from the session map BEFORE the turn yields ``None`` on the first
+    message of every session generation, so the feature is silently off for
+    exactly the turn that introduces it and mysteriously on afterwards.
+    """
+    seen: list = []
+    _patch_pipeline(monkeypatch)
+    sessions = _KnownProviderSessions()
+    turn = _turn(_Renderer())
+    turn.bind_provider = seen.append
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert seen == [sessions.provider]
+
+
+def test_the_hook_runs_before_the_driver(monkeypatch) -> None:
+    # Whatever it authorizes has to be in place for the turn it belongs to, not
+    # the next one.
+    order: list[str] = []
+    _patch_pipeline(monkeypatch)
+
+    class _OrderedDriver(_Driver):
+        def __init__(self, *a, **kw) -> None:
+            order.append("driver")
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(D, "TurnDriver", _OrderedDriver)
+    turn = _turn(_Renderer())
+    turn.bind_provider = lambda _p: order.append("bind")
+
+    asyncio.run(drive_turn(turn, sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+
+    assert order == ["bind", "driver"]
+
+
+def test_a_failing_hook_degrades_the_feature_not_the_turn(monkeypatch) -> None:
+    # Guarded like the origin bind: what it authorizes is an enhancement, so a
+    # failure must not drop an answer the user is waiting for.
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+    turn = _turn(_Renderer())
+
+    def _boom(_provider) -> None:
+        raise RuntimeError("no cwd")
+
+    turn.bind_provider = _boom
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.successes == 1
+    assert sessions.released == 1
+
+
+def test_a_turn_that_omits_the_hook_still_runs(monkeypatch) -> None:
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    assert sessions.successes == 1
+
+
+class TestToollessAgentSpecIsTheBoundary:
+    """The guest spec is the whole enforcement for an untrusted sender's turn. A
+    change that grants it a tool or an MCP server would hand that tool to every
+    untrusted sender on the kiro backend, so the emptiness is pinned here, where
+    the boundary lives, not only where the file is written. It also talks to a
+    person, so it carries a prompt of its own rather than the background helper's
+    empty one."""
+
+    def test_the_regenerated_guest_spec_mounts_no_tools_and_no_servers(self, tmp_path, monkeypatch):
+        import json
+
+        from kiro_crew import agent as agent_module
+
+        monkeypatch.setattr(agent_module, "kiro_agents_dir_path", lambda: tmp_path)
+        agent_module._install_guest_agent()
+        spec = json.loads((tmp_path / agent_module._GUEST_AGENT_FILENAME).read_text())
+        assert spec["name"] == D.TOOLLESS_TURN_AGENT
+        assert spec["tools"] == [] and spec["mcpServers"] == {}
+        # The user-level mcp.json must not be mounted either: kiro-cli defaults
+        # ``includeMcpJson`` to True, which would spawn every configured server.
+        assert spec["includeMcpJson"] is False
+        assert "no tools" in spec["prompt"]
+
+    def test_the_guest_spec_is_installed_with_the_lite_one(self, tmp_path, monkeypatch):
+        """Every rebuild that writes the background agent writes the guest agent."""
+        from kiro_crew import agent as agent_module
+
+        monkeypatch.setattr(agent_module, "kiro_agents_dir_path", lambda: tmp_path)
+        monkeypatch.setattr(agent_module, "_background_agent_model", lambda: "auto")
+        monkeypatch.setattr(agent_module, "_background_cc_model", lambda: "auto")
+        monkeypatch.setattr(agent_module.agent_state, "set_cc_model", lambda *_a, **_k: None)
+        agent_module._install_aim_capabilities()
+        assert (tmp_path / agent_module._GUEST_AGENT_FILENAME).is_file()
+        assert (tmp_path / agent_module._LITE_AGENT_FILENAME).is_file()

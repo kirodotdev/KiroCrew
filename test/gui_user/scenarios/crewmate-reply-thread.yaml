@@ -1,0 +1,46 @@
+# Nightly: screen 07 of the Crewmates launch -- a Slack-style reply thread on
+# one message of a crewmate's chat. The tester talks to a crewmate, then asks
+# a follow-up about ONE of its replies from the bubble's own "Reply in thread"
+# action instead of the main chat, and checks the two things a DOM test cannot
+# judge together: the thread panel opens beside the chat with the bubble
+# quoted, and the bubble then carries a replies footer with a count.
+#
+# The Crew Members page sits behind a feature-preview switch (per-device
+# localStorage), so the tester turns it on first, exactly as members-dm-hello
+# does; the page and the member's card are hedged the same way that scenario
+# hedges them. Reply threads sit behind a second switch, the server-side
+# `dashboard.crewmate_threads` flag (default off), which lives on the same
+# Settings tab under a Crewmates heading; the harness seeds no config, so the
+# tester turns that one on too. The crewmate's reply to the thread lands in the thread, so the
+# footer reads "1 reply" right after sending and "2 replies" once the crewmate
+# has answered; either count is the feature working.
+name: crewmate-reply-thread
+tier: nightly
+feature: members
+user_story: >-
+  As a user talking to a crewmate, I want to ask about one thing it said in a
+  reply thread on that message, so that the follow-up stays beside the message
+  it is about instead of pushing the crewmate's findings up the main chat.
+docs_url: docs/system-specs/modules/history.md
+summary: Reply in thread on a crewmate's bubble; the thread panel opens and the bubble shows a replies footer
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
+  - Still in the Developer section, below the Feature Previews list, find the "Crewmates" heading and turn on the switch titled "Reply threads on crewmate chat messages".
+  - Open the Crew Members page. After the preview is on, a "Crew Members" item appears in the left rail, directly under Sessions; click it.
+  - Click the member named Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) to open its chat.
+  - Type exactly "what is one thing you can help me with?" in the message box and send it with Enter. Wait about three seconds and confirm a reply bubble from the crewmate appeared under your message.
+  - Move the mouse over the crewmate's reply bubble. A small row of icon buttons appears under it; one is titled "Reply in thread" (a speech-bubble icon). Click it.
+  - A panel titled "Thread" opens on the right, beside the chat. It quotes the crewmate's reply at the top and says "No replies yet" under it, with a one-line box at the bottom whose placeholder reads "Reply in thread…".
+  - Type exactly "tell me more about that" in the "Reply in thread…" box in the Thread panel (not the main message box at the bottom of the chat) and send it with Enter. Wait about three seconds.
+expectations:
+  - The Thread panel is open on the right with the heading "Thread", and the main chat is still visible to its left.
+  - Inside the Thread panel, a bubble containing "tell me more about that" is visible under the quoted crewmate reply.
+  - In the main chat, under the crewmate's reply bubble that the thread was started on, a footer with a reply count is visible; it reads "1 reply" right after sending, or "2 replies" once the crewmate has answered in the thread.
+  - The main chat does not contain a bubble with "tell me more about that"; that text is only in the Thread panel.
+max_steps: 20
+max_seconds: 480

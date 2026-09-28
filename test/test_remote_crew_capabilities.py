@@ -1,0 +1,671 @@
+"""``GET /api/instances/{id}/capabilities`` — the peer's rosters, re-shaped.
+
+A session bound to a peer for execution must offer the PEER's agents, models,
+effort levels and workspaces in its header; the local ones describe a machine
+that is not answering the turn, so a wrong pick is accepted by the picker and
+refused on send. These tests pin the two halves that makes true: the **shape**
+each peer endpoint answers with (they do not agree, and a mismatch degrades to a
+silently empty menu rather than an error), and the **clamping** applied to a
+peer's reply, which is untrusted input on its way to the browser.
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+import kiro_crew
+from kiro_crew.dashboard import handlers_instances as hi
+
+
+class _Req:
+    """Request stub mirroring aiohttp's mapping surface.
+
+    ``user`` is "local-app" because the handler's owner gate is POSITIVE
+    (``is_owner_dashboard_request``): with no configured owner_id only the local
+    dashboard subjects pass, so a bare truthy user would fail the second gate.
+    """
+
+    def __init__(self, state, instance_id, identity):
+        self.app = {"state": state}
+        self.match_info = {"id": instance_id}
+        self.headers: dict[str, str] = {}
+        self.query: dict[str, str] = {}
+        self._attrs = identity
+
+    def get(self, key, default=""):
+        return self._attrs.get(key, default)
+
+    def __contains__(self, key):
+        return key in self._attrs
+
+    def __getitem__(self, key):
+        return self._attrs[key]
+
+
+def _request(state, instance_id="nobita", app="", user="local-app"):
+    return _Req(state, instance_id, {"user": user, "app": app})
+
+
+def _enable_instances(monkeypatch):
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+
+
+def _state(replies, *, raises: set[str] | None = None):
+    """A state whose manager answers ``peer_capability`` from *replies* by path."""
+    raises = raises or set()
+
+    async def _peer_capability(_iid, path):
+        if path in raises:
+            raise ConnectionResetError("tunnel died")
+        return replies.get(path, (False, {"code": "capability_error"}))
+
+    return SimpleNamespace(instances_manager=SimpleNamespace(peer_capability=_peer_capability))
+
+
+def _all_ok(**overrides):
+    """Every capability read succeeding, in each endpoint's REAL reply shape."""
+    replies = {
+        "/api/version": (True, {"version": kiro_crew.__version__}),
+        # A dict with the list under a key, next to a sibling default — this is
+        # what `GET /api/agents` actually answers with.
+        "/api/agents": (True, {"agents": [{"name": "coder"}], "default_agent": "coder"}),
+        # A BARE list — `GET /api/models` answers with no envelope at all.
+        "/api/models": (True, [{"model_name": "sonnet", "context_window": 200000}]),
+        "/api/effort-levels": (True, ["low", "high"]),
+        "/api/workspaces": (
+            True,
+            {"workspaces": [{"name": "main", "path": "/w"}], "default": "main"},
+        ),
+    }
+    replies.update(overrides)
+    return replies
+
+
+async def _body(resp):
+    return json.loads(resp.body.decode())
+
+
+@pytest.mark.asyncio
+class TestPayloadShapes:
+    """Each peer endpoint answers differently; all four must reach the picker."""
+
+    async def test_a_dict_wrapped_agents_reply_still_populates_the_picker(self, monkeypatch):
+        """The regression that matters most: agents arrive WRAPPED.
+
+        ``GET /api/agents`` answers ``{"agents": [...], "default_agent": ...}``
+        while ``_cap_rows`` accepts only a list. Handing it the dict returns
+        ``[]``, which is indistinguishable in the UI from a crew that genuinely
+        has no agents — so the bound session's agent picker would be empty on
+        every healthy peer, and nothing would report an error.
+        """
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok())
+
+        resp = await hi.api_instances_capabilities(_request(state))
+
+        assert resp.status == 200
+        data = await _body(resp)
+        assert [row["name"] for row in data["agents"]] == ["coder"]
+        assert data["unavailable"] == {}
+
+    async def test_the_peers_default_agent_is_carried_beside_its_roster(self, monkeypatch):
+        """What answers before the user picks anything.
+
+        A bound session records NO agent at create time (this machine's default
+        names a crew from this machine's roster), so the header has to render the
+        peer's default or it would advertise the wrong crew.
+        """
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok())
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["default_agent"] == "coder"
+
+    async def test_an_unreadable_roster_reports_no_default_agent(self, monkeypatch):
+        """ "" rather than a guess: the caller must not substitute the local default."""
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(**{"/api/agents": (False, {"code": "agent_list_failed"})}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["default_agent"] == ""
+        assert data["unavailable"]["agents"] == "agent_list_failed"
+
+    async def test_a_bare_models_list_is_accepted_unwrapped(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok())
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["models"] == [
+            {
+                "model_name": "sonnet",
+                "display_name": "",
+                "description": "",
+                "context_window": 200000,
+            }
+        ]
+
+    async def test_workspaces_carry_their_rows_and_the_peers_default(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok())
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["workspaces"] == [{"name": "main", "path": "/w"}]
+        assert data["default_workspace"] == "main"
+
+    async def test_effort_levels_keep_only_strings(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(_all_ok(**{"/api/effort-levels": (True, ["low", 7, None, "high", "HIGH"])}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["effort_levels"] == ["low", "high"]
+        register_levels.assert_called_once_with(["low", "high"])
+
+    async def test_presession_effort_levels_use_the_live_cap(self, monkeypatch, caplog):
+        _enable_instances(monkeypatch)
+        levels = [f"level{i:02d}" for i in range(33)]
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(_all_ok(**{"/api/effort-levels": (True, [None] * 32 + levels)}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["effort_levels"] == levels[:32]
+        register_levels.assert_called_once_with(levels[:32])
+        assert "Dropped 1 peer pre-session effort capability level" in caplog.text
+
+
+@pytest.mark.asyncio
+class TestVersionGate:
+    async def test_an_equal_version_reports_a_match(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok())
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["version"] == kiro_crew.__version__
+        assert data["local_version"] == kiro_crew.__version__
+        assert data["version_match"] is True
+
+    async def test_patch_compatible_peer_registers_advertised_effort(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        monkeypatch.setattr(kiro_crew, "__version__", "0.8.0")
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(
+            _all_ok(
+                **{
+                    "/api/version": (True, {"version": "0.8.7"}),
+                    "/api/effort-levels": (True, ["minimal"]),
+                }
+            )
+        )
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["version_match"] is True
+        assert data["effort_levels"] == ["minimal"]
+        register_levels.assert_called_once_with(["minimal"])
+
+    async def test_a_skewed_peer_reports_no_match(self, monkeypatch):
+        """Surfaced BEFORE the first send, which is the point of shipping it.
+
+        The relay refuses a version-skewed dispatch anyway; reporting it here is
+        what lets the UI explain the refusal while the composer is still empty
+        rather than after the user has typed a message.
+        """
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(**{"/api/version": (True, {"version": "0.0.1"})}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["version"] == "0.0.1"
+        assert data["version_match"] is False
+
+    async def test_an_unreported_version_is_not_a_match(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(**{"/api/version": (False, {"code": "capability_peer_too_old"})}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["version"] == ""
+        assert data["version_match"] is False
+        assert data["unavailable"]["version"] == "capability_peer_too_old"
+
+
+@pytest.mark.asyncio
+class TestPartialDegradation:
+    async def test_one_failed_read_does_not_fail_the_others(self, monkeypatch):
+        """Per-control degradation, so the UI can disable exactly what is missing.
+
+        Failing the whole request would blank a shelf whose other three controls
+        are perfectly usable.
+        """
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(**{"/api/models": (False, {"code": "model_list_timeout"})}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["models"] == []
+        assert data["unavailable"] == {"models": "model_list_timeout"}
+        assert [row["name"] for row in data["agents"]] == ["coder"]
+
+    async def test_a_raising_read_is_reported_as_unreachable(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(), raises={"/api/agents"})
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["agents"] == []
+        assert data["unavailable"] == {"agents": "capability_unreachable"}
+
+    async def test_a_non_dict_error_payload_still_names_a_code(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(**{"/api/workspaces": (False, "boom")}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["unavailable"] == {"workspaces": "capability_error"}
+        assert data["workspaces"] == []
+        assert data["default_workspace"] == ""
+
+
+@pytest.mark.asyncio
+class TestPeerReplyClamping:
+    """A peer is untrusted input on its way to the browser."""
+
+    async def test_unlisted_fields_are_dropped_not_forwarded(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(
+            _all_ok(
+                **{
+                    "/api/agents": (
+                        True,
+                        {"agents": [{"name": "coder", "system_prompt": "leak", "tools": ["fs"]}]},
+                    )
+                }
+            )
+        )
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert set(data["agents"][0]) == {"name", "description", "scope", "model"}
+
+    async def test_an_overlong_string_is_truncated(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(
+            _all_ok(
+                **{
+                    "/api/agents": (
+                        True,
+                        {"agents": [{"name": "x" * 500, "description": "y" * 900}]},
+                    )
+                }
+            )
+        )
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert len(data["agents"][0]["name"]) == 128
+        assert len(data["agents"][0]["description"]) == hi._CAP_MAX_STR
+
+    async def test_a_bogus_context_window_reads_as_unknown(self, monkeypatch):
+        """0 is the frontend's "unknown", which falls back to the reference window.
+
+        ``True`` is the case worth pinning: it is an ``int`` in Python, so a bare
+        isinstance check would forward ``1`` as a context window of one token.
+        """
+        _enable_instances(monkeypatch)
+        state = _state(
+            _all_ok(
+                **{
+                    "/api/models": (
+                        True,
+                        [
+                            {"model_name": "a", "context_window": "200000"},
+                            {"model_name": "b", "context_window": True},
+                        ],
+                    )
+                }
+            )
+        )
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert [row["context_window"] for row in data["models"]] == [0, 0]
+
+    async def test_a_flood_of_rows_is_capped(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        rows = [{"model_name": f"m{i}"} for i in range(hi._CAP_MAX_ROWS + 50)]
+        state = _state(_all_ok(**{"/api/models": (True, rows)}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert len(data["models"]) == hi._CAP_MAX_ROWS
+
+    async def test_non_dict_rows_are_skipped(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        state = _state(_all_ok(**{"/api/models": (True, ["sonnet", None, {"model_name": "opus"}])}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert [row["model_name"] for row in data["models"]] == ["opus"]
+
+
+@pytest.mark.asyncio
+class TestGates:
+    async def test_no_manager_is_a_503_not_an_empty_roster(self, monkeypatch):
+        """503 so the client retries; an empty 200 would cache "no models"."""
+        _enable_instances(monkeypatch)
+        state = SimpleNamespace(instances_manager=None)
+
+        resp = await hi.api_instances_capabilities(_request(state))
+
+        assert resp.status == 503
+        assert (await _body(resp))["code"] == "instances_unavailable"
+
+    async def test_the_feature_flag_is_enforced(self, monkeypatch):
+        monkeypatch.setattr(
+            hi.KiroCrewConfig,
+            "load",
+            staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=False))),
+        )
+
+        resp = await hi.api_instances_capabilities(_request(_state(_all_ok())))
+
+        assert resp.status == 403
+
+    async def test_an_unauthenticated_caller_is_refused(self, monkeypatch):
+        _enable_instances(monkeypatch)
+
+        resp = await hi.api_instances_capabilities(_request(_state(_all_ok()), user=""))
+
+        assert resp.status == 401
+
+    async def test_a_slack_origin_cannot_read_a_peers_rosters(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        request = _request(_state(_all_ok()))
+        request.headers["X-Session-Key"] = "slack:C123"
+
+        resp = await hi.api_instances_capabilities(request)
+
+        assert resp.status == 403
+
+    async def test_a_non_owner_dashboard_subject_is_refused(self, monkeypatch):
+        """The reads spend the OWNER's manager-held peer credential.
+
+        A Slack-invited user holding a `!dashboard` link is an authenticated
+        subject with an empty app, so `_guard` alone would let them through.
+        """
+        _enable_instances(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda _r: False,
+        )
+
+        resp = await hi.api_instances_capabilities(_request(_state(_all_ok())))
+
+        assert resp.status in (401, 403)
+
+
+class TestUnwrapHelper:
+    """``_cap_list`` is what keeps a shape mismatch from becoming an empty menu."""
+
+    def test_a_bare_list_passes_through(self):
+        assert hi._cap_list([{"a": 1}], "agents") == [{"a": 1}]
+
+    def test_a_wrapped_list_is_unwrapped_by_key(self):
+        assert hi._cap_list({"agents": [{"a": 1}], "default_agent": "x"}, "agents") == [{"a": 1}]
+
+    def test_a_wrapper_without_the_key_yields_nothing_usable(self):
+        assert hi._cap_list({"other": [1]}, "agents") is None
+
+    def test_a_scalar_is_left_for_cap_rows_to_reject(self):
+        assert hi._cap_rows(hi._cap_list("nonsense", "agents"), {"name": 8}) == []
+
+
+class TestPeerCapabilityCarrier:
+    """The carrier is a closed path set, not a widening of the proxy fence."""
+
+    def test_the_path_set_holds_exactly_the_five_reads(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _PEER_CAPABILITY_PATHS
+
+        assert _PEER_CAPABILITY_PATHS == frozenset(
+            {
+                "/api/version",
+                "/api/agents",
+                "/api/models",
+                "/api/effort-levels",
+                "/api/workspaces",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_path_outside_the_set_raises_before_the_tunnel(self):
+        """The fence is checked BEFORE any target is resolved.
+
+        ``api/agents`` under the proxy's *prefix* fence would also have admitted
+        the peer's mutating ``PUT /api/agents/{name}``; this carrier cannot
+        express a path it does not list. A raise rather than a ``(False, …)`` is
+        deliberate: every caller passes a literal from the set, so reaching here
+        is a programming error and must not degrade into a soft "unavailable"
+        that reads like an offline peer.
+        """
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        mgr = SshTunnelManager.__new__(SshTunnelManager)
+        mgr._peer_target = MagicMock()
+
+        with pytest.raises(ValueError):
+            await mgr.peer_capability("nobita", "/api/agents/evil")
+        mgr._peer_target.assert_not_called()
+
+    @staticmethod
+    async def _timeout_used_for(path: str, monkeypatch) -> float:
+        """The ``ClientTimeout.total`` ``peer_capability`` builds for *path*.
+
+        The session is faked at the module seam, so the read never opens a
+        socket: the fake raises on entry and the call degrades to the ordinary
+        ``capability_unreachable`` answer after the timeout has been captured.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        mgr = stm.SshTunnelManager.__new__(stm.SshTunnelManager)
+        # This carrier re-reads the forward it resolved before it spends the
+        # credential, which asks the manager for the live tunnel and its generation.
+        # A manager assembled without `__init__` has to name both.
+        mgr._tunnels = {}
+        mgr._tunnel_epoch = {}
+        mgr._peer_target = MagicMock(return_value=("http://127.0.0.1:1" + path, "cookie"))
+        mgr._peer_cookie_header = AsyncMock(return_value={"Cookie": "c=1"})
+
+        captured: list[float] = []
+
+        class _FakeSession:
+            def __init__(self, *, timeout):
+                captured.append(timeout.total)
+                raise ConnectionResetError("captured; go no further")
+
+        monkeypatch.setattr(stm.aiohttp, "ClientSession", _FakeSession)
+        ok, payload = await mgr.peer_capability("nobita", path)
+        assert ok is False and payload["code"] == "capability_unreachable"
+        assert len(captured) == 1
+        return captured[0]
+
+    @pytest.mark.asyncio
+    async def test_the_models_read_gets_the_long_cold_path_budget(self, monkeypatch):
+        """`/api/models` runs under the 20s budget, not the shared 8s one.
+
+        The peer's cold model discovery is itself bounded at ~18s (sandbox
+        detection + `kiro-cli chat --list-models` + entitlement revalidation);
+        an 8s client budget kills every cold read and reports a healthy peer as
+        unreachable, which reads as an empty remote model picker.
+        """
+        from kiro_crew.acp.session_handle import _READ_PATH_PROBE_DEADLINE_SECS
+        from kiro_crew.dashboard.handlers.agents import _LIST_MODELS_SUBPROCESS_TIMEOUT_SECS
+        from kiro_crew.instances.constants import (
+            DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS,
+            DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS,
+        )
+        from kiro_crew.sandbox import _SANDBOX_BACKEND_PROBE_TIMEOUT_SECS
+
+        # Each term is the named production bound of one cold-path step:
+        # sandbox-backend detection, `kiro-cli chat --list-models`, and the
+        # entitlement revalidation read-path deadline.
+        cold_chain_secs = (
+            _SANDBOX_BACKEND_PROBE_TIMEOUT_SECS
+            + _LIST_MODELS_SUBPROCESS_TIMEOUT_SECS
+            + _READ_PATH_PROBE_DEADLINE_SECS
+        )
+
+        total = await self._timeout_used_for("/api/models", monkeypatch)
+        assert total == DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS
+        # The split only means something while the models budget clears the
+        # peer's cold worst case and the shared budget stays the short one.
+        assert DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS >= cold_chain_secs
+        assert DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS < DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS
+
+    @pytest.mark.asyncio
+    async def test_the_cheap_reads_keep_the_short_budget(self, monkeypatch):
+        """The four state-backed reads still settle at the 8s budget."""
+        from kiro_crew.instances.constants import DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS
+
+        for path in ("/api/version", "/api/agents", "/api/effort-levels", "/api/workspaces"):
+            total = await self._timeout_used_for(path, monkeypatch)
+            assert total == DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS, path
+
+
+class _FakeContent:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def iter_chunked(self, _size):
+        yield self._body
+
+
+class _FakeResp:
+    def __init__(self, status: int, body: bytes):
+        self.status = status
+        self.content = _FakeContent(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _manager_answering(monkeypatch, replies: dict[str, tuple[int, object]]):
+    """A real ``SshTunnelManager`` whose HTTP session answers from *replies*.
+
+    *replies* maps a capability path to ``(status, json_body)``; the carrier's
+    own status mapping and body parsing run unmodified against it.
+    """
+    from kiro_crew.instances import ssh_tunnel_manager as stm
+
+    mgr = stm.SshTunnelManager.__new__(stm.SshTunnelManager)
+    # This carrier re-reads the forward it resolved before it spends the credential,
+    # which asks the manager for the live tunnel and its generation. A manager
+    # assembled without `__init__` has to name both; empty is the right answer here,
+    # because `_peer_target` is mocked and the two readings compared are consistent.
+    mgr._tunnels = {}
+    mgr._tunnel_epoch = {}
+    mgr._peer_target = MagicMock(side_effect=lambda _iid, path: ("http://peer" + path, "cookie"))
+    mgr._peer_cookie_header = AsyncMock(return_value={"Cookie": "c=1"})
+
+    class _FakeSession:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def get(self, url, **_kwargs):
+            status, body = replies[url.removeprefix("http://peer")]
+            return _FakeResp(status, json.dumps(body).encode())
+
+    monkeypatch.setattr(stm.aiohttp, "ClientSession", _FakeSession)
+    return mgr
+
+
+_REVALIDATING_BODY = {"error": "model list revalidating", "code": "model_list_revalidating"}
+
+
+@pytest.mark.asyncio
+class TestPeerRevalidatingModels:
+    """A peer's deliberate revalidating 503 is transient, not a refusal.
+
+    The peer's ``/api/models`` answers 503 ``model_list_revalidating`` while an
+    entitlement revalidation is in flight and serves the corrected list on the
+    next read. Reported as ``capability_peer_refused`` it would latch the
+    remote model picker for the frontend's whole stale window, since the poll
+    gate re-reads only transient codes.
+    """
+
+    async def test_a_revalidating_503_maps_to_its_own_code(self, monkeypatch):
+        mgr = _manager_answering(monkeypatch, {"/api/models": (503, _REVALIDATING_BODY)})
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/models")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_revalidating"
+
+    async def test_any_other_503_is_still_a_refusal(self, monkeypatch):
+        mgr = _manager_answering(
+            monkeypatch,
+            {"/api/models": (503, {"error": "overloaded", "code": "busy"})},
+        )
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/models")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_refused"
+
+    async def test_a_revalidating_503_on_another_path_is_a_refusal(self, monkeypatch):
+        """Only the models read answers the deliberate revalidating 503."""
+        mgr = _manager_answering(monkeypatch, {"/api/agents": (503, _REVALIDATING_BODY)})
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/agents")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_refused"
+
+    async def test_a_503_with_a_non_object_body_is_a_refusal(self, monkeypatch):
+        mgr = _manager_answering(monkeypatch, {"/api/models": (503, None)})
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/models")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_refused"
+
+    async def test_the_capabilities_document_names_the_revalidating_field(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        replies: dict[str, tuple[int, object]] = {
+            path: (200, body) for path, (_ok, body) in _all_ok().items()
+        }
+        replies["/api/models"] = (503, _REVALIDATING_BODY)
+        mgr = _manager_answering(monkeypatch, replies)
+        state = SimpleNamespace(instances_manager=mgr)
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["models"] == []
+        assert data["unavailable"] == {"models": "capability_peer_revalidating"}
+        assert [row["name"] for row in data["agents"]] == ["coder"]

@@ -1,0 +1,39 @@
+rules:
+  # ─── str.find()/rfind(): -1 sentinel is truthy ───────────────────────
+  # str.find() and str.rfind() signal "not found" with -1, which is TRUTHY.
+  # Using the result directly in a boolean context therefore inverts the
+  # intended logic exactly when the needle is absent: `if s.find(x):` is
+  # true for "not found" and for every position except 0, and
+  # `s.rfind(x) or DEFAULT` never falls back to DEFAULT on a miss (-1 is
+  # kept). This shipped a real defect: a Slack-truncation helper read
+  # rfind's -1 as a valid cut position and left an oversized body intact.
+  # Compare explicitly instead: `if s.find(x) != -1:` / `pos = s.rfind(x);
+  # if pos == -1: pos = DEFAULT`. For pure membership, use `in`.
+
+  - id: kirocrew.find-sentinel-in-boolean-context
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $S.find(...): ...
+          - pattern: |
+              if $S.rfind(...): ...
+          - pattern: |
+              if not $S.find(...): ...
+          - pattern: |
+              if not $S.rfind(...): ...
+          - pattern: |
+              while $S.find(...): ...
+          - pattern: |
+              while $S.rfind(...): ...
+          - pattern: $S.find(...) or $DEFAULT
+          - pattern: $S.rfind(...) or $DEFAULT
+          - pattern: $S.find(...) and $THEN
+          - pattern: $S.rfind(...) and $THEN
+    message: >
+      str.find()/rfind() returns the sentinel -1 for "not found", and -1 is
+      truthy — this boolean context inverts the miss case (and treats a match
+      at index 0 as false). Compare against -1 explicitly
+      (`$S.find(...) != -1`), keep the index in a variable and branch on
+      `== -1`, or use `in` for membership.

@@ -1,0 +1,20 @@
+# Build context for BOTH recipes in this directory (Dockerfile and, when the
+# context happens to be this tree, Dockerfile.crew).
+#
+# container_tests/ is the image's own test suite: ~4,000 lines exercising a Linux
+# container's supervisor. Nothing COPYs it and nothing in the image could run it,
+# so it is pure context upload on every build. MANIFEST.in excludes it from the
+# sdist for the same reason and says so at length; this is the same rule applied
+# to the other place the tree gets packaged up and shipped somewhere.
+container_tests/
+
+# Never in an image, never in a context.
+**/__pycache__/
+**/*.py[cod]
+
+# NOT excluded, deliberately, so the notes below survive a future edit:
+#   vendor/    holds the single staged wheel, read through the Dockerfile's
+#              `--mount=type=bind,source=vendor`. A bind mount reads from the
+#              build context, so excluding it here breaks the build with a
+#              missing-mount error rather than a missing-file one.
+#   container/ is COPYed wholesale and is the running code.

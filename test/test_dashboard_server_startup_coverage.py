@@ -1,0 +1,1537 @@
+"""Coverage tests for ``kiro_crew.dashboard.server``'s startup path.
+
+Sibling of ``test_dashboard_server_coverage.py``, which pins the module's
+extracted *helpers*. What was left uncovered is the one thing no helper test can
+reach: the body of :func:`~kiro_crew.dashboard.server.start_dashboard` itself —
+the app factory that wires every route, middleware and lifecycle hook the
+gateway serves. Nothing asserted here is reachable from a helper, because the
+wiring order and the hook/middleware inventory only exist inside that function.
+
+The listener is never bound. ``start_dashboard`` builds
+``web.TCPSite(runner, addr, port)`` and binds it inside ``_start_site``;
+constructing the site is inert, so stubbing ``_start_site`` means no host port
+is opened. That is the pattern the sibling module established for
+``start_api_server`` — AUTOSDE ``no-test-side-effects`` is ``blocking: true`` and
+an ephemeral ``port=0`` would not exempt a real bind.
+
+Everything else that reaches outside the process is replaced rather than
+tolerated: app-backend launches, the builtin-app registration sweep, the Kiro
+prerequisite probe, the Playwright registration migration (which writes the
+operator's REAL ``~/.kiro/settings/mcp.json``, outside ``KIROCREW_HOME``), the
+terminal reaper (shells out to ``ps``) and the MCP probe. ``KIROCREW_HOME`` is
+pinned to ``tmp_path`` by ``test/conftest.py``, so the state files the startup
+writes stay inside the test's own directory.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import functools
+import os
+import socket
+import stat
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import BaseTestServer, TestClient, TestServer
+
+from kiro_crew.browser_cli import launch as browser_cli_launch
+from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
+from kiro_crew.browser_cli import token as browser_cli_token
+from kiro_crew.dashboard import server as srv
+
+requires_unix_socket = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="unix sockets are POSIX-only; Windows has no AF_UNIX bind for aiohttp",
+)
+
+
+# ── _remove_stale_unix_socket ───────────────────────────────────────────
+#
+# The pre-bind self-heal. It is the one filesystem unlink on the startup path
+# that runs against a path an operator can have replaced, so each arm is a
+# distinct safety decision rather than a variation on one.
+
+
+class TestRemoveStaleUnixSocket:
+    def test_absent_path_is_not_an_error(self, tmp_path: Path) -> None:
+        """A missing socket file is the normal first-boot case, not a failure."""
+        srv._remove_stale_unix_socket(tmp_path / "never-existed.sock")
+
+    def test_a_regular_file_is_left_in_place(self, tmp_path: Path, caplog) -> None:
+        """Only a socket inode may be removed.
+
+        Anything else at the path is someone else's file: unlinking it would
+        make a mis-pointed config path silently destroy operator data, so the
+        bind is allowed to fail instead.
+        """
+        victim = tmp_path / "not-a-socket"
+        victim.write_text("operator data", encoding="utf-8", newline="\n")
+
+        with caplog.at_level("WARNING", logger=srv.logger.name):
+            srv._remove_stale_unix_socket(victim)
+
+        assert victim.read_text(encoding="utf-8") == "operator data"
+        assert "is not a socket" in caplog.text
+
+    def test_a_directory_is_left_in_place(self, tmp_path: Path) -> None:
+        """A directory is not a socket either — and unlink would raise on it."""
+        victim = tmp_path / "dir-in-the-way"
+        victim.mkdir()
+
+        srv._remove_stale_unix_socket(victim)
+
+        assert victim.is_dir()
+
+    @requires_unix_socket
+    def test_a_real_stale_socket_is_unlinked(self, short_sock_dir: Path) -> None:
+        """The arm that lets a restart rebind: a real socket inode is removed.
+
+        Asserted against a real ``AF_UNIX`` inode rather than a mocked
+        ``os.stat``, because the whole decision is ``S_ISSOCK`` on the real
+        mode bits.
+        """
+        path = short_sock_dir / "stale.sock"
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(str(path))
+            assert stat.S_ISSOCK(os.stat(path).st_mode)
+
+            srv._remove_stale_unix_socket(path)
+        finally:
+            sock.close()
+
+        assert not path.exists()
+
+    @requires_unix_socket
+    def test_an_unlink_failure_is_logged_and_swallowed(
+        self, short_sock_dir: Path, monkeypatch, caplog
+    ) -> None:
+        """A refused unlink must degrade to TCP-only, not abort startup.
+
+        The unlink can fail on a read-only or permission-restricted data home;
+        raising here would take the whole gateway down over an optional
+        transport.
+        """
+        path = short_sock_dir / "stale.sock"
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(str(path))
+            monkeypatch.setattr(
+                Path,
+                "unlink",
+                lambda _self, **_kw: (_ for _ in ()).throw(
+                    OSError(errno.EACCES, "permission denied")
+                ),
+            )
+
+            with caplog.at_level("WARNING", logger=srv.logger.name):
+                srv._remove_stale_unix_socket(path)
+        finally:
+            sock.close()
+
+        assert "could not remove stale dashboard socket" in caplog.text
+
+
+# ── _register_unix_socket_cleanup ───────────────────────────────────────
+
+
+class TestRegisterUnixSocketCleanup:
+    """The holder is read LAZILY at shutdown, which is the whole point.
+
+    The hook must be registered before ``runner.setup()`` freezes the signal
+    lists, but the socket path only becomes known after the site starts — so a
+    hook that captured the value eagerly would always see ``None``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_socket_means_nothing_is_removed(self) -> None:
+        """Windows and every degraded-to-TCP boot land here."""
+        app = web.Application()
+        holder: dict[str, Path | None] = {"path": None}
+        srv._register_unix_socket_cleanup(app, holder)
+        removed: list[Path] = []
+
+        async with TestClient(TestServer(app)):
+            pass
+
+        assert removed == []
+
+    @requires_unix_socket
+    @pytest.mark.asyncio
+    async def test_the_socket_named_after_registration_is_removed(
+        self, short_sock_dir: Path
+    ) -> None:
+        """A clean shutdown must not leave a socket file behind.
+
+        Each stale file costs the next client a refused connect before its TCP
+        fallback, so this is the difference between a clean restart and one that
+        looks broken to every internal caller.
+        """
+        path = short_sock_dir / "dash.sock"
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(str(path))
+        sock.close()
+        app = web.Application()
+        holder: dict[str, Path | None] = {"path": None}
+
+        srv._register_unix_socket_cleanup(app, holder)
+        # Only now is the path known — exactly the ordering the lazy read exists
+        # for.
+        holder["path"] = path
+
+        async with TestClient(TestServer(app)):
+            assert path.exists()
+
+        assert not path.exists()
+
+
+# ── start_dashboard ─────────────────────────────────────────────────────
+
+
+def _fake_reserved_socket(port: int = 18321, host: str = "127.0.0.1") -> MagicMock:
+    """An inert stand-in for the boot path's reserved (bound, unlistening) socket.
+
+    No real bind happens (no-test-side-effects): the double answers the two
+    reads the boot path makes — getsockname for the evidence export, close on
+    the failure guards.
+    """
+    sock = MagicMock()
+    sock.getsockname.return_value = (host, port)
+    return sock
+
+
+class _FakeSockSite:
+    """Inert web.SockSite double: accepts the runner+socket, serves nothing."""
+
+    def __init__(self, runner: Any, sock: Any) -> None:  # noqa: ARG002
+        self._runner = runner
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
+    """Replace every startup step that reaches outside this process.
+
+    Returns the spies, so a test can assert a step ran without the step itself
+    launching anything. Grouped in one helper because omitting any single entry
+    does not fail the test — it silently spawns a real subprocess, writes the
+    operator's real config, or shells out to ``ps``, which is the shape of side
+    effect AUTOSDE ``no-test-side-effects`` is blocking on.
+    """
+    import kiro_crew.apps.dev_mode as dev_mode
+    import kiro_crew.kiro_prerequisite as kiro_prereq
+
+    spies: dict[str, Any] = {
+        # Spawns a real backend process per enabled app.
+        "start_enabled_app_backends": MagicMock(return_value=[]),
+        # The bound-port wave (Dev Fleet) — spawned after the site is bound.
+        "start_deferred_app_backends": MagicMock(return_value=[]),
+        # Writes into the apps dir and re-materialises builtin manifests.
+        "register_builtin_apps": MagicMock(),
+        # Rewrites the operator's REAL ~/.kiro/settings/mcp.json — the one step
+        # here whose target is outside KIROCREW_HOME.
+        "cleanup_migrated_builtin": MagicMock(),
+        "on_gateway_startup": AsyncMock(),
+        "on_gateway_shutdown": AsyncMock(),
+    }
+    for name, spy in spies.items():
+        monkeypatch.setattr(srv, name, spy)
+
+    # Probes Kiro readiness by spawning sandboxed CLI subprocesses.
+    prereq = MagicMock()
+    prereq.close = AsyncMock()
+    # start_dashboard awaits the boot-time identity-baseline seed; a bare
+    # MagicMock attribute is not awaitable.
+    prereq.seed_sessions_baseline = AsyncMock(return_value=True)
+    monkeypatch.setattr(kiro_prereq, "KiroPrerequisiteService", MagicMock(return_value=prereq))
+    spies["kiro_prerequisite"] = prereq
+
+    # A filesystem watcher on the apps tree.
+    monkeypatch.setattr(dev_mode, "init_dev_mode_watcher", AsyncMock())
+    monkeypatch.setattr(dev_mode, "stop_dev_mode_watcher", AsyncMock())
+
+    # Background pollers: the terminal reaper shells out to ``ps``, the MCP
+    # probe launches every configured MCP server, and the title poller drives
+    # live PTYs. All three are fire-and-forget tasks, so a real one would
+    # outlive the test.
+    async def _noop() -> None:
+        return None
+
+    for name in ("_bg_mcp_probe", "reap_orphaned_terminals", "poll_terminal_titles"):
+        monkeypatch.setattr(srv.handlers, name, MagicMock(side_effect=lambda *_a, **_k: _noop()))
+
+    return spies
+
+
+async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
+    """Run the real ``start_dashboard`` without binding a listener.
+
+    ``_start_site`` is the only bind on the path, so stubbing it is what keeps
+    this from starting a service; everything else runs for real against the
+    ``tmp_path`` data home. Returns ``(runner, state, spies)``.
+    """
+    import kiro_crew.config.loader as _loader
+    import kiro_crew.dashboard.state as _st
+
+    monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+    monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+    # The boot calls ``init_hooks_system`` with this module's MagicMock cron
+    # service and binds the result to two process globals nothing unbinds; a
+    # later module on the same worker that revokes an app trust would then
+    # await that MagicMock (the eleventh sweep's ten flaky 409s). Pin them
+    # here so monkeypatch puts back what this test found -- the leaker's own
+    # contract, alongside the rootdir conftest's snapshot/restore floor.
+    from kiro_crew.apps import hooks_integration as _hooks
+
+    monkeypatch.setattr(_hooks, "_lifecycle_dispatcher", None)
+    monkeypatch.setattr(_hooks, "_route_registry", None)
+    # POSIX-only extra transport; irrelevant to the wiring under test and it
+    # would bind a real socket in the data home.
+    monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+    # Inert TCP doubles (no-test-side-effects): a real reservation + SockSite
+    # would open a host listener from a unit test. The fake socket answers the
+    # boot path's getsockname reads; the SockSite double accepts start/stop.
+    monkeypatch.setattr(
+        srv, "_reserve_dashboard_port", AsyncMock(return_value=_fake_reserved_socket())
+    )
+    monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+    spies = _neutralise_outside_process_work(monkeypatch)
+    # start_dashboard mutates os.environ directly (browser_cli_snapshots /
+    # browser_cli_token / browser_cli_launch cli_env_overrides()) so descendant
+    # `playwright-cli` invocations inherit them -- real, deliberate production
+    # behavior, not a bug. monkeypatch has no visibility into a raw
+    # os.environ.update(), so snapshot+restore the concrete keys it can touch
+    # here instead. `delenv(raising=False)` on an ABSENT key registers no undo,
+    # so a value production writes afterwards would survive teardown; setenv
+    # to "" first records the absence and restores it, and start_dashboard
+    # overwrites the placeholder before anything reads it.
+    for _leak_key in (
+        browser_cli_snapshots.OUTPUT_DIR_ENV,
+        browser_cli_token.TOKEN_ENV,
+        browser_cli_launch.CONFIG_ENV,
+        # The port-reservation boot path exports the reserved socket's name as
+        # bound-port evidence before the app-backend pass -- same raw
+        # os.environ write, same snapshot+restore need.
+        "KIROCREW_BOUND_PORT",
+        "KIROCREW_BOUND_HOST",
+    ):
+        _prior = os.environ.get(_leak_key)
+        monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+        if _prior is None:
+            monkeypatch.delenv(_leak_key, raising=False)
+
+    sessions = MagicMock(count=0)
+    sessions.remove = AsyncMock()
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.any_active_turn = MagicMock(return_value=False)
+    runner, state = await srv.start_dashboard(
+        sessions=sessions,
+        crons=MagicMock(
+            list_jobs=MagicMock(return_value=[]),
+            list_jobs_async=AsyncMock(return_value=[]),
+            status=MagicMock(return_value={}),
+        ),
+        lessons=MagicMock(load_all=MagicMock(return_value=[])),
+        port=0,
+        **kwargs,
+    )
+    return runner, state, spies
+
+
+class _RunningAppServer(BaseTestServer):
+    """A loopback listener over an AppRunner that ``start_dashboard`` ALREADY set up.
+
+    ``TestServer(runner.app)`` would wrap the app in a second ``AppRunner`` and
+    run every ``on_startup`` hook again on the frozen app: a second proxy
+    ``ClientSession`` and knowledge watcher (the first of each is orphaned),
+    plus aiohttp's deprecation warning on each ``app[...]`` write. Serving the
+    runner's existing protocol factory through a ``ServerRunner`` binds a port
+    without touching the application's lifecycle; the app is torn down once,
+    by ``_dashboard``, through the real cleanup path.
+    """
+
+    def __init__(self, runner: web.AppRunner, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._app_runner = runner
+
+    @property
+    def app(self) -> web.Application:
+        return self._app_runner.app
+
+    async def _make_runner(self, **kwargs: Any) -> web.ServerRunner:
+        server = self._app_runner.server
+        assert server is not None, "the dashboard runner has not been set up"
+        return web.ServerRunner(server, **kwargs)
+
+
+@asynccontextmanager
+async def _dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
+    """A fully wired dashboard app, torn down through the real cleanup path.
+
+    An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this
+    suite's convention (the pinned pytest-asyncio does not collect async
+    generator fixtures declared with plain ``@pytest.fixture``).
+
+    The teardown is not incidental: ``runner.cleanup()`` dispatches every
+    ``on_cleanup`` hook the startup registered, so the hooks are exercised as
+    well as counted.
+
+    The task sweep afterwards is this harness's own hygiene, not a product
+    contract. Four perpetual loops the startup creates — the loop heartbeat, the
+    channel-slot reconciler, the state flush loop and the chat sweeper — have no
+    cleanup hook, because in production the process exits at shutdown. In a test
+    they would outlive the case and be reported against whichever one runs next,
+    so they are cancelled here. The same reasoning covers the two process-level
+    handles the startup opens and no cleanup hook closes; see
+    :func:`_release_process_handles`.
+    """
+    runner, state, spies = await _start_dashboard(tmp_path, monkeypatch, **kwargs)
+    try:
+        yield runner, state, spies
+    finally:
+        await runner.cleanup()
+        await _cancel_stray_tasks()
+        _release_process_handles(state)
+
+
+def _release_process_handles(state: Any) -> None:
+    """Close the file descriptors ``start_dashboard`` opens for the process lifetime.
+
+    Two handles outlive ``runner.cleanup()`` by design, because production closes
+    them by exiting: the loop-stall crash-dump file (a raw ``os.open`` fd held by
+    the watchdog, which no garbage collection ever closes and whose own
+    ``close()`` is a deliberate no-op) and the knowledge store's SQLite
+    connections (``db`` + ``-wal`` + ``-shm`` each). In a test they accumulate
+    one set per dashboard start on the worker, so the harness closes them once
+    the real shutdown path has run. The dump fd is closed at the OS level, which
+    is safe only after the watchdog has stopped: ``stop()`` cancels the
+    ``faulthandler`` timer that would otherwise write into it. The store keeps a
+    connection PER THREAD, and startup opens three on default-executor threads
+    (the source watcher's first sweep and the orphan reclaim, via
+    ``asyncio.to_thread``) besides the loop thread's own; ``close()`` releases
+    only the calling thread's (its pinned contract), so the harness calls
+    ``KnowledgeStore._close_all_for_tests``, which releases every connection the store
+    opened, whichever thread owns it, so none is left to the collector.
+    """
+    watchdog = getattr(state, "_loop_watchdog", None)
+    if watchdog is not None:
+        watchdog.stop()
+        dump_file = getattr(watchdog, "_dump_file", None)
+        if dump_file is not None and not dump_file.closed:
+            os.close(dump_file.fileno())
+    store = getattr(state, "_knowledge_store", None)
+    if store is not None:
+        store._close_all_for_tests()
+
+
+async def _cancel_stray_tasks() -> None:
+    """Cancel every task other than the caller's own, then await them."""
+    stray = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in stray:
+        task.cancel()
+    if stray:
+        await asyncio.gather(*stray, return_exceptions=True)
+
+
+def _record_states(monkeypatch) -> list[Any]:
+    """Record every ``DashboardState`` the boot builds, for a boot that raises.
+
+    A failing ``start_dashboard`` never returns its state, yet by the time it
+    fails it has already opened the knowledge store's connections (the route
+    registration reads the lazy property), and production releases those by
+    exiting. Handing the recorded state to :func:`_release_process_handles`
+    is what lets a failure-path test close them.
+    """
+    built: list[Any] = []
+    real_state = srv.DashboardState
+
+    def _recording(*args: Any, **kwargs: Any) -> Any:
+        state = real_state(*args, **kwargs)
+        built.append(state)
+        return state
+
+    monkeypatch.setattr(srv, "DashboardState", _recording)
+    return built
+
+
+class TestReserveDashboardPort:
+    @staticmethod
+    def _assert_kernel_confirms_listening(sock: socket.socket) -> None:
+        """Assert *sock* is in LISTEN posture, however this kernel reports it.
+
+        ``SO_ACCEPTCONN`` is the direct query, but defining the constant does
+        not mean supporting the query: macOS exposes it and then refuses the
+        ``getsockopt`` with ENOPROTOOPT. Fall back to the behavioural proof —
+        a completed ``connect()``/``accept()`` round trip is possible only
+        against a listening socket.
+        """
+        if hasattr(socket, "SO_ACCEPTCONN"):
+            try:
+                assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) != 0
+                return
+            except OSError:
+                pass  # constant defined, query unsupported (macOS)
+        client = socket.socket(sock.family, socket.SOCK_STREAM)
+        accepted: socket.socket | None = None
+        try:
+            client.settimeout(1)
+            client.connect(sock.getsockname())
+            accepted, _ = sock.accept()
+        finally:
+            if accepted is not None:
+                accepted.close()
+            client.close()
+
+    @staticmethod
+    def _ipv6_loopback_is_assignable() -> bool:
+        """Whether this host can ASSIGN ``::1``, not merely whether CPython knows IPv6.
+
+        ``socket.has_ipv6`` is a BUILD flag: it reports that CPython was compiled with
+        IPv6 support, which says nothing about whether the running kernel has an IPv6
+        loopback address. The Linux backend shards run in a container where IPv6 is
+        compiled in and ``::1`` is not assigned, so the build flag passes and the bind
+        below then fails with ``EADDRNOTAVAIL``.
+
+        ``instances/port_allocator.py`` draws the same distinction with the same errno
+        pair, for the same reason, so this follows its spelling. Every OTHER errno means
+        the probe could not be RUN rather than answered, so it propagates: coercing
+        ``EMFILE`` into "no IPv6 here" would skip the assertion on a host that has it.
+        """
+        unusable = {errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT}
+        try:
+            probe = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        except OSError as exc:
+            if exc.errno in {errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT}:
+                return False
+            raise
+        try:
+            probe.bind(("::1", 0))
+        except OSError as exc:
+            if exc.errno in unusable:
+                return False
+            raise
+        finally:
+            probe.close()
+        return True
+
+    def test_bind_once_matches_kernel_listener_posture(self) -> None:
+        """The reserved socket keeps the hardening required by SockSite."""
+        import inspect
+
+        ipv4_sock = srv._bind_once("127.0.0.1", 0)
+        ipv6_sock: socket.socket | None = None
+        try:
+            self._assert_kernel_confirms_listening(ipv4_sock)
+
+            if os.name == "posix":
+                # POSIX guarantees only "nonzero when set" — BSD kernels
+                # (macOS) report the option's bitmask value, not 1.
+                assert ipv4_sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
+
+            if hasattr(socket, "IPPROTO_IPV6") and self._ipv6_loopback_is_assignable():
+                ipv6_sock = srv._bind_once("::1", 0)
+                assert ipv6_sock.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) != 0
+
+            # Unconditional, and deliberately beside the SO_EXCLUSIVEADDRUSE sibling
+            # below: the live assertion above runs only where `::1` is assignable, and
+            # the ordinary Linux shards are not such a host. Without a pin that every
+            # lane evaluates, deleting `server.py`'s
+            # `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)` would red nothing -- the hosted
+            # `backend-test-ipv6` lane runs a bounded five-case population out of two
+            # other files, so it does not cover this one either.
+            assert "IPV6_V6ONLY" in inspect.getsource(srv._bind_once)
+            assert "SO_EXCLUSIVEADDRUSE" in inspect.getsource(srv._bind_once)
+        finally:
+            if ipv6_sock is not None:
+                ipv6_sock.close()
+            ipv4_sock.close()
+
+    def test_the_ipv6_probe_reports_absent_when_the_address_cannot_be_assigned(
+        self, monkeypatch
+    ) -> None:
+        """A container with IPv6 compiled in but no ``::1`` -- the shape that broke CI."""
+
+        class _Unassignable:
+            def __init__(self, *_a: object) -> None: ...
+
+            def bind(self, _addr: object) -> None:
+                raise OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+
+            def close(self) -> None: ...
+
+        monkeypatch.setattr(socket, "socket", _Unassignable)
+        assert srv  # the module under test is the one imported above
+        assert not TestReserveDashboardPort._ipv6_loopback_is_assignable()
+
+    def test_the_ipv6_probe_reports_absent_when_the_family_is_unsupported(
+        self, monkeypatch
+    ) -> None:
+        def _no_family(*_a: object) -> object:
+            raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+
+        monkeypatch.setattr(socket, "socket", _no_family)
+        assert not TestReserveDashboardPort._ipv6_loopback_is_assignable()
+
+    def test_the_ipv6_probe_propagates_an_errno_that_answers_nothing(self, monkeypatch) -> None:
+        """``EMFILE`` means the probe could not RUN. Reading it as "no IPv6 here" would
+        skip the assertion on a host that has ``::1``, which is the failure this guard
+        exists to prevent."""
+
+        class _OutOfDescriptors:
+            def __init__(self, *_a: object) -> None: ...
+
+            def bind(self, _addr: object) -> None:
+                raise OSError(errno.EMFILE, "Too many open files")
+
+            def close(self) -> None: ...
+
+        monkeypatch.setattr(socket, "socket", _OutOfDescriptors)
+        with pytest.raises(OSError) as caught:
+            TestReserveDashboardPort._ipv6_loopback_is_assignable()
+        assert caught.value.errno == errno.EMFILE
+
+    def test_the_ipv6_assertion_runs_wherever_the_address_is_assignable(self, monkeypatch) -> None:
+        """Negative control for the guard: it must not have become an unconditional skip.
+
+        Drives the real test body with the probe forced BOTH ways against a socket that
+        reports ``IPV6_V6ONLY`` as UNSET. With the probe True the body must raise, which
+        proves the live assertion is load-bearing rather than merely reached; with it
+        False the body must pass, which proves the skip is what the probe decides.
+        Host-independent, so it holds on a container shard as well as on a host with
+        ``::1``.
+        """
+        bound: list[tuple[str, int]] = []
+        real_bind_once = srv._bind_once
+
+        class _V6OnlyUnset:
+            family = socket.AF_INET
+
+            def getsockopt(self, level: int, opt: int) -> int:
+                if (level, opt) == (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY):
+                    return 0
+                return 1
+
+            def close(self) -> None: ...
+
+        # `functools.wraps` sets `__wrapped__`, which `inspect.getsource` follows, so the
+        # body's own source assertions still read the REAL `_bind_once` rather than this
+        # recorder.
+        @functools.wraps(real_bind_once)
+        def _record(host: str, port: int) -> object:
+            bound.append((host, port))
+            return _V6OnlyUnset()
+
+        monkeypatch.setattr(srv, "_bind_once", _record)
+        monkeypatch.setattr(
+            TestReserveDashboardPort,
+            "_assert_kernel_confirms_listening",
+            staticmethod(lambda _s: None),
+        )
+
+        monkeypatch.setattr(
+            TestReserveDashboardPort, "_ipv6_loopback_is_assignable", staticmethod(lambda: True)
+        )
+        with pytest.raises(AssertionError):
+            TestReserveDashboardPort().test_bind_once_matches_kernel_listener_posture()
+        assert ("::1", 0) in bound
+
+        bound.clear()
+        monkeypatch.setattr(
+            TestReserveDashboardPort, "_ipv6_loopback_is_assignable", staticmethod(lambda: False)
+        )
+        TestReserveDashboardPort().test_bind_once_matches_kernel_listener_posture()
+        assert ("::1", 0) not in bound
+        assert ("127.0.0.1", 0) in bound
+
+    def test_bind_once_sets_exclusive_ownership_on_windows(self, monkeypatch) -> None:
+        """The Windows branch sets SO_EXCLUSIVEADDRUSE to a NONZERO value, live.
+
+        The source-string assertion above pins the constant's presence but
+        stays green if the option is set to 0 (which disables exclusivity).
+        This drives the real _bind_once under a faked Windows platform with a
+        recording socket, and asserts the option is actually enabled.
+        """
+        recorded: list[tuple[int, int, int]] = []
+
+        class _RecordingSocket:
+            def __init__(self, family: int, type_: int) -> None:
+                self.family = family
+
+            def setsockopt(self, level: int, opt: int, value: int) -> None:
+                recorded.append((level, opt, value))
+
+            def bind(self, addr: object) -> None:
+                pass
+
+            def listen(self, backlog: int) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        exclusive_opt = 12345  # sentinel: Linux's socket module lacks the real one
+        monkeypatch.setattr(srv.os, "name", "nt")
+        monkeypatch.setattr(srv.socket, "SO_EXCLUSIVEADDRUSE", exclusive_opt, raising=False)
+        monkeypatch.setattr(srv.socket, "socket", _RecordingSocket)
+        srv._bind_once("127.0.0.1", 0)
+        exclusive_calls = [v for (_lvl, opt, v) in recorded if opt == exclusive_opt]
+        assert exclusive_calls, "SO_EXCLUSIVEADDRUSE was never set on the Windows path"
+        assert all(
+            v != 0 for v in exclusive_calls
+        ), "SO_EXCLUSIVEADDRUSE set to 0 disables exclusive ownership"
+
+
+class TestStartDashboardWiring:
+    @pytest.mark.asyncio
+    async def test_backends_spawn_with_the_reserved_ports_evidence_exported(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The reserved socket's REAL name is exported before the spawn pass.
+
+        The origin/proof injection in ``apps.backend`` is fail-closed on
+        ``KIROCREW_BOUND_PORT``. The boot path reserves (bound and listening,
+        not yet accepting) the dashboard port BEFORE the app-backend pass and
+        exports the socket's kernel-assigned name — so the spawn pass must observe
+        exactly that port, for a fixed port and ``--port auto`` alike, and a
+        squatter can never hold the port the backends were told to trust.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        seen: list[str | None] = []
+        real_port = 43121
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=_fake_reserved_socket(port=real_port)),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        spies["start_enabled_app_backends"].side_effect = lambda: (
+            seen.append(os.environ.get("KIROCREW_BOUND_PORT")),
+            [],
+        )[1]
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+        # Stale inherited evidence (an in-process restart / exporting parent):
+        # the reservation export must SUPERSEDE it, never leak it to the pass.
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "55555")
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        runner, state = await srv.start_dashboard(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+        )
+        try:
+            assert seen == [str(real_port)], (
+                "the spawn pass must observe the reserved socket's own port "
+                f"({real_port}), not inherited or configured evidence; it saw "
+                f"{seen!r}"
+            )
+        finally:
+            await runner.cleanup()
+            await _cancel_stray_tasks()
+            _release_process_handles(state)
+
+    @pytest.mark.asyncio
+    async def test_ipv6_loopback_bind_exports_v6_host_evidence(self, tmp_path, monkeypatch) -> None:
+        """A ::1 bind exports ::1 as the callback host, never IPv4 loopback.
+
+        KIROCREW_BIND=::1 listens ONLY on the IPv6 loopback — IPv4
+        127.0.0.1:<port> stays unbound and seizable by a co-resident process.
+        Defaulting the origin host to 127.0.0.1 would therefore route the
+        backends' secrets to whatever grabs the v4 port: the host evidence
+        must say ::1 (which the injection brackets into http://[::1]:<port>).
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        seen: list[str | None] = []
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=_fake_reserved_socket(port=43122, host="::1")),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        spies["start_enabled_app_backends"].side_effect = lambda: (
+            seen.append(os.environ.get("KIROCREW_BOUND_HOST")),
+            [],
+        )[1]
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        runner, state = await srv.start_dashboard(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+        )
+        try:
+            assert seen == ["::1"], (
+                "an IPv6-loopback bind must export ::1 as host evidence; the "
+                f"spawn pass saw {seen!r}"
+            )
+        finally:
+            await runner.cleanup()
+            await _cancel_stray_tasks()
+            _release_process_handles(state)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_port_reservation_spawns_no_backends(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """No backend exists before the gateway owns its port.
+
+        The reservation is what makes the exported origin trustworthy: if the
+        port cannot be bound (a foreign holder kept it), the boot must die
+        WITHOUT having spawned children — a backend spawned first would present
+        its X-App-Secret to whatever answers at the origin it was handed.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv, "_reserve_dashboard_port", AsyncMock(side_effect=SystemExit(1)))
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        try:
+            with pytest.raises(SystemExit):
+                await srv.start_dashboard(
+                    sessions=sessions,
+                    crons=MagicMock(
+                        list_jobs=MagicMock(return_value=[]),
+                        list_jobs_async=AsyncMock(return_value=[]),
+                        status=MagicMock(return_value={}),
+                    ),
+                    lessons=MagicMock(load_all=MagicMock(return_value=[])),
+                    port=18321,
+                )
+            spies["start_enabled_app_backends"].assert_not_called()
+        finally:
+            await _cancel_stray_tasks()
+
+    @staticmethod
+    async def _start_dashboard_for_failure(
+        tmp_path: Path,
+        monkeypatch,
+        *,
+        reserved_socket: MagicMock,
+        backend_start_side_effect: Any | None = None,
+    ) -> None:
+        """Reach a selected post-reservation failure without host side effects."""
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=reserved_socket),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+        spies = _neutralise_outside_process_work(monkeypatch)
+        if backend_start_side_effect is not None:
+            spies["start_enabled_app_backends"].side_effect = backend_start_side_effect
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        await srv.start_dashboard(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_runner_setup_closes_the_socket_and_sweeps_backends(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failure in the middle startup span releases every claimed resource."""
+        reserved_socket = _fake_reserved_socket()
+        runner = SimpleNamespace(
+            setup=AsyncMock(side_effect=asyncio.CancelledError("setup cancelled")),
+            cleanup=AsyncMock(),
+        )
+        sweep = AsyncMock()
+        monkeypatch.setattr(srv, "build_hardened_runner", MagicMock(return_value=runner))
+        monkeypatch.setattr(srv, "_stop_spawned_backends", sweep)
+
+        try:
+            with pytest.raises(asyncio.CancelledError, match="setup cancelled"):
+                await self._start_dashboard_for_failure(
+                    tmp_path,
+                    monkeypatch,
+                    reserved_socket=reserved_socket,
+                )
+            runner.cleanup.assert_awaited_once_with()
+            sweep.assert_awaited_once_with()
+            reserved_socket.close.assert_called_once_with()
+        finally:
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_a_partial_spawn_failure_sweeps_recorded_backends(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A spawn pass that raises after one child is recorded still sweeps it."""
+        import kiro_crew.apps.backend as backend_mod
+
+        reserved_socket = _fake_reserved_socket()
+        swept_names: list[list[str]] = []
+
+        async def _sweep() -> None:
+            swept_names.append(backend_mod.spawned_backend_names())
+
+        sweep = AsyncMock(side_effect=_sweep)
+        monkeypatch.setattr(srv, "_stop_spawned_backends", sweep)
+
+        def _partial_spawn() -> list[str]:
+            monkeypatch.setitem(
+                backend_mod._processes,
+                "partial-app",
+                backend_mod.AppProcess(
+                    app_name="partial-app",
+                    pid=123,
+                    proc=MagicMock(),
+                ),
+            )
+            assert "partial-app" in backend_mod.spawned_backend_names()
+            raise RuntimeError("spawn boom")
+
+        try:
+            with pytest.raises(RuntimeError, match="spawn boom"):
+                await self._start_dashboard_for_failure(
+                    tmp_path,
+                    monkeypatch,
+                    reserved_socket=reserved_socket,
+                    backend_start_side_effect=_partial_spawn,
+                )
+            sweep.assert_awaited_once_with()
+            assert swept_names and "partial-app" in swept_names[0]
+            reserved_socket.close.assert_called_once_with()
+        finally:
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listen_stops_the_spawned_backends(self, tmp_path, monkeypatch) -> None:
+        """A boot that cannot start serving sweeps its spawned backends.
+
+        Backends spawn after the reservation, so their origin is real — but a
+        gateway whose SockSite fails to start will never answer at it. The
+        boot must run runner.cleanup() (whose _hooks_shutdown sweep stops this
+        process's backends) before propagating.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=_fake_reserved_socket()),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", MagicMock(side_effect=RuntimeError("listen boom")))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        states = _record_states(monkeypatch)
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        try:
+            with pytest.raises(RuntimeError, match="listen boom"):
+                await srv.start_dashboard(
+                    sessions=sessions,
+                    crons=MagicMock(
+                        list_jobs=MagicMock(return_value=[]),
+                        list_jobs_async=AsyncMock(return_value=[]),
+                        status=MagicMock(return_value={}),
+                    ),
+                    lessons=MagicMock(load_all=MagicMock(return_value=[])),
+                    port=0,
+                )
+            # runner.cleanup() dispatches on_cleanup, whose _hooks_shutdown
+            # awaits on_gateway_shutdown -- the observable proof the sweep ran.
+            spies["on_gateway_shutdown"].assert_awaited()
+        finally:
+            await _cancel_stray_tasks()
+            for state in states:
+                _release_process_handles(state)
+
+    @pytest.mark.asyncio
+    async def test_the_app_is_wired_and_reports_ready(self, tmp_path, monkeypatch) -> None:
+        """Readiness is published at the boot-to-ready boundary, last.
+
+        ``state.ready`` is the flag the desktop app waits on, so it must be true
+        only once every startup step above it has completed.
+        """
+        async with _dashboard(tmp_path, monkeypatch) as (runner, state, _spies):
+            assert state.ready is True
+            assert runner.app["state"] is state
+            assert runner.app["port"] == 0
+            assert state.resume_channel_agents is None
+
+    @pytest.mark.asyncio
+    async def test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Two waves, one contract each. The main wave runs before ``runner.setup()``
+        so an app's startup hooks find its backend running — and under the
+        reservation (``_reserve_dashboard_port`` above it) it already observes
+        ``KIROCREW_BOUND_PORT``, which
+        ``test_backends_spawn_with_the_reserved_ports_evidence_exported`` pins.
+        The second wave (``start_deferred_app_backends``) still runs only after
+        the site serves: the admission split lives in ``apps/backend.py`` and is
+        shared with the headless entrypoint, where the bound port only exists
+        post-listen."""
+        seen: dict[str, bool] = {}
+        real_setup = web.AppRunner.setup
+
+        async def _setup(self_runner):
+            seen["main_wave_before_setup"] = srv.start_enabled_app_backends.called
+            seen["deferred_wave_before_setup"] = srv.start_deferred_app_backends.called
+            return await real_setup(self_runner)
+
+        monkeypatch.setattr(web.AppRunner, "setup", _setup)
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, _state, spies):
+            assert seen == {
+                "main_wave_before_setup": True,
+                "deferred_wave_before_setup": False,
+            }
+            import kiro_crew.apps.backend as backend_mod
+
+            assert backend_mod.DEV_FLEET_APP_NAME == "dev-fleet"
+            assert spies["start_deferred_app_backends"].called
+
+    @pytest.mark.asyncio
+    async def test_gateway_launch_can_defer_restored_channel_agents(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        prepared = asyncio.get_running_loop().create_future()
+        prepared.set_result(None)
+        schedule_memory = MagicMock(return_value=prepared)
+        async with _dashboard(
+            tmp_path,
+            monkeypatch,
+            defer_channel_agent_resume=True,
+            schedule_memory_preparation=schedule_memory,
+        ) as (_runner, state, _spies):
+            assert callable(state.resume_channel_agents)
+            assert state.memory_startup_task is prepared
+            assert state.ready is True
+            schedule_memory.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_the_mcp_and_dashboard_routes_are_both_mounted(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The dashboard serves the MCP surface as well as its own routes.
+
+        A missing MCP route here is invisible in a browser and breaks every MCP
+        tool call, so the inventory is asserted rather than inferred from the
+        shared ``_register_mcp_routes`` helper being called.
+        """
+        async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
+            routes = {
+                (route.method, route.resource.canonical)
+                for route in runner.app.router.routes()
+                if route.resource is not None
+            }
+
+        for expected in (
+            ("POST", "/api/spawn"),
+            ("GET", "/api/crons"),
+            ("POST", "/api/send-message"),
+            ("GET", "/api/notifications"),
+            ("GET", "/api/status"),
+            ("GET", "/api/ws"),
+        ):
+            assert expected in routes, f"missing route: {expected}"
+
+    @pytest.mark.asyncio
+    async def test_the_middleware_chain_is_ordered_outermost_first(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Ordering is a security property, not a style choice.
+
+        The ``Host`` barrier must run OUTSIDE the audit middleware: aiohttp runs
+        middlewares outermost-first, and a rebinding attempt refused inside the
+        audit layer would 403 without ever being recorded (which is why
+        ``_audit_denied`` exists at all). The deny-audit boundary must in turn
+        run outside the ``Host`` barrier: that is what makes the recording
+        positional rather than dependent on every deny site calling the helper.
+        """
+        async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
+            names = [getattr(mw, "__name__", type(mw).__name__) for mw in runner.app.middlewares]
+
+        assert "host_validation_middleware" in names
+        assert "sel_audit_middleware" in names
+        assert names.index("host_validation_middleware") < names.index("sel_audit_middleware")
+        assert "deny_audit_middleware" in names, "the pre-audit deny boundary is not installed"
+        assert names.index("deny_audit_middleware") < names.index("host_validation_middleware")
+
+    @pytest.mark.asyncio
+    async def test_a_disallowed_host_is_refused_by_the_real_chain(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """DNS-rebinding barrier, through the app's own middleware stack.
+
+        Driven over the already-running app's handler rather than against the
+        production listener: the same middlewares are installed on the app, and
+        only an ephemeral loopback port is bound.
+        """
+        async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
+            async with TestClient(_RunningAppServer(runner)) as client:
+                resp = await client.get("/api/status", headers={"Host": "evil.example.com"})
+                assert resp.status == 403
+                assert "Host header not allowed" in await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_security_headers_are_applied_to_a_real_response(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The header middleware is wired, not merely defined.
+
+        Checked on a real response because ``_apply_security_headers`` is
+        reached through the middleware chain — a header set on a helper nobody
+        calls protects nothing.
+        """
+        async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
+            async with TestClient(_RunningAppServer(runner)) as client:
+                resp = await client.get("/api/status")
+                csp = resp.headers["Content-Security-Policy"]
+                assert "frame-ancestors 'self'" in csp
+                assert resp.headers["X-Content-Type-Options"] == "nosniff"
+                assert resp.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_hooks_are_registered_by_name(self, tmp_path, monkeypatch) -> None:
+        """Every long-lived subsystem must have a teardown hook.
+
+        Selected BY NAME: the lists are appended to as subsystems are added, so a
+        positional assertion silently repoints at whatever landed last.
+
+        The tunnel hook's *relative* position is asserted, because being ahead of
+        the others is its documented contract — ``on_cleanup`` runs in
+        registration order under a hard shutdown deadline, and a tunnel hook
+        queued behind the instances teardown (which waits on SSH children that
+        may ignore SIGTERM) can be starved, leaving the tunnel running after a
+        clean Ctrl+C. Index 0 belongs to aiohttp's own ``CleanupContext``, which
+        every ``web.Application`` registers in its constructor, so first-among-
+        product-hooks is the strongest true claim here.
+        """
+        async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
+            cleanup = [hook.__name__ for hook in runner.app.on_cleanup]
+            startup = [hook.__name__ for hook in runner.app.on_startup]
+
+        later_hooks = (
+            "_instances_shutdown",
+            "_connections_warm_shutdown",
+            "_prevent_sleep_shutdown",
+            "_status_sink_shutdown",
+            "_contrib_shutdown",
+            "_kiro_prerequisite_shutdown",
+            "_watchdog_shutdown",
+            "_unlink_unix_socket",
+        )
+        for name in ("_tunnel_shutdown", *later_hooks):
+            assert name in cleanup, f"missing on_cleanup hook: {name}"
+        tunnel_at = cleanup.index("_tunnel_shutdown")
+        for name in later_hooks:
+            assert tunnel_at < cleanup.index(name), f"{name} would starve the tunnel teardown"
+        for name in (
+            "_instances_startup",
+            "_contrib_startup",
+            "_hooks_startup",
+        ):
+            assert name in startup, f"missing on_startup hook: {name}"
+        # The warm scavenge is deliberately ABSENT from on_startup: those hooks run
+        # inside runner.setup(), before the listener binds, so the scavenge is kicked
+        # explicitly after _start_site instead (no-new-work-on-gateway-boot-path).
+        assert "_connections_warm_startup" not in startup
+
+    @pytest.mark.asyncio
+    async def test_a_cross_origin_post_is_refused(self, tmp_path, monkeypatch) -> None:
+        """The CSRF barrier is installed on the real chain.
+
+        A state-changing request from a page the operator merely visited must not
+        reach a handler: loopback is not a trust boundary, so the Origin check is
+        what stands between any local web page and the gateway's own API.
+        """
+        async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
+            async with TestClient(_RunningAppServer(runner)) as client:
+                resp = await client.post(
+                    "/api/notifications/clear",
+                    json={},
+                    headers={"Origin": "https://evil.example.com"},
+                )
+                assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_a_configured_url_joins_the_csrf_origin_set(self, tmp_path, monkeypatch) -> None:
+        """A published URL widens the CSRF allowlist — but only behind token auth.
+
+        The widening is guarded by an explicit re-check that the token-auth
+        middleware is installed, because ``dashboard.url`` means the dashboard is
+        reachable by something other than a loopback browser; widening the origin
+        set without authentication would accept state-changing requests from that
+        origin unauthenticated.
+        """
+        url = "http://dash.example.com:5476"
+        async with _dashboard(tmp_path, monkeypatch, dashboard_url=url, local_only=False) as (
+            runner,
+            _state,
+            _spies,
+        ):
+            assert any(getattr(mw, "_is_token_auth", False) for mw in runner.app.middlewares)
+            assert url in runner.app["allowed_origins"]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_stops_the_tunnel_it_never_started(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """No manager is built when the tunnel is disabled, so the provider is
+        stopped directly.
+
+        The on-demand link path provisions a tunnel straight on the provider and
+        never constructs a manager, so a hook that bailed out on
+        ``state.tunnel_manager is None`` left exactly the orphan it exists to
+        prevent.
+        """
+        provider = SimpleNamespace(stop=AsyncMock(), enabled=lambda: False)
+        monkeypatch.setattr(
+            srv,
+            "current_context",
+            lambda: SimpleNamespace(
+                tunnel=provider,
+                telemetry=SimpleNamespace(record_event=lambda *_a, **_k: None),
+                dashboard=SimpleNamespace(start_services=AsyncMock(), stop_services=AsyncMock()),
+            ),
+        )
+
+        runner, state, _spies = await _start_dashboard(tmp_path, monkeypatch)
+        assert state.tunnel_manager is None
+        await runner.cleanup()
+        await _cancel_stray_tasks()
+        _release_process_handles(state)
+
+        provider.stop.assert_awaited()
+
+    @staticmethod
+    def _tunnel_enabled_context(monkeypatch) -> None:
+        """Force the enable gate open so the tunnel setup call is reached.
+
+        Driven through the context provider rather than by writing
+        ``tunnel.enabled`` into the config, because ``start_dashboard`` ORs the
+        two and the provider arm needs no config-cache handling.
+        """
+        monkeypatch.setattr(
+            srv,
+            "current_context",
+            lambda: SimpleNamespace(
+                tunnel=SimpleNamespace(stop=AsyncMock(), enabled=lambda: True),
+                telemetry=SimpleNamespace(record_event=lambda *_a, **_k: None),
+                dashboard=SimpleNamespace(start_services=AsyncMock(), stop_services=AsyncMock()),
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_tunnel_reaches_the_tunnel_gate(self, tmp_path: Path, monkeypatch) -> None:
+        """A ``--no-tunnel`` process must not get a tunnel manager on its state.
+
+        Driven end to end through the REAL ``setup_tunnel`` with the enable gate
+        forced open and token auth irrelevant, because the boot-flag refusal is
+        checked ahead of both. The flag is read from process state rather than
+        passed down here -- ``slack.allowlist`` opens a second door that never
+        reaches this function, so a parameter would have guarded only this one.
+        """
+        from kiro_crew.tunnel import set_publish_disabled
+
+        self._tunnel_enabled_context(monkeypatch)
+        set_publish_disabled(True)
+        try:
+            runner, state, _spies = await _start_dashboard(tmp_path, monkeypatch)
+            try:
+                assert state.tunnel_manager is None
+            finally:
+                await runner.cleanup()
+                await _cancel_stray_tasks()
+                _release_process_handles(state)
+        finally:
+            set_publish_disabled(False)
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_gateway_still_asks_for_its_tunnel(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Without the flag the gate is asked exactly as before, so a normal
+        install's remote access cannot be taken away by this change.
+
+        Asserted at the call rather than on the returned state: ``setup_tunnel``
+        also returns None for an unrelated reason (no token auth in this harness),
+        so a state-only assertion would pass even if the tunnel were never
+        attempted at all.
+        """
+        from kiro_crew.tunnel import set_publish_disabled
+
+        self._tunnel_enabled_context(monkeypatch)
+        set_publish_disabled(False)
+        spy = AsyncMock(return_value=None)
+        monkeypatch.setattr(srv, "setup_tunnel", spy)
+
+        runner, state, _spies = await _start_dashboard(tmp_path, monkeypatch)
+        try:
+            spy.assert_awaited_once()
+        finally:
+            await runner.cleanup()
+            await _cancel_stray_tasks()
+            _release_process_handles(state)
+
+
+class TestGatewayShutdownIsGuaranteed:
+    """A hung/raising reconciler
+    stop must not skip on_gateway_shutdown() -- that sweep tears down app
+    backends, so skipping it strands spawned processes past gateway exit."""
+
+    @pytest.mark.asyncio
+    async def test_on_gateway_shutdown_runs_even_if_stopping_the_poller_raises(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        async def _boom() -> None:
+            raise RuntimeError("reconciler stop blew up")
+
+        monkeypatch.setattr(srv, "stop_hook_reconciler", _boom)
+        runner, state, spies = await _start_dashboard(tmp_path, monkeypatch)
+        try:
+            # cleanup dispatches _hooks_shutdown; the finally must still sweep.
+            await runner.cleanup()
+            spies["on_gateway_shutdown"].assert_awaited_once()
+        finally:
+            await _cancel_stray_tasks()
+            _release_process_handles(state)
+
+
+# ---------------------------------------------------------------------------
+# Reservation ladder: Windows TIME_WAIT patience (no-live-holder EADDRINUSE)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_windows_time_wait_no_holder_stretches_the_reservation_ladder(
+    monkeypatch: Any,
+) -> None:
+    """On Windows, EADDRINUSE with NO live holder out-waits TIME_WAIT.
+
+    The exclusive bind (SO_EXCLUSIVEADDRUSE in _bind_once) is documented to
+    refuse the port while the previous generation's connections sit in
+    TIME_WAIT — a state with no process to reclaim. A routine restart right
+    after serving must out-wait that (TcpTimedWaitDelay) rather than die on
+    the short graceful-handover ladder, so the NO_HOLDER outcome stretches
+    the budget to _TIME_WAIT_BUDGET_SECS on Windows.
+    """
+    from kiro_crew.dashboard.port_reclaim import NO_HOLDER
+
+    fails = 10  # more than the short ladder's retries below
+
+    real_bind_once = srv._bind_once
+    calls: list[int] = []
+
+    def flaky_bind(host: str, port: int) -> socket.socket:
+        calls.append(1)
+        if len(calls) <= fails:
+            raise OSError(errno.EADDRINUSE, "address in use (TIME_WAIT remnant)")
+        return real_bind_once(host, port)
+
+    monkeypatch.setattr(srv, "_bind_once", flaky_bind)
+    monkeypatch.setattr(srv.os, "name", "nt")
+    sock = await srv._reserve_dashboard_port(
+        "127.0.0.1",
+        0,
+        retries=3,
+        delay=0.001,
+        reclaim=AsyncMock(return_value=NO_HOLDER),
+    )
+    try:
+        assert len(calls) == fails + 1  # survived past the 3-attempt ladder
+    finally:
+        sock.close()
+
+
+@pytest.mark.asyncio
+async def test_live_holder_keeps_the_short_reservation_ladder_on_windows(
+    monkeypatch: Any,
+) -> None:
+    """A live foreign holder still fails fast on Windows.
+
+    The TIME_WAIT stretch is scoped to the no-holder signature: when a real
+    process owns the port, waiting four minutes cannot help and the short
+    ladder's prompt SystemExit (with its actionable message) is the right
+    outcome.
+    """
+    from kiro_crew.dashboard.port_reclaim import FOREIGN_HOLDER
+
+    calls: list[int] = []
+
+    def always_in_use(host: str, port: int) -> socket.socket:
+        calls.append(1)
+        raise OSError(errno.EADDRINUSE, "address in use (live holder)")
+
+    monkeypatch.setattr(srv, "_bind_once", always_in_use)
+    monkeypatch.setattr(srv.os, "name", "nt")
+    with pytest.raises(SystemExit):
+        await srv._reserve_dashboard_port(
+            "127.0.0.1",
+            0,
+            retries=3,
+            delay=0.001,
+            reclaim=AsyncMock(return_value=FOREIGN_HOLDER),
+        )
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome_name", ["UNAVAILABLE", "RECLAIM_FAILED"])
+async def test_non_time_wait_outcomes_keep_the_short_ladder_on_windows(
+    monkeypatch: Any, outcome_name: str
+) -> None:
+    """Only NO_HOLDER stretches the Windows ladder — nothing else.
+
+    UNAVAILABLE (probe tooling missing) and RECLAIM_FAILED (a live holder
+    that would not die) are not the TIME_WAIT signature: waiting four
+    minutes cannot free the port, so stretching on them would stall boot on
+    a rare collision — the no-new-work-on-gateway-boot-path harm. They keep
+    the short ladder's prompt exit.
+    """
+    from kiro_crew.dashboard import port_reclaim
+
+    outcome = getattr(port_reclaim, outcome_name)
+    calls: list[int] = []
+
+    def always_in_use(host: str, port: int) -> socket.socket:
+        calls.append(1)
+        raise OSError(errno.EADDRINUSE, "address in use")
+
+    monkeypatch.setattr(srv, "_bind_once", always_in_use)
+    monkeypatch.setattr(srv.os, "name", "nt")
+    # Shrink the stretch budget so a wrongly-stretched ladder shows up as a
+    # call-count difference in milliseconds instead of a four-minute stall.
+    monkeypatch.setattr(srv, "_TIME_WAIT_BUDGET_SECS", 0.006)
+    with pytest.raises(SystemExit):
+        await srv._reserve_dashboard_port(
+            "127.0.0.1",
+            0,
+            retries=3,
+            delay=0.001,
+            reclaim=AsyncMock(return_value=outcome),
+        )
+    assert len(calls) == 3

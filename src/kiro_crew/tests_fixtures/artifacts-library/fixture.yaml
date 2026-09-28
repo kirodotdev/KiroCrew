@@ -1,0 +1,7 @@
+schema-version: 2026-04-28
+fixture-name: artifacts-library
+description: |
+  Three saved artifacts of different kinds are ready for artifact-library tests.
+  The widget is on its second version, alongside a markdown document and an svg,
+  each with the meta.json / current.html / versions layout the artifact store writes.
+  This gives the library, version dropdown, and kind filter content on first boot.

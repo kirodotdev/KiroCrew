@@ -1,0 +1,180 @@
+name: Scheduled Failure Watch
+
+# A red `schedule:` run notifies nobody: no pull request carries its check, no
+# commit author gets the e-mail, and the Actions tab is the only place it shows.
+# Two workflows (`add-contributor.yml`, `fix-loop-analysis.yml`) each carry a
+# hand-copied "Surface failure as an issue" step for exactly this reason, and
+# `gui-user-test.yml` files its own nightly report issue. Every other scheduled
+# workflow was silent when red. This one watcher replaces the per-workflow copy:
+# it listens for the completion of every listed scheduled workflow and, when the
+# run was a SCHEDULED one that failed or timed out, opens (or bumps) ONE fixed-title
+# tracking issue per source workflow so a human actually sees it.
+#
+# WHY `workflow_run` AND NOT A STEP IN EACH WORKFLOW: the failure-surfacing
+# step must run after everything else and must exist in every scheduled
+# workflow; a copy per file drifts (three spellings already existed) and a new
+# `schedule:` workflow forgets it. One consumer with a name list cannot drift and
+# is extended by adding one line. It is the shape the fork review lanes and
+# `pr-readiness.yml` already use.
+#
+# WHY GATED ON `workflow_run.event == 'schedule'`: a `workflow_dispatch` run has
+# a human at the keyboard who sees the result, and a `workflow_call` run is
+# surfaced by its caller. Only the unattended schedule needs a messenger.
+#
+# WHY FAILURE *AND* TIMED_OUT, BUT NOT CANCELLED: a scheduled run that hit its
+# workflow-level clock is as invisible as a red one, and the timeout is the exact
+# shape that hid `fix-loop-analysis.yml`'s broken narrative half for two
+# consecutive Mondays. A job-level `timeout-minutes` reports as `failure`; only
+# the workflow-level clock reports `timed_out`, so both are listed. `cancelled`
+# is NOT: several watched workflows cancel their own scheduled run on purpose
+# (`pr-merge-conflict-label.yml` shares a `cancel-in-progress: true` group with
+# its push trigger, `nightly.yml` and `memory-benchmark.yml` single-flight, the
+# sweeps document pending-run supersession), so a cancelled scheduled run is a
+# by-design collapse, not a failure, and filing on it would be noise.
+#
+# DEDUPE: one open issue per source workflow, found by its EXACT fixed title
+# among the open issues carrying the `scheduled-failure` label. A repeat failure
+# adds a "Still failing (<conclusion>): <run url>" comment, not a second issue,
+# and at most one such comment per 6 hours: two watched lanes tick every 10 and
+# 15 minutes, so an unthrottled bump would append ~144 comments a day to one
+# issue and bury the run links a reader needs. Only the watcher's own bumps
+# count against that window -- a human triaging in the thread must not silence
+# the run links. Closing the issue resets the cycle, with the same 6-hour
+# window: a red run inside 6 hours of the close is logged, not filed, so a
+# maintainer closing the issue while a 10-minute lane is still red does not get
+# a fresh issue every tick; the first red run after the window opens a new one.
+# The lookup deliberately
+# uses `gh issue list --label`, which reads the issues API directly, and never
+# `--search`: the search index lags behind a create, and two watched workflows
+# tick every 10 and 15 minutes, so a search-based check could miss the issue
+# filed minutes earlier and open a duplicate; and title search is a phrase
+# match, so a human-filed issue that merely CONTAINS the phrase would absorb the
+# comment. The label narrows the list to this watcher's own issues and the
+# `--jq` equality on `.title` selects (same shape as `main-ratchet-audit.yml`).
+#
+# ADDING A SCHEDULED WORKFLOW: add its `name:` to the `workflows:` list below.
+# `test/test_scheduled_failure_watch.py` fails when a `schedule:` workflow is
+# neither listed here nor carries its own failure-issue step, so the list
+# cannot silently fall behind.
+#
+# NOT LISTED, on purpose (each already reaches a human on failure through its
+# own issue step; watching them too would file every red run twice):
+#   - Add Contributor      -- "Surface failure as an issue" (`if: failure()`)
+#   - Fix Loop Analysis    -- "Surface failure as an issue" in both jobs
+#   - GUI User Test        -- "File or update the nightly report issue"
+#
+# PERMISSIONS: `issues: write` only. The watcher never checks out code and
+# never reads the source run's artifacts; everything it needs is in the event
+# payload. `issues: write` implies the read that `gh issue list` needs.
+#
+# RUNNER: `ubuntu-latest`. A `workflow_run` completion has no live collaborator
+# actor for the AWS webhook allowlist to check, so it cannot route to the
+# CodeBuild fleet -- the same reason every `schedule:` job here stays hosted.
+
+on:
+  workflow_run:
+    workflows:
+      - "CI Runner Watchdog"
+      - "Connections L0 Static Metadata Probe"
+      - "Connections L1 Authorized-Grant Smoke"
+      - "Crew Image Build"
+      - "Deferred Findings Audit"
+      - "Fork PR Label"
+      - "Memory Benchmark (nightly)"
+      - "Nightly Build"
+      - "OTA Update Test (macOS)"
+      - "PR Merge-Conflict Label"
+      - "PR Readiness Self-Heal Sweep"
+      - "Ship Report"
+    types: [completed]
+
+permissions:
+  issues: write
+
+# At most one watcher per source workflow runs at a time, and the one in
+# progress is never killed: two watchers for the same workflow running side by
+# side is how a dedupe check passes twice and files two issues. GitHub keeps only
+# ONE pending run per group, so a third completion evicts the queued one -- that
+# costs nothing here, because the newest completion still runs after the
+# incumbent and finds the issue the incumbent opened.
+concurrency:
+  group: scheduled-failure-watch-${{ github.event.workflow_run.name }}
+  cancel-in-progress: false
+
+jobs:
+  surface:
+    name: Surface a red scheduled run as an issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      github.event.workflow_run.event == 'schedule' &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+       github.event.workflow_run.conclusion == 'timed_out')
+    steps:
+      - name: Open or bump the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SOURCE_NAME: ${{ github.event.workflow_run.name }}
+          SOURCE_PATH: ${{ github.event.workflow_run.path }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          export TITLE="$SOURCE_NAME scheduled run is failing"
+          # One 6-hour window governs both bumps and re-filing after a close.
+          # `SINCE` is exported for the jq filters below; the issues API compares
+          # timestamps in this exact shape.
+          export SINCE="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          # The label must exist before the list and the create below can use it;
+          # --force makes "already exists" a no-op. A refused label write must not
+          # stop the filing itself (the create below fails loud on its own if the
+          # label really is missing), so this is a notice, not an abort -- the
+          # same shape as main-ratchet-audit.yml.
+          gh label create scheduled-failure --repo "$REPO" --force \
+            --color B60205 \
+            --description "A scheduled workflow run failed; filed by scheduled-failure-watch.yml" \
+            >/dev/null \
+            || echo "::notice::Could not ensure the scheduled-failure label (continuing); it may already exist or label writes may be refused."
+          # `--label` reads the issues API directly (no search-index lag); the jq
+          # equality selects. Only an open issue whose title IS the fixed title is
+          # the tracking issue.
+          existing="$(gh issue list --repo "$REPO" --state open --label scheduled-failure \
+            --limit 100 --json number,title \
+            --jq 'map(select(.title == env.TITLE)) | .[0].number // empty')"
+          body="The scheduled \`$SOURCE_PATH\` run ended with conclusion \`$SOURCE_CONCLUSION\`: $RUN_URL
+
+          Nothing else surfaces a red or timed-out \`schedule:\` run, so this issue is the
+          notification. Check the run log, fix the cause, and close this issue once a
+          scheduled run is green again. While it stays open, later red runs add a
+          comment here at most once every 6 hours; a red run within 6 hours of this
+          issue being closed is logged in the watcher's run, not filed; the first red
+          run after that opens a fresh issue.
+
+          <sub>Filed by \`.github/workflows/scheduled-failure-watch.yml\`.</sub>"
+          if [ -n "$existing" ]; then
+            # Bump at most once per 6 hours, counting only the watcher's OWN bumps:
+            # a human comment in the thread must not silence the run links. `since`
+            # is the issues API's own filter (no search index), so a bump made a
+            # minute ago is already visible.
+            recent="$(gh api "repos/$REPO/issues/$existing/comments?since=$SINCE&per_page=100" \
+              --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("Still failing")))] | length')"
+            if [ "$recent" = "0" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body "Still failing ($SOURCE_CONCLUSION): $RUN_URL"
+            else
+              echo "Open issue #$existing was bumped within the last 6 hours; not bumping again for $RUN_URL"
+            fi
+          else
+            # Closed within the window? Then a human just looked at this lane; a
+            # fresh issue every 10-minute tick would be the flood the bump
+            # throttle exists to prevent. Log the run and let the first red run
+            # after the window file anew.
+            recently_closed="$(gh issue list --repo "$REPO" --state closed --label scheduled-failure \
+              --limit 100 --json number,title,closedAt \
+              --jq 'map(select(.title == env.TITLE and .closedAt >= env.SINCE)) | .[0].number // empty')"
+            if [ -n "$recently_closed" ]; then
+              echo "Issue #$recently_closed with this title was closed within the last 6 hours; not filing again for $RUN_URL"
+            else
+              gh issue create --repo "$REPO" --title "$TITLE" --label scheduled-failure --label "area: ci" --body "$body"
+            fi
+          fi

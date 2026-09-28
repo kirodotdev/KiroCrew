@@ -1,0 +1,227 @@
+/**
+ * settingsSearchCore — the ONE scorer for settings search.
+ *
+ * Both surfaces that search SETTINGS_REGISTRY call this module:
+ *  - the Search Everywhere settings provider (`providers/settingsProvider.ts`)
+ *  - the in-page Settings search box (`pages/settings/SettingsSearch.tsx`)
+ *
+ * It exists because the two grew separate copies of the corpus/rank logic and
+ * immediately diverged (the localized-label corpus existed only in-page, so
+ * the palette stayed English-only). A keyword or scoring fix must land once,
+ * for both, or the same query ranks differently depending on where it is typed.
+ *
+ * Matching is PER PART and, for non-label parts, SUBSTRING-gated: a
+ * subsequence that only exists by scattering letters across fields ("yolo"
+ * spanning label+description+keywords), or through one long description ("so
+ * You can fOLlow alOng"), is noise that buries real hits and trains users to
+ * distrust the box. Labels keep full fuzzy matching — typo tolerance belongs
+ * on the field the user is actually naming; a description or keyword counts
+ * only when it literally contains the query. The deliberate trade: a query
+ * spanning two fields ("voice speed" = tab + label) no longer matches — the
+ * tab-prefix syntax (`voice: speed`) is the sanctioned cross-field query, and
+ * the old joined corpus only ever matched one ordering of such queries anyway
+ * (subsequences are order-dependent).
+ *
+ * Ranking tiers, best first:
+ *  1. Label hit — the row IS the term (English label or localized label).
+ *  2. Whole-word keyword hit — the query aligns with a word of a curated
+ *     synonym ("yolo", "shutdown" in "until shutdown"). Ranks WITH labels
+ *     (minus a 1-point tie edge, see keywordRankScore): synonyms are the
+ *     advertised path to settings whose labels don't contain the term, so
+ *     discounting them let scattered-subsequence label noise ("Your Role"
+ *     for "yolo") outrank the intended target.
+ *  3. Any other part hit, discounted ×0.6 — the row merely mentions the term
+ *     in its description/keywords/tab.
+ */
+import { fuzzyMatch } from '../../utils/fuzzyMatch'
+import { i18nT } from '../../i18n/t'
+import { SETTINGS_KEYWORDS } from './settingsKeywords'
+import { settingsTabLabel } from './settingsTabLabel'
+import type { SettingEntry } from './settingsTypes'
+
+export interface SettingEntryScore {
+  /** Comparable score (same scale as fuzzyMatch). Higher is better. */
+  score: number
+  /** Match indices into `localizedLabel`, for highlight marks. Empty when the
+   *  hit came from keywords, description, or the tab name. (In the English
+   *  locale `localizedLabel` equals `entry.label`, so these highlight the
+   *  English label there.) */
+  indices: number[]
+  /** Label as rendered in the active locale, fan-out suffix re-appended. */
+  localizedLabel: string
+}
+
+/**
+ * The entry's label in the active locale. Resolving `labelKey` drops the
+ * fan-out suffix baked into `entry.label` ("Bot Token (Discord)" → "Bot
+ * Token"), which would render per-channel entries as indistinguishable rows —
+ * re-append it.
+ */
+/**
+ * Registry id of the Decisions (Jev) main toggle — the card's own switch.
+ *
+ * The card carries more rows than this one; :data:`DECISIONS_SETTING_IDS` below is
+ * the whole governed set, and the predicate reads that.
+ *
+ * The registry is CODEGEN'd from the static settings tree, so it lists every entry
+ * the build ships regardless of whether the running gateway offers it. This one is
+ * governed: `capabilities.decisions` can withdraw the feature, and
+ * `FeaturePreviewsSection` then renders no card at all. A search result is a promise
+ * that the page has the row, so an unfiltered corpus would land the user on a section
+ * where nothing is there — which reads as a broken page rather than an absent feature.
+ */
+export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
+
+/**
+ * Every registry id the Decisions (Jev) card owns, the main toggle included.
+ *
+ * The card is one governed unit: `capabilities.decisions` withdraws the WHOLE card,
+ * so a search that knows the feature is denied must withhold the address field and
+ * the credential row too. Withholding only the toggle left the rest reachable, and a
+ * result row is a promise that the page has the control — landing a user on a
+ * section where the card was never rendered reads as a broken page.
+ *
+ * Spelled out rather than derived, because the registry carries no source-file
+ * field: `settingsSearchGovernance.test.ts` extracts `DecisionsCard.tsx` with the
+ * real extractor and asserts every label it finds has its id in here, so a control
+ * added to the card without a line here is a red test rather than a live leak.
+ */
+export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
+  DECISIONS_SETTING_ID,
+  'developer.jev-api-key',
+  'developer.earlier-conversation-one-decision-may-carry-in-characters',
+  // The per-point consent switches. Declared in `settingsManual` because the card draws
+  // them from one component labelled by scope, so the extractor cannot see them -- but
+  // they are the card's rows and the fleet ceiling withdraws them with it.
+  'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls',
+  'developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction',
+  'developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help',
+])
+
+/** With `dashboard.tips_enabled` off the rail can drop Discovery, and `sub=discovery`
+ *  then self-heals to the first group -- so an offered hit would land without its control. */
+export const FEATURE_TIPS_SETTING_ID = 'chat.feature-tips'
+
+/** The governance answers the search needs, as the two surfaces resolve them. */
+export interface SettingsSearchGovernance {
+  /**
+   * Whether the Decisions entry may be offered: true unless the ceiling is KNOWN to
+   * withdraw it. Both surfaces resolve it as "the read has not succeeded, or it
+   * succeeded and said `decisions_enabled === true`", so only a definite answer
+   * withholds the row.
+   */
+  decisionsEnabled: boolean
+  /**
+   * Whether the Feature Tips entry may be offered. Same shape: true unless the
+   * `['tipsStatus']` read SUCCEEDED and said `enabled_config === false`.
+   */
+  tipsEnabled: boolean
+}
+
+/**
+ * Whether *entry* may be OFFERED by a search right now.
+ *
+ * Withheld on a KNOWN denial only. A read that failed is not a withdrawal: nothing has
+ * been denied, and reporting the setting as absent would be a stronger claim than the
+ * dashboard can make. The entry stays, and the card it leads to says the read failed —
+ * that card is the surface with somewhere to put the message, which a search result row
+ * is not.
+ *
+ * Deliberately NOT the card's own posture. The card withholds itself on an unresolved
+ * answer because it carries the egress switch and must not offer a write it cannot
+ * ground; a search row grants nothing and only navigates. Making them identical is what
+ * produced the state where a broken config read left the card visible-and-faded while
+ * the search insisted the setting did not exist.
+ */
+export function settingEntryOffered(
+  entry: SettingEntry,
+  governance: SettingsSearchGovernance,
+): boolean {
+  if (entry.id === FEATURE_TIPS_SETTING_ID) return governance.tipsEnabled
+  if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
+  return governance.decisionsEnabled
+}
+
+export function localizedSettingLabel(entry: SettingEntry): string {
+  const base = entry.labelKey ? i18nT(entry.labelKey) : entry.label
+  return entry.labelKey && entry.labelSuffix ? `${base} (${entry.labelSuffix})` : base
+}
+
+/** Separators fuzzyMatch treats as word boundaries, normalized to spaces so the
+ *  whole-word predicate below sees "auto-approve" and "auto approve" alike. */
+const SEPARATORS_RE = /[-_/.:\\|]+/g
+
+/**
+ * A keyword hit that deserves label rank: the query starts the keyword or
+ * starts one of its later words (hyphen/underscore/etc. count as word breaks,
+ * matching fuzzyMatch's own separator set — so "speech" promotes on
+ * "text-to-speech"). Scattered subsequences through a keyword do NOT qualify —
+ * they stay in the discounted corpus tier, or synonym lists would become a
+ * noise amplifier instead of a precision tool.
+ *
+ * Scored 1 point under the raw fuzzy score: a curated synonym ranks WITH
+ * labels but a row whose LABEL is the term wins an exact-score tie (query
+ * "theme" → the Theme setting above Mode-with-keyword-'theme'; the name-based
+ * tiebreak would otherwise pick alphabetically).
+ */
+function keywordRankScore(query: string, kws: readonly string[] | undefined): number {
+  if (!kws) return 0
+  const q = query.toLowerCase().replace(SEPARATORS_RE, ' ')
+  let best = 0
+  for (const kw of kws) {
+    const k = kw.toLowerCase().replace(SEPARATORS_RE, ' ')
+    if (!(k.startsWith(q) || k.includes(' ' + q))) continue
+    const m = fuzzyMatch(query, kw)
+    if (m && m.score > best) best = m.score
+  }
+  return best > 0 ? best - 1 : 0
+}
+
+/**
+ * Score one registry entry against a query, or `null` for no match at all.
+ *
+ * `includeTab` (default true) adds the tab key and its localized display name
+ * as matchable parts; tab-scoped searches pass `false` so the (constant) tab
+ * name cannot produce or distort hits within the tab.
+ */
+export function scoreSettingEntry(
+  query: string,
+  entry: SettingEntry,
+  opts: { includeTab?: boolean } = {},
+): SettingEntryScore | null {
+  const localizedLabel = localizedSettingLabel(entry)
+  const kws = SETTINGS_KEYWORDS[entry.id]
+
+  const localizedLabelMatch = fuzzyMatch(query, localizedLabel)
+  const labelScore = Math.max(
+    localizedLabel !== entry.label ? fuzzyMatch(query, entry.label)?.score ?? 0 : 0,
+    localizedLabelMatch?.score ?? 0,
+  )
+  const strong = Math.max(labelScore, keywordRankScore(query, kws))
+
+  let score = strong
+  if (strong <= 0) {
+    // Corpus tier: best single-part hit, discounted — and only for parts that
+    // CONTAIN the query. fuzzyMatch still provides the score (so a hit at a
+    // word boundary outranks one mid-word), but the containment gate is what
+    // keeps a 40-word description from matching every 4-letter query as a
+    // scattered subsequence. See the module comment.
+    const q = query.trim().toLowerCase()
+    const parts: string[] = []
+    if (entry.description) parts.push(entry.description)
+    if (kws) parts.push(...kws)
+    if (opts.includeTab !== false) {
+      parts.push(entry.tab)
+      parts.push(settingsTabLabel(entry.tab))
+    }
+    let corpus = 0
+    for (const part of parts) {
+      if (!part.toLowerCase().includes(q)) continue
+      const m = fuzzyMatch(query, part)
+      if (m && m.score > corpus) corpus = m.score
+    }
+    if (corpus <= 0) return null
+    score = Math.max(1, Math.round(corpus * 0.6))
+  }
+  return { score, indices: localizedLabelMatch?.indices ?? [], localizedLabel }
+}

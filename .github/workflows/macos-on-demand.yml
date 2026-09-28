@@ -1,0 +1,312 @@
+name: macOS Tests (on demand)
+
+# The full macOS backend suite, on the pull-request path, behind three opt-in
+# switches (see the `decide` job). This is what is left of `ci.yml`'s macOS pytest
+# lane in front of a pull request: the SAME suite, run by calling
+# platform-tests.yml -- the nightly's workflow -- against the PR's own head, but
+# only for the pull requests that ask for it or are drawn for it.
+#
+# WHY IT IS ITS OWN WORKFLOW AND NOT A JOB IN ci.yml. A macOS job inside ci.yml
+# holds that workflow's COMPLETION even with `continue-on-error: true`, and
+# `pr-readiness.yml` -- which produces this repository's only required check --
+# triggers on ci.yml's `workflow_run` completion. So an "advisory" macOS job in
+# ci.yml is not advisory at all: it still puts a 176-213 minute runner queue in
+# front of the merge button, which is exactly what moving the lane was for. Living
+# in a separate workflow that readiness does not evaluate (it is absent from both
+# `on.workflow_run.workflows` and the `workflow_specs` lane list) makes advisory
+# mean advisory. test_macos_platform_tests_gate.py pins that absence.
+#
+# WHAT IT BUYS, given it usually reports late. The queue is unchanged for the pull
+# requests that run it, so the verdict often lands after the merge. It is still
+# worth having: it names ONE pull request, where the nightly names a day of
+# merges, and it arrives hours rather than up to a day later.
+#
+# WHY THE WHOLE SUITE AND NOT A SUBSET. Calling platform-tests.yml means the PR
+# path and the nightly run byte-identical steps: the four shards, the darwin gap
+# lists, and the three admission-gating contracts asserted by name in shard 1
+# (peer identity, the compiled Seatbelt private-memory boundary, the terminal
+# handler suite that test/macos-collect-ignore.txt keeps out of every shard). A
+# hand-maintained subset here would be a second copy of those steps that could
+# drift from the nightly's without any test noticing.
+
+on:
+  pull_request:
+    branches: [main]
+    # `labeled` is on the list because the `decide` job is cheap enough to afford
+    # it: the label is meant to act the moment it is applied, and re-running a
+    # ~1-minute Linux job on every bot label costs nothing. ci.yml cannot make
+    # the same choice (its comment on `ci-full-run` says why: every label would
+    # re-run the whole matrix), which is why its two label switches take effect
+    # only on the next push.
+    #
+    # There is deliberately NO `paths:` filter here. A `paths:` filter applies to
+    # EVERY event type, so it would silently discard the `labeled` event on any
+    # pull request that does not touch a darwin-sensitive file -- and a PR that
+    # touches a shared helper the path list cannot foresee is precisely the one
+    # someone reaches for the label on. The path test lives in `decide` instead,
+    # where it is one of three switches rather than a gate in front of them.
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-on-demand-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Three switches, any one of which runs the suite. All on Linux, ~1 minute,
+  # so the macOS runner is requested only when a switch is on.
+  #
+  #   paths   -- the diff touches a darwin-sensitive file (list below). The
+  #              default reason; roughly 5 percent of pull requests.
+  #   label   -- the PR carries `ci:macos` (same convention as ci.yml's
+  #              `ci:pod-scenarios`). The on-demand path for a fixer who
+  #              repairs a red nightly, and the one to reach for when a change
+  #              to a shared helper might have a darwin edge the path list does
+  #              not know about.
+  #   sample  -- one pull request in twenty, chosen by the HEAD SHA. What it
+  #              buys over the nightly is ATTRIBUTION, not speed: it runs the
+  #              suite against one pull request's own head, so a darwin break in
+  #              a file outside the path list is pinned to ONE PR where the
+  #              nightly pins it to a day of merges. The verdict lands before
+  #              merge only on a PR that stays open longer than the runner queue
+  #              (see the header); on the rest it is the same-day, single-suspect
+  #              version of the nightly's evidence. Chosen by SHA and not by
+  #              `$RANDOM` on purpose: the same commit always gets the same
+  #              answer, so a re-run cannot make a red run disappear, and a
+  #              rebase re-rolls. `github.event.pull_request.head.sha` rather
+  #              than `github.sha` because the latter is the synthetic merge
+  #              commit, which changes whenever main moves.
+  #
+  # Whatever the reason, the lane stays advisory: it is absent from both of
+  # pr-readiness.yml's lists, and test_macos_platform_tests_gate.py pins that
+  # absence, so none of these switches can put a macOS queue in front of a merge.
+  #
+  # Over the three switches sits a CEILING, not a fourth switch: `paths` and
+  # `sample` are refused while this lane already holds `LANE_MAX_LIVE_RUNS` live
+  # runs of the hosted macOS pool. `label` is never refused, and neither is a
+  # re-run. See the env block on the verdict step for the measurement behind it.
+  decide:
+    name: Decide whether the macOS suite runs
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Read-only, and only so the ceiling below can count this lane's own live
+      # runs. Nothing here writes to Actions.
+      actions: read
+    outputs:
+      run: ${{ steps.verdict.outputs.run }}
+      reason: ${{ steps.verdict.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # dorny/paths-filter with `token: ''` diffs locally against the PR base
+          # commit, so that commit must be present.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          # Same reason as ci.yml's `changes` job: an empty token switches the
+          # action to local git change detection, so it spends none of the
+          # installation-token quota every workflow in this repository shares.
+          token: ''
+          filters: |
+            darwin:
+              # The macOS-only identity primitives (LOCAL_PEERPID for the peer
+              # pid, libproc for the process start id) and their callers.
+              - "src/kiro_crew/mcp_gateway/socketsec.py"
+              - "src/kiro_crew/peer_resolve.py"
+              - "src/kiro_crew/platform_compat.py"
+              # Descriptor identity and containment depend on native APFS spelling.
+              - "src/kiro_crew/hooks.py"
+              - "src/kiro_crew/pinned_fs.py"
+              - "src/kiro_crew/dashboard/handlers/files.py"
+              - "test/test_safe_read_file_bytes_descriptor.py"
+              - "test/test_theme_install.py"
+              # The singleton home lock: its durable anchor is POSIX-only, and
+              # its guard tests skip themselves where a directory cannot be
+              # locked, so a darwin regression would read as green without this
+              # lane.
+              - "src/kiro_crew/gateway_lock.py"
+              - "test/test_gateway_lock.py"
+              - "test/test_gateway_lock_diagnosis.py"
+              # The Seatbelt profile the private-memory boundary compiles.
+              - "src/kiro_crew/sandbox.py"
+              # launchd is the macOS pod backend.
+              - "src/kiro_crew/pod/**"
+              # darwin PTY behaviour.
+              - "src/kiro_crew/dashboard/handlers/terminal.py"
+              - "src/kiro_crew/dashboard/terminal_commands.py"
+              - "src/kiro_crew/subagent_manager/terminal.py"
+              # The contracts themselves, and the two darwin gap lists a change
+              # here can silently widen.
+              - "test/test_socketsec.py"
+              - "test/test_member_memory_filesystem.py"
+              - "test/test_terminal_handler.py"
+              # Native lifecycle contracts must not depend on the SHA sample.
+              - "src/kiro_crew/session_pid.py"
+              - "src/kiro_crew/session_lifecycle.py"
+              - "src/kiro_crew/session_cleanup.py"
+              - "src/kiro_crew/session_pool.py"
+              - "test/test_darwin_native_provider_reap.py"
+              - "test/macos-expected-failures.txt"
+              - "test/macos-collect-ignore.txt"
+              # This lane and the workflow it calls.
+              - ".github/workflows/macos-on-demand.yml"
+              - ".github/workflows/platform-tests.yml"
+
+      - name: Combine the three switches
+        id: verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PATHS_HIT: ${{ steps.filter.outputs.darwin }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:macos') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SAMPLE_ONE_IN: "20"
+          # The lane's ceiling on the hosted macOS pool, in LIVE runs of this
+          # workflow. What the pool actually feels is JOBS, and a run holds one
+          # per shard, so this number has to move whenever the shard count in
+          # platform-tests.yml does or the real ceiling drifts while this value
+          # looks untouched: 6 runs of 3 shards was 18 jobs, and 4 runs of the
+          # current 4 shards is 16 -- the same order, deliberately not more.
+          # Measured 2026-09-24: this lane
+          # held 53 of the 56 in-progress macOS jobs and 37 of the 40 queued
+          # ones, across 22 live runs, and a shard created at 08:29 did not get a
+          # runner until 22:44 -- 14 hours, against the 176-213 minutes this
+          # file's header assumes. So it was not sharing the pool with the other
+          # macOS work; it WAS the pool, and `build.yml` and `release.yml` (the
+          # signing paths, which cannot run anywhere else) queued behind it.
+          # A capped run is skipped outright rather than queued, so the ceiling
+          # bounds demand and not just occupancy: at roughly 40 minutes a suite
+          # this lane settles at about six verdicts an hour. That is a deliberate
+          # trade -- a timely verdict for a few pull requests instead of a
+          # 14-hour verdict for all of them, with the nightly still covering
+          # every merge. It is a first calibration off one day's measurement;
+          # revisit it against the queue rather than treating it as tuned.
+          LANE_MAX_LIVE_RUNS: "4"
+          # How many candidate runs the occupancy count may probe for a macOS job
+          # before it reports what it found and moves on. `decide` runs on every
+          # pull request, so this is the ceiling's own cost against a repository-
+          # wide quota; twice the ceiling is enough to find LANE_MAX_LIVE_RUNS
+          # holders when the lane really is full, and stopping early can only
+          # UNDER-count, which lets the suite run. TWICE, so this number moves
+          # with the ceiling above -- left alone it becomes a multiple nobody
+          # chose and spends API reads on every pull request for nothing.
+          LANE_OCCUPANCY_MAX_READS: "8"
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          # The first 8 hex digits of the head SHA, read as an integer, modulo
+          # the sample rate. Deterministic per commit (see the job comment).
+          bucket=$(( 16#${HEAD_SHA:0:8} % SAMPLE_ONE_IN ))
+          reason=""
+          if [ "$PATHS_HIT" = "true" ]; then reason="paths"; fi
+          if [ "$LABELLED" = "true" ]; then reason="${reason:+$reason,}label"; fi
+          if [ "$bucket" -eq 0 ]; then reason="${reason:+$reason,}sample"; fi
+
+          # The ceiling, applied only to the two switches nobody asked for by
+          # hand. `label` is the on-demand path a fixer reaches for while
+          # repairing a red nightly, so a busy pool must not silence it -- that
+          # is the one request where waiting out the queue is the point.
+          capped=""
+          case ",$reason," in
+            *,label,*) ;;
+            ,,) ;;
+            *)
+              # First attempt only. A re-run must not be able to turn a RED lane
+              # into a skip just because the pool happened to be busy the second
+              # time; that is the same property the SHA sample protects, and it
+              # only holds if the ceiling cannot move a verdict from red to
+              # absent. The reverse direction is safe, so a re-run of a capped
+              # run may go on to run the suite.
+              if [ "$RUN_ATTEMPT" = "1" ]; then
+                ids=""
+                unreadable=""
+                for status in in_progress queued; do
+                  # Workflow-scoped: the repo-wide listing mixes every workflow
+                  # and would need paging to count this one. OLDEST first, because
+                  # a run that actually holds a macOS runner is one that got past
+                  # `decide` some time ago, while the newest runs are the ones
+                  # still deciding -- so oldest-first finds the holders inside the
+                  # read bound below.
+                  page=$(gh api \
+                    "repos/${GITHUB_REPOSITORY}/actions/workflows/macos-on-demand.yml/runs?status=${status}&per_page=100" \
+                    --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id] | reverse | .[]" 2>/dev/null) \
+                    || unreadable="1"
+                  ids="$ids $page"
+                done
+                # A run of this workflow is NOT the same thing as a run holding a
+                # macOS runner. The trigger has no `paths:` filter, so every pull
+                # request to main starts one, and the common verdict is `run=false`
+                # -- the job comment puts `paths` at roughly 5 percent of pull
+                # requests. Counting runs would therefore let six concurrent PRs
+                # that touch no darwin path refuse a PR that does, with not one
+                # macOS job in the pool. So each candidate run is asked whether it
+                # has a `macOS Tests` job still queued or running, which is what
+                # the ceiling is about.
+                live=""
+                if [ -z "$unreadable" ]; then
+                  live=0
+                  reads=0
+                  for id in $ids; do
+                    [ "$live" -ge "$LANE_MAX_LIVE_RUNS" ] && break
+                    if [ "$reads" -ge "$LANE_OCCUPANCY_MAX_READS" ]; then
+                      # Bounded on purpose: this runs in `decide` on EVERY pull
+                      # request, and the quota it spends is shared with the whole
+                      # repository. Stopping here reports the holders actually
+                      # found, which is below the ceiling, so the suite runs --
+                      # the same direction as failing open.
+                      echo "::warning::stopped counting macOS lane occupancy after $reads run(s); $live holder(s) found, under the ceiling"
+                      break
+                    fi
+                    reads=$(( reads + 1 ))
+                    held=$(gh api \
+                      "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs?per_page=100&filter=latest" \
+                      --jq '[.jobs[] | select((.name | startswith("macOS Tests")) and (.status == "queued" or .status == "in_progress"))] | length' 2>/dev/null || true)
+                    case "$held" in
+                      ''|*[!0-9]*) live=""; break ;;
+                      0) ;;
+                      *) live=$(( live + 1 )) ;;
+                    esac
+                  done
+                fi
+                # Fail OPEN when the count cannot be read: the ceiling is an
+                # allocation choice, not a safety control, and a lane that stops
+                # covering darwin because an API call failed is the worse error.
+                if [ -z "$live" ]; then
+                  echo "::warning::macOS lane occupancy could not be read; running without the ceiling"
+                elif [ "$live" -ge "$LANE_MAX_LIVE_RUNS" ]; then
+                  capped="$live"
+                fi
+              fi
+              ;;
+          esac
+
+          if [ -n "$capped" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "reason=pool-cap" >> "$GITHUB_OUTPUT"
+            echo "::notice::macOS suite skipped on ${HEAD_SHA:0:12} despite $reason: at least $capped live lane run(s) already hold the macOS pool (ceiling $LANE_MAX_LIVE_RUNS). The nightly still covers this change; add the ci:macos label to run it anyway."
+          elif [ -n "$reason" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=$reason" >> "$GITHUB_OUTPUT"
+            echo "::notice::macOS suite runs on ${HEAD_SHA:0:12}: $reason (sample bucket $bucket of $SAMPLE_ONE_IN)"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "reason=none" >> "$GITHUB_OUTPUT"
+            echo "macOS suite skipped on ${HEAD_SHA:0:12}: no darwin path, no ci:macos label, sample bucket $bucket of $SAMPLE_ONE_IN"
+          fi
+
+  # The nightly's own workflow, called against this pull request's head. Same
+  # four shards, same 40-minute cap per shard, same contracts -- and the same
+  # runner queue, which is why it is behind `decide` and outside readiness.
+  platform-tests:
+    name: macOS Tests
+    needs: [decide]
+    if: needs.decide.outputs.run == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/platform-tests.yml

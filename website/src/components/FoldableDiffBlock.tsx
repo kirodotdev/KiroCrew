@@ -1,0 +1,123 @@
+import { memo, useCallback, useId, useMemo, useState } from 'react'
+import { ChevronDown, FileDiff } from 'lucide-react'
+
+import DiffBlock, { extractFilePath } from './DiffBlock'
+import { countDiffStats } from '../utils/diffLineCounts'
+import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+
+/**
+ * A prose ```diff fence, COLLAPSED to a one-line chip by default.
+ *
+ * A message that changes several files carries several fences, and a fully
+ * expanded patch is tens of rows each — so the prose the user actually came
+ * for scrolls off. The chip states the same three facts a reader needs to
+ * decide whether to look (which file, how much added, how much removed) in one
+ * row, and the patch is one click away.
+ *
+ * The chip is the fence's ONE toggle and stays mounted while the patch is open:
+ * the same control that opened it closes it, reads `aria-expanded`, and shows
+ * its state (filled background, trailing chevron turned up). This is the same
+ * grammar as `ToolCallLine`'s tool-card chip, so the two pills — which look
+ * alike and sit in the same transcript — close the same way. Both default
+ * CLOSED, but each remembers its expansions in its own module-scope set,
+ * because the two are keyed differently (a fence's `foldKey` vs a
+ * `tool_call_id`).
+ *
+ * Applied ONLY where the fence is a retelling: `MarkdownRenderer` opts in with
+ * `collapseDiffs`, which the chat transcript sets and no other surface does. On
+ * an artifact, spec, changelog or review page the patch IS the content, and
+ * hiding it there would take it out of the DOM for find-in-page, whole-page
+ * selection and printing.
+ */
+
+/**
+ * Fences the user has opened, keyed by `foldKey`. Module-level for the same
+ * reason `ToolCallLine.openedDiffCards` is: the transcript re-mounts messages
+ * (load-earlier, variant switch, tab return), and an expansion that evaporates
+ * on re-mount reads as the UI closing the patch while it is being read.
+ * Session-scoped by intent — a reload starts collapsed again.
+ */
+const expandedDiffFences = new Set<string>()
+
+/** Exported for tests: forget every remembered expansion. */
+export function resetExpandedDiffFences(): void {
+  expandedDiffFences.clear()
+}
+
+export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pathHint, foldKey }: {
+  code: string
+  complete: boolean
+  onFileOpen?: (path: string) => void
+  pathHint?: string
+  /** Stable identity for remembering the open state; omit to keep it local. */
+  foldKey?: string
+}) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const [expanded, setExpanded] = useState(() => !!foldKey && expandedDiffFences.has(foldKey))
+  // The region the chip controls. It is rendered whether or not it holds the
+  // patch, so `aria-controls` always resolves to a real element — a disclosure
+  // pointing at an id that exists only while open is not a disclosure.
+  const regionId = useId()
+  // The chip never unmounts, so focus stays on it across a toggle; no hand-off
+  // is needed.
+  const toggle = useCallback(() => {
+    setExpanded(prev => {
+      const next = !prev
+      if (foldKey) {
+        if (next) expandedDiffFences.add(foldKey)
+        else expandedDiffFences.delete(foldKey)
+      }
+      return next
+    })
+  }, [foldKey])
+
+  const stats = useMemo(() => countDiffStats(code), [code])
+  const headerPath = useMemo(() => extractFilePath(code)?.path, [code]) ?? pathHint ?? null
+  // The chip shows the basename; two changed files sharing a name would render
+  // as identical chips, so the full path lives in the native tooltip.
+  const basename = headerPath ? headerPath.split('/').pop() : null
+  // An aria-label REPLACES the button's text, so the counts have to be in it:
+  // without them a screen-reader user cannot hear how large the patch is
+  // without opening it, which is the one decision the chip exists to support.
+  const label = [
+    headerPath
+      ? i18nT('components.fileChangeChips.toggle_diff', { path: headerPath })
+      : i18nT('components.markdownPanel.toggle_diff_view'),
+    i18nT('components.fileChangeChips.removals', { count: stats.removed }),
+    i18nT('components.fileChangeChips.additions', { count: stats.added }),
+  ].join(' · ')
+
+  return (
+    <div>
+      {/* Open look mirrors ToolCallLine's tool-card chip: filled background,
+          full-strength text, chevron turned up. Colour alone did not read as a
+          state. */}
+      <button
+        type="button"
+        className={`my-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${expanded ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
+        data-diff-toggle
+        data-testid="prose-diff-chip"
+        title={headerPath ?? undefined}
+        aria-expanded={expanded}
+        aria-controls={regionId}
+        aria-label={label}
+        onClick={toggle}
+      >
+        <FileDiff size={12} className="shrink-0" aria-hidden />
+        {basename && <span className="font-mono max-w-[240px] truncate">{basename}</span>}
+        <span className="tabular-nums">
+          {stats.removed > 0 && <span className="text-danger">-{stats.removed}</span>}
+          {stats.removed > 0 && stats.added > 0 && ' '}
+          {stats.added > 0 && <span className="text-ok">+{stats.added}</span>}
+        </span>
+        <ChevronDown size={12} aria-hidden className={`shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+      </button>
+      <div id={regionId}>
+        {expanded && (
+          <DiffBlock code={code} complete={complete} onFileOpen={onFileOpen} pathHint={pathHint} />
+        )}
+      </div>
+    </div>
+  )
+})

@@ -1,0 +1,5432 @@
+"""Inbound SSH tunnel manager for the Instances feature.
+
+Adapts the supervised-child + state-machine design of
+``kiro_crew.tunnel.manager.TunnelManager`` (which points *outward* to expose the
+dashboard) to point *inward*: for each connected remote instance it supervises a
+local child process that forwards a loopback port to the remote Kiro Crew's
+dashboard port, over one of two transports (``Instance.connection_method``):
+
+* ``"ssh"`` (default): ``ssh -N -L 127.0.0.1:LP:127.0.0.1:RP <ssh_host>``.
+* ``"ssm"``: ``aws ssm start-session --document-name
+  AWS-StartPortForwardingSession --target <ssm_target> --parameters
+  portNumber=RP,localPortNumber=LP`` — no inbound SSH port or SSH key needed,
+  only IAM (``ssm:StartSession``) and the SSM agent on the remote box.
+
+Design note: a literal ``ssh -fN`` would make ssh fork into the background and
+the foreground process exit immediately, which would leave the gateway unable to
+supervise or kill the real forwarder. A gateway-supervised child must stay in the
+foreground, so we use ``-N`` (no remote command) *without* ``-f``, mirroring how
+``TunnelManager`` supervises its own child. Connection multiplexing is pinned
+off in the argv (``ControlPath=none``) for the same reason: it lets a user's
+``~/.ssh/config`` recreate that fork-and-exit shape from outside this module.
+``ExitOnForwardFailure=yes`` ensures
+ssh exits if the local forward can't be bound, so a failed connect is detected
+rather than hanging. The SSM transport gets the equivalent detection from the
+generic ready-poll (:meth:`_Tunnel._wait_until_ready`) plus a post-hoc ownership
+recheck, since the ``session-manager-plugin`` child does not expose an
+``ExitOnForwardFailure``-style flag.
+
+Scope (Phase 1 / Stage 4): connect, disconnect, status, and shutdown-all, with
+port allocation + token mint wired in. The health-probe loop and 2-tier
+self-heal are Phase 3 — this module exposes clean seams (an ``on_exit`` hook and
+a per-instance state machine) for that follow-up without implementing it here.
+SSM support reuses every one of those seams — it is a second *transport* plugged
+into the same tunnel/state-machine/self-heal/token-refresh code, not a parallel
+implementation.
+
+Security (standard practices): loopback-bound forwards only (never ``0.0.0.0``);
+child spawned via argv list (no local shell) for both transports; ``ssh_host`` /
+``remote_bin`` (SSH) and ``ssm_target`` / ``aws_profile`` / ``aws_region`` (SSM)
+injection-validated before use; minted tokens held in memory only and never
+logged.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import enum
+import hashlib
+import hmac
+import json
+import logging
+import re
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
+from typing import Any, NamedTuple, TypeVar
+from urllib.parse import quote
+
+import aiohttp
+
+from kiro_crew import platform_compat
+from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.cloud.connect import FARGATE_TURN_PATH
+
+# The local (embedding) gateway's configured port — carried into the minted
+# remote token as the CSP frame-ancestor parent origin so the embedded pane can
+# be framed by this desktop app on whatever KIROCREW_PORT it runs on (no
+# hardcoded port, no wildcard). See server._extra_frame_ancestors.
+from kiro_crew.config import live
+from kiro_crew.config.loader import DASHBOARD_PORT as _LOCAL_DASHBOARD_PORT
+from kiro_crew.deploy.engine import aws_spawn_env
+from kiro_crew.gateway_identity import gateway_id
+from kiro_crew.instances.constants import CAPABILITY_REPLY_MAX_BYTES as _CAPABILITY_REPLY_MAX_BYTES
+from kiro_crew.instances.constants import (
+    CHAINED_MINT_REPLY_MAX_BYTES as _CHAINED_MINT_REPLY_MAX_BYTES,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS as _CAPABILITY_PROXY_TIMEOUT,
+)
+from kiro_crew.instances.constants import DEFAULT_CHAINED_MINT_TIMEOUT_SECS as _CHAINED_MINT_TIMEOUT
+from kiro_crew.instances.constants import (
+    DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
+)
+from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _MAX_RECOVERY
+from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT_SECS
+from kiro_crew.instances.constants import (
+    DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS as _MODELS_CAPABILITY_PROXY_TIMEOUT,
+)
+from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _PROBE_FAILS
+from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_INTERVAL
+from kiro_crew.instances.constants import (
+    DEFAULT_PROXY_CONNECT_TIMEOUT_SECS as _PROXY_CONNECT_TIMEOUT,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_PROXY_READ_IDLE_TIMEOUT_SECS as _PROXY_READ_IDLE_TIMEOUT,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_RECOVER_BACKOFF_MAX_SECS as _RECOVER_BACKOFF_MAX_SECS,
+)
+from kiro_crew.instances.constants import DEFAULT_SEARCH_PROXY_TIMEOUT_SECS as _SEARCH_PROXY_TIMEOUT
+from kiro_crew.instances.constants import DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS as _TRANSFER_TIMEOUT
+from kiro_crew.instances.constants import (
+    DEFAULT_SSM_CONNECT_TIMEOUT_SECS as _DEFAULT_SSM_CONNECT_TIMEOUT_SECS,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_SSM_MINT_TIMEOUT_SECS as _DEFAULT_SSM_MINT_TIMEOUT_SECS,
+)
+from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
+from kiro_crew.instances.constants import DEFAULT_TOKEN_REFRESH_FRACTION as _REFRESH_FRACTION
+from kiro_crew.instances.constants import (
+    DEFAULT_TUNNEL_BASE_PORT,
+)
+from kiro_crew.instances.constants import (
+    DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS as _DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS,
+)
+from kiro_crew.instances.constants import (
+    LENT_HOP_TTL_CAP,
+)
+from kiro_crew.instances.constants import SEARCH_REPLY_MAX_BYTES as _SEARCH_REPLY_MAX_BYTES
+from kiro_crew.instances.diagnostics import (
+    DiagnosisResult,
+    diagnose_instance,
+    diagnose_instance_fargate,
+    diagnose_instance_ssm,
+)
+from kiro_crew.instances.hop_port_guard import HopPortGuard
+from kiro_crew.instances.port_allocator import PortAllocator, _is_addr_free, _is_port_free
+from kiro_crew.instances.registry import _ID_RE as _INSTANCE_ID_RE
+from kiro_crew.instances.registry import (
+    _NO_FORWARDER_PID,
+    _UNALLOCATED_PORT,
+    MAX_VIA_HOPS,
+    SSM_TRANSPORT_METHODS,
+    Instance,
+    InstancesRegistry,
+    ancestor_ids,
+    descendant_ids,
+    validate_ttl,
+)
+from kiro_crew.instances.ssm_token_mint import (
+    mint_remote_token_ssm,
+    run_remote_kirocrew_ssm,
+)
+from kiro_crew.instances.token_mint import (
+    HopRetiredError,
+    TokenMintError,
+    mint_remote_token,
+    run_remote_kirocrew,
+    ttl_to_seconds,
+)
+from kiro_crew.instances.validation import (
+    SshValidationError,
+    SsmValidationError,
+    split_ecs_target,
+    validate_aws_profile,
+    validate_aws_region,
+    validate_remote_bin,
+    validate_ssh_host,
+    validate_ssm_run_as,
+    validate_ssm_target,
+)
+from kiro_crew.security import redact
+from kiro_crew.sel import _HMAC_KEY_MIN_BYTES as _SEL_HMAC_KEY_MIN_BYTES
+from kiro_crew.sel import sel, sel_hmac_key_path
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# The parent's own codes for "this hop is not mine any more". Anything else it
+# answers is a failure to retry, not a hop to retire -- the distinction is what
+# keeps a network blip from tearing down a working chain.
+_HOP_RETIRED_CODES = frozenset({"instance_not_connected", "instance_not_found"})
+_LOOPBACK = "127.0.0.1"
+
+#: The closed set of peer endpoints :meth:`SshTunnelManager.peer_capability` may
+#: read. Every one is a GET that reports what the peer gateway CAN do — its
+#: version, its agent roster, its model list, its effort levels, its workspaces —
+#: and none of them mutates anything. Keeping the set here (rather than letting
+#: the caller name a path) is what makes the method a carrier instead of a second
+#: proxy: a tainted string cannot reach a peer route that was never listed, and
+#: the ``api/agents`` mutating verbs stay unreachable even though the roster read
+#: lives under the same prefix. Adding a row is a security decision — it grants
+#: the local gateway a new read against every connected peer.
+_PEER_CAPABILITY_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/version",
+        "/api/agents",
+        "/api/models",
+        "/api/effort-levels",
+        "/api/workspaces",
+    }
+)
+# Poll cadence while waiting for the forward to come up.
+_READY_POLL_INTERVAL_SECS = 0.25
+# Bound on retained stderr so a chatty/looping ssh can't grow memory unbounded.
+_MAX_STDERR_CHARS = 2000
+
+# Bound on retained SSM stdout, at parity with the stderr cap. The SSM child's
+# stdout is drained concurrently for the whole session (see _drain_stdout), so
+# this is what keeps a service that streams into that pipe from growing memory.
+_MAX_STDOUT_CHARS = 2000
+
+# Chunk size for the concurrent stdout drain. Small enough that a close notice
+# lands promptly, large enough that a quiet session costs one pending read.
+_STDOUT_READ_CHUNK = 4096
+
+# Self-heal respawn backoff: wait this base (doubled per consecutive attempt,
+# capped) before rebuilding a failed tunnel, so a flapping link / bind race
+# can't spin a tight respawn loop. Applied in the scheduling seam (_on_tunnel_exit)
+# so direct _recover() callers (tests) aren't slowed.
+_RECOVER_BACKOFF_BASE_SECS = 1.0
+
+# Grace given to a reclaimed (hard-kill-orphaned) forwarder after SIGTERM
+# before escalating to SIGKILL, and after SIGKILL before giving up waiting.
+# `ssh -N` exits on TERM essentially immediately; the escalation mirrors
+# _SshTunnel._terminate's shape with tighter bounds because this runs inside
+# connect() under the manager lock. Nothing in the connect depends on the wait
+# completing — the recorded port stays excluded from allocation either way —
+# so a slow exit costs only these bounded seconds, never correctness.
+_RECLAIM_TERM_GRACE_SECS = 2.0
+_RECLAIM_KILL_GRACE_SECS = 1.0
+# Liveness poll cadence while waiting out the grace windows above.
+_RECLAIM_POLL_INTERVAL_SECS = 0.05
+
+# Domain tag for the forwarder-identity MAC subkey. Mirrors the
+# ``session_pid_sig`` precedent: the signing key is a one-way derivation of
+# the SEL trust root and this domain, so this protocol, the SEL audit chain,
+# and the session-pid sidecars never share a signing key and a MAC produced by
+# any of them is valueless to the others.
+_RECLAIM_SIG_DOMAIN = b"kirocrew-forwarder-identity-v1"
+
+
+async def _read_capability_body(resp: Any) -> tuple[bool, Any]:
+    """Read and decode a peer capability reply body under the size cap.
+
+    Returns ``(True, payload)`` when the body is a JSON dict or list, else
+    ``(False, {"error", "code"})`` with ``capability_malformed_reply``.
+    """
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in resp.content.iter_chunked(65536):
+        received += len(chunk)
+        if received > _CAPABILITY_REPLY_MAX_BYTES:
+            return False, {
+                "error": "peer capability reply exceeds the size cap",
+                "code": "capability_malformed_reply",
+            }
+        chunks.append(chunk)
+    try:
+        payload = json.loads(b"".join(chunks))
+    except Exception:
+        return False, {
+            "error": "peer returned a malformed capability reply",
+            "code": "capability_malformed_reply",
+        }
+    if not isinstance(payload, (dict, list)):
+        return False, {
+            "error": "peer returned a malformed capability reply",
+            "code": "capability_malformed_reply",
+        }
+    return True, payload
+
+
+def _reclaim_identity_key() -> bytes | None:
+    """Derive the forwarder-identity signing subkey, or ``None`` when absent.
+
+    Anchored on the SEL trust root (``sel_hmac_key_path()``), which only the
+    gateway creates and which sits on the sensitive-path deny list — an agent
+    can neither read nor replace it, which is the entire point: a signature
+    under this key is a claim only the GATEWAY can have made. Never creates
+    the key (a first-touch race would mint a root the SEL then distrusts);
+    when it cannot be read the reclaim protocol degrades to "never reclaim"
+    (fail closed) rather than trusting unsigned registry state.
+    """
+    try:
+        raw = sel_hmac_key_path().read_bytes()
+    except OSError:
+        return None
+    if len(raw) < _SEL_HMAC_KEY_MIN_BYTES:
+        return None
+    return hmac.new(raw, _RECLAIM_SIG_DOMAIN, hashlib.sha256).digest()
+
+
+def _forwarder_identity_sig(key: bytes, instance_id: str, pid: int, start: str, port: int) -> str:
+    """MAC over one instance's recorded forwarder identity.
+
+    Binds the identity to the INSTANCE as well as to the process attributes,
+    so a valid record cannot be replayed under another instance id, and any
+    edit to pid, start time, or port invalidates it. NUL joints keep field
+    boundaries unambiguous (no recorded field can contain a NUL: the id and
+    port are charset/range-validated and the start value is a single
+    ``/proc``/``ps``/FILETIME token).
+    """
+    msg = "\0".join((instance_id, str(pid), start, str(port))).encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+# ssh prints these benign advisory lines to stderr on connect (post-quantum KEX
+# warning); they are NOT failures. Strip them from captured stderr so the real
+# error (e.g. "bind: Address already in use") isn't masked in logs/status.
+_BENIGN_SSH_STDERR_MARKERS = (
+    "post-quantum key exchange",
+    "store now, decrypt later",
+    "server may need to be upgraded",
+    "openssh.com/pq",
+)
+
+
+# Classification phrases for _exit_error / _ssm_exit_error, matched against the
+# lowercased noise-stripped stderr. The first hit ALSO anchors the sanitized
+# detail window (see _sanitize_banner) so the classified phrase survives the cap
+# even when arbitrary benign stderr (e.g. LocalCommand output) precedes it.
+_SSH_AUTH_SIGNALS = (
+    "permission denied",
+    "publickey",
+    "authentication failed",
+    "certificate has expired",
+    "certificate expired",
+)
+_SSH_TRANSPORT_DROP_SIGNALS = (
+    "timed out during banner exchange",
+    "session ended unexpectedly",
+    "connection timed out",
+    "connection reset",
+    "closed by remote host",
+    "connection refused",
+)
+_SSH_BIND_SIGNALS = ("address already in use", "cannot listen to port")
+_SSM_CREDENTIAL_SIGNALS = (
+    "expired",
+    "unable to locate credentials",
+    "no credentials",
+    "credentials not found",
+)
+_SSM_DENIAL_SIGNALS = ("accessdenied", "not authorized", "unauthorizedoperation")
+_SSM_PLUGIN_SIGNALS = ("sessionmanagerplugin", "session-manager-plugin")
+_SSM_TARGET_SIGNALS = (
+    "targetnotconnected",
+    "not connected",
+    "invalidinstanceid",
+    "invalidinstanceinformation",
+)
+_SSM_BIND_SIGNALS = ("address already in use", "bind")
+
+# ---------------------------------------------------------------------------
+# SSM close-reason shapes, matched against the tunnel child's STDOUT.
+#
+# `aws ssm start-session` prints every session-close notice to STDOUT and sends
+# its own diagnostics to a rolling log FILE, so none of it reaches the stderr
+# the error classifiers read. The four literals below are the only close shapes
+# session-manager-plugin prints, each taken from its source:
+#
+#   datachannel HandleChannelClosedMessage
+#     "\n\nSessionId: %s : %s\n\n"                   service gave a close reason
+#     "\n\nExiting session with sessionId: %s.\n\n"  closed, no reason given
+#   sessionhandler ResumeSessionHandler
+#     "Session: %s timed out.\n"                     resume gave up; session gone
+#   session ValidateInputAndStartSession
+#     "Cannot perform start session: %v\n"           the session never opened
+#
+# All four paths end in exit status 0: the plugin's Stop() is os.Exit(0) and its
+# main() has no non-zero exit at all. So the exit code cannot separate them and
+# the anchored shape is what does. An unrecognised shape stays generic rather
+# than being guessed at, because naming a cause the text does not establish is
+# the same defect as naming a duration the documentation does not settle.
+_SSM_CLOSED_WITH_REASON_ANCHOR = "sessionid: "
+_SSM_CLOSED_NO_REASON_ANCHOR = "exiting session with sessionid: "
+_SSM_RESUME_TIMED_OUT_ANCHOR = "session: "
+_SSM_START_FAILED_ANCHOR = "cannot perform start session: "
+# Separator the reason-carrying shape puts between the session id and the text.
+_SSM_REASON_SEPARATOR = " : "
+
+# Idle phrases matched INSIDE a service-supplied close reason. The reason text
+# is generated service-side (the message gateway), which is not open source, so
+# this set is deliberately narrow and anything it does not match falls back to
+# the generic wording. Widening it would trade a correct generic message for a
+# possibly-wrong specific one.
+_SSM_IDLE_CLOSE_SIGNALS = (
+    "due to inactivity",
+    "idle timeout",
+    "idle session timeout",
+)
+
+# C0 control characters other than tab and newline. Stripped from captured
+# stdout so a bare ESC, NUL or CR cannot survive into a match or a buffer.
+_C0_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _sanitize_ssm_stdout(text: str) -> str:
+    """ANSI-strip, control-strip and credential-redact captured SSM stdout.
+
+    Applied at READ time rather than per drained chunk: redaction keys on whole
+    tokens, and a credential split across two reads would survive a per-chunk
+    pass. The buffer is already bounded to ``_MAX_STDOUT_CHARS`` when it is
+    captured, so there is no cost to sanitizing all of it at once.
+    """
+    cleaned = _ANSI_CSI_RE.sub("", text)
+    cleaned = _C0_CONTROL_RE.sub("", cleaned)
+    return redact(cleaned)
+
+
+def _ssm_close_reason(stdout: str) -> str:
+    """Classify SSM stdout into one anchored close shape.
+
+    Returns ``"idle"``, ``"closed"``, ``"resume_timeout"``, ``"start_failed"``
+    or ``""`` when nothing matched.
+
+    The service-supplied reason text inside a reason-carrying notice is read
+    here to pick the shape and is not returned: it is a CLASSIFICATION SIGNAL
+    ONLY. The caller composes its own wording from the shape, because
+    service-controlled text is not something this code can vouch for to an
+    operator. Keeping it inside this function means no caller can surface or
+    log it.
+
+    Matching is line-anchored on the literal each shape starts with, so the
+    session banner and per-connection lines the plugin also prints cannot be
+    mistaken for a close notice.
+    """
+    for raw_line in _sanitize_ssm_stdout(stdout).splitlines():
+        line = raw_line.strip()
+        low = line.lower()
+        if low.startswith(_SSM_CLOSED_WITH_REASON_ANCHOR):
+            rest = line[len(_SSM_CLOSED_WITH_REASON_ANCHOR) :]
+            head, sep, reason = rest.partition(_SSM_REASON_SEPARATOR)
+            # No separator means the id was printed without a reason; that is
+            # not a shape the plugin emits, so it is not claimed as one.
+            if not sep or not reason.strip():
+                continue
+            if _first_hit(reason.strip().lower(), _SSM_IDLE_CLOSE_SIGNALS) is not None:
+                return "idle"
+            return "closed"
+        if low.startswith(_SSM_CLOSED_NO_REASON_ANCHOR):
+            return "closed"
+        if low.startswith(_SSM_RESUME_TIMED_OUT_ANCHOR) and low.rstrip(".").endswith("timed out"):
+            return "resume_timeout"
+        if low.startswith(_SSM_START_FAILED_ANCHOR):
+            return "start_failed"
+    return ""
+
+
+def _first_hit(low: str, phrases: tuple[str, ...]) -> str | None:
+    """Return the first of *phrases* present in *low* (already lowercased)."""
+    for phrase in phrases:
+        if phrase in low:
+            return phrase
+    return None
+
+
+def _recover_backoff_secs(attempt: int, cap: float = _RECOVER_BACKOFF_MAX_SECS) -> float:
+    """Exponential backoff before a self-heal rebuild, capped at *cap*. *attempt* is 1-based."""
+    base = _RECOVER_BACKOFF_BASE_SECS * (2 ** max(0, attempt - 1))
+    return min(base, cap)
+
+
+def _strip_benign_ssh_noise(text: str) -> str:
+    """Drop ssh's benign post-quantum KEX warning lines so a real error shows."""
+    kept = [
+        ln
+        for ln in text.splitlines()
+        if ln.strip() and not any(m in ln.lower() for m in _BENIGN_SSH_STDERR_MARKERS)
+    ]
+    return "\n".join(kept).strip()
+
+
+# CSI/ANSI escape sequences (WSSH banners carry color + cursor moves such as
+# \x1b[31m and \x1b[1G); strip them so a control sequence can't corrupt surfaced
+# status text or dashboard tooltips.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+_BANNER_DETAIL_MAX_CHARS = 200
+
+
+def _sanitize_banner(text: str, *, anchor: str | None = None) -> str:
+    """ANSI-strip + credential/exfil-redact untrusted ssh stderr before it is
+    surfaced in status/logs, capped at ``_BANNER_DETAIL_MAX_CHARS``. The banner
+    is external, proxy-controlled text, so it is a redacted secondary detail
+    only -- never a classification signal.
+
+    When *anchor* names the lowercase classification phrase the exit-error
+    classifier matched, the fixed-width window is centered on the first
+    occurrence of that phrase instead of taken from the head, so benign stderr
+    written earlier (e.g. arbitrary ``LocalCommand`` output such as repeated
+    ``tput`` warnings under launchd/systemd where ``TERM`` is unset) cannot
+    consume the budget and truncate the classified reason out of the surfaced
+    detail. Centering on the phrase itself (never on its line, which the
+    proxy-controlled buffer can make arbitrarily long) keeps the phrase inside
+    the window unconditionally. Without an anchor, or when sanitization
+    removed the phrase, the head slice is unchanged.
+    """
+    cleaned = _ANSI_CSI_RE.sub("", text)
+    # Canonical exfiltration-then-credentials composition: the URL pass keys
+    # partly on query length and replaces the whole URL, so a credential pass
+    # run ahead of it can shorten a `?token=<long>` query below that threshold
+    # and leave the destination and payload parameters on the wire.
+    cleaned = redact(cleaned)
+    if len(cleaned) <= _BANNER_DETAIL_MAX_CHARS:
+        return cleaned
+    if anchor:
+        hit = cleaned.lower().find(anchor)
+        if hit >= 0:
+            start = hit + len(anchor) // 2 - _BANNER_DETAIL_MAX_CHARS // 2
+            start = max(0, min(start, len(cleaned) - _BANNER_DETAIL_MAX_CHARS))
+            return cleaned[start : start + _BANNER_DETAIL_MAX_CHARS]
+    return cleaned[:_BANNER_DETAIL_MAX_CHARS]
+
+
+class ProxyRequestError(Exception):
+    """Typed failure from :meth:`SshTunnelManager.proxy_request`.
+
+    Carries a machine-readable ``code`` (mirrors the ``code`` convention of the
+    federated-search errors) and a suggested ``http_status`` so the route
+    handler can translate a failure without string-matching the message.
+    """
+
+    def __init__(self, code: str, message: str, *, http_status: int = 502) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.http_status = http_status
+
+
+class _PeerUnavailable(Exception):
+    """A request to a connected peer could not be attempted at all.
+
+    Raised by :meth:`SshTunnelManager._peer_target` and
+    :meth:`SshTunnelManager._peer_cookie_header` so the three public callers can
+    share how a peer target is *resolved* without sharing their error contracts:
+    each maps ``kind`` onto its own machine-readable code. Those codes are
+    deliberately NOT derived from ``kind`` here — the ``proxy_``/``transfer_``/
+    ``search_`` families belong to three separate route contracts pinned by
+    ``test_error_code_contract.py``, and a reader grepping for one of them must
+    land on the site that returns it.
+
+    ``kind`` is ``"not_connected"``, ``"no_credential"`` or
+    ``"exchange_failed"``; ``message`` is the caller-facing text, identical
+    across the three families. The last two share one code per family: both
+    mean the manager holds no session it can present to the peer.
+    """
+
+    _MESSAGES = {
+        "not_connected": "instance is not connected",
+        "no_credential": "no live credential for this instance; reconnect it",
+        "exchange_failed": "could not exchange the credential with the peer",
+    }
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+        self.message = self._MESSAGES[kind]
+
+
+class TunnelState(enum.Enum):
+    """Per-instance tunnel states."""
+
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    ERROR = "error"
+    STOPPED = "stopped"
+
+
+@dataclass
+class TunnelStatus:
+    """Serializable snapshot of one instance's tunnel (never holds the token)."""
+
+    instance_id: str
+    state: TunnelState = TunnelState.DISCONNECTED
+    local_port: int = 0
+    remote_port: int = 0
+    error: str = ""
+    connected_at: float = 0.0
+    diagnosis: dict | None = None  # last failure-diagnosis ladder result
+    # Fargate only: the local URL of the crew's turn API, what the card shows in
+    # place of a dashboard. Empty for the dashboard-bearing methods.
+    turn_url: str = ""
+
+    def to_dict(self) -> dict:
+        d: dict[str, object] = {
+            "instance_id": self.instance_id,
+            "state": self.state.value,
+            "local_port": self.local_port,
+            "remote_port": self.remote_port,
+            "error": self.error,
+            "connected_at": self.connected_at,
+        }
+        if self.diagnosis is not None:
+            d["diagnosis"] = self.diagnosis
+        if self.turn_url:
+            d["turn_url"] = self.turn_url
+        return d
+
+
+def _build_ssh_tunnel_argv(
+    ssh_host: str, local_port: int, remote_port: int, *, compression: bool = True
+) -> list[str]:
+    """Build the supervised ``ssh -N -L`` argv (loopback-bound, no local shell).
+
+    ``ssh_host`` must already be validated by :func:`validate_ssh_host`.
+
+    ``compression`` adds ``-C`` (zlib transport compression). The forwarded
+    stream carries the remote dashboard SPA bundle + all API/WS traffic, which
+    is highly compressible; the gateway does not gzip at the HTTP layer, so this
+    is the only compression in the path. See ``instances.ssh_compression``.
+    """
+    # Windows: not yet supported — requires the OpenSSH client (`ssh`) on PATH,
+    # which isn't guaranteed; ssh-process kill handling also needs a Windows audit.
+    # Tracked as follow-on work.
+    forward = f"{_LOOPBACK}:{local_port}:{_LOOPBACK}:{remote_port}"
+    argv = [
+        "ssh",
+        "-N",  # no remote command; foreground so the gateway can supervise it
+    ]
+    if compression:
+        argv.append("-C")  # compress the forwarded stream (bundle + API/WS)
+    argv += [
+        "-o",
+        "BatchMode=yes",  # never prompt — fail fast if auth is needed
+        "-o",
+        "ExitOnForwardFailure=yes",  # exit if the local forward can't bind
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "AddressFamily=inet",  # force IPv4 loopback (dodge ::1 fallback)
+        # The forward must stay owned by the child this manager supervises.
+        # Multiplexing takes it away from the user's ssh_config: ssh hands the
+        # forward to an existing shared connection and exits 0, leaving it alive
+        # under a process the gateway never spawned, so a tunnel that is in fact
+        # serving is reported as dead.
+        #
+        # Routing and identity (`User`, `IdentityFile`, `Port`,
+        # `ProxyJump`/`ProxyCommand`) are deliberately still inherited -- the
+        # registry carries no inline equivalents. See §9 of the instances spec.
+        "-o",
+        "ControlPath=none",  # no socket to share -- this is what disables it
+        "-o",
+        "ControlMaster=no",  # policy; ControlPath alone suffices  # wokeignore:rule=master
+        "-L",
+        forward,
+        ssh_host,
+    ]
+    return argv
+
+
+def _build_ssm_tunnel_argv(
+    ssm_target: str, local_port: int, remote_port: int, *, profile: str = "", region: str = ""
+) -> list[str]:
+    """Build the supervised ``aws ssm start-session`` port-forward argv.
+
+    ``ssm_target``/``profile``/``region`` must already be injection-validated
+    (:func:`validate_ssm_target` / :func:`validate_aws_profile` /
+    :func:`validate_aws_region`). Delegates to
+    :func:`kiro_crew.cloud.ssm.build_port_forward_argv` — the launcher's
+    existing, reviewed argv builder — rather than duplicating it, so the two
+    features can never drift on the SSM document/parameter shape.
+    """
+    return cloud_ssm.build_port_forward_argv(ssm_target, remote_port, local_port, profile, region)
+
+
+class _RecoverySuperseded(Exception):
+    """A self-heal rebuild found the tunnel generation moved mid-flight.
+
+    Raised by :meth:`SshTunnelManager._rebuild` when its epoch-gated install
+    is refused, and caught in :meth:`SshTunnelManager._recover`: the recovery
+    must stand down entirely — falling through to the next tier instead would
+    re-mint against a world the recovery has already been superseded in.
+    """
+
+
+class _SshTunnel:
+    """Supervises one instance's tunnel child process (SSH or SSM transport).
+
+    ``ssh_target``/``ssm_target`` and friends are transport-specific; exactly
+    one of ``transport="ssh"`` (using ``ssh_host``) or ``transport="ssm"``
+    (using ``ssm_target``/``aws_profile``/``aws_region``) is active, decided by
+    the caller. All state-machine, health-probe, and self-heal behavior below
+    is shared between both transports — only argv-building and exit-error
+    classification differ.
+    """
+
+    def __init__(
+        self,
+        instance_id: str,
+        ssh_host: str,
+        local_port: int,
+        remote_port: int,
+        *,
+        connect_timeout_secs: float = _DEFAULT_CONNECT_TIMEOUT_SECS,
+        compression: bool = True,
+        probe_failure_threshold: int = _PROBE_FAILS,
+        on_exit: Callable[[str], None] | None = None,
+        transport: str = "ssh",
+        ssm_target: str = "",
+        aws_profile: str = "",
+        aws_region: str = "",
+    ) -> None:
+        self._id = instance_id
+        self._ssh_host = ssh_host
+        self._local_port = local_port
+        self._remote_port = remote_port
+        self._connect_timeout = connect_timeout_secs
+        self._compression = compression
+        # Consecutive health-probe failures tolerated before this tunnel is torn
+        # down to trigger self-heal; the manager threads the config-tunable value.
+        self._probe_fails = probe_failure_threshold
+        self._on_exit = on_exit  # Phase 3 seam: called(instance_id) on unexpected exit
+        self._transport = transport  # "ssh" or "ssm"
+        self._ssm_target = ssm_target
+        self._aws_profile = aws_profile
+        self._aws_region = aws_region
+
+        self._proc: asyncio.subprocess.Process | None = None
+        self._monitor_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._probe_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._stop_event = asyncio.Event()
+        self._probe_failures = 0
+        self._probe_failed = False  # set when the health probe forced teardown
+        self._stopping = False
+        self._stderr_buf = ""
+        # SSM only: the child's close notices go to stdout, so that pipe is
+        # drained concurrently for the whole session by _stdout_task rather than
+        # read once after exit. A second pipe read only at exit would deadlock a
+        # child that fills the OS buffer while still running.
+        self._stdout_buf = ""
+        self._stdout_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self.status = TunnelStatus(
+            instance_id=instance_id,
+            local_port=local_port,
+            remote_port=remote_port,
+        )
+
+    def _build_argv(self) -> list[str]:
+        """Build the transport-specific supervised child argv."""
+        if self._transport == "ssm":
+            return _build_ssm_tunnel_argv(
+                self._ssm_target,
+                self._local_port,
+                self._remote_port,
+                profile=self._aws_profile,
+                region=self._aws_region,
+            )
+        return _build_ssh_tunnel_argv(
+            self._ssh_host, self._local_port, self._remote_port, compression=self._compression
+        )
+
+    async def start(self) -> bool:
+        """Spawn the tunnel child and wait until the local forward is reachable.
+
+        Returns True on success (state CONNECTED), False on failure (state ERROR
+        with ``status.error`` populated). Idempotent guard: a second call while
+        CONNECTED is a no-op returning True.
+        """
+        if self.status.state == TunnelState.CONNECTED:
+            return True
+        self._stopping = False
+        self.status.state = TunnelState.CONNECTING
+        self.status.error = ""
+        # Built in a worker thread: the SSM branch resolves the aws CLI
+        # absolutely, which probes the filesystem (PATH scan +
+        # well-known install dirs) — synchronous work that must not run on the
+        # gateway event loop, where a stalled network mount on PATH would
+        # freeze every request and heartbeat.
+        argv = await asyncio.to_thread(self._build_argv)
+        target = self._ssm_target if self._transport == "ssm" else self._ssh_host
+        logger.info(
+            "Opening %s tunnel for %s: 127.0.0.1:%d -> %s:%d",
+            self._transport,
+            self._id,
+            self._local_port,
+            target,
+            self._remote_port,
+        )
+        try:
+            ssm = self._transport == "ssm"
+            self._proc = await asyncio.create_subprocess_exec(
+                *argv,
+                # SSM only: `aws ssm start-session` prints every session-close
+                # notice to STDOUT (its own diagnostics go to a rolling log
+                # file), so this pipe is the ONLY place the reason a forward
+                # closed can be read — see _ssm_close_reason. It is drained
+                # concurrently from spawn, so a child that keeps writing cannot
+                # fill the buffer and block. ssh writes nothing useful here and
+                # keeps its output discarded.
+                stdout=(asyncio.subprocess.PIPE if ssm else asyncio.subprocess.DEVNULL),
+                stderr=asyncio.subprocess.PIPE,
+                # SSM tunnels get process-group isolation (mirroring
+                # cloud.ssm.open_port_forward) so a later teardown can reap the aws
+                # wrapper's session-manager-plugin child too — see _terminate().
+                # Both kwargs are passed EXPLICITLY per the platform_compat spawn
+                # recipe: on POSIX start_new_session=True calls setsid (killpg reaps
+                # the group) and creationflags is 0; on Windows there is no setsid
+                # (start_new_session is silently ignored) and
+                # CREATE_NEW_PROCESS_GROUP is what makes the tree taskkill /T-reapable.
+                start_new_session=(ssm and platform_compat.IS_POSIX),
+                creationflags=(platform_compat.CREATE_NEW_PROCESS_GROUP if ssm else 0),
+                # SSM only: the argv head is resolved absolutely, but the aws CLI
+                # then looks session-manager-plugin up BY NAME on this child's own
+                # PATH, which a GUI-launched gateway hands down as the minimal
+                # launchd one — so the tunnel dies inside a correctly-resolved aws
+                # unless the child's env carries the install dirs. argv[0]
+                # is handed over so the widening is withheld for a bare head: that
+                # bare name IS a provenance refusal, and widening would put the
+                # refused binary back within execvp's reach. None means inherit,
+                # which is what the ssh transport wants: its binary lives in the
+                # system bin dir and needs no widening.
+                env=(aws_spawn_env(argv[0]) if ssm else None),
+            )
+        except OSError as e:
+            self.status.state = TunnelState.ERROR
+            self.status.error = f"failed to spawn {self._transport} tunnel: {e}"
+            logger.error("Tunnel spawn failed for %s: %s", self._id, e)
+            return False
+
+        # Started BEFORE the readiness wait, so a child that closes during
+        # startup still has its reason captured: _wait_until_ready can conclude
+        # via _failed_on_child_exit, which classifies on this buffer.
+        if self._proc.stdout is not None:
+            self._stdout_task = asyncio.create_task(self._drain_stdout())
+
+        ready = await self._wait_until_ready()
+        if not ready:
+            await self._terminate()
+            if self.status.state != TunnelState.ERROR:
+                self.status.state = TunnelState.ERROR
+                self.status.error = self.status.error or "tunnel did not become ready"
+            return False
+
+        self.status.state = TunnelState.CONNECTED
+        self.status.connected_at = time.time()
+        self.status.error = ""
+        # Supervise for later unexpected exit (Phase 3 self-heal hooks here).
+        self._monitor_task = asyncio.create_task(self._monitor())
+        # Health probe: detect a tunnel that's alive-but-not-forwarding and tear
+        # it down so the monitor's on_exit seam can recover it (Stage 2).
+        if _PROBE_INTERVAL > 0:
+            self._probe_task = asyncio.create_task(self._probe_loop())
+        logger.info("Tunnel connected for %s on 127.0.0.1:%d", self._id, self._local_port)
+        return True
+
+    async def _probe_loop(self) -> None:
+        """Poll the local forward while CONNECTED; tear down on repeated failure.
+
+        Sleeps ``_PROBE_INTERVAL`` between probes (interruptible by ``stop()``).
+        A successful reachability check resets the failure counter; after
+        ``_PROBE_FAILS`` consecutive failures the tunnel is treated as a zombie
+        (alive child, no forwarding) and the child is terminated — the existing
+        ``_monitor`` then fires ``on_exit`` so Stage 2 can rebuild/re-mint.
+        Mirrors ``TunnelManager._probe_loop``.
+        """
+        try:
+            while not self._stopping and self.status.state == TunnelState.CONNECTED:
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=_PROBE_INTERVAL)
+                    return  # stop() was requested during the interval
+                except asyncio.TimeoutError:
+                    pass  # interval elapsed — time to probe
+                if self._stopping or self.status.state != TunnelState.CONNECTED:
+                    return
+                if await self._port_reachable():
+                    self._probe_failures = 0
+                    continue
+                self._probe_failures += 1
+                logger.warning(
+                    "Tunnel health probe failed (%d/%d) for %s",
+                    self._probe_failures,
+                    self._probe_fails,
+                    self._id,
+                )
+                if self._probe_failures >= self._probe_fails:
+                    logger.warning(
+                        "Tunnel for %s unhealthy after %d probe failures — tearing "
+                        "down to trigger recovery",
+                        self._id,
+                        self._probe_failures,
+                    )
+                    self._probe_failed = True
+                    self._probe_failures = 0
+                    # Terminate the child; _monitor (not stopping) marks ERROR and
+                    # fires on_exit. Done in a task so we don't await our own
+                    # cancellation if stop() races in.
+                    asyncio.create_task(self._terminate())
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never let the probe loop crash silently
+            logger.exception("Tunnel probe loop crashed for %s: %s", self._id, exc)
+
+    async def _wait_until_ready(self) -> bool:
+        """Poll the local forward until it accepts a connection or we time out.
+
+        Fails early if the ssh child exits before the port comes up (e.g. auth
+        failure, ExitOnForwardFailure), capturing stderr for diagnostics.
+        """
+        deadline = time.monotonic() + self._connect_timeout
+        while time.monotonic() < deadline:
+            if await self._failed_on_child_exit():
+                return False
+            if await self._port_reachable():
+                # A reachable port is NOT proof THIS child bound it: a lingering
+                # tunnel or orphaned ssh can answer while our child already lost
+                # the bind race (ExitOnForwardFailure -> exit 255). Confirm our
+                # child is still alive before declaring the tunnel ready.
+                if await self._failed_on_child_exit():
+                    return False
+                return True
+            await asyncio.sleep(_READY_POLL_INTERVAL_SECS)
+        self.status.error = f"timed out after {self._connect_timeout}s waiting for forward"
+        return False
+
+    async def _failed_on_child_exit(self) -> bool:
+        """Record an already-exited child as an ERROR status; True if it exited.
+
+        ``self._proc`` is re-read on every call rather than passed in, because
+        each caller looks across an await during which the child can have exited.
+        Returns False when there is no child at all — a racing ``stop()`` clears
+        ``self._proc`` — so that teardown is left to the readiness timeout rather
+        than reported as an exit with a returncode nobody captured.
+        """
+        proc = self._proc
+        if proc is None or proc.returncode is None:
+            return False
+        await self._finish_stdout_drain()
+        await self._capture_stderr()
+        self.status.state = TunnelState.ERROR
+        self.status.error = self._exit_error(proc.returncode)
+        return True
+
+    async def _port_reachable(self) -> bool:
+        """Return True if something accepts a TCP connect on the local forward."""
+        try:
+            fut = asyncio.open_connection(_LOOPBACK, self._local_port)
+            reader, writer = await asyncio.wait_for(fut, timeout=1.0)
+        except (OSError, asyncio.TimeoutError):
+            return False
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        return True
+
+    async def _monitor(self) -> None:
+        """Await the child's exit; on unexpected exit mark ERROR and notify."""
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            await proc.wait()
+        except asyncio.CancelledError:
+            raise
+        if self._stopping:
+            return
+        await self._finish_stdout_drain()
+        await self._capture_stderr()
+        self.status.state = TunnelState.ERROR
+        self.status.error = self._exit_error(proc.returncode)
+        logger.warning("Tunnel for %s exited unexpectedly: %s", self._id, self.status.error)
+        if self._on_exit is not None:
+            with contextlib.suppress(Exception):
+                self._on_exit(self._id)
+
+    def _exit_error(self, returncode: int | None) -> str:
+        """Compose a human error from exit code + captured stderr.
+
+        Classifies on real ssh signals, not on prose the WSSH proxy passes
+        through. A genuine auth failure (permission denied / publickey /
+        certificate expired) is reported as auth; a WSSH session/transport drop
+        (idle timeout, banner-exchange timeout, reset, refused) is reported as a
+        transport drop — never as an auth verdict inferred from banner text. The
+        raw banner is ANSI-stripped and credential-redacted before it is
+        surfaced as a secondary detail, with the fixed-width detail window
+        centered on the matched classification phrase so preceding benign
+        noise (e.g. LocalCommand output) cannot truncate the real reason away.
+
+        The SSM transport has an entirely different error vocabulary (IAM
+        denials, a missing session-manager-plugin, an offline SSM agent), so it
+        is classified separately by :meth:`_ssm_exit_error` — running SSM stderr
+        through the ssh matchers above would mislabel e.g. an ``AccessDenied``
+        as an "ssh auth failure".
+        """
+        if self._probe_failed:
+            return "health probe failed — tunnel alive but not forwarding"
+        if self._transport == "ssm":
+            return self._ssm_exit_error(returncode)
+        # Drop ssh's benign post-quantum KEX advisory so it can't mask the real
+        # failure (the loop symptom was this warning hiding "bind: ... in use").
+        tail = _strip_benign_ssh_noise(self._stderr_buf)
+        low = tail.lower()
+        # Genuine ssh auth signals first, so a real auth failure is never masked
+        # by a transport phrase that happens to co-occur in the same banner.
+        hit = _first_hit(low, _SSH_AUTH_SIGNALS)
+        if hit is not None:
+            return f"ssh auth failed (check SSH access): {_sanitize_banner(tail, anchor=hit)}"
+        # WSSH / transport session drops — not an auth problem. Worded neutrally
+        # because this method is also used for the initial-connect failure path,
+        # where no self-heal is armed yet (so it must not promise reconnection).
+        hit = _first_hit(low, _SSH_TRANSPORT_DROP_SIGNALS)
+        if hit is not None:
+            return f"ssh tunnel transport drop: {_sanitize_banner(tail, anchor=hit)}"
+        hit = _first_hit(low, _SSH_BIND_SIGNALS)
+        if hit is not None:
+            detail = _sanitize_banner(tail, anchor=hit)
+            return f"ssh forward bind failed (local port already in use): {detail}"
+        if tail:
+            return f"ssh exited {returncode}: {_sanitize_banner(tail)}"
+        return f"ssh exited with code {returncode}"
+
+    def _ssm_exit_error(self, returncode: int | None) -> str:
+        """Classify an ``aws ssm start-session`` port-forward child's exit.
+
+        Distinguishes the failure modes an operator can actually act on:
+        expired/absent AWS credentials, an IAM denial on ``ssm:StartSession``,
+        a missing local ``session-manager-plugin``, an instance that is not a
+        registered/online SSM managed node, and a local bind conflict. Like the
+        ssh classifier, the raw stderr is ANSI-stripped and credential-redacted
+        before being surfaced as a secondary detail.
+
+        Those are all stderr signals. A session AWS itself closed writes nothing
+        to stderr at all and exits 0, so when no stderr signal matches this falls
+        through to :meth:`_ssm_closed_error`, which reads the close notice the
+        child prints to stdout. That is the only place the cause of a closed
+        forward exists: the child's own diagnostics go to a rolling log file, and
+        the exit status is 0 for a clean close, a transport drop and a failed
+        start alike.
+        """
+        tail = self._stderr_buf.strip()
+        low = tail.lower()
+        # Credentials first: an expired/absent credential is the most common
+        # cause and its message can also contain "not authorized"-adjacent text.
+        hit = _first_hit(low, _SSM_CREDENTIAL_SIGNALS)
+        if hit is not None:
+            return (
+                "AWS credentials missing or expired (refresh them, e.g. "
+                f"`aws sso login --profile <name>`): {_sanitize_banner(tail, anchor=hit)}"
+            )
+        hit = _first_hit(low, _SSM_DENIAL_SIGNALS)
+        if hit is not None:
+            detail = _sanitize_banner(tail, anchor=hit)
+            return f"IAM denied ssm:StartSession for this target: {detail}"
+        hit = _first_hit(low, _SSM_PLUGIN_SIGNALS)
+        if hit is not None:
+            return (
+                "session-manager-plugin is not installed locally (install the AWS "
+                f"Session Manager plugin, then reconnect): {_sanitize_banner(tail, anchor=hit)}"
+            )
+        hit = _first_hit(low, _SSM_TARGET_SIGNALS)
+        if hit is not None:
+            return (
+                "the SSM target is not a connected managed node (is the instance "
+                f"running with the SSM agent online and an instance profile?): "
+                f"{_sanitize_banner(tail, anchor=hit)}"
+            )
+        hit = _first_hit(low, _SSM_BIND_SIGNALS)
+        if hit is not None:
+            detail = _sanitize_banner(tail, anchor=hit)
+            return f"SSM forward bind failed (local port already in use): {detail}"
+        # Nothing actionable on stderr. The child prints WHY a session closed to
+        # stdout, so consult that next — it outranks unclassified stderr noise
+        # because a close notice states the cause and the noise does not. Only
+        # `kind` is used: the service-supplied reason text stays a classification
+        # signal and is never surfaced or logged.
+        closed = self._ssm_closed_error()
+        if closed:
+            return closed
+        if tail:
+            return f"SSM session exited {returncode}: {_sanitize_banner(tail)}"
+        return f"SSM session exited with code {returncode}"
+
+    def _ssm_closed_error(self) -> str:
+        """Message for a recognised session-close shape, ``""`` when none matched.
+
+        Every branch is worded against what the code can actually establish:
+
+        * No duration. The ECS Exec documentation calls its idle limit fixed
+          while the Session Manager preferences documentation describes an
+          adjustable one, and neither settles which governs a port forward at an
+          ``ecs:`` target — so the preference is named and no number is.
+        * No promise that traffic holds the session open. The documented activity
+          list is terminal-centric, and a client holding a forward open while
+          making no requests can still idle out.
+        * No offer to reconnect. Re-opening is a human action (the cloud lane's
+          opener carries :func:`~kiro_crew.cloud.aws.assert_human_action`), and a
+          fargate crew deliberately gets no auto-connect at all.
+        * Only a real action. A fargate crew has no dashboard pane and no CLI
+          connect verb; its card in Settings is what reaches it.
+        """
+        kind = _ssm_close_reason(self._stdout_buf)
+        port = self._local_port
+        if kind == "idle":
+            return (
+                f"the SSM session on local port {port} was closed by AWS after a period "
+                "with no activity. Open a new forward with Connect on the crew's card in "
+                "Settings. To allow longer idle periods, raise the Session Manager "
+                "idle-timeout preference for this account and region "
+                "(Systems Manager > Session Manager > Preferences)."
+            )
+        if kind == "closed":
+            # AWS ended it and either gave no reason or gave one this code does
+            # not recognise. Say only that, rather than guessing at idleness.
+            return (
+                f"AWS ended the SSM session on local port {port}. Open a new forward "
+                "with Connect on the crew's card in Settings."
+            )
+        if kind == "resume_timeout":
+            return (
+                f"the SSM session on local port {port} was lost and AWS ended it before "
+                "it could be resumed. Open a new forward with Connect on the crew's "
+                "card in Settings."
+            )
+        if kind == "start_failed":
+            return (
+                f"the SSM session for local port {port} never opened: the session-manager "
+                "plugin reported a start-session failure. Run Diagnose on the crew's "
+                "card in Settings for the cause."
+            )
+        return ""
+
+    async def _drain_stdout(self) -> None:
+        """Continuously drain the SSM child's stdout into a bounded buffer.
+
+        Runs for the child's whole life rather than reading once at exit, for two
+        reasons. A pipe nobody reads blocks the writer once the OS buffer fills,
+        which would hang the tunnel itself; and the notice this buffer exists to
+        capture is written immediately before the child exits, so a reader that
+        starts at exit can race the pipe's teardown.
+
+        The buffer keeps the most recent ``_MAX_STDOUT_CHARS`` and nothing else,
+        so a service that streams into this pipe cannot grow memory. Decoding is
+        lossy-by-design (``"replace"``): a split multi-byte sequence must not
+        raise in a background task whose failure nobody observes. Sanitizing is
+        deliberately NOT done here but at read time, because a credential split
+        across two reads would survive a per-chunk pass.
+        """
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        stream = proc.stdout
+        with contextlib.suppress(Exception):
+            while True:
+                data = await stream.read(_STDOUT_READ_CHUNK)
+                if not data:
+                    return
+                self._stdout_buf = (self._stdout_buf + data.decode("utf-8", "replace"))[
+                    -_MAX_STDOUT_CHARS:
+                ]
+
+    async def _finish_stdout_drain(self, *, timeout: float = 2.0) -> None:
+        """Let the stdout drain reach EOF, then retire it.
+
+        Called on every exit path BEFORE the error is composed. The drain is
+        concurrent, so a close notice the child wrote immediately before exiting
+        can still be unread when ``proc.wait()`` returns; awaiting the task lets
+        it observe EOF and land that notice first. Bounded, then cancelled: a
+        surviving grandchild can hold the write end open, and teardown must not
+        wait on it. Whatever was captured is kept either way.
+        """
+        task = self._stdout_task
+        self._stdout_task = None
+        if task is None or task.done():
+            return
+        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def _capture_stderr(self) -> None:
+        """Drain whatever the ssh child wrote to stderr (bounded)."""
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        with contextlib.suppress(Exception):
+            data = await proc.stderr.read()
+            if data:
+                self._stderr_buf = (self._stderr_buf + data.decode("utf-8", "replace"))[
+                    -_MAX_STDERR_CHARS:
+                ]
+
+    async def stop(self) -> None:
+        """Tear down this tunnel (graceful terminate then kill).
+
+        The state leaves CONNECTED before the FIRST await rather than after the last
+        one. Everything that decides whether a credential may be issued for this
+        forward re-reads this same live object -- the token/port pair a pane is
+        answered with, and the mint paths that require CONNECTED -- and the awaits
+        below span seconds (``_terminate`` waits up to 5s per signal). A teardown
+        that reports CONNECTED for that span hands a caller this crew's token
+        paired with a port that is already being released, and nothing revokes a
+        token once the response is sent.
+
+        Narrower than it looks, on purpose. :meth:`_reserved_ports` counts a port by
+        tunnel MEMBERSHIP rather than by state and the caller pops this tunnel only
+        after this returns, so the port stays withheld across the whole window.
+        :meth:`_apply_hop_holds` under-counts ``in_use`` here, which is the direction
+        its own contract calls cheap: the bind loses to a still-live forward and the
+        port is recorded as owed and retried.
+
+        A failed teardown restores the state, because the forward is then still up. A
+        CANCELLED one does not: the child may already be signalled, and refusing to
+        mint for a forward that is half-gone is the safe direction.
+        """
+        previous = self.status.state
+        self.status.state = TunnelState.STOPPED
+        self._stopping = True
+        self._stop_event.set()
+        try:
+            if self._probe_task and not self._probe_task.done():
+                self._probe_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._probe_task
+            if self._monitor_task and not self._monitor_task.done():
+                self._monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._monitor_task
+            await self._finish_stdout_drain(timeout=0.5)
+            await self._terminate()
+        except Exception:
+            self.status.state = previous
+            raise
+        logger.info("Tunnel stopped for %s", self._id)
+
+    async def _terminate(self) -> None:
+        """Terminate the tunnel child if running (terminate, then kill on timeout).
+
+        For the **SSM** transport the child is the ``aws`` wrapper, and the
+        ``session-manager-plugin`` grandchild is what actually holds the
+        forwarded local port — ``proc.terminate()`` alone would signal only the
+        wrapper and leave the plugin alive still bound to the port (the exact
+        leak :func:`kiro_crew.cloud.ssm.kill_port_forward` documents). Since
+        :meth:`start` spawns SSM children with process-group isolation, we reap
+        the whole tree via :func:`platform_compat.kill_process_tree` — ``killpg``
+        on POSIX, ``taskkill /T`` on Windows, so the plugin is reaped on **every**
+        supported platform. A tree-kill failure falls back to the single-process
+        kill.
+        """
+        proc = self._proc
+        if proc and proc.returncode is None:
+            group_signalled = False
+            if self._transport == "ssm":
+                group_signalled = self._signal_group(proc.pid, platform_compat.SIGTERM)
+            try:
+                if not group_signalled:
+                    proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                if self._transport == "ssm" and self._signal_group(
+                    proc.pid, platform_compat.SIGKILL
+                ):
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                else:
+                    with contextlib.suppress(ProcessLookupError):
+                        proc.kill()
+        self._proc = None
+
+    @staticmethod
+    def _signal_group(pid: int, sig: int) -> bool:
+        """Reap *pid*'s whole process tree. Returns whether it was delivered.
+
+        Routed through :func:`platform_compat.kill_process_tree` rather than a raw
+        ``os.killpg``/``os.getpgid`` pair, which exist only on POSIX and would
+        leave the ``session-manager-plugin`` grandchild orphaned (still holding
+        the forwarded port) on native Windows — a supported platform.
+
+        Best-effort and never raises: the shim propagates exceptions (an
+        already-reaped tree, a refused broadcast pgid, a protected Windows
+        descendant, a permission error), and all of them mean "not delivered", so
+        the caller falls back to the single-process kill.
+        """
+        try:
+            return platform_compat.kill_process_tree(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError, ValueError, AttributeError):
+            return False
+
+    @property
+    def pid(self) -> int | None:
+        """PID of the live ssh child, or None if not running."""
+        proc = self._proc
+        return proc.pid if proc is not None and proc.returncode is None else None
+
+
+def _verify_and_reclaim_forwarder(
+    pid: int,
+    expected_start: str,
+    expected_argv: list[str],
+    port: int,
+    tree: bool,
+    audit_resources: str,
+) -> str:
+    """Verify a recorded forwarder's identity, then SIGTERM/SIGKILL-reclaim it.
+
+    Blocking by design — process-attribute reads, signals, liveness polls —
+    so callers run it in a worker thread, never on the event loop. Doing the
+    verification and the first signal in ONE thread keeps the check-to-signal
+    window at in-process microseconds, the same residual the repo's other
+    pid-reuse guards accept.
+
+    Identity is pid + start time + exact argv, checked in that order, and the
+    start-time comparison is RE-RUN before the destructive SIGKILL: the grace
+    window is exactly the interval in which the pid can exit and be recycled,
+    and ``pid_exists`` polling cannot observe an exit that is immediately
+    followed by reuse. Mirrors the stale-app-backend reaper's guard
+    (leak-not-mis-kill): any unconfirmed identity withholds the signal.
+
+    ``tree=True`` for the SSM transport, whose child was spawned into its own
+    process group (``start_new_session``, so pgid == pid) — the group signal
+    reaps the ``session-manager-plugin`` grandchild still holding the
+    forwarded port, and completion is judged by :func:`pgroup_exists` plus the
+    port actually releasing, so a wrapper that exits first cannot fake
+    success while the plugin keeps the port. If the group leader is already
+    reaped by SIGKILL time, the group cannot be re-addressed through the
+    existing pid-keyed helpers; the TERM broadcast has already reached every
+    member, and a member that ignores it keeps the port — reported truthfully
+    as not reclaimed (the port stays excluded from allocation). The ssh child
+    is spawned WITHOUT a new group: after a gateway hard-kill it sits in the
+    DEAD gateway's process group, where a group signal could hit unrelated
+    survivors — so it gets a pid-scoped signal only, which suffices because
+    ``ssh -N`` holds the forward itself and spawns no descendants of its own.
+
+    Returns one of: ``"reclaimed"`` (identity confirmed, process/group gone,
+    port released), ``"identity_mismatch"`` (nothing was ever signalled),
+    ``"recycled_during_grace"`` (SIGKILL withheld: the pid stopped matching
+    its recorded identity during the TERM grace), ``"not_gone"`` (signals
+    delivered but the process, group, or port is still held at the end).
+    Every path that delivered at least one signal emits a SEL audit event.
+    """
+
+    def _identity_holds() -> bool:
+        now = platform_compat.process_start_time(pid)
+        if now is None or now != expected_start:
+            return False
+        # Both halves, both times: the start token alone is 1s-granular on
+        # macOS (``ps -o lstart=``), so a same-second pid reuse could keep it
+        # matching while the process is someone else's — the argv half breaks
+        # that tie. A mid-death target whose argv is already unreadable reads
+        # as not-held and merely withholds the escalation (TERM was already
+        # delivered to the verified process).
+        return platform_compat.process_argv_matches_exact(pid, list(expected_argv))
+
+    def _alive() -> bool:
+        return platform_compat.pgroup_exists(pid) if tree else platform_compat.pid_exists(pid)
+
+    def _gone() -> bool:
+        # Single-address on purpose: the question here is "did OUR forwarder let
+        # go of the port it held", and an ``ssh -L`` child binds 127.0.0.1 alone.
+        # The aggregate ``_is_port_free`` would answer a DIFFERENT question -- "is
+        # this port free for a new forward" -- so an unrelated ::1 listener would
+        # make a fully reclaimed orphan report not-gone and mis-attribute this
+        # reclaim's audited outcome.
+        return not _alive() and _is_addr_free(port, "127.0.0.1")
+
+    def _deliver(sig: int) -> None:
+        if tree and _SshTunnel._signal_group(pid, sig):
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError, ValueError):
+            platform_compat.kill_pid(pid, sig)
+
+    def _wait_gone(grace_secs: float) -> bool:
+        deadline = time.monotonic() + grace_secs
+        while time.monotonic() < deadline:
+            if _gone():
+                return True
+            time.sleep(_RECLAIM_POLL_INTERVAL_SECS)
+        return _gone()
+
+    def _audit(outcome: str) -> None:
+        try:
+            sel().log_api_access(
+                caller="gateway",
+                operation="forwarder_orphan_reclaim",
+                outcome=outcome,
+                resources=audit_resources,
+            )
+        except Exception as exc:  # noqa: BLE001 — audit must never break reclaim
+            logger.debug("SEL audit failed for forwarder_orphan_reclaim: %s", exc)
+
+    if not _identity_holds():
+        return "identity_mismatch"
+    _deliver(platform_compat.SIGTERM)
+    if _wait_gone(_RECLAIM_TERM_GRACE_SECS):
+        _audit("sigterm")
+        return "reclaimed"
+    # Re-confirm identity before the destructive escalation, and withhold the
+    # SIGKILL on ANYTHING short of a positive match — including a pid that no
+    # longer exists while its group/port linger. A recycled pid would make
+    # ``getpgid`` resolve (and the group kill target) the REPLACEMENT process,
+    # and ``pid_exists`` polling cannot distinguish "still our child" from
+    # "exited and recycled inside a poll gap", so absence of the pid is not a
+    # safe fall-through: no verified identity, no SIGKILL
+    # (leak-not-mis-kill). The TERM broadcast above already reached every
+    # group member while the identity was verified; a member that ignores it
+    # keeps the port, which stays excluded from allocation and is reported
+    # truthfully below.
+    if not _identity_holds():
+        _audit("sigkill_withheld_identity_unconfirmed")
+        return "recycled_during_grace"
+    _deliver(platform_compat.SIGKILL)
+    if _wait_gone(_RECLAIM_KILL_GRACE_SECS):
+        _audit("sigkill")
+        return "reclaimed"
+    _audit("not_gone")
+    return "not_gone"
+
+
+class _Moved(NamedTuple):
+    """Why a credential was discarded, and whether the forward must go too.
+
+    Two fields rather than one string because the caller needs an answer no string
+    can carry safely: a superseded GENERATION means this gateway rebuilt its own
+    forward, so tearing it down would destroy what a heal just repaired, while a
+    disagreeing IDENTITY means the forward still in place is riding a hop that
+    changed hands. Sniffing the reason text for the difference would make the
+    prose load-bearing; this makes the decision say it.
+    """
+
+    reason: str
+    retire: bool
+
+
+@dataclass(frozen=True)
+class _Mint:
+    """A mint's whole answer, carried to the caller instead of published on the way.
+
+    For a chained crew the parent states three things at once: the credential, the
+    loopback ``hop`` its own forward to that crew listens on, and the ``ttl`` it
+    issued the credential under. They belong together because they describe ONE
+    forward, and publishing any of them before the caller's generation fence lets a
+    superseded mint overwrite a current one -- including the hop that the credential
+    check itself compares against, which would leave it comparing stale to stale.
+
+    It also carries the parent's own IDENTITY for that hop -- the id the parent
+    knows the crew by, and the generation of the parent's forward to it. A port
+    number cannot serve as that identity: the parent's allocator hands a just-freed
+    port to the next connect, so the same number names a different forward after
+    ordinary churn, and a comparison on numbers clears exactly the case it exists to
+    refuse.
+
+    ``hop``, ``hop_id`` and ``ttl`` are empty for every unchained transport: those
+    mint over a key this gateway holds, so there is no second party stating anything.
+    """
+
+    token: str
+    hop: int = 0
+    ttl: str = ""
+    hop_id: str = ""
+    hop_gen: int = -1
+
+
+@dataclass
+class _TransportParams:
+    """Validated, transport-specific connection parameters for one instance.
+
+    Resolved once by :meth:`SshTunnelManager._resolve_transport` so the
+    connect / rebuild / self-heal / token-refresh paths all build their tunnel
+    and mint their token from the same validated values instead of each
+    re-branching on ``connection_method``.
+    """
+
+    method: str  # "ssh" | "ssm" | "fargate"
+    ssh_host: str = ""
+    remote_bin: str = ""
+    ssm_target: str = ""
+    aws_profile: str = ""
+    aws_region: str = ""
+    ssm_run_as: str = ""
+    #: Set only for a CHAINED instance: the parent instance whose already-open hop
+    #: this forward rides, and the loopback port ON THAT PARENT where the parent's
+    #: own forward to this crew listens. When present, ``ssh_host`` is the PARENT's
+    #: host (that is who we dial) and ``forward_remote_port`` is what we forward
+    #: to, so the instance's own ``ssh_host`` / ``remote_port`` are never dialled
+    #: from here — this gateway has no route to them, which is the whole reason the
+    #: chain exists.
+    via_instance_id: str = ""
+    via_remote_port: int = 0
+
+    @property
+    def is_chained(self) -> bool:
+        """Whether this forward rides another instance's hop."""
+        return bool(self.via_instance_id)
+
+    def forward_remote_port(self, own_remote_port: int) -> int:
+        """The port the forward's far end targets.
+
+        A chained instance targets its parent's loopback port; every other
+        instance targets the crew's own gateway port.
+        """
+        return self.via_remote_port if self.is_chained else own_remote_port
+
+    @property
+    def target(self) -> str:
+        """The human-facing target (ssh host, SSM instance id or ECS task) for messages."""
+        return self.ssm_target if self.method in SSM_TRANSPORT_METHODS else self.ssh_host
+
+    @property
+    def forwards_over_ssm(self) -> bool:
+        """Whether the forwarder child is ``aws ssm start-session``."""
+        return self.method in SSM_TRANSPORT_METHODS
+
+    def tunnel_kwargs(self) -> dict:
+        """Transport kwargs for the ``_SshTunnel`` constructor.
+
+        The tunnel child knows two argv shapes, ssh and the SSM port-forward. A
+        fargate instance's child IS the SSM port-forward (aimed at an ECS task), so
+        it is handed the ``ssm`` transport; what differs for fargate lives on the
+        manager (no mint, no remote ``kirocrew``), not in the child.
+        """
+        return {
+            "transport": "ssm" if self.forwards_over_ssm else "ssh",
+            "ssm_target": self.ssm_target,
+            "aws_profile": self.aws_profile,
+            "aws_region": self.aws_region,
+        }
+
+    def turn_url(self, local_port: int) -> str:
+        """The local turn-API URL for a fargate forward, ``""`` otherwise."""
+        if self.method != "fargate":
+            return ""
+        return f"http://{_LOOPBACK}:{local_port}{FARGATE_TURN_PATH}"
+
+
+class SshTunnelManager:
+    """Manages per-instance tunnels (SSH or SSM) keyed by instance id.
+
+    Holds the live tunnels, allocates loopback ports, mints per-instance tokens,
+    and keeps the registry's ``was_connected`` / ``last_active`` hints in sync.
+    Tokens are kept in memory only (never persisted, never logged) and handed to
+    the API layer via :meth:`get_token`.
+
+    The class name is retained (rather than renamed to a transport-neutral one)
+    because it is referenced by ``dashboard/server.py`` and the existing test
+    suite; it now supervises whichever transport each instance's
+    ``connection_method`` selects.
+    """
+
+    def __init__(
+        self,
+        registry: InstancesRegistry,
+        *,
+        base_port: int = DEFAULT_TUNNEL_BASE_PORT,
+        connect_timeout_secs: float | None = None,
+        ssh_compression: bool = True,
+        max_recovery_attempts: int = _MAX_RECOVERY,
+        recover_backoff_max_secs: float = _RECOVER_BACKOFF_MAX_SECS,
+        probe_failure_threshold: int = _PROBE_FAILS,
+        mint_timeout_secs: float | None = None,
+        mint_token: Callable[..., Awaitable[str]] = mint_remote_token,
+        tunnel_factory: Callable[..., _SshTunnel] | None = None,
+        parent_port: int | None = None,
+    ) -> None:
+        self._registry = registry
+        # The port the embedding dashboard ACTUALLY bound, carried into every
+        # minted remote token as the CSP frame-ancestor parent origin.
+        #
+        # Falls back to the configured value only when the caller cannot supply
+        # the real one. The distinction matters: ``DASHBOARD_PORT`` is derived
+        # from env/config at import time, so in the desktop app — which resolves
+        # its own port but spawns the backend without passing it through — the
+        # two disagree, the claim names a port the parent is not served on, and
+        # the remote's ``frame-ancestors`` then blocks the iframe ("Pane failed
+        # to load"). The gateway already knows its real port (``app["port"]``,
+        # passed to ``_register_instances_hooks``), so it is threaded in here
+        # rather than re-derived.
+        self._parent_port = parent_port if parent_port else _LOCAL_DASHBOARD_PORT
+        self._allocator = PortAllocator(base_port=base_port)
+        self._connect_timeout = connect_timeout_secs
+        self._ssh_compression = ssh_compression
+        # Self-heal tunables (config-tunable via instances.*): max consecutive
+        # recovery attempts before give-up, the cap on the per-attempt backoff,
+        # and the per-tunnel consecutive-probe-failure teardown threshold.
+        self._max_recovery = max_recovery_attempts
+        self._recover_backoff_max = recover_backoff_max_secs
+        self._probe_fails = probe_failure_threshold
+        self._mint_timeout = mint_timeout_secs
+        self._mint_token = mint_token
+        self._tunnel_factory = tunnel_factory or _SshTunnel
+        self._tunnels: dict[str, _SshTunnel] = {}
+        self._tokens: dict[str, str] = {}
+        #: instance_id -> (link token it was exchanged from, session cookie value).
+        #: Keyed on the link so a re-mint silently retires the old session.
+        self._peer_sessions: dict[str, tuple[str, str]] = {}
+        # Last connect/reconnect failure reason per instance, retained after the
+        # failed tunnel is popped so a sticky tab whose tunnel is down can still
+        # report *why* (e.g. a startup auto-revive that couldn't reach the host).
+        # Cleared on a successful connect or an explicit disconnect.
+        self._last_error: dict[str, str] = {}
+        # The TTL a CHAINED crew's current token was actually issued under, keyed
+        # by our id for that crew. A chained token is minted by the parent under
+        # the PARENT's record for the crew, which this gateway cannot know: our own
+        # row defaults to 20h, so scheduling the refresh from it would place the
+        # refresh after a shorter token has already expired. Written by the chained
+        # mint that produced the token, so it always describes the token held.
+        self._chained_ttl: dict[str, str] = {}
+        # The hop port the PARENT reported for a chained crew, from the same mint
+        # reply. Kept separate from the row because the row's copy came over a
+        # pane's postMessage: this one is the parent's own statement, and it is
+        # what the forward is allowed to aim at.
+        self._chained_hop_port: dict[str, int] = {}
+        #: The parent's own identity -- (its id for the crew, its forward's
+        #: generation) -- for the hop each chained forward here was BUILT against.
+        #: Written only by ``_store_token``, read only by
+        #: ``_credential_forward_moved``: it is what makes that comparison an
+        #: identity rather than a port number, which a reused port defeats.
+        self._chained_hop_identity: dict[str, tuple[str, int]] = {}
+        # Retirement tasks, held so they are not garbage-collected mid-teardown.
+        self._retirements: set[asyncio.Task] = set()
+        self._lock = asyncio.Lock()
+        #: OS-level ownership of ports we have lent as chained hops. The lease in the
+        #: registry keeps a lent port out of THIS allocator; this keeps it out of every
+        #: other process on the host, which is what the lease alone could not do.
+        #: Deliberately NOT armed here -- constructing a manager must not bind ports.
+        #: Armed by :meth:`sync_hop_holds`, which the gateway calls at startup, and by
+        #: every teardown that frees a lent port.
+        self._hop_guard = HopPortGuard()
+        #: port -> lease deadline, mirrored from the registry at the moment
+        #: ``lend_hop`` succeeds. Exists so the SYNCHRONOUS exit seam can bind a
+        #: freed lent port with zero ``await``; the registry remains authoritative
+        #: and this is rebuilt from it at startup and pruned on every settle.
+        self._lent_hops: dict[int, float] = {}
+        # Lends whose registry write is STILL IN FLIGHT. `_lent_hops` is re-seeded
+        # wholesale from the registry on every settle, so an entry registered before
+        # its write completes would be wiped by a settle landing in that window --
+        # reopening the very gap registering early closes. These are unioned back in
+        # there, and each is removed the moment its write resolves either way.
+        self._pending_lends: dict[int, float] = {}
+        # Self-heal: consecutive recovery attempts per instance (reset on a
+        # successful rebuild) + live recovery task refs (stored so they aren't
+        # GC'd mid-flight; cancelled on shutdown).
+        self._recover_attempts: dict[str, int] = {}
+        self._recovery_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        # Same tasks, indexed by instance: a reconfiguration must cancel the
+        # recovery in flight for ITS instance only, and a recovery that
+        # captured the pre-edit record cannot be allowed to reinstall it.
+        self._recovery_by_instance: dict[str, set[asyncio.Task]] = {}  # type: ignore[type-arg]
+        # Instances whose coordinates are being rewritten right now. Self-heal
+        # reads the record before it takes the lock, so cancelling the recoveries
+        # in flight is not enough on its own: a tunnel exiting mid-edit schedules
+        # a FRESH recovery that would read the pre-edit record. This barrier is
+        # set before the first await of a reconfiguration and cleared after the
+        # write, and recovery refuses to run for an instance named in it — which
+        # closes the window instead of racing it with a retry loop.
+        self._reconfiguring: set[str] = set()
+        # Generation counter per instance, bumped every time a tunnel is
+        # INSTALLED and every time one is torn down (_teardown_locked): both
+        # events end the generation a slow unlocked mint or rebuild ran for.
+        # A mint runs without the lock, so the tunnel it was minted for can be torn
+        # down and replaced while it is in flight; `instance_id in self._tunnels` is
+        # then true again and cannot tell the generations apart. The stamp can:
+        # a token is stored only if the tunnel it belongs to is still the current
+        # one. Coverage, mint path by mint path: connect() mints inside its
+        # critical section, so nothing can replace the tunnel mid-mint and it
+        # needs no stamp; _refresh_token_once — and refresh_token(), the
+        # request-driven path the embedded dashboard calls, which delegates to
+        # it and is not a task in `_refresh_tasks`, so it cannot be cancelled by
+        # name — compares the stamp under the lock before its store; the
+        # self-heal tier-2 re-mint does the same before its store.
+        self._tunnel_epoch: dict[str, int] = {}
+        # Proactive token refresh: per-instance refresh task + the mint timestamp
+        # / ttl so the TTL-remaining can be surfaced (Stage 6).
+        self._refresh_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        self._token_minted_at: dict[str, float] = {}
+        self._token_ttl_secs: dict[str, int] = {}
+        # The transport tunables above are copies of instances.*, so a config write
+        # reaches them only through apply_config(). Held on self because the watcher
+        # holds the owner weakly. ``fail_closed=False``: the section carries no
+        # authorization, so a degraded document's defaults are the right answer.
+        self._config_sub = live.watch_section(
+            self,
+            "instances",
+            method="apply_config",
+            fail_closed=False,
+            name="SshTunnelManager",
+        )
+
+    def apply_config(self, instances_cfg: object) -> None:
+        """Adopt new ``instances.*`` transport tunables.
+
+        Every value here is consulted per operation -- per connect, per mint, per
+        recovery attempt -- so pushing it onto the manager is a genuine hot apply
+        rather than a value that only matters at construction. The probe threshold
+        is additionally propagated into the tunnels ALREADY running, since each one
+        copied it when it was built and would otherwise keep tearing itself down on
+        the old count.
+
+        ``tunnel_base_port`` is deliberately left alone: the allocator has already
+        handed out ports from the old base and live tunnels hold them, so moving the
+        base mid-flight would only fragment the range. It applies to a manager built
+        after the change.
+        """
+        self._connect_timeout = getattr(instances_cfg, "connect_timeout_secs")
+        self._mint_timeout = getattr(instances_cfg, "mint_timeout_secs")
+        self._ssh_compression = bool(getattr(instances_cfg, "ssh_compression"))
+        self._max_recovery = int(getattr(instances_cfg, "max_recovery_attempts"))
+        self._recover_backoff_max = float(getattr(instances_cfg, "recover_backoff_max_secs"))
+        self._probe_fails = int(getattr(instances_cfg, "probe_failure_threshold"))
+        for tunnel in self._tunnels.values():
+            # Attribute-set on the live tunnel rather than a restart: the threshold
+            # is compared against a running counter, so the new value takes effect on
+            # the next probe without dropping a healthy forward.
+            tunnel._probe_fails = self._probe_fails
+
+    async def _persist_hint(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+        """Run a registry hint write in a worker thread; return only when it is DONE.
+
+        A cancelled ``await asyncio.to_thread(...)`` abandons only the await —
+        the already-submitted worker thread keeps running, and its
+        read-modify-rewrite of ``instances.json`` can land AFTER the caller's
+        ``async with self._lock`` block has unwound. That late write races the
+        next locked write (e.g. a cancelled connect's ``was_connected=True``
+        overtaking a disconnect's reset and reviving an instance the user
+        disconnected). So on cancellation this helper keeps waiting for the
+        worker to finish, then re-raises the cancellation — the caller's lock
+        is not released until the write has durably completed. Write FAILURES
+        are swallowed: hint persistence is best-effort, matching the
+        pre-offload ``contextlib.suppress(Exception)`` semantics.
+        """
+        task: asyncio.Task[Any] = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as e:
+                if task.done():
+                    raise  # write already completed; propagate the cancel as-is
+                cancelled = e
+                continue  # keep waiting: the worker write is still in flight
+            except Exception:
+                pass  # best-effort hint write
+            break
+        if cancelled is not None:
+            raise cancelled
+
+    async def _forwarder_identity_hints(
+        self, instance_id: str, tunnel: _SshTunnel
+    ) -> dict[str, Any]:
+        """Build the registry hints that record *tunnel*'s live forwarder child.
+
+        The recorded identity is ``forwarder_pid`` + ``forwarder_start`` + the
+        ``local_port`` that child is bound to, authenticated by
+        ``forwarder_sig`` — a MAC over all three plus the instance id. Every
+        field is read from the LIVE tunnel, so the set describes one process
+        rather than a mix of one process and another's port: a pid recorded
+        against a port it was not signed with leaves the signature failing
+        verification, and the orphan reclaim then refuses the very child the
+        write exists to record.
+
+        ``was_connected=True`` rides along because a live forwarder is exactly
+        what makes an instance auto-reconnectable, so the flag and the identity
+        of the child it refers to become durable in the same write.
+
+        Two states persist as a deliberate fail-closed miss rather than an
+        error: a start time that cannot be read records as ``""``, and an
+        unreadable signing key leaves ``forwarder_sig`` empty. Either one
+        disables the reclaim for this child — :meth:`_reclaim_orphan_forwarder`
+        requires both — which loses a leaked process at the next hard-kill but
+        can never signal the wrong one.
+
+        Both blocking reads (the platform start-time query and the key read)
+        go off the event loop: every caller holds the manager lock, where a
+        synchronous read would stall unrelated requests and heartbeats.
+
+        Returns the COMPLETE kwarg set for :meth:`_persist_hint`; a caller adds
+        only its own extras. :meth:`connect` and :meth:`_mark_recovered` both
+        write this record, and one builder is what keeps their field sets
+        identical: a field added to the identity here reaches both writes,
+        where two hand-written kwarg lists can carry it in one and omit it in
+        the other — and a record missing the port ``forwarder_sig`` signs over
+        fails its own verification.
+        """
+        forwarder_pid = tunnel.pid or _NO_FORWARDER_PID
+        # The port the forwarder actually bound, which for a rebuild can differ
+        # from the one connect() first allocated (see _recover).
+        local_port = tunnel.status.local_port
+        forwarder_start = ""
+        forwarder_sig = ""
+        if forwarder_pid > 0:
+            started = await asyncio.to_thread(platform_compat.process_start_time, forwarder_pid)
+            forwarder_start = started or ""
+        if forwarder_pid > 0 and forwarder_start:
+            key = await asyncio.to_thread(_reclaim_identity_key)
+            if key is not None:
+                forwarder_sig = _forwarder_identity_sig(
+                    key, instance_id, forwarder_pid, forwarder_start, local_port
+                )
+        return {
+            "local_port": local_port,
+            "forwarder_pid": forwarder_pid,
+            "forwarder_start": forwarder_start,
+            "forwarder_sig": forwarder_sig,
+            "was_connected": True,
+        }
+
+    def _reserved_ports(self) -> set[int]:
+        """Ports already taken: live tunnels, recorded local_ports, LENT hops.
+
+        The third source is what stops a chained credential reaching a crew it was
+        not minted for. A hub riding one of our hops holds the port NUMBER; when the
+        crew behind it disconnects, that port returns to the free set and is the
+        FIRST one handed to the next connect, so the hub's forward -- still pointed
+        at the number -- would deliver one crew's bearer token to another crew's
+        gateway. Withholding the port for as long as the credential we issued is
+        valid removes the moment that could happen in.
+
+        The deadline is ours, not the hub's: it is the TTL this gateway minted the
+        token under, so nothing is expected of the hub and no state crosses the
+        boundary. Once it passes the token is dead, and the port is ordinary again.
+
+        Read from the registry rather than from memory so a restart cannot drop a
+        reservation while the credential it protects is still live.
+        """
+        reserved: set[int] = {t.status.local_port for t in self._tunnels.values()}
+        for inst in self._registry.list():
+            if inst.local_port:
+                reserved.add(inst.local_port)
+        # Leases are document-level, not per-row: a crew can be REMOVED while a
+        # credential naming its hop is still valid, and the port has to stay withheld
+        # across that -- which a field on the deleted row could not do.
+        reserved |= self._registry.live_hop_leases()
+        return reserved
+
+    def sync_hop_holds(self) -> set[int]:
+        """Hold every lent hop port no live forward is serving. Returns what failed.
+
+        BLOCKING, and named so: it reads the registry from disk. Call it from a thread
+        (``await asyncio.to_thread(...)``) or use :meth:`_apply_hop_holds` when the
+        lease table is already in hand -- the same rule, and for the same reason, as
+        ``_reserved_ports`` a few hundred lines above, whose own comment says a
+        synchronous version here "would stall unrelated requests and heartbeats".
+
+        The companion to the lease in :meth:`_reserved_ports`, and the half that has
+        teeth outside this process: the lease keeps a lent port out of OUR allocator,
+        this keeps it out of every other binder on the host.
+
+        Call it at startup as well as on teardown, and that is not belt-and-braces: the
+        lease is PERSISTED and a socket is not, so after a restart every live lease
+        would otherwise name a port this gateway withholds from itself and owns in no
+        other sense.
+        """
+        return self._apply_hop_holds(self._registry.live_hop_lease_deadlines())
+
+    def hop_ownership_violations(self, leases: dict[int, float] | None = None) -> dict[int, str]:
+        """THE invariant, in one place:
+
+            For every live lease, either a live forward OWNS its port or the guard HOLDS
+            it.
+
+        Returns a ``port -> why`` map of leases satisfying neither; empty means the
+        invariant holds. This exists because the same defect kept arriving by new routes
+        -- an orphaned forwarder at startup, a hold that failed once, an ``ssh`` child
+        exiting unexpectedly, the same past ``max_recovery_attempts`` -- and each was a
+        path nobody had enumerated rather than a new kind of mistake. A list of call sites
+        is forgotten by the next path added; a predicate is not, so the tests drive states
+        against THIS and stop asking whether some site was remembered.
+
+        Deliberately read-only: it reports, and :meth:`_apply_hop_holds` is what repairs.
+        A violation means a chained bearer credential names a port nothing owns.
+        """
+        if leases is None:
+            leases = self._registry.live_hop_lease_deadlines()
+        owners = {
+            t.status.local_port: iid
+            for iid, t in self._tunnels.items()
+            if t.status.local_port and t.status.state is TunnelState.CONNECTED
+        }
+        held = self._hop_guard.held_ports()
+        violations: dict[int, str] = {}
+        for port in sorted(leases):
+            if port in owners or port in held:
+                continue
+            stale = [
+                iid
+                for iid, t in self._tunnels.items()
+                if t.status.local_port == port and t.status.state is not TunnelState.CONNECTED
+            ]
+            violations[port] = (
+                f"a {stale[0]!r} entry mentions it but is not CONNECTED, so no forward "
+                "owns it and no hold was taken"
+                if stale
+                else "no forward owns it and no hold was taken"
+            )
+        return violations
+
+    def _apply_hop_holds(self, leases: dict[int, float]) -> set[int]:
+        """Bind the holds for an ALREADY-READ lease table. Returns what failed.
+
+        Split out so a caller that must not widen the gap between a port's release and
+        its hold can take the slow read beforehand and leave only the binds here.
+
+        **A port counts as in use only while a forward is actually LISTENING on it --
+        CONNECTED state -- not while any tunnel object remembers the number.** The
+        forward's own listener is the ownership in that state, and two sockets cannot
+        share the address, so a held port is excluded rather than bound. But an
+        unexpected ``ssh`` exit leaves its tunnel in ``_tunnels`` with ``local_port``
+        intact and the state ERROR, and past ``max_recovery_attempts`` it stays there:
+        counting that as in use would skip the hold for a port the OS has already freed
+        while the credential naming it is still valid, which is the exposure itself.
+
+        Deliberately NARROWER than :meth:`_reserved_ports`, which counts every port any
+        tunnel or row remembers and is RIGHT to. The two run in opposite safety
+        directions: over-counting costs the allocator only a port it declines to reuse,
+        while over-counting here withholds a hold. Under-counting here is the cheap
+        error -- the bind simply loses to the live forward, and the port is recorded as
+        owed and retried.
+        """
+        in_use = {
+            t.status.local_port
+            for t in self._tunnels.values()
+            if t.status.local_port and t.status.state is TunnelState.CONNECTED
+        }
+        # The registry is the source of truth, so every settle re-seeds the cache
+        # from it rather than trusting what memory accumulated: a lapsed or
+        # removed lease disappears here, and a restart rebuilds the cache whole.
+        # The one exception is a lend whose write has not resolved yet: the registry
+        # cannot name it and a plain re-seed would drop it, which would leave the
+        # synchronous exit seam with nothing to bind during exactly the window the
+        # early registration exists to cover. Each of these is removed as soon as its
+        # write resolves, so this cannot accumulate.
+        #
+        # Bound ONCE and given to both readers, because they are two halves of one
+        # answer and giving them different sets is a hole rather than an inconsistency:
+        # `sync` releases every held or owed port absent from what it is handed
+        # (`hop_port_guard.sync`), so passing the registry-only snapshot here let a
+        # settle landing inside an in-flight lend release a hold the exit seam had
+        # already taken -- leaving the port unowned for a whole recovery backoff while
+        # the chained credential naming it stayed valid. The cache got the union and the
+        # guard did not, which is exactly the divergence this single binding removes.
+        settled = {**dict(leases), **self._pending_lends}
+        self._lent_hops = settled
+        return self._hop_guard.sync(settled, in_use)
+
+    async def _reclaim_orphan_forwarder(self, inst: Instance, params: _TransportParams) -> None:
+        """Reclaim *inst*'s own forwarder child leaked by a gateway hard-kill.
+
+        A SIGKILLed gateway never runs teardown, so its forwarder child
+        survives, reparented to init with nothing left to reap it: one idle
+        process, one loopback port, and one live session to the remote per
+        hard-kill → reconnect cycle. The restarted manager finds the recorded
+        ``local_port`` occupied and (correctly) allocates around it; this hook
+        is what turns that permanent leak into a reclaim.
+
+        Reclamation is keyed on OUR OWN recorded identity, never a
+        process-table match — matching the table by argv pattern would
+        SIGTERM forwards operators opened themselves, and no
+        pattern can distinguish our child from a stranger's. The registry
+        itself is agent-writable, so a recorded claim is honored only when it
+        AUTHENTICATES: the record must carry the gateway's own MAC over
+        (instance id, pid, start time, port), computed at spawn under a key
+        derived from the SEL trust root — which an agent can neither read nor
+        replace — so a record written or re-pointed by anything but this
+        gateway fails verification outright. Behind the MAC, defense in depth
+        from kernel-owned facts: the candidate must be a genuine ORPHAN — not
+        a pid this manager currently supervises, and reparented to init
+        (``get_ppid == 1``), which no live gateway's forwarder is. Then the
+        recorded pid is trusted only behind a STRICT identity check, both
+        halves recorded at spawn: the pid's start time must equal the recorded
+        ``forwarder_start``, AND its full argv must exactly equal the forward
+        command line this manager would construct for the recorded port (host
+        and all). Anything less — either hint missing, process gone,
+        attributes unreadable, or any element differing — means the identity
+        cannot be confirmed: the process is left alone and connect falls
+        through to normal allocation. The start-time half is what defeats pid
+        recycling (argv can collide in principle; a recycled pid's start time
+        cannot), and it is re-verified before the SIGKILL escalation inside
+        the worker. Best-effort: a failed reclaim never fails the connect, it
+        only leaves the leak for the next attempt.
+
+        A rebuilt-vs-recorded argv can also drift apart without any foul play
+        (an edited compression/host setting, or an ``aws`` entrypoint the
+        kernel rewrites through a shebang) — that misses the reclaim, never
+        mis-kills, and is logged below so the miss is visible instead of
+        silent.
+
+        Runs under the manager lock (its caller ``connect`` holds it); every
+        blocking step — the port probe and the verify-and-signal worker — is
+        pushed off the event loop via ``asyncio.to_thread``.
+        """
+        pid = inst.forwarder_pid
+        port = inst.local_port
+        start = inst.forwarder_start
+        sig = inst.forwarder_sig
+        if pid <= 1 or port <= 0 or not start or not sig:
+            return  # identity not (fully) recorded — nothing we may touch
+        # FAIL CLOSED on a port whose chained credential is still valid: leave the
+        # orphan alone. Reclaiming exists to give this crew its recorded port BACK, and
+        # a lent port is one `allocate` deliberately routes around (the lease keeps it
+        # reserved), so the reclaim would free a port this connect is not going to use
+        # anyway -- converting a port safely occupied by our own dead forwarder into a
+        # free one a stranger can bind while a hub still forwards a bearer token to it.
+        # The orphan IS the ownership here, and a stronger one than a held socket. It
+        # is reclaimed by the next connect once the lease lapses, and lingering is
+        # already a tolerated outcome further down this function.
+        if port in await asyncio.to_thread(self._registry.live_hop_leases):
+            logger.info(
+                "Leaving leaked %s forwarder pid %d for %s in place: port %d still "
+                "carries a live chained-credential lease, and freeing it would expose "
+                "that port rather than recover it",
+                params.method,
+                pid,
+                inst.id,
+                port,
+            )
+            return
+        # The registry is agent-writable state, so its identity claims are
+        # UNTRUSTED until authenticated: the record must carry the MAC this
+        # gateway (and only this gateway — the key derives from the SEL trust
+        # root, which sits on the sensitive-path deny list) computed when it
+        # spawned the child. A record an agent wrote, edited, or re-pointed at
+        # someone else's process fails verification and is refused before any
+        # process attribute is even read. Key unreadable -> refuse (never
+        # trust unsigned state).
+        key = await asyncio.to_thread(_reclaim_identity_key)
+        if key is None:
+            return
+        # Both the reconstruction and the comparison are fed agent-writable
+        # text: a record can carry arbitrary strings (even lone surrogates
+        # that refuse UTF-8 encoding), and compare_digest on str raises
+        # TypeError for non-ASCII. Any malformed field IS a verification
+        # failure, never a crash on the connect path.
+        try:
+            expected_sig = _forwarder_identity_sig(key, inst.id, pid, start, port)
+            sig_ok = hmac.compare_digest(sig.encode("utf-8"), expected_sig.encode("utf-8"))
+        except (TypeError, ValueError, UnicodeError):
+            sig_ok = False
+        if not sig_ok:
+            logger.warning(
+                "Recorded forwarder identity for %s failed signature "
+                "verification; refusing reclaim (registry edited outside the "
+                "gateway?)",
+                inst.id,
+            )
+            return
+        # Defense in depth behind the MAC, from gateway-/kernel-owned facts: a
+        # pid this manager is CURRENTLY supervising is never a leak candidate,
+        # and a genuine hard-kill orphan has been reparented to init — a
+        # forwarder whose parent is still alive belongs to a running gateway
+        # (this one or another), so it is refused no matter what the registry
+        # says. Subreaper hosts read as non-orphaned and merely miss the
+        # reclaim (fail closed, leak-not-mis-kill).
+        live_pids = {t.pid for t in self._tunnels.values() if t.pid}
+        if pid in live_pids:
+            return
+        if await asyncio.to_thread(platform_compat.get_ppid, pid) != 1:
+            return
+        if await asyncio.to_thread(_is_port_free, port):
+            return  # nothing holds the recorded port — nothing leaked to reclaim
+        if params.forwards_over_ssm:
+            expected = _build_ssm_tunnel_argv(
+                params.ssm_target,
+                port,
+                params.forward_remote_port(inst.remote_port),
+                profile=params.aws_profile,
+                region=params.aws_region,
+            )
+        else:
+            expected = _build_ssh_tunnel_argv(
+                params.ssh_host,
+                port,
+                # A chained forward targets its parent's loopback port, so the
+                # identity compared here has to be the argv that was actually
+                # spawned. Comparing the crew's own port would never match, and
+                # a mismatch is read as "not our child" — the leaked forwarder
+                # would be left holding the port forever.
+                params.forward_remote_port(inst.remote_port),
+                compression=self._ssh_compression,
+            )
+        outcome = await asyncio.to_thread(
+            _verify_and_reclaim_forwarder,
+            pid,
+            start,
+            expected,
+            port,
+            params.forwards_over_ssm,
+            f"instance={inst.id} pid={pid} port={port} transport={params.method}",
+        )
+        if outcome == "reclaimed":
+            logger.info(
+                "Reclaimed leaked %s forwarder pid %d for %s (released port %d)",
+                params.method,
+                pid,
+                inst.id,
+                port,
+            )
+        elif outcome == "identity_mismatch":
+            logger.info(
+                "Recorded %s forwarder pid %d for %s no longer matches its "
+                "recorded identity (recycled pid, or the rebuilt command line "
+                "drifted); leaving it alone (#1972) — port %d stays excluded "
+                "from allocation",
+                params.method,
+                pid,
+                inst.id,
+                port,
+            )
+        elif outcome == "recycled_during_grace":
+            logger.warning(
+                "Withheld SIGKILL for %s forwarder pid %d of %s: the pid "
+                "stopped matching its recorded identity during the term grace "
+                "(recycled); port %d stays excluded from allocation",
+                params.method,
+                pid,
+                inst.id,
+                port,
+            )
+        else:  # "not_gone"
+            logger.warning(
+                "Leaked %s forwarder pid %d for %s (or a group member holding "
+                "port %d) did not exit within the reclaim grace; leaving it "
+                "for the next connect (the port stays excluded from allocation)",
+                params.method,
+                pid,
+                inst.id,
+                port,
+            )
+
+    def _connect_timeout_for(self, method: str) -> float:
+        """Readiness timeout for *method*, honoring an explicit caller override.
+
+        SSM's ``session-manager-plugin`` has to complete a WebSocket handshake
+        with the SSM service before it binds the local port, which routinely
+        takes longer than a direct ssh TCP connect — so the SSM default is
+        higher. A caller that passed an explicit ``connect_timeout_secs``
+        (tests, tuning) wins for both transports.
+        """
+        if self._connect_timeout is not None:
+            return self._connect_timeout  # explicit override
+        if method in SSM_TRANSPORT_METHODS:
+            return _DEFAULT_SSM_CONNECT_TIMEOUT_SECS
+        return _DEFAULT_CONNECT_TIMEOUT_SECS
+
+    def _mint_timeout_for(self, method: str) -> float:
+        """Token-mint timeout for *method*, honoring an explicit override.
+
+        Mirrors :meth:`_connect_timeout_for`: the SSM mint dispatches
+        ``aws ssm send-command`` and polls ``get-command-invocation``, whose
+        dispatch latency (agent poll interval) makes its default higher. A
+        caller that passed an explicit ``mint_timeout_secs`` (config, tests)
+        wins for both transports — including a value equal to either
+        transport's default.
+        """
+        if self._mint_timeout is not None:
+            return self._mint_timeout  # explicit override
+        if method == "ssm":
+            return _DEFAULT_SSM_MINT_TIMEOUT_SECS
+        return _DEFAULT_MINT_TIMEOUT_SECS
+
+    def _resolve_transport(
+        self, inst: Instance, parent: Instance | None = None
+    ) -> _TransportParams:
+        """Validate + resolve *inst*'s transport params immediately before use.
+
+        Raises :class:`SshValidationError` / :class:`SsmValidationError` so each
+        caller can surface a clean per-instance error. Validation happens here —
+        right before a command line is built — rather than trusting the
+        registry's lighter early-reject charset checks.
+
+        A CHAINED instance is resolved first and separately: this gateway has no
+        route to it, so what gets dialled is its PARENT's host and the parent's
+        loopback port. The crew's own ``ssh_host`` / ``remote_port`` are left
+        alone (they describe the crew on its own machine and name the row in the
+        UI); dialling them from here is exactly the thing that does not work.
+        """
+        if inst.via_instance_id:
+            return self._resolve_chained_transport(inst, parent)
+        method = (inst.connection_method or "ssh").strip().lower()
+        if method == "fargate":
+            target = validate_ssm_target(inst.ssm_target)
+            # validate_ssm_target admits every SSM target shape; this method only
+            # forwards to an ECS task, so an EC2 id is refused here rather than
+            # handed to a forward that would reach a box with no turn API.
+            if split_ecs_target(target) is None:
+                raise SsmValidationError(
+                    f"ssm_target {target!r} must be an ECS task target "
+                    f"(ecs:<cluster>_<task-id>_<runtime-id>) for a fargate instance"
+                )
+            return _TransportParams(
+                method="fargate",
+                ssm_target=target,
+                aws_profile=validate_aws_profile(inst.aws_profile),
+                aws_region=validate_aws_region(inst.aws_region),
+            )
+        if method == "ssm":
+            target = validate_ssm_target(inst.ssm_target)
+            # Connect-time mirror of the registry's ssm arm, for records stored
+            # before the registry refused them: an ECS task has no SSM agent to
+            # run ``kirocrew token`` on, so forwarding it would only fail later
+            # at the mint with a generic error. Refuse here and name the method
+            # that owns the target.
+            if split_ecs_target(target) is not None:
+                raise SsmValidationError(
+                    f"ssm_target {target!r} is an ECS task target; it belongs to the "
+                    f"fargate connection method, not ssm"
+                )
+            return _TransportParams(
+                method="ssm",
+                ssm_target=target,
+                aws_profile=validate_aws_profile(inst.aws_profile),
+                aws_region=validate_aws_region(inst.aws_region),
+                ssm_run_as=validate_ssm_run_as(inst.ssm_run_as),
+                remote_bin=validate_remote_bin(inst.remote_bin),
+            )
+        return _TransportParams(
+            method="ssh",
+            ssh_host=validate_ssh_host(inst.ssh_host),
+            remote_bin=validate_remote_bin(inst.remote_bin),
+        )
+
+    def _resolve_chained_transport(
+        self, inst: Instance, parent: Instance | None
+    ) -> _TransportParams:
+        """Resolve a chained instance's forward from its PARENT's coordinates.
+
+        The forward dialled here is ``ssh -L <local>:127.0.0.1:<via_remote_port>
+        <parent host>``: a second connection to the parent, targeting the loopback
+        port where the parent's own forward to this crew already listens. Nothing
+        is executed on the parent, so ``remote_bin`` is deliberately left empty —
+        a chained instance's token is minted by the parent's own gateway over the
+        hop it owns, never by a command this gateway builds.
+
+        Refusals here are the reasons a chain cannot be ridden at all:
+
+        * the parent is gone from the registry (removed while the child stayed);
+        * the parent is itself reached over SSM, whose forwarder takes no second
+          local forward from this gateway — ssm as the parent hop is a follow-up;
+        * the hop port is not a port.
+        """
+        if parent is None:
+            raise SshValidationError(
+                f"instance {inst.id!r} is reached through {inst.via_instance_id!r}, which is "
+                f"no longer configured. Remove this crew, or re-add it from the crew that "
+                f"reaches it."
+            )
+        if parent.id == inst.id:
+            raise SshValidationError(
+                f"instance {inst.id!r} names itself as the crew it is reached through"
+            )
+        parent_method = (parent.connection_method or "ssh").strip().lower()
+        if parent_method != "ssh":
+            raise SshValidationError(
+                f"crew {parent.id!r} is reached over {parent_method}, and a further crew can "
+                f"only be chained through an ssh hop"
+            )
+        if not 1 <= inst.via_remote_port <= 65535:
+            raise SshValidationError(
+                f"invalid hop port {inst.via_remote_port!r} on {parent.id!r}: expected the "
+                f"loopback port where that crew's own forward listens"
+            )
+        return _TransportParams(
+            method="ssh",
+            ssh_host=validate_ssh_host(parent.ssh_host),
+            via_instance_id=parent.id,
+            via_remote_port=inst.via_remote_port,
+        )
+
+    async def _with_parent(self, inst: Instance) -> Instance | None:
+        """The registry record this instance is reached THROUGH, or ``None``.
+
+        Read off the event loop, like every other registry touch in this module.
+        ``None`` for a top-level instance and for a parent id naming no record;
+        :meth:`_resolve_chained_transport` tells those two apart, because only the
+        second is an error.
+        """
+        if not inst.via_instance_id:
+            return None
+        return await asyncio.to_thread(self._registry.get, inst.via_instance_id)
+
+    async def _peer_gateway_id(self, local_port: int) -> str:
+        """The ``gateway_id`` reported at ``127.0.0.1:<local_port>``, or ``""``.
+
+        ``/api/health`` needs no credential, and it reveals identity only to a
+        direct-local caller — which is what a request through the loopback end of
+        our own forward is. ``""`` covers every "cannot tell": an unreachable
+        port, a malformed reply, and a crew whose build predates the field.
+        """
+        url = f"http://{_LOOPBACK}:{int(local_port)}/api/health"
+        try:
+            timeout = aiohttp.ClientTimeout(total=_TOKEN_PROBE_TIMEOUT)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, allow_redirects=False) as resp:
+                    if resp.status != 200:
+                        return ""
+                    raw = await resp.content.read(_CHAINED_MINT_REPLY_MAX_BYTES + 1)
+                    if len(raw) > _CHAINED_MINT_REPLY_MAX_BYTES:
+                        return ""
+                    payload = json.loads(raw)
+        except Exception as e:
+            logger.debug("gateway-id probe on port %d failed (%s)", local_port, type(e).__name__)
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        reported = payload.get("gateway_id")
+        return reported if isinstance(reported, str) else ""
+
+    async def _chain_cycle_reason(self, inst: Instance, local_port: int) -> str:
+        """Why *inst*'s freshly-opened chained forward closes a loop, or ``""``.
+
+        Compares GATEWAY IDS, never host strings: one machine answers to many
+        spellings (an ssh alias, an FQDN, an IP, ``localhost``), so a string
+        comparison would refuse unrelated crews and still admit a real loop.
+
+        Only a CHAINED forward is checked. A top-level instance that happens to
+        point back at this gateway is what today's product already allows, and
+        turning that into a refusal here would break a working setup over an
+        arrangement this feature does not introduce.
+
+        Fail-open on a crew that reports no id (a build older than the field):
+        the loop it cannot rule out is a nested pane, not an escape from any
+        boundary, and :data:`kiro_crew.instances.registry.MAX_VIA_HOPS` already
+        bounds the arrangement to three levels. Refusing instead would make
+        chaining unusable against every crew that has not been updated yet.
+        """
+        if not inst.via_instance_id:
+            return ""
+        reported = await self._peer_gateway_id(local_port)
+        if not reported:
+            logger.info("Crew %s reports no gateway id; chaining it without a cycle check", inst.id)
+            return ""
+        own = await asyncio.to_thread(gateway_id)
+        if own and reported == own:
+            return (
+                "that crew is this dashboard reached through a loop. Chaining a crew back to "
+                "the gateway showing it would nest this dashboard inside itself."
+            )
+        instances = await asyncio.to_thread(self._registry.list)
+        for ancestor_id in ancestor_ids(instances, inst.id):
+            st = self.status(ancestor_id)
+            if st is None or st.state is not TunnelState.CONNECTED or st.local_port <= 0:
+                continue
+            if await self._peer_gateway_id(st.local_port) == reported:
+                return (
+                    f"that crew is {ancestor_id!r} reached through a loop. A crew cannot be "
+                    f"chained back to one already carrying the hop."
+                )
+        return ""
+
+    def _minted_ttl(self, inst: Instance) -> str:
+        """The TTL a freshly minted token for *inst* should be stored under.
+
+        A CHAINED crew's token was issued by its parent, under the parent's own
+        record for that crew; every other token was issued under ours. The mint
+        refuses a reply that does not state a usable lifetime, so the parent's
+        answer is present for every chained token that exists.
+
+        Returns the SHORTER of the parent's answer and our own record's, which is
+        what makes the refresh schedule safe in both directions: shorter than the
+        token's real life only costs an early re-mint, while longer would schedule
+        it after the token is already dead. Taking the minimum means that holds
+        however the two numbers are configured, rather than resting on an
+        assumption about which is bigger.
+        """
+        if not inst.via_instance_id:
+            return inst.ttl
+        reported = self._chained_ttl.get(inst.id)
+        if not reported:
+            return inst.ttl
+        try:
+            return reported if ttl_to_seconds(reported) < ttl_to_seconds(inst.ttl) else inst.ttl
+        except Exception:
+            # Both were validated where they were accepted, so this is a guard
+            # rather than a path: the shorter-looking answer is the safe pick.
+            return reported
+
+    @staticmethod
+    def _lent_hop_ttl(inst: Instance) -> str:
+        """The lifetime a credential minted for ANOTHER gateway's pane is issued for.
+
+        The SHORTER of the crew's own row TTL and :data:`LENT_HOP_TTL_CAP`, taken as
+        a minimum rather than an assignment so a row configured shorter than the cap
+        keeps its own figure.
+
+        Three things must be this one number, which is why they read it from here
+        instead of from the row: the lifetime the remote crew issues the token for,
+        the deadline the hop lease is recorded under, and the TTL the answer reports
+        to the asking hub. The lease exists to withhold the port for exactly as long
+        as the credential can be used, and the hub schedules its re-mint from the
+        reported figure -- so a site reading the row while the others read the cap
+        would either free the port under a live credential or schedule a re-mint
+        after the token is already dead.
+
+        This gateway's OWN pane is not lent and is not capped: it goes through
+        :meth:`_mint_for`, which reads the row.
+        """
+        try:
+            if ttl_to_seconds(inst.ttl) <= ttl_to_seconds(LENT_HOP_TTL_CAP):
+                return inst.ttl
+        except Exception:
+            # The row was validated where it was accepted, so this is a guard rather
+            # than a path. The cap is the safe pick: an unreadable row cannot be
+            # shown to be shorter.
+            return LENT_HOP_TTL_CAP
+        return LENT_HOP_TTL_CAP
+
+    async def _remint_parent_under_lock(self, parent_id: str) -> bool:
+        """Re-mint *parent_id*'s own credential WITHOUT reaching for the lock.
+
+        :meth:`_mint_through_parent` can run inside :meth:`connect`'s
+        ``async with self._lock``, so it cannot reach for :meth:`refresh_token`:
+        that stores under the same lock, ``asyncio.Lock`` is not reentrant, and the
+        acquire would never complete while the caller's own frame holds it -- a
+        connect that hangs forever holding the lock, wedging every later connect,
+        disconnect and self-heal.
+
+        So this stores directly, and must be correct whether or not a lock is
+        held, because its three callers differ: :meth:`connect` holds the lock
+        across the mint, while :meth:`_refresh_token_once` and the self-heal's
+        tier-2 mint deliberately do not. What makes the store safe in all three is
+        the tunnel GENERATION, captured before the mint and compared after: an
+        unheld lock lets the parent be disconnected and reconnected during a mint
+        budget measured in tens of seconds, and membership alone cannot see that
+        -- the new tunnel satisfies it, so the fresh credential would be
+        overwritten by one minted against the generation before it.
+
+        Returns ``False`` for every "cannot", leaving the 401 to be raised as a
+        mint failure: a parent mid-reconfiguration, one that is not connected,
+        coordinates that do not validate, a mint the parent's own remote refused,
+        and a parent whose tunnel was replaced while this mint was in flight.
+        """
+        if parent_id in self._reconfiguring:
+            return False
+        inst = await asyncio.to_thread(self._registry.get, parent_id)
+        if inst is None or parent_id not in self._tunnels:
+            return False
+        # Which tunnel generation this credential is being minted FOR. Captured
+        # before the first await, compared before the store.
+        epoch = self._tunnel_epoch.get(parent_id, 0)
+        try:
+            params = self._resolve_transport(inst, await self._with_parent(inst))
+        except (SshValidationError, SsmValidationError) as e:
+            logger.warning("Parent-hop re-mint aborted for %s: %s", parent_id, e)
+            return False
+        try:
+            mint = await self._mint_for(inst, params)
+        except TokenMintError as e:
+            logger.warning("Parent-hop re-mint failed for %s: %s", parent_id, e)
+            return False
+        if not self._store_token(inst, mint, minted_at_epoch=epoch, binds_forward=False):
+            return False
+        logger.info("Parent-hop re-mint succeeded for %s", parent_id)  # value never logged
+        return True
+
+    async def _mint_through_parent(self, inst: Instance, params: _TransportParams) -> _Mint:
+        """Ask the parent crew to mint *inst*'s token with OUR embed parent port.
+
+        A NARROW carrier, like :meth:`peer_capability`: the path is built here from
+        the crew's id IN THE PARENT's registry, never supplied by a caller, and the
+        only body field is the port this gateway serves its own dashboard on. It
+        runs over the parent's already-open forward with the parent's port-scoped
+        cookie, so:
+
+        * the parent's credential never leaves this object and never reaches the
+          browser — the pane's postMessage relay only ever carries "crew X is up
+          on my port N", which is why a chained pane can be announced by untrusted
+          frame code at all;
+        * the minted token is the CHILD's, issued by the child's own gateway over
+          the hop the parent owns, and it carries our embed parent port so the
+          child's CSP admits this gateway's page as the pane's frame ancestor. The
+          parent's own token for that child is untouched, so the parent's pane for
+          it keeps working.
+
+        A 401/403 gets exactly one transparent re-mint of the PARENT's credential
+        and one retry, matching every other peer call here. That re-mint goes
+        through :meth:`_remint_parent_under_lock` rather than the public refresh,
+        because one of the two callers DOES hold the manager lock: ``connect``
+        holds it across the mint, while the self-heal's tier-2 mint deliberately
+        runs without it (see the "slow remote I/O WITHOUT the lock" phase). A
+        lock-taking refresh would deadlock the first caller, so the store is
+        gated on the tunnel generation instead, which is correct either way.
+        That unheld lock is also why this method re-reads the parent's forward
+        before spending the credential; see :meth:`_require_peer_forward`.
+        Raises :class:`TokenMintError` on anything else, so the caller's existing
+        mint-failure handling applies unchanged.
+        """
+        parent_id = params.via_instance_id
+        # The id the PARENT knows this crew by. It is the only one the parent can
+        # look up: our own id is derived from the name HERE and equals the parent's
+        # only by luck, so a name collision, a rename there, or an explicitly
+        # assigned id makes them differ and the parent answers 404 for a crew it
+        # holds. A STORED id reaching a request path has also never been through
+        # `validate` -- `Instance.from_dict` is deliberately tolerant, so a registry
+        # file written by hand or by an agent can carry any string. Unchecked, an id
+        # like `victim/disconnect?x=` would interpolate into a DIFFERENT
+        # authenticated route on the parent and spend our credential for it there.
+        # Refuse it, then still encode as exactly one segment.
+        child_id = inst.via_remote_id
+        if not _INSTANCE_ID_RE.match(child_id):
+            raise TokenMintError(
+                f"crew {inst.id!r} carries no usable id for that crew on {parent_id!r}, so the "
+                f"parent cannot be asked to mint a token for it"
+            )
+        path = f"/api/instances/{quote(child_id, safe='')}/embed-token"
+        body = json.dumps({"embed_parent_port": int(self._parent_port)}).encode("utf-8")
+        # ONE budget for the whole call, retry included, so that when the caller
+        # DOES hold the manager lock (``connect``) the ceiling a concurrent
+        # connect or disconnect waits on is the ceiling of the CALL; a full budget
+        # per attempt would double it.
+        deadline = time.monotonic() + _CHAINED_MINT_TIMEOUT
+        reminted = False
+        for _attempt in range(2):
+            try:
+                url, cookie_name = self._peer_target(parent_id, path)
+                stamp = self._peer_forward_stamp(parent_id)
+                headers = await self._peer_headers_for(parent_id, url, cookie_name, stamp)
+            except _PeerUnavailable as e:
+                raise TokenMintError(
+                    f"crew {parent_id!r} is not connected, so it cannot mint a token for "
+                    f"{inst.id!r} ({e.message})"
+                ) from None
+            headers["Content-Type"] = "application/json"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TokenMintError(f"crew {parent_id!r} did not answer the mint in time")
+            timeout = aiohttp.ClientTimeout(total=remaining)
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        url,
+                        data=body,
+                        headers=headers,
+                        # Same SSRF reasoning as every other peer call: the
+                        # loopback end of our own forward is the only legitimate
+                        # target, so a compromised parent answering 30x must not
+                        # redirect this mint anywhere.
+                        allow_redirects=False,
+                    ) as resp:
+                        if resp.status in (401, 403):
+                            if not reminted and await self._remint_parent_under_lock(parent_id):
+                                reminted = True
+                                continue
+                            raise TokenMintError(f"crew {parent_id!r} rejected our credential")
+                        if not 200 <= resp.status < 300:
+                            # Read BEFORE any status branch, because the status alone
+                            # cannot tell the two 404s apart: a build with no chaining
+                            # route and a parent that does not hold this crew both
+                            # answer 404, and only the second means the hop is retired.
+                            # Taken from the reply's `code`, never its sentence, which
+                            # is prose and is allowed to change.
+                            code = ""
+                            with contextlib.suppress(Exception):
+                                # Capped like the success read on this same wire: the
+                                # reply comes from another gateway, so an error body
+                                # must not be the one place that reads without a bound.
+                                raw = await resp.content.read(_CHAINED_MINT_REPLY_MAX_BYTES + 1)
+                                if len(raw) <= _CHAINED_MINT_REPLY_MAX_BYTES:
+                                    body = json.loads(raw)
+                                    if isinstance(body, dict):
+                                        code = str(body.get("code") or "")
+                            if code in _HOP_RETIRED_CODES:
+                                # The parent still answers; what it answers is that the
+                                # hop is not ours. Retrying cannot recover it. With the
+                                # reservation at the document level the removed crew's
+                                # port stays withheld, so this is not what keeps the
+                                # credential out of another gateway -- prevention is.
+                                # What it does is retire a forward that cannot work
+                                # again, because the crew it reaches is gone from the
+                                # parent, and the port it dials becomes the parent's to
+                                # reassign once the reservation lapses.
+                                raise HopRetiredError(
+                                    f"crew {parent_id!r} does not hold the hop to "
+                                    f"{inst.id!r} ({code})"
+                                )
+                            if resp.status in (404, 405):
+                                raise TokenMintError(
+                                    f"crew {parent_id!r} did not mint for {child_id!r}: its "
+                                    f"build has no endpoint for chaining through it"
+                                )
+                            raise TokenMintError(
+                                f"crew {parent_id!r} refused the mint (HTTP {resp.status})"
+                            )
+                        raw = await resp.content.read(_CHAINED_MINT_REPLY_MAX_BYTES + 1)
+                        if len(raw) > _CHAINED_MINT_REPLY_MAX_BYTES:
+                            raise TokenMintError(
+                                f"crew {parent_id!r} returned an oversized mint reply"
+                            )
+                        try:
+                            payload = json.loads(raw)
+                        except Exception:
+                            raise TokenMintError(
+                                f"crew {parent_id!r} returned a malformed mint reply"
+                            ) from None
+                        token = payload.get("token") if isinstance(payload, dict) else None
+                        if not isinstance(token, str) or not token:
+                            raise TokenMintError(
+                                f"crew {parent_id!r} returned no token for {inst.id!r}"
+                            )
+                        reported_ttl = payload.get("ttl")
+                        # Untrusted like every other field, but REQUIRED: the
+                        # parent issued this token, so it is the only party that
+                        # knows when it dies. Our own record's TTL is not a safe
+                        # stand-in -- it is a separate number, defaulting to 20h,
+                        # and nothing holds it below the parent's, so scheduling
+                        # the refresh from it can land after the token has already
+                        # expired. A token we cannot describe is refused here, the
+                        # same as one we cannot read: every gateway that answers
+                        # this endpoint at all reports the TTL it issued.
+                        if not isinstance(reported_ttl, str) or not reported_ttl:
+                            raise TokenMintError(
+                                f"crew {parent_id!r} minted a token for {inst.id!r} without "
+                                f"saying how long it lasts"
+                            )
+                        try:
+                            validate_ttl(reported_ttl)
+                        except Exception:
+                            raise TokenMintError(
+                                f"crew {parent_id!r} reported an unusable lifetime for the "
+                                f"token it minted for {inst.id!r}"
+                            ) from None
+                        # The hop port, from the one party entitled to name it. The
+                        # row's copy arrived over a pane's postMessage and is what
+                        # `ssh -L` aims at on the parent's machine, so a forged
+                        # notice would otherwise choose which loopback-only service
+                        # there this gateway forwards and then renders as a crew.
+                        # This answer comes over the credential we hold for the
+                        # parent, so it is the parent's own statement about its own
+                        # forward. Shape-checked and dropped if unusable -- the
+                        # caller refuses the dial rather than falling back to the
+                        # pane's value.
+                        #
+                        # Nothing is published from here. All three values go back
+                        # as one answer, and only the caller's fenced store writes
+                        # them, because the hop this names is the very value the
+                        # credential check reads.
+                        # REQUIRED, with ttl's strictness rather than port's. A
+                        # port that cannot be read is dropped and the caller refuses
+                        # to dial; an identity that cannot be read is worse, because
+                        # the dial would succeed and only the comparison guarding the
+                        # credential would be weakened. The endpoint and this field
+                        # ship in the same change, so no build can answer this route
+                        # and omit them: a parent without the field is a parent
+                        # without the route, which the 404 branch above already names.
+                        reported_id = payload.get("hop_id")
+                        if not isinstance(reported_id, str) or not reported_id:
+                            raise TokenMintError(
+                                f"crew {parent_id!r} minted a token for {inst.id!r} without "
+                                f"naming which of its own crews the hop reaches"
+                            )
+                        reported_gen = payload.get("hop_gen")
+                        if (
+                            not isinstance(reported_gen, int)
+                            or isinstance(reported_gen, bool)
+                            or reported_gen < 0
+                        ):
+                            raise TokenMintError(
+                                f"crew {parent_id!r} minted a token for {inst.id!r} without "
+                                f"naming which generation of its forward the hop is"
+                            )
+                        reported_port = payload.get("port")
+                        usable_port = (
+                            reported_port
+                            if (
+                                isinstance(reported_port, int)
+                                and not isinstance(reported_port, bool)
+                                and 1 <= reported_port <= 65535
+                            )
+                            else 0
+                        )
+                        return _Mint(
+                            token=token,
+                            hop=usable_port,
+                            ttl=reported_ttl,
+                            hop_id=reported_id,
+                            hop_gen=reported_gen,
+                        )
+            except TokenMintError:
+                raise
+            except Exception as e:
+                logger.info(
+                    "Chained mint for %s through %s failed (%s)",
+                    inst.id,
+                    parent_id,
+                    type(e).__name__,  # never the credential, never the token
+                )
+                raise TokenMintError(
+                    f"crew {parent_id!r} did not answer the mint ({type(e).__name__})"
+                ) from None
+        raise TokenMintError(f"crew {parent_id!r} rejected our credential")
+
+    async def _mint_for(self, inst: Instance, params: _TransportParams) -> _Mint:
+        """Mint a dashboard token for *inst* over its configured transport.
+
+        The SSH path goes through the injectable ``self._mint_token`` seam (kept
+        so the existing tests can substitute a fake mint); the SSM path calls
+        :func:`mint_remote_token_ssm`. Never logs the token.
+
+        A fargate instance has nothing to mint: the task runs no ``kirocrew`` and
+        serves no dashboard. Every mint path (connect, self-heal, proactive and
+        on-demand refresh) funnels through here, so refusing here is what keeps a
+        later caller from dispatching ``kirocrew token`` at an ECS task.
+
+        A CHAINED instance is minted by its PARENT, over the credential this
+        gateway already holds for that parent — this gateway has no key for the
+        crew itself, which is the whole reason the chain exists. The parent mints
+        with OUR embed parent port, so the pane this gateway serves is the frame
+        ancestor the crew's own CSP admits.
+        """
+        if params.is_chained:
+            return await self._mint_through_parent(inst, params)
+        if params.method == "fargate":
+            raise TokenMintError(
+                "a fargate instance has no dashboard token: the task serves only its "
+                "turn API, reached at the tunnel's turn_url"
+            )
+        if params.method == "ssm":
+            return _Mint(
+                await mint_remote_token_ssm(
+                    params.ssm_target,
+                    aws_profile=params.aws_profile,
+                    aws_region=params.aws_region,
+                    ssm_run_as=params.ssm_run_as,
+                    remote_bin=params.remote_bin,
+                    ttl=inst.ttl,
+                    remote_port=inst.remote_port,
+                    embed_parent_port=self._parent_port,
+                    timeout_secs=self._mint_timeout_for(params.method),
+                )
+            )
+        return _Mint(
+            await self._mint_token(
+                params.ssh_host,
+                remote_bin=params.remote_bin,
+                ttl=inst.ttl,
+                remote_port=inst.remote_port,
+                embed_parent_port=self._parent_port,
+                timeout_secs=self._mint_timeout_for(params.method),
+            )
+        )
+
+    async def mint_embed_token(self, instance_id: str, embed_parent_port: int) -> tuple[bool, dict]:
+        """Mint *instance_id*'s token for ANOTHER gateway's pane.
+
+        The counterpart of :meth:`_mint_through_parent`, from this side of the hop:
+        a hub that reaches this crew by riding our forward has no key for it, so we
+        mint over the transport we already hold and hand the token back, carrying
+        the HUB's dashboard port as the embed-parent claim rather than our own.
+
+        No CREDENTIAL is stored. The token we keep for this crew is the one OUR pane
+        loads with, and overwriting it with one scoped to someone else's page would
+        break our own pane for the crew we just helped somebody else reach.
+
+        One thing IS recorded: the hop we lent and when the token we issued against
+        it expires, in the registry document's own port-keyed lease table (see
+        :meth:`InstanceRegistry.lend_hop`). Until that moment the port is withheld
+        from allocation -- see :meth:`_reserved_ports` -- because the hub rides the
+        port NUMBER, and handing that number to another crew while the hub's token
+        is still valid is what delivers one crew's credential to a different crew's
+        gateway. It is kept on the DOCUMENT and not on this crew's row because
+        removing the crew deletes its row while the hub's token stays live. The
+        deadline is the TTL we issued, so this asks nothing of the hub and is not a
+        lease.
+
+        Returns ``(ok, payload)``. On success the payload carries the ``token``, the
+        loopback ``port`` our own forward listens on, which is the hop the hub
+        forwards to, and the ``ttl`` the token was issued under -- OUR record's TTL
+        for this crew, which the hub cannot know and must not assume: its own row
+        for the crew defaults to 20h, and scheduling a refresh from that would put
+        the refresh after a shorter token has already expired. The token and the
+        port are one claim, not two facts: the mint is a multi-second round trip
+        taken without the manager lock, so the hop is read once before it and
+        confirmed unmoved after, and a hop that moved is refused rather than
+        answered. On failure the payload carries ``error`` / ``code`` plus the HTTP
+        ``status`` the route should answer with, so the handler translates without
+        string-matching.
+        """
+        inst = await asyncio.to_thread(self._registry.get, instance_id)
+        if inst is None:
+            return False, {"error": "not found", "code": "instance_not_found", "status": 404}
+        if inst.via_instance_id:
+            # The depth cap, seen from this end. The asking hub counted hops in
+            # its own registry and cannot see that we reach this crew through a
+            # further one; only we can, so only we can refuse it.
+            return False, {
+                "error": (
+                    f"this dashboard reaches {inst.name} through a further crew, so chaining "
+                    f"it once more would go past the {MAX_VIA_HOPS}-hop limit"
+                ),
+                "code": "chain_too_deep",
+                "status": 400,
+            }
+        st = self.status(instance_id)
+        if st is None or st.state is not TunnelState.CONNECTED or st.local_port <= 0:
+            return False, {
+                "error": f"{inst.name} is not connected here, so there is no hop to ride",
+                "code": "instance_not_connected",
+                "status": 409,
+            }
+        # The hop and the generation, captured together and read again after the
+        # mint. `status()` hands out the tunnel's LIVE status object, and a
+        # teardown pops that tunnel without zeroing the port on it, so the
+        # captured value survives the forward it described; the allocator then
+        # hands that exact port to the next connect first, because it takes the
+        # first free port above the base and the teardown returned this one to
+        # the free set. Reading the port after the await would therefore name
+        # another crew's forward. Nothing between here and the mint awaits, so
+        # these two readings describe one moment.
+        hop = int(st.local_port)
+        epoch = self._tunnel_epoch.get(instance_id, 0)
+        try:
+            params = self._resolve_transport(inst)
+        except (SshValidationError, SsmValidationError) as e:
+            return False, {
+                "error": f"invalid {inst.connection_method} settings: {e}",
+                "code": "instance_invalid",
+                "status": 400,
+            }
+        # Computed ONCE, here, and threaded to all three places that must agree: the
+        # lifetime the remote crew issues the token for, the lease deadline below, and
+        # the `ttl` this answer reports. Three reads of the row would be three chances
+        # for them to disagree.
+        lent_ttl = self._lent_hop_ttl(inst)
+        try:
+            token = await self._mint_token_with_parent_port(
+                inst, params, int(embed_parent_port), ttl=lent_ttl
+            )
+        except TokenMintError as e:
+            return False, {
+                "error": f"token mint failed: {e}",
+                "code": "instance_mint_failed",
+                "status": 502,
+            }
+        # The same decision, from the one exit that RETURNS a credential instead of
+        # storing it. It passes an identity-less mint because it is not riding a hop:
+        # it IS the hop, so the identity branch has nothing to compare and the two
+        # readings below are its own.
+        # Held from the validation through the reservation write, because those two are
+        # one decision: the hop is only worth naming if it is still ours when the
+        # record that protects it lands. Validating outside the lock and writing inside
+        # leaves a gap the size of the acquire, and the gap is the whole hazard -- a
+        # teardown and reconnect there would have us reserve a port the crew does not
+        # serves while answering with the one it does. Safe to take here because the
+        # only caller is the HTTP route; the hub-side mint is the one that can run under
+        # this lock, and it goes through `_remint_parent_under_lock` instead.
+        async with self._lock:
+            return await self._answer_embed_mint(
+                inst, instance_id, token, hop, epoch, lent_ttl=lent_ttl
+            )
+
+    async def _answer_embed_mint(
+        self, inst: Instance, instance_id: str, token: str, hop: int, epoch: int, *, lent_ttl: str
+    ) -> tuple[bool, dict]:
+        """Validate the hop and record it as lent, then answer. Caller holds the lock.
+
+        Split out so the lock is held across exactly these two steps and nothing else:
+        the mint above takes seconds and must not hold it, and the answer below must not
+        be assembled from readings taken before it.
+
+        *lent_ttl* is the lifetime the credential was ACTUALLY minted under, passed in
+        rather than re-derived, because the lease deadline and the reported figure have
+        to be that same number: a second derivation here could disagree with the one
+        the remote crew was asked for, and the disagreement would either free the port
+        under a live credential or have the hub re-mint after its token is dead.
+        """
+        moved = self._credential_forward_moved(inst, _Mint(""), epoch, binds_forward=False).reason
+        if not moved:
+            # Two readings this exit adds, because they are its own: it hands back
+            # the LOCAL port our forward listens on, where a store cares about the
+            # remote hop the forward dials, and it answers only for a crew that is
+            # serving right now -- where the self-heal stores deliberately while
+            # their tunnel sits in ERROR, which is why they are separate.
+            live = self._tunnels[instance_id]
+            if live.status.state is not TunnelState.CONNECTED:
+                moved = "this forward is no longer connected"
+            elif int(live.status.local_port or 0) != hop:
+                moved = f"this forward now listens on another port than the {hop} we named"
+        if moved:
+            # The hop this token was minted against is not the hop we would name.
+            # Answering anyway hands the asking hub a credential for THIS crew
+            # plus a port that a crew connected during the mint can already own,
+            # and the hub forwards to whatever now listens there. The shared
+            # decision above is the same one every credential STORE makes, so this
+            # exit cannot drift from them.
+            return False, {
+                "error": (
+                    f"our forward to {inst.name} changed while its token was being minted, "
+                    "so the token is not paired with a hop we can name; try again"
+                ),
+                "code": "instance_hop_changed",
+                "status": 409,
+            }
+        # The reservation is a PRECONDITION of handing the token over, not a note
+        # taken on the way out. Three things make it one.
+        #
+        # It runs under the manager lock, together with a re-reading of the hop. The
+        # checks above ran before it, and this method takes multi-second awaits, so a
+        # teardown and reconnect can move the hop in between -- which would record a
+        # port the crew does not serve while answering with the one it does.
+        #
+        # The write propagates its error instead of going through `_persist_hint`,
+        # whose documented semantics are best-effort (`except Exception: pass`). That
+        # is right for a hint that only has to be usually-there; it is wrong for the
+        # record that keeps this port away from another crew, because a swallowed
+        # failure would hand out a credential with nothing protecting its hop.
+        #
+        # And a reservation that cannot be written REFUSES the mint. A credential this
+        # gateway cannot protect is one it does not issue.
+        #
+        # The deadline is the SAME ttl the payload promises, so the port is withheld for
+        # exactly as long as the token can be used. `lend_hop` takes the later of this
+        # and any standing lease, so a second hub's mint cannot shorten one an earlier
+        # mint earned.
+        #
+        # It is also what bounds the window a gateway exit opens: `close_all` releases
+        # every hold, because a socket cannot outlive its process, and the credential
+        # stays valid because the remote crew issued it. So the exposure after an exit
+        # runs to this deadline and no further, which is why the lent lifetime is
+        # capped (:meth:`_lent_hop_ttl`) rather than taken from the row.
+        until = time.time() + ttl_to_seconds(lent_ttl)
+        # Registered BEFORE the write, not after it. `lend_hop` runs in a thread, and
+        # the synchronous exit seam answers from this cache alone (`_hold_lent_port_now`)
+        # precisely so it can bind with no `await`. Populating the cache only after the
+        # write meant an ssh exit landing INSIDE the thread hop found no lease, bound
+        # nothing, and the allocator handed the freed port to the next connect -- while
+        # the credential for it had already been returned. Both values are known here,
+        # before any await, so there is nothing to wait for: the port is `hop` and the
+        # deadline is the ttl this payload promises.
+        #
+        # This is deliberately the pessimistic order. A lease recorded for a write that
+        # then fails withholds a port for nothing until the unwind below puts the entry
+        # back as it found it; a lease recorded too late hands out a credential with an
+        # unprotected port. The first costs a port, the second costs the credential.
+        #
+        # Both caches take the LATER deadline, the same max-wins rule the durable record
+        # and the guard's own hold already follow: a mint for a hop whose lease is still
+        # live must not shorten it, because the credential that earned the longer deadline
+        # stays valid until ITS deadline and the synchronous exit seam reads these tables
+        # alone. Capture what is there first, so a failed write can put it back rather
+        # than delete a lease this call never earned.
+        prior_pending = self._pending_lends.get(hop)
+        prior_lent = self._lent_hops.get(hop)
+        registered = max(until, prior_pending or 0.0, prior_lent or 0.0)
+        self._pending_lends[hop] = registered
+        self._lent_hops[hop] = registered
+        try:
+            await asyncio.to_thread(self._registry.lend_hop, hop, until)
+        except Exception as e:
+            # Unwind the early registration, but only if it is still OURS: a concurrent
+            # mint for the same hop may have replaced it, and writing blindly would
+            # damage a live lease this call never owned. Putting the CAPTURED value back
+            # rather than popping is what keeps an earlier lease intact -- this call may
+            # have been the one that raised the deadline, and deleting the entry would
+            # leave the only table the exit seam can read with no record of a hop whose
+            # credential is still valid, which is the window the early registration
+            # above exists to close.
+            if self._pending_lends.get(hop) == registered:
+                if prior_pending is None:
+                    self._pending_lends.pop(hop, None)
+                else:
+                    self._pending_lends[hop] = prior_pending
+            if self._lent_hops.get(hop) == registered:
+                if prior_lent is None:
+                    self._lent_hops.pop(hop, None)
+                else:
+                    self._lent_hops[hop] = prior_lent
+            # NOT through `_persist_hint`, whose documented semantics are best-effort
+            # (`except Exception: pass`). That is right for a hint that only has to be
+            # usually-there and wrong for the record that keeps this port away from
+            # another crew: a swallowed failure would hand out a credential with
+            # nothing protecting its hop. A reservation that cannot be written refuses
+            # the mint, because a credential this gateway cannot protect is one it does
+            # not issue.
+            logger.warning(
+                "Refusing to mint for %s: could not record the lent hop (%s)",
+                instance_id,
+                type(e).__name__,
+            )
+            return False, {
+                "error": (
+                    f"could not record that {inst.name}'s hop is lent, so the token "
+                    f"would not be protected against the port being reused"
+                ),
+                "code": "instance_hop_lease_failed",
+                "status": 503,
+            }
+        # The write resolved, so the registry names this lease and the settle's re-seed
+        # will carry it on its own. Only the in-flight marker is dropped; the cache entry
+        # registered before the write stays exactly as it was. The comparison is against
+        # what this call WROTE, and it puts back what it captured, so a marker a
+        # concurrent mint owns is neither erased nor mistaken for this one's.
+        if self._pending_lends.get(hop) == registered:
+            if prior_pending is None:
+                self._pending_lends.pop(hop, None)
+            else:
+                self._pending_lends[hop] = prior_pending
+        return True, {
+            "token": token,
+            "port": hop,
+            # The lifetime the token was actually issued for, which the hub cannot know
+            # and must not assume: its own row for this crew defaults to 20h, and
+            # scheduling a re-mint from that would place it long after this credential
+            # is dead. The hub takes the shorter of this and its row.
+            "ttl": lent_ttl,
+            # OUR identity for this hop, which is what makes the asking hub's later
+            # comparison an identity rather than a number. `hop_id` is the id we know
+            # the crew by -- the hub asked us by it, so it is ours to confirm -- and
+            # `hop_gen` is the generation of our own forward to it, verified unmoved
+            # by the reading just above. A hub holding (id, generation) can tell our
+            # rebuilt forward from the one it dialled even when the port is identical.
+            "hop_id": inst.id,
+            "hop_gen": epoch,
+        }
+
+    async def _mint_token_with_parent_port(
+        self, inst: Instance, params: _TransportParams, embed_parent_port: int, *, ttl: str
+    ) -> str:
+        """Mint *inst*'s token carrying *embed_parent_port* as the frame-ancestor claim.
+
+        The same two transport calls :meth:`_mint_for` makes, with the embed-parent
+        port supplied instead of read from this gateway's own config. Kept beside
+        :meth:`_mint_for` rather than folded into it because the two answer
+        different questions — "a token for MY pane" and "a token for a hub's pane" —
+        and a flag on one method would make every existing mint site read as
+        though it had a choice about that.
+
+        *ttl* is required rather than defaulted from ``inst.ttl``: this is the mint
+        whose credential leaves for another gateway, so its lifetime is the capped
+        one its caller computed (:meth:`_lent_hop_ttl`), and the same number has to
+        reach the lease and the answer. A default would let a future caller mint an
+        uncapped credential without saying so.
+        """
+        if params.method == "fargate":
+            raise TokenMintError(
+                "a fargate instance has no dashboard token: the task serves only its "
+                "turn API, reached at the tunnel's turn_url"
+            )
+        if params.method == "ssm":
+            return await mint_remote_token_ssm(
+                params.ssm_target,
+                aws_profile=params.aws_profile,
+                aws_region=params.aws_region,
+                ssm_run_as=params.ssm_run_as,
+                remote_bin=params.remote_bin,
+                ttl=ttl,
+                remote_port=inst.remote_port,
+                embed_parent_port=embed_parent_port,
+                timeout_secs=self._mint_timeout_for(params.method),
+            )
+        return await self._mint_token(
+            params.ssh_host,
+            remote_bin=params.remote_bin,
+            ttl=ttl,
+            remote_port=inst.remote_port,
+            embed_parent_port=embed_parent_port,
+            timeout_secs=self._mint_timeout_for(params.method),
+        )
+
+    async def connect(
+        self, instance_id: str, *, rebuild: bool = False, only_if_connected: bool = False
+    ) -> TunnelStatus:
+        """Open a tunnel + mint a token for *instance_id*; return its status.
+
+        Idempotent: connecting an already-connected instance returns its current
+        status. Raises :class:`KeyError` for an unknown instance, or surfaces a
+        validation / mint / spawn error via the returned status (state ERROR).
+        Works for either ``connection_method`` — the transport is resolved by
+        :meth:`_resolve_transport`.
+
+        ``rebuild=True`` breaks the idempotence on purpose: a CONNECTED tunnel is
+        torn down first (``keep_intent`` — the user is asking for the crew, not
+        turning it off) and a fresh forwarder is spawned on a DIFFERENT local
+        port: the port just freed is excluded from the allocation, so both a
+        stalled stream on the old forwarder and a cause bound to the old port
+        itself are escaped by one Retry. This is the pane's Retry after a load watchdog
+        fired on a document that DID navigate: the transport is up by every
+        probe the manager runs (``/api/health`` answers, the credential
+        validates), yet one stream inside it stalled and the pane's module
+        graph will wait on it forever. Nothing short of a new TCP path clears
+        that, and the plain connect — which sees CONNECTED and returns — would
+        hand the same stalled tunnel back.
+
+        A teardown that fails (the stop raises) is reported as an ERROR status,
+        the same way every other connect failure is: the live tunnel is left
+        exactly as :meth:`_teardown_locked` leaves it (intact — nothing is
+        removed unless the stop succeeded), the reason is retained for
+        :meth:`last_error`, and the caller gets a 502 with a message instead of
+        a propagated exception turned into an unexplained 500.
+
+        ``only_if_connected=True`` is the opposite restriction: answer a
+        CONNECTED tunnel exactly like the plain connect (its status, its cached
+        token) but, when the tunnel is not up, spawn nothing and touch nothing
+        -- return a DISCONNECTED status and leave ``was_connected`` as the user
+        last set it. This is the viewport's auto-warm, whose job is to pre-mount
+        panes for tunnels that are ALREADY up, never to bring one up. The check
+        runs under the manager lock, the same lock :meth:`disconnect` holds
+        while it stops a tunnel, so an auto-warm racing a disconnect either sees
+        the tunnel still CONNECTED (and warms a pane the disconnect's
+        ``removeWarm`` then drops) or sees it gone and stands down; it can never
+        re-open a tunnel the user just closed, which a probe-then-connect from
+        the browser could.
+        """
+        if rebuild and only_if_connected:
+            raise ValueError("rebuild and only_if_connected are mutually exclusive")
+        async with self._lock:
+            inst = await asyncio.to_thread(self._registry.get, instance_id)
+            if inst is None:
+                raise KeyError(f"no instance with id {instance_id!r}")
+
+            existing = self._tunnels.get(instance_id)
+            # The port a rebuild tears down. Kept out of the allocation below so
+            # the new forwarder lands on a DIFFERENT local port: the field
+            # evidence has every stall on the first allocated port, so a cause
+            # bound to the port itself (a stale listener, a local firewall or
+            # proxy rule) is a live hypothesis alongside the stalled stream. A
+            # first-free allocator would hand the just-freed port straight back
+            # and Retry could loop on it forever with no in-product escape.
+            rebuild_freed_port: int | None = None
+            if only_if_connected and (
+                existing is None or existing.status.state != TunnelState.CONNECTED
+            ):
+                logger.info(
+                    "Connected-only connect for %s declined: tunnel is %s",
+                    instance_id,
+                    existing.status.state.value if existing is not None else "absent",
+                )
+                return TunnelStatus(
+                    instance_id=inst.id,
+                    state=TunnelState.DISCONNECTED,
+                    local_port=inst.local_port,
+                    remote_port=inst.remote_port,
+                )
+            if rebuild and existing is not None:
+                logger.info(
+                    "Rebuilding tunnel for %s on request (was %s on 127.0.0.1:%s)",
+                    instance_id,
+                    existing.status.state.value,
+                    existing.status.local_port,
+                )
+                try:
+                    await self._teardown_locked(instance_id, keep_intent=True)
+                except Exception as e:  # noqa: BLE001 - reported, not swallowed
+                    logger.warning(
+                        "Rebuild of %s could not stop the old tunnel: %s", instance_id, e
+                    )
+                    return self._error_status(
+                        inst,
+                        f"could not stop the existing tunnel to rebuild it: {e}. "
+                        f"Disconnect and connect again, or retry.",
+                    )
+                if existing.status.local_port:
+                    rebuild_freed_port = existing.status.local_port
+                existing = None
+                # The registry row was just rewritten (local_port reset); re-read
+                # so the allocation below skips nothing stale and records fresh.
+                inst = await asyncio.to_thread(self._registry.get, instance_id)
+                if inst is None:
+                    raise KeyError(f"no instance with id {instance_id!r}")
+            if existing is not None and existing.status.state == TunnelState.CONNECTED:
+                return existing.status
+            if existing is not None:
+                # Tracked but not CONNECTED: stop it first so its child is
+                # terminated and the local forward freed before we spawn a
+                # replacement. Otherwise the old child orphans (dropped from
+                # _tunnels below, never killed) and keeps the port — every
+                # replacement then hits ExitOnForwardFailure while _port_reachable
+                # is still satisfied by the orphan -> tight respawn loop.
+                with contextlib.suppress(Exception):
+                    await existing.stop()
+
+            # Injection-safe validation immediately before building command lines.
+            try:
+                params = self._resolve_transport(inst, await self._with_parent(inst))
+            except (SshValidationError, SsmValidationError) as e:
+                return self._error_status(inst, f"invalid {inst.connection_method} settings: {e}")
+
+            # A CHAINED crew is minted for BEFORE its forward opens, which is the
+            # opposite order from every other method here, for one reason: the
+            # forward's target port must come from the parent and not from our row.
+            # `ssh -L <local>:127.0.0.1:<hop>` aims at the parent's own loopback,
+            # and our row's copy of `hop` arrived over a pane's postMessage -- so a
+            # forged notice would otherwise choose which loopback-only service on
+            # that machine this gateway forwards, and the pane would then render
+            # whatever answers as a crew's dashboard inside the owner's page. The
+            # mint reply names the port the parent's own forward listens on, over
+            # the credential we already hold for it. It can run first because it
+            # rides the PARENT's hop, which is already up -- this crew's forward is
+            # not involved in it at all.
+            chained_mint: _Mint | None = None
+            if params.is_chained:
+                try:
+                    chained_mint = await self._mint_for(inst, params)
+                except TokenMintError as e:
+                    return self._error_status(inst, f"token mint failed: {e}")
+                hop = chained_mint.hop
+                if not hop:
+                    return self._error_status(
+                        inst,
+                        f"crew {params.via_instance_id!r} did not name the port its forward to "
+                        f"this crew listens on, so there is no hop to ride. Reconnect that crew.",
+                    )
+                if hop != params.via_remote_port:
+                    # The parent disagrees with the row. Its answer wins and is
+                    # persisted, so a later reconnect and the rebuild path dial the
+                    # same port this one does.
+                    await self._persist_hint(
+                        self._registry.update, instance_id, via_remote_port=hop
+                    )
+                    inst = dataclass_replace(inst, via_remote_port=hop)
+                    params = dataclass_replace(params, via_remote_port=hop)
+
+            # SSM needs the local session-manager-plugin; fail with an actionable
+            # message rather than letting the child exit with a cryptic error.
+            #
+            # Probed in a worker thread: the probe resolves the plugin through the
+            # deploy engine's shared resolver, which scans PATH, then the
+            # well-known install dirs, then routes a fallback-dir hit through
+            # executable-provenance validation — filesystem work that must not run
+            # on the gateway event loop, where a stalled network mount would freeze
+            # every request and heartbeat. Same reason _build_argv is offloaded
+            # below, and the same thing the dashboard's own cloud handler does with
+            # this exact call.
+            if params.forwards_over_ssm:
+                if not await asyncio.to_thread(cloud_ssm.session_manager_plugin_installed):
+                    return self._error_status(inst, cloud_ssm.session_manager_plugin_install_hint())
+
+            # Reclaim our own forwarder if a prior gateway hard-kill leaked it
+            # still holding this instance's recorded port. Keyed on the recorded
+            # pid behind a strict exact-argv identity check — see the method for
+            # why nothing else is ever signalled. Best-effort: allocation below
+            # skips the recorded port whether or not the reclaim succeeded.
+            await self._reclaim_orphan_forwarder(inst, params)
+
+            # Allocate a free loopback port for the forward. It deliberately does
+            # NOT have to equal ``inst.remote_port``. The embedded dashboard runs
+            # in an iframe at http://127.0.0.1:<local_port>, and the remote
+            # gateway accepts that because:
+            #   * ``check_origin`` has a same-origin loopback branch — a loopback
+            #     Origin equal to the request's own Host is trusted at ANY port,
+            #     which is exactly the shape the iframe produces (it is served at
+            #     127.0.0.1:<local_port> and calls that same location.host); and
+            #   * ``build_allowed_hosts`` compares hostname only, so the Host
+            #     header matches regardless of port; and
+            #   * the session cookie is named from the browser-facing port
+            #     (``_cookie_port_from_host``), so distinct local ports get
+            #     distinct cookies instead of colliding in the shared 127.0.0.1
+            #     jar — that helper exists precisely for tunnels whose local port
+            #     differs from the remote's.
+            # This does not reopen CSE SEC-016: a malicious local page on an
+            # arbitrary port sends its own Origin while the Host stays the
+            # gateway's, so the two differ and the same-origin branch rejects it.
+            # Browsers forbid scripts from forging either header.
+            #
+            # Mirroring the remote port instead would make the shipped defaults
+            # self-contradictory: a stock gateway binds the same default port on
+            # both ends, so a stock hub would already hold the port a stock remote
+            # reports and two stock installs could never connect.
+            #
+            # Every instance's recorded port stays reserved, and the allocator
+            # probes each candidate, so a port anything still holds — including a
+            # leftover forwarder of our own — is skipped rather than fought over.
+            # That skip is why no orphan-reaping step is needed for connect to
+            # make PROGRESS: nothing has to be killed to get a working tunnel.
+            #
+            # The cost that skip alone would carry: an ``ssh -N -L`` child
+            # orphaned by a gateway hard-kill keeps its loopback port and its
+            # session to the remote until the OS reaps it. That leak is now
+            # reclaimed by ``_reclaim_orphan_forwarder`` above — by the child's
+            # RECORDED pid behind a strict exact-argv identity check, never by
+            # scanning the process table. Scanning it by argv pattern could
+            # SIGTERM a forward the operator opened themselves; an unrecorded or
+            # unverified process is therefore left alone, and allocation simply
+            # skips its port.
+            #
+            # There is deliberately no "take my own previous port back" branch.
+            # It reads as free stability, but the case it fires in cannot benefit:
+            # ``disconnect`` zeroes the port, while ``shutdown`` documents that it
+            # "Leaves registry hints intact", so the recorded port survives a
+            # gateway RESTART rather than only a crash — and after any restart the
+            # token is re-minted and the pane reloads, so there is no iframe
+            # origin or ``mc_token_<port>`` cookie left to keep stable. The
+            # in-session case that genuinely wants the same port is already served
+            # by ``_recover``, which reuses ``current.status.local_port``.
+            #
+            # Everything here runs off the event loop: ``_reserved_ports`` reads
+            # the registry from disk under its own lock, and the port probe binds
+            # a socket. Under the mirror neither happened on this path -- the port
+            # was a fixed field read and one probe -- whereas this reads a file
+            # and can walk upward past every occupied candidate, all inside the
+            # manager lock on the gateway's loop, where a synchronous scan would
+            # stall unrelated requests and heartbeats. This matches how the rest
+            # of the module already reaches the registry (``asyncio.to_thread``).
+            reserved = await asyncio.to_thread(self._reserved_ports)
+            if rebuild_freed_port is not None:
+                reserved = set(reserved) | {rebuild_freed_port}
+            try:
+                local_port = await asyncio.to_thread(self._allocator.allocate, exclude=reserved)
+            except RuntimeError as e:
+                return self._error_status(inst, str(e))
+
+            # If WE are holding this port, let go before probing it. The allocator
+            # excludes live leases, so a port it hands back is one whose lease has
+            # lapsed and which we therefore have no business still owning -- and a
+            # hold the reaper has not swept yet would otherwise fail the check below
+            # against ourselves, turning a legitimate reconnect into a port conflict.
+            self._hop_guard.release(local_port)
+            # The probe above is advisory — there is an inherent TOCTOU window
+            # between probing and ssh actually binding — so re-check immediately
+            # before spawning and fail with an actionable message rather than
+            # letting the child exit on ExitOnForwardFailure.
+            if not await asyncio.to_thread(_is_port_free, local_port):
+                return self._error_status(
+                    inst,
+                    f"local port {local_port} was taken while connecting. Retry; "
+                    f"if it keeps happening, disconnect whatever is holding port "
+                    f"{local_port} or move instances.tunnel_base_port to a "
+                    f"quieter range.",
+                )
+
+            # Open the tunnel first so the forward is live.
+            tunnel = self._tunnel_factory(
+                inst.id,
+                params.ssh_host,
+                local_port,
+                params.forward_remote_port(inst.remote_port),
+                connect_timeout_secs=self._connect_timeout_for(params.method),
+                compression=self._ssh_compression,
+                probe_failure_threshold=self._probe_fails,
+                on_exit=self._on_tunnel_exit,
+                **params.tunnel_kwargs(),
+            )
+            self._tunnels[instance_id] = tunnel
+            self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
+            tunnel.status.turn_url = params.turn_url(local_port)
+            ok = await tunnel.start()
+            if not ok:
+                self._last_error[instance_id] = tunnel.status.error or "tunnel failed to start"
+                # Drop the failed tunnel (matching the mint-failure path below) so
+                # status() returns None and _status_for surfaces the error via the
+                # last_error() fallback, rather than leaving a stale ERROR tunnel
+                # lingering in _tunnels (its process never started, so _on_tunnel_exit
+                # never fires to clean it up).
+                self._tunnels.pop(instance_id, None)
+                return tunnel.status
+
+            # Cycle guard, for a chained forward only. Which gateway is at the far
+            # end of a hop cannot be known until the hop is open, so the check has
+            # to happen here rather than at add time: the chain names ports on
+            # other machines, and only the far end can say who it is. A loop that
+            # closes back on this gateway (or on a crew already carrying the hop)
+            # would nest a dashboard inside itself, and every pane in the loop
+            # would fight over the same tab bar.
+            cycle = await self._chain_cycle_reason(inst, local_port)
+            if cycle:
+                with contextlib.suppress(Exception):
+                    await tunnel.stop()
+                self._tunnels.pop(instance_id, None)
+                return self._error_status(inst, cycle)
+
+            # Mint a per-instance token over the same transport (never logged).
+            # A fargate forward reaches a turn API, not a dashboard: there is no
+            # token to mint and none to refresh, so the forward alone is the
+            # connection and the status carries the turn URL instead.
+            if params.method != "fargate":
+                try:
+                    # Already minted above for a chained crew, because its reply is
+                    # what named the port this forward was allowed to dial.
+                    mint = chained_mint or await self._mint_for(inst, params)
+                except TokenMintError as e:
+                    await tunnel.stop()
+                    self._tunnels.pop(instance_id, None)
+                    return self._error_status(inst, f"token mint failed: {e}")
+                if not self._store_token(
+                    inst,
+                    mint,
+                    minted_at_epoch=self._tunnel_epoch.get(instance_id, 0),
+                    binds_forward=True,
+                ):
+                    # This site installed the tunnel itself and has held the lock
+                    # ever since, so the only way the store refuses is that the
+                    # forward does not ride the hop the mint named -- a CONNECTED
+                    # tab with no credential, which the pane cannot recover from.
+                    # Treat it as the mint failure it effectively is.
+                    await tunnel.stop()
+                    self._tunnels.pop(instance_id, None)
+                    return self._error_status(
+                        inst,
+                        "the crew holding the hop moved this crew to another port while its "
+                        "token was being minted. Connect again.",
+                    )
+                self._schedule_token_refresh(instance_id)
+                await self._prime_peer_session(instance_id)
+
+            # Persist hints: the forwarder identity record built by
+            # _forwarder_identity_hints (port, pid, start time, signature,
+            # was_connected — the same record _mark_recovered writes) plus
+            # last-active, which is this site's alone — ONE
+            # read-modify-rewrite of instances.json (fsync), so the set is
+            # durable together and the manager lock is held for a single fsync
+            # round-trip. The identity is what a later connect uses to
+            # reclaim this child if a gateway hard-kill orphans it.
+            # _persist_hint runs it off the loop and does not
+            # return — even under cancellation — until the write completes, so
+            # the lock cannot release while the worker write is still in
+            # flight (a late hint write would race a subsequent disconnect).
+            await self._persist_hint(
+                self._registry.update,
+                instance_id,
+                mark_last_active=True,
+                **await self._forwarder_identity_hints(instance_id, tunnel),
+            )
+            # A successful (re)connect clears any stale give-up counter so the next
+            # unexpected drop gets a full fresh recovery budget instead of tripping
+            # the cap immediately.
+            self._recover_attempts.pop(instance_id, None)
+            # Connected cleanly — drop any retained failure reason from a prior
+            # attempt so status() does not report a stale error.
+            self._last_error.pop(instance_id, None)
+            return tunnel.status
+
+    async def disconnect(self, instance_id: str, *, keep_intent: bool = False) -> bool:
+        """Tear down *instance_id*'s tunnel, drop its token, clear its port hint.
+
+        Returns whether a live tunnel existed.
+
+        ``keep_intent`` distinguishes a RECONFIGURATION from a user disconnect.
+        ``was_connected`` records that the user wants this instance connected, so
+        only an explicit disconnect may clear it; a caller tearing a tunnel down
+        in order to rebuild it (an edit that changes the host or port) passes
+        ``keep_intent=True`` and leaves that flag alone. Restoring the flag
+        afterwards instead would race a real disconnect arriving mid-edit and
+        silently revive the instance the user just turned off.
+
+        The persisted ``local_port`` is reset to the unallocated sentinel here —
+        symmetric with :meth:`connect` setting it — so a disconnected instance
+        never leaves a stale port recorded. Without this the freed port reads as
+        perpetually reserved (``_reserved_ports`` / the ``local_port == 0``
+        "unallocated" contract), and the instance can't be reconnected. The
+        registry cleanup runs even when no live tunnel is tracked, so a port left
+        behind by an unclean prior exit can still be cleared by a disconnect.
+
+        A crew that other crews are CHAINED behind takes them down with it, and
+        this is where that happens: their forwards ride this one's hop, so leaving
+        them up would leave a forward pointing at a port on a machine this gateway
+        has no route to — a pane that looks connected and answers nothing.
+        Children are torn down first, deepest last, before the parent's own
+        forward closes under them.
+        """
+        async with self._lock:
+            for child_id in await self._chained_below(instance_id):
+                # keep_intent on the children: the user turned off the PARENT.
+                # Clearing a child's intent as well would silently un-remember it,
+                # so reconnecting the parent would not bring its crews back.
+                with contextlib.suppress(Exception):
+                    await self._teardown_locked(child_id, keep_intent=True)
+            return await self._teardown_locked(instance_id, keep_intent=keep_intent)
+
+    async def _chained_below(self, instance_id: str) -> list[str]:
+        """Ids whose forward rides *instance_id*'s hop, nearest first.
+
+        Read off the event loop, like every other registry touch here. Empty for a
+        gateway with no chained crews, which is the only shape that existed before
+        chaining — so this adds one registry read to a disconnect and changes
+        nothing else about it.
+        """
+        instances = await asyncio.to_thread(self._registry.list)
+        return descendant_ids(instances, instance_id)
+
+    async def _teardown_locked(self, instance_id: str, *, keep_intent: bool) -> bool:
+        """The body of :meth:`disconnect`, for callers already holding the lock.
+
+        Reconfiguration needs the teardown and the coordinate rewrite to happen
+        inside ONE critical section, so it cannot call the public method without
+        deadlocking on our own non-reentrant lock.
+        """
+        # Stop FIRST, discard after. A stop that raises leaves the forward alive,
+        # and everything below is what makes that forward usable: its token, its
+        # refresh task, its place in `_tunnels`. Clearing any of it before the
+        # process is really down leaves a live tunnel with no credential (session
+        # transfer then reports `transfer_no_credential`) or, worse, an untracked
+        # process holding the port. Nothing is removed unless the stop succeeded.
+        tunnel = self._tunnels.get(instance_id)
+        # Read the lease table BEFORE the stop, off the event loop. The read is the
+        # slow part -- a file read plus a parse of every row -- and it is why a
+        # synchronous `sync_hop_holds` here broke `no-blocking-call-on-event-loop`.
+        # It is taken ahead of the stop rather than after it on purpose: `await`ing
+        # anything BETWEEN the stop and the bind is what would widen the one window
+        # this mechanism cannot close, from two adjacent statements to however long
+        # the SHARED default executor takes to schedule -- unbounded when it is busy,
+        # and it is the same executor the identity read runs on. So the slow half
+        # moves ahead of the release and only the bind, which is a non-blocking
+        # loopback syscall and one port rather than one per lease, stays in line.
+        leases = await asyncio.to_thread(self._registry.live_hop_lease_deadlines)
+        if tunnel is not None:
+            await tunnel.stop()
+        self._tunnels.pop(instance_id, None)
+        self._tokens.pop(instance_id, None)
+        self._peer_sessions.pop(instance_id, None)
+        self._chained_ttl.pop(instance_id, None)
+        self._chained_hop_port.pop(instance_id, None)
+        self._chained_hop_identity.pop(instance_id, None)
+        # The moment the hole opens: the forward above has just released the port, and
+        # a chained credential naming it is still valid for the rest of its lease.
+        # Taking OS ownership here is what stops any other local process -- including a
+        # second gateway, which cannot see our lease -- from binding it and being handed
+        # that credential by a pane that has not noticed anything.
+        self._apply_hop_holds(leases)
+        self._recover_attempts.pop(instance_id, None)
+        self._last_error.pop(instance_id, None)
+        # A teardown ends the generation: a slow unlocked mint or rebuild in
+        # flight captured the pre-teardown stamp, and this bump is what lets
+        # the epoch compares at their store/record sites refuse the result —
+        # membership alone reads true again as soon as anything reinstalls.
+        self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
+        # Awaited, not just signalled: a refresh already inside its mint would
+        # otherwise finish afterwards and store a token for a tunnel this teardown
+        # has already removed. Ordered after the stop for the same reason as the
+        # token itself — a rejected edit must leave the live tunnel intact.
+        await self._cancel_token_refresh_and_wait(instance_id)
+        # A parked self-heal is deliberately NOT drained here, although it has
+        # the same shape of hazard. Draining would await _cancel_recovery under
+        # the lock we hold, and unlike the refresh loop a recovery's
+        # cancellation can be swallowed — _SshTunnel.stop() suppresses
+        # CancelledError around its child-task awaits — after which the
+        # survivor parks on THIS lock and the gather never returns. The
+        # surviving recovery is harmless instead: the epoch bump above makes
+        # its generation stamp stale, so tier 2's store refuses the token and
+        # _mark_recovered unwinds the rebuild instead of recording it.
+        # Clear the lazy-reconnect hint AND the recorded local port together
+        # (one atomic write). local_port must return to the unallocated
+        # sentinel so the now-free port is not treated as reserved forever,
+        # and the forwarder pid goes with it: the child was just stopped, so a
+        # retained pid would eventually be recycled by the OS and point a later
+        # reclaim at a stranger (the exact-argv guard would refuse it, but a
+        # cleared hint never even asks). _persist_hint runs the
+        # read-modify-rewrite off the loop and does
+        # not return — even if this handler is cancelled (e.g. aiohttp
+        # aborting at shutdown) — until the write completes: the in-memory
+        # teardown above is already done, so abandoning the persisted reset
+        # would leave was_connected=True plus a stale local_port, reviving
+        # an instance the user disconnected and pinning the freed port.
+        hints: dict[str, object] = {
+            "local_port": _UNALLOCATED_PORT,
+            "forwarder_pid": _NO_FORWARDER_PID,
+            "forwarder_start": "",
+            "forwarder_sig": "",
+        }
+        if not keep_intent:
+            hints["was_connected"] = False
+        await self._persist_hint(self._registry.update, instance_id, **hints)
+        return tunnel is not None
+
+    def _track_recovery(self, instance_id: str, task: asyncio.Task) -> None:  # type: ignore[type-arg]
+        """Retain a background task so it is not GC'd, indexed by instance."""
+        self._recovery_tasks.add(task)
+        per = self._recovery_by_instance.setdefault(instance_id, set())
+        per.add(task)
+
+        def _done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
+            self._recovery_tasks.discard(t)
+            bucket = self._recovery_by_instance.get(instance_id)
+            if bucket is not None:
+                bucket.discard(t)
+                if not bucket:
+                    self._recovery_by_instance.pop(instance_id, None)
+
+        task.add_done_callback(_done)
+
+    async def _cancel_token_refresh_and_wait(self, instance_id: str) -> None:
+        """Cancel this instance's refresh loop and WAIT for it to unwind.
+
+        ``_cancel_token_refresh`` only signals. A refresh already inside its mint
+        would otherwise finish afterwards and store a token minted from the
+        pre-edit coordinates against the tunnel the edit rebuilt — the embedded
+        dashboard would then be handed a credential the new remote never issued.
+        """
+        task = self._refresh_tasks.get(instance_id)
+        self._cancel_token_refresh(instance_id)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _cancel_recovery(self, instance_id: str) -> None:
+        """Cancel and AWAIT this instance's in-flight recovery.
+
+        Self-heal reads the instance record before it takes the lock, so a
+        recovery already in flight holds the PRE-edit coordinates. Letting it
+        proceed would reinstall a tunnel to the old machine after the edit
+        landed — and because ``connect()`` is idempotent, that tunnel would then
+        be handed out for the new settings. Awaiting the cancellation is the
+        point: returning while the task is still unwinding would leave exactly
+        the race this closes.
+        """
+        tasks = list(self._recovery_by_instance.get(instance_id, ()))
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        # A cancelled recovery is expected to raise CancelledError; anything else
+        # it raises is its own business and already logged by its done-callback.
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def reconfigure(self, instance_id: str, apply: Callable[[], _T]) -> _T:
+        """Tear the tunnel down and rewrite its coordinates as ONE operation.
+
+        Editing the host/port/transport of a live instance is two steps that must
+        not be observed apart: with the lock released between them, a ``connect``
+        can read the OLD record, and whether its tunnel is already CONNECTED or
+        still CONNECTING when the write lands decides whether any after-the-fact
+        sweep notices it. Holding the lock across both removes the window instead
+        of narrowing it — a racing ``connect`` either completes before this (and
+        is torn down here) or starts after (and reads the new coordinates).
+
+        ``apply`` performs the persistence and returns whatever the caller needs;
+        it runs on a worker thread because the registry write is blocking, so the
+        event loop is not held while the lock is.
+        """
+        # The barrier goes up FIRST, with no await before it, so no recovery can
+        # be scheduled for this instance from here on (see `_reconfiguring`).
+        # Cancellation then runs OUTSIDE the lock, because a recovery task may
+        # itself be waiting for that lock and awaiting it while holding the lock
+        # would deadlock.
+        self._reconfiguring.add(instance_id)
+        try:
+            # Self-heal rebuilds a tunnel from the record it read, so it is
+            # stopped and unwound before the coordinates move. The refresh loop is
+            # unwound by the teardown instead — AFTER the stop succeeds — because a
+            # rejected edit must leave the live tunnel with its credential and its
+            # refresh intact. The barrier already prevents either from restarting.
+            await self._cancel_recovery(instance_id)
+            return await self._reconfigure_locked(instance_id, apply)
+        finally:
+            self._reconfiguring.discard(instance_id)
+
+    async def _reconfigure_locked(self, instance_id: str, apply: Callable[[], _T]) -> _T:
+        """The locked half of :meth:`reconfigure` (barrier already raised)."""
+        async with self._lock:
+            # Children first, and NOT tolerantly: their forwards were built from
+            # this crew's coordinates, so an edit that moves this crew to another
+            # machine leaves every `ssh -L ... <old host>` below it live and still
+            # reporting CONNECTED -- serving the machine the user just left while
+            # the record names the new one. `disconnect` suppresses a child's
+            # teardown failure because it is shutting everything down anyway; here
+            # a failure must abort the edit, for the same reason the parent's does.
+            for child_id in await self._chained_below(instance_id):
+                # keep_intent on the children: the user edited the PARENT. Clearing
+                # a child's intent would silently un-remember it, so reconnecting
+                # would not bring its crews back.
+                await self._teardown_locked(child_id, keep_intent=True)
+            # Deliberately NOT tolerant: a stop that failed leaves the old forward
+            # live, so persisting the new coordinates would leave the record
+            # pointing at one machine while the still-open tunnel serves another —
+            # and that tunnel is the one the user would reach. The edit aborts,
+            # the tunnel stays tracked (see _teardown_locked), and the caller is
+            # told to disconnect and retry.
+            await self._teardown_locked(instance_id, keep_intent=True)
+            # The write is shielded: if this request's task is cancelled (the
+            # client hung up), the worker thread keeps going regardless, and an
+            # unshielded await would unwind the `async with` and release the lock
+            # while that write was still in flight — letting a concurrent connect
+            # read the pre-edit coordinates. Awaiting it out under the lock keeps
+            # the critical section honest, then the cancellation propagates.
+            write = asyncio.ensure_future(asyncio.to_thread(apply))
+            try:
+                return await asyncio.shield(write)
+            except asyncio.CancelledError:
+                await asyncio.wait({write})
+                raise
+
+    async def shutdown(self) -> None:
+        """Tear down all tunnels (gateway shutdown). Leaves registry hints intact
+        so lazy reconnect can revive the last-active instance next startup."""
+        async with self._lock:
+            # End every generation FIRST, before any await below: cancellation
+            # of an in-flight self-heal can be swallowed inside
+            # _SshTunnel.stop(), and a survivor that still saw its expected
+            # stamp would reinstall a child after this cleanup. With the stamp
+            # moved, its gated install and record refuse instead.
+            for instance_id in list(self._tunnels):
+                self._tunnel_epoch[instance_id] = self._tunnel_epoch.get(instance_id, 0) + 1
+            # Cancel any in-flight self-heal so it can't resurrect a tunnel
+            # after shutdown.
+            for task in list(self._recovery_tasks):
+                if not task.done():
+                    task.cancel()
+            self._recover_attempts.clear()
+            for instance_id in list(self._refresh_tasks):
+                self._cancel_token_refresh(instance_id)
+            ids = list(self._tunnels)
+            for instance_id in ids:
+                tunnel = self._tunnels.pop(instance_id, None)
+                self._tokens.pop(instance_id, None)
+                self._peer_sessions.pop(instance_id, None)
+                if tunnel is not None:
+                    with contextlib.suppress(Exception):
+                        await tunnel.stop()
+            # Every lent hop port goes with the process, so nothing stays bound by a
+            # guard whose gateway is gone. The LEASE survives this, and
+            # `sync_hop_holds` at the next startup is what re-takes the ports.
+            #
+            # Off the loop: `close_all` joins the reaper thread with a timeout, and a
+            # join is a blocking wait -- on the event loop it stalls every other task
+            # for as long as the thread takes to notice.
+            await asyncio.to_thread(self._hop_guard.close_all)
+            logger.info("All instance tunnels shut down (%d)", len(ids))
+
+    # ── self-heal ─────────────────────────────────────────────────────────
+
+    def _hold_lent_port_now(self, instance_id: str) -> None:
+        """Take a just-freed lent port back, synchronously and without reading anything.
+
+        Answers from :attr:`_lent_hops` alone, so there is no `await` between the port
+        becoming free and the bind. Never raises: the caller is a monitor seam, and a
+        failure to hold here is recorded as owed by the guard and retried on its next
+        pass rather than propagated into the exit path.
+        """
+        try:
+            tunnel = self._tunnels.get(instance_id)
+            port = int(getattr(getattr(tunnel, "status", None), "local_port", 0) or 0)
+            if port <= 0:
+                return
+            self._hold_lent_port_by_number(port)
+        except Exception:
+            logger.exception("Could not take back %s's lent hop port on exit", instance_id)
+
+    def _hold_lent_port_by_number(self, port: int) -> None:
+        """Hold *port* if the cache still names it as lent and the credential is alive.
+
+        The port-keyed core of :meth:`_hold_lent_port_now`, extracted because the rebuild
+        needs exactly this and already holds the number. ONE definition on purpose: the
+        last defect in this mechanism was a second copy of a rule drifting from the first
+        (the settle handed the cache a union and the guard a bare snapshot), so the re-arm
+        gets one body and two callers rather than two bodies.
+
+        No await, by construction -- it reads :attr:`_lent_hops` and binds.
+        """
+        if port <= 0:
+            return
+        until = self._lent_hops.get(port)
+        if until is None or until <= time.time():
+            return  # not lent, or the credential it protected has already died
+        self._hop_guard.hold(port, until)
+
+    def _on_tunnel_exit(self, instance_id: str) -> None:
+        """Sync seam invoked by a tunnel's monitor on unexpected exit.
+
+        Takes the port back FIRST, synchronously, from the in-memory lease cache. This is
+        the whole reason that cache exists: the child is already gone, so the lent port is
+        free at the OS level from this instant, and any `await` before the bind -- even
+        the thread hop of a registry read -- is a window in which another local process
+        can take it and be handed the still-valid credential. A bind on loopback does not
+        block, so nothing is gained by moving it off the loop and the ordering is what
+        matters. The recovery task below then reconciles against the registry, which stays
+        the source of truth.
+
+        Schedules the async 2-tier recovery as a tracked task (refs retained so
+        it isn't GC'd mid-flight; exceptions logged). A backoff (scaled by the
+        consecutive-attempt count) is applied there, in the scheduling seam, so a
+        flapping link / bind race can't spin a tight respawn loop — and so direct
+        ``_recover`` callers (unit tests) aren't slowed.
+        """
+        self._hold_lent_port_now(instance_id)
+        if instance_id in self._reconfiguring:
+            # Its coordinates are being rewritten; whatever this recovery read
+            # would already be stale. The reconfiguration tears the tunnel down
+            # itself, and the user reconnects against the new record.
+            logger.info("Skipping self-heal for %s: reconfiguration in progress", instance_id)
+            return
+        delay = _recover_backoff_secs(
+            self._recover_attempts.get(instance_id, 0) + 1, self._recover_backoff_max
+        )
+        task = asyncio.create_task(self._recover_after(instance_id, delay))
+        self._track_recovery(instance_id, task)
+        task.add_done_callback(
+            lambda t: (
+                logger.error("Self-heal task crashed: %s", t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
+        )
+
+    async def _recover_after(self, instance_id: str, delay: float) -> None:
+        """Sleep *delay* (backoff) then run the 2-tier self-heal.
+
+        Takes the hop holds FIRST, before the backoff and before any recovery attempt.
+        The child is already gone by the time this runs, so its lent port is free at the
+        OS level while the credential naming it stays valid -- and the rebuild that would
+        re-occupy it is the whole backoff away, or never, once attempts run out. Waiting
+        for the rebuild to close that window would leave it open for the backoff on every
+        flap and permanently on the give-up path.
+        """
+        try:
+            leases = await asyncio.to_thread(self._registry.live_hop_lease_deadlines)
+            self._apply_hop_holds(leases)
+        except Exception:
+            logger.exception("Could not take hop holds after %s's forward exited", instance_id)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if instance_id in self._reconfiguring:
+            # Scheduled just before the barrier went up, or the barrier rose
+            # during the backoff: either way this attempt holds stale coordinates.
+            return
+        try:
+            await self._recover(instance_id)
+        finally:
+            # ONE re-settle covers every exit, and the in-use invariant is what makes
+            # it correct in both directions: a rebuild that SUCCEEDED leaves the tunnel
+            # CONNECTED, so its port counts as in use and the hold is dropped for the
+            # live forward; a rebuild that failed or gave up leaves it in any other
+            # state, so the port is not in use and the hold is taken. Enumerating the
+            # recovery's failure exits instead would mean a new `return` silently
+            # skipping it. `suppress(Exception)` deliberately does not catch
+            # `CancelledError`, so a shutdown-cancelled recovery propagates rather than
+            # awaiting inside a cancelled task.
+            with contextlib.suppress(Exception):
+                leases = await asyncio.to_thread(self._registry.live_hop_lease_deadlines)
+                self._apply_hop_holds(leases)
+
+    async def _rebuild(
+        self, inst: Instance, params: _TransportParams, local_port: int, expected_epoch: int
+    ) -> _SshTunnel | None:
+        """Build + start a fresh tunnel for *inst*, replacing the live one.
+
+        Returns the installed tunnel when its start succeeds, else ``None`` —
+        the object (not a bare bool) so the recovery can tell ITS install from
+        one that raced in during the unlocked awaits (see _mark_recovered).
+
+        Stops the existing tunnel first so its child is terminated and the
+        local forward port is released before we spawn the replacement. Without
+        this the old child orphans (dropped from ``_tunnels`` but never killed)
+        and keeps holding the port, so every replacement fails
+        ``ExitOnForwardFailure`` while ``_port_reachable`` is still satisfied by
+        the orphan — the tight respawn loop this method otherwise produced.
+
+        The install itself is gated, under the manager lock, on the stamp
+        still reading *expected_epoch*: ``old.stop()`` is an unlocked await, so
+        a concurrent ``connect()`` can install a live replacement (or a
+        ``disconnect`` can end the generation) while it runs, and an ungated
+        install would overwrite that replacement without stopping it — an
+        orphaned child holding its port, untracked. On refusal the tunnel
+        object is discarded unstarted (no process exists yet) and
+        :class:`_RecoverySuperseded` is raised so the recovery stands down.
+        Stopping ``old`` first is safe on every path: each caller reaches this
+        method synchronously from the section that verified the stamp, so
+        ``old`` is always the generation the recovery owns.
+        """
+        old = self._tunnels.get(inst.id)
+        if old is not None:
+            with contextlib.suppress(Exception):
+                await old.stop()
+        tunnel = self._tunnel_factory(
+            inst.id,
+            params.ssh_host,
+            local_port,
+            params.forward_remote_port(inst.remote_port),
+            connect_timeout_secs=self._connect_timeout_for(params.method),
+            compression=self._ssh_compression,
+            probe_failure_threshold=self._probe_fails,
+            on_exit=self._on_tunnel_exit,
+            **params.tunnel_kwargs(),
+        )
+        tunnel.status.turn_url = params.turn_url(local_port)
+        async with self._lock:
+            if self._tunnel_epoch.get(inst.id, 0) != expected_epoch:
+                raise _RecoverySuperseded(inst.id)
+            self._tunnels[inst.id] = tunnel
+            # A self-heal reinstall is a new generation too: a mint in flight
+            # against the tunnel this one replaces must not land on it.
+            self._tunnel_epoch[inst.id] = expected_epoch + 1
+        # Our OWN hold, if we have one, is on this port, so the bind below would lose to
+        # it. Let go IMMEDIATELY before that bind and take it straight back unless the
+        # bind succeeded -- which is what makes the unheld window exactly the bind it
+        # exists for.
+        #
+        # Releasing any earlier, in the recovery's locked phase, would leave the port
+        # unheld across tier 2's mint whenever tier 1's rebuild fails -- bounded by the
+        # mint timeout rather than by a bind -- with the chained credential still naming
+        # it. The caller's `finally` is no substitute: it runs only after the whole
+        # two-tier recovery returns. Releasing here means a failed start re-takes the
+        # port before returning, so tier 2 mints with it held.
+        #
+        # The `finally` is what covers every exit, including `_RecoverySuperseded` from the
+        # revalidation below. A successful start needs no hold: the live forward owns the
+        # port, `_apply_hop_holds` excludes it from `want`, and the re-arm here is a no-op
+        # against a lease the cache does not name.
+        self._hop_guard.release(local_port)
+        owned = False
+        try:
+            started = await tunnel.start()
+            # start() is an unlocked await with a window BEFORE the child spawns
+            # (argv building). A disconnect or connect landing in that window
+            # stops this tunnel while it has no process — a no-op — and then
+            # untracks it, so the spawn lands afterwards with ours as the only
+            # live handle. Revalidate under the lock and reap our own child when
+            # displaced; after start() returns, any later displacer's stop() finds
+            # the process and this window is closed.
+            async with self._lock:
+                superseded = (
+                    self._tunnels.get(inst.id) is not tunnel
+                    or self._tunnel_epoch.get(inst.id, 0) != expected_epoch + 1
+                )
+            if superseded:
+                with contextlib.suppress(Exception):
+                    await tunnel.stop()
+                raise _RecoverySuperseded(inst.id)
+            # Only a start that SURVIVED the revalidation owns the port. The
+            # superseded path above stops our own child, which frees the port again,
+            # so it must fall through to the re-arm like any other failure.
+            owned = bool(started)
+            return tunnel if started else None
+        finally:
+            if not owned:
+                self._hold_lent_port_by_number(local_port)
+
+    async def _mark_recovered(
+        self, instance_id: str, mine: _SshTunnel, expected_epoch: int
+    ) -> None:
+        """Record *mine* as the recovered tunnel iff its generation is current.
+
+        ``mine.start()`` is an unlocked await, so the world can move between
+        the gated install (see :meth:`_rebuild`) and this record: a
+        ``connect()`` replaces *mine* (stopping it), or a ``disconnect`` tears
+        it down — either way the record this write would make is about a
+        tunnel that is not current, and persisting ``was_connected=True`` over
+        a disconnect's ``False`` would silently revive, across restarts, an
+        instance the user turned off. *expected_epoch* is the Phase 1 stamp
+        plus the installs this recovery made itself; teardown bumps the stamp
+        too, so any interleaved install OR teardown reads as a mismatch and
+        the record is refused. Nothing needs unwinding on refusal: every
+        displacing path stops the tunnel it displaces, so *mine* is already
+        down and untracked.
+
+        Reset the attempt counter and persist the hints, under lock, iff tracked.
+
+        A rebuild replaced the tunnel child, so the recorded forwarder
+        identity (``forwarder_pid`` + ``forwarder_start`` + the
+        ``local_port`` that child is bound to) must move with
+        ``was_connected`` — a stale identity would point a later hard-kill
+        reclaim at a process that does not exist (harmless, the identity
+        check refuses it) while the ACTUAL replacement child leaked
+        unrecorded. All hints go in one write.
+
+        The record comes from :meth:`_forwarder_identity_hints`, so this write
+        carries exactly the fields :meth:`connect`'s does and the pair cannot
+        drift apart. ``local_port`` matters twice over here. A rebuild takes
+        its port from the LIVE tunnel (see :meth:`_recover`), which may differ
+        from the recorded one. And ``forwarder_sig`` is a MAC over the port, so
+        recording a pid against a different port than the one it was signed
+        with leaves the signature failing verification — the reclaim then
+        refuses the very child this write exists to record, and every consumer
+        reading the recorded port (the pane URL, :meth:`diagnose`'s fallback)
+        addresses a port nothing is listening on.
+
+        The persist stays INSIDE the manager lock so write order equals
+        lock-acquisition order: a concurrent :meth:`disconnect`'s
+        ``was_connected=False`` (also written under the lock) can never be
+        overwritten by this recovery write landing late. The tracked-check
+        gates the persist — an instance the user disconnected must not be
+        re-marked auto-reconnectable. ``_persist_hint`` keeps the lock held
+        until the worker write completes even under cancellation; a cancelled
+        bare ``to_thread`` await would NOT stop the already-running thread, so
+        its write could land after the lock released and break the ordering.
+        """
+        async with self._lock:
+            tunnel = self._tunnels.get(instance_id)
+            if tunnel is None:
+                return
+            if tunnel is not mine or self._tunnel_epoch.get(instance_id, 0) != expected_epoch:
+                logger.info("Discarding a superseded self-heal rebuild for %s", instance_id)
+                return
+            self._recover_attempts[instance_id] = 0
+            await self._persist_hint(
+                self._registry.update,
+                instance_id,
+                **await self._forwarder_identity_hints(instance_id, tunnel),
+            )
+
+    async def _recover(self, instance_id: str) -> None:
+        """2-tier self-heal for an unhealthy tunnel (either transport).
+
+        Tier 1: rebuild the tunnel (reusing the existing token).
+        Tier 2: if rebuild fails, re-mint the token over the instance's
+        transport, then rebuild. A fargate instance has no token, so its tier 2
+        is a second rebuild.
+        A CHAINED crew is minted for BEFORE tier 1, because only the mint reply
+        names the port the parent's forward to this crew listens on, and tier 1's
+        rebuild has to dial it; its tier 2 is therefore a second rebuild too.
+        Capped at ``_MAX_RECOVERY`` consecutive attempts (reset on success) so a
+        persistently-broken host can't churn forever. No-ops if the instance was
+        disconnected/removed or has already recovered while we waited for the lock.
+
+        The slow remote I/O (mint; rebuild) runs **without** the manager lock —
+        mirroring ``_refresh_token_once`` — so self-heal can't stall concurrent
+        connect/disconnect/shutdown. The lock is held only for the
+        validation/state checks and to store a freshly minted token.
+        """
+        # Phase 1 — validate + bump the attempt counter under the lock, then release.
+        async with self._lock:
+            inst = await asyncio.to_thread(self._registry.get, instance_id)
+            current = self._tunnels.get(instance_id)
+            if inst is None or current is None:
+                return  # disconnected / removed while we waited
+            if current.status.state == TunnelState.CONNECTED:
+                self._recover_attempts.pop(instance_id, None)
+                return  # already healthy (e.g. user reconnected)
+
+            attempts = self._recover_attempts.get(instance_id, 0) + 1
+            self._recover_attempts[instance_id] = attempts
+            if attempts > self._max_recovery:
+                logger.error(
+                    "Giving up self-heal for %s after %d attempts", instance_id, self._max_recovery
+                )
+                self._schedule_diagnosis(instance_id)
+                return
+
+            try:
+                params = self._resolve_transport(inst, await self._with_parent(inst))
+            except (SshValidationError, SsmValidationError) as e:
+                logger.warning("Self-heal aborted for %s: %s", instance_id, e)
+                return
+
+            local_port = current.status.local_port or inst.local_port
+            # The hold is NOT released here. Releasing it in this locked phase would leave
+            # the port unheld across tier 2's mint whenever tier 1's rebuild fails, while
+            # the chained credential still names it, and the caller's `finally` is no
+            # substitute because it runs only after the whole two-tier recovery returns.
+            # The release lives in `_rebuild`, immediately before the bind that needs it
+            # and taken straight back when that bind does not produce a live forward, so
+            # every slow step here -- the mint above all -- runs with the port held.
+            # Which tunnel generation this recovery found. Nothing between here
+            # and tier 1's rebuild installs a tunnel, so tier 2 can bind its
+            # store to the ONE bump that a failed tier-1 rebuild is guaranteed
+            # to make (see the store below). A chained crew's mint below does
+            # await, so every step past this point re-reads the stamp under the
+            # lock and stands down when it has moved -- the mint discards its
+            # token and `_rebuild` raises _RecoverySuperseded.
+            epoch = self._tunnel_epoch.get(instance_id, 0)
+
+        # A chained crew's whole mint answer is taken at the top of this recovery
+        # and carried here until the forward rides the hop it named.
+        chained_mint: _Mint | None = None
+
+        # Phase 2 — slow remote I/O WITHOUT the lock.
+        # A CHAINED crew is minted for BEFORE tier 1 rebuilds -- the same
+        # inversion `connect` makes, for the same reason: the forward's target
+        # port must come from the parent, not from our row. A parent that came
+        # back on a different loopback port is the commonest reason this crew
+        # needs healing at all, and `ssh -L` binds the LOCAL side whatever
+        # answers remotely, so `start()` -- which waits only for the local
+        # forward to accept -- reports success against a hop that is gone. Tier 1
+        # would then mark the crew recovered, reset the attempt counter, and
+        # never reach the tier-2 mint that is the only place the parent names its
+        # current port: healthy on the board, unreachable in fact, every cycle.
+        # The mint rides the PARENT's hop, which is already up, so it runs before
+        # this crew has any forward of its own.
+        if params.is_chained:
+            logger.info("Self-heal mint through parent for %s [attempt %d]", instance_id, attempts)
+            try:
+                mint = await self._mint_for(inst, params)
+            except TokenMintError as e:
+                # The hop runs through the parent, so a parent we cannot mint
+                # over is a parent we cannot heal through either. Standing down
+                # keeps the attempt counted, so _MAX_RECOVERY still ends in
+                # diagnosis rather than a silent forever-retry.
+                logger.warning("Self-heal mint through parent failed for %s: %s", instance_id, e)
+                return
+            hop = mint.hop
+            if not hop:
+                # Falling back to the row's port is the exposure `connect`
+                # refuses: the row's copy arrived over a pane's postMessage, so a
+                # forged notice would choose which loopback-only service on the
+                # parent this gateway forwards and renders as a crew.
+                logger.warning(
+                    "Self-heal aborted for %s: crew %r named no port for its forward to this crew",
+                    instance_id,
+                    params.via_instance_id,
+                )
+                return
+            async with self._lock:
+                if instance_id not in self._tunnels:
+                    return  # disconnected while minting -- discard
+                if self._tunnel_epoch.get(instance_id, 0) != epoch:
+                    logger.info("Discarding a superseded self-heal mint for %s", instance_id)
+                    return
+            if hop != params.via_remote_port:
+                # The parent disagrees with the row. Its answer wins and is
+                # persisted, so a later reconnect dials the same port this does.
+                await self._persist_hint(self._registry.update, instance_id, via_remote_port=hop)
+                inst = dataclass_replace(inst, via_remote_port=hop)
+                params = dataclass_replace(params, via_remote_port=hop)
+            # The token is NOT stored here, and that is the whole point of the
+            # reorder: the forward still dials the hop the parent has just moved
+            # off, so this crew's credential would be stored against a forward
+            # that now reaches whichever crew the parent gave that port to. It is
+            # carried to tier 1's rebuild and stored once the forward rides the
+            # hop it was minted for -- the store refuses it before then anyway,
+            # because the two ports disagree.
+            chained_mint = mint
+
+        # Tier 1 — rebuild tunnel, reuse existing token.
+        logger.info("Self-heal tier 1 (rebuild tunnel) for %s [attempt %d]", instance_id, attempts)
+        try:
+            rebuilt = await self._rebuild(inst, params, local_port, expected_epoch=epoch)
+        except _RecoverySuperseded:
+            # A connect or disconnect moved the generation mid-rebuild. Not a
+            # tier failure: falling through to tier 2 would re-mint against a
+            # world this recovery has been superseded in.
+            logger.info("Self-heal for %s stood down: superseded mid-rebuild", instance_id)
+            return
+        if rebuilt is not None:
+            # The rebuild's install is the one bump expected past the Phase 1
+            # stamp; anything else means the world moved mid-rebuild and
+            # _mark_recovered unwinds instead of recording.
+            if chained_mint is not None:
+                # NOW the forward rides the hop this credential was minted for.
+                async with self._lock:
+                    if not self._store_token(
+                        inst, chained_mint, minted_at_epoch=epoch + 1, binds_forward=True
+                    ):
+                        return
+                    self._schedule_token_refresh(instance_id)
+            await self._mark_recovered(instance_id, rebuilt, epoch + 1)
+            logger.info("Self-heal tier 1 finished for %s", instance_id)
+            return
+
+        # Tier 2 -- re-mint the dashboard token, then rebuild. A fargate instance
+        # has no token, so its tier 2 is the rebuild alone: the tier-1 failure
+        # already bumped the generation once, which is the stamp the second
+        # rebuild binds to below. A chained crew's tier 2 is the rebuild alone
+        # too, for the opposite reason -- its mint runs at the top of this
+        # recovery, seconds ago, and carries the hop port tier 1 dialled.
+        if params.method == "fargate" or params.is_chained:
+            logger.info("Self-heal tier 2 (re-forward) for %s", instance_id)
+        else:
+            logger.info("Self-heal tier 2 (re-mint token) for %s", instance_id)
+            try:
+                mint = await self._mint_for(inst, params)
+            except TokenMintError as e:
+                logger.warning("Self-heal re-mint failed for %s: %s", instance_id, e)
+                return
+            async with self._lock:
+                if instance_id not in self._tunnels:
+                    return  # disconnected while minting -- discard
+                # This mint ran for the generation tier 1 installed, which is
+                # exactly ONE bump past the Phase 1 stamp: a failed tier-1 rebuild
+                # always installs (and bumps for) its replacement before start()
+                # reports failure, and every path that raises instead never
+                # reaches this store. The store refuses any other value, and the
+                # rebuild below would otherwise replace the current tunnel using
+                # this recovery's stale record.
+                if not self._store_token(
+                    inst, mint, minted_at_epoch=epoch + 1, binds_forward=False
+                ):
+                    return
+                self._schedule_token_refresh(instance_id)
+        try:
+            rebuilt = await self._rebuild(inst, params, local_port, expected_epoch=epoch + 1)
+        except _RecoverySuperseded:
+            logger.info("Self-heal for %s stood down: superseded mid-rebuild", instance_id)
+            return
+        if rebuilt is not None:
+            # epoch + 2: tier 1's failed install and this rebuild's own are
+            # the two bumps this recovery made itself.
+            if chained_mint is not None:
+                # A chained crew's tier 2 mints nothing, so the answer still waiting
+                # from the top of this recovery is published here -- against this
+                # rebuild's generation, now that its forward rides the hop.
+                async with self._lock:
+                    if not self._store_token(
+                        inst, chained_mint, minted_at_epoch=epoch + 2, binds_forward=True
+                    ):
+                        return
+                    self._schedule_token_refresh(instance_id)
+            await self._mark_recovered(instance_id, rebuilt, epoch + 2)
+            if params.method != "fargate":
+                await self._prime_peer_session(instance_id)
+            logger.info("Self-heal tier 2 finished for %s", instance_id)
+        else:
+            logger.warning("Self-heal failed for %s even after re-mint", instance_id)
+
+    def status(self, instance_id: str) -> TunnelStatus | None:
+        """Return the live tunnel status for *instance_id*, or None if not live."""
+        tunnel = self._tunnels.get(instance_id)
+        return tunnel.status if tunnel is not None else None
+
+    def last_error(self, instance_id: str) -> str | None:
+        """Return the retained connect/reconnect failure reason, or None.
+
+        Set by the connect path when an attempt fails (validation, port
+        conflict, tunnel spawn, or token mint) and the failed tunnel is not
+        retained as a live ERROR status; cleared on a successful connect or an
+        explicit disconnect. Lets a sticky tab whose tunnel is down report *why*
+        even though there is no live tunnel object to query.
+        """
+        return self._last_error.get(instance_id)
+
+    def status_all(self) -> dict[str, TunnelStatus]:
+        """Return live tunnel statuses keyed by instance id."""
+        return {iid: t.status for iid, t in self._tunnels.items()}
+
+    async def diagnose(self, instance_id: str) -> dict | None:
+        """Run the failure-diagnosis ladder for *instance_id*.
+
+        Read-only ordered probes (transport reachability → remote dashboard →
+        local forward); the first broken link is the diagnosis. Result is stored
+        on the live tunnel's status so it surfaces in ``status()``/``to_dict()``.
+        Runs WITHOUT the manager lock (the probes do network I/O). Returns the
+        result dict, or None for an unknown instance.
+        """
+        inst = await asyncio.to_thread(self._registry.get, instance_id)
+        if inst is None:
+            return None
+        tunnel = self._tunnels.get(instance_id)
+        local_port = (tunnel.status.local_port if tunnel else 0) or inst.local_port
+        method = (inst.connection_method or "ssh").strip().lower()
+        if inst.via_instance_id:
+            # A chained crew is probed along the hop THIS gateway opened — the
+            # parent's host and the parent's loopback port — because that is the
+            # link that can be broken here. Probing the crew's own coordinates
+            # would dial a host this gateway has no route to and report every
+            # healthy chain as unreachable. A parent that has gone from the
+            # registry leaves nothing to probe, and that IS the diagnosis.
+            parent = await self._with_parent(inst)
+            if parent is None:
+                result = DiagnosisResult(
+                    code="chain_parent_missing",
+                    reason=(
+                        f"the crew this one is reached through ({inst.via_instance_id}) is no "
+                        f"longer configured. Remove this crew, or re-add it from the crew that "
+                        f"reaches it."
+                    ),
+                    probes=[{"name": "chain_parent", "ok": False}],
+                )
+            else:
+                result = await diagnose_instance(
+                    parent.ssh_host,
+                    inst.via_remote_port,
+                    local_port,
+                    connect_timeout_secs=min(
+                        self._connect_timeout_for("ssh"), _DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS
+                    ),
+                )
+        elif method == "fargate":
+            result = await diagnose_instance_fargate(
+                inst.ssm_target,
+                local_port,
+                aws_profile=inst.aws_profile,
+                aws_region=inst.aws_region,
+            )
+        elif method == "ssm":
+            result = await diagnose_instance_ssm(
+                inst.ssm_target,
+                inst.remote_port,
+                local_port,
+                aws_profile=inst.aws_profile,
+                aws_region=inst.aws_region,
+                ssm_run_as=inst.ssm_run_as,
+            )
+        else:
+            result = await diagnose_instance(
+                inst.ssh_host,
+                inst.remote_port,
+                local_port,
+                connect_timeout_secs=min(
+                    self._connect_timeout_for("ssh"), _DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS
+                ),
+            )
+        diag = result.to_dict()
+        # Re-fetch the tunnel (it may have changed during the probes) and attach.
+        tunnel = self._tunnels.get(instance_id)
+        if tunnel is not None:
+            tunnel.status.diagnosis = diag
+        logger.info("Instance %s diagnosis: %s", instance_id, diag.get("code"))
+        return diag
+
+    async def restart_remote(self, instance_id: str) -> dict:
+        """Restart the remote Kiro Crew gateway over the instance's transport.
+
+        Uses the remote ``kirocrew restart`` (itself systemd/launchd-aware),
+        resolved via the run-marker first (the running gateway's own launcher,
+        keyed by ``remote_port``) and falling back to the bin-candidate ladder —
+        so restart works even when ``~/.local/bin/kirocrew`` points at an
+        uninstalled worktree. Validates the transport params first. After a
+        restart the remote dashboard port bounces, so the local tunnel's health
+        probe detects the drop and self-heals (Stage 2) — no manual reconnect
+        needed. Returns ``{ok, message}``.
+        """
+        inst = await asyncio.to_thread(self._registry.get, instance_id)
+        if inst is None:
+            return {"ok": False, "message": "unknown instance"}
+        try:
+            params = self._resolve_transport(inst, await self._with_parent(inst))
+        except (SshValidationError, SsmValidationError) as e:
+            return {"ok": False, "message": f"invalid {inst.connection_method} settings: {e}"}
+        if params.is_chained:
+            # A chained crew is reached through another crew's hop, so this
+            # gateway has no shell on it: `kirocrew restart` would have to be
+            # dispatched at the PARENT, restarting the wrong machine. Restart it
+            # from the crew that reaches it.
+            return {
+                "ok": False,
+                "message": (
+                    f"{inst.name} is reached through {params.via_instance_id}, so this "
+                    f"dashboard cannot run commands on it. Restart it from that crew."
+                ),
+            }
+        if params.method == "fargate":
+            # Refused before any command is built: the task runs no kirocrew
+            # gateway, so a restart dispatched at it would only fail remotely.
+            return {
+                "ok": False,
+                "message": (
+                    "a fargate instance runs no Kiro Crew gateway to restart; "
+                    "stop and relaunch the task instead"
+                ),
+            }
+        if params.method == "ssm":
+            rc, err = await run_remote_kirocrew_ssm(
+                params.ssm_target,
+                "restart",
+                aws_profile=params.aws_profile,
+                aws_region=params.aws_region,
+                ssm_run_as=params.ssm_run_as,
+                remote_bin=params.remote_bin,
+                marker_port=inst.remote_port,
+            )
+        else:
+            rc, err = await run_remote_kirocrew(
+                params.ssh_host,
+                "restart",
+                remote_bin=params.remote_bin,
+                marker_port=inst.remote_port,
+                connect_timeout_secs=self._mint_timeout_for(params.method),
+            )
+        if rc == 0:
+            logger.info("Restarted remote gateway for %s", instance_id)
+            return {"ok": True, "message": "remote gateway restart requested"}
+        logger.warning("Remote restart for %s failed (rc=%s): %s", instance_id, rc, err)
+        return {"ok": False, "message": err or f"restart exited {rc}"}
+
+    def _schedule_diagnosis(self, instance_id: str) -> None:
+        """Fire-and-forget a diagnosis run (tracked so it isn't GC'd)."""
+        task = asyncio.create_task(self.diagnose(instance_id))
+        self._track_recovery(instance_id, task)
+        task.add_done_callback(
+            lambda t: (
+                logger.error("Diagnosis task crashed for %s: %s", instance_id, t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
+        )
+
+    def get_token(self, instance_id: str) -> str:
+        """Return the in-memory token for a connected instance, or ``""``.
+
+        Callers must not log the result. Exists so the API layer can hand the
+        token to the browser for the embedded iframe's first-party cookie.
+        """
+        return self._tokens.get(instance_id, "")
+
+    async def token_validates(self, local_port: int, token: str) -> bool:
+        """Probe whether *token* still authenticates against the live tunnel.
+
+        A cheap loopback ``GET http://127.0.0.1:<local_port>/api/status?token=…``
+        through the already-open SSH forward — **no SSH spawn**. Lets the API
+        layer validate a *stored* token before handing it to the browser on
+        (re)connect: a token can go stale while the tunnel stays CONNECTED (a
+        failed self-heal re-mint, or a remote ``kirocrew restart`` that
+        invalidates tokens), and an iframe loaded with a stale token gets a
+        server-rendered 403 page — the SPA never boots, so the reactive
+        ``mc-auth-expired`` recovery can't fire. This closes that initial-load
+        gap by catching the bad token *before* the iframe loads.
+
+        Returns ``True`` only on a positive ``2xx`` that confirms the token is
+        accepted. Returns ``False`` on 401/403, a missing token, an unknown
+        port, **and** on any timeout / connection error — an unconfirmed token
+        is never treated as valid (authorization must be positively confirmed,
+        deny-by-default). The caller recovers by forcing a fresh mint
+        (``refresh_token``); a genuinely unreachable link will fail that mint too
+        and the caller surfaces a clean error rather than serving a token it
+        could not confirm. The token is sent only over loopback→SSH
+        (encrypted)→remote loopback and is never logged.
+        """
+        if not token or local_port <= 0:
+            return False
+        url = f"http://{_LOOPBACK}:{int(local_port)}/api/status"
+        timeout = aiohttp.ClientTimeout(total=_TOKEN_PROBE_TIMEOUT)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, params={"token": token}) as resp:
+                    # Positive confirmation only: 2xx == token accepted.
+                    return 200 <= resp.status < 300
+        except Exception as e:  # timeout, connection refused, etc.
+            # Deny-by-default: we could not positively confirm the token.
+            logger.info(
+                "Token liveness probe on port %s inconclusive (%s); treating as invalid",
+                local_port,
+                type(e).__name__,  # never the token
+            )
+            return False
+
+    def _peer_target(self, instance_id: str, path: str) -> tuple[str, str]:
+        """Resolve ``(url, cookie_name)`` for one request to a CONNECTED peer.
+
+        Owns the three rules that every peer request shares and that all of them
+        depend on for correctness, so they are stated once instead of per caller:
+
+        * the request is only ever attempted against a ``CONNECTED`` tunnel —
+          none of these methods opens one, so a disconnected peer is a refusal,
+          not a reconnect;
+        * the target is always the loopback end of the already-open forward,
+          never a peer-supplied host;
+        * the cookie name is **port-scoped**. The dashboard keys its cookie on
+          the port the CLIENT connected to (``token_auth._cookie_port_from_host``),
+          not on the peer's own listen port, so two remotes both serving 7777
+          through different forwards do not collide on one cookie. A bare
+          ``mc_token`` is never read and would 403 every call.
+
+        Raises :class:`_PeerUnavailable` instead of returning an error, because
+        the callers' failure shapes differ (an exception for ``proxy_request``,
+        an ``(ok, payload)`` tuple for the other two).
+        """
+        st = self.status(instance_id)
+        if st is None or st.state is not TunnelState.CONNECTED:
+            raise _PeerUnavailable("not_connected")
+        local_port = st.local_port
+        if local_port <= 0:
+            raise _PeerUnavailable("no_credential")
+        url = f"http://{_LOOPBACK}:{int(local_port)}/{path.lstrip('/')}"
+        return url, f"mc_token_{int(local_port)}"
+
+    def _peer_forward_stamp(self, instance_id: str) -> tuple[int, int]:
+        """The ``(port, generation)`` a peer target was resolved against.
+
+        Captured next to :meth:`_peer_target`, which bakes the port into both the
+        url and the cookie name, so the two readings describe one moment.
+        """
+        st = self.status(instance_id)
+        connected = st is not None and st.state is TunnelState.CONNECTED
+        port = int(getattr(st, "local_port", 0) or 0) if connected else 0
+        return port, self._tunnel_epoch.get(instance_id, 0)
+
+    def _require_peer_forward(self, instance_id: str, stamp: tuple[int, int]) -> None:
+        """Refuse unless the forward *stamp* names is still the live one.
+
+        Every peer request resolves its url and cookie name from a port and then
+        awaits before spending the credential on them. A teardown in that window
+        frees the port WITHOUT zeroing it on the status object the tunnel handed
+        out, and the allocator gives that exact port to the next connect first,
+        so the pre-await url can name another crew's forward by the time the
+        request goes out. The generation is compared too, because a peer
+        disconnected and reconnected inside the window can land on the same port
+        and satisfy the port alone -- the same reading
+        :meth:`_remint_parent_under_lock` relies on, and for the same reason: the
+        mint budget is tens of seconds and the request path does not hold the
+        manager lock.
+
+        Raises :class:`_PeerUnavailable` ``("not_connected")``, so each caller's
+        existing mapping for a peer that cannot be reached applies unchanged.
+        """
+        if self._peer_forward_stamp(instance_id) != stamp:
+            raise _PeerUnavailable("not_connected")
+
+    async def _peer_headers_for(
+        self, instance_id: str, url: str, cookie_name: str, stamp: tuple[int, int]
+    ) -> dict[str, str]:
+        """One attempt's credential header, for a target resolved from *stamp*.
+
+        The pair of checks is here rather than at the five call sites so it has one
+        definition and cannot be half-applied. Both are needed, because TWO
+        credentials can go out per attempt: the link exchange inside
+        :meth:`_peer_cookie_header` presents the minted link to *url* itself, and
+        the caller then sends the session cookie to that same *url*. A retry
+        reaches this method after the previous attempt's request and its re-mint,
+        which is the long await the forward can be torn down inside -- so the
+        check before the exchange is not redundant with the caller's capture.
+        """
+        self._require_peer_forward(instance_id, stamp)
+        headers = await self._peer_cookie_header(instance_id, url, cookie_name)
+        self._require_peer_forward(instance_id, stamp)
+        return headers
+
+    async def _exchange_link(self, url: str, link: str, cookie_name: str) -> str:
+        """Trade a one-time *link* for the peer's session cookie.
+
+        The peer refuses a link presented as a cookie, so the manager does what a
+        browser does: one ``GET /api/status?token=`` through the tunnel, keeping
+        the ``Set-Cookie`` value. Redirects are not followed and nothing is
+        logged.
+
+        Only a peer that answered 401 or 403 (the peer's ``_deny`` answers 403
+        to a bad link) returns ``""``: that is the one failure a re-mint fixes,
+        so the caller sends no cookie and lets the peer's 401/403 drive it.
+        Every other outcome raises :class:`_PeerUnavailable`
+        ``("exchange_failed")``: a peer that could not be reached, one that
+        accepted the link (2xx) without setting a session cookie, and one that
+        answered any other status (a 3xx, another 4xx, a 5xx). A fresh link
+        would meet the same wall, and spending the single re-mint on it would
+        report a peer error as "peer rejected the credential".
+        """
+        base = url.split("/", 3)
+        status_url = "/".join(base[:3]) + "/api/status"
+        # A peer call, not the deny-by-default liveness probe: it waits the
+        # proxy connect budget, so a slow but reachable peer is not reported
+        # as "exchange_failed" (503 proxy_no_credential).
+        timeout = aiohttp.ClientTimeout(total=_PROXY_CONNECT_TIMEOUT)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    status_url, params={"token": link}, allow_redirects=False
+                ) as resp:
+                    status = resp.status
+                    morsel = resp.cookies.get(cookie_name)
+        except Exception as e:  # timeout, connection refused, etc.
+            logger.info("Peer link exchange failed (%s)", type(e).__name__)
+            raise _PeerUnavailable("exchange_failed") from None
+        if status in (401, 403):
+            return ""
+        if not 200 <= status < 300 or morsel is None:
+            raise _PeerUnavailable("exchange_failed")
+        return morsel.value
+
+    async def _peer_cookie_header(
+        self, instance_id: str, url: str, cookie_name: str
+    ) -> dict[str, str]:
+        """Build the ``Cookie`` header carrying this peer's session credential.
+
+        Must be re-read per attempt, not hoisted out of a retry loop: a re-mint
+        replaces the credential mid-call and the retry exists to use the fresh
+        one. The minted token is a one-time link, so it is exchanged for the
+        peer's session cookie first and the result cached against that link.
+        An exchange the peer refused sends no cookie; the peer's 401/403 then
+        drives the caller's single re-mint. An exchange that could not complete
+        raises :class:`_PeerUnavailable` (see :meth:`_exchange_link`).
+
+        **The session never leaves this object.** It travels as a cookie
+        rather than a query parameter so it cannot land in the peer's HTTP access
+        log, and it is never logged here. The minted link itself reaches the peer
+        once, as ``GET /api/status?token=``, the same exchange a browser makes.
+        """
+        link = self._tokens.get(instance_id, "")
+        if not link:
+            raise _PeerUnavailable("no_credential")
+        cached = self._peer_sessions.get(instance_id)
+        if cached is not None and cached[0] == link:
+            return {"Cookie": f"{cookie_name}={cached[1]}"}
+        session_value = await self._exchange_link(url, link, cookie_name)
+        if not session_value:
+            return {}
+        # A re-mint that landed during the exchange owns the cache: storing this
+        # pair would displace the session of the link that replaced it.
+        if self._tokens.get(instance_id) == link:
+            self._peer_sessions[instance_id] = (link, session_value)
+        return {"Cookie": f"{cookie_name}={session_value}"}
+
+    async def _prime_peer_session(self, instance_id: str) -> None:
+        """Exchange a just-stored link for the peer's session while it is fresh.
+
+        A minted link's click window is minutes, while the proactive refresh
+        re-mints hours apart. Exchanging only on the first peer request would
+        leave a link that has aged past that window by then, so every site that
+        stores a link calls this right away. A failure here changes nothing:
+        the request path still exchanges lazily and re-mints on a refusal.
+        """
+        try:
+            url, cookie_name = self._peer_target(instance_id, "api/status")
+            await self._peer_cookie_header(instance_id, url, cookie_name)
+        except _PeerUnavailable:
+            return
+
+    @contextlib.asynccontextmanager
+    async def proxy_request(
+        self,
+        instance_id: str,
+        method: str,
+        path: str,
+        *,
+        params: "dict[str, str] | None" = None,
+        data: bytes | None = None,
+        content_type: str = "",
+    ):
+        """Open *path* on a connected peer's gateway; yield the live response.
+
+        The generic carrier for remote-crew chat (design: remote-crew-chat).
+        Runs entirely over the already-open forward — **no SSH spawn** — and
+        follows :meth:`search_sessions_remote`'s credential rules: the token
+        never leaves this object, it travels as the port-scoped cookie so it
+        cannot land in the peer's access log, and a 401/403 gets exactly one
+        transparent re-mint retry.
+
+        Yields the **un-buffered** ``aiohttp.ClientResponse`` so the caller can
+        pump a streaming body (a proxied chat turn streams SSE for minutes);
+        the response and its session are closed when the context exits. The
+        timeout is connect+read-idle rather than total for the same reason: a
+        total cap would sever a long turn mid-stream. It is fixed here rather
+        than offered as a parameter — the policy is a property of what this
+        method is for, not a per-call choice.
+
+        Failures raise :class:`ProxyRequestError` with a machine-readable
+        ``code`` and a suggested ``http_status``, so the route handler can
+        translate without string-matching.
+        """
+
+        def _unavailable(exc: _PeerUnavailable) -> ProxyRequestError:
+            if exc.kind == "not_connected":
+                return ProxyRequestError("proxy_peer_not_connected", exc.message, http_status=503)
+            return ProxyRequestError("proxy_no_credential", exc.message, http_status=503)
+
+        try:
+            url, cookie_name = self._peer_target(instance_id, path)
+        except _PeerUnavailable as e:
+            raise _unavailable(e) from None
+        # Captured WITH the url, not per attempt: the url is resolved once here and
+        # reused by every retry, so the forward a later attempt must still be
+        # talking to is the one THIS reading names. See :meth:`_require_peer_forward`.
+        stamp = self._peer_forward_stamp(instance_id)
+        tmo = aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=_PROXY_CONNECT_TIMEOUT,
+            sock_read=_PROXY_READ_IDLE_TIMEOUT,
+        )
+        reminted = False
+        while True:
+            try:
+                headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
+            except _PeerUnavailable as e:
+                raise _unavailable(e) from None
+            if content_type:
+                headers["Content-Type"] = content_type
+            session = aiohttp.ClientSession(timeout=tmo)
+            try:
+                resp = await session.request(
+                    method,
+                    url,
+                    params=params,
+                    data=data,
+                    headers=headers,
+                    # The tunnel endpoint is the ONLY legitimate target. A
+                    # compromised peer answering 30x would otherwise make
+                    # aiohttp fetch an attacker-chosen URL FROM THE HUB (SSRF
+                    # into its loopback control planes).
+                    allow_redirects=False,
+                )
+            except Exception as e:  # timeout, connection refused, etc.
+                await session.close()
+                logger.info(
+                    "proxy_request to %s failed before a response (%s)",
+                    instance_id,
+                    type(e).__name__,  # never the token or the body
+                )
+                raise ProxyRequestError(
+                    "proxy_peer_unreachable",
+                    f"peer did not answer ({type(e).__name__})",
+                    http_status=502,
+                ) from None
+            if resp.status in (401, 403):
+                resp.release()
+                await session.close()
+                # One re-mint, then it is a credential failure — never streamed
+                # to the caller as a bare peer 401, which would read as "the
+                # chat endpoint said no" instead of "the tunnel credential is
+                # not working" and lose the coded error the UI keys off.
+                if not reminted and await self.refresh_token(instance_id):
+                    reminted = True
+                    continue  # retry once with the fresh credential
+                raise ProxyRequestError(
+                    "proxy_unauthorized", "peer rejected the credential", http_status=502
+                )
+            try:
+                yield resp
+            finally:
+                resp.release()
+                await session.close()
+            return
+
+    async def send_session_bundle(self, instance_id: str, bundle: dict) -> tuple[bool, dict]:
+        """POST a session-transfer *bundle* to a connected instance's importer.
+
+        Returns ``(ok, payload)``: on success *payload* is the peer's JSON reply
+        (carrying the new session key); on failure it carries ``error`` and a
+        machine-readable ``code`` so the caller can tell a stale token from an
+        unreachable peer from a bundle the peer refused from a peer too old to
+        have an importer at all.
+
+        Runs entirely over the already-open forward — **no SSH spawn**, same as
+        :meth:`token_validates`.
+
+        **The token never leaves this object** — see
+        :meth:`_peer_cookie_header`, which owns that rule for every peer request.
+        """
+        try:
+            url, cookie_name = self._peer_target(instance_id, "/api/chat/slots/import")
+        except _PeerUnavailable as e:
+            return False, {
+                "error": e.message,
+                "code": (
+                    "transfer_peer_not_connected"
+                    if e.kind == "not_connected"
+                    else "transfer_no_credential"
+                ),
+            }
+        stamp = self._peer_forward_stamp(instance_id)
+        timeout = aiohttp.ClientTimeout(total=_TRANSFER_TIMEOUT)
+        # Two INDEPENDENT one-shot retries, tracked by flag rather than by loop
+        # index so neither consumes the other's budget:
+        #  * ``reminted`` -- a retained credential can go stale while the tunnel
+        #    stays CONNECTED (the condition ``token_validates`` exists for: a
+        #    failed self-heal re-mint, or a remote restart that invalidates
+        #    credentials). One fresh mint turns that into a transparent success.
+        #  * ``downgraded`` -- an older peer refuses bundle_version 2; resend the
+        #    transcript-only v1 shape it has always accepted.
+        # Bounded at 3 attempts so at most one of each can fire plus the original.
+        reminted = False
+        downgraded = False
+        for _attempt in range(3):
+            try:
+                headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
+            except _PeerUnavailable as e:
+                return False, {"error": e.message, "code": "transfer_no_credential"}
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(url, json=bundle, headers=headers) as resp:
+                        try:
+                            payload = await resp.json()
+                        except Exception:
+                            payload = {}
+                        if 200 <= resp.status < 300:
+                            return True, payload if isinstance(payload, dict) else {}
+                        if resp.status in (401, 403):
+                            if not reminted and await self.refresh_token(instance_id):
+                                reminted = True
+                                continue  # retry once with the fresh credential
+                            return False, {
+                                "error": "peer rejected the credential",
+                                "code": "transfer_unauthorized",
+                            }
+                        if resp.status in (404, 405):
+                            # A peer with no importer route cannot receive a
+                            # session at all, and says so in two different ways
+                            # depending on its routing table: 404 when nothing
+                            # matches, 405 when the path falls through to
+                            # ``/api/chat/slots/{slot}`` (registered GET/DELETE
+                            # only) and aiohttp reports the method instead.
+                            # Neither is a status the importer itself ever
+                            # returns, so both mean the same actionable thing —
+                            # surface that rather than a bare status code the
+                            # user cannot act on.
+                            return False, {
+                                "error": (
+                                    "instance is running an older Kiro Crew that cannot "
+                                    "receive sessions — update it, then reconnect"
+                                ),
+                                "code": "transfer_peer_too_old",
+                            }
+                        # Forward the peer's own code when it sent one: a version
+                        # mismatch or an oversized bundle is actionable, and
+                        # rewriting it here would erase that.
+                        code = payload.get("code") if isinstance(payload, dict) else None
+                        # An OLDER peer refuses bundle_version 2 outright, even
+                        # though its Layer B is purely additive. Downgrade once
+                        # and resend the transcript-only v1 shape that peer has
+                        # always handled: without this, gaining Layer B would
+                        # REMOVE the ability to send to a peer that has not been
+                        # upgraded yet.
+                        #
+                        # Gated on the VERSION, not on Layer B presence: a
+                        # context-free session ships a v2 bundle with NO
+                        # ``layer_b`` key at all, and a presence check would skip
+                        # the downgrade for exactly those transfers and fail them
+                        # against a v1 peer. Dropping ``layer_b`` below stays
+                        # unconditional because it is simply absent in that case.
+                        if (
+                            code == "transfer_version_unsupported"
+                            and not downgraded
+                            and bundle.get("bundle_version") == 2
+                        ):
+                            downgraded = True
+                            bundle = {k: v for k, v in bundle.items() if k != "layer_b"}
+                            bundle["bundle_version"] = 1
+                            logger.info(
+                                "Session transfer to %s: peer refused v2; "
+                                "retrying transcript-only at v1",
+                                instance_id,
+                            )
+                            continue
+                        return False, {
+                            "error": (
+                                payload.get("error")
+                                if isinstance(payload, dict) and payload.get("error")
+                                else f"peer refused the transfer (HTTP {resp.status})"
+                            ),
+                            "code": code or "transfer_peer_refused",
+                        }
+            except Exception as e:
+                logger.info(
+                    "Session transfer to %s failed (%s)",
+                    instance_id,
+                    type(e).__name__,  # never the credential, never the bundle
+                )
+                return False, {
+                    "error": f"could not reach the instance ({type(e).__name__})",
+                    "code": "transfer_unreachable",
+                }
+        # Both attempts came back unauthorized.
+        return False, {
+            "error": "peer rejected the credential",
+            "code": "transfer_unauthorized",
+        }
+
+    async def peer_capability(self, instance_id: str, path: str) -> tuple[bool, Any]:
+        """GET one of a connected peer's read-only capability endpoints.
+
+        This is deliberately a NARROW CARRIER, not a general proxy. The generic
+        ``/api/instances/{id}/proxy/*`` route forwards a caller-supplied path and
+        is therefore fenced to the ``api/chat`` / ``api/stream`` prefixes; the
+        five paths a local session needs in order to render a peer-bound header
+        (version, agent roster, model list, effort levels, workspaces) sit
+        outside those prefixes. Widening the prefix list would have granted the
+        whole ``api/agents`` surface — including its mutating ``PUT`` — so the
+        capability read gets its own carrier whose target is chosen from a fixed
+        set here rather than by the caller.
+
+        Returns ``(ok, payload)``. On success *payload* is the peer's decoded
+        JSON, which may be a dict (version, workspaces) or a list (agents,
+        models, effort levels) — both shapes are real and returned as-is. On
+        failure *payload* is ``{"error", "code"}`` so a caller can tell a stale
+        credential from a peer too old to answer.
+        """
+        if path not in _PEER_CAPABILITY_PATHS:
+            # A programming error, not a runtime condition: the path set is
+            # closed and every caller passes a literal from it.
+            raise ValueError(f"not a peer capability path: {path!r}")
+        try:
+            url, cookie_name = self._peer_target(instance_id, path)
+        except _PeerUnavailable as e:
+            return False, {
+                "error": e.message,
+                "code": (
+                    "capability_peer_not_connected"
+                    if e.kind == "not_connected"
+                    else "capability_no_credential"
+                ),
+            }
+        stamp = self._peer_forward_stamp(instance_id)
+        # /api/models is the one read whose cold path runs bounded work on the
+        # peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat
+        # --list-models` + up to 3s entitlement revalidation, ~18s worst case),
+        # so it gets its own budget; the four cheap reads keep the short one.
+        # See both constants for sizing.
+        total = (
+            _MODELS_CAPABILITY_PROXY_TIMEOUT if path == "/api/models" else _CAPABILITY_PROXY_TIMEOUT
+        )
+        timeout = aiohttp.ClientTimeout(total=total)
+        reminted = False
+        for _attempt in range(2):
+            try:
+                headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
+            except _PeerUnavailable as e:
+                return False, {"error": e.message, "code": "capability_no_credential"}
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(
+                        url,
+                        headers=headers,
+                        # Same SSRF reasoning as the search carrier: the tunnel
+                        # endpoint is the only legitimate target, so a peer
+                        # answering 30x must not redirect the hub anywhere.
+                        allow_redirects=False,
+                    ) as resp:
+                        if resp.status in (401, 403):
+                            if not reminted and await self.refresh_token(instance_id):
+                                reminted = True
+                                continue  # retry once with the fresh credential
+                            return False, {
+                                "error": "peer rejected the credential",
+                                "code": "capability_unauthorized",
+                            }
+                        if resp.status in (404, 405):
+                            # The peer predates this endpoint. Reported as its own
+                            # code because it is the actionable case (update the
+                            # peer), not a transport fault to retry.
+                            return False, {
+                                "error": f"peer does not serve {path}",
+                                "code": "capability_peer_too_old",
+                            }
+                        if resp.status == 503 and path == "/api/models":
+                            # A healthy peer answers its models read with a
+                            # deliberate 503 while it revalidates the list. The
+                            # models read is the only path that answers this
+                            # deliberate 503, so only it gets the transient code
+                            # the caller re-polls through; any other 503 is a
+                            # refusal.
+                            body_ok, body = await _read_capability_body(resp)
+                            if (
+                                body_ok
+                                and isinstance(body, dict)
+                                and body.get("code") == "model_list_revalidating"
+                            ):
+                                return False, {
+                                    "error": "peer is revalidating its model list",
+                                    "code": "capability_peer_revalidating",
+                                }
+                        if not 200 <= resp.status < 300:
+                            return False, {
+                                "error": f"peer refused the read (HTTP {resp.status})",
+                                "code": "capability_peer_refused",
+                            }
+                        return await _read_capability_body(resp)
+            except Exception as e:
+                logger.info(
+                    "Peer capability read %s from %s failed (%s)",
+                    path,
+                    instance_id,
+                    type(e).__name__,  # never the credential
+                )
+                return False, {
+                    "error": f"could not reach the instance ({type(e).__name__})",
+                    "code": "capability_unreachable",
+                }
+        # Both attempts came back unauthorized.
+        return False, {
+            "error": "peer rejected the credential",
+            "code": "capability_unauthorized",
+        }
+
+    async def peer_version(self, instance_id: str) -> tuple[bool, str]:
+        """The peer gateway's ``kiro_crew.__version__``, or ``(False, code)``.
+
+        Used by the version-equality gate that fences remote execution. A peer
+        without ``/api/version`` answers 404 and comes back as
+        ``capability_peer_too_old`` — which the gate must treat exactly like a
+        mismatch, since an unknown version cannot be proven equal.
+        """
+        ok, payload = await self.peer_capability(instance_id, "/api/version")
+        if not ok:
+            code = (
+                payload.get("code", "capability_unreachable") if isinstance(payload, dict) else ""
+            )
+            return False, str(code)
+        version = payload.get("version") if isinstance(payload, dict) else None
+        if not isinstance(version, str) or not version:
+            return False, "capability_malformed_reply"
+        return True, version
+
+    async def search_sessions_remote(
+        self, instance_id: str, query: str, limit: int
+    ) -> tuple[bool, dict]:
+        """GET a connected peer's ``/api/sessions/search`` over its tunnel.
+
+        Returns ``(ok, payload)``: on success *payload* is the peer's JSON reply
+        (``{"sessions": [...]}``); on failure it carries ``error`` and a
+        machine-readable ``code`` so the aggregator can tell a stale credential
+        from an unreachable peer.
+
+        Runs entirely over the already-open forward — **no SSH spawn** — and
+        follows the shared credential rules in :meth:`_peer_cookie_header`: the
+        token never leaves this object and travels as the port-scoped cookie. A
+        401/403 gets exactly one transparent re-mint retry — a retained
+        credential can go stale while the tunnel stays CONNECTED.
+        """
+        try:
+            url, cookie_name = self._peer_target(instance_id, "/api/sessions/search")
+        except _PeerUnavailable as e:
+            return False, {
+                "error": e.message,
+                "code": (
+                    "search_peer_not_connected"
+                    if e.kind == "not_connected"
+                    else "search_no_credential"
+                ),
+            }
+        stamp = self._peer_forward_stamp(instance_id)
+        timeout = aiohttp.ClientTimeout(total=_SEARCH_PROXY_TIMEOUT)
+        reminted = False
+        for _attempt in range(2):
+            try:
+                headers = await self._peer_headers_for(instance_id, url, cookie_name, stamp)
+            except _PeerUnavailable as e:
+                return False, {"error": e.message, "code": "search_no_credential"}
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(
+                        url,
+                        params={"q": query, "limit": str(int(limit))},
+                        headers=headers,
+                        # The tunnel endpoint is the ONLY legitimate target. A
+                        # compromised peer answering 30x would otherwise make
+                        # aiohttp fetch an attacker-chosen URL FROM THE HUB
+                        # (SSRF into its loopback control planes).
+                        allow_redirects=False,
+                    ) as resp:
+                        if resp.status in (401, 403):
+                            if not reminted and await self.refresh_token(instance_id):
+                                reminted = True
+                                continue  # retry once with the fresh credential
+                            return False, {
+                                "error": "peer rejected the credential",
+                                "code": "search_unauthorized",
+                            }
+                        if not 200 <= resp.status < 300:
+                            return False, {
+                                "error": f"peer refused the search (HTTP {resp.status})",
+                                "code": "search_peer_refused",
+                            }
+                        # Byte-cap BEFORE decoding: resp.json() buffers the whole
+                        # body first, so a hostile/broken peer streaming an
+                        # unbounded reply could exhaust hub memory before any
+                        # per-field clamp runs. StreamReader.read(n) returns as
+                        # soon as ANY buffered data exists, so a single call can
+                        # yield a prefix of a multi-chunk reply — accumulate to
+                        # EOF, refusing the moment the cap is crossed. An honest
+                        # reply (<=200 clamped rows) sits far below the cap.
+                        chunks: list[bytes] = []
+                        received = 0
+                        oversized = False
+                        async for chunk in resp.content.iter_chunked(65536):
+                            received += len(chunk)
+                            if received > _SEARCH_REPLY_MAX_BYTES:
+                                oversized = True
+                                break
+                            chunks.append(chunk)
+                        if oversized:
+                            return False, {
+                                "error": "peer search reply exceeds the size cap",
+                                "code": "search_malformed_reply",
+                            }
+                        try:
+                            payload = json.loads(b"".join(chunks))
+                        except Exception:
+                            payload = None
+                        if not isinstance(payload, dict):
+                            return False, {
+                                "error": "peer returned a malformed search reply",
+                                "code": "search_malformed_reply",
+                            }
+                        return True, payload
+            except Exception as e:
+                logger.info(
+                    "Federated session search to %s failed (%s)",
+                    instance_id,
+                    type(e).__name__,  # never the credential, never the query
+                )
+                return False, {
+                    "error": f"could not reach the instance ({type(e).__name__})",
+                    "code": "search_unreachable",
+                }
+        # Both attempts came back unauthorized.
+        return False, {
+            "error": "peer rejected the credential",
+            "code": "search_unauthorized",
+        }
+
+    def token_ttl_remaining(self, instance_id: str) -> int | None:
+        """Seconds until the current token reaches its TTL, or None if unknown.
+
+        Used by the Manage panel (Stage 6) to show "token TTL remaining".
+        """
+        minted = self._token_minted_at.get(instance_id)
+        ttl = self._token_ttl_secs.get(instance_id)
+        if minted is None or ttl is None:
+            return None
+        return max(0, int(ttl - (time.time() - minted)))
+
+    def token_ttl_total(self, instance_id: str) -> int | None:
+        """Seconds the CURRENT token was issued for, or None if unknown.
+
+        The companion of :meth:`token_ttl_remaining`, and the reason it exists is
+        that a caller comparing the two must divide by the same number the
+        remaining was derived from. A crew's row TTL is NOT that number for a
+        chained crew: its token is issued by the parent, so the stored total is
+        the parent's figure (or ours, whichever is shorter), and a reader that
+        measured progress against the row would read a 1h token as permanently
+        past a 20h row's refresh threshold and re-mint on every poll.
+        """
+        return self._token_ttl_secs.get(instance_id)
+
+    # ── proactive token refresh ────────────────────────────────────────────
+
+    def _mint_superseded(self, instance_id: str, minted_at_epoch: int) -> str:
+        """Why a mint's answer must be thrown away, or ``""`` -- the shared core.
+
+        Two readings that apply to EVERYTHING a mint said, its hop and its lifetime
+        as much as its credential: the forward it ran for is gone, or another
+        forward took its place. Membership reads true again after any reinstall, so
+        the generation counter is what tells one from the next.
+        """
+        if instance_id not in self._tunnels:
+            return "the forward it was minted for is gone"
+        if self._tunnel_epoch.get(instance_id, 0) != minted_at_epoch:
+            return "another forward took its place while the mint was in flight"
+        return ""
+
+    def _credential_forward_moved(
+        self,
+        inst: Instance,
+        mint: _Mint,
+        minted_at_epoch: int,
+        *,
+        binds_forward: bool,
+    ) -> _Moved:
+        """Why a CREDENTIAL for *inst* must not be used, and whether to retire.
+
+        THE one place the pairing between a credential and the forward it will
+        travel over is decided. A dashboard token is a bearer credential for ONE
+        crew, and it reaches that crew only over the forward it was minted against;
+        deliver it over a different forward and it reaches whoever is behind that
+        one instead.
+
+        :meth:`_mint_superseded`'s two readings, then two that belong to a
+        credential alone.
+
+        The port is read FIRST and only as a cheap early-out: a forward dialling a
+        different number than the mint named is plainly the wrong forward. It cannot
+        be what CLEARS the check, because the parent's allocator hands a just-freed
+        port to the next connect, so equal numbers are exactly what a reused port
+        looks like -- and that is the case this exists to refuse.
+
+        What clears it is the parent's own IDENTITY for the hop: the id it knows the
+        crew by and the generation of its forward to it, both stated in the reply.
+        Compared against the identity the forward HERE was built against, so a parent
+        that tore its forward down and rebuilt it -- possibly handing the old port to
+        another crew in between -- fails to match, whatever the numbers say.
+
+        ``binds_forward`` says which question is being asked. A store that accompanies
+        this gateway building or rebuilding the forward onto the hop this mint named
+        is DEFINING that identity, so there is nothing yet to contradict; a store for
+        a forward already up is asking whether it still rides the hop it was built
+        for, and that one compares.
+        """
+        superseded = self._mint_superseded(inst.id, minted_at_epoch)
+        if superseded:
+            return _Moved(superseded, False)
+        live = self._tunnels[inst.id]
+        riding = int(getattr(live.status, "remote_port", 0) or 0)
+        if mint.hop and riding and mint.hop != riding:
+            return _Moved(
+                f"the crew holding the hop now serves it on port {mint.hop} "
+                f"while this forward still dials {riding}",
+                # Retires for the same reason the identity branch below does, and under
+                # the same condition. The parent moved this crew to a new port and can
+                # hand the old one to ANOTHER crew, so the forward still dialling the
+                # old number now reaches that crew instead -- and the token already in
+                # `_tokens` keeps travelling over it. Refusing the new credential alone
+                # left both in place with nothing to correct them: each refresh cycle
+                # re-discarded and retried, so the stale pair survived indefinitely.
+                #
+                # Gated on `not binds_forward` for the reason that flag exists: a store
+                # accompanying this gateway BUILDING the forward onto the hop the mint
+                # named is defining that pairing, and retiring there would tear down the
+                # forward it is in the middle of establishing.
+                not binds_forward,
+            )
+        if mint.hop_id and not binds_forward:
+            built_for = self._chained_hop_identity.get(inst.id)
+            if built_for is not None and built_for != (mint.hop_id, mint.hop_gen):
+                return _Moved(
+                    f"this forward was built against {built_for[0]!r} generation "
+                    f"{built_for[1]} and the crew holding the hop now answers for "
+                    f"{mint.hop_id!r} generation {mint.hop_gen}",
+                    # Retires for the same reason as the port branch above: the forward
+                    # already in place is riding a hop that changed hands behind an
+                    # unchanged port number, and refusing the new credential leaves it
+                    # there. This branch is already reached only when `binds_forward` is
+                    # false, so it needs no further gate.
+                    True,
+                )
+        return _Moved("", False)
+
+    def _store_token(
+        self, inst: Instance, mint: _Mint, *, minted_at_epoch: int, binds_forward: bool
+    ) -> bool:
+        """Publish everything a mint said, or DISCARD all of it. Never logs the token.
+
+        Answers whether the credential was stored. A discarded mint leaves the
+        previous credential in place, which is the safe side: it may be stale, and a
+        stale token produces a 403 the client recovers from, where a token delivered
+        over another crew's forward is a disclosure nothing downstream re-checks.
+
+        BOTH sides of the pairing pass through here, which is the point. The reply's
+        hop and lifetime are written FIRST and behind the generation fence, so a
+        superseded mint cannot overwrite the hop that the credential comparison
+        itself reads -- fencing one side only leaves that comparison reading a stale
+        value against a stale forward and passing. The credential is stored behind
+        that comparison, which by then is asking whether the forward rides the hop
+        THIS mint named.
+
+        The effective lifetime is derived HERE and is not a parameter, because it
+        depends on the publish this method has just done.
+
+        ``minted_at_epoch`` and ``binds_forward`` are both required, so a caller
+        cannot store without saying which forward it minted against and whether this
+        store is the one DEFINING that forward's hop identity. Every credential store
+        in this module goes through here, so a site added later cannot forget any of
+        it.
+        """
+        superseded = self._mint_superseded(inst.id, minted_at_epoch)
+        if superseded:
+            # Worded without the word for what was minted: the SAST logging rule
+            # matches that keyword in a format string, and a nothing-was-leaked log
+            # line is not worth a suppression comment.
+            logger.info("Discarding a mint for %s: %s", inst.id, superseded)
+            return False
+        # Compared BEFORE the identity is published, because the identity is what it
+        # compares against: publishing first would compare this mint's answer with
+        # itself. The port and lifetime are published first, as before, since the
+        # port's witness is the forward's own `remote_port` rather than the record.
+        if mint.hop:
+            self._chained_hop_port[inst.id] = mint.hop
+        if mint.ttl:
+            self._chained_ttl[inst.id] = mint.ttl
+        moved = self._credential_forward_moved(
+            inst, mint, minted_at_epoch, binds_forward=binds_forward
+        )
+        if moved.reason:
+            logger.info("Discarding a mint for %s: %s", inst.id, moved.reason)
+            if moved.retire:
+                # Refusing the new credential is not enough on its own: the forward
+                # and the token already in place are the ones riding the moved hop,
+                # and nothing else retires them. Both non-defining mismatch branches
+                # ask for this -- the port number moved, or the identity behind an
+                # unchanged number did -- and the fence above is why that is
+                # sufficient: a superseded generation has already been rejected, so it
+                # never reaches this line and a rebuilt forward cannot be torn down by
+                # a mint that lost a race to it. Neither branch asks while
+                # `binds_forward` is set, so a forward being established is never the
+                # thing retired.
+                self._schedule_chained_retirement(inst.id, moved.reason)
+            return False
+        if mint.hop_id:
+            self._chained_hop_identity[inst.id] = (mint.hop_id, mint.hop_gen)
+        self._tokens[inst.id] = mint.token
+        self._token_minted_at[inst.id] = time.time()
+        with contextlib.suppress(Exception):
+            # Read HERE, after the publish above. _minted_ttl takes the shorter of
+            # the parent's answer and our record's, and the parent's answer is what
+            # that publish just wrote -- so a caller computing this would read the
+            # dict before its own mint had reached it, store our record's default,
+            # and schedule the refresh past a shorter token's expiry. Taking the
+            # reading inside removes that ordering instead of asking each site to
+            # respect it.
+            self._token_ttl_secs[inst.id] = ttl_to_seconds(self._minted_ttl(inst))
+        return True
+
+    def _cancel_token_refresh(self, instance_id: str) -> None:
+        """Cancel + drop an instance's refresh task and token metadata."""
+        task = self._refresh_tasks.pop(instance_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._token_minted_at.pop(instance_id, None)
+        self._token_ttl_secs.pop(instance_id, None)
+
+    def _schedule_chained_retirement(self, instance_id: str, reason: str) -> None:
+        """Retire a chained forward that rides a hop other than the one it was built for.
+
+        Scheduled rather than awaited, and that is not a style choice: the callers
+        differ in whether they hold the manager lock. `_store_token` runs inside
+        `connect`'s lock AND outside it from the refresh, and ``asyncio.Lock`` is not
+        reentrant -- awaiting a teardown from under the lock would park forever and
+        wedge every later connect, disconnect and self-heal. So this hands the work
+        to a task that acquires the lock itself, the same shape the self-heal uses.
+        """
+        task = asyncio.create_task(self._retire_chained(instance_id, reason))
+        self._retirements.add(task)
+        task.add_done_callback(self._retirements.discard)
+        task.add_done_callback(
+            lambda t: (
+                logger.error("Chained retirement crashed: %s", t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
+        )
+
+    async def _retire_chained(self, instance_id: str, reason: str) -> None:
+        """Drop the credential and the forward, keeping the user's intent.
+
+        ``keep_intent=True`` because the user still wants this crew: what is wrong is
+        the hop, not the wish. Leaving ``was_connected`` set is what lets the ordinary
+        reconnect bring it back on a hop that is actually ours -- where clearing it
+        would present a security teardown as the user having turned the crew off.
+        """
+        logger.warning("Retiring the chained forward for %s: %s", instance_id, reason)
+        async with self._lock:
+            if instance_id not in self._tunnels:
+                return
+            await self._teardown_locked(instance_id, keep_intent=True)
+        self._last_error[instance_id] = reason
+
+    def _schedule_token_refresh(self, instance_id: str) -> None:
+        """(Re)start the proactive refresh loop for *instance_id*.
+
+        Refuses while a reconfiguration holds the barrier: a refresh mints against
+        the record it read, so one started here would carry the pre-edit
+        coordinates and could store that token against the rebuilt tunnel.
+        """
+        if instance_id in self._reconfiguring:
+            logger.info(
+                "Skipping proactive refresh for %s: reconfiguration in progress",
+                instance_id,
+            )
+            return
+        existing = self._refresh_tasks.get(instance_id)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        task = asyncio.create_task(self._token_refresh_loop(instance_id))
+        self._refresh_tasks[instance_id] = task
+        task.add_done_callback(
+            # False positive (below): only the instance id + exception are logged,
+            # never the token. The message contains the word "Token" (the task's
+            # name), which trips the heuristic; this module never logs token values
+            # (a documented invariant — mint/refresh keep tokens off stderr/logs).
+            lambda t: (
+                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+                logger.error("Token refresh task crashed for %s: %s", instance_id, t.exception())
+                if not t.cancelled() and t.exception()
+                else None
+            )
+        )
+
+    def _refresh_delay(self, instance_id: str) -> float | None:
+        """How long to wait before the next proactive re-mint, or None if unknown.
+
+        Derived from the lifetime the CURRENT token was issued under, read at the
+        moment it is needed rather than once for the life of the loop. That stored
+        lifetime is rewritten by every store (:meth:`_store_token`), and for a
+        chained crew it is the SHORTER of the parent's answer and our own record
+        (:meth:`_minted_ttl`) -- so lowering the TTL on either side changes it while
+        the loop is running. Neither edit is a transport field, so neither tears the
+        tunnel down and restarts this loop; a delay computed once would keep
+        sleeping the old, longer interval, and the shorter token would die before
+        the next re-mint. The pane then reloads and whatever was unsaved in it is
+        gone, on every cycle rather than once.
+        """
+        ttl_secs = self._token_ttl_secs.get(instance_id)
+        if not ttl_secs:
+            return None
+        return max(1.0, ttl_secs * _REFRESH_FRACTION)
+
+    async def _token_refresh_loop(self, instance_id: str) -> None:
+        """Sleep to ~80% of TTL, re-mint, repeat — until cancelled.
+
+        Keeps the in-memory token valid ahead of the 20h cap so reconnects /
+        fresh iframe loads always have a usable token. Re-mint failures are
+        logged and retried on the next cycle (self-heal also covers tunnel-side
+        breakage). Cancelled by disconnect/shutdown.
+        """
+        delay = self._refresh_delay(instance_id)
+        if delay is None:
+            return
+        try:
+            while True:
+                await asyncio.sleep(delay)
+                # A failed re-mint is only terminal once the instance is not
+                # connected (dropped from _tunnels).
+                if (
+                    not await self._refresh_token_once(instance_id)
+                    and instance_id not in self._tunnels
+                ):
+                    return
+                # Re-derive rather than keep the value this loop started with: every
+                # store rewrites the stored lifetime, and for a chained crew it is
+                # the shorter of the parent's answer and our record, so a TTL lowered
+                # on either side has to move the schedule. A FAILED refresh stored
+                # nothing, so this reads back the same number and the deliberate
+                # retry-at-the-same-interval behaviour is unchanged.
+                delay = self._refresh_delay(instance_id) or delay
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # never let the refresh loop crash silently
+            logger.exception("Token refresh loop crashed for %s: %s", instance_id, exc)
+
+    async def _refresh_token_once(self, instance_id: str) -> bool:
+        """Re-mint the token once. Returns True on success.
+
+        The remote mint runs WITHOUT holding the manager lock (so a slow mint
+        can't block connect/disconnect); the result is stored under the lock only
+        if the instance is still connected (guards a disconnect mid-mint). Uses
+        whichever transport the instance is configured for.
+        """
+        # A reconfiguration is about to move the coordinates this mint would read,
+        # so starting one now can only produce a token for a machine the user is
+        # leaving. The caller reports "no token" and the client retries.
+        if instance_id in self._reconfiguring:
+            return False
+        inst = await asyncio.to_thread(self._registry.get, instance_id)
+        if inst is None or instance_id not in self._tunnels:
+            return False
+        # Which tunnel generation this token is being minted FOR. Captured before
+        # the await, compared after.
+        epoch = self._tunnel_epoch.get(instance_id, 0)
+        try:
+            params = self._resolve_transport(inst, await self._with_parent(inst))
+        except (SshValidationError, SsmValidationError) as e:
+            logger.warning("Token refresh aborted for %s: %s", instance_id, e)
+            return False
+        try:
+            mint = await self._mint_for(inst, params)
+        except HopRetiredError as e:
+            # The parent answered that the hop is gone, so retrying cannot recover
+            # it -- and the forward we still hold points at a port the parent may
+            # now hand to a different crew, which would carry this crew's token
+            # there. Terminal for the forward, unlike every other mint failure.
+            self._schedule_chained_retirement(instance_id, str(e))
+            return False
+        except TokenMintError as e:
+            logger.warning("Proactive token refresh failed for %s: %s", instance_id, e)
+            return False
+        async with self._lock:
+            if instance_id not in self._tunnels:
+                return False  # disconnected while minting — discard
+            if not self._store_token(inst, mint, minted_at_epoch=epoch, binds_forward=False):
+                return False
+        await self._prime_peer_session(instance_id)
+        logger.info("Proactively refreshed token for %s", instance_id)  # no token in logs
+        return True
+
+    async def refresh_token(self, instance_id: str) -> str | None:
+        """Force a fresh token mint for a connected instance and return it.
+
+        Drives the owner's client-side refresh loop: re-mints over SSH, stores
+        the new token, and returns it so the browser can reload the embedded
+        iframe with a valid token — either proactively (before the TTL cap) or
+        reactively (the embedded dashboard reported an expired session). Returns
+        ``None`` if the instance isn't connected or the mint failed. The token
+        is never logged.
+        """
+        if not await self._refresh_token_once(instance_id):
+            return None
+        return self.get_token(instance_id) or None
+
+    def _error_status(self, inst: Instance, message: str) -> TunnelStatus:
+        """Build (and remember) an ERROR status for *inst* without a live tunnel.
+
+        The message is retained in ``_last_error`` so a later :meth:`status`
+        lookup — after the failed-connect tunnel has been popped — can still
+        report *why* the instance is down. This is what lets a sticky tab whose
+        tunnel never came up show its error instead of a bare "disconnected".
+        """
+        logger.warning("Instance %s connect error: %s", inst.id, message)
+        self._last_error[inst.id] = message
+        return TunnelStatus(
+            instance_id=inst.id,
+            state=TunnelState.ERROR,
+            local_port=inst.local_port,
+            remote_port=inst.remote_port,
+            error=message,
+        )

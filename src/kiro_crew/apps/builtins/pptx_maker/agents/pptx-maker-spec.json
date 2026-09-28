@@ -1,0 +1,35 @@
+{
+  "name": "pptx-maker-spec",
+  "description": "Spec-driven presentation agent. Runs the briefing, outline and art-direction conversation, then delegates slide composition to pptx-maker-composer.",
+  "mcpServers": {
+    "sdpm": {
+      "command": "{UV_BIN}",
+      "args": ["run", "--directory", "{ENGINE_MCP_DIR}", "python", "server_acp.py"],
+      "env": { "PYTHONPATH": "", "PATH": "{TOOLS_PATH}" },
+      "timeout": 120000
+    }
+  },
+  "prompt": "file://{ENGINE_ROOT}/mcp-local/acp-agent-prompts/spec-agent.md",
+  "resources": [
+    "file://{ENGINE_ROOT}/skill/references/workflows/create-new-1-briefing.md",
+    "file://{APP_PROMPTS}/spec-studio.md"
+  ],
+  "tools": [
+    "@sdpm/analyze_template", "@sdpm/apply_style", "@sdpm/code_to_slide",
+    "@sdpm/generate_pptx", "@sdpm/grid", "@sdpm/import_attachment",
+    "@sdpm/init_presentation", "@sdpm/list_asset_sources", "@sdpm/list_guides",
+    "@sdpm/list_styles", "@sdpm/list_templates", "@sdpm/list_workflows",
+    "@sdpm/measure_slides", "@sdpm/pptx_to_json", "@sdpm/read_examples",
+    "@sdpm/read_guides", "@sdpm/read_workflows", "@sdpm/run_python",
+    "@sdpm/search_assets", "use_subagent", "read", "glob", "grep",
+    "web_search", "web_fetch"
+  ],
+  "toolsSettings": {
+    "subagent": {
+      "availableAgents": ["pptx-maker-composer"],
+      "trustedAgents": ["pptx-maker-composer"]
+    }
+  },
+  "welcomeMessage": "What presentation would you like to create?",
+  "model": "auto"
+}

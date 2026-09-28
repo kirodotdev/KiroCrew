@@ -1,0 +1,2470 @@
+"""Tests for chat_tags — tag vocabulary CRUD, slot tag assignment, sidebar columns, drag-drop."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import _make_state, _make_tags_app
+
+from kiro_crew.dashboard import chat_tags as chat_tags_module
+from kiro_crew.dashboard.chat_tags import _normalize_column, _valid_color
+from kiro_crew.dashboard.state import _ChatSlot
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_signing_secret(monkeypatch):
+    """Pin the grants-store provenance key so no test touches the real
+    ``token_signing.key`` (lazy creation would pollute the developer's or
+    runner's live config home)."""
+    from kiro_crew.dashboard import token_secret
+
+    monkeypatch.setattr(token_secret, "_get_secret", lambda: b"test-signing-key")
+
+
+# ── Pure helpers ──
+
+
+class TestValidColor:
+    def test_accepts_lowercase_hex(self):
+        assert _valid_color("#abcdef") == "#abcdef"
+
+    def test_accepts_uppercase_hex(self):
+        assert _valid_color("#ABCDEF") == "#ABCDEF"
+
+    def test_rejects_short_hex(self):
+        assert _valid_color("#abc") == "#6b7280"
+
+    def test_rejects_no_hash(self):
+        assert _valid_color("ff0000") == "#6b7280"
+
+    def test_rejects_garbage(self):
+        assert _valid_color("not-a-color") == "#6b7280"
+
+
+class TestNormalizeColumn:
+    def _state_with_tags(self, tmp_path):
+        state = _make_state(tmp_path)
+        state._tags = [
+            {"id": "t1", "name": "T1", "color": "#111111", "order": 0, "status": True},
+            {"id": "t2", "name": "T2", "color": "#222222", "order": 1, "status": False},
+        ]
+        return state
+
+    def test_returns_none_for_non_dict(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        assert _normalize_column(state, "not-a-dict") is None
+
+    def test_rejects_unknown_tag_ids(self, tmp_path):
+        # An unknown id must reject the payload, not be silently dropped —
+        # a drop lands the column on tag_ids [] (match-all), which presents
+        # to the user as "the filter does nothing".
+        state = self._state_with_tags(tmp_path)
+        assert _normalize_column(state, {"tag_ids": ["t1", "ghost", "t2"]}) is None
+
+    def test_accepts_known_tag_ids(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"tag_ids": ["t1", "t2"]})
+        assert col is not None
+        assert col["tag_ids"] == ["t1", "t2"]
+
+    def test_accepts_empty_tag_ids_as_match_all(self, tmp_path):
+        # [] is the documented clear-filter/match-all state; it must stay valid.
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"tag_ids": []})
+        assert col is not None
+        assert col["tag_ids"] == []
+
+    def test_rejects_non_string_tag_id_entries(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        assert _normalize_column(state, {"tag_ids": ["t1", 42]}) is None
+
+    def test_rejects_non_list_tag_ids(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        assert _normalize_column(state, {"tag_ids": "not-a-list"}) is None
+
+    def test_rejects_invalid_mode(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        assert _normalize_column(state, {"mode": "fancy"}) is None
+
+    def test_truncates_name_to_max(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"name": "x" * 200})
+        assert col is not None
+        assert len(col["name"]) == 60
+
+    def test_coerces_order_to_int(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"order": "5"})
+        assert col is not None
+        assert col["order"] == 5
+
+    def test_ignores_unparseable_order(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"order": "abc"})
+        assert col is not None
+        # Default applied via setdefault
+        assert col["order"] == 0
+
+    def test_include_untagged_coerced_to_bool(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {"include_untagged": 1})
+        assert col is not None
+        assert col["include_untagged"] is True
+
+    def test_defaults_when_empty_payload(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        col = _normalize_column(state, {})
+        assert col == {
+            "mode": "any",
+            "tag_ids": [],
+            "name": "",
+            "order": 0,
+            "include_untagged": False,
+            "source": "tags",
+            "state_key": "",
+        }
+
+    def test_existing_values_preserved_when_keys_absent(self, tmp_path):
+        state = self._state_with_tags(tmp_path)
+        existing = {
+            "id": "c1",
+            "name": "Keep",
+            "tag_ids": ["t1"],
+            "mode": "all",
+            "order": 7,
+            "include_untagged": True,
+        }
+        col = _normalize_column(state, {"name": "Updated"}, existing=existing)
+        assert col is not None
+        assert col["id"] == "c1"
+        assert col["name"] == "Updated"
+        assert col["tag_ids"] == ["t1"]
+        assert col["mode"] == "all"
+        assert col["order"] == 7
+        assert col["include_untagged"] is True
+
+
+# ── Tag vocabulary endpoints ──
+
+
+class TestTagVocabulary:
+    @pytest.mark.asyncio
+    async def test_list_seeds_default_vocabulary(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.load_tags()
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/tags")
+            assert resp.status == 200
+            tags = await resp.json()
+            names = {t["name"] for t in tags}
+            assert names == {"Planned", "ToDo", "Implementation", "Review", "Done"}
+            assert all(t["status"] is True for t in tags)
+
+    @pytest.mark.asyncio
+    async def test_list_returns_in_order(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._tags = [
+            {"id": "b", "name": "B", "color": "#000000", "order": 1, "status": False},
+            {"id": "a", "name": "A", "color": "#000000", "order": 0, "status": False},
+        ]
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/tags")
+            tags = await resp.json()
+            assert [t["name"] for t in tags] == ["A", "B"]
+
+    @pytest.mark.asyncio
+    async def test_list_survives_a_hand_edited_order(self, tmp_path, monkeypatch):
+        """``tags.json`` is loaded verbatim, so a row whose ``order`` is not a number
+        must sort as 0 rather than turn every reader of the vocabulary into a 500."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._tags = [
+            {"id": "b", "name": "B", "color": "#000000", "order": 1, "status": False},
+            {"id": "x", "name": "X", "color": "#000000", "order": "invalid", "status": False},
+            {"id": "f", "name": "F", "color": "#000000", "order": 0.5, "status": False},
+            {"id": "m", "name": "M", "color": "#000000", "status": False},
+        ]
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/tags")
+            assert resp.status == 200
+            names = [t["name"] for t in await resp.json()]
+            assert names[-1] == "B" and set(names) == {"B", "X", "F", "M"}
+
+    def test_tag_order_never_raises(self):
+        from kiro_crew.dashboard.chat_tags import _order_key
+
+        assert _order_key({"order": 3}) == 3
+        assert _order_key({"order": 2.9}) == 2
+        for bad in ("invalid", None, True, [1], float("nan"), float("inf"), -float("inf")):
+            assert _order_key({"order": bad}) == 0
+        assert _order_key({}) == 0
+
+    @pytest.mark.asyncio
+    async def test_create_refuses_an_app_caller(self, tmp_path, monkeypatch):
+        """Tags have no owner, so an app may not add to the person's shared list.
+
+        Decided at the route on the middleware's validated claim, which is what
+        makes the ``chat_tag_create`` MCP tool's refusal the endpoint's rule and
+        not a tool-layer copy of it.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        from aiohttp import web as _web
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "some-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tags", json={"name": "Coined"})
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "app_forbidden"
+            listed = await (await client.get("/api/chat/tags")).json()
+        assert all(t["name"] != "Coined" for t in listed)
+        assert all(t.get("name") != "Coined" for t in state._tags)
+
+    @pytest.mark.asyncio
+    async def test_create_rate_limits_an_internal_caller(self, tmp_path, monkeypatch):
+        """Same budget as folder create, so an agent loop cannot grow tags.json unbounded.
+
+        Mutation guard: drop the ``allow_create`` call and the whole burst is 201.
+        """
+        from kiro_crew.dashboard import create_rate_limit
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        create_rate_limit.reset_for_tests()
+        try:
+            state = _make_state(tmp_path)
+            app = _make_tags_app(state)
+            headers = {"X-Internal-Secret": "s3cret", "X-Internal-Caller": "kirocrew-dashboard"}
+            async with TestClient(TestServer(app)) as client:
+                allowed = 0
+                for i in range(create_rate_limit.MAX_TAG_CREATES_PER_WINDOW + 3):
+                    resp = await client.post(
+                        "/api/chat/tags", json={"name": f"T{i}"}, headers=headers
+                    )
+                    if resp.status == 201:
+                        allowed += 1
+                    else:
+                        assert resp.status == 429
+                        assert (await resp.json())["code"] == "create_rate_limited"
+            assert allowed == create_rate_limit.MAX_TAG_CREATES_PER_WINDOW
+        finally:
+            create_rate_limit.reset_for_tests()
+
+    @pytest.mark.asyncio
+    async def test_create_does_not_rate_limit_the_browser(self, tmp_path, monkeypatch):
+        """A person seeding a board can legitimately outpace the agent budget."""
+        from kiro_crew.dashboard import create_rate_limit
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        create_rate_limit.reset_for_tests()
+        try:
+            state = _make_state(tmp_path)
+            app = _make_tags_app(state)
+            async with TestClient(TestServer(app)) as client:
+                for i in range(create_rate_limit.MAX_TAG_CREATES_PER_WINDOW + 3):
+                    resp = await client.post("/api/chat/tags", json={"name": f"B{i}"})
+                    assert resp.status == 201
+        finally:
+            create_rate_limit.reset_for_tests()
+
+    @pytest.mark.asyncio
+    async def test_update_refuses_an_app_caller_and_a_gone_slot(self, tmp_path, monkeypatch):
+        """PATCH is a vocabulary write too: same two refusals as POST, before any edit."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._tags = [
+            {"id": "t1", "name": "Keep", "color": "#000000", "order": 0, "status": False}
+        ]
+        app = _make_tags_app(state)
+
+        from aiohttp import web as _web
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            if request.headers.get("X-As-App"):
+                request["app"] = request.headers["X-As-App"]
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(
+                "/api/chat/tags/t1", json={"name": "Renamed"}, headers={"X-As-App": "some-app"}
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "app_forbidden"
+            resp = await client.patch(
+                "/api/chat/tags/t1",
+                json={"name": "Renamed"},
+                headers={"X-Session-Key": "dashboard:gone-slot"},
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "caller_unattributable"
+        assert state._tags[0]["name"] == "Keep"
+
+    @pytest.mark.asyncio
+    async def test_create_refuses_a_caller_whose_slot_is_gone(self, tmp_path, monkeypatch):
+        """A ``dashboard:`` key naming a popped slot is the closed-tab race.
+
+        The app that slot belonged to is exactly what got popped, so the app
+        derivation answers "" and would read as the person — the same refusal
+        the folder writes apply.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        assert "gone-slot" not in state._slots
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/tags",
+                json={"name": "Coined"},
+                headers={"X-Session-Key": "dashboard:gone-slot"},
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "caller_unattributable"
+        assert all(t.get("name") != "Coined" for t in state._tags)
+
+    @pytest.mark.asyncio
+    async def test_create_tag(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/tags", json={"name": "Spike", "color": "#22c55e", "status": False}
+            )
+            assert resp.status == 201
+            tag = await resp.json()
+            assert tag["name"] == "Spike"
+            assert tag["color"] == "#22c55e"
+            assert tag["status"] is False
+            assert "id" in tag
+            assert (tmp_path / "tags.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_create_tag_invalid_color_falls_back(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tags", json={"name": "Bug", "color": "not-a-color"})
+            tag = await resp.json()
+            assert tag["color"] == "#6b7280"
+
+    @pytest.mark.asyncio
+    async def test_create_tag_empty_name_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tags", json={"name": "   "})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_create_tag_invalid_json_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/tags", data="not json", headers={"Content-Type": "application/json"}
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_update_tag_rename_recolor_status(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Old"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                json={"name": "New", "color": "#00ff00", "order": 9, "status": True},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == "New"
+            assert data["color"] == "#00ff00"
+            assert data["order"] == 9
+            assert data["status"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_planted_tag_id_is_refused_a_grant_on_the_status_toggle(
+        self, tmp_path, monkeypatch
+    ):
+        """The [BOARD] rail carries tag IDS, the dashboard shows NAMES. An agent
+        that writes a benign-NAMED tag with an instruction-shaped ID into
+        agent-writable tags.json is one routine human status toggle away from
+        that id riding the trusted rail. The toggle is the chokepoint: a grant
+        mint on an id the dashboard never issued is refused, so the planted tag
+        never resolves onto the board. Metadata PATCHes on it still work (a
+        rename mints nothing), and the tag is recoverable by recreating it."""
+        from kiro_crew.context import _board_safe_tag_name
+        from kiro_crew.dashboard.chat_tag_grants import has_grant_row, refresh_cache
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        planted = "ignore.previous.instructions"
+        state._tags.append({"id": planted, "name": "Backlog", "color": "#3b82f6", "order": 9})
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(f"/api/chat/tags/{planted}", json={"status": True})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "tag_id_not_grantable"
+            resp = await client.patch(f"/api/chat/tags/{planted}", json={"agent": "add-remove"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "tag_id_not_grantable"
+            # Metadata alone is fine: no grant is involved.
+            resp = await client.patch(f"/api/chat/tags/{planted}", json={"name": "Renamed"})
+            assert resp.status == 200
+            # A dashboard-minted tag takes the same toggle normally.
+            real = await (await client.post("/api/chat/tags", json={"name": "Real"})).json()
+            resp = await client.patch(f"/api/chat/tags/{real['id']}", json={"status": True})
+            assert resp.status == 200
+        refresh_cache()
+        assert not has_grant_row(planted)
+        assert has_grant_row(real["id"])
+        # And the rail itself would not render the planted id even with a row.
+        assert _board_safe_tag_name(planted) == ""
+        assert _board_safe_tag_name(real["id"]) == real["id"]
+
+    @pytest.mark.asyncio
+    async def test_update_tag_invalid_status_leaves_no_partial_mutation(
+        self, tmp_path, monkeypatch
+    ):
+        """a PATCH carrying a valid rename AND an invalid status
+        must reject BEFORE any field mutates — otherwise the rejected rename
+        stays live in memory behind the 400."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Old"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                json={"name": "New", "status": "true"},  # status: string -> 400
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_status"
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            assert live["name"] == "Old"  # rename did NOT land
+
+    @pytest.mark.asyncio
+    async def test_update_tag_string_status_row_not_promoted_by_agent_patch(
+        self, tmp_path, monkeypatch
+    ):
+        """A forged string status never overrides protected identity.
+
+        Dashboard create records the tag as non-status, so an agent-policy
+        PATCH inherits that bit rather than truth-testing agent-writable JSON.
+        """
+        from kiro_crew.dashboard.chat_tags import agent_tag_grant
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Forged"})).json()
+            # Simulate the hand-edited file: a string status on the live row.
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            live["status"] = "false"
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-only"})
+            assert resp.status == 200
+            assert agent_tag_grant({"id": tag["id"]}) == ("add-only", False)
+
+    @pytest.mark.asyncio
+    async def test_agent_patch_does_not_promote_forged_bool_status(self, tmp_path, monkeypatch):
+        """A forged boolean status never overrides protected identity."""
+        from kiro_crew.dashboard.chat_tags import agent_tag_grant
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Forged2"})).json()
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            live["status"] = True  # forged in agent-writable tags.json
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-remove"})
+            assert resp.status == 200
+            # Policy updated, but NO workflow-state authority minted — the
+            # forged tags.json bit never reaches the protected store.
+            assert agent_tag_grant({"id": tag["id"]}) == ("add-remove", False)
+
+    @pytest.mark.asyncio
+    async def test_failed_mint_restores_prior_grant(self, tmp_path, monkeypatch):
+        """revoke-up-front must not become a PERMANENT revocation
+        when the replacement mint fails — the prior grant is restored and the
+        PATCH still surfaces 500."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        real_mint = ct.mint_grant
+
+        def _failing_mint(tag_id, *, policy, status):
+            if policy == "add-only":
+                raise OSError("simulated store write failure")
+            real_mint(tag_id, policy=policy, status=status)
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Keep2", "status": True})
+            ).json()
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+            monkeypatch.setattr(ct, "mint_grant", _failing_mint)
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-only"})
+            assert resp.status == 500
+            # The prior grant survives the failed narrowing PATCH.
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+
+    @pytest.mark.asyncio
+    async def test_status_patch_without_agent_keeps_the_recorded_policy(
+        self, tmp_path, monkeypatch
+    ):
+        """A status-inclusive PATCH that omits ``agent`` — the ordinary form-edit
+        re-send — keeps the policy already in the protected store. A human-only
+        ``none`` row stays ``none`` and a narrowed ``add-only`` stays ``add-only``;
+        only a tag with no protected record at all takes the out-of-the-box
+        ``add-remove`` default, the same one the create path mints."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        async with TestClient(TestServer(app)) as client:
+            # Human-only workflow state: created as a status tag, then reserved.
+            reserved = await (
+                await client.post("/api/chat/tags", json={"name": "Human-only", "status": True})
+            ).json()
+            resp = await client.patch(f"/api/chat/tags/{reserved['id']}", json={"agent": "none"})
+            assert resp.status == 200
+            assert ct.agent_tag_grant({"id": reserved["id"]}) == ("none", True)
+            # The form re-sends name + status without agent.
+            resp = await client.patch(
+                f"/api/chat/tags/{reserved['id']}", json={"name": "Human only", "status": True}
+            )
+            assert resp.status == 200
+            assert ct.agent_tag_grant({"id": reserved["id"]}) == ("none", True)
+
+            # Narrowed policy survives the same re-send.
+            narrowed = await (
+                await client.post("/api/chat/tags", json={"name": "Narrow", "status": True})
+            ).json()
+            await client.patch(f"/api/chat/tags/{narrowed['id']}", json={"agent": "add-only"})
+            resp = await client.patch(f"/api/chat/tags/{narrowed['id']}", json={"status": True})
+            assert resp.status == 200
+            assert ct.agent_tag_grant({"id": narrowed["id"]}) == ("add-only", True)
+
+            # A plain tag already has protected identity. Promoting it to a
+            # workflow state without an explicit policy stays human-only.
+            plain = await (await client.post("/api/chat/tags", json={"name": "Plain"})).json()
+            assert ct.has_grant_row(plain["id"])
+            resp = await client.patch(f"/api/chat/tags/{plain['id']}", json={"status": True})
+            assert resp.status == 200
+            assert ct.agent_tag_grant({"id": plain["id"]}) == ("none", True)
+
+    @pytest.mark.asyncio
+    async def test_failed_mint_rolls_back_vocabulary(self, tmp_path, monkeypatch):
+        """A PATCH whose grant transition fails leaves both stores unchanged."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_mint(tag_id, *, policy, status):
+            raise OSError("simulated store write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Stable"})).json()
+            monkeypatch.setattr(ct, "mint_grant", _failing_mint)
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                # The final policy is the intended failing write; the identity
+                # downgrade occurs before the vocabulary write.
+                json={"name": "Renamed", "agent": "add-only", "status": False},
+            )
+            assert resp.status == 500
+            live = next(t for t in state._tags if t["id"] == tag["id"])
+            assert live["name"] == "Stable"  # memory rolled back
+            import json as _json
+
+            on_disk = _json.loads((tmp_path / "tags.json").read_text(encoding="utf-8"))
+            disk_tag = next(t for t in on_disk if t["id"] == tag["id"])
+            assert disk_tag["name"] == "Stable"  # disk rolled back too
+
+    @pytest.mark.asyncio
+    async def test_delete_aborts_when_revoke_fails(self, tmp_path, monkeypatch):
+        """a deletion must never outlive the authority it removes
+        — a failed revoke aborts the DELETE with the tag (and grant) intact."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_revoke(tag_id):
+            raise OSError("simulated store write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Guarded", "status": True})
+            ).json()
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+            monkeypatch.setattr(ct, "revoke_grant", _failing_revoke)
+            resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 500
+            assert any(t["id"] == tag["id"] for t in state._tags)  # still present
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+
+    @pytest.mark.asyncio
+    async def test_update_keeps_status_identity_across_the_write_window(
+        self, tmp_path, monkeypatch
+    ):
+        """A PATCH that re-mints a grant is two store writes with the vocabulary
+        commit in between. Observed AT the vocabulary write (the crash window),
+        the tag must still carry its status identity as a ``("none", True)``
+        row -- less authority, never a missing row that the applier would read
+        as a plain label and let two workflow states coexist."""
+        from kiro_crew.dashboard import chat_tag_grants as grants
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        real_write = ct._write_tags_snapshot
+        seen: dict[str, object] = {}
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Stage", "status": True})
+            ).json()
+
+            def _observing_write(_state, _snapshot):
+                grants.refresh_cache()
+                seen["row_exists"] = grants.has_grant_row(tag["id"])
+                seen["grant"] = grants.resolve_grant(tag["id"])
+                return real_write(_state, _snapshot)
+
+            monkeypatch.setattr(ct, "_write_tags_snapshot", _observing_write)
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}", json={"name": "Stage 2", "agent": "add-only"}
+            )
+            assert resp.status == 200
+        # Inside the window: a row exists, grants nothing, keeps the status bit.
+        assert seen == {"row_exists": True, "grant": ("none", True)}
+        grants.refresh_cache()
+        assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-only", True)
+
+    @pytest.mark.asyncio
+    async def test_metadata_only_update_failure_never_touches_the_grant_store(
+        self, tmp_path, monkeypatch
+    ):
+        """A rename/recolour PATCH does not capture the prior grant (it never
+        asked for a grant change), so its failure compensation must not act on
+        the grant store at all -- acting on 'no prior row' there would revoke
+        the tag's real grant behind the 500."""
+        from kiro_crew.dashboard import chat_tag_grants as grants
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_write(_state, _snapshot):
+            raise OSError("simulated tags.json write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Stage", "status": True})
+            ).json()
+            grants.refresh_cache()
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+            monkeypatch.setattr(ct, "_write_tags_snapshot", _failing_write)
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"name": "Stage 2"})
+            assert resp.status == 500
+        grants.refresh_cache()
+        assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+
+    @pytest.mark.asyncio
+    async def test_rowless_tag_is_refused_before_vocab_write(self, tmp_path, monkeypatch):
+        """A legacy or planted row cannot recreate provenance through PATCH."""
+        from kiro_crew.dashboard import chat_tag_grants as grants
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_write(_state, _snapshot):
+            pytest.fail("rowless refusal must happen before the vocabulary write")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Legacy", "status": True})
+            ).json()
+            grants.revoke_grant(tag["id"])  # simulate the upgraded, row-less state
+            grants.refresh_cache()
+            assert not grants.has_grant_row(tag["id"])
+            monkeypatch.setattr(ct, "_write_tags_snapshot", _failing_write)
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}", json={"status": True, "agent": "add-remove"}
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "tag_id_not_grantable"
+        grants.refresh_cache()
+        assert not grants.has_grant_row(tag["id"])
+
+    @pytest.mark.asyncio
+    async def test_delete_vocab_failure_restores_grant(self, tmp_path, monkeypatch):
+        """revoke succeeded but the vocabulary persist
+        failed — the captured grant is re-minted so a failed DELETE is a
+        no-op on authority."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_write(_state, _snapshot):
+            raise OSError("simulated tags.json write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (
+                await client.post("/api/chat/tags", json={"name": "Kept", "status": True})
+            ).json()
+            monkeypatch.setattr(ct, "_write_tags_snapshot", _failing_write)
+            resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 500
+            assert any(t["id"] == tag["id"] for t in state._tags)
+            assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
+
+    @pytest.mark.asyncio
+    async def test_create_mint_failure_rolls_back_the_tag(self, tmp_path, monkeypatch):
+        """a POST with status:true whose grant mint fails must not
+        return 201 for a tag chat_tag refuses — the grant is minted BEFORE
+        the vocabulary commit, so a mint failure aborts with NOTHING durable
+        in either store and surfaces 500."""
+        from kiro_crew.dashboard import chat_tags as ct
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        def _failing_mint(tag_id, *, policy, status):
+            raise OSError("simulated store write failure")
+
+        async with TestClient(TestServer(app)) as client:
+            monkeypatch.setattr(ct, "mint_grant", _failing_mint)
+            resp = await client.post("/api/chat/tags", json={"name": "Doomed", "status": True})
+            assert resp.status == 500
+            assert not any(t.get("name") == "Doomed" for t in state._tags)
+            # Grant-first ordering: the mint failed before the vocabulary
+            # write, so tags.json was never touched by this request — it is
+            # either absent (fresh home) or free of the doomed tag.
+            tags_path = tmp_path / "tags.json"
+            if tags_path.exists():
+                import json as _json
+
+                on_disk = _json.loads(tags_path.read_text(encoding="utf-8"))
+                assert not any(t.get("name") == "Doomed" for t in on_disk)
+
+    @pytest.mark.asyncio
+    async def test_update_tag_empty_name_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Keep"})).json()
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"name": "   "})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_update_tag_unparseable_order_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "X"})).json()
+            resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"order": "abc"})
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_update_tag_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/tags/ghost", json={"name": "Anything"})
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_update_tag_invalid_json_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "X"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_update_tag_redacts_credentials_in_name(self, tmp_path, monkeypatch):
+        """PATCH a tag name containing an AWS key — the credential is redacted."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Safe"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                json={"name": "key-AKIAIOSFODNN7EXAMPLE"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert "AKIAIOSFODNN7EXAMPLE" not in data["name"]
+
+    @pytest.mark.asyncio
+    async def test_update_tag_redacts_credential_straddling_truncation(self, tmp_path, monkeypatch):
+        """Redaction must run BEFORE truncation: a credential crossing the
+        60-char cut would otherwise be sliced into a fragment the scanners
+        do not recognize, persisting a raw key prefix."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Redact"})).json()
+            resp = await client.patch(
+                f"/api/chat/tags/{tag['id']}",
+                json={"name": "x" * 50 + "AKIAIOSFODNN7EXAMPLE"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert "AKIA" not in data["name"]
+
+    @pytest.mark.asyncio
+    async def test_create_tag_redacts_credential_straddling_truncation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/tags",
+                json={"name": "x" * 50 + "AKIAIOSFODNN7EXAMPLE"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert "AKIA" not in data["name"]
+
+    @pytest.mark.asyncio
+    async def test_delete_tag_persists_vocab_before_slots(self, tmp_path, monkeypatch):
+        """Crash-atomic ordering: tags.json is the single durable commit and
+        must be written BEFORE any slot strip — a crash after it leaves only
+        harmless dangling slot ids (pruned on load), never lost assignments
+        with a still-live tag."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        call_order: list[str] = []
+
+        async def _tracking_save(st, slot, **kwargs):
+            call_order.append("save_slot")
+            return True  # a committed save — None would read as the refusal
+
+        original_write = __import__(
+            "kiro_crew.dashboard.chat_tags", fromlist=["_write_tags_snapshot"]
+        )._write_tags_snapshot
+
+        def _tracking_write(st, snapshot):
+            call_order.append("write_tags_snapshot")
+            return original_write(st, snapshot)
+
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Del"})).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [tag["id"]]
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", _tracking_save):
+                with patch("kiro_crew.dashboard.chat_tags._write_tags_snapshot", _tracking_write):
+                    resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 200
+            # Vocabulary removal must be committed BEFORE slot persistence.
+            assert call_order.index("write_tags_snapshot") < call_order.index("save_slot")
+
+    @pytest.mark.asyncio
+    async def test_delete_tag_strips_from_slots_and_columns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Spike"})).json()
+            other = await (await client.post("/api/chat/tags", json={"name": "Other"})).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [tag["id"], other["id"]]
+            state._slots["s1"] = slot
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns",
+                    json={"tag_ids": [tag["id"], other["id"]], "mode": "any"},
+                )
+            ).json()
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 200
+            assert tag["id"] not in {t["id"] for t in state._tags}
+            assert slot.tags == [other["id"]]
+            updated_col = next(c for c in state._tag_boards if c["id"] == col["id"])
+            assert tag["id"] not in updated_col["tag_ids"]
+            assert other["id"] in updated_col["tag_ids"]
+
+    @pytest.mark.asyncio
+    async def test_delete_tag_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.delete("/api/chat/tags/ghost")
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_strips_all_slots_despite_partial_save_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """A failing slot save during the post-commit strip must not abort
+        stripping the remaining slots; the failed one is marked dirty."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Partial"})).json()
+            slot_a = _ChatSlot("s1")
+            slot_a.tags = [tag["id"]]
+            slot_b = _ChatSlot("s2")
+            slot_b.tags = [tag["id"]]
+            state._slots["s1"] = slot_a
+            state._slots["s2"] = slot_b
+
+            saves: list[str] = []
+
+            async def _partial_failing_save(state_arg, slot_arg, **kwargs):
+                saves.append(slot_arg.key)
+                if slot_arg.key == "s1":
+                    raise IOError("disk full")
+                return True  # a committed save — None would read as the refusal
+
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", _partial_failing_save):
+                resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 200
+            assert all(t["id"] != tag["id"] for t in state._tags)
+            # BOTH slots stripped in memory despite s1's save failing:
+            assert tag["id"] not in slot_a.tags
+            assert tag["id"] not in slot_b.tags
+            assert "s1" in saves and "s2" in saves  # s2 not aborted by s1
+            assert getattr(slot_a, "_dirty", False) is True
+
+    @pytest.mark.asyncio
+    async def test_delete_succeeds_despite_board_persist_failure(self, tmp_path, monkeypatch):
+        """Board strip failure after the vocab commit is tolerated: deletion
+        succeeds; the dangling board reference is pruned on next load."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "BoardFail"})).json()
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns",
+                    json={"tag_ids": [tag["id"]], "mode": "any"},
+                )
+            ).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [tag["id"]]
+            state._slots["s1"] = slot
+
+            def _failing_boards(snapshot):
+                raise IOError("disk full")
+
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                with patch.object(state, "save_tag_boards_snapshot", _failing_boards):
+                    resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 200
+            assert all(t["id"] != tag["id"] for t in state._tags)
+            assert tag["id"] not in slot.tags
+            updated_col = next(c for c in state._tag_boards if c["id"] == col["id"])
+            assert tag["id"] not in updated_col["tag_ids"]  # stripped in memory
+
+
+# ── Slot tag assignment ──
+
+
+class TestSlotTags:
+    @pytest.mark.asyncio
+    async def test_assign_filters_unknown_and_dedupes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            t1 = await (await client.post("/api/chat/tags", json={"name": "T1"})).json()
+            t2 = await (await client.post("/api/chat/tags", json={"name": "T2"})).json()
+            slot = _ChatSlot("s1")
+            original_revision = slot.tags_revision
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [t1["id"], "ghost", t1["id"], t2["id"], 7]},
+                )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["tags"] == [t1["id"], t2["id"]]
+            assert data["tags_revision"] == slot.tags_revision
+            assert data["prior_tags_revision"] == original_revision
+            assert slot.tags_revision != original_revision
+            # Revisions are TOTALLY ORDERED, not merely opaque: a persisted
+            # per-process epoch counter then a zero-padded sequence, so a client
+            # can tell an older snapshot it never saw (a delayed HTTP fetch after
+            # a newer WebSocket frame, or a slow pre-restart reply) from a newer
+            # commit by string order alone. The successor must share the epoch
+            # and sort strictly after its predecessor.
+            import re as _re
+
+            assert _re.fullmatch(r"\d{16}\.\d{20}-[0-9a-f]{8}", slot.tags_revision)
+            assert _re.fullmatch(r"\d{16}\.\d{20}-[0-9a-f]{8}", original_revision)
+            assert slot.tags_revision.split(".")[0] == original_revision.split(".")[0]
+            assert slot.tags_revision > original_revision
+            assert state.serialize_slot(slot)["tags_revision"] == slot.tags_revision
+            assert slot.tags == [t1["id"], t2["id"]]
+
+    @pytest.mark.asyncio
+    async def test_assign_with_stale_base_revision_is_refused_without_writing(
+        self, tmp_path, monkeypatch
+    ):
+        """Two clients: B commits t2 while A composes ``[t1]`` onto the earlier
+        snapshot. A's write names that snapshot's revision as its base; the
+        server compares under the tag lock, refuses without touching the slot,
+        and returns the current list + revision so A can rebase its delta. The
+        same list sent with the CURRENT revision (or no base at all) commits."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            t1 = await (await client.post("/api/chat/tags", json={"name": "T1"})).json()
+            t2 = await (await client.post("/api/chat/tags", json={"name": "T2"})).json()
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            stale_base = slot.tags_revision
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                # Client B commits t2 (unconditional legacy write).
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": [t2["id"]]})
+                assert resp.status == 200
+                current = slot.tags_revision
+                assert current != stale_base
+                saves_before = save.call_count
+                # Client A, composed onto the pre-B snapshot, tries to replace with [t1].
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [t1["id"]], "base_tags_revision": stale_base},
+                )
+                assert resp.status == 409
+                body = await resp.json()
+                assert body["code"] == "stale_base"
+                assert body["base_tags_revision"] == stale_base
+                assert body["tags_revision"] == current
+                assert body["tags"] == [t2["id"]]
+                assert slot.tags == [t2["id"]] and slot.tags_revision == current
+                assert save.call_count == saves_before  # nothing written
+                # A rebases its delta onto the returned list and retries.
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [t2["id"], t1["id"]], "base_tags_revision": current},
+                )
+                assert resp.status == 200
+                assert slot.tags == [t2["id"], t1["id"]]
+                assert (await resp.json())["prior_tags_revision"] == current
+                # A non-string base is rejected up front.
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags", json={"tags": [], "base_tags_revision": 5}
+                )
+                assert resp.status == 400
+                assert (await resp.json())["code"] == "base_not_string"
+
+    @pytest.mark.asyncio
+    async def test_agent_mutation_is_visible_to_the_boards_cas(self, tmp_path, monkeypatch):
+        """The agent's ``chat_tag`` directive and the human board edit the same
+        slot. The board composes its PUT against the revision it last saw; an
+        agent mutation that landed in between must rotate that revision, so the
+        human's save is refused as ``stale_base`` and shown the agent's tags --
+        not applied over them without a word."""
+        from kiro_crew.dashboard.session_directive_apply import apply_session_directive
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            review = await (
+                await client.post("/api/chat/tags", json={"name": "Review", "status": True})
+            ).json()
+            plain = await (await client.post("/api/chat/tags", json={"name": "Plain"})).json()
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            human_base = slot.tags_revision
+
+            async def _saved(state, slot, force=False, expected_history_key=None):
+                return True
+
+            with patch("kiro_crew.dashboard.chat_persistence.save_slot_off_loop", _saved):
+                result = await apply_session_directive(
+                    state,
+                    slot,
+                    "dashboard:s1",
+                    "chat_tag",
+                    {"set_state": "Review"},
+                    producer_is_user_facing=True,
+                )
+            assert not result.startswith("Error:"), result
+            assert slot.tags == [review["id"]]
+            agent_revision = slot.tags_revision
+            assert agent_revision != human_base
+
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [plain["id"]], "base_tags_revision": human_base},
+                )
+                assert resp.status == 409
+                body = await resp.json()
+                assert body["code"] == "stale_base"
+                assert body["tags"] == [review["id"]] and body["tags_revision"] == agent_revision
+                assert slot.tags == [review["id"]]  # the agent's change stands
+                assert save.call_count == 0
+                # Rebased onto what the agent wrote, the human's edit commits.
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={
+                        "tags": [review["id"], plain["id"]],
+                        "base_tags_revision": agent_revision,
+                    },
+                )
+                assert resp.status == 200
+                assert slot.tags == [review["id"], plain["id"]]
+
+    @pytest.mark.asyncio
+    async def test_assign_refusal_restores_tags_and_revision(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "T1"})).json()
+            slot = _ChatSlot("s1")
+            slot.tags = ["existing"]
+            original_revision = slot.tags_revision
+            state._slots["s1"] = slot
+
+            async def _refuse(*_args, **_kwargs):
+                return False
+
+            state.push_slots_update = MagicMock()
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", _refuse):
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": [tag["id"]]})
+
+            assert resp.status == 409
+            assert slot.tags == ["existing"]
+            body = await resp.json()
+            assert body["code"] == "session_gone"
+            # The provisional revision may have leaked via a concurrent slots
+            # broadcast while the save awaited; the rejection must name it so
+            # clients can classify that frame as stale, not as a newer writer.
+            assert body["rejected_tags_revision"]
+            assert body["rejected_tags_revision"] != original_revision
+            # The rollback mints a FRESH revision rather than restoring the
+            # prior one: a client that adopted the leaked revision already
+            # treats the prior one as a known predecessor and would keep the
+            # rejected tags. The fresh revision is broadcast so it reconverges.
+            assert slot.tags_revision != original_revision
+            assert slot.tags_revision != body["rejected_tags_revision"]
+            assert body["tags_revision"] == slot.tags_revision
+            # The rolled-back list rides along so a client can seed its accepted
+            # snapshot from the server's post-rollback state before retrying.
+            assert body["tags"] == ["existing"]
+            state.push_slots_update.assert_called()
+
+    def test_revision_epoch_persists_and_orders_across_restarts(self, tmp_path, monkeypatch):
+        """A restarted process claims a higher epoch from the persisted counter,
+        so every revision it mints sorts after every revision of the previous
+        process — however far the old process's sequence had advanced."""
+        from kiro_crew.dashboard import state as state_module
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # Process 1: fresh data home, seeds the counter and mints many revisions.
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
+        old_revisions = [state_module.mint_tags_revision() for _ in range(50)]
+        assert old_revisions == sorted(old_revisions)
+        epoch_file = tmp_path / state_module._TAGS_REVISION_EPOCH_FILE
+        first_epoch = int(epoch_file.read_text().strip())
+        assert first_epoch > 0
+        # Process 2 ("restart"): re-claims (>= counter + 1 and >= clock) and
+        # starts its sequence over.
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
+        new_revision = state_module.mint_tags_revision()
+        assert int(epoch_file.read_text().strip()) > first_epoch
+        assert new_revision.split(".")[1].startswith("0" * 19 + "1")
+        assert all(new_revision > old for old in old_revisions)
+        # A backward clock step cannot regress the claim below the counter.
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        monkeypatch.setattr(state_module.time, "time_ns", lambda: 1_000_000)
+        assert state_module.ensure_tags_revision_epoch() == int(epoch_file.read_text().strip())
+        assert state_module.ensure_tags_revision_epoch() > int(new_revision.split(".")[0])
+
+    def test_unpersisted_epoch_mints_opaque_revisions(self, tmp_path, monkeypatch):
+        """When the epoch counter cannot be persisted, no ordering may be asserted
+        (the next restart cannot know about it, and a backward clock step could
+        then yield a LOWER orderable epoch that clients would reject). The process
+        mints opaque revisions instead, which clients treat with equality and
+        lineage only; a later writable restart persists a real epoch again and
+        orderable minting resumes."""
+        import re as _re
+
+        from kiro_crew.dashboard import state as state_module
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        epoch_file = tmp_path / state_module._TAGS_REVISION_EPOCH_FILE
+        epoch_file.write_text("41\n")
+        real_atomic_write = state_module.atomic_write
+
+        def _unwritable(*_args, **_kwargs):
+            raise OSError("read-only data home")
+
+        monkeypatch.setattr(state_module, "atomic_write", _unwritable)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
+        assert state_module.ensure_tags_revision_epoch() is None
+        opaque = [state_module.mint_tags_revision() for _ in range(3)]
+        assert all(_re.fullmatch(r"[0-9a-f]{32}", r) for r in opaque)
+        assert len(set(opaque)) == 3
+        assert epoch_file.read_text().strip() == "41"  # nothing persisted
+        # The failed claim is remembered: no disk retry on every mint.
+        assert state_module._TAGS_REVISION_EPOCH == state_module._TAGS_REVISION_EPOCH_UNPERSISTED
+
+        # Home becomes writable again on a later restart: orderable minting resumes.
+        monkeypatch.setattr(state_module, "atomic_write", real_atomic_write)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
+        recovered = state_module.mint_tags_revision()
+        assert _re.fullmatch(r"\d{16}\.\d{20}-[0-9a-f]{8}", recovered)
+        assert int(epoch_file.read_text().strip()) == int(recovered.split(".")[0]) > 41
+
+    def test_epoch_claim_is_durable_before_it_is_used(self, tmp_path, monkeypatch):
+        """The anti-regression guarantee rests on the persisted counter surviving
+        a crash. The claim must fsync the file's data AND sync the parent
+        directory (the rename's entry) before any revision is minted from it;
+        otherwise a power loss inside the flush window followed by a backward
+        clock step re-claims an epoch that connected clients already hold."""
+        from kiro_crew.dashboard import state as state_module
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        calls: list[tuple[str, object]] = []
+        real_atomic_write = state_module.atomic_write
+
+        def _recording_write(path, data, **kwargs):
+            calls.append(("write", kwargs.get("fsync", False)))
+            return real_atomic_write(path, data, **kwargs)
+
+        def _recording_fsync_dir(path, **_kwargs):
+            calls.append(("sync_dir", Path(path)))
+
+        monkeypatch.setattr(state_module, "atomic_write", _recording_write)
+        monkeypatch.setattr(state_module, "fsync_dir", _recording_fsync_dir)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
+        claimed = state_module.ensure_tags_revision_epoch()
+        assert claimed is not None and claimed > 0
+        assert calls == [("write", True), ("sync_dir", tmp_path)]
+
+        # A directory sync that reports the device refused the write is a failed
+        # claim: the counter is not durable, so ordering must not be asserted.
+        def _failing_fsync_dir(path, **_kwargs):
+            raise OSError(5, "EIO")
+
+        monkeypatch.setattr(state_module, "fsync_dir", _failing_fsync_dir)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        assert state_module.ensure_tags_revision_epoch() is None
+
+    def test_malformed_epoch_file_mints_opaque_revisions(self, tmp_path, monkeypatch):
+        """A counter that cannot be parsed is not "no counter": the real value may
+        exceed anything the clock now yields, so re-seeding from the clock could
+        persist a LOWER epoch than clients already hold (a backward clock step
+        after the corruption). The process must mint opaque revisions and leave
+        the file alone rather than assert an order it cannot prove."""
+        import re as _re
+
+        from kiro_crew.dashboard import state as state_module
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        epoch_file = tmp_path / state_module._TAGS_REVISION_EPOCH_FILE
+        epoch_file.write_text("garbage\n")
+        # Backward clock: far below any epoch a healthy process would have claimed.
+        monkeypatch.setattr(state_module.time, "time_ns", lambda: 1_000_000)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_EPOCH", None)
+        monkeypatch.setattr(state_module, "_TAGS_REVISION_SEQ", 0)
+        assert state_module.ensure_tags_revision_epoch() is None
+        assert _re.fullmatch(r"[0-9a-f]{32}", state_module.mint_tags_revision())
+        assert epoch_file.read_text() == "garbage\n"  # never overwritten with a low epoch
+
+    @pytest.mark.asyncio
+    async def test_assign_slot_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put("/api/chat/slots/ghost/tags", json={"tags": []})
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_assign_invalid_json_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._slots["s1"] = _ChatSlot("s1")
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put(
+                "/api/chat/slots/s1/tags",
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_assign_non_array_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._slots["s1"] = _ChatSlot("s1")
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put("/api/chat/slots/s1/tags", json={"tags": "not-a-list"})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_assign_app_token_denied_on_foreign_slot(self, tmp_path, monkeypatch):
+        """An app caller gets the indistinguishable 404 and writes nothing.
+
+        Tagging is a write to a session's own state, the same class as filing
+        (``api_chat_slot_folder``), and the ``chat_tag_assign`` MCP tool reaches
+        this route on behalf of app agents whose visibility is only scoped
+        client-side — so the boundary must hold here. Both an UNSCOPED slot and
+        another app's slot answer ``slot_not_found``: a distinct code per reason
+        would make the route an existence oracle.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        unscoped = _ChatSlot("s1")
+        foreign = _ChatSlot("s2")
+        foreign._app = "other-app"
+        state._slots["s1"] = unscoped
+        state._slots["s2"] = foreign
+        app = _make_tags_app(state)
+
+        from aiohttp import web as _web
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "attacker-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            # Seeded directly: an app caller may not POST a tag (see
+            # test_create_refuses_an_app_caller), and this test is about the PUT.
+            tag = {"id": "t1", "name": "T1", "color": "#000000", "order": 0, "status": False}
+            state._tags.append(tag)
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                for key in ("s1", "s2"):
+                    resp = await client.put(
+                        f"/api/chat/slots/{key}/tags", json={"tags": [tag["id"]]}
+                    )
+                    assert resp.status == 404
+                    assert (await resp.json())["code"] == "slot_not_found"
+            save.assert_not_called()
+        assert unscoped.tags == [] and foreign.tags == []
+
+    @pytest.mark.asyncio
+    async def test_assign_app_token_denied_when_slot_is_linked_to_a_foreign_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        """``_app`` alone is not ownership: the write lands on the LINKED transcript.
+
+        An app-owned slot whose ``linked_session_key`` names another owner's
+        session would pass an ``_app`` check and persist the app's tags into a
+        conversation it does not own. Both identities must resolve to the app.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        mine = _ChatSlot("s1")
+        mine._app = "my-app"
+        theirs = _ChatSlot("s2")
+        theirs._app = "other-app"
+        theirs.linked_session_key = "taskrunner:t1:chat:abc"
+        mine.linked_session_key = "taskrunner:t1:chat:abc"  # rebound onto the other app's session
+        state._slots["s1"] = mine
+        state._slots["s2"] = theirs
+        state._tags.append(
+            {"id": "t1", "name": "T1", "color": "#000000", "order": 0, "status": False}
+        )
+        app = _make_tags_app(state)
+
+        from aiohttp import web as _web
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": ["t1"]})
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+            save.assert_not_called()
+        assert mine.tags == []
+
+    def test_app_owns_transcript_is_unanimous_and_fails_closed(self):
+        """Own file and own linked session pass; shared, foreign, unclaimed or empty keys do not."""
+        from kiro_crew.dashboard.token_auth import app_owns_transcript
+
+        mine = _ChatSlot("s1")
+        mine._app = "my-app"
+        theirs = _ChatSlot("s2")
+        theirs._app = "other-app"
+        slots = {"s1": mine, "s2": theirs}
+        assert app_owns_transcript(slots, "", "anything") is True  # the person
+        assert app_owns_transcript(slots, "my-app", "dashboard:s1") is True
+        assert app_owns_transcript(slots, "my-app", "dashboard:s2") is False
+        mine.linked_session_key = "taskrunner:t9:chat:xyz"
+        assert app_owns_transcript(slots, "my-app", "taskrunner:t9:chat:xyz") is True
+        theirs.linked_session_key = "taskrunner:t9:chat:xyz"  # now shared with another owner
+        assert app_owns_transcript(slots, "my-app", "taskrunner:t9:chat:xyz") is False
+        # An unbound channel-origin slot's transcript is claimed by no slot.
+        assert app_owns_transcript(slots, "my-app", "slack:C1.unbound") is False
+        # A channel transcript is the person's even when only app slots are bound
+        # to it — the app's own slots cannot vouch for it.
+        mine.linked_session_key = "slack:C7.700"
+        assert app_owns_transcript(slots, "my-app", "slack:C7.700") is False
+        assert app_owns_transcript(slots, "my-app", "") is False
+
+    @pytest.mark.asyncio
+    async def test_assign_app_token_denied_when_a_foreign_slot_binds_mid_request(
+        self, tmp_path, monkeypatch
+    ):
+        """Ownership is re-asked under the write lock, not only before the awaits.
+
+        The pre-await check passes (the app's slot is the only claimant); a
+        foreign slot then binds to the same transcript while the body is being
+        read. The under-lock re-check must see the new claimant and refuse
+        with nothing saved — otherwise the earlier answer is stale by the time
+        the write lands.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        mine = _ChatSlot("s1")
+        mine._app = "my-app"
+        mine.linked_session_key = "taskrunner:t1:chat:abc"
+        theirs = _ChatSlot("s2")
+        theirs._app = "other-app"
+        state._slots["s1"] = mine
+        state._slots["s2"] = theirs
+        state._tags.append(
+            {"id": "t1", "name": "T1", "color": "#000000", "order": 0, "status": False}
+        )
+        app = _make_tags_app(state)
+
+        from aiohttp import web as _web
+
+        from kiro_crew.dashboard import chat_tags as _ct
+
+        real_read = _ct.read_bounded_json
+
+        async def _bind_then_read(request):
+            theirs.linked_session_key = "taskrunner:t1:chat:abc"  # lands during the body await
+            return await real_read(request)
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            with (
+                patch(
+                    "kiro_crew.dashboard.chat_tags.read_bounded_json", side_effect=_bind_then_read
+                ),
+                patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save,
+            ):
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": ["t1"]})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "session_gone"
+            save.assert_not_called()
+        assert mine.tags == []
+
+    @pytest.mark.asyncio
+    async def test_assign_refuses_a_caller_whose_slot_is_gone(self, tmp_path, monkeypatch):
+        """The closed-tab race on the per-slot write, same guard as the vocabulary writes.
+
+        A ``dashboard:`` key naming a popped slot derives app "" and would read
+        as the person, passing both ownership checks. Refused before either.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        target = _ChatSlot("s1")
+        state._slots["s1"] = target
+        state._tags.append(
+            {"id": "t1", "name": "T1", "color": "#000000", "order": 0, "status": False}
+        )
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": ["t1"]},
+                    headers={"X-Session-Key": "dashboard:gone-slot"},
+                )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "caller_unattributable"
+            save.assert_not_called()
+        assert target.tags == []
+
+    @pytest.mark.asyncio
+    async def test_assign_app_token_allowed_on_its_own_linked_transcript(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        own = _ChatSlot("s1")
+        own._app = "my-app"
+        own.linked_session_key = "taskrunner:t9:chat:xyz"
+        state._slots["s1"] = own
+        state._tags.append(
+            {"id": "t1", "name": "T1", "color": "#000000", "order": 0, "status": False}
+        )
+        app = _make_tags_app(state)
+
+        from aiohttp import web as _web
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": ["t1"]})
+            assert resp.status == 200
+        assert own.tags == ["t1"]
+
+    @pytest.mark.asyncio
+    async def test_assign_app_token_allowed_on_own_slot(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        own = _ChatSlot("s1")
+        own._app = "my-app"
+        state._slots["s1"] = own
+        app = _make_tags_app(state)
+
+        from aiohttp import web as _web
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            tag = {"id": "t1", "name": "T1", "color": "#000000", "order": 0, "status": False}
+            state._tags.append(tag)
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": [tag["id"]]})
+            assert resp.status == 200
+        assert own.tags == [tag["id"]]
+
+
+# ── Sidebar columns ──
+
+
+class TestColumns:
+    @pytest.mark.asyncio
+    async def test_list_columns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/tag-columns")
+            assert resp.status == 200
+            assert await resp.json() == []
+
+    @pytest.mark.asyncio
+    async def test_list_columns_survives_a_hand_edited_order(self, tmp_path, monkeypatch):
+        """``tag_boards.json`` is loaded verbatim like ``tags.json``; same key, same rule."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._tag_boards = [
+            {"id": "b", "name": "B", "tag_ids": [], "mode": "any", "order": 1},
+            {"id": "x", "name": "X", "tag_ids": [], "mode": "any", "order": "invalid"},
+            {"id": "m", "name": "M", "tag_ids": [], "mode": "any"},
+        ]
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/chat/tag-columns")
+            assert resp.status == 200
+            names = [c["name"] for c in await resp.json()]
+            assert names[-1] == "B" and set(names) == {"B", "X", "M"}
+
+    @pytest.mark.asyncio
+    async def test_create_column(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "T"})).json()
+            resp = await client.post(
+                "/api/chat/tag-columns",
+                json={"name": "Lane", "tag_ids": [tag["id"]], "mode": "all"},
+            )
+            assert resp.status == 201
+            col = await resp.json()
+            assert col["name"] == "Lane"
+            assert col["tag_ids"] == [tag["id"]]
+            assert col["mode"] == "all"
+            assert "id" in col
+            assert (tmp_path / "tag_boards.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_create_column_invalid_mode_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tag-columns", json={"mode": "fancy"})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_create_column_invalid_json_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/tag-columns",
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_update_column(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            col = await (await client.post("/api/chat/tag-columns", json={"name": "Old"})).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}", json={"name": "New", "include_untagged": True}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == "New"
+            assert data["include_untagged"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_column_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/tag-columns/ghost", json={"name": "X"})
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_update_column_invalid_payload_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            col = await (await client.post("/api/chat/tag-columns", json={})).json()
+            resp = await client.patch(f"/api/chat/tag-columns/{col['id']}", json={"mode": "fancy"})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_update_column_valid_tag_id_persists(self, tmp_path, monkeypatch):
+        """The board filter round-trip: a tag id taken from the same list the
+        popover renders (GET /api/chat/tags) must survive the PATCH."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Jira"})).json()
+            listed = await (await client.get("/api/chat/tags")).json()
+            assert tag["id"] in {t["id"] for t in listed}
+            col = await (await client.post("/api/chat/tag-columns", json={"name": "L"})).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}", json={"tag_ids": [tag["id"]]}
+            )
+            assert resp.status == 200
+            assert (await resp.json())["tag_ids"] == [tag["id"]]
+            persisted = next(c for c in state._tag_boards if c["id"] == col["id"])
+            assert persisted["tag_ids"] == [tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_update_column_unknown_tag_id_rejected_400(self, tmp_path, monkeypatch):
+        """An unknown tag id must fail LOUDLY (400 + code), never return 200
+        with the id silently dropped — the drop is what made the board filter
+        appear to do nothing (column falls back to match-all)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Real"})).json()
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"tag_ids": [tag["id"]], "mode": "any"}
+                )
+            ).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}", json={"tag_ids": ["ghost123"]}
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_column_payload"
+            # The column's previous filter is untouched by the rejected write.
+            persisted = next(c for c in state._tag_boards if c["id"] == col["id"])
+            assert persisted["tag_ids"] == [tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_update_column_empty_tag_ids_clears_filter(self, tmp_path, monkeypatch):
+        """[] is the clear-filter (match-all) state the board UI sends; it
+        must stay accepted."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "T"})).json()
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"tag_ids": [tag["id"]], "mode": "any"}
+                )
+            ).json()
+            resp = await client.patch(f"/api/chat/tag-columns/{col['id']}", json={"tag_ids": []})
+            assert resp.status == 200
+            assert (await resp.json())["tag_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_create_column_unknown_tag_id_rejected_400(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/tag-columns", json={"tag_ids": ["ghost123"]})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_column_payload"
+
+    @pytest.mark.asyncio
+    async def test_create_column_empty_tag_ids_allowed(self, tmp_path, monkeypatch):
+        """The board creates columns with tag_ids [] (add-column flows);
+        validation must keep that working."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/tag-columns", json={"name": "", "tag_ids": [], "mode": "any"}
+            )
+            assert resp.status == 201
+            assert (await resp.json())["tag_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_update_column_invalid_json_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            col = await (await client.post("/api/chat/tag-columns", json={})).json()
+            resp = await client.patch(
+                f"/api/chat/tag-columns/{col['id']}",
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_delete_column(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            col = await (await client.post("/api/chat/tag-columns", json={})).json()
+            resp = await client.delete(f"/api/chat/tag-columns/{col['id']}")
+            assert resp.status == 200
+            assert state._tag_boards == []
+
+    @pytest.mark.asyncio
+    async def test_delete_column_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.delete("/api/chat/tag-columns/ghost")
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_reorder_columns(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/tag-columns", json={"name": "A"})).json()
+            b = await (await client.post("/api/chat/tag-columns", json={"name": "B"})).json()
+            resp = await client.put("/api/chat/tag-columns/order", json={"ids": [b["id"], a["id"]]})
+            assert resp.status == 200
+            listed = await (await client.get("/api/chat/tag-columns")).json()
+            assert [c["id"] for c in listed] == [b["id"], a["id"]]
+
+    @pytest.mark.asyncio
+    async def test_reorder_columns_with_int_id_does_not_crash_audit(self, tmp_path, monkeypatch):
+        """Regression: review-bot flagged ',
+        '.join(ids[:10]) raising TypeError on non-string elements,
+        which would skip the SEL audit event after the state mutation."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/tag-columns", json={"name": "A"})).json()
+            # Send a malformed ids list mixing string + int (the audit join must coerce).
+            resp = await client.put("/api/chat/tag-columns/order", json={"ids": [a["id"], 42]})
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_reorder_invalid_json_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put(
+                "/api/chat/tag-columns/order",
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_reorder_non_list_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put("/api/chat/tag-columns/order", json={"ids": "not-a-list"})
+            assert resp.status == 400
+
+
+# ── Drag-drop semantics ──
+
+
+class TestDrop:
+    @pytest.mark.asyncio
+    async def test_drop_on_status_lane_swaps_status_tag(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            todo = await (
+                await client.post("/api/chat/tags", json={"name": "ToDo", "status": True})
+            ).json()
+            done = await (
+                await client.post("/api/chat/tags", json={"name": "Done", "status": True})
+            ).json()
+            spike = await (
+                await client.post("/api/chat/tags", json={"name": "spike", "status": False})
+            ).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [todo["id"], spike["id"]]
+            state._slots["s1"] = slot
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"tag_ids": [done["id"]], "mode": "any"}
+                )
+            ).json()
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
+            data = await resp.json()
+            assert data["ok"] is True
+            assert "tags_revision" not in data
+            assert done["id"] in data["tags"]
+            assert todo["id"] not in data["tags"]
+            assert spike["id"] in data["tags"]
+
+    @pytest.mark.asyncio
+    async def test_drop_refusal_restores_tags_with_fresh_revision(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            todo = await (
+                await client.post("/api/chat/tags", json={"name": "ToDo", "status": True})
+            ).json()
+            done = await (
+                await client.post("/api/chat/tags", json={"name": "Done", "status": True})
+            ).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [todo["id"]]
+            original_revision = slot.tags_revision
+            state._slots["s1"] = slot
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns", json={"tag_ids": [done["id"]], "mode": "any"}
+                )
+            ).json()
+
+            async def _refuse(*_args, **_kwargs):
+                return False
+
+            state.push_slots_update = MagicMock()
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", _refuse):
+                resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
+            data = await resp.json()
+            assert data["ok"] is False
+            # Tags rolled back, but under a FRESH revision (not the prior one a
+            # client that saw the leaked provisional frame already treats as
+            # stale), and the rollback is broadcast so clients reconverge.
+            assert slot.tags == [todo["id"]]
+            assert slot.tags_revision != original_revision
+            state.push_slots_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_drop_on_filter_only_column_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            todo = await (
+                await client.post("/api/chat/tags", json={"name": "ToDo", "status": True})
+            ).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [todo["id"]]
+            state._slots["s1"] = slot
+            col = await (
+                await client.post("/api/chat/tag-columns", json={"tag_ids": [], "mode": "any"})
+            ).json()
+            resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
+            data = await resp.json()
+            assert data["ok"] is False
+            assert data["tags"] == [todo["id"]]
+
+    @pytest.mark.asyncio
+    async def test_drop_slot_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/ghost/drop", json={"column_id": "x"})
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_drop_column_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._slots["s1"] = _ChatSlot("s1")
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": "ghost"})
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_drop_invalid_json_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state._slots["s1"] = _ChatSlot("s1")
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/drop",
+                data="not json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_drop_on_multi_tag_column_is_noop(self, tmp_path, monkeypatch):
+        """Drop on a column with > 1 status tag is a no-op (not a single-status lane)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            todo = await (
+                await client.post("/api/chat/tags", json={"name": "ToDo", "status": True})
+            ).json()
+            done = await (
+                await client.post("/api/chat/tags", json={"name": "Done", "status": True})
+            ).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [todo["id"]]
+            state._slots["s1"] = slot
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns",
+                    json={"tag_ids": [todo["id"], done["id"]], "mode": "any"},
+                )
+            ).json()
+            resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
+            data = await resp.json()
+            assert data["ok"] is False
+            assert data["tags"] == [todo["id"]]
+
+
+# ── load_tags safety: do not overwrite a present-but-corrupt tags.json ──
+
+
+class TestLoadTagsSafety:
+    def test_load_failure_does_not_overwrite_with_defaults(self, tmp_path, monkeypatch):
+        """If tags.json exists but cannot be parsed, never silently overwrite it
+        with the seed vocabulary — that would destroy the user's data."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # Write an unreadable / corrupt tags file
+        corrupt = tmp_path / "tags.json"
+        corrupt.write_text("not-json-at-all", encoding="utf-8")
+        original = corrupt.read_text(encoding="utf-8")
+        state = _make_state(tmp_path)
+        state.load_tags()
+        # On parse failure: vocabulary stays empty AND the file is untouched.
+        assert state._tags == []
+        assert corrupt.read_text(encoding="utf-8") == original
+
+    def test_missing_file_seeds_defaults(self, tmp_path, monkeypatch):
+        """If tags.json doesn't exist, seed the default 5 status tags."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.load_tags()
+        names = {t["name"] for t in state._tags}
+        assert names == {"Planned", "ToDo", "Implementation", "Review", "Done"}
+        assert (tmp_path / "tags.json").exists()
+
+    def test_first_boot_crash_after_the_grant_seed_keeps_defaults_grantable(
+        self, tmp_path, monkeypatch
+    ):
+        """The default grants are seeded BEFORE the vocabulary commit. A first
+        boot that dies between the two leaves inert grant rows and no tags.json;
+        the next boot is still a fresh install, seeds the vocabulary, and the
+        defaults resolve agent-drivable. With the reverse order that boot reads
+        as an upgraded install and seeds an EMPTY store, so every default
+        workflow state silently becomes human-only."""
+        from kiro_crew.dashboard import chat_tags as ct
+        from kiro_crew.dashboard import state as state_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        crashed = _make_state(tmp_path)
+        real_seed = state_mod.seed_default_grants
+
+        def _seed_then_die(ids):
+            real_seed(ids)
+            raise KeyboardInterrupt  # the process dies right after the seed
+
+        monkeypatch.setattr(state_mod, "seed_default_grants", _seed_then_die)
+        with pytest.raises(KeyboardInterrupt):
+            crashed.load_tags()
+        # The vocabulary commit comes AFTER the seed, so nothing about the
+        # vocabulary is durable yet: the next boot is still a fresh install.
+        assert not (tmp_path / "tags.json").exists()
+        monkeypatch.setattr(state_mod, "seed_default_grants", real_seed)
+
+        state = _make_state(tmp_path)
+        state.load_tags()
+        assert (tmp_path / "tags.json").exists()
+        ct.refresh_cache()
+        for tag in state._tags:
+            assert ct.agent_tag_grant(tag) == ("add-remove", True), tag["name"]
+
+    def test_explicitly_empty_file_is_not_reseeded(self, tmp_path, monkeypatch):
+        """If tags.json contains [], the user explicitly cleared every tag —
+        do not re-seed defaults across restart."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        (tmp_path / "tags.json").write_text("[]", encoding="utf-8")
+        state = _make_state(tmp_path)
+        state.load_tags()
+        assert state._tags == []
+        # And the file content is preserved (no re-seed write).
+        assert (tmp_path / "tags.json").read_text(encoding="utf-8") == "[]"
+
+    def test_load_prunes_dangling_column_tag_ids(self, tmp_path, monkeypatch):
+        """A crash mid-tag-delete can leave a deleted tag id on a column.
+        Load must prune it: the column API rejects unknown ids, so a dangling
+        id left in place would make that column's filter un-editable."""
+        import json as _json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        (tmp_path / "tags.json").write_text(
+            _json.dumps([{"id": "live1", "name": "Live", "color": "#111111", "order": 0}]),
+            encoding="utf-8",
+        )
+        (tmp_path / "tag_boards.json").write_text(
+            _json.dumps(
+                [
+                    {
+                        "id": "c1",
+                        "name": "L",
+                        "tag_ids": ["live1", "ghost"],
+                        "mode": "any",
+                        "order": 0,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path)
+        state.load_tags()
+        assert state._tag_boards[0]["tag_ids"] == ["live1"]
+
+    def test_load_keeps_column_tag_ids_when_vocabulary_unknown(self, tmp_path, monkeypatch):
+        """A corrupt tags.json means the vocabulary is UNKNOWN — pruning
+        against it would wipe every column filter. Fail open, same rule as
+        the slot-restore prune."""
+        import json as _json
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        (tmp_path / "tags.json").write_text("not-json-at-all", encoding="utf-8")
+        (tmp_path / "tag_boards.json").write_text(
+            _json.dumps([{"id": "c1", "name": "L", "tag_ids": ["t1"], "mode": "any", "order": 0}]),
+            encoding="utf-8",
+        )
+        state = _make_state(tmp_path)
+        state.load_tags()
+        assert state._tag_boards[0]["tag_ids"] == ["t1"]
+
+
+class TestReorderUniqueOrders:
+    @pytest.mark.asyncio
+    async def test_partial_reorder_does_not_collide(self, tmp_path, monkeypatch):
+        """Reordering only a subset of columns must not leave older columns
+        sharing an `order` value with the newly-renumbered ones."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            a = await (await client.post("/api/chat/tag-columns", json={"name": "A"})).json()
+            b = await (await client.post("/api/chat/tag-columns", json={"name": "B"})).json()
+            c = await (await client.post("/api/chat/tag-columns", json={"name": "C"})).json()
+            # Only reorder the C-then-B subset; A is left implicit.
+            resp = await client.put("/api/chat/tag-columns/order", json={"ids": [c["id"], b["id"]]})
+            assert resp.status == 200
+            listed = await (await client.get("/api/chat/tag-columns")).json()
+            orders = {col["id"]: col["order"] for col in listed}
+            # All three orders must be unique
+            assert len(set(orders.values())) == 3
+            # The explicitly-ordered ids land at 0 and 1, in submitted order.
+            assert orders[c["id"]] == 0
+            assert orders[b["id"]] == 1
+            # The unmentioned A is pushed past the explicit ordering.
+            assert orders[a["id"]] >= 2
+
+
+class TestDropOnMixedColumn:
+    @pytest.mark.asyncio
+    async def test_drop_on_status_plus_filter_still_swaps_status(self, tmp_path, monkeypatch):
+        """The docstring promises that a drop on a column with exactly one
+        status tag swaps onto that status — additional non-status tags in
+        the column's filter must not block the swap."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            todo = await (
+                await client.post("/api/chat/tags", json={"name": "ToDo", "status": True})
+            ).json()
+            done = await (
+                await client.post("/api/chat/tags", json={"name": "Done", "status": True})
+            ).json()
+            spike = await (
+                await client.post("/api/chat/tags", json={"name": "spike", "status": False})
+            ).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [todo["id"]]
+            state._slots["s1"] = slot
+            # Column is "Done AND spike" — exactly one status tag in the filter.
+            col = await (
+                await client.post(
+                    "/api/chat/tag-columns",
+                    json={"tag_ids": [done["id"], spike["id"]], "mode": "all"},
+                )
+            ).json()
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.post("/api/chat/slots/s1/drop", json={"column_id": col["id"]})
+            data = await resp.json()
+            assert data["ok"] is True
+            assert done["id"] in data["tags"]
+            assert todo["id"] not in data["tags"]
+
+
+# ── F1: DELETE fail-closed propagation from save_slot_off_loop ──
+
+
+class TestDeleteSlotPersistPropagatesFromUnderlying:
+    """Crash-atomic contract: an underlying slot write failure during the
+    post-commit strip does NOT fail the deletion — the vocab commit already
+    made it durable; the slot is marked dirty for periodic-flush retry."""
+
+    @pytest.mark.asyncio
+    async def test_delete_succeeds_despite_underlying_write_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Under"})).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [tag["id"]]
+            state._slots["s1"] = slot
+
+            async def _failing_save(state_arg, slot_arg, **kwargs):
+                raise IOError("disk full")
+
+            with patch.object(chat_tags_module, "save_slot_off_loop", _failing_save):
+                resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 200
+            # Tag removed from vocabulary; slot stripped in memory; the
+            # failed write left the slot dirty so the flush retries it.
+            assert all(t["id"] != tag["id"] for t in state._tags)
+            assert tag["id"] not in slot.tags
+            assert getattr(slot, "_dirty", False) is True
+
+
+# ── F2: Tag create surfaces persist failure and rolls back ──
+
+
+class TestTagCreatePersistFailure:
+    """F2: save_tags_snapshot now uses strict writes; a create that fails to
+    persist must return 5xx and NOT leave the tag in state._tags."""
+
+    @pytest.mark.asyncio
+    async def test_create_returns_500_and_rolls_back_on_write_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            with patch.object(
+                state.__class__,
+                "_atomic_write_json_strict",
+                side_effect=IOError("disk full"),
+            ):
+                resp = await client.post("/api/chat/tags", json={"name": "Ghost"})
+            assert resp.status == 500
+            body = await resp.json()
+            assert body["code"] == "persist_failed"
+            # Tag must NOT be in state
+            assert not any(t.get("name") == "Ghost" for t in state._tags)
+
+
+# ── F3: Board column create concurrency test ──
+
+
+class TestBoardColumnConcurrency:
+    """F3: Two concurrent column creates must both appear in state and the
+    final snapshot (lock serializes them)."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_column_creates_both_persisted(self, tmp_path, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        snapshots_written: list[list[dict]] = []
+        _real_save = state.save_tag_boards_snapshot
+
+        def _recording_save(snapshot):
+            snapshots_written.append(snapshot)
+            _real_save(snapshot)
+
+        async with TestClient(TestServer(app)) as client:
+            with patch.object(state, "save_tag_boards_snapshot", _recording_save):
+                results = await asyncio.gather(
+                    client.post("/api/chat/tag-columns", json={"mode": "any"}),
+                    client.post("/api/chat/tag-columns", json={"mode": "any"}),
+                )
+            assert all(r.status == 201 for r in results)
+            col_ids = [await r.json() for r in results]
+            ids_created = {c["id"] for c in col_ids}
+            # Both columns in state
+            state_ids = {c["id"] for c in state._tag_boards}
+            assert ids_created.issubset(state_ids)
+            # Final snapshot (last written) contains both
+            assert len(snapshots_written) >= 2
+            final_snap_ids = {c["id"] for c in snapshots_written[-1]}
+            assert ids_created.issubset(final_snap_ids)
+
+
+# ── F1-ext: Delete vocab-write failure triggers compensating rollback ──
+
+
+class TestDeleteVocabWriteCompensation:
+    """Crash-atomic contract: the vocabulary write is the single durable
+    commit. If it fails, NOTHING else has been touched — slots are never
+    stripped and no compensation writes are needed."""
+
+    @pytest.mark.asyncio
+    async def test_vocab_write_failure_leaves_slots_untouched(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "VocabFail"})).json()
+            slot = _ChatSlot("s1")
+            slot.tags = [tag["id"]]
+            state._slots["s1"] = slot
+
+            slot_saves: list[str] = []
+
+            async def _recording_save(state_arg, slot_arg, **kwargs):
+                slot_saves.append(slot_arg.key)
+
+            with patch.object(chat_tags_module, "save_slot_off_loop", _recording_save):
+                with patch.object(
+                    chat_tags_module, "_write_tags_snapshot", side_effect=IOError("disk full")
+                ):
+                    resp = await client.delete(f"/api/chat/tags/{tag['id']}")
+            assert resp.status == 500
+            body = await resp.json()
+            assert body["code"] == "persist_failed"
+            # Vocabulary restored in memory; slot NEVER touched (no strip, no
+            # save) — the failed vocab write is the only attempted mutation.
+            assert any(t["id"] == tag["id"] for t in state._tags)
+            assert tag["id"] in slot.tags
+            assert slot_saves == []
+
+
+# ── F2-ext: Update race with concurrent DELETE ──
+
+
+class TestUpdateDeleteRace:
+    """F2: The PATCH handler must resolve the tag INSIDE the write lock.
+    A concurrent DELETE that wins the lock first must cause PATCH to 404
+    (not silently mutate a detached dict)."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_delete_causes_update_to_404(self, tmp_path, monkeypatch):
+        import asyncio as _asyncio
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Race"})).json()
+            tid = tag["id"]
+
+            # Make _write_tags_snapshot slow so the DELETE holds the lock long
+            # enough for PATCH to queue behind it.
+            original_write = __import__(
+                "kiro_crew.dashboard.chat_tags", fromlist=["_write_tags_snapshot"]
+            )._write_tags_snapshot
+
+            def _slow_write(st, snap):
+                __import__("time").sleep(0.15)
+                return original_write(st, snap)
+
+            # Run DELETE and PATCH concurrently.
+            # DELETE wins the lock; PATCH waits, then re-resolves -> 404.
+            with patch(
+                "kiro_crew.dashboard.chat_tags._write_tags_snapshot",
+                side_effect=_slow_write,
+            ):
+                delete_task = _asyncio.ensure_future(client.delete(f"/api/chat/tags/{tid}"))
+                # Small delay so DELETE grabs the lock first.
+                await _asyncio.sleep(0.01)
+                patch_task = _asyncio.ensure_future(
+                    client.patch(f"/api/chat/tags/{tid}", json={"name": "Updated"})
+                )
+
+                delete_resp, patch_resp = await _asyncio.gather(delete_task, patch_task)
+
+            # DELETE should succeed.
+            assert delete_resp.status == 200
+
+            # PATCH must 404 (tag deleted under the lock before PATCH could resolve it).
+            assert patch_resp.status == 404
+            patch_body = await patch_resp.json()
+            assert patch_body["code"] == "not_found"
+
+            # The tag must NOT be in state (no silent ghost mutation).
+            assert not any(t["id"] == tid for t in state._tags)
+
+
+class TestNonObjectBodiesAcrossConvertedHandlers:
+    """Every converted handler answers 400, never 5xx, on a non-object body.
+
+    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
+    ``request.json()`` returned them and the ``.get()`` (or ``in``) that each
+    handler performs next raised from OUTSIDE the parse ``try`` -- a 500 for
+    what is really malformed client input. Driven through a real
+    client so the shared guard's 64 KB pre-decode cap is exercised on the wire,
+    which is how these endpoints now read their body; the cap decision for each
+    site is recorded in ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], "a string", 5, 1.5, True, None], ids=repr)
+    async def test_non_object_body_is_400_not_500(self, payload, tmp_path) -> None:
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            # Seed a real tag and column: the {id} routes check existence BEFORE
+            # parsing, so a made-up id would 404 and never reach the guard --
+            # the test would pass for the wrong reason.
+            created = await client.post("/api/chat/tags", json={"name": "T"})
+            assert created.status in (200, 201), await created.text()
+            tag_id = (await created.json())["id"]
+            col = await client.post("/api/chat/tag-columns", json={"name": "C"})
+            assert col.status in (200, 201), await col.text()
+            col_id = (await col.json())["id"]
+
+            routes = [
+                ("post", "/api/chat/tags"),
+                ("patch", f"/api/chat/tags/{tag_id}"),
+                ("post", "/api/chat/tag-columns"),
+                ("put", "/api/chat/tag-columns/order"),
+                ("patch", f"/api/chat/tag-columns/{col_id}"),
+            ]
+            # api_chat_slot_tags and api_chat_slot_drop are converted too, but
+            # they resolve the slot BEFORE parsing, so reaching their guard
+            # needs a live slot rather than a seeded tag. Their call sites are
+            # pinned in _CAP_REGISTER, and their guard is the same shared call.
+            for method, path in routes:
+                # ``json=None`` makes the client send NO body, which is a
+                # different fact (invalid_json) from a body containing the JSON
+                # literal ``null`` -- send that one as raw bytes.
+                if payload is None:
+                    resp = await getattr(client, method)(
+                        path,
+                        data=b"null",
+                        headers={"Content-Type": "application/json"},
+                    )
+                else:
+                    resp = await getattr(client, method)(path, json=payload)
+                assert resp.status == 400, (path, payload, resp.status)
+                assert (await resp.json())["code"] == "body_not_object", path

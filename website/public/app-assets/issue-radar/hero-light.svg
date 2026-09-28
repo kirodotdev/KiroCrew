@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" width="480" height="270">
+  <defs>
+    <linearGradient id="bg-l" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#eafaf3"/>
+      <stop offset="100%" stop-color="#c9f0e0"/>
+    </linearGradient>
+    <radialGradient id="sweep-l" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#059669" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#059669" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="480" height="270" rx="12" fill="url(#bg-l)"/>
+  <circle cx="60" cy="40" r="20" fill="#a7f3d0" opacity="0.5"/>
+  <circle cx="420" cy="230" r="30" fill="#6ee7b7" opacity="0.35"/>
+
+  <!-- Radar rings, centered slightly left so the issue list has room on the right -->
+  <g transform="translate(175,140)">
+    <circle r="95" fill="none" stroke="#047857" stroke-width="1.2" opacity="0.25"/>
+    <circle r="68" fill="none" stroke="#047857" stroke-width="1.2" opacity="0.35"/>
+    <circle r="42" fill="none" stroke="#047857" stroke-width="1.2" opacity="0.45"/>
+    <circle r="16" fill="none" stroke="#047857" stroke-width="1.4" opacity="0.6"/>
+    <path d="M0,0 L0,-95 A95,95 0 0,1 82,-47.5 Z" fill="url(#sweep-l)"/>
+    <line x1="0" y1="0" x2="0" y2="-95" stroke="#059669" stroke-width="2.4" stroke-linecap="round"/>
+    <circle r="4" fill="#059669"/>
+    <!-- Blips: issues the sweep has picked up -->
+    <circle cx="55" cy="-38" r="4.5" fill="#dc2626"/>
+    <circle cx="-30" cy="20" r="4" fill="#f59e0b"/>
+    <circle cx="20" cy="60" r="3.5" fill="#059669"/>
+    <circle cx="-65" cy="-15" r="3.5" fill="#059669" opacity="0.5"/>
+  </g>
+
+  <!-- Issue cards, right side -->
+  <rect x="300" y="55" width="150" height="30" rx="6" fill="#ffffff" stroke="#a7f3d0" stroke-width="1.5"/>
+  <circle cx="316" cy="70" r="4" fill="#dc2626"/>
+  <rect x="328" y="64" width="90" height="6" rx="3" fill="#065f46"/>
+  <rect x="328" y="74" width="60" height="5" rx="2.5" fill="#6ee7b7"/>
+
+  <rect x="300" y="93" width="150" height="30" rx="6" fill="#ffffff" stroke="#a7f3d0" stroke-width="1.5"/>
+  <circle cx="316" cy="108" r="4" fill="#f59e0b"/>
+  <rect x="328" y="102" width="100" height="6" rx="3" fill="#065f46"/>
+  <rect x="328" y="112" width="45" height="5" rx="2.5" fill="#6ee7b7"/>
+
+  <rect x="300" y="131" width="150" height="30" rx="6" fill="#ffffff" stroke="#a7f3d0" stroke-width="1.5" opacity="0.6"/>
+  <circle cx="316" cy="146" r="4" fill="#059669" opacity="0.6"/>
+  <rect x="328" y="140" width="80" height="6" rx="3" fill="#065f46" opacity="0.5"/>
+  <rect x="328" y="150" width="55" height="5" rx="2.5" fill="#6ee7b7" opacity="0.5"/>
+
+  <!-- Ledger check badge -->
+  <circle cx="405" cy="205" r="18" fill="#059669"/>
+  <circle cx="405" cy="205" r="14" fill="#047857"/>
+  <path d="M396 205 L402 211 L414 199" stroke="white" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

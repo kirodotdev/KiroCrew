@@ -1,0 +1,152 @@
+import { useEffect, useRef, useState } from 'react'
+import { CheckCircle, Handshake, Ban, Package, Wrench } from 'lucide-react'
+import ToolInputPreview from './ToolInputPreview'
+import TrustDropdown from './TrustDropdown'
+import ErrorNotice from './ErrorNotice'
+import { ApiError } from '../api/client'
+import { isTerminalApprovalRefusal } from '../api/apiError'
+import { baseCommandLabel } from '../utils/trustPatterns'
+import { haptic } from '../lib/haptic'
+
+import { i18nT } from '../i18n/t'
+export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, hasCommand = true, baseCommand, baseDerivable, trustAllLabelKey, trustCommandLabelKey, trustBaseLabelKey, trustedLabelKeys, labelValues, onApprove }: {
+  title: string; toolInput: string; showButtons: boolean; showTrust?: boolean
+  /** False when the approval has no tool command behind it (for example, an
+      agent-role channel approval): forwarded to TrustDropdown so command-
+      scoped tiers are not offered for that card. */
+  hasCommand?: boolean
+  /** The base the SERVER would grant for the base tier, when the surface
+      knows it (a channel approval's `meta.base_command`). Overrides the
+      first-token derivation below, which can only guess: for a compound
+      command it names one segment of a grant the server refuses. */
+  baseCommand?: string
+  /** The server's verdict on whether the base tier can be recorded for this
+      approval. `false` withholds the tier; `undefined` (a surface without the
+      fact, or a legacy message) keeps the shell-title derivation. */
+  baseDerivable?: boolean
+  // Passed through to TrustDropdown: a surface whose `trust` decision grants
+  // more than the session (e.g. channel-wide, persisted) labels the real grant.
+  trustAllLabelKey?: string
+  /** Same, for the per-command tiers: a surface whose grants are scoped
+      differently from chat's (agent-scoped, until restart) names that scope. */
+  trustCommandLabelKey?: string
+  trustBaseLabelKey?: string
+  /** Post-decision confirmation per trust tier, so the card restates the
+      scope the reader just granted instead of one sentence for all three.
+      A tier without a key keeps the generic confirmation. */
+  trustedLabelKeys?: Partial<Record<'trust' | 'trust_command' | 'trust_base', string>>
+  /** Extra interpolation values for the keys above (e.g. the agent role),
+      beside the `cmd` / `base` the card supplies itself. */
+  labelValues?: Record<string, string>
+  /** MUST return the request's promise: it feeds the optimistic-state rollback
+   *  below (rejection restores the buttons). No `void` arm, so a fire-and-forget
+   *  handler — the shape behind #5524 — cannot compile here. */
+  onApprove: (decision: string, pattern?: string) => Promise<unknown>
+}) {
+  const [decided, setDecided] = useState<string | null>(null)
+  // null = no failure. `terminal` marks a refusal that retrying can never
+  // clear; `message` is the server's own refusal text ('' = a response-less
+  // transport failure, which renders the generic hedged copy — raw fetch
+  // internals like "Failed to fetch" are not user vocabulary).
+  const [failure, setFailure] = useState<{ terminal: boolean; message: string; attempted: string } | null>(null)
+  const buttonsRef = useRef<HTMLDivElement | null>(null)
+  // The decided state flips optimistically so the buttons collapse on click,
+  // but a rejected decision request rolls it back: a card must never read
+  // "Trusted"/"Approved" on a failed POST. An ApiError carries the server's
+  // own verdict, so its copy asserts the decision was not recorded; a
+  // response-less transport failure proves only that no response arrived, so
+  // it hedges with "may not have been recorded". `isTerminalApprovalRefusal`
+  // decides which refusals keep their buttons (#11180).
+  const handle = (d: string, pattern?: string) => {
+    setFailure(null)
+    setDecided(d)
+    // The one tap in the chat that is a consequential decision, felt when the
+    // decision has LANDED, not when the button was pressed: an approve the
+    // server refuses must never be felt as a success first. A refusal gets the
+    // heavier double-buzz so a thumb cannot mistake it for an approval it meant
+    // to give. Silent where the device has no engine.
+    Promise.resolve(onApprove(d, pattern)).then(() => {
+      haptic(d === 'rejected' ? 'error' : 'success')
+    }, (err: unknown) => {
+      setDecided(null)
+      const refusal = err instanceof ApiError ? err : null
+      setFailure({
+        terminal: isTerminalApprovalRefusal(err),
+        message: refusal && refusal.message ? refusal.message : '',
+        attempted: d,
+      })
+    })
+  }
+  // The optimistic unmount dropped keyboard focus to <body>; when the buttons
+  // return for a retryable failure, put focus back on the button matching the
+  // decision that failed — never a different one, or a keyboard user retrying
+  // a failed Reject with Enter would silently APPROVE the command instead.
+  // Positional: Approve renders first and Reject last; a trust attempt lands
+  // on the dropdown trigger between them.
+  useEffect(() => {
+    if (!failure || failure.terminal) return
+    const buttons = Array.from(buttonsRef.current?.querySelectorAll('button') ?? [])
+    if (!buttons.length) return
+    const target = failure.attempted === 'approved' ? buttons[0]
+      : failure.attempted === 'rejected' ? buttons[buttons.length - 1]
+        : buttons.length > 2 ? buttons[1] : buttons[0]
+    target.focus()
+  }, [failure])
+  const borderColor = decided === 'approved' || decided === 'trust' || decided === 'trust_command' || decided === 'trust_base' ? 'border-l-ok' : decided === 'rejected' || failure?.terminal ? 'border-l-danger' : 'border-l-warn'
+
+  const isShell = title.startsWith('Running: ')
+  const normalized = title.replace(/^(Running: |Reading )/, '')
+  // Approvals without a command (including agent-role channel approvals) pass
+  // `hasCommand=false`; do not derive dead command/base authority from a title.
+  // A server-stated base wins over the first-token guess: only the server
+  // knows which binary its grant would cover.
+  const baseCmd = hasCommand ? (baseCommand || normalized.split(/\s+/)[0] || normalized) : ''
+  const trustValues = { cmd: hasCommand ? normalized : '', base: baseCommandLabel(baseCmd), ...labelValues }
+  const trustedLabel = (tier: 'trust' | 'trust_command' | 'trust_base') =>
+    i18nT(trustedLabelKeys?.[tier] ?? 'components.approvalCard.trusted_auto_approving_future_calls', trustValues)
+  // The showButtons branch renders its own i18n "Running:" label, so a shell
+  // title (which carries the "Running: " prefix) must be de-prefixed there to
+  // avoid "Running: Running: …". The wrench branch renders no label, so the
+  // raw title keeps its verb ("Running: " / "Reading ") for context.
+  const displayTitle = showButtons && isShell ? normalized : title
+  const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
+
+  return (
+    <div className={`bg-card border border-border border-l-[3px] ${borderColor} rounded-md px-3.5 py-2.5 text-sm animate-scale-in`}>
+      {toolInput
+        ? <><strong>{i18nT('components.approvalCard.tool_approval_requested')}</strong></>
+        : <>{showButtons ? <><Package className="lucide-inline" /> {i18nT('components.approvalCard.running')} </> : <><Wrench className="lucide-inline" /> </>}<strong>{displayTitle}</strong>{showButtons ? ' wants to run' : ''}</>
+      }
+      {toolInput && <ToolInputPreview toolInput={toolInput} threshold={200} />}
+      {showButtons && !decided && !failure?.terminal && (
+        // Grouped so a screen reader announces approve / trust / reject as one
+        // decision cluster rather than three loose buttons; operators batch-
+        // approve, so the controls must read as a set (Req 2.5, WCAG AA). The
+        // buttons carry visible text, so their accessible name comes from that
+        // text — a redundant aria-label would only override it, so only the
+        // otherwise-unnamed group gets an explicit label.
+        <div ref={buttonsRef} role="group" aria-label={i18nT('components.approvalCard.actions_group')} className="mt-1.5 flex gap-1.5 flex-wrap">
+          <button className={btnClass} onClick={() => handle('approved')}><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approve')}</button>
+          {showTrust && <TrustDropdown fullCommand={hasCommand ? normalized : ''} baseCommand={baseCmd} isShell={hasCommand && isShell} hasCommand={hasCommand} showTrustBase={baseDerivable !== false} trustAllLabelKey={trustAllLabelKey} trustCommandLabelKey={trustCommandLabelKey} trustBaseLabelKey={trustBaseLabelKey} labelValues={labelValues} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
+          <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
+        </div>
+      )}
+      {failure !== null && (
+        // The card holds no draft: the pending buttons are not user input and the
+        // failed decision is retryable, so the hand-off loses nothing.
+        <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.terminal
+          ? i18nT('components.approvalCard.approval_no_longer_pending')
+          : failure.message
+            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
+            : i18nT('components.approvalCard.decision_failed')} />
+      )}
+      {decided && (
+        <div className="mt-1.5 text-[13px] text-muted">
+          {decided === 'approved' && <><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approved')}</>}
+          {(decided === 'trust' || decided === 'trust_command' || decided === 'trust_base') && <><Handshake className="lucide-inline" /> {trustedLabel(decided)}</>}
+          {decided === 'rejected' && <><Ban className="lucide-inline" /> {i18nT('components.approvalCard.rejected')}</>}
+        </div>
+      )}
+    </div>
+  )
+}

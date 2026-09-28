@@ -1,0 +1,1031 @@
+"""The interactive ``kirocrew cloud launch`` wizard.
+
+One command → answer at most a question or two → KiroCrew running on a
+correctly-sized, correctly-configured EC2 box in the user's own AWS account,
+backend signed in, browser open on the live dashboard.
+
+The wizard is thin orchestration: it prints the UI (:mod:`cloud.ui`) and calls
+into the testable engine modules (:mod:`cloud.ec2`, :mod:`cloud.iam`,
+:mod:`cloud.login`, :mod:`cloud.connect`). All AWS work runs through the
+``run_aws`` chokepoint.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import secrets
+import threading
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from kiro_crew.cloud import connect as connect_mod
+from kiro_crew.cloud import ec2, iam, login, sizes, ssm, ui
+from kiro_crew.cloud.aws import AWSError
+from kiro_crew.cloud.config import DEFAULT_REGION
+from kiro_crew.cloud.launch_state import LaunchState
+from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
+from kiro_crew.validation import ValidationError
+
+_TOTAL_STEPS = 6
+
+# How often to poll CloudFormation events / the on-box log while launching.
+_PROGRESS_POLL_SECS = 8
+# Indirection so tests can stub the poll sleep.
+_sleep = time.sleep
+
+
+def _deploy_with_progress(
+    *,
+    tag: str,
+    tier: sizes.SizeTier,
+    profile: str,
+    region: str,
+    subnet_id: str = "",
+    disable_rollback: bool = False,
+) -> ec2.DeployResult:
+    """Run ``ec2.deploy`` while streaming live CloudFormation + bootstrap logs.
+
+    ``ec2.deploy`` blocks (the ``aws cloudformation deploy`` call waits on the
+    WaitCondition), so we run it in a background thread and, on this thread,
+    poll + print: (1) each new stack resource event, and (2) once the instance
+    exists, the tail of ``/var/log/kirocrew-setup.log`` over SSM. This replaces
+    the opaque spinner with real progress and makes failures diagnosable.
+    """
+    box: dict[str, object] = {}
+    # Capture the detached `aws cloudformation deploy` child so a Ctrl+C on THIS
+    # (main) thread can terminate it — otherwise the deploy runs on a daemon
+    # thread whose run_aws KeyboardInterrupt handler never fires (the signal hits
+    # the main thread), leaving the child (up to 1800s) orphaned.
+    deploy_proc: dict[str, object] = {}
+
+    def _run() -> None:
+        try:
+            box["result"] = ec2.deploy(
+                tag=tag,
+                tier=tier,
+                profile=profile,
+                region=region,
+                subnet_id=subnet_id,
+                disable_rollback=disable_rollback,
+                proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
+            )
+        except BaseException as exc:  # noqa: BLE001 - surfaced on join
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+
+    seen_events: set[str] = set()
+    seen_log_lines: set[str] = set()
+    instance_id = ""
+    ui.detail("Streaming CloudFormation + bootstrap progress:")
+    try:
+        _stream_progress(worker, tag, profile, region, seen_events, seen_log_lines, instance_id)
+    except BaseException:
+        # A Ctrl+C (KeyboardInterrupt) OR any other exception out of the progress
+        # poll loop (e.g. a transient AWS error the loop doesn't swallow) would
+        # otherwise skip worker.join() and orphan the detached `aws cloudformation
+        # deploy` child (~1800s). Terminate that child before propagating, so no
+        # failure path leaves it running. Re-raise so handle_cloud renders the
+        # abort/error message.
+        proc = deploy_proc.get("proc")
+        if proc is not None:
+            _terminate_deploy(proc)
+        raise
+
+    worker.join()
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    return box["result"]  # type: ignore[return-value]
+
+
+def _terminate_deploy(proc: object) -> None:
+    """Best-effort SIGTERM→SIGKILL of an interrupted deploy child."""
+    try:
+        if proc.poll() is None:  # type: ignore[attr-defined]
+            proc.terminate()  # type: ignore[attr-defined]
+            proc.wait(timeout=5)  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - best effort on interrupt
+        try:
+            proc.kill()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+def _stream_progress(
+    worker: "threading.Thread",
+    tag: str,
+    profile: str,
+    region: str,
+    seen_events: set,
+    seen_log_lines: set,
+    instance_id: str,
+) -> None:
+    """Poll + print stack events and on-box bootstrap log until the worker ends."""
+    while worker.is_alive():
+        # 1) New stack resource events.
+        try:
+            for ev in ec2.list_stack_events(tag, profile, region):
+                if ev["id"] in seen_events:
+                    continue
+                seen_events.add(ev["id"])
+                if ev["resource"] in ("", tag) and "IN_PROGRESS" in ev["status"]:
+                    continue
+                marker = "FAILED" in ev["status"]
+                line = f"  {ev['status']:<22} {ev['resource']}"
+                (ui.fail if marker else ui.detail)(line.rstrip())
+                if ev["reason"] and (marker or "COMPLETE" not in ev["status"]):
+                    ui.detail(f"      {ev['reason'][:200]}")
+                if ev["resource"] == "Instance" and not instance_id:
+                    st = ec2.describe(tag, profile, region)
+                    instance_id = str(st.get("instance_id", "") or "")
+        except AWSError:
+            pass
+        # 2) On-box bootstrap log tail (once the instance is up + SSM-managed).
+        if instance_id:
+            for logln in _fetch_bootstrap_log(instance_id, profile, region):
+                if logln in seen_log_lines:
+                    continue
+                seen_log_lines.add(logln)
+                ui.detail(f"      [box] {logln[:180]}")
+        _sleep(_PROGRESS_POLL_SECS)
+
+
+# How long to wait for a resumed instance's SSM agent to come back online.
+_SSM_READY_TIMEOUT_SECS = 180
+_SSM_READY_POLL_SECS = 6
+
+
+def _ensure_running_and_ssm_ready(instance_id: str, profile: str, region: str) -> bool:
+    """Start a stopped resumed instance and wait for SSM to report Online.
+
+    A resumed stack (`launch` after `stop`) may be stopped; every downstream step
+    is over SSM, which fails until the box is running AND its SSM agent has
+    re-registered. Returns True when SSM is Online (or was already), False on a
+    timeout / start failure (caller aborts with a clear message).
+    """
+    state = ec2._instance_state(instance_id, profile, region)
+    if state in ("stopped", "stopping"):
+        ui.info(f"Instance is {state}; starting it…")
+        try:
+            aws_start_instance(instance_id, profile, region)
+        except AWSError as exc:
+            ui.fail(f"could not start the instance: {exc}")
+            return False
+    elif state and state != "running":
+        # pending / shutting-down / terminated — can't proceed reliably.
+        if state == "terminated":
+            ui.fail("the saved instance is terminated — run `kirocrew cloud launch --new`.")
+            return False
+        ui.info(f"Instance is {state}; waiting for it to run…")
+
+    # Wait for SSM to report the node Online (agent up), so login/tunnel work.
+    waited = 0
+    with ui.Spinner("Waiting for the instance's SSM agent to come online…"):
+        while waited < _SSM_READY_TIMEOUT_SECS:
+            if ssm.instance_is_managed(instance_id, profile, region):
+                ui.ok("Instance is running and SSM is online.")
+                return True
+            _sleep(_SSM_READY_POLL_SECS)
+            waited += _SSM_READY_POLL_SECS
+    ui.fail(
+        "the instance did not report SSM Online in time. Check "
+        "`kirocrew cloud status`; the agent may still be starting — retry shortly."
+    )
+    return False
+
+
+def aws_start_instance(instance_id: str, profile: str, region: str) -> None:
+    """Start a single instance by id (thin wrapper over the aws chokepoint)."""
+    from kiro_crew.cloud import aws as _aws
+
+    _aws.checked(
+        ["ec2", "start-instances", "--instance-ids", instance_id],
+        profile,
+        region,
+        action="ec2:StartInstances",
+    )
+
+
+def _verify_operational(
+    instance_id: str,
+    profile: str,
+    region: str,
+    *,
+    assume_yes: bool = False,
+    login_target: Optional[KiroLoginTarget] = None,
+) -> str:
+    """Confirm the box is FULLY operational: kiro-cli signed in AS THE RIGHT IDENTITY so chats work.
+
+    A gateway that serves HTTP still errors on every new chat if the kiro-cli
+    backend is logged out (the ACP session exits with 'not logged in'). This
+    checks that state and, when logged out, drives one interactive re-login so
+    the user finishes with a box where chat actually works — not just a page
+    that loads. With an Identity Center *login_target*, a valid session for the
+    WRONG identity is reported as a mismatch rather than as success.
+
+    Returns one of ``"ok"`` (signed in as the target), ``"mismatch"`` (a valid
+    session for a DIFFERENT identity — only ``cloud logout`` fixes it, so the
+    launch must not report success), or ``"unsigned"`` (no session, or the
+    check itself failed). The three are distinct because the caller's exit code
+    depends on it: a mismatch is a failed launch, an unsigned box is a warning.
+    """
+    target = login_target or KiroLoginTarget()
+    ui.info(f"Verifying the Kiro backend is signed in as {target.describe()} (so new chats work)…")
+    try:
+        if login.is_logged_in(instance_id, profile, region, target=target):
+            ui.ok("Kiro backend signed in — new chats will work.")
+            return "ok"
+        # EVERY target is checked for a wrong-identity session, the Builder ID
+        # default included: a reused instance holding an Identity Center session
+        # is not "signed in" for a Builder ID launch, and declining the re-login
+        # below must not turn that into an exit-0 warning.
+        state = login.remote_identity_state(instance_id, profile, region, target=target)
+        if state == "mismatch":
+            ui.warn(
+                f"The instance is signed in to a DIFFERENT Kiro identity than {target.describe()}."
+            )
+            ui.detail(f"Sign the wrong account out first, then re-run: {target.recovery_command()}")
+            return "mismatch"
+    except AWSError as exc:
+        # Transient SSM/API failure — we could not *check*, which is not the
+        # same as "not signed in". Say so instead of a misleading warning.
+        ui.warn("Could not verify sign-in state (transient AWS/SSM error).")
+        ui.detail(f"{exc} — check later with: kirocrew cloud login")
+        return "unsigned"
+
+    ui.warn("Kiro backend is NOT signed in — a new chat would error.")
+    if not assume_yes and not ui.confirm("Sign in to Kiro now?", default=True):
+        return "unsigned"
+
+    try:
+        prompt = login.start_device_login(
+            instance_id, profile, region, open_browser=True, target=target
+        )
+    except AWSError as exc:
+        ui.fail(str(exc))
+        return "unsigned"
+    if prompt.already_logged_in:
+        ui.ok("Signed in.")
+        return "ok"
+    if not prompt.url:
+        # A social-login prompt can come back with a LIVE port-forward tunnel
+        # (prompt.port_forward) but no URL to show. Returning here without
+        # prompt.close() orphans that SSM child + its loopback callback port (the
+        # launch() no-url branch already closes it — mirror that). close() is a
+        # no-op when there's no tunnel, so it's safe on the device-code path too.
+        prompt.close()
+        ui.detail(prompt.error or login.social_login_hint(prompt))
+        # kiro-cli's "already logged in" over a WRONG identity surfaces here as a
+        # verified mismatch with no URL -- a refusal, not the social-login case.
+        return "mismatch" if prompt.identity_mismatch else "unsigned"
+    if prompt.browser_opened:
+        ui.note(f"Opened {ui.CYAN}{prompt.url}{ui.RESET} — approve the code to finish.")
+    else:
+        ui.note(f"Open {ui.CYAN}{prompt.url}{ui.RESET} and approve the code.")
+    if prompt.code:
+        ui.detail(f"Verification code: {prompt.code}")
+    login.resume_login_daemon(instance_id, profile, region, target=target)
+    try:
+        with ui.Spinner("Waiting for sign-in approval…"):
+            signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
+    finally:
+        prompt.close()
+    if signed:
+        ui.ok("Signed in — new chats will work now.")
+    return "ok" if signed else "unsigned"
+
+
+def _fetch_bootstrap_log(
+    instance_id: str, profile: str, region: str, *, lines: int = 6
+) -> list[str]:
+    """Best-effort tail of the on-box setup log over SSM (empty on any error)."""
+    try:
+        res = ssm.run_command(
+            instance_id,
+            "tail -n %d /var/log/kirocrew-setup.log 2>/dev/null "
+            "| tr -d '\\r' "
+            "| grep -avE 'Installing (npm|kirocrew and) depend|building React app' || true" % lines,
+            profile,
+            region,
+            run_as="root",
+            total_wait=30,
+        )
+    except AWSError:
+        return []
+    if not res.ok:
+        return []
+    return [ln for ln in (res.stdout or "").splitlines() if ln.strip()]
+
+
+@dataclass(frozen=True)
+class _ExistingLaunch:
+    """A CloudFormation stack that can be resumed by ``cloud launch``."""
+
+    tag: str
+    stack_name: str
+    stack_status: str = ""
+    saved: bool = False
+
+
+def _new_tag() -> str:
+    """A short, unique discovery tag: ``kc-<6 hex>``."""
+    return f"kc-{secrets.token_hex(3)}"
+
+
+def launch(
+    profile: str = "",
+    region: str = "",
+    *,
+    size_key: str = "",
+    subnet_id: str = "",
+    assume_yes: bool = False,
+    force_new: bool = False,
+    keep_on_failure: bool = False,
+    hold_tunnel: bool = True,
+    login_target: Optional[KiroLoginTarget] = None,
+) -> int:
+    """Run the full interactive launch flow. Returns a process exit code.
+
+    ``login_target`` is the Kiro identity the crew signs in as (see
+    :mod:`kiro_crew.cloud.login_target`); ``None`` is Builder ID. An Identity
+    Center target that arrived without its region (inherited from the local
+    ``whoami``, which does not report one) is completed here — asked for
+    interactively, or refused under ``assume_yes`` with the flag to pass —
+    never quietly downgraded to Builder ID.
+
+    ``subnet_id`` (``--subnet``) pins the launch to an explicit subnet instead
+    of network auto-discovery — for dedicated-VPC / private-subnet setups the
+    default-VPC preference would otherwise never pick. ``hold_tunnel=False``
+    closes the SSM tunnel and returns instead of blocking on it — used when the
+    wizard is embedded in a larger flow (``kirocrew setup``) that still has
+    steps to print after this one.
+    """
+    cfg = LaunchState.load()
+    profile = profile or cfg.profile
+    region = region or cfg.region or DEFAULT_REGION
+    target = login_target or KiroLoginTarget()
+    if target.is_identity_center and not target.region:
+        # Inherited from the local whoami, which names the start URL but not the
+        # Identity Center region. Decide BEFORE provisioning: nothing is billed
+        # yet, and a launch that later cannot sign in is the expensive outcome.
+        if assume_yes:
+            ui.fail(
+                f"This machine is signed in to {target.start_url}; pass "
+                "--idp-region <identity-center-region> (or --no-inherit-identity) "
+                "to launch non-interactively."
+            )
+            return 2
+        ui.info(f"This machine's Kiro identity is IAM Identity Center at {target.start_url}.")
+        while True:
+            raw = ui.prompt(
+                "Identity Center region for the crew's sign-in (e.g. us-east-1)", default=""
+            )
+            try:
+                target = KiroLoginTarget.from_fields(
+                    license="pro", start_url=target.start_url, region=raw
+                )
+                break
+            except LoginTargetError as exc:
+                ui.warn(str(exc))
+    if target.is_identity_center:
+        ui.info(f"The crew will sign in as {target.describe()}.")
+    else:
+        ui.detail(
+            "The crew will sign in with Builder ID (pass --identity-provider for Identity Center)."
+        )
+    if subnet_id:
+        try:
+            subnet_id = ec2.validate_subnet_id(subnet_id)
+        except ValidationError as exc:
+            # argparse can't charset-check the id; surface a clean one-liner
+            # instead of a traceback (launch() is also a public entrypoint).
+            ui.fail(str(exc))
+            return 1
+
+    print(ui.BANNER)
+    steps = ui.Steps(_TOTAL_STEPS)
+
+    # ── 1. AWS account ────────────────────────────────────────────────────
+    steps.step("AWS account")
+    if not profile:
+        ui.info("Using the AWS CLI's default credentials (no --profile).")
+        ui.detail("KiroCrew never stores AWS credentials — the aws CLI resolves them.")
+    with ui.Spinner("Checking AWS access…"):
+        reach = iam.reachability_check(profile, region)
+    if not reach["reachable"]:
+        ui.fail("Could not resolve AWS credentials.")
+        ui.detail(reach.get("detail", ""))
+        ui.note(reach.get("note", ""))
+        return 1
+    who = reach["account"]
+    ui.ok(f"account {who} · {region} · reachable")
+    if not (
+        reach["ec2_reachable"] and reach["cloudformation_reachable"] and reach["ssm_reachable"]
+    ):
+        ui.warn("Some services weren't reachable (EC2/CloudFormation/SSM).")
+        ui.detail(
+            "The launch will still try; on AccessDenied the exact missing action is reported."
+        )
+    if not _ensure_session_manager_plugin(assume_yes=assume_yes):
+        return 1
+
+    # ── 2. Permissions ───────────────────────────────────────────────────
+    steps.step("Permissions")
+    ui.info("Launch creates a CloudFormation stack (EC2 + IAM role + security group).")
+    ui.detail("If a launch fails with AccessDenied, apply this policy and retry:")
+    ui.detail("  kirocrew cloud iam-policy   → prints the least-privilege policy")
+    ui.ok("Reachability confirmed (first launch is the true permission test).")
+
+    # ── 3. Deployment choice + size ───────────────────────────────────────
+    steps.step("Deployment choice")
+    try:
+        result = _select_existing_launch(
+            cfg,
+            profile,
+            region,
+            assume_yes=assume_yes,
+            force_new=force_new,
+        )
+    except AWSError as exc:
+        ui.fail(str(exc))
+        if exc.missing_action:
+            ui.detail(f"Grant `{exc.missing_action}` (see `kirocrew cloud iam-policy`) and retry.")
+        return 1
+
+    tier = None
+    if result is None:
+        if force_new:
+            ui.info("Creating a new cloud stack because --new was supplied.")
+        if size_key:
+            try:
+                tier = sizes.get_tier(size_key)
+            except KeyError as exc:
+                # argparse `choices` gate the CLI, but the public launch()
+                # entrypoint can be called with an arbitrary size_key — surface a
+                # clean error instead of an uncaught KeyError traceback.
+                ui.fail(str(exc).strip("'\""))
+                return 1
+            ui.ok(f"Size: {tier.label} — {tier.summary()}")
+        elif assume_yes:
+            tier = sizes.default_tier()
+            ui.ok(f"Size: {tier.label} — {tier.summary()} (default)")
+        else:
+            opts = [(t.label, t.summary()) for t in sizes.interactive_tiers()]
+            default_idx = [t.key for t in sizes.interactive_tiers()].index(sizes.DEFAULT_TIER_KEY)
+            idx = ui.choose("Instance size", opts, default_index=default_idx)
+            tier = sizes.interactive_tiers()[idx]
+        ui.detail(
+            f"~${tier.approx_usd_per_hr:.2f}/hr · "
+            f"~${sizes.monthly_estimate(tier):.0f}/mo if left running (approx)"
+        )
+
+        if not assume_yes and not size_key:
+            if not ui.confirm(f"Launch a {tier.label} instance in {region}?", default=True):
+                ui.info("Aborted — nothing was created.")
+                return 0
+    else:
+        ui.detail("Keeping the existing stack; instance size is unchanged.")
+        if subnet_id:
+            if assume_yes:
+                # Non-interactive: an explicitly requested pin that would be
+                # silently ignored is worse than an early exit — a script that
+                # passed --subnet expects the instance IN that subnet.
+                ui.fail("--subnet cannot apply to the existing stack (its network is fixed).")
+                ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
+                return 1
+            ui.warn("--subnet is ignored for an existing stack (its network is fixed).")
+            ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
+
+    # ── 4. Launch ─────────────────────────────────────────────────────────
+    steps.step("Launching")
+    if result is None:
+        assert tier is not None
+        tag = _new_tag()
+        ui.info(f"CloudFormation stack: {ec2.stack_name(tag)}")
+        if subnet_id:
+            ui.info(f"Subnet: {subnet_id} (explicit --subnet; auto-discovery skipped)")
+        # NB: do NOT persist last_tag yet. Saving it BEFORE the deploy succeeds
+        # would leave the record pointing at a ROLLBACK_COMPLETE / no-instance
+        # stack on a failed first launch, and the NEXT `launch` would then treat
+        # that broken stack as the saved deployment and abort at "instance not
+        # ready" instead of cleanly creating a new one. We hold the fields in memory (so
+        # progress streaming + failure diagnostics have the tag) and only write the launch
+        # record AFTER a confirmed-healthy deploy below.
+        #
+        # The PRIOR pointer is a different question, and it is cleared HERE rather than left
+        # to the write below. See `_clear_prior_pointer`: leaving it is what would make a
+        # failed post-deploy write destructive rather than merely lossy.
+        if not _clear_prior_pointer(cfg.last_tag):
+            return 1
+        cfg = dataclasses.replace(cfg, profile=profile, region=region, last_tag=tag)
+        ui.info("Provisioning EC2 + installing KiroCrew (this takes a few minutes)…")
+        try:
+            result = _deploy_with_progress(
+                tag=tag,
+                tier=tier,
+                profile=profile,
+                region=region,
+                subnet_id=subnet_id,
+                disable_rollback=keep_on_failure,
+            )
+        except AWSError as exc:
+            ui.fail(str(exc))
+            if exc.missing_action:
+                ui.detail(
+                    f"Grant `{exc.missing_action}` (see `kirocrew cloud iam-policy`) and retry."
+                )
+            else:
+                # Surface the detailed on-box failure and how to dig further.
+                for f in ec2.get_stack_failures(tag, profile, region)[:4]:
+                    ui.detail(f"  {f['resource']}: {f['reason'][:240]}")
+                ui.detail(
+                    "Full events: "
+                    f"aws cloudformation describe-stack-events --stack-name "
+                    f"{ec2.stack_name(tag)} --region {region}"
+                )
+                if not keep_on_failure:
+                    ui.detail(
+                        "Re-run with --keep-on-failure to keep the instance for "
+                        "inspection (`kirocrew cloud launch --keep-on-failure`)."
+                    )
+            return 1
+        # Deploy succeeded (WaitCondition confirmed the gateway healthy) — NOW it
+        # is safe to persist the tag as the saved deployment.
+        #
+        # Into the LAUNCH RECORD, which this path owns, and not into `cloud.json`, which the
+        # operator owns and may have open in an editor. Writing there had to choose between
+        # overwriting their `fargate` block and refusing, and a refusal lands HERE -- after
+        # the instance is deployed and billing, before sign-in and dashboard setup -- so the
+        # command aborted over a file it did not need to write at all.
+        _record_launch(profile=profile, region=region, tag=tag)
+        ui.ok(f"Instance {result.instance_id} is up and KiroCrew is healthy.")
+    elif not result.instance_id:
+        ui.warn("Previous cloud stack exists but the instance is not ready yet.")
+        ui.detail("Check progress with: kirocrew cloud status")
+        return 1
+    else:
+        ui.ok(f"Resuming instance {result.instance_id}.")
+        # A resumed stack may be STOPPED (after `kirocrew cloud stop`). All the
+        # downstream steps (sign-in, tunnel) go over SSM, which fails on a
+        # stopped box — so start it and wait for SSM to come back online first.
+        if not _ensure_running_and_ssm_ready(result.instance_id, profile, region):
+            return 1
+
+    # ── 5. Sign in to Kiro ────────────────────────────────────────────────
+    steps.step("Sign in to Kiro")
+    instance_id = result.instance_id
+    # A mismatch verified here is a verdict on the launch, not a transient
+    # condition: it holds through the operational recheck below unless that
+    # recheck positively confirms the right identity.
+    mismatch_seen = False
+    if login.is_logged_in(instance_id, profile, region, target=target):
+        ui.ok(f"kiro-cli is already signed in on the instance as {target.describe()}.")
+    elif login.remote_identity_state(instance_id, profile, region, target=target) == "mismatch":
+        # A resumed instance can carry a valid session for the WRONG account --
+        # for any target, the Builder ID default included (an Identity Center
+        # session is the wrong license and models for a Builder ID launch).
+        # That is a mismatch, not "already signed in", and switching requires a
+        # logout first (kiro-cli ignores a login over a live session).
+        mismatch_seen = True
+        ui.warn(f"The instance is signed in to a different Kiro identity than {target.describe()}.")
+        ui.detail(f"To switch: {target.recovery_command()}")
+    else:
+        ui.info(f"Starting kiro-cli sign-in on the instance as {target.describe()}…")
+        prompt = login.start_device_login(
+            instance_id, profile, region, open_browser=True, target=target
+        )
+        if prompt.already_logged_in:
+            ui.ok("Signed in.")
+        elif prompt.url:
+            if prompt.ports:
+                ports = ", ".join(str(port) for port in prompt.ports)
+                ui.detail(f"Forwarded Kiro sign-in callback port over SSM: {ports}")
+            if prompt.browser_opened:
+                ui.note(f"Opened {ui.CYAN}{prompt.url}{ui.RESET} in your browser.")
+            else:
+                ui.note(f"Open {ui.CYAN}{prompt.url}{ui.RESET} in your browser.")
+            if prompt.code:
+                ui.detail(f"Verification code: {prompt.code}")
+            ui.info("Approve in the browser to finish sign-in…")
+            try:
+                with ui.Spinner("Waiting for sign-in approval…"):
+                    signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
+            finally:
+                prompt.close()
+            if signed:
+                ui.ok("Signed in.")
+            else:
+                ui.warn("Sign-in not detected yet — you can finish it later.")
+                ui.detail("Re-run: kirocrew cloud connect (then sign in from the dashboard/SSM).")
+        else:
+            prompt.close()
+            if prompt.identity_mismatch:
+                # kiro-cli refused to sign in over a live session for the WRONG
+                # identity. Verified the same as the probe above, recorded the
+                # same: the recheck below must not read it down to "unsigned".
+                mismatch_seen = True
+                ui.warn(
+                    f"The instance is signed in to a different Kiro identity than {target.describe()}."
+                )
+                ui.detail(f"To switch: {target.recovery_command()}")
+            else:
+                ui.warn("Could not start Kiro sign-in automatically.")
+                ui.detail(prompt.error or login.social_login_hint(prompt))
+
+    # Verify the box is FULLY operational — not just that the gateway serves
+    # HTTP, but that a new chat will actually work (kiro-cli logged in so the
+    # ACP backend can start a session). If it's not, re-login before finishing,
+    # so the user never lands on a dashboard where every chat errors. A verified
+    # identity MISMATCH is carried to the exit code below: the dashboard is still
+    # opened and the crew registered (the named recovery needs both), but the
+    # launch did not deliver the identity it was asked for and must not exit 0.
+    signin_state = _verify_operational(
+        instance_id, profile, region, assume_yes=assume_yes, login_target=target
+    )
+    if mismatch_seen and signin_state != "ok":
+        # The recheck did not confirm the right identity (it failed transiently,
+        # or found no session it could act on). The mismatch verified a moment
+        # ago stands; "unsigned" would let this launch exit 0 under the wrong
+        # identity.
+        signin_state = "mismatch"
+    if signin_state == "unsigned":
+        ui.warn(
+            "Kiro backend is not signed in — new chats will error until you "
+            "sign in. Run: kirocrew cloud login"
+        )
+
+    # ── 6. Open the dashboard ─────────────────────────────────────────────
+    steps.step("Open the dashboard")
+    try:
+        conn = connect_mod.connect(instance_id, profile, region, open_browser=True)
+    except AWSError as exc:
+        ui.fail(f"Could not open the dashboard: {exc}")
+        conn = None
+    if conn and conn.url:
+        if conn.browser_opened:
+            ui.ok("Opening the dashboard in your browser.")
+        else:
+            ui.ok("Dashboard tunnel open.")
+        ui.note(f"{ui.CYAN}{conn.url}{ui.RESET}")
+        if not conn.browser_opened:
+            ui.detail("Open this URL in your browser.")
+    elif conn and conn.error:
+        ui.warn("Dashboard tunnel did not become ready.")
+        ui.detail(conn.error)
+    # Register for the managed /instances experience (best effort). Registers
+    # over the native SSM transport, so the dashboard reaches the box with no
+    # SSH key / inbound port / ~/.ssh/config.
+    connect_mod.register_instance(
+        instance_id,
+        name=f"Kiro Crew Cloud ({result.tag})",
+        profile=profile,
+        region=region,
+    )
+
+    # ── Done ──────────────────────────────────────────────────────────────
+    print()
+    dashboard_ready = bool(conn and conn.ready and conn.url)
+    if signin_state == "mismatch":
+        ui.fail(
+            f"Kiro Crew is running on AWS, but signed in to a DIFFERENT Kiro identity than "
+            f"{target.describe()} — this launch did not deliver the identity it was asked for."
+        )
+        ui.detail(f"Fix: {target.recovery_command()}")
+    elif dashboard_ready:
+        ui.note(f"{ui.GREEN}{ui.BOLD}KiroCrew is live on AWS.{ui.RESET}")
+    else:
+        ui.warn("KiroCrew is running on AWS, but the dashboard tunnel is not open.")
+        ui.detail("Fix the local SSM tunnel issue, then run: kirocrew cloud connect")
+    print()
+    ui.note(f"{ui.BOLD}Manage it:{ui.RESET}")
+    ui.detail("kirocrew cloud status            # state + cost estimate")
+    ui.detail("kirocrew cloud connect           # reopen the dashboard")
+    ui.detail("kirocrew cloud stop | start      # pause / resume (saves cost)")
+    ui.detail("kirocrew cloud destroy           # remove EVERYTHING from AWS")
+    print()
+
+    # Keep the SSM tunnel alive so the dashboard URL we just opened keeps
+    # working — the port-forward child dies the moment we return otherwise
+    # (it was started with start_new_session=True and would be orphaned).
+    # When embedded in `kirocrew setup` (hold_tunnel=False) we must return so
+    # the outer flow can finish; close the tunnel and say how to reopen it.
+    if conn and conn.ready and conn.process is not None and conn.process.poll() is None:
+        if not hold_tunnel:
+            conn.close()
+            ui.detail("Dashboard tunnel closed — reopen anytime: kirocrew cloud connect")
+        else:
+            ui.detail(
+                "Keeping the dashboard tunnel open — press Ctrl+C to exit "
+                "(reopen later with `kirocrew cloud connect`)."
+            )
+            try:
+                conn.process.wait()
+            except KeyboardInterrupt:
+                conn.close()
+                ui.info("Tunnel closed. KiroCrew keeps running on AWS.")
+    if signin_state == "mismatch":
+        return 1
+    return 0 if dashboard_ready else 1
+
+
+def _ensure_session_manager_plugin(*, assume_yes: bool = False) -> bool:
+    """Ensure the local Session Manager plugin needed for SSM tunnels exists."""
+    if ssm.session_manager_plugin_installed():
+        ui.ok("session-manager-plugin found")
+        return True
+
+    ui.warn("session-manager-plugin is required for SSM dashboard tunnels.")
+    ui.detail("KiroCrew can install AWS's official Session Manager plugin locally.")
+    if not assume_yes and not ui.confirm("Install session-manager-plugin now?", default=True):
+        ui.detail("Install it later with: kirocrew cloud doctor")
+        return False
+
+    ui.info("Installing session-manager-plugin locally. Sudo may ask for your password.")
+    result = ssm.install_session_manager_plugin()
+    if result.ok:
+        ui.ok(result.message or "session-manager-plugin installed")
+        return True
+    ui.fail("Could not install session-manager-plugin.")
+    ui.detail(result.message)
+    return False
+
+
+def _clear_prior_pointer(previous_tag: str) -> bool:
+    """Drop the pointer to the PREVIOUS stack before a new one is provisioned.
+
+    Returns False to abort the launch, and the two halves of this decision are opposites on
+    purpose. :func:`_record_launch` writes the pointer to the stack this launch just created,
+    after it is deployed and billing, so a failure there warns and continues -- losing that
+    pointer costs a ``kirocrew cloud list``. The pointer to the LAST stack is a different
+    object with a different failure: if it is still on disk when the post-deploy write fails,
+    the record names ``kc-old`` while ``kc-new`` is the stack that exists, and a later
+    ``cloud destroy`` with no ``--tag`` resolves ``kc-old`` and deletes a stack the operator
+    did not mean to touch. That is irreversible, it takes the data with it, and nothing the
+    operator can see says the pointer is stale.
+
+    Clearing it first makes the only reachable outcome of a failed write "no target", which is
+    an inconvenience, instead of "the wrong target", which is destruction. The same move as
+    removing the power from a file rather than defending its bytes.
+
+    This one refuses where the later write warns because of WHEN it runs: nothing has been
+    provisioned yet, so an abort costs the operator no stack and no bill -- while the later
+    write cannot abort anything without throwing away work already paid for.
+
+    ``clear_tag`` is conditional on the pointer still naming *previous_tag*, so a launch that
+    recorded its own tag in between is left alone. That is the right answer for the FILE -- the
+    pointer is current, not stale -- and it is NOT a reason to carry on: the question that
+    decides whether to provision is whose stack a no-tag ``destroy`` would name if this
+    launch's own write then failed, and the answer is the other launch's.
+
+    Its ``False`` covers two states and only one is a hazard, which is why the bool alone does
+    not decide: it also declines when there is NO pointer, which is the state this function
+    exists to reach. So a declined clear is followed by a read of what the pointer is now, and
+    only a different NON-EMPTY tag aborts.
+    """
+    if not previous_tag:
+        return True
+    try:
+        # Both values from ONE locked call: the tag reported is the one the compare saw, not a
+        # second read that can have moved again -- and ``clear_tag``'s bool alone cannot decide
+        # here, because it declines both when another launch recorded its own tag AND when
+        # there is no pointer at all. The second is the state this function exists to reach.
+        _cleared, saved_now = LaunchState.try_clear_tag(previous_tag)
+    except OSError as exc:
+        ui.fail(f"Could not clear the saved pointer to '{previous_tag}': {exc}")
+        ui.detail("Nothing was created, and nothing is billing.")
+        ui.detail(
+            f"Launching now could leave that pointer naming '{previous_tag}' while the new "
+            "stack is the one that exists, and a later `kirocrew cloud destroy` without "
+            f"--tag would delete '{previous_tag}'."
+        )
+        ui.detail("Free some disk space (or fix the file's permissions) and re-run.")
+        return False
+    if saved_now:
+        # A REFUSAL IS NOT A COMMIT. The clear declined and the pointer names a DIFFERENT stack,
+        # so another launch recorded its own while this one was being set up. That makes the
+        # pointer CURRENT rather than stale, which is why declining is the right answer for the
+        # file -- and reading it as success is the bug this branch exists for. The question that
+        # decides whether to provision is not "is the pointer stale", it is "if my own record
+        # write fails after the deploy, whose stack does a no-tag destroy name": that launch's,
+        # which is live and not this operator's to lose.
+        #
+        # So abort, in the same shape as the write failure above: nothing has been provisioned,
+        # so an abort costs nothing, and a re-run observes the pointer that is there now.
+        ui.fail(f"The saved pointer changed while this launch was starting: '{saved_now}'.")
+        ui.detail("Nothing was created, and nothing is billing.")
+        ui.detail(
+            f"Another launch recorded '{saved_now}'. Launching now could leave that tag saved "
+            "while this stack is the one that exists, and a later `kirocrew cloud destroy` "
+            f"without --tag would delete '{saved_now}'."
+        )
+        ui.detail("Re-run `kirocrew cloud launch` to launch against the current pointer.")
+        return False
+    return True
+
+
+def _record_launch(*, profile: str, region: str, tag: str) -> None:
+    """Write the launch record, and never fail the command over it.
+
+    Every caller runs AFTER its remote work: the instance is deployed and billing, or the
+    resume has already reattached. Sign-in, the dashboard tunnel and the closing instructions
+    still have to happen, and all of them matter more to the operator than a pointer file.
+
+    So a write failure warns and the wizard continues. Nothing is silently lost: the warning
+    names the tag, and `kirocrew cloud list` enumerates the real stacks, so the instance is
+    findable and re-attachable by tag even with no pointer on disk. The reverse -- aborting
+    here -- leaves a running instance whose sign-in never happened.
+
+    Narrow on purpose. Only `OSError` is swallowed, which is what a disk or permission
+    failure raises; anything else is a defect in this code and must surface.
+    """
+    try:
+        LaunchState.record(profile=profile, region=region, last_tag=tag)
+    except OSError as exc:
+        ui.warn(f"Could not save the launch record: {exc}")
+        ui.detail(f"The instance is up. Reach it with: kirocrew cloud connect --tag {tag}")
+
+
+def _select_existing_launch(
+    cfg: LaunchState,
+    profile: str,
+    region: str,
+    *,
+    assume_yes: bool = False,
+    force_new: bool = False,
+) -> ec2.DeployResult | None:
+    """Prompt for an existing launch target, if one can be resumed."""
+    if force_new:
+        return None
+
+    launches = _discover_existing_launches(cfg, profile, region)
+    selected = _choose_existing_launch(launches, cfg, assume_yes=assume_yes)
+    if selected is None:
+        return None
+
+    result = _resume_tag(selected.tag, profile, region)
+    if result is None:
+        return None
+    cfg = dataclasses.replace(cfg, profile=profile, region=region, last_tag=selected.tag)
+    if not selected.saved:
+        # The launch record, for the reason the post-deploy write uses it: this runs after
+        # the resume has already reattached, so a write that can fail must not be a write
+        # that can fail the command.
+        _record_launch(profile=profile, region=region, tag=selected.tag)
+    return result
+
+
+def _discover_existing_launches(
+    cfg: LaunchState, profile: str, region: str
+) -> list[_ExistingLaunch]:
+    """Find resumable stacks from saved state or CloudFormation discovery."""
+    launches: list[_ExistingLaunch] = []
+    seen: set[str] = set()
+
+    if cfg.last_tag and _saved_launch_matches(cfg, profile, region):
+        result = _deploy_result_for_tag(cfg.last_tag, profile, region)
+        # Defense in depth for configs written by an OLD build (or any path that
+        # persisted last_tag before the deploy confirmed): only treat the saved
+        # tag as a resumable launch if its stack is actually usable — has an
+        # instance AND is not in a failed/rolled-back terminal state. A stale tag
+        # pointing at a ROLLBACK_COMPLETE / instance-less stack is ignored (falls
+        # through to fresh discovery / a new launch) instead of being resumed and
+        # aborting at "instance not ready".
+        if result is not None and _saved_launch_is_usable(result):
+            launches.append(
+                _ExistingLaunch(
+                    tag=result.tag,
+                    stack_name=result.stack_name,
+                    stack_status=result.status,
+                    saved=True,
+                )
+            )
+            seen.add(result.tag)
+
+    if launches:
+        return launches
+
+    for row in ec2.list_stacks(profile, region):
+        tag = str(row.get("tag", ""))
+        if not tag or tag in seen:
+            continue
+        launches.append(
+            _ExistingLaunch(
+                tag=tag,
+                stack_name=str(row.get("stack_name", ec2.stack_name(tag))),
+                stack_status=str(row.get("stack_status", "")),
+            )
+        )
+        seen.add(tag)
+    return launches
+
+
+def _choose_existing_launch(
+    launches: list[_ExistingLaunch], cfg: LaunchState, *, assume_yes: bool = False
+) -> _ExistingLaunch | None:
+    """Return the stack the user chose to keep, or None to create a new one."""
+    if not launches:
+        return None
+
+    if assume_yes:
+        if len(launches) == 1 or cfg.last_tag:
+            chosen = _preferred_existing_launch(launches, cfg)
+            ui.info(
+                f"Existing KiroCrew cloud stack found: {chosen.stack_name}. "
+                "Keeping it by default."
+            )
+            ui.detail("Use `kirocrew cloud launch --new` to create a separate instance.")
+            return chosen
+        tags = ", ".join(launch.tag for launch in launches)
+        raise AWSError(
+            "multiple existing KiroCrew cloud stacks found; rerun interactively "
+            f"to choose one ({tags}), or pass `kirocrew cloud launch --new` "
+            "to create a separate instance"
+        )
+
+    if len(launches) == 1:
+        launch = launches[0]
+        idx = ui.choose(
+            "Existing KiroCrew cloud deployment",
+            [
+                ("Keep and resume existing", _launch_summary(launch)),
+                (
+                    "Create a new installation",
+                    "Leaves the existing AWS stack untouched.",
+                ),
+            ],
+            default_index=0,
+        )
+        if idx == 0:
+            return launch
+        ui.info("Creating a new installation; the existing stack is unchanged.")
+        return None
+
+    options = [(f"Keep {launch.tag}", _launch_summary(launch)) for launch in launches]
+    options.append(("Create a new installation", "Leaves existing AWS stacks untouched."))
+    idx = ui.choose("Existing KiroCrew cloud deployments", options, default_index=0)
+    if idx < len(launches):
+        return launches[idx]
+    ui.info("Creating a new installation; existing stacks are unchanged.")
+    return None
+
+
+def _preferred_existing_launch(
+    launches: list[_ExistingLaunch], cfg: LaunchState
+) -> _ExistingLaunch:
+    """Prefer the saved launch when non-interactive defaults are accepted."""
+    if cfg.last_tag:
+        for launch in launches:
+            if launch.tag == cfg.last_tag:
+                return launch
+    return launches[0]
+
+
+def _launch_summary(launch: _ExistingLaunch) -> str:
+    status = f" · {launch.stack_status}" if launch.stack_status else ""
+    saved = " · saved" if launch.saved else ""
+    return f"{launch.stack_name}{status}{saved}"
+
+
+def _deploy_result_for_tag(tag: str, profile: str, region: str) -> ec2.DeployResult | None:
+    st = ec2.describe(tag, profile, region)
+    if not st.get("exists"):
+        return None
+    return ec2.DeployResult(
+        tag=tag,
+        stack_name=st.get("stack_name", ec2.stack_name(tag)),
+        region=st.get("region", region),
+        instance_id=st.get("instance_id", ""),
+        public_dns=st.get("public_dns", ""),
+        status=st.get("stack_status", ""),
+        reused=True,
+    )
+
+
+def _saved_launch_matches(cfg: LaunchState, profile: str, region: str) -> bool:
+    return (cfg.profile or "") == (profile or "") and (cfg.region or DEFAULT_REGION) == region
+
+
+def _saved_launch_is_usable(result: ec2.DeployResult) -> bool:
+    """True if a saved-tag stack is worth resuming (has an instance, not failed).
+
+    Guards against a stale ``last_tag`` (e.g. written by an older build before the
+    save-only-on-success fix, or any partial launch) that points at a
+    ROLLBACK_COMPLETE / no-instance stack. Such a tag must NOT be presented as the
+    resumable saved deployment — otherwise ``launch`` resumes it and aborts at
+    "instance not ready" instead of cleanly starting fresh.
+    """
+    if result.status in ec2._FAILED_STATES:
+        return False
+    return bool(result.instance_id)
+
+
+def _resume_tag(tag: str, profile: str, region: str) -> ec2.DeployResult | None:
+    result = _deploy_result_for_tag(tag, profile, region)
+    if result is None:
+        return None
+
+    ui.info(f"Resuming existing CloudFormation stack: {ec2.stack_name(tag)}")
+    ui.detail("Use `kirocrew cloud launch --new` to create a separate instance.")
+    return result

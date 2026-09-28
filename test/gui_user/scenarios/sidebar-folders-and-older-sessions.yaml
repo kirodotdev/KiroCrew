@@ -1,0 +1,42 @@
+# Smoke: the list-shell sidebar read against the fixture built for it. `rich`
+# ships a pinned "Welcome to KiroCrew" session, a "Demos" folder holding two  (brand-ok: fixture title)
+# sessions, and a closed "Research: MCP transport trade-offs" session that the
+# slot cutoff has dropped from the live list but that the Older Sessions pane
+# still shows. The pane is closed by default, so opening it is the one action.
+#
+# Two things about the seeded layout the expectations must state the way the
+# product draws them, or the tester judges the product against a wrong picture:
+# the list view renders every root folder first and the ungrouped sessions
+# (pinned ones leading) under the folders, so the pinned row sits BELOW the
+# Demos folder; and one of the two Demos sessions has an old enough last
+# activity that the folder tucks it behind a "Dormant sessions" expander row.
+name: sidebar-folders-and-older-sessions
+tier: smoke
+feature: sidebar
+user_story: >-
+  As a returning user, I want my sessions grouped in folders with pinned ones
+  on top and a pane for older, closed sessions, so that I can find past work
+  quickly without scrolling a flat list.
+docs_url: docs/feature-map/README.md
+summary: Read the pinned row and the Demos folder, then open Older Sessions and find the closed session
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. Look at the left sidebar's session list without clicking anything yet. Note a folder row named "Demos" at the top of the list and, further down and outside the folder, a pinned row titled "Welcome to KiroCrew".  # brand-ok: verbatim seeded session title from the rich fixture
+  - If the "Demos" folder is collapsed, click it once to expand it. Inside it, one session is listed directly and the other sits under a "Dormant sessions" row; if that row is collapsed, click it once so both session titles are readable.
+  - At the bottom of the sidebar find the "Older Sessions" row (it has a small clock icon) and click it to open the pane.
+  - Wait a second for the list of older sessions to load.
+expectations:
+  - >-
+    The "Demos" folder is expanded and holds exactly two sessions, "Fix empty-glob crash in
+    list_sessions" and "Triage: cron runs twice per tick"; one of them may be listed under a
+    "Dormant sessions" row inside the folder, which still counts as inside the folder.
+  - The pinned "Welcome to KiroCrew" row is listed outside the folder, below it, in the ungrouped part of the list.  # brand-ok: verbatim seeded session title from the rich fixture
+  - >-
+    The "Older Sessions" pane is open and lists a session titled "Research: MCP transport
+    trade-offs", which does not appear in the live list above.
+  - Nothing in the sidebar overflows horizontally or overlaps another row.
+max_steps: 12
+max_seconds: 300

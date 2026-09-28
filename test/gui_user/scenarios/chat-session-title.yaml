@@ -1,0 +1,44 @@
+# Smoke: rename a session inline from its header. The title in the bar above
+# the transcript is one editable control (`SessionTitleControl`): a click swaps
+# the text for a text box seeded with the current title, fully selected, and
+# Enter (or leaving the box) commits the rename; the sidebar row follows at
+# once because header and sidebar read the same slot title. The subject is the
+# seeded "Welcome to KiroCrew" session -- pinned and outside the Demos folder,  (brand-ok: fixture title)
+# so its row is always on screen without expanding anything.
+#
+# The rename is persisted, and the same un-reseeded gateway serves the retry
+# and every later scenario in the run (two of which name this title), so the
+# flow is rename -> read -> rename back and leaves the title as it found it.
+# Both rename steps say what the box must hold when Enter is pressed rather
+# than "type over it", so a retry that starts from a half-finished attempt
+# (title left renamed) converges on the original name instead of inverting it.
+# Every action costs a screenshot and only the newest three survive
+# (harness.KEEP_IMAGES), so the flow ends on the restoring Enter with no wait
+# after it: the three kept frames are the second click on the title (its box
+# opens seeded with the NEW name and the sidebar row reads the same -- the
+# evidence the first rename landed), the original name typed back in, and the
+# settled header after the second Enter, which the final expectations read.
+name: chat-session-title
+tier: smoke
+feature: chat
+user_story: >-
+  As a user, I want auto-generated slot titles I can rename inline, so that
+  sessions are recognisable in the sidebar.
+docs_url: docs/system-specs/modules/session.md
+summary: Rename the pinned Welcome session from its header title, read the new name in header and sidebar, then rename it back
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the left sidebar's session list click the pinned row titled "Welcome to KiroCrew" (it sits below the "Demos" folder, outside it). Its conversation opens and the bar above the transcript shows the same title.  # brand-ok: verbatim seeded session title from the rich fixture
+  - Click once on that title text in the bar above the transcript (not on the row in the sidebar). The text turns into a text box holding the current title, with the whole title selected.
+  - Type exactly "Welcome renamed by gui test" so that the box holds only that text, then press Enter. The box closes, and both the header and the sidebar row now read "Welcome renamed by gui test".
+  - Click the title in the header once more. The text box opens again, this time holding "Welcome renamed by gui test". Type exactly "Welcome to KiroCrew" so that the box holds only that text, then press Enter. Do nothing else after that.  # brand-ok: verbatim seeded session title from the rich fixture
+expectations:
+  - The bar above the transcript reads "Welcome to KiroCrew" as plain text, with no text box open.  # brand-ok: verbatim seeded session title from the rich fixture
+  - The pinned row in the sidebar also reads "Welcome to KiroCrew", and no row anywhere in the sidebar reads "Welcome renamed by gui test".  # brand-ok: verbatim seeded session title from the rich fixture
+  - In the screenshot taken right after you clicked the title the second time, the text box held "Welcome renamed by gui test" and the sidebar row read "Welcome renamed by gui test" as well.
+  - No red error banner (for example one starting "Couldn't rename") is visible.
+max_steps: 12
+max_seconds: 300

@@ -1,0 +1,406 @@
+"""The macOS lane's placement, asserted from the workflow SOURCE.
+
+WHY THIS FILE EXISTS. The macOS pytest lane belongs in ``platform-tests.yml``,
+which ``nightly.yml`` calls, and NOT on the pull_request path. The reason is the
+runner queue, not the runtime. MEASURED on three green PR runs (34866269260,
+34864945056, 34863753125) that carried the lane: the macOS jobs waited 176, 190 and
+213 minutes for a ``macos-15`` runner and then ran for 26-33. Everything non-macOS
+in ``ci.yml`` finishes at 78-98 minutes while those runs took 248-268, so about 64
+percent of a pull request's CI wall clock was macOS queue time -- and because
+``pr-readiness.yml`` (this repository's only required check) is triggered by
+``workflow_run`` on ``ci.yml``'s completion, that queue sits directly on the merge
+button. Across the same window the lane produced 0 failures and 129 cancellations,
+usually still queued when a newer push superseded the run. At nightly hours the
+same runners arrive in 0-33 minutes.
+
+Three properties have to hold for that placement to be a move and not a deletion,
+and each one is quiet when it breaks:
+
+1. Nothing on the pull_request path may instantiate a macOS runner. A
+   ``continue-on-error`` macOS job still holds ``ci.yml``'s completion, so it still
+   holds readiness -- an "advisory" macOS job in that file is not advisory.
+2. A red macOS suite must hold PUBLICATION and never a BUILD. The artifacts are the
+   evidence a fixer works from; this is the same trade
+   ``dependency-vulnerability-gate`` makes, and that test file pins the other half.
+3. The opt-in on-demand lane must stay OUT of readiness' lane list, or the queue
+   it was extracted to avoid comes back through a different door.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import yaml
+from macos_lane_helpers import verdict_script as _verdict_script
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def _load(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+
+
+def _triggers(document: dict) -> dict:
+    """``on:`` is YAML 1.1's boolean ``True`` after ``safe_load``, not the string."""
+    return document.get(True, document.get("on")) or {}
+
+
+def _needs(job: dict) -> list[str]:
+    needs = job.get("needs", [])
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+class TestThePullRequestPathInstantiatesNoMacRunner:
+    """The property the whole move exists for, checked where it can regress."""
+
+    def test_ci_declares_no_macos_runner_reachable_from_a_pull_request(self) -> None:
+        # Checked on `runs-on` and `strategy.matrix.os` only -- the two places that
+        # actually provision a runner. Step bodies legitimately mention macOS (an
+        # `if: runner.os == 'macOS'` guard inside a cross-platform job costs
+        # nothing), so scanning the whole job would fail on prose.
+        ci = _load("ci.yml")
+        offenders = []
+        for name, job in ci["jobs"].items():
+            runs_on = json.dumps(job.get("runs-on", ""))
+            matrix_os = json.dumps((job.get("strategy") or {}).get("matrix", {}).get("os", ""))
+            if "macos" not in f"{runs_on}{matrix_os}".lower():
+                continue
+            # The one permitted shape: a runner list that macOS enters only when
+            # the event is NOT a pull request.
+            if name == "e2e-boot-matrix" and "github.event_name == 'pull_request'" in matrix_os:
+                continue
+            offenders.append(name)
+
+        assert not offenders, (
+            f"{offenders} put a macOS runner on the pull_request path. A macos-15 job in ci.yml "
+            "waits 176-213 minutes for a runner, and PR Readiness is triggered by this "
+            "workflow's completion, so it holds the merge button even with "
+            "continue-on-error. Opt-in macOS work belongs in macos-on-demand.yml, which "
+            "calls platform-tests.yml."
+        )
+
+    def test_the_boot_matrix_keeps_macos_off_the_pull_request_leg_only(self) -> None:
+        # Not just "the expression mentions pull_request": the two branches are
+        # read, so an inverted condition (macOS on PRs, not on main) fails here
+        # rather than in a three-hour queue.
+        matrix_os = _load("ci.yml")["jobs"]["e2e-boot-matrix"]["strategy"]["matrix"]["os"]
+        pull_request_side, _, push_side = matrix_os.partition("||")
+
+        assert "macos" not in pull_request_side.lower()
+        assert "macos-15" in push_side
+        # Still a real gateway boot on the other two platforms in front of a PR: a
+        # Windows-only delegation break that every unit test mocked past is the
+        # escape this job exists for, and only a real boot can see it.
+        assert "windows-latest" in pull_request_side
+        assert "ubuntu-latest" in pull_request_side
+
+    def test_ci_no_longer_owns_the_macos_pytest_job(self) -> None:
+        assert "backend-test-macos" not in _load("ci.yml")["jobs"]
+        assert "backend-test-macos" in _load("platform-tests.yml")["jobs"]
+
+
+class TestTheMovedLaneIsTheSameLane:
+    """A move that quietly drops shards or canaries is a deletion with a receipt."""
+
+    def test_the_full_suite_still_runs_in_four_shards(self) -> None:
+        job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
+        assert job["runs-on"] == "macos-15", "macos-latest moves under us; pin the label"
+        assert job["strategy"]["matrix"]["group"] == [1, 2, 3, 4]
+        assert job["env"]["SHARD_COUNT"] == 4
+        # 40 is a spend guard as much as a hang guard -- a runaway macOS shard costs
+        # about ten times a Linux one -- so suite growth is absorbed by the shard
+        # COUNT and this number stays put. The cap only means something while the
+        # slowest shard sits inside it with room to spare.
+        assert job["timeout-minutes"] == 40
+        runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
+        # The file-sharding plugin, the same one backend-test and
+        # backend-test-windows use: only the owning shard IMPORTS a file, where
+        # pytest-split collects the whole suite in every shard and deselects the
+        # rest. On a lane billed at ten times Linux, paying every import once per
+        # shard for tests that shard then discards is the difference between a cap
+        # with headroom and a cap that cancels publication.
+        assert "-p scripts.ci_file_shards" in runs
+        assert '--file-shards "$SHARD_COUNT"' in runs and "--file-shard " in runs
+        # An explicit worker count, never `-n auto`: the budget plugin behind
+        # `auto` reads ~3 GiB free on the 7 GiB macos-15 runner and answers ONE
+        # worker, which is what made every shard run serially on a 3-core
+        # machine. The runner is a fixed shape the lane can state outright.
+        shard = next(
+            str(s.get("run", "")) for s in job["steps"] if "--file-shard " in str(s.get("run", ""))
+        )
+        assert "-n auto" not in shard, "the mac shard is back on the memory budget (1 worker)"
+        assert " -n 2 " in shard
+        assert "--splits" not in runs, "pytest-split re-imports every shard's discards"
+
+    #: The concurrent ``macos-15`` job count this lane's ceiling was calibrated at, from
+    #: the day it held 53 of the 56 in-progress macOS jobs and one shard waited 14 hours
+    #: for a runner while the signing paths queued behind it. A recalibration edits this
+    #: one number; the assertion and the docstring both read it.
+    CALIBRATED_PEAK_MACOS_JOBS = 18
+
+    def test_the_on_demand_ceiling_is_a_job_ceiling_not_a_run_ceiling(self) -> None:
+        """The product is the invariant; either factor alone can hide a rise in it.
+
+        ``macos-on-demand.yml`` admits runs, but the hosted macOS pool is starved by
+        JOBS, and a run of this lane holds one per shard. So a shard-count bump lifts
+        that lane's peak occupancy without touching the ceiling it is bounded by, and
+        the ceiling's own comment cannot stop it -- a comment is not a guard, which is
+        why the product is asserted here rather than described there.
+
+        The calibrated peak lives in ``CALIBRATED_PEAK_MACOS_JOBS`` rather than in this
+        sentence, so a recalibration is one edit. Raising either factor past it needs the
+        pool argument made again in the same diff, which is exactly what failing here
+        asks for.
+        """
+        shards = _load("platform-tests.yml")["jobs"]["backend-test-macos"]["env"]["SHARD_COUNT"]
+        decide = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        ceiling = next(
+            int(step["env"]["LANE_MAX_LIVE_RUNS"])
+            for step in decide
+            if "LANE_MAX_LIVE_RUNS" in (step.get("env") or {})
+        )
+        peak = self.CALIBRATED_PEAK_MACOS_JOBS
+        assert int(shards) * ceiling <= peak, (
+            f"{shards} shards x {ceiling} live runs = {int(shards) * ceiling} concurrent "
+            f"macos-15 jobs, over the {peak} this lane's ceiling was calibrated at"
+        )
+        # The probe budget is justified beside itself as TWICE the ceiling, and that
+        # is the only reason its size is defensible on a step that runs for every
+        # pull request. Left behind when the ceiling moves it becomes a multiple
+        # nobody chose, spending repository-wide API reads to look for holders that
+        # cannot exist.
+        reads = next(
+            int(step["env"]["LANE_OCCUPANCY_MAX_READS"])
+            for step in decide
+            if "LANE_OCCUPANCY_MAX_READS" in (step.get("env") or {})
+        )
+        assert reads == ceiling * 2, (
+            f"the occupancy probe reads up to {reads} runs against a ceiling of "
+            f"{ceiling}; the comment beside it justifies twice the ceiling"
+        )
+
+    def test_the_sharded_run_cannot_report_success_through_tee(self) -> None:
+        # The shard pipes pytest to `tee` so the log survives as an artifact, and
+        # a pipeline's status is its LAST command's. Without `set -o pipefail` every
+        # failing macOS shard would exit 0 through tee, the job would go green, and
+        # this entire lane would gate nothing while looking like it did -- the worst
+        # available failure, because it is silent. Asserted in the same step as the
+        # pipe, and before the pytest line, since a pipefail set afterwards protects
+        # nothing.
+        job = _load("platform-tests.yml")["jobs"]["backend-test-macos"]
+        shard = next(step for step in job["steps"] if "--file-shards" in str(step.get("run", "")))
+        run = str(shard["run"])
+        assert "| tee" in run, "the shard no longer keeps a log"
+        assert run.index("set -o pipefail") < run.index("pytest "), run
+
+    def test_the_shard_log_is_uploaded_even_when_the_shard_is_cancelled(self) -> None:
+        # A shard killed at the 40-minute cap is `cancelled`, and its ids are the
+        # ones a human most needs. `if: failure()` would drop exactly that case.
+        steps = _load("platform-tests.yml")["jobs"]["backend-test-macos"]["steps"]
+        upload = next(
+            s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+        )
+        assert upload["if"] == "always()"
+        assert "shard-macos-" in upload["with"]["name"]
+
+    def test_native_peer_identity_and_terminal_contracts_are_asserted_by_name(self) -> None:
+        # `pytest -q` does not name passing tests and a skip exits 0, so each of
+        # these is asserted to have PASSED by node id. That is the same blindness
+        # that once left four mutation-verified tests unrun inside conftest's
+        # Windows collect_ignore.
+        runs = "\n".join(
+            str(step.get("run", ""))
+            for step in _load("platform-tests.yml")["jobs"]["backend-test-macos"]["steps"]
+        )
+        for node_id in (
+            "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves",
+            "test/test_terminal_handler.py",
+        ):
+            assert node_id in runs, f"{node_id} is no longer executed on real Darwin"
+
+    def test_platform_tests_never_runs_on_a_pull_request(self) -> None:
+        # A `pull_request` trigger here would put the whole suite back in front of
+        # every merge, which is the exact regression this file guards. The two
+        # allowed triggers are the nightly's call and a fixer's dispatch.
+        triggers = _triggers(_load("platform-tests.yml"))
+        assert set(triggers) == {"workflow_call", "workflow_dispatch"}
+
+
+class TestARedMacSuiteHoldsPublicationAndNeverABuild:
+    """The mirror image of test_dependency_vulnerability_gate.py's partition."""
+
+    def test_every_shipper_is_behind_it_and_no_builder_is(self) -> None:
+        jobs = _load("nightly.yml")["jobs"]
+        assert jobs["platform-tests"]["uses"] == "./.github/workflows/platform-tests.yml"
+
+        gated, ungated = [], []
+        for name, job in jobs.items():
+            if name == "platform-tests":
+                continue
+            (gated if "platform-tests" in _needs(job) else ungated).append(name)
+
+        assert sorted(gated) == sorted(
+            [
+                "publish-cli",
+                "publish-docker",
+                "publish-linux-appimage-arm64",
+                "publish-linux-appimage-x64",
+                "publish-linux-deb-arm64",
+                "publish-linux-deb-x64",
+                "publish-linux-rpm-arm64",
+                "publish-linux-rpm-x64",
+                "publish-windows-x64",
+                "sign-and-notarize",
+                "sign-and-notarize-arm64",
+                "sign-and-notarize-x64",
+            ]
+        )
+        # No build job may grow this `needs:`. Gating the builds is what blocked the
+        # nightly for hours at a stretch when the dependency audit was wired that
+        # way, and it would also destroy the artifacts a fixer needs: with the gate
+        # on publication, a red macOS suite still leaves built, unsigned artifacts
+        # in the run to download.
+        assert sorted(ungated) == sorted(
+            [
+                "version",
+                "build-wheel",
+                "build-desktop",
+                "build-windows",
+                "dependency-vulnerability-gate",
+                "pod-scenarios",
+                "process-leak-invariant",
+            ]
+        )
+
+
+class TestTheOnDemandLaneCannotBecomeAGate:
+    """Advisory has to mean advisory, and that is a property of readiness' lists."""
+
+    def test_readiness_does_not_evaluate_the_on_demand_lane(self) -> None:
+        readiness = (WORKFLOWS / "pr-readiness.yml").read_text(encoding="utf-8")
+        # Absent from both the workflow_run trigger allowlist and the evaluated
+        # lane list. Adding it to either turns a 3-hour macOS queue back into a
+        # merge blocker, one line at a time.
+        assert "macos-on-demand" not in readiness
+        assert "macOS Tests (on demand)" not in readiness
+        assert "platform-tests" not in readiness
+        assert "Platform Tests" not in readiness
+
+    def test_the_on_demand_lane_listens_for_labels_and_keeps_paths_off_the_trigger(self) -> None:
+        # A `paths:` filter applies to EVERY event type, so one on the trigger
+        # would discard the `labeled` event on any PR that touches no darwin file
+        # -- which is exactly the PR someone reaches for the label on. The path
+        # test therefore lives in `decide`, as one of three switches.
+        triggers = _triggers(_load("macos-on-demand.yml"))
+        assert set(triggers) == {"pull_request"}
+        pull_request = triggers["pull_request"]
+        assert "paths" not in pull_request
+        assert "labeled" in pull_request["types"]
+
+    def test_the_decide_job_ors_paths_label_and_a_deterministic_sample(self) -> None:
+        canary = _load("macos-on-demand.yml")
+        decide = canary["jobs"]["decide"]
+        assert "macos" not in str(decide["runs-on"]).lower(), "deciding must not cost a mac runner"
+        run = "\n".join(str(step.get("run", "")) for step in decide["steps"])
+        filters = "\n".join(
+            str((step.get("with") or {}).get("filters", "")) for step in decide["steps"]
+        )
+        # The two darwin gap lists stay on the path switch: widening either one is
+        # how darwin coverage shrinks without a single test changing.
+        assert "test/macos-expected-failures.txt" in filters
+        assert "test/macos-collect-ignore.txt" in filters
+        # The label switch, spelled like ci.yml's `ci:pod-scenarios`.
+        env = "\n".join(str(step.get("env", "")) for step in decide["steps"])
+        assert "'ci:macos'" in env
+        # The sample is a function of the PR HEAD SHA, never of a random source: a
+        # re-run must give the same answer, or a red run vanishes on retry.
+        assert "$RANDOM" not in run and "shuf" not in run
+        assert "github.event.pull_request.head.sha" in env
+        assert "16#${HEAD_SHA:0:8}" in run
+        assert "'SAMPLE_ONE_IN': '20'" in env
+        # And the mac job runs only on decide's say-so.
+        mac = canary["jobs"]["platform-tests"]
+        assert mac["needs"] == ["decide"]
+        assert mac["if"] == "needs.decide.outputs.run == 'true'"
+
+    def test_native_reap_contract_triggers_the_macos_lane(self) -> None:
+        steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        filters = next(step["with"]["filters"] for step in steps if step.get("id") == "filter")
+        paths = yaml.safe_load(filters)["darwin"]
+        assert {
+            "src/kiro_crew/session_pid.py",
+            "src/kiro_crew/session_lifecycle.py",
+            "src/kiro_crew/session_cleanup.py",
+            "src/kiro_crew/session_pool.py",
+            "test/test_darwin_native_provider_reap.py",
+        } <= set(paths)
+
+    def test_the_on_demand_lane_calls_the_nightly_workflow_not_a_copy(self) -> None:
+        # One suite, two callers. A hand-maintained subset here would be a second
+        # copy of the shard and contract steps that could drift from the nightly's
+        # without a test noticing; calling the same reusable workflow removes the
+        # drift axis instead of fencing it.
+        mac = _load("macos-on-demand.yml")["jobs"]["platform-tests"]
+        assert mac["uses"] == "./.github/workflows/platform-tests.yml"
+        assert "runs-on" not in mac and "steps" not in mac
+        # The called workflow declares only `contents: read`, and the caller job
+        # must grant at least that and nothing this lane does not need.
+        assert mac["permissions"] == {"contents": "read"}
+        assert _load("platform-tests.yml")["permissions"] == {"contents": "read"}
+
+    def test_descriptor_security_paths_always_select_native_macos(self) -> None:
+        steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        filters = next(step["with"]["filters"] for step in steps if step.get("id") == "filter")
+        darwin = yaml.safe_load(filters)["darwin"]
+        for path in (
+            "src/kiro_crew/hooks.py",
+            "src/kiro_crew/pinned_fs.py",
+            "src/kiro_crew/dashboard/handlers/files.py",
+            "test/test_safe_read_file_bytes_descriptor.py",
+            "test/test_theme_install.py",
+        ):
+            assert path in darwin, f"{path} must select the native macOS suite"
+
+
+class TestTheDecideJobsReadScope:
+    """The ceiling's occupancy read must not widen what `decide` may see.
+
+    Platform-independent, so it stays collected on every shard; the bash-executing
+    assertions live in ``test_macos_pool_ceiling_posix.py``.
+    """
+
+    def test_the_decide_job_may_only_read_actions(self) -> None:
+        decide = _load("macos-on-demand.yml")["jobs"]["decide"]
+        assert decide["permissions"] == {"contents": "read", "actions": "read"}
+        # Counting is workflow-scoped, so it needs neither paging nor a wider read.
+        assert "actions/workflows/macos-on-demand.yml/runs" in _verdict_script()
+        # And it asks each candidate run whether it HOLDS a macOS job, rather than
+        # counting runs of this workflow, most of which decide not to run the suite.
+        assert "/jobs?per_page=100&filter=latest" in _verdict_script()
+        assert 'startswith("macOS Tests")' in _verdict_script()
+
+    def test_the_probes_job_name_prefix_matches_the_job_it_looks_for(self) -> None:
+        """The occupancy probe and the job it counts are coupled by a STRING.
+
+        The probe keeps a run only when a job's name starts with a literal; the suite
+        job supplies that name. Nothing else ties them, so renaming the job makes the
+        probe return a valid `0` for every candidate: no warning fires, the ceiling
+        never trips, and the lane silently goes back to owning the pool. Pin the pair
+        so a rename goes red here instead.
+        """
+        document = _load("macos-on-demand.yml")
+        suite_job = next(
+            job
+            for name, job in document["jobs"].items()
+            if name != "decide" and "platform-tests.yml" in str(job.get("uses", ""))
+        )
+        declared = suite_job["name"]
+        script = _verdict_script()
+        prefix = script.split('startswith("', 1)[1].split('")', 1)[0]
+        assert declared.startswith(prefix), (
+            f"the occupancy probe filters on jobs whose name starts with {prefix!r}, "
+            f"but the suite job is named {declared!r}; a run holding the pool would "
+            f"not be counted"
+        )

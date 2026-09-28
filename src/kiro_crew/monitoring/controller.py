@@ -1,0 +1,471 @@
+"""Probe-first structured monitor controller and compact wake envelope."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
+from typing import Any, Protocol
+
+from kiro_crew import autonudge_provider_trust
+from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
+from kiro_crew.monitoring.azure_devops_pull_request import AzureDevOpsPullRequestProvider
+from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
+from kiro_crew.monitoring.decision import monitor_budget_reason
+from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProvider
+from kiro_crew.monitoring.gitlab_merge_request import GitLabMergeRequestProvider
+from kiro_crew.monitoring.models import (
+    MAX_MONITOR_PROVIDER_CONCURRENCY,
+    MonitorCreationSurface,
+    MonitorDecision,
+    MonitorDispatchResult,
+    MonitorObservation,
+    MonitorObservationStatus,
+    MonitorProbeResult,
+    MonitorState,
+    MonitorVerdict,
+    ProviderErrorKind,
+    resolve_probe_result,
+    transient_probe_failure,
+)
+from kiro_crew.monitoring.pull_request import provider_error_result
+from kiro_crew.monitoring.registry import monitor_kind
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+MONITOR_WAKE_MAX_CHARS = 4096
+# GitHub and GitLab monitors intentionally retain their existing ambient CLI
+# identity outside an explicitly authenticated dashboard creation. Every other
+# provider fails closed on channel or legacy-unknown provenance unless it is
+# explicitly added here with matching security docs.
+_CHANNEL_OWNER_CREDENTIAL_KINDS = frozenset({"github_pull_request", "gitlab_merge_request"})
+
+logger = logging.getLogger(__name__)
+
+
+class _Loop(Protocol):
+    id: str
+    slot_key: str
+    monitor: MonitorState | None
+
+
+class _Service(Protocol):
+    async def stop_monitor_if_budget_exhausted(
+        self,
+        monitor_id: str,
+        *,
+        now: float,
+    ) -> bool: ...
+
+    async def apply_monitor_probe(
+        self,
+        monitor_id: str,
+        result: MonitorProbeResult,
+        *,
+        now: float,
+        config_generation: int,
+    ) -> MonitorVerdict: ...
+
+    async def record_monitor_dispatch_failure(
+        self,
+        monitor_id: str,
+        fingerprint: str,
+        *,
+        now: float | None = None,
+    ) -> None: ...
+
+    async def record_monitor_dispatch_busy(
+        self,
+        monitor_id: str,
+        fingerprint: str,
+        *,
+        now: float,
+    ) -> None: ...
+
+    async def record_monitor_dispatched(
+        self,
+        monitor_id: str,
+        fingerprint: str,
+        *,
+        now: float,
+    ) -> None: ...
+
+    async def record_monitor_completion_evidence_unavailable(
+        self,
+        monitor_id: str,
+        fingerprint: str,
+        *,
+        now: float,
+    ) -> None: ...
+
+    async def monitor_dispatch_is_authorized(
+        self,
+        monitor_id: str,
+        fingerprint: str,
+    ) -> bool: ...
+
+
+class _Provider(Protocol):
+    def probe(
+        self,
+        subjects: Sequence[str],
+        *,
+        previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+        use_owner_credentials: bool = True,
+    ) -> Mapping[str, MonitorProbeResult]: ...
+
+
+MonitorDispatcher = Callable[[Any, str], Awaitable[MonitorDispatchResult]]
+OwnerCredentialsAuthorizer = Callable[[_Loop, MonitorState], bool]
+#: Names the crew log unit a loop's OWNER session is writing -- its live ACP session
+#: id -- or ``""`` when the slot has no live session. Injected by the host, which is
+#: the one party that holds the session registry; the controller never opens a
+#: session or a file to find out. Typed on ``Any`` for the loop, as the dispatcher
+#: is, so a host callback annotated with its own loop type satisfies it.
+OwnerSessionResolver = Callable[[Any], str]
+
+
+class MonitorController:
+    """Run typed probes and request a turn only for an accepted wake claim."""
+
+    def __init__(
+        self,
+        service: _Service,
+        dispatch: MonitorDispatcher,
+        *,
+        providers: Mapping[str, _Provider] | None = None,
+        clock: Callable[[], float] = time.time,
+        owner_credentials_authorized: OwnerCredentialsAuthorizer | None = None,
+        owner_session_id: OwnerSessionResolver | None = None,
+    ) -> None:
+        self._service = service
+        self._dispatch = dispatch
+        self._clock = clock
+        self._provider_gate = asyncio.Semaphore(MAX_MONITOR_PROVIDER_CONCURRENCY)
+        self._owner_credentials_authorized = (
+            owner_credentials_authorized or self._protected_owner_credentials_authorized
+        )
+        self._owner_session_id = owner_session_id
+        self._providers = dict(providers or {})
+        if not self._providers:
+            self._providers = {
+                "github_pull_request": GitHubPullRequestProvider(),
+                "gitlab_merge_request": GitLabMergeRequestProvider(),
+                "azure_devops_pull_request": AzureDevOpsPullRequestProvider(),
+                "bitbucket_pull_request": BitbucketPullRequestProvider(),
+            }
+
+    @staticmethod
+    def _protected_owner_credentials_authorized(loop: _Loop, state: MonitorState) -> bool:
+        return autonudge_provider_trust.is_monitor_owner_credentials_recorded(
+            loop.id,
+            loop.slot_key,
+            state.kind,
+            state.target,
+        )
+
+    async def tick(self, loop: _Loop, *, now: float) -> MonitorVerdict:
+        """Run one probe and return its verdict.
+
+        A verdict produced without probing -- a recorded outcome, an
+        undelivered wake still in flight -- carries no entries, because nothing
+        was observed on this tick.
+        """
+        state = getattr(loop, "monitor", None)
+        if state is None:
+            raise ValueError("structured monitor state is required")
+        if state.outcome is not None:
+            if (
+                state.wake_in_flight
+                and state.completion_evidence_deadline > 0
+                and now >= state.completion_evidence_deadline
+            ):
+                await self._service.record_monitor_completion_evidence_unavailable(
+                    loop.id,
+                    state.last_wake_fingerprint,
+                    now=now,
+                )
+            return MonitorVerdict(decision=MonitorDecision.STOP_BLOCKED)
+        if state.wake_in_flight:
+            deadline = state.completion_evidence_deadline
+            if state.wake_delivery is MonitorDispatchResult.BUSY:
+                if now < state.next_probe_at:
+                    return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
+                if monitor_budget_reason(state, now=now):
+                    await self._service.record_monitor_dispatch_busy(
+                        loop.id,
+                        state.last_wake_fingerprint,
+                        now=now,
+                    )
+                    return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
+                return await self._dispatch_claimed(loop, state, now=now)
+            if (
+                state.wake_delivery is MonitorDispatchResult.DISPATCHED
+                and deadline > 0
+                and now >= deadline
+            ):
+                await self._service.record_monitor_completion_evidence_unavailable(
+                    loop.id,
+                    state.last_wake_fingerprint,
+                    now=now,
+                )
+            return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
+        if await self._service.stop_monitor_if_budget_exhausted(loop.id, now=now):
+            return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
+        config_generation = state.config_generation
+        target = state.target
+        kind = state.kind
+        # Read BEFORE the probe. The service publishes an accepted observation into
+        # this same state object, so after apply_monitor_probe returns this field
+        # already names the new fingerprint, and the comparison the record depends
+        # on would compare a value with itself.
+        previous_fingerprint = state.last_fingerprint
+        previous_observation = deepcopy(state.last_observation)
+        provider = self._providers.get(state.kind)
+        result: MonitorProbeResult
+        if provider is None:
+            result = provider_error_result(ProviderErrorKind.SETUP, "provider_unsupported")
+            return await self._service.apply_monitor_probe(
+                loop.id,
+                result,
+                now=now,
+                config_generation=config_generation,
+            )
+        try:
+            dashboard_owner_credentials = False
+            if state.creation_surface is MonitorCreationSurface.DASHBOARD:
+                dashboard_owner_credentials = await asyncio.to_thread(
+                    self._owner_credentials_authorized,
+                    loop,
+                    state,
+                )
+            async with self._provider_gate:
+                results = await asyncio.to_thread(
+                    provider.probe,
+                    (target,),
+                    previous_observations={target: previous_observation},
+                    use_owner_credentials=(
+                        dashboard_owner_credentials or state.kind in _CHANNEL_OWNER_CREDENTIAL_KINDS
+                    ),
+                )
+        except Exception:
+            logger.exception("structured monitor provider raised unexpectedly")
+            result = transient_probe_failure()
+        else:
+            # resolve_probe_result logs the unusable case itself: a status test here
+            # cannot distinguish its synthesized fallback from a transient the
+            # provider classified correctly, and would log every rate limit as an
+            # error.
+            result = resolve_probe_result(results, target)
+        verdict = await self._service.apply_monitor_probe(
+            loop.id,
+            result,
+            now=now,
+            config_generation=config_generation,
+        )
+        self._record_observation(
+            loop,
+            state,
+            result,
+            kind=kind,
+            target=target,
+            previous_fingerprint=previous_fingerprint,
+            now=now,
+        )
+        if verdict.decision is not MonitorDecision.WAKE_ACTIONABLE:
+            return verdict
+        return await self._dispatch_claimed(loop, state, now=now, entries=verdict.entries)
+
+    def _record_observation(
+        self,
+        loop: _Loop,
+        state: MonitorState,
+        result: MonitorProbeResult,
+        *,
+        kind: str,
+        target: str,
+        previous_fingerprint: str,
+        now: float,
+    ) -> None:
+        """Append the probe's canonical snapshot to the owner session's crew log.
+
+        Once per CHANGE, never per poll, and independent of the wake decision: a
+        subject that moved from one pending state to another is recorded even
+        though nobody is woken for it, because the record is about the subject,
+        not about what the engine chose to do.
+
+        "Changed" is judged against the state the service PUBLISHED, not against
+        the raw observation. ``apply_monitor_probe`` copies an accepted observation
+        into this live state object before it returns, and declines one taken
+        under a superseded configuration generation without touching it. Reading
+        the published fingerprint back is what keeps the record honest in both
+        directions: a declined observation writes nothing (the next tick will
+        observe the subject again and record it then, once), and a baseline reset
+        that raced this probe cannot be mistaken for a change, because the state
+        then names neither the previous fingerprint nor this one.
+
+        The provider-error result is excluded before any of that: a failed read is
+        no evidence about the subject, carries no fingerprint, and is never
+        published as one.
+
+        The owner session is named by the host's resolver. A slot with no live
+        session -- cold after a restart, or torn down -- records nothing rather
+        than opening one: a probe runs without a model turn and must stay that
+        cheap. Nothing here is allowed to reach the tick: a record that could not
+        be made is logged, and the wake this tick may owe is delivered regardless.
+        """
+        if self._owner_session_id is None:
+            return
+        observation = result.observation
+        if observation.status is MonitorObservationStatus.PROVIDER_ERROR:
+            return
+        if not observation.fingerprint or observation.fingerprint == previous_fingerprint:
+            return
+        if state.last_fingerprint != observation.fingerprint:
+            return
+        try:
+            session_id = self._owner_session_id(loop)
+            if not session_id:
+                return
+            from kiro_crew.crew_log import emit as crew_log_emit
+            from kiro_crew.crew_log.entry_types import OBJECT_PRODUCER_PROBE
+
+            crew_log_emit.on_object_observed(
+                session_id,
+                producer=OBJECT_PRODUCER_PROBE,
+                kind=kind,
+                target=target,
+                fingerprint=observation.fingerprint,
+                facts=result.canonical,
+                observed_at=now,
+            )
+        except Exception:
+            logger.exception("structured monitor could not record its observation")
+
+    async def _dispatch_claimed(
+        self,
+        loop: _Loop,
+        state: MonitorState,
+        *,
+        now: float,
+        entries: tuple[MonitorObservation, ...] = (),
+    ) -> MonitorVerdict:
+        """Deliver one persisted claim or schedule its typed recovery path.
+
+        *entries* are the observations that produced the claim, carried through
+        so the delivered verdict still names its evidence. A retry of a claim
+        persisted on an earlier tick has none to carry.
+        """
+        envelope = format_monitor_wake(
+            monitor_id=loop.id,
+            kind=state.kind,
+            target=state.target,
+            objective=state.objective,
+            fingerprint=state.last_wake_fingerprint,
+            reason_code=state.last_wake_reason_code,
+            canonical=state.last_observation,
+            wake_instructions=state.wake_instructions,
+        )
+        if not await self._service.monitor_dispatch_is_authorized(
+            loop.id,
+            state.last_wake_fingerprint,
+        ):
+            return MonitorVerdict(decision=MonitorDecision.STOP_BLOCKED, entries=entries)
+        try:
+            delivered = await self._dispatch(loop, envelope)
+        except asyncio.CancelledError:
+            await self._service.record_monitor_dispatch_busy(
+                loop.id,
+                state.last_wake_fingerprint,
+                now=now,
+            )
+            raise
+        except Exception:
+            logger.exception("structured monitor delivery raised unexpectedly")
+            delivered = MonitorDispatchResult.BUSY
+        if not isinstance(delivered, MonitorDispatchResult):
+            logger.error("structured monitor dispatcher returned an untyped result")
+            delivered = MonitorDispatchResult.UNAVAILABLE
+        if delivered is MonitorDispatchResult.UNAVAILABLE:
+            await self._service.record_monitor_dispatch_failure(
+                loop.id,
+                state.last_wake_fingerprint,
+                now=now,
+            )
+        elif delivered is MonitorDispatchResult.BUSY:
+            await self._service.record_monitor_dispatch_busy(
+                loop.id,
+                state.last_wake_fingerprint,
+                now=now,
+            )
+        elif delivered is MonitorDispatchResult.DISPATCHED:
+            await self._service.record_monitor_dispatched(
+                loop.id,
+                state.last_wake_fingerprint,
+                now=self._clock(),
+            )
+        return MonitorVerdict(decision=MonitorDecision.WAKE_ACTIONABLE, entries=entries)
+
+
+def format_monitor_wake(
+    *,
+    monitor_id: str,
+    kind: str,
+    target: str,
+    objective: str,
+    fingerprint: str,
+    reason_code: str,
+    canonical: Mapping[str, object],
+    wake_instructions: str = "",
+) -> str:
+    """Render only allowlisted canonical facts, redacted before the hard cap.
+
+    The subject noun and the fields to render come from the registry entry for
+    *kind*, so each subject describes itself to the agent it wakes. *kind* is the
+    monitor's armed kind (``MonitorState.kind``), the authoritative record of what
+    is being watched -- not a value read out of the provider-supplied canonical,
+    which is versioned and may be thin.
+
+    Two absences read differently. A kind the registry has no entry for is an
+    unidentifiable subject: it yields a neutral envelope that names the kind and
+    says its fields are undeclared, never one subject's shape stamped over
+    another's facts. A registered kind whose canonical is thin -- an empty or older
+    ``last_observation`` -- still knows its noun and field list from the entry, and
+    simply reports its state changed. Everything rendered here passes through the
+    redaction and the hard cap below, so a canonical field a provider fills reaches
+    the woken agent scrubbed, not raw.
+    """
+    entry = monitor_kind(kind)
+    changed: list[str] = []
+    if entry is None:
+        subject_noun = f"{kind} subject" if kind else "monitored subject"
+        changed_line = "canonical fields undeclared for this kind"
+    else:
+        subject_noun = entry.subject_noun
+        for name in entry.wake_fields:
+            if name == "checks":
+                checks = canonical.get("checks")
+                if isinstance(checks, Mapping):
+                    for check_state in ("failed", "pending", "unknown"):
+                        values = checks.get(check_state)
+                        if isinstance(values, list) and values:
+                            changed.append(f"{check_state} checks: {len(values)}")
+                continue
+            value = canonical.get(name)
+            if isinstance(value, (str, int, bool)):
+                changed.append(f"{name}={value}")
+        changed_line = "; ".join(changed) or "canonical state changed"
+    head = canonical.get("head_revision")
+    action = wake_instructions.strip() or "Inspect the changed facts and take the next safe action."
+    envelope = (
+        f"{MONITOR_WAKE_PREFIX}\n"
+        f"Monitor {monitor_id}: {subject_noun} {target}; objective: {objective}.\n"
+        f"Fingerprint: {fingerprint}. Classification: {reason_code or 'actionable'}.\n"
+        f"Head: {head if isinstance(head, str) else 'unknown'}. "
+        f"Changed: {changed_line}.\n"
+        f"Next action: {action}"
+    )
+    envelope, _ = redact_exfiltration_urls(envelope)
+    envelope, _ = redact_credentials(envelope)
+    return envelope[:MONITOR_WAKE_MAX_CHARS]

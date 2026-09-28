@@ -1,0 +1,32 @@
+# Smoke: the keyboard-shortcut reference at Settings > Shortcuts. The pane is
+# the same data as the Alt+K shortcuts modal laid out as ordinary Settings
+# cards: a "Preferences" card with the "Enable shortcuts" switch (on by
+# default), then one card per shortcut group ("Chat Navigation", "Panel
+# Navigation", "Actions") whose rows pair a plain-language action with its key
+# caps, then "Search" and "Panel toggles". Everything is client-side and static
+# on the seeded target, so the flow is one read and one scroll and the
+# expectations hold on any night. The tester only READS the switch: flipping it
+# off would disable every chord for the scenarios that follow in the same run.
+# Override recording and the modal itself are separate backlog records.
+name: settings-shortcuts
+tier: smoke
+feature: settings
+user_story: >-
+  As a keyboard user, I want a shortcut reference with overrides, so that I can
+  work faster.
+docs_url: docs/feature-map/README.md
+summary: Open Settings > Shortcuts and read the Enable switch and the grouped shortcut table
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings/shortcuts
+steps:
+  - You are on the Settings page with its Shortcuts tab selected; the pane heading reads "Shortcuts" with "Keyboard shortcuts reference and preferences" beneath it. Read the first card, under a small "Preferences" heading. Do not click its switch.
+  - Scroll down once inside the pane so the shortcut groups below the Preferences card come into view, and read them.
+expectations:
+  - The "Shortcuts" tab is highlighted in the settings navigation on the left of the page.
+  - A "Preferences" card shows a row labelled "Enable shortcuts" whose switch is on.
+  - At least two group headings are visible (for example "Chat Navigation", "Panel Navigation" or "Actions"), each above a card of rows; every row has an action name on the left and one or more small key caps on the right (such as "Alt" + "1" or "Alt" + "C").
+  - No text is clipped, overlapping or unreadable, and no red error banner is visible.
+max_steps: 6
+max_seconds: 180

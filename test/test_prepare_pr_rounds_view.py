@@ -1,0 +1,201 @@
+"""Tests for `pr_findings.py --rounds`, the prepare-pr loop's cross-round memory.
+
+The view is rebuilt from the PR's own writer-authored disposition comments, so
+nothing lives on disk and the record outlives the loop. Three properties are
+load-bearing:
+
+- one round per judged `head=`, in first-disposed order, regardless of which
+  lane each comment targets;
+- the two optional plain lines (`self-added:`, `mechanism:`) are read from the
+  comment body OUTSIDE the `> ` block, and a span disposed twice in one round
+  counts that round once;
+- the retrospective trigger is an EXIT CODE (30): a span at three rounds, or the
+  next round being the 3rd/6th/9th.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import ModuleType
+
+from skill_script_helpers import load_skill_script
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = (
+    ROOT
+    / "src"
+    / "kiro_crew"
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "prepare-pr"
+    / "scripts"
+    / "pr_findings.py"
+)
+
+
+def _load() -> ModuleType:
+    return load_skill_script("prepare_pr_findings_rounds", SCRIPT)
+
+
+def _disp(cid: int, target: str, head: str, span: str | None, extra: str = "") -> dict:
+    marker = "<!-- ai-review-disposition target={} head={} -->\n".format(target, head)
+    claim = "**fixed** — span={}\n".format(span) if span else "**fixed** — a watch item\n"
+    body = marker + claim + extra + "\n> rationale line naming span=deadbeef0000 as evidence only\n"
+    return {"id": cid, "body": body, "user": {"login": "writer"}}
+
+
+def _wire(module: ModuleType, monkeypatch, comments: list[dict]) -> None:
+    monkeypatch.setattr(module, "fetch_disposition_comments", lambda repo, number: comments)
+    monkeypatch.setattr(
+        module,
+        "writer_disposition_records",
+        lambda repo, cs: [module.parse_disposition_record(c) for c in cs],
+    )
+
+
+def test_rounds_are_grouped_by_judged_head_in_order(monkeypatch, capsys):
+    mod = _load()
+    h0 = "a" * 40
+    h1 = "b" * 40
+    comments = [
+        _disp(1, "gpt", h0, "aaaaaaaaaaa1", "self-added: no\n"),
+        _disp(2, "design", h1, None, "mechanism: retry guard on add\n"),
+        _disp(3, "gpt", h1, "aaaaaaaaaaa1", "self-added: yes\n"),
+        _disp(4, "gpt", h1, "aaaaaaaaaaa2", "self-added: yes\nmechanism: digest suffix on path\n"),
+    ]
+    _wire(mod, monkeypatch, comments)
+    rc = mod.rounds_view("o/r", 7, "c" * 40, {"additions": 10, "deletions": 2})
+    out = capsys.readouterr().out
+    assert rc == 30, "two rounds disposed -> the next is the 3rd -> retrospective due"
+    assert (
+        "- round 0 — head aaaaaaaaaaaa — 1 disposition(s) [gpt×1] — spans: aaaaaaaaaaa1 — self-added: 0"
+        in out
+    )
+    assert (
+        "- round 1 — head bbbbbbbbbbbb — 3 disposition(s) [design×1, gpt×2] — spans: aaaaaaaaaaa1, aaaaaaaaaaa2 — self-added: 2"
+        in out
+    )
+    assert "    mechanism: retry guard on add" in out
+    assert "    mechanism: digest suffix on path" in out
+    assert "size now: +10/-2" in out
+    assert "next round: 2" in out
+    assert "findings in self-added code: 2   mechanisms declared: 2" in out
+    assert "recurring spans (≥3 rounds): none" in out
+    # a span= inside a `> ` line is evidence, not a claim
+    assert "deadbeef0000" not in out.split("spans:")[1].split("\n")[0]
+
+
+def test_exit_30_on_third_round_and_on_a_span_at_three(monkeypatch, capsys):
+    mod = _load()
+    heads = ["1" * 40, "2" * 40, "3" * 40, "4" * 40]
+    # two rounds disposed -> next is the 3rd -> due
+    _wire(
+        mod,
+        monkeypatch,
+        [_disp(1, "gpt", heads[0], "aaaaaaaaaaa1"), _disp(2, "gpt", heads[1], "aaaaaaaaaaa2")],
+    )
+    assert mod.rounds_view("o/r", 7, "f" * 40, {}) == 30
+    assert "RETROSPECTIVE DUE" in capsys.readouterr().out
+    # four rounds, no span repeated -> next is the 5th -> not due
+    _wire(
+        mod,
+        monkeypatch,
+        [
+            _disp(1, "gpt", heads[0], "aaaaaaaaaaa1"),
+            _disp(2, "gpt", heads[1], "aaaaaaaaaaa2"),
+            _disp(3, "gpt", heads[2], "aaaaaaaaaaa3"),
+            _disp(4, "gpt", heads[3], "aaaaaaaaaaa4"),
+        ],
+    )
+    assert mod.rounds_view("o/r", 7, "f" * 40, {}) == 0
+    # the same span in three rounds -> due regardless; twice in one round counts once
+    _wire(
+        mod,
+        monkeypatch,
+        [
+            _disp(1, "gpt", heads[0], "aaaaaaaaaaa1"),
+            _disp(2, "gpt", heads[1], "aaaaaaaaaaa1"),
+            _disp(3, "gpt", heads[1], "aaaaaaaaaaa1"),
+            _disp(4, "gpt", heads[2], "aaaaaaaaaaa1"),
+            _disp(5, "gpt", heads[3], "aaaaaaaaaaa9"),
+        ],
+    )
+    assert mod.rounds_view("o/r", 7, "f" * 40, {}) == 30
+    assert "  aaaaaaaaaaa1 ×3" in capsys.readouterr().out
+
+
+def test_size_line_splits_code_and_test_and_never_moves_the_exit(monkeypatch, capsys):
+    mod = _load()
+    first, now = "a" * 40, "c" * 40
+    diffs = {
+        first: "src/x.py\t10\t2\ntest/test_x.py\t5\t0\n",
+        now: "src/x.py\t40\t5\ntest/test_x.py\t20\t1\nwebsite/electron/mochi/test/machineStore.test.js\t3\t0\n",
+    }
+
+    def fake_run(args):
+        sha = args[2].rsplit("...", 1)[1]
+        return (0, diffs[sha], "") if sha in diffs else (1, "", "No commit found")
+
+    monkeypatch.setattr(mod, "run", fake_run)
+    _wire(mod, monkeypatch, [_disp(1, "gpt", first, "aaaaaaaaaaa1")])
+    assert mod.rounds_view("o/r", 7, now, {"baseRefName": "main"}) == 0
+    out = capsys.readouterr().out
+    assert "size at first judged head: code 12, test 5 lines   now: code 45, test 24 lines" in out
+    # a first head GitHub cannot read (force-pushed away) reads as unknown
+    _wire(mod, monkeypatch, [_disp(1, "gpt", "d" * 40, "aaaaaaaaaaa1")])
+    assert mod.rounds_view("o/r", 7, now, {"baseRefName": "main"}) == 0
+    assert "size at first judged head: unknown   now: code 45" in capsys.readouterr().out
+    # a compare GitHub truncated at its file cap is not a size
+    diffs[now] = "src/x.py\t1\t0\n" * mod.COMPARE_FILE_CAP
+    assert mod.rounds_view("o/r", 7, now, {"baseRefName": "main"}) == 0
+    assert "now: unknown" in capsys.readouterr().out
+
+
+def test_rounds_view_fails_closed_when_comments_are_unreadable(monkeypatch, capsys):
+    mod = _load()
+    monkeypatch.setattr(mod, "fetch_disposition_comments", lambda repo, number: None)
+    assert mod.rounds_view("o/r", 7, "f" * 40, {}) == 2
+    monkeypatch.setattr(mod, "fetch_disposition_comments", lambda repo, number: [])
+    monkeypatch.setattr(mod, "writer_disposition_records", lambda repo, cs: None)
+    assert mod.rounds_view("o/r", 7, "f" * 40, {}) == 2
+
+
+def test_skill_wires_the_rounds_view_and_the_two_lines():
+    skill = (SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "pr_findings.py <pr#> --rounds" in skill
+    # The intent lives in the PR body's frozen sections, not in a separate comment.
+    assert "prepare-pr-intent" not in skill
+    flat = " ".join(skill.split())
+    assert "Copy the frozen goal verbatim every round." in flat
+    assert "revert to `<head sha>` and redo via a smaller path" in flat
+    assert "`self-added: yes|no`" in skill and "`mechanism: <one line>`" in skill
+    assert "round_notes" not in skill
+    assert "## Three questions per finding" in skill
+
+
+def test_the_frozen_goal_line_is_printed_from_the_pr_body(monkeypatch, capsys):
+    mod = _load()
+    _wire(mod, monkeypatch, [])
+    body = "## Problem / Motivation\r\n\r\n**Goal:**  Users can resume a chat.  \r\n"
+    assert mod.rounds_view("o/r", 7, "f" * 40, {"body": body}) == 0
+    assert "goal (frozen): Users can resume a chat.\n" in capsys.readouterr().out
+
+
+def test_an_unfilled_or_absent_goal_line_reads_as_missing(monkeypatch, capsys):
+    mod = _load()
+    _wire(mod, monkeypatch, [])
+    # The template ships an empty `**Goal:**` scaffold; that is not a goal.
+    for pr_json in ({"body": "## Problem / Motivation\n\n**Goal:**\n\nText.\n"}, {}):
+        mod.rounds_view("o/r", 7, "f" * 40, pr_json)
+        assert "goal (frozen): MISSING" in capsys.readouterr().out
+
+
+def test_the_goal_line_is_redacted_before_printing(monkeypatch, capsys):
+    """The body is PR-controlled, so a credential in it must not reach the transcript."""
+    mod = _load()
+    _wire(mod, monkeypatch, [])
+    secret = "ghp_" + "a" * 36
+    mod.rounds_view("o/r", 7, "f" * 40, {"body": "**Goal:** leak token={}\n".format(secret)})
+    out = capsys.readouterr().out
+    assert "goal (frozen): leak" in out
+    assert secret not in out

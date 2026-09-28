@@ -1,0 +1,43 @@
+# Smoke: the left nav rail collapses to icons and expands again from its brand
+# button. The rail header (logo, product name, arrow-to-edge glyph) is ONE
+# button titled "Collapse sidebar": a click narrows the rail to an icon strip
+# and the row labels go away, a hover over any icon row lays its label over
+# the row as a flyout (`useNavTip`), and the same button -- now the bare logo,
+# titled "Expand sidebar" -- widens it again. Pure shell chrome with no gateway
+# call, so it holds on any night. The product name is not spelled in the steps:
+# the rail renders the configured bot name, which the seed sets to a one-word
+# identifier.
+#
+# The collapsed flag is persisted per device (localStorage `mc-nav`) in the one
+# browser profile the whole run shares, so the flow is collapse -> hover ->
+# expand and leaves the rail as it found it (expanded on a fresh profile). The
+# collapse and expand steps each name the state to reach rather than "click",
+# so a retry that starts from a collapsed rail converges on an expanded one
+# instead of inverting it. Only the newest three screenshots survive
+# (harness.KEEP_IMAGES), so the flow is exactly three actions (the first step
+# is a read) with no wait after the last: the kept frames are the collapsed
+# rail, the hover flyout and the expanded rail, in that order.
+name: sidebar-rail-collapse-expand
+tier: smoke
+feature: sidebar
+user_story: >-
+  As a user, I want to collapse the rail to icons, so that I have more room
+  for content.
+docs_url: docs/feature-map/README.md
+summary: Collapse the left nav rail to icons from its brand button, hover an icon for its label, then expand it again
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. The narrow column at the far left of the window is the nav rail. At its top sit the product logo and a name in capital letters, with a small arrow-pointing-to-a-line icon at the right edge of that row; below are rows labelled "Sessions", "Schedule" and "Artifacts", an "Apps" section, and at the bottom "Agent Capabilities" and "Settings". Only look for now.
+  - Make sure the rail is COLLAPSED -- if those labels are showing, click the logo-and-name row once. The rail narrows to a strip of icons and every label disappears. (The wider session list next to the rail is not the rail; leave it alone.)
+  - Move the mouse over the top icon of the narrow rail, the one directly below the logo, without clicking. A small label reading "Sessions" appears over or beside the icon.
+  - Now make sure the rail is EXPANDED -- click the logo at the top of the narrow rail once. The rail widens and the row labels come back. Do nothing else after that.
+expectations:
+  - The nav rail is expanded, with the name beside the logo and the row labels "Sessions", "Schedule", "Artifacts", "Agent Capabilities" and "Settings" readable.
+  - In the screenshot where the rail was collapsed and nothing was hovered, the rail was a narrow strip of icons with none of those labels showing, and the content to its right had grown wider.
+  - In the screenshot taken while the mouse hovered the top icon, a label reading "Sessions" was visible next to or over that icon.
+  - Nothing in the rail is clipped or overlaps, and no red error banner is visible.
+max_steps: 8
+max_seconds: 240

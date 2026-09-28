@@ -1,0 +1,44 @@
+# Smoke: browse the workspace from the Activity panel's Files view without
+# attaching or sending anything. The Files view is one of the three PINNED
+# views (Changes / Files / Artifacts) that are always present in the panel's
+# top strip; while Changes is active the other two are icon-only chips, so the
+# Files chip is found by its accessible name, not by visible text. Its body is
+# the FilesHomePanel: a header reading "Files" with the project's quick actions,
+# and beneath it the FileBrowserRail tree for the seeded project directory --
+# folder rows that expand in place and file rows that would open a tab. The
+# flow expands exactly one folder and stops: opening a file, attaching it to
+# the composer or sending a message would change the session and belongs to a
+# different scenario.
+#
+# Same persistence caveat as chat-activity-side-panel-toggle: the open flag is
+# stored per session (`mc-activity-open:<slot>`) in the shared browser profile,
+# so the open step is worded as a state to reach and the flow closes the panel
+# at the end, leaving it as it found it. Only the newest three screenshots
+# survive (harness.KEEP_IMAGES); with five actions they are the expanded
+# folder, the closed panel and the settled page, so the browse evidence is read
+# from the first of them.
+name: chat-files-side-panel-browse
+tier: smoke
+feature: files
+user_story: >-
+  As a user, I want to browse my workspace files beside the transcript, so that
+  I can find a file to reference without leaving the chat.
+docs_url: docs/feature-map/README.md
+summary: Open the Activity panel, switch to its pinned Files view, expand one folder in the workspace tree, then close the panel
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /chat
+steps:
+  - You are on the chat page. In the left sidebar's session list click the pinned row titled "Welcome to KiroCrew" (below the "Demos" folder, outside it) so that its conversation opens, with a header bar above the transcript showing that title.  # brand-ok: verbatim seeded session title from the rich fixture
+  - Make sure the Activity panel is open. If nothing is showing to the right of the transcript, click the "Open activity panel" button -- a small panel icon at the right end of that header bar, near the pop-out icon -- once. A panel appears beside the transcript.
+  - In the panel's top strip, next to the highlighted "Changes" tab, click the icon-only tab named "Files" (a folders icon). The panel body changes to a header reading "Files" with a file tree beneath it listing the project's folders and files.
+  - In that tree click the first row that has a chevron (a folder row) once, so it expands in place and its children -- indented rows, at least one of them a file with an extension -- appear beneath it. Do not click a file row.
+  - At the right end of the panel's top strip click the "Close panel" button (a panel icon).
+expectations:
+  - No panel is showing beside the transcript; the conversation fills the width of the main area again, and the "Open activity panel" icon button is back at the right end of the header bar.
+  - In the screenshot taken after the folder click, the panel stood to the right of the transcript with its "Files" tab highlighted, a header reading "Files", and a tree in which one folder row was expanded with indented child rows beneath it, at least one of them a file name with an extension.
+  - The composer at the bottom of the transcript is empty and no file chip or attachment is showing above it; no new message was added to the conversation.
+  - No red error banner is visible and the panel showed no text reading "No project directory is set for this chat".
+max_steps: 10
+max_seconds: 270

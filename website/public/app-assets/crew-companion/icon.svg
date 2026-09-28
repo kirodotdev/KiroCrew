@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Friendly rounded ghost: dome head + scalloped tail, reused from the Kiro companion silhouette -->
+  <path d="M5,18 L5,9.5 A7,7 0 0 1 19,9.5 L19,18 Q16.67,20.2 14.33,18 Q12,20.2 9.67,18 Q7.33,20.2 5,18 Z"
+        fill="var(--ico-a, currentColor)" fill-opacity="0.22"
+        stroke="var(--ico-a, currentColor)" stroke-width="1.8" stroke-linejoin="round"/>
+  <!-- Eyes -->
+  <circle cx="9.6" cy="11.2" r="1.35" fill="var(--ico-b, currentColor)"/>
+  <circle cx="14.4" cy="11.2" r="1.35" fill="var(--ico-b, currentColor)"/>
+</svg>

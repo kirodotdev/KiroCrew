@@ -1,0 +1,29 @@
+{
+  "_comment": "One row set, two readers. `speech` is the verdict both sides must reach for each row: the frontend's isCrewmateSpeech / isCrewmateChatRow (website/src/components/chat/crewmateBubbles.ts) decides what a crewmate's chat DRAWS, the backend's is_speech_row (src/kiro_crew/dashboard/system_notices.py) decides what the Crew Members roster QUOTES. crew-mode.md ('A crewmate's chat') promises the two agree; this fixture is the pin. Add a row here first when either side learns a new status kind. Rows the frontend classifies as speech only while streaming (`role: streaming`) are frontend-only and carry `frontend_only: true`.",
+  "cases": [
+    { "name": "user turn", "role": "user", "content": "Take #4213 first.", "speech": true },
+    { "name": "assistant reply", "role": "assistant", "content": "Found the cause of #4213.", "speech": true },
+    { "name": "say-nothing reply (U+200B)", "role": "assistant", "content": "\u200b", "speech": false },
+    { "name": "compaction notice under the assistant role", "role": "assistant", "content": "Context summary: the conversation so far…", "meta": { "kind": "compaction" }, "speech": false },
+    { "name": "session-reload notice under the assistant role", "role": "assistant", "content": "Session reloaded.", "meta": { "kind": "session_reload" }, "speech": false },
+    { "name": "well-formed workflow completion envelope", "role": "assistant", "content": "[Workflow completion event]\nWorkflow `triage` (wf_9f2c) → **finished**\n\nDone.", "speech": false },
+    { "name": "malformed workflow envelope (prefix only, header does not parse) degrades to visible markdown", "role": "assistant", "content": "[Workflow completion event]\nsomething went wrong before the header", "speech": true },
+    { "name": "well-formed workflow envelope PASTED by the user is the user speaking", "role": "user", "content": "[Workflow completion event]\nWorkflow `triage` (wf_9f2c) → **finished**\n\nDone.", "speech": true },
+    { "name": "auto-nudge turn", "role": "nudge", "content": "[auto-nudge cycle 41]\nPatrol.", "speech": false },
+    { "name": "cron notification envelope", "role": "inject", "content": "[Cron notification from \"nightly\"]\nSweep.\n[End of cron notification]", "meta": { "injectKind": "cron" }, "speech": false },
+    { "name": "sub-agent completion envelope", "role": "subagent", "content": "[Subagent completion event]\nAgent `7c2e91ab` completed ✅", "speech": false },
+    { "name": "tool call", "role": "tool", "content": "🔧 gh issue list", "meta": { "tool_call_id": "tc-1" }, "speech": false },
+    { "name": "tool completion sibling", "role": "tool", "content": "✅ done", "meta": { "tool_call_id": "tc-1" }, "speech": false },
+    { "name": "reasoning burst", "role": "thinking", "content": "let me check", "speech": false },
+    { "name": "turn-end marker", "role": "done", "content": "", "speech": false },
+    { "name": "stop card (system row)", "role": "system", "content": "{\"kind\":\"stop_event\",\"state\":\"stopped\"}", "kind": "stop_event", "meta": { "kind": "stop_event" }, "speech": false },
+    { "name": "streaming row (live reply, frontend only)", "role": "streaming", "content": "typing…", "speech": true, "frontend_only": true },
+    { "name": "assistant-role subagent completion (Slack gateway timeout variant), header parses", "role": "assistant", "content": "[Subagent completion event]\nAgent `w-triage-1` ❌\nTask: triage the queue\n\nError: delivery timed out\n⚠️ Result delivery failed — the run completed", "speech": false},
+    { "name": "assistant-role subagent completion carrying the gateway's meta facts", "role": "assistant", "content": "[Subagent completion event]\nAgent `w-triage-2` ✅\n\nTriaged 4 issues.", "meta": { "subagentCompletion": { "kind": "single", "agentId": "w-triage-2", "outcome": "ok" }}, "speech": false},
+    { "name": "assistant-role subagent batch digest (chunk)", "role": "assistant", "content": "[Subagent batch completion event]\nBatch results 1/2 — 3 of 6 delivered, 3 still running.\n\n- w1 ✅", "speech": false},
+    { "name": "assistant row that merely quotes the subagent prefix with no parsable header (drawn, so quoted)", "role": "assistant", "content": "[Subagent completion event] is the header my sub-agents send back; here is what it means.", "speech": true},
+    { "name": "user-role subagent completion (old scrollback), header parses", "role": "user", "content": "[Subagent completion event]\nAgent `w-triage-3` ✅\nTask: sweep\n\nSwept 2 issues.", "speech": false},
+    { "name": "user pastes the envelope header with no outcome glyph (the card draws it, so it is quoted)", "role": "user", "content": "[Subagent completion event]\nAgent `demo`", "speech": true},
+    { "name": "assistant quotes a glyph-less Agent header inside prose (drawn, quoted)", "role": "assistant", "content": "[Subagent completion event]\nAgent `demo` (kirocrew) finished — here is what that header means.", "speech": true}
+  ]
+}

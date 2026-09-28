@@ -1,0 +1,189 @@
+# Error Handling
+
+## Principles
+
+1. Custom exceptions in `acp/client.py` for ACP protocol/prompt errors, in
+   `acp/session_handle.py` for runtime/transport errors, and in `acp/runtime.py`
+   for runtime binding and session-start errors
+2. Error strings at CLI boundaries (never expose tracebacks to users)
+3. Graceful degradation — partial output returned on timeout
+
+## Exception Hierarchy
+
+Two independent families. `AcpError` covers protocol and prompt-level failures;
+`AcpRuntimeError` covers the process and request transport underneath it.
+
+```
+AcpError (base, acp/client.py)          — carries `transient`, the retry verdict
+├── AcpTimeoutError        — prompt timed out, has partial_output
+├── AcpPermissionNeeded    — tool approval required
+├── AcpProcessDied         — kiro-cli exited unexpectedly
+│   └── AcpRegistrationRateLimited — the death's stderr shows a throttled
+│                            dynamic registration (HTTP 429); transient, so the
+│                            retry ladders recover it instead of surfacing a
+│                            terminal generic death. Classified only while the
+│                            session has produced no text and run no tool, so
+│                            the verdict can never license a replay that
+│                            repeats side effects
+├── AcpAuthRequired        — kiro-cli not authenticated; non-retryable
+├── AcpSandboxInitFailed   — an OS sandbox refused to initialize; non-retryable
+├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
+│                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
+├── PiGateExtensionTampered — the shipped Pi gate extension failed its digest check
+├── AcpModelUnavailable    — requested model not entitled; non-retryable
+└── AcpPromptBusy          — a prompt is already in flight on this session
+
+AcpRuntimeError (base, acp/session_handle.py)
+├── AcpRuntimeDead            — the underlying process has died
+├── AcpRequestTimeout         — a request's response missed its budget
+│   └── AcpSessionStartTimeout — `session/new` timed out while a collector owns
+│                                the possible late result (acp/runtime.py)
+└── AcpWorkspaceBindingError  — descriptor-bound runtime cannot serve another cwd
+    └── AcpToolSurfaceBindingError — a shared runtime cannot safely serve the
+                                     requested tool surface (acp/runtime.py)
+```
+
+`AcpToolGateUnroutable` is a distinct type rather than a transport error because
+the condition is a configuration fact: a respawn re-reads the same answer and
+refuses again while consuming a reconnect budget meant for transport faults. The
+same argument makes `AcpAuthRequired` and `AcpModelUnavailable` distinct — each
+one is invalid on its own terms, so the retry ladder must be skipped rather than
+walked. `AcpRequestTimeout` subclasses its base so existing
+`except AcpRuntimeError` handlers keep catching it.
+
+**A retry DROPPED after its backoff hands back everything it counted before it.**
+A spent one-shot silently disarms the next real recovery; a counted attempt
+shortens the next ladder and inflates its backoff seed, both for a retry that
+never reached the provider. A no-requeue exit ENDS the turn, so it owes the same
+per-turn budget refresh the landed and terminal arms do -- the whole ladder, not a
+decrement, because an arm that already spent attempts 1..2 would otherwise stay
+permanently short. The pending "retrying..." card is corrected by APPENDING a
+give-up row rather than retracted, so the affordance to continue comes back
+instead of the row simply disappearing.
+
+## Boundaries
+
+| Boundary | Strategy |
+|----------|----------|
+| ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
+| JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
+| Config load | Invalid JSON → log warning, return defaults |
+| Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
+| asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
+
+## Dashboard Error Codes
+
+Dashboard JSON errors include a stable lower-snake `code` alongside advisory
+`error` text, preserving the route's HTTP status. Redact untrusted text fields
+before putting them in a transparent response dictionary. A computed status is
+compliant when that dictionary carries an explicit code; an uncoded or opaque
+body remains debt in `test/test_error_code_contract.py`. That guard also checks
+literal code values on computed-status responses and refuses dictionary spreads
+that could replace the code.
+
+## Backend Error Classification
+
+`acp/client.py` rewrites raw JSON-RPC backend errors into actionable user text
+(`_format_acp_error`) and decides retry-eligibility (`_is_transient_raw_error`).
+Both key off the SAME module-level `_RE_*` patterns so wording and retry verdict
+never drift. Notable terminal (non-retryable) classes:
+
+- **Malformed request**: a structural rejection (backend "Improperly formed
+  request"). Classified TERMINAL: the identical payload cannot succeed on
+  retry, so the message states the request was malformed and points at a repair
+  affordance (`/compact` to shrink and repair the conversation, or starting a new
+  conversation) rather than suggesting a retry. The reset affordance is PROSE,
+  not a command: this formatter does not know which surface renders the string,
+  and the reset command differs per surface (`/new` on Telegram and Discord, a
+  new tab on the dashboard), so naming one spelling hands every other surface's
+  user a command that does nothing. A command may be named here only if
+  every surface UNDERSTANDS it: `/compact` qualifies because it reaches the
+  backend through the prompt transport everywhere, even on Slack, which also
+  offers `!compact` as its own alias. The same rule governs the sibling
+  prompt-busy branch, which for the same reason now names no command at all.
+- **Unsupported image history**: Kiro's `IMAGE_FORMAT_UNSUPPORTED` /
+  `ImageValidationError` is terminal and structural. The exception also carries
+  the narrower `image_format_unsupported` tag. A current attachment is left in
+  place with remove-or-re-encode guidance; a dashboard turn with no new
+  attachments may discard the native resume SID once and retry from Kiro Crew's
+  bounded text transcript, which excludes native binary image blocks.
+  "No new attachment" is read as TWO facts, because empty dashboard attachment
+  lists do not prove the turn shipped no image: a channel turn (and a dashboard
+  turn that types a path) carries its image as a bare path inside the message
+  text, which `build_prompt_blocks` inlines as a CURRENT-turn image block. So the
+  recovery additionally requires that the raw message match none of
+  `image_refs._PATH_RE` — the builder's own scanner on the builder's own
+  haystack — and otherwise falls through to the terminal guidance rather than
+  clearing a healthy conversation and re-inlining the same bytes.
+  The queued recovery turn is gated at DISPATCH, not only at enqueue: the
+  conversation discard and the pending-reset consume are awaited between the two,
+  and a soft Stop in that window preserves the queue while `_stopping` snaps back
+  to idle. The slot therefore records the recovery's queue id plus the slot- and
+  session-scoped stop generations at enqueue, and the queue drain drops the entry
+  (refunding the shared one-shot) when either counter moved, when user input
+  queued behind it, or when the slot was rebound to another session — the same
+  guard the model-access and refusal replays carry.
+- **Usage limit** and **model not entitled**: allowance spent, or the plan lacks
+  the model; also terminal, with guidance to switch model or tier.
+
+The auth family has exactly ONE transient member, **credential propagation**.
+Bedrock refuses a freshly minted credential with "The security token included in
+the request is invalid" — usually wrapped in `UnrecognizedClientException` and
+carrying a 403 — until IAM has propagated it, and the identical credential is
+accepted seconds later, so the existing backoff ladder absorbs it.
+`is_credential_propagation_delay` is the single predicate, read ahead of
+`_RE_AUTH` and the session-expiry branch in BOTH the classifier and the
+formatter, ahead of `llm_helpers._is_transient_acp_error`'s
+`accessdenied`/`unrecognizedclient` exclusion short-circuit (a
+`_TRANSIENT_MARKERS` entry alone is unreachable, because the exclusion sits
+above the markers), and inside `is_auth_failure_output` so `acp/runtime.py`'s
+stderr latch does not convert it to the explicitly non-retryable
+`AcpAuthRequired` and skip the ladder entirely. It is scoped to the "is invalid"
+WORDING, never to the status: a bare 401/403, an `... is expired` token, a
+combined "invalid or expired", and an invalid *bearer* token all stay terminal.
+The predicate lives in `credential_errors.py`, not `acp/client.py`, so consumers
+on the application side of the agent-SDK boundary share one verdict without a
+fresh ACP-layer import edge.
+
+That wording is shared with a permanently invalid access key
+(`UnrecognizedClientException` or `InvalidClientTokenId` for a key that was
+deleted, rotated, or mistyped), so a never-valid credential is also classified
+transient. The retry budget bounds that misclassification — three retries, ~15 s
+— and the formatted message closes with the terminal "refresh your AWS
+credentials" guidance rather than asserting the propagation diagnosis as fact.
+
+Retry hints are the other wording-only signal, and they are **provider-scoped**:
+`_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
+for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's
+generic upstream 500, whose frame has no named exception and no HTTP status, so
+the hint is its only transient marker). Onboarding a backend means auditing that
+alternation. The kiro-cli mid-stream envelope ("Encountered an error in the
+response stream: …") is deliberately NOT a hint — matching it would make the
+branch a catch-all that discards the real cause.
+
+## Model-Side Refusals
+
+A refusal is a turn the model DECLINED, not a turn that failed: the request
+reached the model and the answer is "no". It is deterministic — the same prompt
+hits the same filter — so it is never retried, and the useful thing to show is
+the reason. Harnesses report that reason unevenly, so `acp/types.RefusalInfo`
+is the one shape every harness is folded onto (`category`,
+`explanation`, `recommended_model`), each field left EMPTY when the provider
+did not say — never guessed.
+
+- **Kiro (kiro-cli, KAS)** — the service's content filter emits a
+  `_kiro.dev/metadata` frame with `stopReason: CONTENT_FILTERED` and a `refusal`
+  object, streams the canned explanation ("The selected model cannot continue
+  this conversation…") as ordinary assistant text, then ends the turn with a
+  plain `end_turn` (or a bare `-32603`). `acp/_dispatch.parse_refusal` reads the
+  frame (members of `ACP_BACKENDS_STRUCTURED_REFUSAL` only) onto
+  `AcpPromptStats.refusal`; `AcpPromptStats.terminal_refusal` rewrites the
+  terminal's stop reason to `STOP_REASON_REFUSAL` and attaches the payload as
+  `AcpEvent.refusal`. The explanation is redacted at the parser.
+- **claude-agent-acp, codex-acp** — only Anthropic's bare `stopReason: "refusal"`
+  reaches the client; `terminal_refusal` passes it through with no payload, and
+  the dashboard's refusal branch (keyed on the stop reason) renders the bare card.
+- **Dashboard** — `chat_runner.refusal_card_text` renders one card from
+  `RefusalInfo`: the lead line, then one line per non-empty field. Because the
+  Kiro explanation streams as text, the card is emitted from BOTH the answered
+  and the text-less branch of the turn epilogue.

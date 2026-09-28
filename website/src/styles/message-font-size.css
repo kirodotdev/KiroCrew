@@ -1,0 +1,122 @@
+/* Applies the `--mc-message-font-size` setting to the conversation surface:
+ * message bubble text and everything read or written alongside it (code,
+ * tables, follow-up chips, the composer). Chrome around the column — sidebars,
+ * status lines, toolbars — is deliberately not covered.
+ *
+ * MarkdownRenderer's `p`/`li`/heading renderers are shared by ~30 non-chat
+ * surfaces (issue/PR panels, notification modals, meeting notes, artifact
+ * previews) that have no `--mc-message-font-size` var and rely on the
+ * renderer's own fixed sizes. Overriding the renderer's defaults directly
+ * would leak this setting into every one of those.
+ *
+ * `.msg-content` alone is not bubble-exclusive either — it's also the class
+ * MarkdownRenderer's own host wrapper carries in ~9 non-chat surfaces
+ * (ArtifactThumbs, NotificationDetailPanel, MarkdownPanel, ContentRenderer,
+ * ArtifactBody, RemoteArtifactDetailPage, ...).
+ *
+ * Scoped by `.mc-message-font-scope` rather than the theming contract's
+ * `.message-bubble` (website/docs/theming-contract.md pins that class to a
+ * user/assistant turn specifically, so a theme author styling it should not
+ * also be styling a cron/system notification row). `.mc-message-font-scope`
+ * carries no contract meaning — it exists only so this stylesheet can find
+ * every surface that should scale, chat bubbles and system notification rows
+ * alike, without widening what `.message-bubble` means to a theme.
+ */
+.mc-message-font-scope.msg-content p,
+.mc-message-font-scope.msg-content li {
+  font-size: inherit;
+  /* Tailwind's `leading-relaxed` value, applied here directly since the
+   * ancestor's font-size is now variable rather than the fixed default. */
+  line-height: 1.625;
+}
+
+/* Headings keep their proportions to the (now variable) body size instead of
+ * staying fixed px, so the hierarchy never inverts as the setting scales up.
+ * `em` here resolves against the bubble's own font-size, i.e. the setting.
+ * Values are each heading's original fixed size (20/18/16/14/14/13px) divided
+ * by the 14px default body size, so the ratios — and the rendered result at
+ * the default — are unchanged from before this rule existed. */
+.mc-message-font-scope.msg-content h1 { font-size: 1.4286em; }
+.mc-message-font-scope.msg-content h2 { font-size: 1.2857em; }
+.mc-message-font-scope.msg-content h3 { font-size: 1.1429em; }
+.mc-message-font-scope.msg-content h4,
+.mc-message-font-scope.msg-content h5 { font-size: 1em; }
+.mc-message-font-scope.msg-content h6 { font-size: 0.9286em; }
+
+/* Everything below keeps the ratio to body text it had at the 14px default,
+ * so the default render is unchanged and only the proportions survive a
+ * change of setting. The ratios: 13/14 = 0.9286 for code, table headers and
+ * follow-up chips; 20/14 = 1.4286 for the code line-height; 1 for table
+ * cells and the composer. Where a value must be absolute (Pierre reads
+ * `--diffs-*` as lengths inside its shadow root, where `em` would resolve
+ * against the wrong element) it is derived from the setting var directly. */
+
+/* Inline code. index.css sets `.msg-content code { font-size: .9em }`; this
+ * pins the ratio to the exact pre-setting rendered size (13px at 14px). */
+.mc-message-font-scope.msg-content :not(pre) > code {
+  font-size: 0.9286em;
+}
+
+/* Code blocks. `.msg-content pre` in index.css is `0.8125rem`, a root-relative
+ * unit that ignores the bubble; the staged stand-in inside CodeBlock carries
+ * Tailwind's `text-[13px]` / `leading-5` and `.pierre-plain` pins a 20px
+ * line-height so the stand-in and the highlighted surface are the same height
+ * (the swap must be a restyle, not a reflow). All of them are re-derived from
+ * the setting here so they scale together and the swap stays height-neutral. */
+.mc-message-font-scope.msg-content pre {
+  font-size: calc(var(--mc-message-font-size, 14px) * 0.9286);
+}
+.mc-message-font-scope.msg-content .pierre-plain,
+.mc-message-font-scope.msg-content .pierre-plain code {
+  font-size: calc(var(--mc-message-font-size, 14px) * 0.9286);
+  line-height: calc(var(--mc-message-font-size, 14px) * 1.4286);
+}
+.mc-message-font-scope.msg-content .pierre-surface {
+  --diffs-font-size: calc(var(--mc-message-font-size, 14px) * 0.9286);
+  --diffs-line-height: calc(var(--mc-message-font-size, 14px) * 1.4286);
+}
+
+/* Tables. MarkdownRenderer's <table> carries Tailwind `text-sm`, a fixed 14px
+ * that would otherwise become the anchor for every `em` below it, so it is
+ * re-anchored to the bubble first. `text-sm` also sets a fixed 20px
+ * line-height (`1.25rem`); the table's is re-derived as a length so th (which
+ * inherits) and td (whose own `text-sm` is overridden back to inherit) keep
+ * rows at 20/14 of the setting instead of tightening as the text grows. The
+ * cells themselves carry `text-[13px]` (th) and `text-sm` (td), both
+ * root-relative. */
+.mc-message-font-scope.msg-content table {
+  font-size: inherit;
+  line-height: calc(var(--mc-message-font-size, 14px) * 1.4286);
+}
+.mc-message-font-scope.msg-content th {
+  font-size: 0.9286em;
+}
+.mc-message-font-scope.msg-content td {
+  font-size: 1em;
+  line-height: inherit;
+}
+
+/* The bordered forge/Jira link chips MarkdownRenderer renders inline next to
+ * code spans. They are `<span>`s, so the inline-code rule above does not reach
+ * them (the mono path/session chip is a `<code>` and already scales through
+ * it). The renderer is shared with non-chat surfaces, several of which mount
+ * inside the chat page where the setting var is published, so the chips keep
+ * their fixed Tailwind size by default and scale only under the bubble scope —
+ * otherwise a side-panel preview would show 14px prose beside 18px chips. */
+.mc-message-font-scope.msg-content .mc-md-ref-chip {
+  font-size: 0.9286em;
+}
+
+/* Surfaces that are part of what the user reads and writes in the conversation
+ * but are not markdown prose: the follow-up chips and the composer. Neither
+ * sits under `.mc-message-font-scope`, so they read the setting var directly
+ * and fall back to the 14px default anywhere it is unset (a bare render, a
+ * non-chat host), which keeps those hosts byte-identical. Applied as classes
+ * rather than Tailwind arbitrary values so the ratio lives next to the others
+ * above. */
+.mc-message-font-chip {
+  font-size: calc(var(--mc-message-font-size, 14px) * 0.9286);
+}
+.mc-message-font-text {
+  font-size: var(--mc-message-font-size, 14px);
+}

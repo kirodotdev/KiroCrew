@@ -1,0 +1,19 @@
+schema-version: 2026-04-28
+fixture-name: minimal
+description: |
+  Populated KIROCREW_HOME with two workspaces, preferences/projects/semantic/
+  history files, a paused and an active cron, one hook, and one seeded
+  chat session under sessions/dashboard_starter.jsonl so the dashboard's
+  sessions list is non-empty on first boot. Mirrors the shape of a real
+  user $KIROCREW_HOME without any personal data, at the smallest
+  populated size — one of everything the gateway expects to find.
+
+  Use ``rich`` when you want a fully populated dashboard (multiple
+  sessions, folder grouping, archive, History content); ``minimal`` is
+  enough for tests that only need "a $KIROCREW_HOME that isn't empty".
+
+  SQLite stores (memory.db, memory_index.db) are intentionally omitted —
+  vector-backed semantic memory and the event log bootstrap themselves
+  empty on first gateway start. Text-only content (markdown, JSON, JSONL)
+  gives deterministic byte-for-byte comparison in tests; SQLite binaries
+  would require a reproducible builder script to be diffable.

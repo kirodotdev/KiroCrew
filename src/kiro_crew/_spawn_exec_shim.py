@@ -1,0 +1,376 @@
+"""Post-exec shim: apply a child's process setup, then ``exec`` the real command.
+
+Spawned as::
+
+    <sys.executable> -I -S -c <this file's source> [--rlimits=SPEC] [--oom-bias]
+        [--chdir-fd=N] [--ctty-fd=N] -- argv...
+
+and replaces itself with ``argv`` via ``execv``, so the PID, process group,
+session, inherited fds, and exit status the caller observes are all the child's
+own -- this is a shim, not a supervisor: it never forks and never waits.
+
+Why this exists
+---------------
+Handing the same ``setrlimit`` calls to ``preexec_fn`` instead makes CPython
+``fork()`` the multi-GB, ~118-thread gateway and run Python bytecode in the
+child before ``exec``. A lock another thread held at fork time can never be
+released there, so the child can deadlock before reaching ``exec`` -- and when it
+does, two things follow that a per-command timeout cannot reach:
+
+* ``subprocess.Popen._execute_child`` blocks in an unbounded
+  ``os.read(errpipe_read, ...)`` waiting for the child to exec or die. For
+  ``asyncio.create_subprocess_exec`` that read happens on the event loop thread,
+  with no ``await`` point, so the whole gateway stops.
+* ``_posixsubprocess``'s ``child_exec()`` runs ``_close_open_fds()`` *after*
+  ``preexec_fn``, so a child wedged in ``preexec_fn`` still holds a duplicate of
+  every parent fd -- including the dashboard's listening socket, which then
+  survives the gateway it outlived.
+
+Running the limits here instead removes the whole class: the process is
+single-threaded post-exec, and with ``preexec_fn=None`` the fork child executes
+only async-signal-safe C. Limits set here are inherited by the exec'd image and
+all of its descendants, so coverage is unchanged.
+
+Kept stdlib-only and import-light on purpose: it is executed as an immutable
+source string captured by the gateway at import time, never imported from the
+(agent-writable) package directory at spawn time. ``-S`` is part of that fence --
+it skips ``site``, so a ``sitecustomize`` dropped into site-packages cannot run
+ahead of this code -- and it also halves interpreter startup.
+"""
+
+from __future__ import annotations
+
+import errno
+import os
+import sys
+import time
+
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - Windows has no POSIX rlimits
+    _resource = None  # type: ignore[assignment]
+
+_RLIMIT_FLAG = "--rlimits="
+_OOM_BIAS_FLAG = "--oom-bias"
+_CHDIR_FD_FLAG = "--chdir-fd="
+_CTTY_FD_FLAG = "--ctty-fd="
+_ARGV_SEPARATOR = "--"
+# Shell convention for "command found but could not be executed", so a caller
+# that only sees the exit status can still tell an exec failure from the
+# command's own nonzero exit.
+_EXEC_FAILED = 127
+# A target that raises these from ``execv`` is transiently absent, not broken:
+# the Kiro CLI replaces its own executable during an update, and a spawn landing
+# inside that rename window sees ENOENT or ETXTBSY until the replacement settles.
+_EXECV_RETRYABLE_ERRNOS = (errno.ENOENT, errno.ETXTBSY)
+# Six tries over two seconds ride out that window. Reporting it as exit 127
+# instead would make the parent mark the runtime dead with no retry.
+_EXECV_RETRY_ATTEMPTS = 6
+_EXECV_RETRY_DELAY_S = 0.4
+# Matches sandbox.session_host_preexec: raise NOFILE to the inherited hard cap,
+# or to this floor when the kernel reports no ceiling at all.
+_UNLIMITED_NOFILE_FLOOR = 65536
+
+
+def _parse_rlimits(spec: str) -> list[tuple[int, int | None]]:
+    """Resolve ``RLIMIT_NAME:value`` pairs into ``(rlimit id, value)`` tuples.
+
+    ``value`` is ``None`` for the literal token ``hard``, which means "raise the
+    soft limit to the inherited hard limit" rather than a numeric request.
+    Unknown names and unparseable values are skipped rather than failing the
+    spawn, matching ``security.apply_resource_limits``.
+
+    Called BEFORE :func:`_apply_rlimits` so every allocation this parse needs
+    happens while the process still has its inherited budget.
+    """
+    if _resource is None or not spec:
+        return []
+    parsed: list[tuple[int, int | None]] = []
+    for item in spec.split(","):
+        name, _, raw = item.partition(":")
+        res_id = getattr(_resource, name, None)
+        if not isinstance(res_id, int):
+            continue
+        if raw == "hard":
+            parsed.append((res_id, None))
+            continue
+        try:
+            parsed.append((res_id, int(raw)))
+        except ValueError:
+            continue
+    return parsed
+
+
+def _apply_rlimits(pairs: list[tuple[int, int | None]]) -> None:
+    """Apply pre-parsed limits to this process.
+
+    Mirrors ``security.apply_resource_limits``: clamp a numeric request DOWN to
+    the inherited hard limit (never try to raise a ceiling), set soft AND hard so
+    the child cannot lift its own cap back up, and swallow per-limit failures so
+    an rlimit this platform lacks never blocks the spawn. The ``hard`` token is
+    the one case that raises the SOFT limit -- it leaves the hard limit alone, so
+    a trusted session host gets headroom without losing its ceiling.
+    """
+    if _resource is None:
+        return
+    res = _resource
+    for res_id, requested in pairs:
+        try:
+            soft, hard = res.getrlimit(res_id)
+            if requested is None:
+                if hard == res.RLIM_INFINITY:
+                    res.setrlimit(res_id, (max(soft, _UNLIMITED_NOFILE_FLOOR), hard))
+                else:
+                    res.setrlimit(res_id, (hard, hard))
+                continue
+            if hard != res.RLIM_INFINITY:
+                requested = min(requested, hard)
+            res.setrlimit(res_id, (requested, requested))
+        except (ValueError, OSError):
+            continue
+
+
+def _bias_oom_score() -> None:
+    """Bias the kernel OOM killer toward this process tree (``oom_score_adj``=1000).
+
+    So a memory-ballooning tool is killed before the cgroup ``memory.max``
+    ceiling takes out the whole agent scope. Inherited across ``exec`` and by
+    descendants. Linux-only, unprivileged, best-effort -- never raises.
+
+    Requested explicitly with ``--oom-bias`` rather than implied by the presence
+    of limits, because the callers do not agree: the tool and build preexec paths
+    this replaces biased every child, while the session-host path never did, and
+    an interactive terminal must not be a preferred kill target at all.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        fd = os.open("/proc/self/oom_score_adj", os.O_WRONLY)
+        try:
+            os.write(fd, b"1000")
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _enter_bound_directory(fd: int) -> bool:
+    """``fchdir`` into an inherited directory descriptor, then close it.
+
+    The caller verified that directory's IDENTITY, not its name, so entering it
+    by descriptor is the whole point: a pathname re-resolved here could have been
+    retargeted since the check. Handing the spawn ``cwd="/dev/fd/<n>"`` instead
+    only works on Linux, where those entries are symlinks to the target; macOS
+    refuses ``chdir()`` on them outright -- reported as ``EACCES`` on one host and
+    ``ENOTDIR`` on macOS 26, so the errno is not the thing to key on.
+
+    The descriptor is closed once this process stands in the directory, so the
+    command and its descendants do not inherit a handle that outlives the check.
+
+    Returns False rather than exec'ing from the inherited cwd: a silent fallback
+    would run the command in a workspace nobody authorized.
+    """
+    try:
+        os.fchdir(fd)
+    except OSError as exc:
+        sys.stderr.write(f"spawn shim: cannot enter bound directory fd {fd}: {exc.strerror}\n")
+        return False
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return True
+
+
+def _acquire_controlling_tty(fd: int) -> bool:
+    """Make the terminal on *fd* the controlling terminal of this session.
+
+    ``TIOCSCTTY`` is the reason an interactive shell can be interrupted at all:
+    without a controlling terminal the kernel has no foreground process group to
+    deliver Ctrl+C to, so ``SIGINT`` reaches nothing. Inheriting an already-open
+    terminal descriptor does not confer it -- it has to be claimed, after
+    ``setsid()``, by the session leader itself.
+
+    Claimed HERE rather than in a ``preexec_fn`` for the reason this whole module
+    exists: a ``preexec_fn`` would run this in a fork of the multi-threaded
+    gateway, and the ioctl is not what costs -- the fork is. Post-exec this
+    process is single-threaded, so the same ioctl carries none of that risk.
+
+    ``os.login_tty`` rather than a bare ``ioctl``: it is the libc primitive for
+    exactly this step, so the platform-correct ``TIOCSCTTY`` value comes from libc
+    instead of a hardcoded constant that differs between Linux and the BSDs. It
+    also calls ``setsid()`` first -- harmless when the spawn already asked for a
+    new session, because both glibc and the BSD libcs ignore that call's result --
+    and redirects stdin, stdout and stderr onto *fd*, which is what asking for a
+    controlling terminal means.
+
+    Returns False rather than exec'ing without one: a shell with no controlling
+    terminal looks like a working terminal until the user presses Ctrl+C and
+    nothing happens, and that silent substitution is the same failure class
+    :func:`_enter_bound_directory` refuses for a directory.
+    """
+    login_tty = getattr(os, "login_tty", None)
+    if login_tty is None:  # pragma: no cover - POSIX-only flag, POSIX-only callers
+        sys.stderr.write("spawn shim: os.login_tty unavailable on this platform\n")
+        return False
+    try:
+        login_tty(fd)
+    except OSError as exc:
+        sys.stderr.write(
+            f"spawn shim: cannot acquire controlling terminal on fd {fd}: {exc.strerror}\n"
+        )
+        return False
+    return True
+
+
+def _default_ignored_signals() -> list[int]:
+    """Give the terminal session the default dispositions a login would.
+
+    ``SIG_IGN`` survives ``exec`` where a handler does not, so every signal the
+    gateway process inherited as ignored -- a launcher that backgrounds it from
+    a script sets SIGINT and SIGQUIT to ignore, ``nohup`` sets SIGHUP, and this
+    interpreter itself ignores SIGPIPE on startup -- would otherwise reach the
+    shell as ignored. An interactive shell keeps a signal that was ignored on
+    entry ignored in every command it runs, so the user would get a terminal
+    where Ctrl+C never interrupts the foreground job and a closed terminal never
+    hangs it up, with nothing in the shell's own state to say why. ``login``
+    and ``sshd`` hand the shell defaults; so does this.
+
+    Only dispositions that are ``SIG_IGN`` are touched: handlers reset on
+    ``exec`` by themselves, and the two signals that cannot be changed are
+    skipped by the ``OSError`` the kernel raises for them. Returns the signals
+    it changed so a failed ``exec`` can put them back: the shim then reports
+    through the stderr it was given, and must not die of a SIGPIPE it had been
+    told to ignore while doing so.
+    """
+    import signal
+
+    changed: list[int] = []
+    for signum in signal.valid_signals():
+        try:
+            if signal.getsignal(signum) is signal.SIG_IGN:
+                signal.signal(signum, signal.SIG_DFL)
+                changed.append(signum)
+        except (OSError, ValueError, RuntimeError):
+            continue
+    return changed
+
+
+def _reignore_signals(signums: list[int]) -> None:
+    """Undo :func:`_default_ignored_signals` on the path where ``exec`` did not happen."""
+    import signal
+
+    for signum in signums:
+        try:
+            signal.signal(signum, signal.SIG_IGN)
+        except (OSError, ValueError, RuntimeError):
+            continue
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse the shim's own options, then ``exec`` the command after ``--``.
+
+    Returns an exit code only on a usage or exec failure; on success it does not
+    return at all.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    spec = ""
+    want_oom_bias = False
+    chdir_fd: int | None = None
+    ctty_fd: int | None = None
+    while args and args[0] != _ARGV_SEPARATOR:
+        item = args.pop(0)
+        if item.startswith(_RLIMIT_FLAG):
+            spec = item[len(_RLIMIT_FLAG) :]
+        elif item == _OOM_BIAS_FLAG:
+            want_oom_bias = True
+        elif item.startswith(_CTTY_FD_FLAG):
+            raw_fd = item[len(_CTTY_FD_FLAG) :]
+            try:
+                ctty_fd = int(raw_fd)
+            except ValueError:
+                ctty_fd = -1
+            if ctty_fd < 0:
+                # Fail closed, as for the other descriptor flag: exec'ing a shell
+                # with no controlling terminal yields a terminal whose Ctrl+C is
+                # silently dead, which is worse than not opening one.
+                sys.stderr.write(f"spawn shim: bad {_CTTY_FD_FLAG}{raw_fd!r}\n")
+                return _EXEC_FAILED
+        elif item.startswith(_CHDIR_FD_FLAG):
+            raw_fd = item[len(_CHDIR_FD_FLAG) :]
+            try:
+                chdir_fd = int(raw_fd)
+            except ValueError:
+                chdir_fd = -1
+            if chdir_fd < 0:
+                # Fail closed for the same reason an unknown option does: the
+                # caller asked for one exact directory, and running in whatever
+                # cwd was inherited would substitute a different one silently.
+                sys.stderr.write(f"spawn shim: bad {_CHDIR_FD_FLAG}{raw_fd!r}\n")
+                return _EXEC_FAILED
+        else:
+            # Fail closed. A stray token here means the caller and this shim
+            # disagree about the argv contract, and guessing which side the
+            # command starts on could exec the wrong thing.
+            sys.stderr.write(f"spawn shim: unknown option {item!r}\n")
+            return _EXEC_FAILED
+    if not args:
+        sys.stderr.write(f"spawn shim: missing {_ARGV_SEPARATOR!r} argv separator\n")
+        return _EXEC_FAILED
+    args.pop(0)  # the separator itself
+    if not args:
+        sys.stderr.write("spawn shim: no command to execute\n")
+        return _EXEC_FAILED
+
+    # Everything that allocates happens before the limits go on, so a tight
+    # RLIMIT_AS cannot make the shim fail between setrlimit and execv. Encoding
+    # argv here leaves execv with only its own C-level argument array to build.
+    pairs = _parse_rlimits(spec)
+    try:
+        encoded = [os.fsencode(item) for item in args]
+    except (UnicodeEncodeError, ValueError):
+        sys.stderr.write("spawn shim: command argv is not encodable\n")
+        return _EXEC_FAILED
+
+    # Ahead of the limits, like every other allocating step: the failure path
+    # here writes to stderr, and a tight RLIMIT_AS must not be what breaks it.
+    if chdir_fd is not None and not _enter_bound_directory(chdir_fd):
+        return _EXEC_FAILED
+    if ctty_fd is not None and not _acquire_controlling_tty(ctty_fd):
+        return _EXEC_FAILED
+
+    _apply_rlimits(pairs)
+    if want_oom_bias:
+        _bias_oom_score()
+    # execv, not execve: the environment this process was given IS the
+    # environment the caller built for the command, and passing it through
+    # untouched avoids rebuilding the whole mapping under the new limits.
+    # No PATH search -- the caller resolves argv[0] in the parent, so a target
+    # that was already missing at resolve time failed the spawn there.
+    # The retry rides out the CLI self-update rename window, which the
+    # runtime spawn path owns. A terminal (--ctty-fd) command that is already
+    # missing must fail fast instead of stalling the shell for the budget.
+    attempts = 1 if ctty_fd is not None else _EXECV_RETRY_ATTEMPTS
+    # A terminal session starts from default signal dispositions, as it would
+    # from login. Done last, so the shim's own failure reports above still run
+    # under the dispositions it was given, and undone if exec does not happen.
+    reset_signals = _default_ignored_signals() if ctty_fd is not None else []
+    try:
+        for attempt in range(attempts):
+            try:
+                os.execv(encoded[0], encoded)
+            except OSError as exc:
+                if exc.errno in _EXECV_RETRYABLE_ERRNOS and attempt < attempts - 1:
+                    time.sleep(_EXECV_RETRY_DELAY_S)
+                    continue
+                _reignore_signals(reset_signals)
+                sys.stderr.write(f"spawn shim: cannot execute {args[0]!r}: {exc.strerror}\n")
+                return _EXEC_FAILED
+            return _EXEC_FAILED  # pragma: no cover - execv does not return on success
+    finally:
+        _reignore_signals(reset_signals)
+    return _EXEC_FAILED  # pragma: no cover - the loop returns on every attempt
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised as a spawned process
+    sys.exit(main())

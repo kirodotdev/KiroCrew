@@ -1,0 +1,3653 @@
+"""Built-in security controls — deny list, sensitive path protection, and audit scanning."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import bisect
+import fnmatch
+import hashlib as _hashlib
+import importlib
+import ipaddress
+import json
+import logging
+import math
+import os
+import re
+import shlex
+import socket
+import string
+import sys
+import threading
+import time
+import unicodedata
+import uuid
+from collections import Counter
+from collections.abc import Sequence
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from types import ModuleType
+from typing import TYPE_CHECKING, NamedTuple
+from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
+
+from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.executors import (
+    _MAX_PATH_RESOLVE_WORKERS,
+    maintenance_executor,
+    path_resolve_executor,
+)
+from kiro_crew.identity_stores import (
+    AUTH_SQLITE_DB,
+    AUTH_SQLITE_SIDECAR_SUFFIXES,
+    fenced_home_dirs,
+)
+from kiro_crew.memory_stores import (
+    DEFAULT_MEMORY_STORE,
+    MEMORY_STORES_DIR_NAME,
+)
+from kiro_crew.memory_stores import declared_store_names as memory_stores_declared_names
+from kiro_crew.memory_stores import (
+    named_store_of_db,
+    resolve_store_path,
+)
+from kiro_crew.sel import SecurityEvent, SecurityEventLog
+from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
+
+from . import (
+    argv_floor,
+    denied_rules,
+    diagnostics,
+    exfil,
+    helpers,
+    inline_payload,
+    paths,
+    perm_verb_mention,
+    redaction,
+    shell_normalizer,
+    vocabulary,
+)
+
+# NB: kiro_crew.vector_memory is imported lazily inside scan_memory() rather than
+# at module top level. vector_memory.py imports redact_credentials/
+# redact_exfiltration_urls from this module at ITS top level, so a top-level
+# import here would create a circular import — under which the ImportError guard
+# would silently set the store to None and disable scan_memory(). The deferred
+# import breaks the cycle and also keeps the numpy/faiss/snowballstemmer stack
+# off the lightweight import path.
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Iterator
+    from typing import Any
+
+    from kiro_crew.vector_memory import VectorMemoryStore
+
+logger = logging.getLogger(__name__)
+
+
+def _schedule_push_allow_audit(command: str) -> None:
+    """Fire-and-forget audit write offloaded to the maintenance executor.
+
+    Avoids blocking the event loop on file I/O (same concern as
+    ``_emit_deny_event`` — both should be offloaded per the
+    no-blocking-call-on-event-loop guideline).  Falls back to an inline
+    synchronous write when no event loop is running (sync/test contexts).
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(maintenance_executor(), _emit_push_allow_event, command)
+    except RuntimeError:
+        # No running loop (called from a sync test or non-async context) —
+        # fall back to inline write (acceptable: no event loop to block).
+        _emit_push_allow_event(command)
+
+
+def _emit_push_allow_event(command: str) -> None:
+    """Emit a SEL audit event when a feature-branch push is allowed through.
+
+    Best-effort: an audit failure is logged at WARNING and does not affect the
+    allow decision (the push already passed the protected-branch gate).
+    """
+    try:
+        sel = SecurityEventLog()
+        sel.log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                event_type="push_allowed",
+                caller_identity="",
+                agent="kirocrew",
+                source="security",
+                operation="git_push",
+                outcome="allowed",
+                resources="feature_branch_push",
+                metadata={
+                    "command": redact_and_truncate(command, 200),
+                    "mechanism": "BRANCH_GATE",
+                },
+            )
+        )
+    except Exception:
+        logger.warning(
+            "SEL audit failed for push_allowed (allow stands)",
+            exc_info=True,
+        )
+
+
+# Longest path echoed back by ``sanitized_oauth_endpoint``. Real authorization
+# endpoint paths are short (the longest builtin is 31 chars); anything past this
+# bound is noise at best and smuggled payload at worst, so it is truncated with
+# an ellipsis rather than surfaced whole.
+_SANITIZED_OAUTH_PATH_MAX_LEN = 200
+
+# DNS caps a full hostname at 253 octets; a longer "host" is not a hostname.
+_SANITIZED_OAUTH_HOST_MAX_LEN = 253
+
+
+def _contains_format_characters(text: str) -> bool:
+    """True when *text* carries Unicode format characters (category Cf).
+
+    Zero-width and directional format characters (U+200B ZERO WIDTH SPACE,
+    U+200D ZWJ, U+2060 WORD JOINER, RTL/LTR marks, ...) are invisible in a
+    rendered banner: a credential split by them fails every substring pattern
+    here yet visually reassembles in the browser. Real authorization-endpoint
+    components are plain ASCII, so their mere presence is disqualifying.
+    """
+    return any(unicodedata.category(ch) == "Cf" for ch in text)
+
+
+def _oauth_component_is_unsafe(text: str) -> bool:
+    """True when a URL component carries credential-like material at ANY decode layer.
+
+    Mirrors the rejection gate's decode budget (``_MAX_URL_DECODE_PASSES``): the
+    gate rejects a double-encoded credential on a DEEPER decode pass, so a
+    sanitizer that scanned only one layer would echo the very bytes the gate
+    refused. Fail-closed like the gate: a component still percent-decodable when
+    the budget runs out, or one carrying a heavy percent-encoded run, is unsafe
+    even when no known pattern matched.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    if _exfil._EXFIL_PERCENT_RE.search(text):
+        return True
+    candidate = text
+    for _ in range(_exfil._MAX_URL_DECODE_PASSES + 1):
+        # Invisible format characters (category Cf) split a credential so no
+        # substring pattern below can match it, while the browser renders the
+        # fragments visually reassembled. No legitimate endpoint component
+        # contains them, so presence alone is unsafe — checked on every decode
+        # layer because %E2%80%8B only becomes U+200B after a decode pass.
+        if _contains_format_characters(candidate):
+            return True
+        # _EXFIL_PATTERNS is included because it is a pattern family the
+        # REJECTION itself can fire on (plus-delimited private-key headers,
+        # SSH keys, token shapes) — a component must never be echoed when it
+        # matches what the gate refused. Over-matching only redacts more.
+        if (
+            _redaction._contains_fixed_credential(candidate)
+            or _redaction._text_contains_bare_secret(candidate)
+            or _exfil._EXFIL_PATTERNS.search(candidate)
+        ):
+            return True
+        # unquote_plus, not unquote: form-encoded material delimits with "+"
+        # (e.g. a plus-separated private-key header), which only matches the
+        # credential patterns once folded to spaces. Display never uses this
+        # decoded form, so the wider fold cannot distort what is surfaced.
+        decoded = unquote_plus(candidate)
+        if decoded == candidate:
+            return False
+        candidate = decoded
+    # Still decodable after the budget — same deliberate fail-closed posture as
+    # the gate's saturation guard: refuse to echo what cannot be fully scanned.
+    return True
+
+
+def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
+    """Best-effort ``(host, path)`` of an OAuth URL, safe to surface to users.
+
+    :func:`oauth_url_contains_credential` answers only a boolean, so its
+    callers cannot tell the user WHICH endpoint tripped the scanner — and the
+    remedy (``oauth_endpoints.json``) needs an exact host+path to be
+    actionable. This sibling names the endpoint without weakening the
+    rejection:
+
+    * only the lowercase hostname and the path are returned — NEVER the query,
+      fragment, port, or userinfo, which is where state/PKCE material and
+      smuggled credentials live;
+    * both components are scanned at every percent-decode layer up to the
+      gate's own budget: a credential-bearing path (raw, encoded, or
+      over-encoded past the budget) is replaced with the shared redaction tag,
+      and a credential-bearing HOSTNAME makes the whole helper return ``None``
+      — a host is an identity, so a redacted host would name nothing;
+    * both components are length-capped, so a pathological URL cannot bloat a
+      banner or a log line; a capped component ends in ``…`` so a reader can
+      tell a chopped name from a whole one.
+
+    Returns ``None`` when the URL does not parse to a hostname, so callers fall
+    back to their existing unnamed message. Deliberately independent of WHY the
+    URL was rejected: it never re-runs the credential verdict.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if not host:
+        return None
+    # A userinfo-bearing authority is never named. Raw userinfo is stripped by
+    # parsed.hostname, but PERCENT-ENCODED userinfo (user%3Apass%40host, or the
+    # double-encoded %2540 form that survives one decode pass) hides inside
+    # what urlparse reports as the hostname — check for "@" at EVERY decode
+    # layer up to the gate's budget, and refuse to name an authority that is
+    # still decodable when the budget runs out.
+    netloc_candidate = parsed.netloc
+    for _ in range(_exfil._MAX_URL_DECODE_PASSES + 1):
+        if "@" in netloc_candidate:
+            return None
+        decoded_netloc = unquote_plus(netloc_candidate)
+        if decoded_netloc == netloc_candidate:
+            break
+        netloc_candidate = decoded_netloc
+    else:
+        return None
+    # Scan BEFORE truncating (both components): a credential split by a length
+    # cap must still trigger redaction, not survive in half.
+    host = host.lower()
+    if _oauth_component_is_unsafe(host):
+        return None
+    if not host.isascii():
+        # Surface an internationalized host in A-label (punycode) form: it
+        # defuses homoglyph spoofing in the banner and matches the ASCII-only
+        # shape an oauth_endpoints.json entry must take anyway.
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+        # INVARIANT: the exact byte sequence surfaced must have passed the
+        # scan in its FINAL form. IDNA's nameprep folds fullwidth characters
+        # to ASCII, so a token-shaped fullwidth host that the pre-IDNA scan
+        # could not match can NORMALIZE INTO a credential — re-scan the
+        # transformed form and refuse to name it.
+        if _oauth_component_is_unsafe(host):
+            return None
+    if len(host) > _SANITIZED_OAUTH_HOST_MAX_LEN:
+        # Marked like the path below: a silently chopped host reads as a whole
+        # hostname that nothing on disk will ever match.
+        host = host[:_SANITIZED_OAUTH_HOST_MAX_LEN] + "…"
+    path = parsed.path or "/"
+    if _oauth_component_is_unsafe(path):
+        path = _redaction._REDACTED_CREDENTIAL_TAG
+    elif len(path) > _SANITIZED_OAUTH_PATH_MAX_LEN:
+        path = path[:_SANITIZED_OAUTH_PATH_MAX_LEN] + "…"
+    return host, path
+
+
+def sanitized_oauth_endpoint_display(url: str) -> str | None:
+    """A rejected endpoint as one copy-ready ``host/path`` string, or ``None``.
+
+    :func:`sanitized_oauth_endpoint` answers a diagnostic ``(host, path)`` pair
+    and, by contract, may hand back a component that is NOT pasteable: the
+    shared redaction tag for a credential-bearing path, or a ``…``-capped host
+    or path. A surface whose whole point is "write THIS into
+    ``oauth_endpoints.json``" must not join those into text that reads as
+    actionable and is not.
+
+    So this helper returns a string only when writing the entry would WORK:
+
+    * the host matches ``_OAUTH_EXTENSION_HOST_RE`` (lowercase DNS name with a
+      letter TLD — so ``localhost``, IP literals and a capped host are refused);
+    * the path passes ``_valid_oauth_extension_path`` (leading ``/``, no
+      ``; ? # % \\ ..`` or whitespace) and is neither redacted nor capped;
+    * the rejection is one the allowlist can clear
+      (:func:`oauth_rejection_is_endpoint_exemptible`): the gate is re-run as
+      if the endpoint were approved, and only a URL that then PASSES is named.
+      A URL refused for a fixed credential, userinfo, a fragment, path
+      parameters, heavy percent-encoding, ``http`` or an explicit port would be
+      refused again after the entry is added, so it stays unnamed rather than
+      advertise a remedy that cannot work.
+
+    Callers fall back to their unnamed message on ``None``. Because the
+    counterfactual re-runs the gate, this can stat the operator file (memoized),
+    so callers treat it like the gate itself and run it off the event loop.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    endpoint = sanitized_oauth_endpoint(url)
+    if endpoint is None:
+        return None
+    host, path = endpoint
+    # A capped host needs no check of its own: the host rule below ends in a
+    # letter TLD, which a trailing "…" can never satisfy.
+    if path == _redaction._REDACTED_CREDENTIAL_TAG or path.endswith("…"):
+        return None
+    if not _exfil._OAUTH_EXTENSION_HOST_RE.fullmatch(
+        host
+    ) or not _exfil._valid_oauth_extension_path(path):
+        return None
+    if not _exfil.oauth_rejection_is_endpoint_exemptible(url):
+        return None
+    return f"{host}{path}"
+
+
+# ── Binary File MIME Allowlist ──
+# Files whose UTF-8 decode fails are accepted by file_send / outbox only when
+# their guessed MIME type is in this allowlist. Deny-by-default; expand only
+# when a use case is reviewed for safe rendering on the dashboard origin.
+# SVG is intentionally excluded (can carry inline scripts); served as
+# attachment by the download handler for defense-in-depth.
+BINARY_MIME_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "audio/mpeg",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/ogg",
+        "audio/flac",
+        "audio/aac",
+        "audio/mp4",
+        "audio/webm",
+        "audio/opus",
+        "video/mp4",
+        "video/webm",
+        "video/ogg",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/bmp",
+        "application/pdf",
+    }
+)
+
+
+def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
+    """Apply all redaction passes, reporting what each one removed.
+
+    The same passes in the same order as :func:`redact`, which is the point of
+    it living here: exfiltration URLs run FIRST because that pass matches whole
+    URLs, and a credential replaced ahead of it leaves a placeholder inside one,
+    which the URL matcher then fails to recognise as the shape it is there to
+    catch. A caller that wants the found lists would otherwise hand-sequence
+    the two calls and own that ordering separately -- which several already do,
+    in the reverse order.
+
+    Returns ``(text, credential_warnings, url_warnings)``. Both lists hold the
+    WARNING strings the underlying passes report (``"Redacted credential pattern
+    (20 chars)"``), never the removed values, so a caller can tell the user their
+    content was altered -- and log that fact -- without handling a secret.
+
+    This is the companion-BLIND baseline, like every ``security.redact*`` entry
+    point: it consults no active :class:`CredentialPolicy`. An egress site must
+    finish the text through ``platform.context.redact_via_context`` so a loaded
+    companion's extra patterns apply; use this one for the warnings, or where the
+    baseline is deliberately the subject.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    text, urls = _exfil.redact_exfiltration_urls(text)
+    text, credentials = _redaction.redact_credentials(text)
+    return text, list(credentials), list(urls)
+
+
+def redact(text: str) -> str:
+    """Apply all redaction passes (exfiltration URLs + credentials)."""
+    return redact_with_findings(text)[0]
+
+
+# ── Streaming redaction (pentest issue 3) ──
+# Per-chunk redaction misses a credential split across token/streaming
+# boundaries: a chunk ending ``...AKIA`` and the next starting ``IOSFODNN7...``
+# each individually escape redact_credentials(), so the raw fragments reach
+# WebSocket/SSE consumers even though the final assembled message is redacted.
+# StreamRedactor withholds the trailing run of "credential-class" characters
+# (which could be the start of a not-yet-complete credential) until a
+# terminator arrives or the stream ends, redacting only the confirmed-safe
+# prefix before it is emitted on the wire.
+
+# Characters that can appear inside a credential token/pattern. A credential is
+# a contiguous run of these; any byte OUTSIDE this set terminates an in-progress
+# match, so text up to (and including) such a terminator is safe to redact and
+# emit. Includes URL / base64 / connection-string punctuation so exfil URLs and
+# DB URIs are also held intact across chunk boundaries — plus quotes and URL
+# query delimiters (``"`` ``'`` ``?&#``) so a JSON key/value or query-string
+# secret is not committed piecemeal across a chunk edge. (The private-key HEADER
+# phrase contains spaces and is the one pattern that can split on a terminator;
+# it is a non-secret header string and the final full-text pass still redacts
+# the persisted/displayed copy.)
+_CRED_CLASS: frozenset[str] = frozenset(
+    string.ascii_letters + string.digits + "_-+/=.:@%~" + '"' + "'" + "?&#"
+)
+
+# Upper bound on withheld trailing characters. Larger than the longest
+# fixed-format credential so a split token is always rejoined before emission;
+# bounds latency/memory for a pathologically long unbroken run (only affects a
+# single >512-char secret with no delimiter, which no supported provider issues).
+_STREAM_HOLDBACK_MAX = 512
+
+# PEM header hold-back: matches an in-progress "BEGIN [type] PRIVATE KEY"
+# phrase in the tail of the commit buffer.  When found, we refuse to commit
+# at the whitespace boundary so the full multi-word marker stays inside one
+# redaction pass (ported from the upstream project).
+_PEM_HOLD_RE = re.compile(
+    r"BEGIN[\s](?:RSA[\s]?|DSA[\s]?|EC[\s]?|OPENSSH[\s]?)?(?:PRIVATE)?[\s]?$",
+    re.IGNORECASE,
+)
+
+# JWTs (esp. RS256/ES256 with embedded claims) routinely exceed the 512-char DoS
+# floor, so a terminal JWT longer than _STREAM_HOLDBACK_MAX would be bisected by
+# the default cap and emitted half-redacted. When the withheld tail *looks like*
+# the start of a JWT, we raise the cap to this larger ceiling so the whole token
+# is rejoined before emission while still keeping the buffer bounded.
+_STREAM_HOLDBACK_JWT_MAX = 4096
+
+# A sticky discard consumes only bytes that the ARMING anchor defines as value
+# bytes. These two classes are the existing classes from the partial JWT and
+# Bearer anchors below, named so the anchors and discard cannot drift apart.
+_JWT_SEGMENT_VALUE_CLASS = r"[A-Za-z0-9_-]"
+_BEARER_VALUE_CLASS = r"[A-Za-z0-9._~+/=-]"
+_STREAM_DISCARD_RUN_RES = {
+    # Read off the owner at import: the class is baked into the compiled pattern
+    # here, so this is a one-shot build input rather than a stored re-export. The
+    # resolver below is not available yet -- it is defined with the rest of the
+    # facade machinery, after this module has finished binding its own names.
+    "token-param": re.compile(rf"{redaction._TOKEN_PARAM_VALUE_CLASS}*"),
+    "jwt": re.compile(rf"(?:{_JWT_SEGMENT_VALUE_CLASS}|\.)*"),
+    "bearer": re.compile(rf"{_BEARER_VALUE_CLASS}*"),
+}
+# Bytes of terminator-less continuation dropped silently between two tags. It is
+# NOT an exit: at the bound the discard re-emits the tag, zeroes the counter and
+# keeps dropping, so the counter stays O(1) and a credential's continuation never
+# resumes raw. Only a byte outside the arming anchor's value class ends the discard.
+_STREAM_DISCARD_MAX = 1 << 20
+
+# The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
+# header prefix optionally followed by up to FOUR `.`-separated base64url segments
+# (the final segment may be empty mid-stream). Three segments = a JWS/JWT
+# (header.payload.sig); five = a compact JWE (header.key.iv.ciphertext.tag), so the
+# `{0,4}` trailing quantifier admits the full JWE shape too — matching the batch
+# `_CREDENTIAL_PATTERNS` JWE ceiling — instead of bisecting a >512-char JWE at the
+# 512 floor. Anchored to the buffer end (`\Z`).
+_PARTIAL_JWT_TAIL_RE = re.compile(
+    rf"eyJ{_JWT_SEGMENT_VALUE_CLASS}+(?:\.{_JWT_SEGMENT_VALUE_CLASS}*){{0,4}}\Z"
+)
+
+
+def _partial_jwt_tail(buf: str) -> re.Match[str] | None:
+    """The trailing partial JWT, skipping one whose finished header is not a JSON object."""
+    m = _PARTIAL_JWT_TAIL_RE.search(buf)
+    while m is not None and "." in m.group():
+        header = m.group().split(".", 1)[0]
+        if header.find("eyJ", 1) != -1 or redaction._is_json_object_segment(header):
+            break
+        m = _PARTIAL_JWT_TAIL_RE.search(buf, m.start() + 1)
+    return m
+
+
+# Trailing (possibly incomplete) `Authorization: Bearer <token>` anchor at the end
+# of the stream buffer. Unlike a bare credential run, this anchor embeds WHITESPACE
+# (`Authorization: Bearer `) which is NOT in `_CRED_CLASS`, so the maximal-trailing-
+# cred-run holdback in `StreamRedactor.feed` would commit the `Authorization:` /
+# `Bearer ` prefix in one chunk and the opaque token in the next — redacting
+# neither, since the batch `Authorization:\s*Bearer` pattern only fires when the
+# whole anchor is present in a single `redact()` call. We therefore withhold from
+# the START of any such trailing anchor so the anchor and its token stay joined
+# until a terminator (or stream end) arrives.
+#
+# `\Z` pins the match to the buffer tail so only a genuinely in-progress anchor is
+# held. The `Bearer` word is matched by any of its prefixes (`B`…`Bearer`) so a
+# split mid-word (`Authorization: Bear` | `er opaque…`) still holds; a completed
+# anchor followed by a token then whitespace no longer matches (`\s+` after the
+# token cannot reach `\Z`), so it is committed and redacted whole. Requiring the
+# `Bearer` prefix bounds over-holding: ordinary prose like `Authorization: granted`
+# fails the match and is released immediately. Case-INSENSITIVE and JSON-aware to
+# mirror the batch pattern: HTTP/2 lower-cases header names (`authorization:` /
+# `bearer`) and JSON shapes the header as `{"Authorization": "Bearer <tok>"}` (a
+# quote before the `:` and before the token), so the anchor tolerates an optional
+# quote around `[:=]` and folds the `Authorization`/`Bearer` words — otherwise a
+# lowercase or JSON-shaped anchor split across chunks would not be held and its
+# token would leak. Opaque OAuth/refresh/SSO Bearer tokens carry no `eyJ` header,
+# so without this anchor a >512-char opaque bearer tail would stay on the 512 floor
+# and stream its raw tail.
+_BEARER_ANCHOR_PARTIAL_RE = re.compile(
+    r"""Authorization["']?\s*[:=]\s*["']?"""
+    rf"(?:Bearer(?:\s+{_BEARER_VALUE_CLASS}*)?|Beare|Bear|Bea|Be|B)?\Z",
+    re.IGNORECASE,
+)
+
+
+def _complete_token_match_crossing(
+    matches: tuple[re.Match[str], ...], cut: int
+) -> re.Match[str] | None:
+    """Return the first token-parameter value strictly bisected by *cut*, if any."""
+    for match in matches:
+        # A cut at end(1) or end(1)+1 leaves the whole separator-name-equals-
+        # value inside the commit, where the batch pass redacts it whole. Only a
+        # cut inside the value strands an anchor-less suffix.
+        if match.start() < cut < match.end(1):
+            return match
+    return None
+
+
+class StreamRedactor:
+    """Rolling-buffer redactor for streamed LLM output.
+
+    Feed raw chunks in order; ``feed`` returns the redacted, safe-to-broadcast
+    prefix (possibly empty while a partial credential is buffered). Call
+    ``flush`` when the stream/segment ends to redact and return the remainder.
+    Adds at most one chunk of latency. A credential is never split across a
+    commit boundary because commits only ever end at a non-credential-class
+    character, while a credential is a contiguous credential-class run.
+    """
+
+    __slots__ = ("_buf", "_redact", "_discarding", "_discard_kind", "_discarded")
+
+    def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
+        self._buf = ""
+        # Resolve at call time so module-load order is irrelevant.
+        self._redact = redactor or redact
+        self._discarding = False
+        self._discard_kind: str | None = None
+        self._discarded = 0
+
+    def feed(self, chunk: str) -> str:
+        """Accept a chunk; return the redacted prefix that is safe to emit now."""
+        # Owners of the re-exported names read below, resolved through the
+        # import system so the value is read from the one place it lives.
+        _redaction = _submodule("redaction")
+
+        if not chunk:
+            return ""
+        self._buf += chunk
+
+        # Invariant: `_buf` is always "" on entry when `_discarding` is true;
+        # this chunk is solely the continuation of the already-tagged drop.
+        # Only a terminator byte exits the discard. Reaching the bound with no
+        # terminator re-emits the tag and resets the counter but stays armed:
+        # clearing the flag there would hand the credential's remaining bytes
+        # to Phase A as an anchorless run, which the 512 floor streams raw.
+        if self._discarding:
+            assert self._discard_kind is not None
+            run_match = _STREAM_DISCARD_RUN_RES[self._discard_kind].match(self._buf)
+            assert run_match is not None
+            run = run_match.end()
+            self._discarded += run
+            if run == len(self._buf):
+                self._buf = ""
+                if self._discarded < _STREAM_DISCARD_MAX:
+                    return ""
+                self._discarded = 0
+                return _redaction._REDACTED_CREDENTIAL_TAG
+            self._discarding = False
+            self._discard_kind = None
+            self._buf = self._buf[run:]
+
+        # PHASE A -- SAFETY CUT.
+        # Invariant: every candidate can only move the cut backward. Bytes before
+        # the minimum do not bisect any known in-progress credential anchor.
+        natural_cut = len(self._buf)
+        while natural_cut > 0 and self._buf[natural_cut - 1] in _CRED_CLASS:
+            natural_cut -= 1
+        partial_jwt = _partial_jwt_tail(self._buf)
+        safety_cuts = [natural_cut]
+
+        # Canonical credential tags are fixed points only when a batch-redaction
+        # call sees the WHOLE tag. Their interior space is outside `_CRED_CLASS`,
+        # so a chunk boundary inside a tag can otherwise commit its head and let
+        # token-parameter pass 4 re-redact that fragment. Hold only a STRICT tag
+        # prefix ending at the buffer tail. The nested search examines at most
+        # the longest module-owned tag and only defers the cut: it is not a
+        # credential anchor and therefore cannot escalate a cap or authorize a
+        # fail-closed drop.
+        partial_tag_start: int | None = None
+        for tag in _redaction.CREDENTIAL_REDACTION_TAGS:
+            max_prefix = min(len(self._buf), len(tag) - 1)
+            for prefix_len in range(max_prefix, 0, -1):
+                if self._buf.endswith(tag[:prefix_len]):
+                    start = len(self._buf) - prefix_len
+                    partial_tag_start = (
+                        start if partial_tag_start is None else min(partial_tag_start, start)
+                    )
+                    break
+        # PEM header hold-back (ported from the upstream project): the
+        # multi-word phrase "BEGIN RSA PRIVATE KEY" splits on whitespace. If the
+        # tail of the commit window contains an in-progress PEM header prefix,
+        # refuse to commit at this boundary.
+        if natural_cut > 0 and _PEM_HOLD_RE.search(
+            self._buf[max(0, natural_cut - 50) : natural_cut]
+        ):
+            safety_cuts.append(0)
+
+        # Bearer anchors are STRONG: their embedded whitespace is not in
+        # _CRED_CLASS, so the natural cut could otherwise split anchor and value.
+        bearer_anchor = _BEARER_ANCHOR_PARTIAL_RE.search(self._buf)
+        if bearer_anchor is not None:
+            safety_cuts.append(bearer_anchor.start())
+
+        # A token-name prefix without '=' is WEAK. It still needs a short
+        # holdback so a chunk boundary cannot split the name, but it is not yet a
+        # credential and must never escalate the cap or authorize data loss.
+        token_anchor = _redaction._TOKEN_PARAM_PARTIAL_RE.search(self._buf)
+        weak_token_anchor = None
+        strong_token_anchor = False
+        if token_anchor is not None:
+            safety_cuts.append(token_anchor.start())
+            strong_token_anchor = token_anchor.group("eq") is not None
+            if not strong_token_anchor:
+                weak_token_anchor = token_anchor
+
+        i = min(safety_cuts)
+        complete_token_matches = tuple(_redaction._TOKEN_PARAM_RE.finditer(self._buf))
+        # Invariant: the complete-match crossing predicate is re-evaluated after
+        # every assignment to `i`; both Phase A and the Phase B floor call the
+        # same helper rather than letting their predicate copies drift.
+        complete_token_crossing = _complete_token_match_crossing(complete_token_matches, i)
+        if complete_token_crossing is not None:
+            i = min(i, complete_token_crossing.start())
+
+        strong_anchored = (
+            partial_jwt is not None
+            or bearer_anchor is not None
+            or complete_token_crossing is not None
+            or strong_token_anchor
+        )
+
+        # A partial canonical tag is already-redacted material. It lowers only
+        # the safety cut and is deliberately applied AFTER STRONG classification,
+        # so the tag prefix itself can neither raise a cap nor authorize a drop.
+        if partial_tag_start is not None:
+            i = min(i, partial_tag_start)
+
+        # PHASE B -- BOUNDS.
+        # Invariant: STRONG anchors may fail closed instead of exposing a secret;
+        # WEAK name prefixes never drop data. Any forced cut is repaired before
+        # emission so it cannot strand an anchor-less token-value suffix.
+        cap = _STREAM_HOLDBACK_MAX
+        if len(self._buf) - i > cap and strong_anchored:
+            cap = _STREAM_HOLDBACK_JWT_MAX
+        if len(self._buf) - i > cap:
+            if strong_anchored:
+                # Preserve the fail-closed ceiling for a real credential anchor:
+                # redact the safe prefix, tag the event, and drop the oversized
+                # tail rather than bisecting it and exposing the token head.
+                # Only STRONG evidence arms the sticky discard. A WEAK trailing
+                # name prefix (`&tok`, no `=`) is held by the safety cut but is
+                # not yet a credential: it authorizes no drop and names no value
+                # class to drop with.
+                credential_reaches_end = (
+                    partial_jwt is not None
+                    or bearer_anchor is not None
+                    or strong_token_anchor
+                    or (
+                        complete_token_crossing is not None
+                        and complete_token_crossing.end(1) == len(self._buf)
+                    )
+                )
+                self._discarding = credential_reaches_end
+                self._discard_kind = None
+                if credential_reaches_end:
+                    # Every arming term above maps to exactly one kind, carrier
+                    # first: a STRONG token anchor or a complete crossing ending
+                    # the buffer -> "token-param"; a Bearer anchor -> "bearer";
+                    # a partial JWT -> "jwt". No other term can arm, so the
+                    # final `else` holds a true invariant.
+                    # Prefer an enclosing carrier over a token shape inside its
+                    # value: its value class defines where that credential ends.
+                    token_param_reaches_end = strong_token_anchor or (
+                        complete_token_crossing is not None
+                        and complete_token_crossing.end(1) == len(self._buf)
+                    )
+                    if token_param_reaches_end:
+                        self._discard_kind = "token-param"
+                    elif bearer_anchor is not None:
+                        self._discard_kind = "bearer"
+                    else:
+                        assert partial_jwt is not None
+                        self._discard_kind = "jwt"
+                self._discarded = 0
+                # A complete value may cross the safety cut yet end before a
+                # benign suffix in the same buffer. Drop only through the value;
+                # the suffix remains buffered for normal processing. Sticky
+                # discard is reserved for credential material that reaches the
+                # buffer end, where a continuation can still arrive.
+                drop_end = len(self._buf)
+                if complete_token_crossing is not None and not credential_reaches_end:
+                    drop_end = complete_token_crossing.end(1)
+                commit, self._buf = self._buf[:i], self._buf[drop_end:]
+                out = self._redact(commit) if commit else ""
+                return out + _redaction._REDACTED_CREDENTIAL_TAG
+
+            i = len(self._buf) - cap
+
+            # The floor was computed after Phase A, so re-check complete token
+            # parameters against the actual cut. Advancing through the value is
+            # safe because the whole parameter reaches one batch-redaction call,
+            # and it shrinks the buffer rather than weakening the DoS bound.
+            floor_crossing = _complete_token_match_crossing(complete_token_matches, i)
+            if floor_crossing is not None:
+                i = floor_crossing.end(1)
+
+            # Repair the complete-match cut first, then preserve a trailing WEAK
+            # prefix if that repair crossed it. An encoded separator is at most
+            # 14 bytes and a name letter at most 42 (three `&#x0{0,8}HH;` slots),
+            # so the clamp is <=224 bytes -- still under
+            # `_STREAM_HOLDBACK_MAX = 512`.
+            if weak_token_anchor is not None and weak_token_anchor.start() < i:
+                i = weak_token_anchor.start()
+
+        if i <= 0:
+            return ""  # whole buffer is a (possibly partial) credential run — hold
+        commit, self._buf = self._buf[:i], self._buf[i:]
+        return self._redact(commit)
+
+    def flush(self) -> str:
+        """Redact and return the buffered remainder; clears the buffer."""
+        if self._discarding:
+            self._buf = ""
+            self._discarding = False
+            self._discard_kind = None
+            return ""
+        out = self._redact(self._buf) if self._buf else ""
+        self._buf = ""
+        return out
+
+    def reset(self) -> None:
+        """Discard the buffer without emitting (segment abandoned/cleared)."""
+        self._buf = ""
+        self._discarding = False
+        self._discard_kind = None
+        self._discarded = 0
+
+
+def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:
+    """The views of ONE shell segment that the deny tiers are matched against.
+
+    *segment* arrives with its ORIGINAL CASE, and every view returned is
+    lowercased.  Case matters for exactly one step: bash's Unicode escape widths
+    are case-sensitive (``\\u`` up to 4 hex digits, ``\\U`` up to 8), so decoding
+    after a ``lower()`` would read ``$'\\u0072f'`` -- which bash passes as ``rf`` --
+    as a single 5-digit code point and miss the rule.  The decode therefore runs
+    FIRST, on the text as written, and the lowercasing happens after.
+
+    The first element is always the raw text (lowercased) -- matched exactly as it
+    was before this helper existed -- so nothing that was denied can stop being
+    denied.  Quote/escape-NORMALIZED re-joins are APPENDED when they differ.
+
+    *emit_self* False walks NESTED PAYLOADS ONLY, emitting no view for *segment*
+    itself.  That is how the whole command is inspected without joining across its
+    separators: ``_split_segments`` is deliberately quote-unaware, so a newline
+    inside a quoted payload (``bash -c 'r\\<newline>m -rf /'``) severs the command
+    into pieces before the payload can be extracted from it -- while re-joining the
+    whole command would fabricate a command that never ran.  Walking it for
+    payloads without emitting its own re-join gets the first without the second.
+
+    ── Why the extra view is needed ──
+    Both deny tiers match TEXT, and a shell removes quoting, escaping and
+    empty-string splices and collapses whitespace runs before the program ever
+    sees its argv.  So every rule authored as a command SHAPE (``rm -rf /``,
+    ``dd if=``, ``chmod 777``) was defeated by re-spelling any one token:
+    ``rm -rf "/"``, ``"rm" -rf /``, ``'rm' -rf /``, ``rm "-rf" /``,
+    ``r''m -rf /`` and ``rm  -rf /`` all run the identical command and none of
+    them CONTAINS the pattern's own text.  Of the ~140 built-in rules only the
+    six self-protection rules and git-publish had an argv-structural floor
+    closing this (see ``_SELF_PROTECTION_FLOOR_PATTERNS``); every other rule was
+    spelling-dependent.
+
+    ── Why the tokenizer is ``_shell_tokens`` and not ``normalize_shell_command``
+    Both share one tokenizer, but the deny view deliberately stops BEFORE
+    ``~``/``$HOME`` expansion, for two reasons.  Expansion is
+    platform-dependent, so it would make the view decide differently per host:
+    it DELETES the literal ``~`` that ``rm -rf ~.*`` is authored to match, and
+    on Windows it yields a drive path (``c:\\users\\…``) that no POSIX-anchored
+    rule matches — so ``rm -rf "~"`` would be caught on Linux by the sibling
+    ``rm -rf /.*`` rule and missed on Windows.  And a denied view becomes the
+    security event log's ``operation`` field, so expanding here would write the
+    operator's real home path into the audit trail on every such denial.  Path
+    IDENTITY (dot segments, ``..``, ``$HOME`` versus the resolved home) is
+    already decided by ``is_sensitive_path`` against the
+    sensitive-path keystone, which is the layer that resolves rather than
+    matches; this view answers only the narrower question of what the shell
+    hands over as argv.
+
+    ── Why this is a per-SEGMENT view, never a whole-command one ──
+    Re-joining tokens with single spaces erases the separators a shell uses to
+    END a command, so normalizing the whole input would FABRICATE a command that
+    was never run: ``echo rm`` + newline + ``-rf /`` is two commands, and a
+    whole-input re-join reads as ``echo rm -rf /``.  The heredoc frames pinned by
+    ``TestStdinProgramTextScoping.test_benign_neighbour_no_longer_reads_as_a_mint``
+    are the concrete case.  Segments come from ``_split_segments``, so no boundary
+    is ever crossed — including inside a nested payload, which is split the same
+    way before being viewed.
+
+    ── Nested shell payloads ──
+    A shell's ``-c`` argument is a COMMAND, and ``shlex`` strips only the OUTER
+    quoting level, so ``bash -c 'dd "if=/dev/zero" of=/dev/sda'`` re-joins with
+    its inner quotes intact and the ``dd if=`` rule still does not match.
+    Each literal payload is
+    therefore walked and viewed in its own right, reusing
+    :func:`_nested_shell_payloads` — the extractor the self-protection floor
+    already uses, so the ``-c`` / ``eval`` / ``env -S`` / herestring /
+    ``$SHELL -c`` spellings and the ``bash -c -- <script>`` form are recognized
+    here by construction rather than re-enumerated.  Only LITERAL payloads exist
+    to walk: ``eval "$CMD"`` carries no visible script and stays the raw tier's
+    job.
+
+    The walk takes NO numeric depth cap, for the reason
+    :func:`_self_token_frames` records: whatever the number, one more wrapper
+    defeats it.  It terminates structurally instead — a payload is carried inside
+    ONE token of its parent, so it is strictly shorter than the parent's source
+    text, and a chain of strictly shorter strings is finite.
+
+    ── Fail-closed, and it never raises ──
+    This only ever ADDS views.  ``_shell_tokens`` already degrades to whitespace
+    splitting with quote stripping when ``shlex`` rejects the input (so even an
+    unbalanced-quote segment still normalizes), and every window is built inside a
+    guard: this runs in the permission gate, where an exception is a crash rather
+    than a security decision, so a failure drops that window and leaves the raw
+    view standing.  A failure can therefore lose the EXTRA match but never the raw
+    one, so it cannot turn a denied command into an allowed one.
+
+    ── Residual ──
+    Three shapes stay outside every view.  A token split by BOTH quoting and a
+    separator-shaped glue construct (``"rm"$(echo ' ')-rf /``) is in none of them:
+    the raw text is not contiguous and the glue lands on its own segment — the
+    whole-string raw pass covers the glue-ONLY spelling (``git$(echo ' ')push``),
+    and closing the combination needs a normalizer that models substitution,
+    which a re-join is not.  A variable spelling of a path operand
+    (``rm -rf $HOME``) is by construction not expanded here, per the note above.
+    And a quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) still renders an
+    extra separator.  Adding a render without it would be additive like the one
+    above and so could not lose a denial, but it is not the same claim: an empty
+    element carries no characters, so a view without it is still the argv the
+    shell hands over; a whitespace-only element is a real operand naming a file
+    that can exist, so a view without it is an argv ONE OPERAND SHORT of the one
+    that runs.  Widening the render to elements that do carry characters changes
+    what a view is permitted to assert -- and ``is_denied``'s exception machinery
+    (present, and ``_DENY_EXCEPTIONS`` empty today) is matched against views, so
+    the direction it would open is ALLOW, not deny.  Recognizing this shape wants
+    rules matched against argv STRUCTURE rather than against a rendered line,
+    which is what ``_SELF_PROTECTION_FLOOR_PATTERNS`` already does for the six
+    self-protection rules — and is why those are not fooled by either shape.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _shell_normalizer = _submodule("shell_normalizer")
+
+    views: list[str] = [segment.lower()] if emit_self else []
+    seen_views: set[str] = set(views)
+    # Decode the case-sensitive escapes BEFORE folding case (see the docstring),
+    # then work entirely in lowercase from here on -- the tiers compare lowercased
+    # text, and the payload extractor recognizes lowercase program names.  Guarded
+    # like the walk below: this is the permission gate, so a decoder that raises
+    # must cost the extra view, never the decision.
+    try:
+        start = _shell_normalizer._decode_shell_quoted_literals(segment).lower()
+    except Exception:
+        logger.debug("deny-view quote decode failed; raw view only", exc_info=True)
+        start = segment.lower()
+    seen_sources: set[str] = {start}
+    # (source, parent_len, is_root, allow_join): a payload lives inside one token of
+    # its parent, so it is strictly shorter than the parent's source text — which is
+    # what bounds this walk without a numeric cap.  ``is_root`` marks the source the
+    # caller handed in, whose own re-join ``emit_self=False`` suppresses.
+    # ``allow_join`` carries the same discipline ``_shell_payload_walk`` applies: a
+    # frame produced BY the ``eval`` argument join must not join again, or the two
+    # walks each build a chain of shrinking suffixes and this one — which re-lexes
+    # and re-splits every frame — dominates the cost (measured on ``"eval " * 640``:
+    # 12.0 s of a 14.2 s total here, against 0.04 s before the join existed).
+    pending: list[tuple[str, int, bool, bool]] = [(start, len(start) + 1, True, True)]
+    while pending:
+        source, parent_len, is_root, allow_join = pending.pop()
+        try:
+            tokens = _shell_normalizer._shell_tokens(source)
+            if not tokens:
+                continue
+            # No expansion happens above, so an already-lowercased source stays
+            # lowercased through the re-join and needs no second fold.
+            #
+            # The empty-elided re-join is a THIRD view, ADDED beside the plain one
+            # rather than replacing it -- this helper only ever adds views, and
+            # substituting here broke that invariant in a measurable way.  An
+            # empty-quoted word (``""``, ``''``, ``$''``, or any concatenation of
+            # them) is a real argv element the shell does hand over, so
+            # ``_shell_tokens`` is right to keep it and the payload walk below
+            # still sees argv as it was.  What it cannot survive is the RENDER: a
+            # single-space join turns a zero-width element into a spurious extra
+            # separator, and every rule authored as a command shape with single
+            # separators (``rm -rf /``, ``dd if=``) then stops matching its own
+            # target -- ``rm -rf "" /home/x`` rendered as ``rm -rf  /home/x``.
+            # The element contributes no text to the shape and cannot name a file
+            # or carry a flag, so a view without it renders what the command does
+            # rather than fabricating something it does not.
+            #
+            # Keeping the plain join is not defensive tidiness.  A rule that
+            # REQUIRES an intervening token (``rm -rf .* ./data``) matched the
+            # double-spaced view and matches neither the elided one nor the
+            # command's canonical spelling, so dropping it removed a denial that
+            # existed: ``r""m -rf "" ./data`` was refused and became
+            # allowed (reproduced against the
+            # merge-base).  Emitting both means a rule authored against either
+            # whitespace shape still fires, which is the only reading that cannot
+            # lose a denial.  Rules whose own pattern already tolerated the extra
+            # separator (``chmod.*/etc/.*``) were denying via the plain view all
+            # along, which is why the escape was pattern-dependent rather than
+            # uniform, and why this belongs here and not in individual rules.
+            view = " ".join(tokens)
+            candidates = [view]
+            elided = " ".join(token for token in tokens if token)
+            if elided and elided != view:
+                candidates.append(elided)
+            for candidate in candidates:
+                if not (is_root and not emit_self) and candidate not in seen_views:
+                    seen_views.add(candidate)
+                    views.append(candidate)
+            joined_here: set[str] = set()
+            payloads = _shell_normalizer._nested_shell_payloads(
+                tokens, allow_join=allow_join, joined_out=joined_here
+            )
+            programs = _shell_normalizer._argv_programs(tokens) if payloads else []
+            # Both values below read ONLY ``tokens``, which is fixed for this
+            # whole walk, so they are charged ONCE here instead of once per
+            # payload.  Asking per payload is what makes this loop quadratic in
+            # payload count (18k payloads, ~293s): the exemption's
+            # command-level guards sweep the whole argv, and recovering a
+            # payload's positions with ``enumerate`` sweeps it again, so N
+            # payloads cost N x len(tokens).  Neither hoist can change a verdict:
+            # same inputs, same answers, computed once rather than N times.  Both
+            # are skipped when there are no payloads so an ordinary command --
+            # the common case -- pays nothing new.
+            command_disqualified = (
+                _shell_normalizer._data_consumer_command_disqualified(tokens) if payloads else False
+            )
+            token_positions: dict[str, list[int]] = {}
+            if payloads:
+                for _pos, _tok in enumerate(tokens):
+                    token_positions.setdefault(_tok, []).append(_pos)
+            for payload in payloads:
+                if len(payload) >= parent_len:
+                    continue
+                # ``echo bash -c '<script>'`` PRINTS the script, so descending into
+                # it refuses a command that runs nothing.  The repo's own exemption
+                # decides this, rather
+                # than a "launcher must be in command position" rule: the launcher
+                # is NOT in command position in ``sudo bash -c …``,
+                # ``timeout 5 bash -c …``, ``nohup``, ``ssh host``, ``xargs`` or
+                # ``env FOO=1 bash -c …``, all of which really do execute, so that
+                # rule would trade this false positive for six bypasses.
+                # ``_data_consumer_exempt`` is a DENYLIST of consumers with the
+                # executing cases already carved out (a piped evaluator, a
+                # substitution in program position, an ``awk``/``sed`` script that
+                # can execute), so a program it does not know stays walked.
+                #
+                # A payload is not necessarily a TOKEN.  ``_nested_shell_payloads``
+                # also returns SYNTHESIZED text — a ``sed`` ``e``-flag replacement,
+                # the tail of a glued herestring (``bash<<<'<script>'``), a glued
+                # ``env -S`` argument, an ``alias`` assignment — which is a
+                # substring or a re-join, not an element of ``tokens``.  Recovering
+                # a position with ``list.index`` therefore raised ``ValueError`` and
+                # propagated out of the permission gate on legitimate input
+                # (``sed 's/x/y/e' notes.txt``).
+                #
+                # The exemption is decided per OCCURRENCE and fails closed: it is
+                # applied only when the payload appears as a token AND every
+                # occurrence sits in the argv of a data consumer.  A payload with no
+                # token position cannot be proven inert, so it is DESCENDED into —
+                # over-blocking, which is the safe direction here.  Deciding from a
+                # single recovered index would not be sound: a short synthesized
+                # payload can also be a coincidental substring of an unrelated
+                # token, and one wrong position could wrongly exempt a payload that
+                # really executes.
+                occurrences = token_positions.get(payload, [])
+                if occurrences and all(
+                    _shell_normalizer._data_consumer_exempt(
+                        i,
+                        payload,
+                        programs,
+                        tokens,
+                        command_disqualified=command_disqualified,
+                    )
+                    for i in occurrences
+                ):
+                    continue
+                # A payload is a command LINE, so it gets the same PRE-LEX treatment
+                # the top level got: the shell that runs it folds ITS continuations
+                # before lexing, so fold before splitting or the split severs them.
+                # ``bash -c 'r\<newline>m -rf /'`` otherwise yields the pieces ``r``
+                # and ``m -rf /``, and no view holds the command that runs.
+                # A view must also not be joined across one
+                # of the payload's own separators.  Only the PIECES are recorded as
+                # walked — recording the payload itself would filter out the single
+                # piece that equals it.
+                child_may_join = payload not in joined_here
+                for piece in _split_segments(_shell_normalizer._fold_line_continuations(payload)):
+                    piece = piece.strip()
+                    if piece and piece not in seen_sources:
+                        seen_sources.add(piece)
+                        pending.append((piece, len(source), False, child_may_join))
+        except Exception:
+            # This runs INSIDE the permission gate, where an exception is a crash
+            # rather than a security decision — the hazard ``_normalize_search_path``
+            # documents for the same reason.  Losing one view only costs the EXTRA
+            # match; the raw view is already in ``views`` and the raw tier decides
+            # exactly as it did before this helper existed, so a failure here can
+            # never turn a denied command into an allowed one.
+            logger.debug("deny-view construction failed for a window", exc_info=True)
+            continue
+    return tuple(views)
+
+
+# An interpreter binds the halves to its OWN variables
+# (``n = "<name>"; v = "<verb>"; run([n, v])``) and then uses the names.  Inlining those
+# bindings is the interpreter-side twin of the shell assignment resolution, and it is what
+# keeps the argv pattern TIGHT: the alternative -- admitting ``;`` into the separator class
+# so the two quoted strings may sit in different statements -- would also match
+# ``print('<name>'); log('<verb>')``, which mints nothing.
+_INTERP_BINDING_RE = re.compile(r"\b([a-z_]\w*)\s*=\s*('[^']*'|\"[^\"]*\")")
+_INTERP_IDENT_RE = re.compile(r"\b[a-z_]\w*\b")
+
+
+# ``"<name> %s" % "<verb>"`` -- printf-style formatting is the same evasion as adjacent
+# literal concatenation, one operator along.  The tuple spelling
+# (``"%s %s" % ("<name>", "<verb>")``) is covered by consuming the arguments in order.
+_PERCENT_FORMAT_RE = re.compile(
+    r"""(['"])([^'"]*)\1\s*%\s*\(?\s*((?:['"][^'"]*['"]\s*,?\s*)+)\)?"""
+)
+_QUOTED_FRAGMENT_RE = re.compile(r"""['"]([^'"]*)['"]""")
+_FORMAT_SPEC_RE = re.compile(r"%[-+ #0]*\d*(?:\.\d+)?[sridfge]")
+
+
+def _collapse_percent_format(text: str) -> str:
+    """Apply ``%`` formatting to a quoted template whose arguments are literals.
+
+    Only literal arguments are substituted -- the point is to see the string the
+    interpreter will hand to a sink, exactly as the concatenation collapse does.
+    """
+
+    def _apply(match: "re.Match[str]") -> str:
+        quote, template, arg_blob = match.group(1), match.group(2), match.group(3)
+        args = _QUOTED_FRAGMENT_RE.findall(arg_blob)
+        if not args:
+            return match.group(0)
+        remaining = list(args)
+
+        def _one(_spec: "re.Match[str]") -> str:
+            return remaining.pop(0) if remaining else _spec.group(0)
+
+        return f"{quote}{_FORMAT_SPEC_RE.sub(_one, template)}{quote}"
+
+    return _PERCENT_FORMAT_RE.sub(_apply, text)
+
+
+def _inline_interpreter_bindings(text: str) -> str:
+    """Replace identifiers bound to a quoted literal in *text* with that literal."""
+    bindings: dict[str, str] = {}
+    for match in _INTERP_BINDING_RE.finditer(text):
+        bindings.setdefault(match.group(1), match.group(2))
+    if not bindings:
+        return text
+    return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
+
+
+def is_denied(
+    tool_name: str,
+    extra_patterns: list[str] | None = None,
+    *,
+    denied_regexes: list[str] | None = None,
+    reason_notes: dict[str, str] | None = None,
+) -> str | None:
+    """Check tool name against the built-in/effective + extra deny patterns.
+
+    Returns denial reason string, or None if allowed.
+
+    ── Two tiers ──
+    * Regex tier (``denied_regexes``): the effective enabled built-in rule
+      regexes plus user-added regexes (output of ``compute_effective_denied``),
+      matched via ``re.search`` (``re.IGNORECASE``).  When ``None``, FAILS
+      CLOSED to all built-ins enabled.
+    * Glob tier (``extra_patterns``): legacy ``auto_deny_tools`` + companion
+      overlay globs, matched via ``fnmatch`` exactly as before.
+
+    ── Two-pass evaluation ──
+    Pass 1 (whole-string): every deny pattern is matched against the
+    full input.  If a pattern matches and **no exception pattern also
+    matches the full input**, the input is denied immediately.  This
+    closes evasion vectors where the deny string spans a separator
+    boundary that per-segment splitting would erase, e.g.
+    ``git$(echo ' ')push origin main`` (which bash evaluates to
+    ``git push origin main``): the whole string contains both ``git`` and
+    ``push`` so the broad ``*git*push*`` glob matches, and there is no
+    matching exception, so the command is denied at this stage even
+    though splitting on ``$(`` / ``)`` would otherwise produce no
+    segment containing both substrings.
+
+    Pass 2 (per-segment) only runs if pass 1 found a deny match **and**
+    the full input also matched at least one exception for that pattern.
+    The input is split on shell command separators (``;``, ``&&``,
+    ``||``, ``|``, newlines) and command-substitution boundaries
+    (``$(``, ``)``, backticks) into segments, and each segment is
+    re-evaluated independently.  This preserves the chaining-bypass
+    protection (any embedded real
+    publish lives in its own segment and matches the deny pattern in its
+    own right) while allowing the legitimate stash-in-pipeline case
+    that the prior whole-string design over-blocked.
+
+    Edge cases & limitations:
+      - Pass-1 deny is conservative: anything matching a deny glob with
+        no exception is blocked, even if the input is structurally
+        contorted.
+      - Pass-2 splitting is purely textual; quoted strings and escaped
+        separators are split anyway (over-blocking is the safer
+        direction).
+      - Each pass-2 segment is matched in TWO views: the raw text, then a
+        quote/escape-normalized re-join of that segment
+        (``_deny_segment_views``), so a rule authored as a command shape is
+        not defeated by re-quoting a token (``rm -rf "/"``), splicing one
+        (``r''m -rf /``) or padding the whitespace.  Strictly additive, and
+        never applied across a separator — see that helper.
+      - Heredoc bodies, ``eval``, ``bash -c``, etc., are not parsed
+        specially.  If those become evasion vectors in practice, add
+        explicit deny patterns for them.
+
+    Audit:
+      - Every denial path emits a ``deny_event`` SEL event via
+        ``_emit_deny_event``.
+      - Every granted exception emits a ``deny_exception`` SEL event via
+        ``_emit_deny_exception_event`` (fail-closed: if SEL logging
+        fails the exception is not granted).
+
+    Args:
+        tool_name: The full command line / tool invocation to evaluate.
+        extra_patterns: Optional fnmatch glob patterns (glob tier — legacy
+            ``auto_deny_tools`` + companion overlay).
+        denied_regexes: The effective enabled rule regexes (regex tier).  When
+            ``None``, fails closed to all built-in rules enabled.
+        reason_notes: Optional ``{pattern: operator note}`` map.  When the pattern
+            that matched has a note, the note is appended to the refusal on its
+            OWN line.  Presentation only — it never affects whether something is
+            denied.
+
+    Returns:
+        Denial reason string (mentioning the matched pattern), or
+        ``None`` if the input is allowed.
+    """
+    # The owners of the names this function reads, resolved once per call. Reading
+    # a name through its owner is what keeps its value in one place; resolving the
+    # owner once rather than per read is what keeps this per-tool-call predicate's
+    # cost flat -- one import-system lookup per owner, not one per name read.
+    _rules = _submodule("denied_rules")
+    _argv = _submodule("argv_floor")
+    _shell = _submodule("shell_normalizer")
+    _diag = _submodule("diagnostics")
+
+    lower = tool_name.lower()
+
+    def _reason(
+        matched: str,
+        note_override: str = "",
+        *,
+        rule: str = "",
+        component: str = "",
+    ) -> str:
+        """Refusal text for *matched* -- see :func:`_deny_reason`, the shared producer.
+
+        *note_override* lets the argv-structural floor say why a pattern the input
+        does not literally match was still the rule that fired (see
+        ``_SELF_PROTECTION_FLOOR_NOTES``).
+
+        *rule* and *component* add the diagnostic line, and only the STRUCTURAL
+        floors below pass them. That is the whole distinction: a pattern-tier
+        denial's first line already names the pattern that matched the input, so a
+        diagnostic would repeat it on every ordinary refusal, while a floor denial
+        reports a pattern the input provably cannot match and is the refusal an
+        agent cannot diagnose at all. The span is the whole subject because a floor
+        decides on the argv's SHAPE rather than at an offset.
+        """
+        diagnostic = (
+            _diag.refusal_diagnostic(rule, component, tool_name) if rule and component else None
+        )
+        return _rules._deny_reason(
+            matched, reason_notes, note_override=note_override, diagnostic=diagnostic
+        )
+
+    glob_patterns = list(extra_patterns or [])
+    if denied_regexes is None:
+        regex_patterns = _rules.compute_effective_denied(
+            _rules.BUILTIN_DENIED_RULES, (), False, (), ()
+        )
+    else:
+        regex_patterns = list(denied_regexes)
+    # Capture which git-publish rules are still ENABLED *before* the strip below
+    # removes their patterns from the regex tier. Computing this afterwards would
+    # always yield the empty set and the floor would never fire — a silent, total
+    # loss of push protection.
+    git_publish_enabled = {p for p in regex_patterns if p in _rules._GIT_PUBLISH_RULE_PATTERNS}
+    # Never feed git-publish rule patterns to Python ``re`` — they are ReDoS-prone
+    # under backtracking and are already enforced by the ``_is_git_publish`` floor
+    # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
+    regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
+    # The two self-protection rules get an ADDITIONAL argv-structural floor
+    # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
+    # only a tokenized view can tell ``kirocrew "token"`` from
+    # ``kirocrew-wt-x/test_token_auth.py``.  The floor is a UNION with the regex
+    # tier, never a replacement -- the patterns deliberately stay in
+    # ``regex_patterns``.  Two independent reasons:
+    #   1. The regex still matches raw text, so a payload the tokenizer cannot
+    #      see into (``bash -c "kirocrew token"``, ``eval "$CMD"``) is caught.
+    #   2. The tokenizer can fail (unbalanced quotes, or a platform bug like the
+    #      one fixed in ``normalize_shell_command`` above), and a floor that
+    #      REPLACED the regex would then fail OPEN.
+    # A rule the operator has DISABLED must stay disabled, so the floor runs
+    # only for patterns still present in the effective set.
+    floor_enabled = {p for p in regex_patterns if p in _rules._SELF_PROTECTION_FLOOR_PATTERNS}
+    # An interpreter CONCATENATES adjacent string literals, so ``'p'+'kill -f <name>'``
+    # is one command by the time it reaches the sink.  The two interpreter rules are
+    # therefore also matched against a copy with those joins collapsed.  Scoped to those
+    # two patterns on purpose: collapsing text for all the other rules would change
+    # inputs they were never measured against.
+    joined = _inline_interpreter_bindings(
+        _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
+    )
+    if joined != lower:
+        for interpreter_pattern in regex_patterns:
+            if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
+                continue
+            try:
+                if re.search(interpreter_pattern, joined, re.IGNORECASE):
+                    _emit_deny_event(tool_name, interpreter_pattern, lower)
+                    return _reason(interpreter_pattern)
+            except re.error:  # pragma: no cover - patterns are validated at load
+                continue
+    # Ordered (pattern, is_regex) pairs so the two passes share one code path;
+    # regex tier first (the effective rule set), then the glob tier.
+    all_patterns: list[tuple[str, bool]] = [(p, True) for p in regex_patterns] + [
+        (p, False) for p in glob_patterns
+    ]
+
+    # ── Git publish (verb-anchored, not a glob) ──
+    # Checked on the whole string first so command-substitution glue-evasion
+    # (e.g. ``git$(echo ' ')push``) is caught even though splitting on ``$(``
+    # / ``)`` would otherwise scatter the ``git``/``push`` tokens across
+    # segments.  ``_is_git_publish`` is verb-anchored, so a commit message or
+    # branch name merely containing "push" does not match.
+    #
+    # A push to a PROTECTED branch (or a bare/ambiguous push) is denied here;
+    # an explicit FEATURE-branch push is allowed to fall through to the normal
+    # glob passes (so any other deny pattern in a compound command still
+    # applies), and we record the allow INTENT now — the ``push_allowed`` audit
+    # is emitted only at a SUCCESS return path below, so the SEL trail reflects
+    # the FINAL outcome (never an allow for a command ultimately denied).
+    #
+    # Evaluated over the whole string AND the source of every nested shell payload
+    # (``_shell_payload_sources``), because this floor is the SOLE enforcement for
+    # pushes -- every git-publish rule is stripped from the regex tier just above.
+    # A top-level-only text match therefore meant one wrapper was a complete
+    # bypass: ``bash -c 'git push origin main'`` and ``eval '<push>'`` reached no
+    # check at all, while the self-protection floor beside it was already immune
+    # because it re-tokenizes payloads. Same walk, same depth guarantee, so a
+    # wrapper cannot buy anything here either.
+    push_allow_pending = False
+    try:
+        payload_sources = _argv._shell_payload_sources(lower)
+    except Exception:
+        # This runs inside the PreToolUse gate, which must return a DECISION and
+        # never raise. Degrade to the top-level reading -- precisely what this
+        # floor checked before it learned to descend -- so a broken walk costs
+        # the nested coverage and nothing else. Failing closed here instead
+        # would refuse ordinary commands on any walk hiccup.
+        payload_sources = [lower]
+    # Tags are collected across EVERY publish source, not just the top-level
+    # string, and gated once afterwards. Reading only ``lower`` made one wrapper a
+    # complete bypass of the sole enforcement pushes have; gating once at the end
+    # keeps the per-rule opt-out semantics exactly as written -- a rule an operator
+    # disabled stays disabled at whatever depth it fires.
+    publish_sources = [source for source in payload_sources if _argv._is_git_publish(source)]
+    if publish_sources:
+        floor_tags: frozenset[str] = frozenset()
+        for publish_source in publish_sources:
+            floor_tags |= _argv._git_publish_floor_tags(publish_source)
+        # The ungated tag denies regardless of opt-out: it marks a command whose
+        # target could not be verified at all, which is what keeps the gated
+        # rules below non-bypassable. Report it under the brace-expansion rule,
+        # whose coverage this branch is, so the refusal still names a catalog row.
+        if _rules._GIT_PUBLISH_UNGATED in floor_tags:
+            ungated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(
+                "git-publish-push-brace-expansion-refspec", _argv._GIT_PUBLISH_DENY_LABEL
+            )
+            _emit_deny_event(tool_name, ungated_pattern, lower)
+            return _reason(
+                ungated_pattern,
+                "Matched structurally on the command's argv, not by the pattern text above: "
+                "shell substitution or expansion fuses text into the push target, so the "
+                "destination branch cannot be determined before the push runs.",
+                rule="git-publish-target-unverifiable",
+                component="git-publish-floor",
+            )
+        for tag in sorted(floor_tags):
+            gated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(tag)
+            if gated_pattern is None:
+                # A tag naming no catalog row is a MAINTENANCE error, not a policy
+                # choice, and the two must not share a branch: skipping here would
+                # turn a renamed rule id or tag literal into a silent allow of a
+                # protected-branch push, with the failure direction under
+                # refactoring being "publish". Deny instead, under the ungated
+                # sentinel's row, so the mistake is loud and fail-closed. The
+                # structural guard in test_push_branch_gate.py still catches it at
+                # build time; this is what happens if that guard is ever removed.
+                fallback = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(
+                    "git-publish-push-brace-expansion-refspec", _argv._GIT_PUBLISH_DENY_LABEL
+                )
+                logger.error(
+                    "git-publish floor tag %r resolves to no catalog rule; denying "
+                    "fail-closed. This is a code defect: the tag and the rule id "
+                    "have drifted apart.",
+                    tag,
+                )
+                _emit_deny_event(tool_name, fallback, lower)
+                return _reason(
+                    fallback,
+                    "A protected-branch push shape was recognised but its rule "
+                    "could not be resolved, so it is refused rather than allowed.",
+                    rule="git-publish-tag-unresolved",
+                    component="git-publish-floor",
+                )
+            if gated_pattern not in git_publish_enabled:
+                continue
+            # SEL keeps the PATTERN (that is what maps an event to a catalog row),
+            # while the human-facing refusal leads with the rule ID: the chip in
+            # the dashboard's RecoveryCard is filled verbatim from this first line,
+            # and a ~70-char raw regex there is unreadable on the single most
+            # frequent denial an agent user hits. The id is both short and the
+            # actual toggle identity, so it tells the operator exactly which row to
+            # switch off; the regex stays available on the note line below, which
+            # the chip parser deliberately ignores.
+            _emit_deny_event(tool_name, gated_pattern, lower)
+            note = _rules._GIT_PUBLISH_FLOOR_NOTES.get(tag, "")
+            return _reason(
+                tag,
+                f"{note} (rule pattern: {gated_pattern})".strip(),
+                rule=tag,
+                component="git-publish-floor",
+            )
+        push_allow_pending = True
+
+    # ── Self-protection floor (argv-structural, not a glob) ──
+    # Runs before the pattern passes and on the WHOLE string, for the same reason
+    # the git-publish floor does: the evasions live in shell syntax that textual
+    # splitting scatters or mis-reads.  Each predicate here is checked only if its
+    # catalog row is still in the effective set, so an operator-disabled rule
+    # stays disabled.
+    for rule_id, predicate in (
+        ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
+        ("self-protection-kill", _argv._is_self_kill),
+        ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
+        ("sandbox-escape-ssh-self", _argv._is_ssh_to_self),
+    ):
+        pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
+        if pattern is None or pattern not in floor_enabled:
+            continue
+        # The mint predicate also gets the command AS SUBMITTED: it decodes base64
+        # literals to read the name they hide, and base64 does not survive the
+        # lower-casing every other predicate reads.
+        hit = (
+            _argv._is_credential_mint(lower, raw_text=tool_name)
+            if predicate is _argv._is_credential_mint
+            else predicate(lower)
+        )
+        if hit:
+            # Report the rule's own pattern, exactly as the regex tier does, so
+            # the denial reason and the SEL event still map back to the rule id —
+            # plus a second line saying the match was STRUCTURAL, because a floor
+            # hit routinely occurs on input that pattern cannot match and the
+            # bare identifier reads as a false explanation.
+            _emit_deny_event(tool_name, pattern, lower)
+            return _reason(
+                pattern,
+                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+                rule=rule_id,
+                component="argv-floor",
+            )
+    # The self-management SUBCOMMAND floors have no catalog row (their
+    # product-name-anywhere regex rows were deleted, see
+    # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), so there is no pattern to gate on
+    # and nothing to report but the id: they run unconditionally, like the
+    # git-publish anti-obfuscation branches.  Gating them on a row lookup was the
+    # trap this replaces -- ``.get(rule_id)`` returning None fell through to
+    # ``continue``, so deleting the row silently disabled the floor.
+    for rule_id, predicate in (
+        ("self-protection-restart", _argv._is_self_restart),
+        ("self-protection-update", _argv._is_self_update),
+        ("self-protection-file-delivery", _argv._is_self_file_delivery),
+        ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
+        ("self-protection-cloud", _argv._is_self_cloud_destructive),
+    ):
+        if predicate(lower):
+            _emit_deny_event(tool_name, rule_id, lower)
+            return _reason(
+                rule_id,
+                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+                rule=rule_id,
+                component="argv-floor",
+            )
+
+    # Memoizes the argv-structural mention walk per view: the same view is asked
+    # about once per matching pattern, and every opted-in pattern can match.
+    mention_cache: dict[str, bool] = {}
+
+    # ── Pass 1: whole-string deny ──
+    # If any pattern matches the full input AND no exception matches the
+    # full input, deny outright.  A whole-string match that IS covered by an
+    # exception falls through to the per-segment Pass 2 carve-out re-check.
+    #
+    # The regex tier matches the FULL, untruncated string via ``_DenyMatcher``
+    # (linear-time, no length bound — see the ReDoS-mitigation notes above), so
+    # a destructive needle at any offset within a single un-separated segment is
+    # caught here.  ``_is_git_publish`` / the always-on floors also run on the
+    # full string before this point.
+    for pattern, is_regex in all_patterns:
+        if _rules._deny_pattern_matches(pattern, lower, is_regex):
+            exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
+            whole_string_exception_match = (
+                exceptions
+                and _rules._exception_eligible(lower)
+                and any(fnmatch.fnmatch(lower, e.lower()) for e in exceptions)
+            )
+            if not whole_string_exception_match and _perm_verb_mention_narrows(
+                pattern, lower, mention_cache
+            ):
+                # Same shape as the glob exception above: a whole-string carve-out
+                # only DEFERS to Pass 2, which re-judges each segment on its own,
+                # so an embedded real invocation is still denied there.  The audit
+                # is emitted here (and GATES the carve-out) because for a search
+                # whose verb and path land in different segments Pass 2 never
+                # matches, so this is the only place the decision is recorded.
+                if _emit_deny_exception_event(tool_name, pattern, _PERM_VERB_MENTION_MECHANISM):
+                    whole_string_exception_match = True
+            if not whole_string_exception_match:
+                _emit_deny_event(tool_name, pattern, lower)
+                return _reason(pattern)
+
+    # ── Pass 2: per-segment (re-)evaluation ──
+    # Split into segments and check each.  This runs UNCONDITIONALLY: besides
+    # the exception-carve-out re-check, splitting isolates an embedded real
+    # publish/destructive command (e.g. after ``;`` / ``&&`` / inside
+    # ``$(...)``) into its own segment so it matches the deny pattern in its own
+    # right (chaining-bypass protection).  Segments that match a deny pattern
+    # AND an exception are allowed with a SEL audit event.
+    #
+    # Each segment is evaluated in every view ``_deny_segment_views`` returns:
+    # the RAW text first (identical to what this pass matched before that helper
+    # existed), then a quote/escape-normalized re-join of the same segment when
+    # it differs.  The second view is what makes a rule authored as a command
+    # shape hold under re-spelling — ``rm -rf "/"`` and ``"rm" -rf /`` reach the
+    # ``rm -rf /`` rule as the one command they both are.  It is strictly
+    # additive: see that helper for why it is per-segment and why a
+    # normalization failure cannot widen what is allowed.
+    # Segments are split from the ORIGINAL-case input, not from ``lower``, so
+    # ``_deny_segment_views`` can decode bash's case-sensitive Unicode escape
+    # widths before folding case.  The split is unaffected: ``_split_segments``
+    # cuts on ``;`` ``&&`` ``||`` ``|`` newlines and substitution boundaries, none
+    # of which any case mapping produces, so splitting-then-lowercasing and
+    # lowercasing-then-splitting give the same pieces.
+    #
+    # Line continuations are folded FIRST, because the split cuts on the newline
+    # they contain: without this, ``"r\<newline>m" -rf /`` is severed into two
+    # segments and neither contains the command bash actually runs.  The fold is
+    # quote-aware (see ``_fold_line_continuations``) -- pass 1 above still matches
+    # the completely unfolded text, so this only ever adds reach.
+    # The WHOLE command is walked for nested payloads first, with its own re-join
+    # suppressed.  ``_split_segments`` is deliberately quote-unaware, so a newline
+    # inside a quoted payload severs the command before the payload can be
+    # extracted from it -- ``bash -c 'r\<newline>m -rf /'`` arrives as the pieces
+    # ``bash -c 'r\`` and ``m -rf /'`` and the ``-c`` script is never seen.
+    # Emitting no view for the command itself is what keeps
+    # this from fabricating one across its separators.
+    folded = _shell._fold_line_continuations(tool_name)
+    segments = [seg.strip() for seg in _split_segments(folded)]
+    segments = [seg for seg in segments if seg]
+    work: list[tuple[str, tuple[str, ...]]] = []
+    # The whole-command payload walk is only needed when the split actually SPLIT
+    # something.  With a single segment the whole command IS that segment, so
+    # walking it twice doubles the payload scan -- which is quadratic in token
+    # count inside ``_nested_shell_payloads`` -- for no view the segment walk does
+    # not already produce.  Measured: skipping the duplicate halves the cost on a
+    # command padded with thousands of interpreter tokens (a stall risk).
+    if len(segments) != 1 or segments[0] != folded.strip():
+        work.append(("", _deny_segment_views(tool_name, False)))
+    for seg_raw in segments:
+        work.append((seg_raw.lower(), _deny_segment_views(seg_raw)))
+    for seg_lower, segment_views in work:
+        for view in segment_views:
+            for pattern, is_regex in all_patterns:
+                if _rules._deny_pattern_matches(pattern, view, is_regex):
+                    exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
+                    if (
+                        exceptions
+                        and _rules._exception_eligible(view)
+                        and any(fnmatch.fnmatch(view, e.lower()) for e in exceptions)
+                    ) or _perm_verb_mention_narrows(pattern, lower, mention_cache):
+                        # ``lower``, not ``view``: the mention reading is a
+                        # WHOLE-COMMAND judgement and a Pass 2 segment is not
+                        # always a command.  ``_split_segments`` is deliberately
+                        # quote-unaware, so a quoted alternation is severed
+                        # mid-literal and the tail arrives looking like an
+                        # invocation -- ``rg -n 'chmod|chown' /etc/profile.d``
+                        # yields the fragment ``chown' /etc/profile.d``, whose
+                        # first word IS the verb.  Judging that fragment refuses
+                        # a search that runs nothing.  Nothing is lost by asking
+                        # about the whole command instead: the predicate demands
+                        # that EVERY occurrence, in the command and in every
+                        # nested payload, sit at an argument position, and a
+                        # chained real invocation is exactly an occurrence in
+                        # program position -- ``_ends_argv`` cuts the argv at
+                        # ``;`` ``&&`` ``||`` ``|`` and at a subshell or brace
+                        # opener, so the embedded command's own verb leads its
+                        # own argv and refuses the whole exemption.  A newline
+                        # separator, which ``shlex`` would swallow as
+                        # whitespace, is refused outright by the predicate.
+                        if not _emit_deny_exception_event(
+                            tool_name, pattern, _perm_verb_mechanism_for(pattern)
+                        ):
+                            _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
+                            return _reason(pattern)
+                        # Exception granted for this pattern on this segment;
+                        # continue to evaluate any remaining patterns against
+                        # the same segment (a different pattern without an
+                        # exception must still cause a deny).
+                        continue
+                    _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
+                    return _reason(pattern)
+    # All windows cleared the deny passes — the input is allowed.  If it was a
+    # feature-branch push, emit the deferred allow audit now (final outcome).
+    #
+    # The RAW input is audited, never ``lower``.  ``lower`` exists for MATCHING;
+    # nothing matched on an allow, so the case fold buys the record nothing and
+    # costs it two things.  Faithfulness: branch names and remote URLs are
+    # case-sensitive, so folding records a push to ``Feature-ABC`` as a push to
+    # ``feature-abc``.  And redaction: the credential scrubber inside
+    # ``redact_and_truncate`` matches an AWS key ID case-SENSITIVELY on purpose
+    # (widening it would false-positive on ordinary prose — ``asia`` is a word —
+    # across every egress surface; see ``credential_patterns``), so a key handed
+    # in already case-folded slips past the pre-slice redaction, gets cut by the
+    # 200-char clip, and the surviving prefix is short enough to escape SEL's own
+    # any-case write-path net too — a partial key persisting in the durable log.
+    if push_allow_pending:
+        _schedule_push_allow_audit(tool_name)
+    return None
+
+
+def is_denied_synthesized_target(
+    target: str,
+    patterns: list[str] | None = None,
+    *,
+    extra_patterns: list[str] | None = None,
+    reason_notes: dict[str, str] | None = None,
+) -> str | None:
+    """Evaluate a SYNTHESIZED target against the patterns that participate in one.
+
+    A synthesized target is not a command line.  It is a ``"<namespace> key=value ..."``
+    summary this gate mints from a tool call's structured arguments so a rule can see a
+    scope that exists nowhere in text (``hooks._search_deny_target``).  Handing it to
+    :func:`is_denied` evaluates it against the WHOLE shared rule set, including the ~140
+    command-oriented built-ins -- and those match its path text incidentally: the
+    ``mkfs.*`` rule denies a read-only search of a directory named ``mkfs-tests``.  The
+    only per-rule remedy is disabling that rule by id, which also stops it protecting
+    real shell commands, so the collision costs a real control to clear.
+
+    Which patterns participate: exactly the ones the CALLER passes.  The hooks gate
+    passes the operator's own enabled regexes, and the companion overlay is evaluated
+    separately and unscoped a layer up (``PolicyAuthority``).  The shipped built-in
+    catalogue is NOT passed and takes no part in a synthesized target: a built-in cannot
+    express a scope rule for one -- none is authored against the grammar, ratcheted by
+    ``test_no_shipped_builtin_is_authored_against_the_grammar`` -- so its only possible
+    hit here is the incidental one this tier exists to drop.  A future built-in written
+    against the grammar fails that ratchet, which is the signal to give it an explicit
+    way in.
+
+    This is deliberately a caller-supplied SET rather than a filter applied here.  An
+    earlier revision classified the merged effective set by testing each pattern's text
+    against the shipped catalogue, and text cannot answer that question: an operator who
+    authors a pattern whose text coincides with a shipped one (``mkfs.*`` is a natural
+    thing to type) had their OWN rule read as shipped and dropped -- a silent fail-open on
+    an explicit deny.  Pattern text is not provenance.  Passing only what participates
+    makes provenance structural: there is nothing left to misclassify.
+
+    What this does NOT run, and why:
+
+    * The argv-structural floors (credential mint, self-kill, restart/update/cloud) and
+      the verb-anchored git-publish detector.  Each interprets SHELL SYNTAX, and a
+      synthesized target has none: its tokens are the namespace and ``key=value`` pairs,
+      values are whitespace-encoded by the synthesizer so one cannot split into two
+      tokens, and no such target can name a program.  A search of a tree cannot mint a
+      credential or kill a process, so these can only produce false positives here.  A
+      real command still reaches them through its own ``command`` target.
+    * Per-segment (pass 2) re-evaluation.  Segment splitting exists to isolate a chained
+      command inside one shell line; a synthesized target has no chaining semantics, so
+      splitting it only manufactures pseudo-commands out of path substrings -- the same
+      collision class, one layer down.
+
+    Args:
+        target: The synthesized target, e.g. ``"file-search path=/srv max_depth=3"``.
+        patterns: Regex-tier patterns that participate (the operator's own).  ``None``
+            or empty means the regex tier contributes nothing -- NOT that it falls back
+            to every built-in, which would be the opposite of this tier's contract.
+        extra_patterns: Glob-tier patterns that participate (``auto_deny_tools``).
+        reason_notes: Optional ``{pattern: operator note}`` map, presentation only.
+
+    Returns:
+        Denial reason string (mentioning the matched pattern), or ``None`` if allowed.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _denied_rules = _submodule("denied_rules")
+
+    lower = target.lower()
+    all_patterns: list[tuple[str, bool]] = [(p, True) for p in list(patterns or [])] + [
+        (p, False) for p in list(extra_patterns or [])
+    ]
+    for pattern, is_regex in all_patterns:
+        if not _denied_rules._deny_pattern_matches(pattern, lower, is_regex):
+            continue
+        # No ``_DENY_EXCEPTIONS`` carve-out here.  That map ships EMPTY and its machinery
+        # is retained in ``is_denied`` only for a future scoped exception, so replicating
+        # it here would be dead symmetry.  If it ever gains an entry, this tier has to be
+        # revisited deliberately -- ``test_the_deny_exception_map_is_still_empty`` reddens
+        # then, so the omission cannot become a silent gap.
+        _emit_deny_event(target, pattern, lower)
+        return _denied_rules._deny_reason(pattern, reason_notes)
+    return None
+
+
+def _split_segments(command_lower: str) -> list[str]:
+    """Split a command into independently-evaluatable segments.
+
+    Splits on shell separators and command-substitution boundaries.
+    Returns the list of segments (which may include the empty string for
+    adjacent separators; callers should skip empties).
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _shell_normalizer = _submodule("shell_normalizer")
+
+    return _shell_normalizer._CMD_SPLIT_RE.split(command_lower)
+
+
+def _emit_deny_event(
+    tool_name: str, deny_pattern: str, segment: str, raw_segment: str = ""
+) -> None:
+    """Emit a SEL audit event when a command is denied.
+
+    Records the operation, matched pattern, and (for pass-2 denials) the
+    specific segment that triggered the block.  This satisfies the
+    security-controls guideline that every permission decision — both
+    grants and denials — must produce an audit trail.
+
+    *raw_segment* is the segment's UNNORMALIZED text, recorded as a separate
+    ``raw_segment`` field when it differs from *segment*.  A pass-2 match can now
+    come from a quote-normalized view (``_deny_segment_views``), and the view is
+    the more useful thing to show — it names the command that would have run —
+    but the evasion is only visible in the spelling the caller actually
+    submitted, so forensics needs both.  The full raw input is already carried in
+    ``operation``; this pins WHICH segment of it normalized into the match, which
+    a multi-segment command otherwise leaves the reader to re-derive.  Omitted
+    when the two are equal, so an ordinary denial's event does not grow.
+
+    Best-effort: SEL logging failures are logged at WARNING and do not
+    affect the deny decision (denials are inherently fail-closed; the
+    block stands regardless of audit success).
+    """
+    try:
+        sel = SecurityEventLog()
+        # ``redact_and_truncate``, never a bare slice: it redacts over the FULL text
+        # BEFORE cutting, which is the rule that function exists to enforce -- a
+        # credential straddling the 200-char boundary would otherwise be cut in half,
+        # and the fragment no longer matches the credential pattern, so SEL's own
+        # write-path redaction cannot catch it and the partial secret persists in a
+        # dashboard-readable log.  Both fields take it: a bare slice carries the
+        # same hazard in either one.
+        metadata = {
+            "deny_pattern": deny_pattern,
+            "segment": redact_and_truncate(segment, 200) if segment else "",
+            "mechanism": "BUILTIN_DENY_PATTERNS",
+        }
+        if raw_segment and raw_segment != segment:
+            metadata["raw_segment"] = redact_and_truncate(raw_segment, 200)
+        sel.log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                event_type="deny_event",
+                caller_identity="",
+                agent="kirocrew",
+                source="security",
+                operation=tool_name,
+                outcome="denied",
+                resources=f"deny_pattern={deny_pattern}",
+                metadata=metadata,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "SEL audit failed for deny_event on %r (deny stands)",
+            tool_name,
+            exc_info=True,
+        )
+
+
+#: SEL ``mechanism`` value for the argv-structural inert-mention narrowing.
+#: Distinct from the glob carve-out map's ``_DENY_EXCEPTIONS`` so the audit trail
+#: can tell the two apart -- they share one emitter and nothing else.
+_PERM_VERB_MENTION_MECHANISM = "_PERM_VERB_MENTION"
+
+
+def _perm_verb_mechanism_for(pattern: str) -> str:
+    """The SEL mechanism name for the exception about to be granted.
+
+    Pass 2 reaches the emitter from a condition that is an OR of the glob
+    carve-out and the mention reading, so the branch alone cannot say which one
+    fired.  The mention reading is the narrower of the two -- it applies only to
+    the opted-in patterns -- so membership in that set decides the label.
+    """
+    if pattern in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
+        return _PERM_VERB_MENTION_MECHANISM
+    return "_DENY_EXCEPTIONS"
+
+
+def _perm_verb_mention_narrows(
+    pattern: str,
+    view: str,
+    cache: dict[str, bool],
+) -> bool:
+    """Whether *pattern* is narrowed away on *view* by an inert-mention reading.
+
+    A thin adapter over :func:`~.perm_verb_mention._perm_verb_mention_only`: it confines
+    the narrowing to the catalog patterns that opt into it, and memoizes the
+    argv walk per view.  The walk descends every nested payload, so it is the
+    expensive half of this check while the membership test is a set lookup --
+    and ``is_denied`` asks the same question once per matching pattern.
+
+    Returns False for every other pattern, which is what keeps this from
+    touching any rule outside the derived set.  The set's size is deliberately
+    not written down here: it is derived from the catalog, so a count in prose
+    goes stale the next time a row is added or renamed.
+    """
+    if pattern not in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
+        return False
+    verdict = cache.get(view)
+    if verdict is None:
+        verdict = _submodule("perm_verb_mention")._perm_verb_mention_only(view)
+        cache[view] = verdict
+    return verdict
+
+
+def _emit_deny_exception_event(
+    tool_name: str,
+    deny_pattern: str,
+    mechanism: str = "_DENY_EXCEPTIONS",
+) -> bool:
+    """Emit an SEL audit event when a deny exception is applied.
+
+    Returns True if the event was logged successfully, False otherwise.
+    The caller must NOT grant the exception if this returns False.
+
+    *mechanism* names WHICH narrowing granted the exception.  Two unrelated ones
+    reach this emitter -- the glob carve-out map and the argv-structural
+    inert-mention reading -- and recording both under one value makes the audit
+    trail unable to answer "why was this allowed", which is the only question it
+    exists for.  The default keeps the glob path's historical value.
+    """
+    try:
+        sel = SecurityEventLog()
+        sel.log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                event_type="deny_exception",
+                caller_identity="",
+                agent="kirocrew",
+                source="security",
+                operation=tool_name,
+                outcome="allowed",
+                resources=f"deny_pattern={deny_pattern}",
+                metadata={"deny_pattern": deny_pattern, "mechanism": mechanism},
+            )
+        )
+        return True
+    except Exception:
+        logger.warning(
+            "SEL audit failed for deny_exception — denying %r (fail-closed)",
+            tool_name,
+            exc_info=True,
+        )
+        return False
+
+
+def audit_bash_command(command: str) -> str | None:
+    """Check a bash command against suspicious patterns.
+
+    Returns warning string, or None if clean.
+    Patterns with ``*`` are matched as globs via fnmatch.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _denied_rules = _submodule("denied_rules")
+
+    lower = command.lower()
+    for pattern in _denied_rules.SUSPICIOUS_BASH_PATTERNS:
+        pat = pattern.lower()
+        if "*" in pat:
+            if fnmatch.fnmatch(lower, f"*{pat}*"):
+                return f"Suspicious command detected: matches '{pattern}'"
+        elif pat in lower:
+            return f"Suspicious command detected: matches '{pattern}'"
+    return None
+
+
+def scan_history(history_dir: Path, last_n: int = 100) -> list[dict]:
+    """Scan recent conversation history for suspicious tool usage.
+
+    Returns list of findings: [{file, line, tool, command, warning}]
+    """
+    findings: list[dict] = []
+    if not history_dir.is_dir():
+        return findings
+
+    files = sorted(history_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    checked = 0
+    for f in files:
+        try:
+            for line in f.read_text().splitlines():
+                if checked >= last_n:
+                    return findings
+                checked += 1
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                content = entry.get("content", "")
+                role = entry.get("role", "")
+                if role != "assistant" or not isinstance(content, str):
+                    continue
+                # Check for bash commands in tool calls
+                warning = audit_bash_command(content)
+                if warning:
+                    findings.append(
+                        {
+                            "file": f.name,
+                            "warning": warning,
+                            "snippet": content[:200],
+                        }
+                    )
+        except OSError:
+            continue
+    return findings
+
+
+#: How many episodic rows one store contributes to an injection audit. Newest
+#: first (``get_episodic_list`` orders by ``created_at DESC``), so the bound
+#: drops the oldest rows rather than a random slice, and it is per store: the
+#: work is proportional to the number of declared stores, not shared across them.
+_MEMORY_AUDIT_EPISODIC_LIMIT = 1000
+
+#: How much of a matching row's own text a finding carries. Enough to recognise the
+#: row and decide what to remove; short enough that a report of many findings stays
+#: readable in a terminal. Shared by every tier so one row's excerpt cannot be longer
+#: than another's purely by which pass found it.
+_MEMORY_AUDIT_VALUE_CHARS = 200
+
+
+def _memory_stores_to_scan() -> list[tuple[str, Path | None]]:
+    """``(store name, vector file)`` for every store :func:`scan_memory` opens.
+
+    The DEFAULT store is FIRST and carries ``None``, meaning "construct
+    ``VectorMemoryStore`` with no path". That is not a shortcut: it keeps the
+    default store's construction byte-identical, including the side effect that
+    a bare ``VectorMemoryStore().init()`` CREATES ``config_dir()/memory.db``
+    when it is absent. An install with no named stores must behave exactly as it
+    always has, down to that.
+
+    Named stores come off :func:`memory_stores_declared_names`, the enumeration every tier
+    of the audit shares.
+
+    A declared store whose vector file does not exist yet is SKIPPED. A named
+    store starts empty and its file appears at the first write, while
+    ``VectorMemoryStore.init()`` creates the directory, the file and (under the
+    crew schema lineage) decides its shape — so scanning one would have an audit
+    materialize a silo that holds nothing to scan. Skipping it costs this tier
+    only: that store's JSONL lessons tier is audited regardless, and on a
+    silo-bound crew with no vector store it is the ONLY populated tier there is.
+
+    Never raises: a config that cannot be read degrades to the default store
+    alone, the same floor ``memory_stores._declared_stores`` falls back to.
+    """
+    stores: list[tuple[str, Path | None]] = [(DEFAULT_MEMORY_STORE, None)]
+    for name in memory_stores_declared_names():
+        if name == DEFAULT_MEMORY_STORE:
+            continue
+        try:
+            # Opened DIRECTLY, never through the agent file gate: the whole
+            # ``memory_stores/`` subtree is a keystone leaf, so
+            # ``is_sensitive_path`` is True for every path this resolves. This is
+            # the established keystone-reader pattern — a legitimate reader opens
+            # the path itself, and relaxing the fence for this one caller would
+            # unfence the subtree for every tool caller too.
+            path = resolve_store_path(name)
+            # Confirm attribution independently of config lookup: each audit row
+            # must name the store whose database was actually opened. Strict
+            # binding resolution also rejects unavailable or undeclared stores.
+            if named_store_of_db(path) != name:
+                logger.warning(
+                    "memory store %r resolved to %s, which is not that store's own file; "
+                    "not audited rather than reporting another store's rows under its name",
+                    name,
+                    path,
+                )
+                continue
+            from kiro_crew.memory_stores import memory_store_version
+
+            if not path.exists() and memory_store_version(name) != 2:
+                logger.warning(
+                    "memory store %r has no vector file yet; its vector tier is not audited",
+                    name,
+                )
+                continue
+        except Exception:
+            logger.warning(
+                "memory store %r has no resolvable vector file; not audited", name, exc_info=True
+            )
+            continue
+        stores.append((name, path))
+    return stores
+
+
+#: ``type`` of the synthetic finding that stands in for a store nobody could read.
+#: Not an injection match -- it is the audit reporting that it does not KNOW, which is
+#: the one answer a security verdict must never round down to "clean".
+STORE_UNAUDITABLE = "store_unauditable"
+
+
+def _unauditable_finding(store_name: str) -> dict:
+    """A finding meaning "this store could not be read", shaped like a real one.
+
+    Carries the same four keys both CLI printers read (``type`` / ``key`` / ``warning``
+    / ``value``) plus ``store``, so it renders through each of them unchanged. Without
+    it a per-store failure is fail-soft all the way to the verdict: ``scan_memory()``
+    returns ``[]`` and the CLI prints a green tick, so corrupting one silo would silence
+    the audit for that silo AND earn a clean bill of health for the whole install.
+    """
+    return {
+        "type": STORE_UNAUDITABLE,
+        "key": store_name,
+        "warning": "store could not be read; its contents are UNKNOWN, not clean",
+        "value": "",
+        "store": store_name,
+    }
+
+
+#: ``type`` of a finding from a store's JSONL lessons tier. Distinct from ``"semantic"``
+#: and ``"episodic"`` because the tier decides the remedy — a lesson is removed with
+#: ``kirocrew learn remove``, not a memory delete — and because this tier exists on a
+#: store that has no vector file at all, where it is the only thing feeding the prompt.
+LESSON_FINDING_TYPE = "lesson"
+
+#: ``type`` of the synthetic finding that stands in for a lessons file nobody could read.
+#: The lessons twin of :data:`STORE_UNAUDITABLE`, separate so a report says WHICH tier is
+#: unknown: a store can have a readable vector file and an unreadable lessons file.
+LESSONS_UNAUDITABLE = "lessons_unauditable"
+
+
+def _unauditable_lessons_finding(store_name: str, path: Path) -> dict:
+    """A finding meaning "this store's lessons file could not be read".
+
+    Shaped exactly like :func:`_unauditable_finding` — the four keys both CLI printers
+    read plus ``store`` — for the same reason: a read failure that returns no finding is
+    fail-soft all the way to the verdict, so making one lessons file unreadable would
+    both silence that tier and earn the install a green tick.
+
+    ``key`` names the FILE rather than the store, which is what a reader needs here: the
+    store name is already on the ``store`` key, and the actionable fact is which path
+    would not open.
+    """
+    return {
+        "type": LESSONS_UNAUDITABLE,
+        "key": str(path),
+        "warning": "lessons file could not be read; its contents are UNKNOWN, not clean",
+        "value": "",
+        "store": store_name,
+    }
+
+
+def _lessons_files_to_scan() -> list[tuple[str, Path]]:
+    """``(store name, lessons file)`` for every store's JSONL lessons tier.
+
+    The DEFAULT store is first, then each declared store in name order, off the shared
+    :func:`memory_stores_declared_names`. Every store is listed, including one with no
+    ``memory.db``: a silo-bound crew's lesson WRITES land in this file precisely when
+    that silo has no vector store (``dashboard.handlers.cron._lesson_jsonl_store`` routes
+    by BINDING, and ``ContextBuilder.get_lessons_for`` creates only the markdown
+    directory), and ``LessonStore.get_context`` injects those rows into that crew's
+    prompt as ``[Learned corrections]``. So this is the tier an audit of vector files
+    alone reports "clean" about while it is the only populated, prompt-injected tier the
+    install has.
+
+    Each path comes from :class:`learn.LessonStore` itself rather than from a composed
+    ``<dir>/lessons.jsonl``, so the audit reads the exact file the writer writes.
+
+    A named store's directory is taken from the vector path this audit already trusts:
+    ``resolve_store_path(name).parent`` is the directory ``ensure_memory_store_dir``
+    hands the writer, and ``named_store_of_db`` is the same positive attribution gate the
+    vector pass applies — ``resolve_store_path`` DEGRADES rather than raising, so without
+    it a config save landing mid-scan would resolve the operator's OWN
+    ``lessons.jsonl`` under a crew's name and print the operator's corrections as that
+    crew's. The resolved path is re-checked against that directory afterwards because
+    ``LessonStore.__init__`` has fallbacks of its own; a store whose file lands outside
+    its own directory is not audited rather than misattributed.
+
+    Never raises. A store that cannot be resolved is dropped with a warning, which is
+    fail-soft on the ENUMERATION only — a file that resolves and then will not open is a
+    finding, not a silence (see :func:`_scan_store_lessons`).
+    """
+    from kiro_crew.learn import LessonStore
+
+    files: list[tuple[str, Path]] = []
+    for name in memory_stores_declared_names():
+        try:
+            from kiro_crew.memory_stores import memory_store_version
+
+            if memory_store_version(name) == 2:
+                continue
+            if name == DEFAULT_MEMORY_STORE:
+                # No ``base_dir``: byte-identical with the global ``LessonStore()`` every
+                # write path constructs, so the default store's file is the one the
+                # dashboard route, the CLI and the context builder all share.
+                files.append((name, LessonStore().path))
+                continue
+            db_path = resolve_store_path(name)
+            if named_store_of_db(db_path) != name:
+                logger.warning(
+                    "memory store %r resolved to %s, which is not that store's own file; "
+                    "its lessons tier is not audited rather than reporting another "
+                    "store's corrections under its name",
+                    name,
+                    db_path,
+                )
+                continue
+            path = LessonStore(base_dir=db_path.parent).path
+            if path.parent != db_path.parent:
+                logger.warning(
+                    "memory store %r resolved its lessons file to %s, outside the store's "
+                    "own directory %s; not audited rather than misattributed",
+                    name,
+                    path,
+                    db_path.parent,
+                )
+                continue
+        except Exception:
+            logger.warning(
+                "memory store %r has no resolvable lessons file; not audited",
+                name,
+                exc_info=True,
+            )
+            continue
+        files.append((name, path))
+    return files
+
+
+def _scan_store_lessons(store_name: str, path: Path, findings: list[dict]) -> None:
+    """Injection findings for ONE store's lessons file, each attributed to *store_name*.
+
+    *path* is opened DIRECTLY, never through the agent file gate: a named store's
+    lessons file is inside the keystone ``memory_stores/`` subtree, so
+    ``is_sensitive_path`` is True for it. That is the established keystone-reader pattern
+    (see ``docs/system-specs/modules/security.md`` and
+    ``docs/architecture/security-deep-dive.md``) — a legitimate reader opens the path
+    itself, because relaxing the fence for this one caller would unfence the subtree for
+    every tool caller too.
+
+    An ABSENT file is not a finding: a store's lessons tier appears at the first
+    correction, so absence is the ordinary state of a fresh store rather than a failure.
+    Any OTHER read failure IS one, because the whole file is a directive tier and "I
+    could not look" must not render as a tick.
+
+    Screens ``rule`` and ``negative`` — the two fields ``LessonStore.get_context``
+    renders into the prompt — with the SAME predicate the vector tiers use, so widening
+    the surface does not widen what counts as a finding. Every syntactically valid row is
+    screened, including one carrying a ``repo_scope`` that ``load_all`` drops: an audit
+    has no project to evaluate a scope against, and poisoned text sitting in this file is
+    reportable wherever a context build would have rendered it.
+
+    ONE finding per ROW, on the first matching field. The row is the unit of removal, so
+    a row poisoned in both fields is one thing for a reader to act on rather than two
+    findings sharing a key and inflating the count.
+
+    Reads the file whole. ``LessonStore`` itself loads and rewrites it whole on every
+    save and prunes it to a bounded row count, so the whole file already IS the
+    production working set — and a row-count bound here would be a blind spot an
+    attacker could append past.
+
+    The excerpt is NOT redacted, matching the vector passes exactly: they surface
+    ``value_json`` and ``text`` as stored, and a report that redacted one tier but not
+    another would read as though the tiers held different classes of content.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _helpers = _submodule("helpers")
+
+    try:
+        # ``errors="replace"`` so a file carrying a non-UTF-8 byte is still screened
+        # rather than reported unauditable: the rows around the bad byte are exactly the
+        # ones an attacker would hope a decode error hid. It also means the only failure
+        # this can raise is an OSError -- there is no decode path left to fail.
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        logger.debug("memory store %r has no lessons file at %s", store_name, path)
+        return
+    except OSError:
+        logger.warning(
+            "memory store %r has an unreadable lessons file at %s; reporting it as "
+            "unauditable rather than clean",
+            store_name,
+            path,
+            exc_info=True,
+        )
+        findings.append(_unauditable_lessons_finding(store_name, path))
+        return
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        matched = next(
+            (
+                value
+                for value in (row.get("rule"), row.get("negative"))
+                if isinstance(value, str) and _helpers._contains_injection(value)
+            ),
+            None,
+        )
+        if matched is None:
+            continue
+        findings.append(
+            {
+                "type": LESSON_FINDING_TYPE,
+                # The file and line, so the row can be found and removed. The matching
+                # text is the poisoned content itself, so it is the ``value``.
+                "key": f"{path.name}:{lineno}",
+                "value": matched[:_MEMORY_AUDIT_VALUE_CHARS],
+                "warning": "Injection pattern detected",
+                "store": store_name,
+            }
+        )
+
+
+def _memory_audit_matches(value: object) -> Iterator[str]:
+    """Inspect decoded JSON leaves, including JSON stored inside revision snapshots."""
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _helpers = _submodule("helpers")
+
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+        elif isinstance(current, str):
+            try:
+                decoded = json.loads(current)
+            except (ValueError, TypeError):
+                decoded = None
+            if isinstance(decoded, (dict, list, str)):
+                pending.append(decoded)
+            elif _helpers._contains_injection(current):
+                yield current
+
+
+def _scan_memory_record_history(
+    store: VectorMemoryStore,
+    store_name: str,
+    findings: list[dict],
+    reported: set[tuple[str, bytes]],
+) -> None:
+    """Audit all metadata and revisions without loading the history into retrieval.
+
+    The tables are optional for older databases. Read every physical row in bounded
+    batches: a conflict proposal or a corrected old value is still durable content.
+    The same poisoned leaf repeated in an active row and its journal is one finding
+    for that record; a different historical payload remains separately reportable.
+    """
+    for table, kind, identity, prefix in (
+        ("memory_record_meta", "metadata", "record_id", ""),
+        ("memory_revisions", "revision", "record_id", ""),
+        ("memory_history", "history", "day", "history:"),
+        ("memory_consolidations", "consolidation", "source_id", "consolidation:"),
+    ):
+        with store._db_lock:
+            if not store.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",  # wokeignore:rule=master
+                (table,),
+            ).fetchone():
+                continue
+            # These are code-owned identifiers, never user input.
+            cursor = store.db.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
+            columns = [column[0] for column in cursor.description]
+        while True:
+            with store._db_lock:
+                rows = cursor.fetchmany(128)
+            if not rows:
+                break
+            for values in rows:
+                row = dict(zip(columns, values))
+                record_id = prefix + str(row[identity])
+                matches = list(_memory_audit_matches(row))
+                fresh = [
+                    value
+                    for value in matches
+                    if (record_id, _hashlib.sha256(value.encode()).digest()) not in reported
+                ]
+                if not fresh:
+                    continue
+                reported.update(
+                    (record_id, _hashlib.sha256(value.encode()).digest()) for value in matches
+                )
+                key = f"{record_id}@{row['id']}" if "id" in row else record_id
+                findings.append(
+                    {
+                        "type": kind,
+                        "key": key,
+                        "value": fresh[0][:_MEMORY_AUDIT_VALUE_CHARS],
+                        "warning": "Injection pattern detected",
+                        "store": store_name,
+                    }
+                )
+
+
+def _scan_memory_store(store: VectorMemoryStore, store_name: str, findings: list[dict]) -> None:
+    """Injection findings for ONE opened store, each attributed to *store_name*.
+
+    ``store`` is the attribution carrier rather than the caller's own bookkeeping
+    because the findings from every store land in ONE flat list: an unattributed
+    row reads as the global store's, which both hides which crew's silo was
+    poisoned and puts one crew's memory text in another crew's report.
+
+    ``store`` is appended LAST so the four pre-existing keys keep their
+    positions; a consumer reading only those sees the shape it always saw.
+
+    Appends into the CALLER's list rather than building and returning its own: a raise
+    partway through -- a corrupt page reached on the episodic pass -- would otherwise
+    discard every semantic finding already collected for this store along with the
+    exception.
+    """
+    reported: set[tuple[str, bytes]] = set()
+    for entry in store.get_all_semantic():
+        val = entry.get("value_json", "")
+        matches = list(_memory_audit_matches(val))
+        if matches:
+            reported.update(
+                (f"key:{entry['key']}", _hashlib.sha256(value.encode()).digest())
+                for value in matches
+            )
+            findings.append(
+                {
+                    "type": "semantic",
+                    "key": entry["key"],
+                    "value": val[:_MEMORY_AUDIT_VALUE_CHARS],
+                    "warning": "Injection pattern detected",
+                    "store": store_name,
+                }
+            )
+    for entry in store.get_episodic_list(limit=_MEMORY_AUDIT_EPISODIC_LIMIT):
+        text = entry.get("text", "")
+        matches = list(_memory_audit_matches(text))
+        if matches:
+            reported.update(
+                (entry["id"], _hashlib.sha256(value.encode()).digest()) for value in matches
+            )
+            findings.append(
+                {
+                    "type": "episodic",
+                    "key": entry["id"],
+                    "value": text[:_MEMORY_AUDIT_VALUE_CHARS],
+                    "warning": "Injection pattern detected",
+                    "store": store_name,
+                }
+            )
+    _scan_memory_record_history(store, store_name, findings, reported)
+
+
+def scan_memory() -> list[dict]:
+    """Scan every declared memory store's durable rows for suspicious content.
+
+    Returns one flat list of findings, each carrying the ``store`` it came from.
+    The default store comes first, then each declared named store in name order.
+
+    Covers SQLite facts, directives, episodes, metadata, immutable revisions,
+    learned history and consolidation receipts, then V1's JSONL lessons file.
+    Historical values are audit-only and are not added to model retrieval. V2
+    never consults an old learned-file sidecar as another authority.
+
+    Scanning named stores is not completeness for its own sake either: a crew silo's
+    directive tier is loaded into that crew's prompt, so it is the highest-value
+    prompt-injection target on disk, and the audit that reported "clean" while
+    opening only ``config_dir()/memory.db`` was reporting on a file the attacker
+    had no reason to write.
+
+    FAIL SOFT per store and per tier. One unreadable or corrupt silo costs that
+    store's findings for that tier and nothing else — not the default store's, not
+    those of the stores after it, and not the other tier's — because an audit that
+    aborts on the first bad file is an audit an attacker can silence by corrupting one
+    silo. The VERDICT is not fail-soft: a tier that could not be read reports itself,
+    so "unknown" never renders as a tick.
+
+    The vector tier runs first, whole, then the lessons tier. Grouping by tier rather
+    than by store keeps the vector pass's list order untouched, so an install with no
+    lessons file reports exactly what it always reported.
+    """
+    findings: list[dict] = []
+    # Lazy import to avoid a circular dependency (vector_memory imports
+    # redact_credentials/redact_exfiltration_urls from this module at its top
+    # level) and to keep the optional numpy/faiss/snowballstemmer stack off the
+    # lightweight import path. Skip the scan cleanly if it is unavailable.
+    try:
+        from kiro_crew.vector_memory import VectorMemoryStore
+    except Exception:  # numpy/faiss/snowballstemmer are optional heavy deps; any
+        # import-time failure (ImportError, OSError from a C-extension, etc.)
+        # must skip the scan cleanly rather than crash the caller.
+        # The lessons tier is stdlib-only and does NOT share that fate: it is the
+        # tier a store has when it has no vector store at all, so returning early
+        # here would make a missing numpy the way to silence it.
+        _scan_lessons_tier(findings)
+        return findings
+
+    for store_name, db_path in _memory_stores_to_scan():
+        try:
+            from kiro_crew.memory_stores import memory_store_version
+
+            member_store = db_path is not None and memory_store_version(store_name) == 2
+            if member_store and db_path is not None:
+                from kiro_crew.config.loader import KiroCrewConfig
+                from kiro_crew.vector_memory import open_member_database
+
+                config = KiroCrewConfig.load()
+                store = open_member_database(
+                    db_path,
+                    member_id=config.memory_stores[store_name].owner_member_id,
+                    store_id=store_name,
+                )
+            else:
+                store = (
+                    VectorMemoryStore() if db_path is None else VectorMemoryStore(db_path=db_path)
+                )
+        except Exception:
+            logger.warning(
+                "could not open memory store %r for an injection audit", store_name, exc_info=True
+            )
+            findings.append(_unauditable_finding(store_name))
+            continue
+        try:
+            if not member_store:
+                store.init()
+            _scan_memory_store(store, store_name, findings)
+        except Exception:
+            logger.warning(
+                "memory store %r could not be audited for injection patterns",
+                store_name,
+                exc_info=True,
+            )
+            findings.append(_unauditable_finding(store_name))
+        finally:
+            # In a finally so a raise anywhere above cannot leak this store's
+            # sqlite connection, and so a many-store install does not accumulate
+            # one open handle per store for the length of the scan.
+            try:
+                store.close()
+            except Exception:
+                logger.debug("closing memory store %r failed", store_name, exc_info=True)
+    _scan_lessons_tier(findings)
+    return findings
+
+
+def _scan_lessons_tier(findings: list[dict]) -> None:
+    """Append every store's lessons-file findings into *findings*.
+
+    Its own function so the two ``scan_memory`` exits — the ordinary one and the early
+    return taken when the optional vector stack will not import — cannot drift on
+    whether this tier ran.
+
+    TOTAL: a failure costs at most one store's lessons tier, never the caller.
+    ``scan_memory`` is reached from two CLI verbs, and an exception here would replace an
+    audit report with a traceback — including the vector findings already collected. The
+    per-store backstop still REPORTS, so a store lost to an unexpected raise is
+    "unknown", not "clean"; :func:`_scan_store_lessons` handles the read failures it can
+    name itself.
+    """
+    try:
+        targets = _lessons_files_to_scan()
+    except Exception:
+        logger.warning("no memory store's lessons tier could be enumerated", exc_info=True)
+        return
+    for store_name, lessons_path in targets:
+        try:
+            _scan_store_lessons(store_name, lessons_path, findings)
+        except Exception:
+            logger.warning(
+                "memory store %r could not have its lessons tier audited",
+                store_name,
+                exc_info=True,
+            )
+            findings.append(_unauditable_lessons_finding(store_name, lessons_path))
+
+
+def audit_injection_dropped(
+    *,
+    surface: str,
+    session_key: str = "",
+    channel_id: str = "",
+    thread_ts: str = "",
+    agent: str = "kirocrew",
+    sample: str = "",
+) -> None:
+    """Emit an SEL audit event when injection-screened content is dropped.
+
+    Called when :func:`contains_injection` flags untrusted external content
+    (e.g. a Slack thread-parent message or thread metadata authored by a
+    non-owner) and the content is dropped before reaching the LLM prompt
+    Recording the attempt keeps prompt-injection attempts
+    visible in the audit trail rather than silently discarded.
+
+    Best-effort: an SEL logging failure is logged at WARNING and never
+    propagates — the content is dropped regardless of audit success, so this
+    cannot break prompt building.
+    """
+    try:
+        SecurityEventLog().log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                event_type="prompt_injection_dropped",
+                caller_identity=session_key,
+                agent=agent,
+                source="context",
+                operation=surface,
+                outcome="dropped",
+                resources=f"channel_id={channel_id} thread_ts={thread_ts}",
+                metadata={
+                    "surface": surface,
+                    "channel_id": channel_id,
+                    "thread_ts": thread_ts,
+                    "sample": redact_and_truncate(sample, 200),
+                    "mechanism": "contains_injection",
+                },
+            )
+        )
+    except Exception:
+        logger.warning(
+            "SEL audit failed for prompt_injection_dropped on %r (content still dropped)",
+            surface,
+            exc_info=True,
+        )
+
+
+def should_record_observe_history(
+    channel_history: object | None,
+    user_authorized: bool,
+) -> bool:
+    """Return True if an observe-mode message should be recorded.
+
+    Only authorized users' messages are recorded to prevent non-owner
+    prompt injection via shared channel traffic.
+    """
+    return channel_history is not None and user_authorized
+
+
+def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
+    """Redact credentials and exfiltration URLs, then truncate.
+
+    Redaction runs over the full text BEFORE the ``max_chars`` slice so a
+    credential (or base64/URL blob) straddling the truncation boundary cannot
+    leak as an unredacted partial fragment. Truncating first
+    would cut a secret in half, leaving a prefix that no longer matches the
+    credential regex and therefore escapes redaction.
+    """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    return _redaction.redact_credentials(_exfil.redact_exfiltration_urls(text or "")[0])[0][
+        :max_chars
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Facade machinery
+# ---------------------------------------------------------------------------
+# The security controls are split by responsibility across submodules of this
+# package, and ``kiro_crew.security`` stays the only import path: every name a
+# submodule owns is re-exported here, private helpers included, because callers
+# and tests reach them as attributes of the package and patch them by dotted
+# string. Two properties have to hold for that to keep being true after a name
+# moves out of this file.
+#
+# 1. A read here answers with the object the owning submodule holds. Resolving it
+#    through the owner on each access is what makes that true by construction
+#    rather than by a copy that agrees at import and can drift afterwards. The
+#    frozen list in ``_exports`` is what keeps the set of names checkable.
+# 2. Setting the attribute HERE reaches the owning submodule. A caller inside
+#    that submodule resolves the name through its own globals, so a patch
+#    applied only here would leave it running the unpatched object -- the test
+#    passes while testing nothing. ``_ReExportModule`` below is what closes that,
+#    so every existing patch site stays as written.
+#
+# Both halves resolve the owner with ``importlib.import_module``, which answers
+# from ``sys.modules``. That leaves one place a value lives (the owner's
+# namespace) and one place a module lives (``sys.modules``), so neither half has
+# a second copy to keep in step.
+#
+# The table below is in dependency order, lowest layer first, and a name belongs
+# to the submodule that DEFINES it. Names this module imports for its own use
+# from outside the package -- the standard library, and other ``kiro_crew``
+# modules -- are not in the table: no submodule of this package owns them, so
+# there is no owner to resolve them through, and they stay ordinary attributes of
+# this module.
+
+#: Re-exported name -> the submodule that DEFINES it, the one place its value
+#: lives. Read from here by ``__getattr__``, so the facade binds none of these
+#: names in its own namespace.
+_EXPORTS: dict[str, str] = {
+    # argv_floor
+    "_AMBIGUOUS_REFS": "argv_floor",
+    "_AMBIGUOUS_REFSPEC_RE": "argv_floor",
+    "_DEV_MODE_CONFIRM_FLAG": "argv_floor",
+    "_EXPANSION_DEFAULT_RE": "argv_floor",
+    "_GIT_ARG_FLAGS": "argv_floor",
+    "_GIT_PUBLISH_DENY_LABEL": "argv_floor",
+    "_GIT_PUBLISH_GLUE_RE": "argv_floor",
+    "_GIT_PUBLISH_RE": "argv_floor",
+    "_GIT_PUBLISH_SUBST_PROGRAM_RE": "argv_floor",
+    "_HOSTNAME_SUBSTITUTION_HINTS": "argv_floor",
+    "_HOSTNAME_VARIABLE_FORMS": "argv_floor",
+    "_LOOPBACK_HOST_NAMES": "argv_floor",
+    "_PROCESS_SUBSTITUTION_SAFE_CHARS": "argv_floor",
+    "_PROTECTED_BRANCHES": "argv_floor",
+    "_PUSH_ALL_BRANCHES_OPTS": "argv_floor",
+    "_PUSH_NO_VALUE_OPTS": "argv_floor",
+    "_PUSH_NO_VALUE_SHORTS": "argv_floor",
+    "_PUSH_REPO_OPTS": "argv_floor",
+    "_PUSH_VALUE_OPTS": "argv_floor",
+    "_PUSH_VALUE_SHORTS": "argv_floor",
+    "_QUOTED_SEP_SENTINELS": "argv_floor",
+    "_RAW_ASSIGNMENT_RE": "argv_floor",
+    "_RSYNC_RSH_ASSIGN_RE": "argv_floor",
+    "_SELF_CLOUD_DESTRUCTIVE_VERBS": "argv_floor",
+    "_SELF_FLOOR_MACHINERY_RE": "argv_floor",
+    "_SELF_FLOOR_NAME_HINT_RE": "argv_floor",
+    "_SELF_FLOOR_QUOTE_JUNK_RE": "argv_floor",
+    "_SELF_IMPORT_RE": "argv_floor",
+    "_SELF_MODULE_SPELLINGS": "argv_floor",
+    "_SHELL_RESERVED_WORDS": "argv_floor",
+    "_SSH_COMMAND_OPTION_KEYS": "argv_floor",
+    "_SSH_FAMILY_VERBS": "argv_floor",
+    "_SSH_FORWARD_OPT_LETTERS": "argv_floor",
+    "_SSH_ROUTING_OPTION_KEYS": "argv_floor",
+    "_SelfModuleScan": "argv_floor",
+    "_bare_kill_raw_bodies": "argv_floor",
+    "_git_publish_floor_tags": "argv_floor",
+    "_git_push_args": "argv_floor",
+    "_host_is_self": "argv_floor",
+    "_is_credential_mint": "argv_floor",
+    "_is_dev_mode_out_of_root_confirm": "argv_floor",
+    "_is_git_publish": "argv_floor",
+    "_is_git_push_via_normalizer": "argv_floor",
+    "_is_kill_by_name_program": "argv_floor",
+    "_is_push_to_protected_branch": "argv_floor",
+    "_is_self_cloud_destructive": "argv_floor",
+    "_is_self_file_delivery": "argv_floor",
+    "_is_self_gateway_restart": "argv_floor",
+    "_is_self_kill": "argv_floor",
+    "_is_self_module_flag": "argv_floor",
+    "_is_self_module_invocation": "argv_floor",
+    "_is_self_restart": "argv_floor",
+    "_is_self_update": "argv_floor",
+    "_is_ssh_to_self": "argv_floor",
+    "_kill_prefix_keeps_anchor": "argv_floor",
+    "_mask_quoted_separators": "argv_floor",
+    "_matches_self_subcommand": "argv_floor",
+    "_normalize_ref": "argv_floor",
+    "_operand_targets_self": "argv_floor",
+    "_operands_lead_with": "argv_floor",
+    "_own_host_names": "argv_floor",
+    "_own_host_seed": "argv_floor",
+    "_own_interface_addresses": "argv_floor",
+    "_process_substitution_word_is_opaque": "argv_floor",
+    "_proxyjump_value_targets_self": "argv_floor",
+    "_push_segment_targets_protected": "argv_floor",
+    "_resolve_own_host_names": "argv_floor",
+    "_resolve_own_host_names_into_cache": "argv_floor",
+    "_routing_option_key_value_targets_self": "argv_floor",
+    "_routing_option_value_targets_self": "argv_floor",
+    "_self_cli_operands": "argv_floor",
+    "_self_floor_can_fire": "argv_floor",
+    "_self_module_flag_scan": "argv_floor",
+    "_self_module_name_index": "argv_floor",
+    "_self_program_index": "argv_floor",
+    "_self_token_frames": "argv_floor",
+    "_shell_payload_sources": "argv_floor",
+    "_ssh_family_verb": "argv_floor",
+    "_static_substitution_output": "argv_floor",
+    "_unmask_separators": "argv_floor",
+    # denied_rules
+    "BUILTIN_DENIED_RULES": "denied_rules",
+    "BUILTIN_DENY_PATTERNS": "denied_rules",
+    "DENY_REASON_MATCH_PREFIX": "denied_rules",
+    "DENY_REASON_PREFIX": "denied_rules",
+    "DeniedCommandRule": "denied_rules",
+    "SUSPICIOUS_BASH_PATTERNS": "denied_rules",
+    "_AWS_SECRET_VAR_NAMES": "denied_rules",
+    "_AWS_SECRET_WORDS": "denied_rules",
+    "_AWS_SECRET_WORD_PREFIXES": "denied_rules",
+    "_AWS_VAR_SELECTOR": "denied_rules",
+    "_DANGEROUS_AWS_FLAG_RUN": "denied_rules",
+    "_DENY_EXCEPTIONS": "denied_rules",
+    "_DENY_FALLBACK_SCAN_MAX_CHARS": "denied_rules",
+    "_DENY_MATCHER_CACHE": "denied_rules",
+    "_DenyMatcher": "denied_rules",
+    "_ENV_CRED_DENIAL_REASON": "denied_rules",
+    "_ENV_CRED_PATTERNS": "denied_rules",
+    "_ENV_CRED_SHARED_RULES": "denied_rules",
+    "_ENV_CRED_SHARED_RULE_IDS": "denied_rules",
+    "_ENV_DUMP_GREP_AWS_PATTERN": "denied_rules",
+    "_ENV_DUMP_VERBS": "denied_rules",
+    "_FLOOR_ENFORCED_RULE_IDS": "denied_rules",
+    "_GIT_PUBLISH_FLOOR_BY_ID": "denied_rules",
+    "_GIT_PUBLISH_FLOOR_NOTES": "denied_rules",
+    "_GIT_PUBLISH_RULES": "denied_rules",
+    "_GIT_PUBLISH_RULE_CATEGORY": "denied_rules",
+    "_GIT_PUBLISH_RULE_PATTERNS": "denied_rules",
+    "_GIT_PUBLISH_UNGATED": "denied_rules",
+    "_GIT_PUBLISH_UNGATED_RULE_IDS": "denied_rules",
+    "_INERT_SEARCH_GLOBS": "denied_rules",
+    "_INERT_SEARCH_VERBS": "denied_rules",
+    "_INTERPRETER_RULE_IDS": "denied_rules",
+    "_INTERPRETER_RULE_PATTERNS": "denied_rules",
+    "_LEGACY_RULE_ID_BY_PATTERN": "denied_rules",
+    "_LINEARIZED_AWS_FLAG_RUN": "denied_rules",
+    "_LITERAL_CONCAT_RE": "denied_rules",
+    "_PERM_VERB_MENTION_PATTERNS": "denied_rules",
+    "_PRINTENV_AWS_SECRET_PATTERN": "denied_rules",
+    "_RULES_BY_ID": "denied_rules",
+    "_RULE_ID_BY_PATTERN": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_BY_ID": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_NOTES": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_PATTERNS": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_RULE_IDS": "denied_rules",
+    "_SELF_PROTECTION_UNGATED_FLOOR_IDS": "denied_rules",
+    "_aws_secret_word_prefix_alternation": "denied_rules",
+    "_check_env_credential_access": "denied_rules",
+    "_deny_matcher": "denied_rules",
+    "_deny_pattern_matches": "denied_rules",
+    "_deny_reason": "denied_rules",
+    "_exception_eligible": "denied_rules",
+    "_frags_can_underconsume": "denied_rules",
+    "_has_top_level_alternation": "denied_rules",
+    "_linearize_deny_pattern": "denied_rules",
+    "_matches_full_input": "denied_rules",
+    "_polynomial_backtracking_prone": "denied_rules",
+    "_redos_prone": "denied_rules",
+    "_resolved_pin_ids": "denied_rules",
+    "_rule_id_for_pattern": "denied_rules",
+    "_split_deny_frags": "denied_rules",
+    "builtin_denied_rules": "denied_rules",
+    "compute_effective_denied": "denied_rules",
+    "edition_denied_rules": "denied_rules",
+    "enabled_rule_ids": "denied_rules",
+    "floor_enforced_builtin_command_ids": "denied_rules",
+    "is_safe_user_regex": "denied_rules",
+    "pinned_builtin_command_ids": "denied_rules",
+    "pinned_builtin_command_ids_for_snapshot": "denied_rules",
+    # diagnostics
+    "REFUSAL_DIAGNOSTIC_PREFIX": "diagnostics",
+    "RefusalDiagnostic": "diagnostics",
+    "RefusalSpanShape": "diagnostics",
+    "annotate_refusal": "diagnostics",
+    "refusal_diagnostic": "diagnostics",
+    "refusal_span_shape": "diagnostics",
+    # exfil
+    "EXFILTRATION_REDACTION_TAG_PREFIX": "exfil",
+    "OAuthUrlCredentialDiagnostic": "exfil",
+    "OAuthUrlShapeProfile": "exfil",
+    "_BASH_EXFIL_PATTERNS": "exfil",
+    "_BASH_EXFIL_RES": "exfil",
+    "_BASH_EXFIL_ROW_DISCRIMINATORS": "exfil",
+    "_BASH_EXFIL_RULE_BY_LABEL": "exfil",
+    "_BASH_EXFIL_RULE_BY_PATTERN": "exfil",
+    "_CREDENTIAL_RE": "exfil",
+    "_ENDPOINT_EXTENSION_CAP": "exfil",
+    "_ENDPOINT_EXTENSION_ENTRIES_KEY": "exfil",
+    "_EXFIL_PATTERNS": "exfil",
+    "_EXFIL_PERCENT_RE": "exfil",
+    "_EXFIL_QUERY_MIN_LEN": "exfil",
+    "_HARD_CREDENTIAL_RE": "exfil",
+    "_IMDS_IP": "exfil",
+    "_IMDS_IPV6": "exfil",
+    "_IP_CANDIDATE_RE": "exfil",
+    "_IP_COMPONENT": "exfil",
+    "_MAX_URL_DECODE_PASSES": "exfil",
+    "_OAUTH_AUTHORIZATION_ENDPOINTS": "exfil",
+    "_OAUTH_DIAGNOSTIC_PARAMETER_RE": "exfil",
+    "_OAUTH_ENTROPY_QUERY_PARAMS": "exfil",
+    "_OAUTH_EXTENSION_AUDITED": "exfil",
+    "_OAUTH_EXTENSION_HOST_RE": "exfil",
+    "_OAUTH_EXTENSION_MEMO": "exfil",
+    "_OAUTH_EXTENSION_PATH_BAD": "exfil",
+    "_OAUTH_EXTENSION_PATH_MAX_LEN": "exfil",
+    "_OAUTH_QUERY_PARAMS": "exfil",
+    "_OAUTH_S256_CHALLENGE_RE": "exfil",
+    "_OAUTH_URL_SYMBOLS": "exfil",
+    "_S3_PRESIGNED_PARAMS": "exfil",
+    "_S3_PRESIGNED_RE": "exfil",
+    "_SIGNATURE_RE": "exfil",
+    "_SLACK_APP_CREATE_PARAMS": "exfil",
+    "_STRUCTURAL_VALIDATORS": "exfil",
+    "_STS_TOKEN_RE": "exfil",
+    "_URL_RE": "exfil",
+    "_approved_oauth_authorization_endpoint": "exfil",
+    "_check_imds_access": "exfil",
+    "_emit_oauth_extension_used_event": "exfil",
+    "_exempt_exact_hosts": "exfil",
+    "_exfil_exempt_hosts": "exfil",
+    "_exfil_rule_id_for_match": "exfil",
+    "_exfil_url_warning": "exfil",
+    "_is_safe_presigned": "exfil",
+    "_kirocrew_slack_app_link_alias": "exfil",
+    "_load_operator_oauth_endpoints": "exfil",
+    "_oauth_char_class": "exfil",
+    "_oauth_credential_scan_target": "exfil",
+    "_oauth_diagnostic": "exfil",
+    "_oauth_entropy_form_is_protocol_shaped": "exfil",
+    "_oauth_entropy_value_is_protocol_shaped": "exfil",
+    "_oauth_query_diagnostic": "exfil",
+    "_oauth_shape_profile": "exfil",
+    "_oauth_url_payload_diagnostic": "exfil",
+    "_safe_oauth_parameter_name": "exfil",
+    "_slack_manifest_payload_re": "exfil",
+    "_slack_manifest_re_slot": "exfil",
+    "_valid_oauth_extension_path": "exfil",
+    "_validate_operator_oauth_entries": "exfil",
+    "audit_bash_exfiltration": "exfil",
+    "bounded_blocked_links": "exfil",
+    "canonicalize_ip": "exfil",
+    "diagnose_oauth_url_credential": "exfil",
+    "exfil_query_min_len": "exfil",
+    "oauth_rejection_is_endpoint_exemptible": "exfil",
+    "oauth_url_contains_credential": "exfil",
+    "redact_exfiltration_urls": "exfil",
+    "redact_exfiltration_urls_with_records": "exfil",
+    "scan_exfiltration_urls": "exfil",
+    # helpers
+    "_RLIMIT_DEFAULTS": "helpers",
+    "_bias_child_oom_score": "helpers",
+    "_contains_injection": "helpers",
+    "_resource": "helpers",
+    "apply_resource_limits": "helpers",
+    "contains_injection": "helpers",
+    "resource_limit_spec": "helpers",
+    # inline_payload
+    "_INLINE_DYNAMIC_EXEC_RE": "inline_payload",
+    "_has_self_importing_inline_program": "inline_payload",
+    "_inline_payload_reaches_cli": "inline_payload",
+    # paths
+    "DENIED_ROOT_PARTS": "paths",
+    "MAX_SCANNABLE_COMMAND_CHARS": "paths",
+    "MAX_SCANNABLE_SOURCE_BODY_CHARS": "paths",
+    "PathResolutionStalled": "paths",
+    "UNVERIFIABLE_PATH_PREFIX": "paths",
+    "_BuiltTargets": "paths",
+    "_CREW_HOME_PREFIXES": "paths",
+    "_CREW_SECRET_LEAVES": "paths",
+    "_HOME_TARGETS_TTL_COST_RATIO": "paths",
+    "_HOME_TARGETS_TTL_MAX_SECS": "paths",
+    "_HOME_TARGETS_TTL_SECS": "paths",
+    "_KEYSTONE_ARTIFACT_PARENTS": "paths",
+    "_KEYSTONE_ARTIFACT_SUFFIXES": "paths",
+    "_KIRO_AGENTS_DIR": "paths",
+    "_ON_WINDOWS": "paths",
+    "_OVERRIDE_ANCHORED_LEAVES": "paths",
+    "_OVERRIDE_ROOT_ENVS": "paths",
+    "_PATH_RESOLVE_COOLDOWN_MAX_SECS": "paths",
+    "_PATH_RESOLVE_COOLDOWN_SECS": "paths",
+    "_PATH_RESOLVE_TIMEOUT_SECS": "paths",
+    "_ResolvedRoots": "paths",
+    "_SENSITIVE_HOME_DIRS": "paths",
+    "_TTL_COST_RATIO_ENV": "paths",
+    "_TTL_MAX_SECS_ENV": "paths",
+    "_UNC_PREFIX_RE": "paths",
+    "_WRITE_PROTECTED_HOME_PATHS": "paths",
+    "_candidate_forms": "paths",
+    "_env_float": "paths",
+    "_expanded_env_root": "paths",
+    "_home_dir_targets": "paths",
+    "_home_dir_targets_uncached": "paths",
+    "_home_targets_cache": "paths",
+    "_home_targets_ttl": "paths",
+    "_is_keystone_publish_artifact": "paths",
+    "_is_unc_path": "paths",
+    "_lexical_root": "paths",
+    "_mark_stalled": "paths",
+    "_oversize_refusal": "paths",
+    "_path_in_home_dirs": "paths",
+    "_path_resolve_clock": "paths",
+    "_path_resolve_degraded": "paths",
+    "_path_resolve_lock": "paths",
+    "_realpath_or_none": "paths",
+    "_rebuild_targets_bounded": "paths",
+    "_resolve_root_anchors": "paths",
+    "_resolved_env_root": "paths",
+    "_resolved_forms_bounded": "paths",
+    "_resolved_root_key": "paths",
+    "_resolved_spellings": "paths",
+    "_run_resolution_bounded": "paths",
+    "_stall_prefix": "paths",
+    "canonical_path_refusal": "paths",
+    "crew_home_prefixes": "paths",
+    "is_sensitive_bash_command": "paths",
+    "is_sensitive_canonical_path": "paths",
+    "is_sensitive_path": "paths",
+    "is_sensitive_resolved_path": "paths",
+    "is_sensitive_write_path": "paths",
+    "is_unverifiable_path_refusal": "paths",
+    "path_contains_sensitive": "paths",
+    "sandbox_credential_targets": "paths",
+    "sensitive_home_dirs": "paths",
+    "sensitive_path_refusal": "paths",
+    "write_protected_home_paths": "paths",
+    # perm_verb_mention
+    "_perm_verb_mention_only": "perm_verb_mention",
+    # redaction
+    "CREDENTIAL_REDACTION_TAGS": "redaction",
+    "REDACTED_CREDENTIAL_TAG": "redaction",
+    "_B64_CHUNK_RE": "redaction",
+    "_BARE_SECRET_RUN_RE": "redaction",
+    "_CREDENTIAL_PATTERNS": "redaction",
+    "_CREDENTIAL_PREFILTER_AUTHORIZATION_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_DISCORD_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_GH_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_LITERALS": "redaction",
+    "_CREDENTIAL_PREFILTER_TELEGRAM_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_URI_RE": "redaction",
+    "_ENTROPY_TERMS_KEY_LEN": "redaction",
+    "_HEX_ONLY_RE": "redaction",
+    "_LOCAL_PATH_PLACEHOLDER": "redaction",
+    "_LOCAL_PATH_RE": "redaction",
+    "_PREFILTER_MIN_LEN": "redaction",
+    "_PRINTABLE_BYTES": "redaction",
+    "_REDACTED_CREDENTIAL_TAG": "redaction",
+    "_REDACTED_ENCODED_CREDENTIAL_TAG": "redaction",
+    "_SECRET_ENTROPY_MIN": "redaction",
+    "_SECRET_KEY_LEN": "redaction",
+    "_SECRET_MAX_LOWER_RUN": "redaction",
+    "_SECRET_MAX_SLASHES": "redaction",
+    "_SECRET_MAX_VOWEL_RATIO": "redaction",
+    "_SECRET_PRINTABLE_DECODE_RATIO": "redaction",
+    "_TOKEN_PARAM_PARTIAL_RE": "redaction",
+    "_TOKEN_PARAM_RE": "redaction",
+    "_TOKEN_PARAM_VALUE_CLASS": "redaction",
+    "_VOWELS": "redaction",
+    "_contains_bare_secret": "redaction",
+    "_contains_fixed_credential": "redaction",
+    "_decode_b64_chunk": "redaction",
+    "_decode_b64_safe": "redaction",
+    "_decodes_to_printable_text": "redaction",
+    "_has_all_three_char_classes": "redaction",
+    "_looks_like_secret_key": "redaction",
+    "_lowercase_run_exceeds": "redaction",
+    "_might_contain_credential": "redaction",
+    "_shannon_entropy": "redaction",
+    "_text_contains_bare_secret": "redaction",
+    "_vowel_ratio": "redaction",
+    "get_credential_patterns": "redaction",
+    "redact_credentials": "redaction",
+    "redact_local_paths": "redaction",
+    "redact_path_segments": "redaction",
+    # shell_normalizer
+    "_AMBIGUOUS_EXPANSION_RE": "shell_normalizer",
+    "_ANSI_C_LITERAL_ESCAPES": "shell_normalizer",
+    "_ANSI_C_NUMERIC_ESCAPE_RE": "shell_normalizer",
+    "_ANSI_C_QUOTE_RE": "shell_normalizer",
+    "_ANSI_C_SPACE_ESCAPES": "shell_normalizer",
+    "_ARRAY_ASSIGN_RE": "shell_normalizer",
+    "_ARRAY_EXPAND_RE": "shell_normalizer",
+    "_CARRIER_SPLIT_WINDOW": "shell_normalizer",
+    "_CMD_SEPARATOR_RE": "shell_normalizer",
+    "_CMD_SPLIT_RE": "shell_normalizer",
+    "_COMPUTED_VALUE_RE": "shell_normalizer",
+    "_CONTROL_OPERATOR_RE": "shell_normalizer",
+    "_DATA_CONSUMER_PROGRAMS": "shell_normalizer",
+    "_EMPTY_QUOTE_RE": "shell_normalizer",
+    "_EMPTY_SUBST_RE": "shell_normalizer",
+    "_ENV_SPLIT_PROGRAMS": "shell_normalizer",
+    "_FUNC_DEF_RE": "shell_normalizer",
+    "_GLOB_CHARS_RE": "shell_normalizer",
+    "_HOME_VAR_RE": "shell_normalizer",
+    "_INDIRECT_VAR_USE_RE": "shell_normalizer",
+    "_LOCAL_ASSIGN_RE": "shell_normalizer",
+    "_NESTED_SHELL_PROGRAMS": "shell_normalizer",
+    "_NESTED_SHELL_VERBS": "shell_normalizer",
+    "_NUMERIC_ESCAPE_RE": "shell_normalizer",
+    "_ONE_CHAR_CLASS_RE": "shell_normalizer",
+    "_OUTPUT_REDIRECT_RE": "shell_normalizer",
+    "_PARAM_DEFAULT_RE": "shell_normalizer",
+    "_PARAM_TRANSFORM_RE": "shell_normalizer",
+    "_PRINTF_ESCAPES": "shell_normalizer",
+    "_PROCESS_SUBSTITUTION_OPENERS": "shell_normalizer",
+    "_PUSH_REDIRECTION_RE": "shell_normalizer",
+    "_PYTHON_INLINE_PROGRAM_FLAGS": "shell_normalizer",
+    "_PYTHON_OPERAND_FLAGS": "shell_normalizer",
+    "_PYTHON_PROGRAM_RE": "shell_normalizer",
+    "_REDIRECT_START_RE": "shell_normalizer",
+    "_SCRIPT_EXECUTES_RE": "shell_normalizer",
+    "_SHELL_ACTIVE_CHARS": "shell_normalizer",
+    "_SHELL_ASSIGN_RE": "shell_normalizer",
+    "_SHELL_COMMAND_FLAG_RE": "shell_normalizer",
+    "_SHELL_COMMAND_GLUED_RE": "shell_normalizer",
+    "_SHELL_LINE_CONTINUATION_RE": "shell_normalizer",
+    "_SHELL_OPERATOR_CHARS": "shell_normalizer",
+    "_SHELL_SEGMENT_SEPARATORS": "shell_normalizer",
+    "_SHELL_VAR_NAMES": "shell_normalizer",
+    "_SHELL_VAR_RE": "shell_normalizer",
+    "_SHELL_WRAPPER_CHARS": "shell_normalizer",
+    "_ShellChar": "shell_normalizer",
+    "_ShellWalk": "shell_normalizer",
+    "_VAR_USE_RE": "shell_normalizer",
+    "_argv_programs": "shell_normalizer",
+    "_array_assignments": "shell_normalizer",
+    "_backtick_closer": "shell_normalizer",
+    "_continuation_width": "shell_normalizer",
+    "_cut_at_operator": "shell_normalizer",
+    "_data_consumer_command_disqualified": "shell_normalizer",
+    "_data_consumer_exempt": "shell_normalizer",
+    "_debracket": "shell_normalizer",
+    "_decode_ansi_c_body": "shell_normalizer",
+    "_decode_printf_escapes": "shell_normalizer",
+    "_decode_shell_quoted_literals": "shell_normalizer",
+    "_dequote_token": "shell_normalizer",
+    "_ends_argv": "shell_normalizer",
+    "_escape_code_is_inert": "shell_normalizer",
+    "_fold_line_continuations": "shell_normalizer",
+    "_glob_could_expand_to": "shell_normalizer",
+    "_glob_to_regex": "shell_normalizer",
+    "_glued_shell_command_payload": "shell_normalizer",
+    "_here_string_payload": "shell_normalizer",
+    "_heredoc_marker": "shell_normalizer",
+    "_is_computed_value": "shell_normalizer",
+    "_is_env_split_flag": "shell_normalizer",
+    "_is_glued_shell_command_token": "shell_normalizer",
+    "_is_herestring_token": "shell_normalizer",
+    "_is_mint_verb": "shell_normalizer",
+    "_is_not_double_dash": "shell_normalizer",
+    "_is_self_program": "shell_normalizer",
+    "_is_shell_command_flag": "shell_normalizer",
+    "_is_shell_variable_reference": "shell_normalizer",
+    "_iter_shell_chars": "shell_normalizer",
+    "_matching_close_paren": "shell_normalizer",
+    "_mint_verb_in_substitution": "shell_normalizer",
+    "_nested_shell_payloads": "shell_normalizer",
+    "_next_stop_indexes": "shell_normalizer",
+    "_normalize_operand": "shell_normalizer",
+    "_numeric_escape_char": "shell_normalizer",
+    "_numeric_escape_code": "shell_normalizer",
+    "_operand_span_end": "shell_normalizer",
+    "_output_redirect_scan": "shell_normalizer",
+    "_pipes_into_evaluator": "shell_normalizer",
+    "_program_basename": "shell_normalizer",
+    "_protected_name_in_substitution": "shell_normalizer",
+    "_push_option_matches": "shell_normalizer",
+    "_push_token_redirection": "shell_normalizer",
+    "_push_token_shell_read": "shell_normalizer",
+    "_python_reads_stdin": "shell_normalizer",
+    "_redirect_consumes_next": "shell_normalizer",
+    "_redirect_glue_point": "shell_normalizer",
+    "_resolve_function_aliases": "shell_normalizer",
+    "_resolve_local_assignments": "shell_normalizer",
+    "_resolve_param_defaults": "shell_normalizer",
+    "_sed_exec_replacement": "shell_normalizer",
+    "_self_tokens": "shell_normalizer",
+    "_shell_c_carrier_glued": "shell_normalizer",
+    "_shell_c_carrier_payloads": "shell_normalizer",
+    "_shell_join_continuations": "shell_normalizer",
+    "_shell_payload_walk": "shell_normalizer",
+    "_shell_quote_walk": "shell_normalizer",
+    "_shell_tokens": "shell_normalizer",
+    "_split_glued_operators": "shell_normalizer",
+    "_split_push_command_segments": "shell_normalizer",
+    "_split_shell_words": "shell_normalizer",
+    "_stdin_program_text": "shell_normalizer",
+    "_stdin_redirect_carriers": "shell_normalizer",
+    "_strip_redirect": "shell_normalizer",
+    "_substitution_bodies": "shell_normalizer",
+    "_substitution_depth_delta": "shell_normalizer",
+    "_substitution_program": "shell_normalizer",
+    "_xargs_reconstructed_command": "shell_normalizer",
+    "normalize_shell_command": "shell_normalizer",
+    # vocabulary
+    "_KILL_BY_NAME_PROGRAMS": "vocabulary",
+    "_SELF_NAME_RE": "vocabulary",
+    "_SELF_PROGRAM_RE": "vocabulary",
+    "_SELF_PROGRAM_SPELLINGS": "vocabulary",
+}
+
+
+def _submodule(module: str) -> ModuleType:
+    """Return a submodule of this package, read from where modules are stored.
+
+    The single resolution site, used by the re-export protocol and by this
+    module's OWN code: a function defined here resolves a bare global through this
+    module's namespace directly, which ``__getattr__`` never sees, so it asks for
+    the owner and reads the name off it instead.
+
+    :data:`sys.modules` IS the one place a module is stored, so the read goes
+    there and a purged or replaced owner is seen at once. ``import_module`` is
+    what POPULATES that store, so it answers only the miss -- and keeping it off
+    the resolved path matters beyond speed: it is an attribute of a module any
+    caller can rebind, and a test that patches it for its own reasons
+    (``patch("importlib.import_module")``, three sites in this repository) would
+    otherwise reroute every read of every security gate here to that patch for as
+    long as it is installed.
+
+    A mapping of resolved owners kept in this module would be the second storage
+    location this package exists to remove.
+    """
+    module_name = f"{__name__}.{module}"
+    try:
+        return sys.modules[module_name]
+    except KeyError:
+        return importlib.import_module(module_name)
+
+
+def _owner(name: str) -> ModuleType:
+    """Return the submodule that defines ``name``, resolved on each access."""
+    return _submodule(_EXPORTS[name])
+
+
+def __getattr__(name: str) -> Any:
+    """Read a re-exported name from the submodule that owns it (:pep:`562`).
+
+    A name this module does not hold reaches here, which is every re-exported
+    name: the value is read from its owner on each access, so the owner's
+    namespace is the only place it lives.
+
+    A name outside the table raises ``AttributeError``, the answer a caller and
+    ``getattr(..., default)`` both expect for a name that does not exist. A name
+    IN the table whose owner cannot be imported raises the ``ImportError`` from
+    that import instead, deliberately: these are security predicates, and
+    ``getattr(security, "is_sensitive_path", None)`` swallows ``AttributeError``
+    while letting ``ImportError`` through. Turning an unresolvable gate into a
+    ``None`` a caller reads as falsy would grant what the gate exists to refuse,
+    so the failure stays loud and the decision stays closed.
+    """
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(_owner(name), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
+
+
+class _ReExportModule(ModuleType):
+    """Send a write to a re-exported name to the submodule that owns it.
+
+    Binding the name in this package's own namespace instead would shadow the
+    owner permanently, because ``__getattr__`` runs only for a name the package
+    does not already hold: the shadow would win every later read, and the owner's
+    value would become unreachable through this package.
+
+    That makes such a write undoable, which matters for the restore-by-reassign
+    protocol a test harness uses (``pytest``'s ``monkeypatch`` reads the attribute
+    to remember it, then assigns the remembered value back). Against a shadowing
+    write, the value it reads is whatever the owner holds AT THAT MOMENT -- so a
+    harness that patches the owner first remembers the patched value, and its
+    restore installs that value in the package for the life of the process.
+    Forwarding the write leaves one value to remember and one to put back.
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _EXPORTS:
+            setattr(_owner(name), name, value)
+        else:
+            super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _EXPORTS:
+            delattr(_owner(name), name)
+        else:
+            super().__delattr__(name)
+
+
+# Installed last, so the forwarding is live for every caller but never runs while
+# this module is still binding its own names.
+sys.modules[__name__].__class__ = _ReExportModule
+
+# ``from kiro_crew.security import *`` consults this list and never reaches
+# ``__getattr__``, so without it a star import would carry only the names this
+# module binds itself and every re-exported predicate would be missing -- a
+# ``NameError`` at the star-importer's first use. It is DERIVED from the two
+# authorities rather than written out, so it is a projection of them and not a
+# third list of names to keep in step: the table's keys, plus what this module
+# binds, minus the private names a star import never carried.
+__all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
+
+
+if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
+    from kiro_crew.security.argv_floor import (  # noqa: F401
+        _AMBIGUOUS_REFS,
+        _AMBIGUOUS_REFSPEC_RE,
+        _DEV_MODE_CONFIRM_FLAG,
+        _EXPANSION_DEFAULT_RE,
+        _GIT_ARG_FLAGS,
+        _GIT_PUBLISH_DENY_LABEL,
+        _GIT_PUBLISH_GLUE_RE,
+        _GIT_PUBLISH_RE,
+        _GIT_PUBLISH_SUBST_PROGRAM_RE,
+        _HOSTNAME_SUBSTITUTION_HINTS,
+        _HOSTNAME_VARIABLE_FORMS,
+        _LOOPBACK_HOST_NAMES,
+        _PROCESS_SUBSTITUTION_SAFE_CHARS,
+        _PROTECTED_BRANCHES,
+        _PUSH_ALL_BRANCHES_OPTS,
+        _PUSH_NO_VALUE_OPTS,
+        _PUSH_NO_VALUE_SHORTS,
+        _PUSH_REPO_OPTS,
+        _PUSH_VALUE_OPTS,
+        _PUSH_VALUE_SHORTS,
+        _QUOTED_SEP_SENTINELS,
+        _RAW_ASSIGNMENT_RE,
+        _RSYNC_RSH_ASSIGN_RE,
+        _SELF_CLOUD_DESTRUCTIVE_VERBS,
+        _SELF_FLOOR_MACHINERY_RE,
+        _SELF_FLOOR_NAME_HINT_RE,
+        _SELF_FLOOR_QUOTE_JUNK_RE,
+        _SELF_IMPORT_RE,
+        _SELF_MODULE_SPELLINGS,
+        _SHELL_RESERVED_WORDS,
+        _SSH_COMMAND_OPTION_KEYS,
+        _SSH_FAMILY_VERBS,
+        _SSH_FORWARD_OPT_LETTERS,
+        _SSH_ROUTING_OPTION_KEYS,
+        _bare_kill_raw_bodies,
+        _git_publish_floor_tags,
+        _git_push_args,
+        _host_is_self,
+        _is_credential_mint,
+        _is_dev_mode_out_of_root_confirm,
+        _is_git_publish,
+        _is_git_push_via_normalizer,
+        _is_kill_by_name_program,
+        _is_push_to_protected_branch,
+        _is_self_cloud_destructive,
+        _is_self_file_delivery,
+        _is_self_gateway_restart,
+        _is_self_kill,
+        _is_self_module_flag,
+        _is_self_module_invocation,
+        _is_self_restart,
+        _is_self_update,
+        _is_ssh_to_self,
+        _kill_prefix_keeps_anchor,
+        _mask_quoted_separators,
+        _matches_self_subcommand,
+        _normalize_ref,
+        _operand_targets_self,
+        _operands_lead_with,
+        _own_host_names,
+        _own_host_seed,
+        _own_interface_addresses,
+        _process_substitution_word_is_opaque,
+        _proxyjump_value_targets_self,
+        _push_segment_targets_protected,
+        _resolve_own_host_names,
+        _resolve_own_host_names_into_cache,
+        _routing_option_key_value_targets_self,
+        _routing_option_value_targets_self,
+        _self_cli_operands,
+        _self_floor_can_fire,
+        _self_module_flag_scan,
+        _self_module_name_index,
+        _self_program_index,
+        _self_token_frames,
+        _SelfModuleScan,
+        _shell_payload_sources,
+        _ssh_family_verb,
+        _static_substitution_output,
+        _unmask_separators,
+    )
+    from kiro_crew.security.denied_rules import (  # noqa: F401
+        _AWS_SECRET_VAR_NAMES,
+        _AWS_SECRET_WORD_PREFIXES,
+        _AWS_SECRET_WORDS,
+        _AWS_VAR_SELECTOR,
+        _DANGEROUS_AWS_FLAG_RUN,
+        _DENY_EXCEPTIONS,
+        _DENY_FALLBACK_SCAN_MAX_CHARS,
+        _DENY_MATCHER_CACHE,
+        _ENV_CRED_DENIAL_REASON,
+        _ENV_CRED_PATTERNS,
+        _ENV_CRED_SHARED_RULE_IDS,
+        _ENV_CRED_SHARED_RULES,
+        _ENV_DUMP_GREP_AWS_PATTERN,
+        _ENV_DUMP_VERBS,
+        _FLOOR_ENFORCED_RULE_IDS,
+        _GIT_PUBLISH_FLOOR_BY_ID,
+        _GIT_PUBLISH_FLOOR_NOTES,
+        _GIT_PUBLISH_RULE_CATEGORY,
+        _GIT_PUBLISH_RULE_PATTERNS,
+        _GIT_PUBLISH_RULES,
+        _GIT_PUBLISH_UNGATED,
+        _GIT_PUBLISH_UNGATED_RULE_IDS,
+        _INERT_SEARCH_GLOBS,
+        _INERT_SEARCH_VERBS,
+        _INTERPRETER_RULE_IDS,
+        _INTERPRETER_RULE_PATTERNS,
+        _LEGACY_RULE_ID_BY_PATTERN,
+        _LINEARIZED_AWS_FLAG_RUN,
+        _LITERAL_CONCAT_RE,
+        _PERM_VERB_MENTION_PATTERNS,
+        _PRINTENV_AWS_SECRET_PATTERN,
+        _RULE_ID_BY_PATTERN,
+        _RULES_BY_ID,
+        _SELF_PROTECTION_FLOOR_BY_ID,
+        _SELF_PROTECTION_FLOOR_NOTES,
+        _SELF_PROTECTION_FLOOR_PATTERNS,
+        _SELF_PROTECTION_FLOOR_RULE_IDS,
+        _SELF_PROTECTION_UNGATED_FLOOR_IDS,
+        BUILTIN_DENIED_RULES,
+        BUILTIN_DENY_PATTERNS,
+        DENY_REASON_MATCH_PREFIX,
+        DENY_REASON_PREFIX,
+        SUSPICIOUS_BASH_PATTERNS,
+        DeniedCommandRule,
+        _aws_secret_word_prefix_alternation,
+        _check_env_credential_access,
+        _deny_matcher,
+        _deny_pattern_matches,
+        _deny_reason,
+        _DenyMatcher,
+        _exception_eligible,
+        _frags_can_underconsume,
+        _has_top_level_alternation,
+        _linearize_deny_pattern,
+        _matches_full_input,
+        _polynomial_backtracking_prone,
+        _redos_prone,
+        _resolved_pin_ids,
+        _rule_id_for_pattern,
+        _split_deny_frags,
+        builtin_denied_rules,
+        compute_effective_denied,
+        edition_denied_rules,
+        enabled_rule_ids,
+        floor_enforced_builtin_command_ids,
+        is_safe_user_regex,
+        pinned_builtin_command_ids,
+        pinned_builtin_command_ids_for_snapshot,
+    )
+    from kiro_crew.security.diagnostics import (  # noqa: F401
+        REFUSAL_DIAGNOSTIC_PREFIX,
+        RefusalDiagnostic,
+        RefusalSpanShape,
+        annotate_refusal,
+        refusal_diagnostic,
+        refusal_span_shape,
+    )
+    from kiro_crew.security.exfil import (  # noqa: F401
+        _BASH_EXFIL_PATTERNS,
+        _BASH_EXFIL_RES,
+        _BASH_EXFIL_ROW_DISCRIMINATORS,
+        _BASH_EXFIL_RULE_BY_LABEL,
+        _BASH_EXFIL_RULE_BY_PATTERN,
+        _CREDENTIAL_RE,
+        _ENDPOINT_EXTENSION_CAP,
+        _ENDPOINT_EXTENSION_ENTRIES_KEY,
+        _EXFIL_PATTERNS,
+        _EXFIL_PERCENT_RE,
+        _EXFIL_QUERY_MIN_LEN,
+        _HARD_CREDENTIAL_RE,
+        _IMDS_IP,
+        _IMDS_IPV6,
+        _IP_CANDIDATE_RE,
+        _IP_COMPONENT,
+        _MAX_URL_DECODE_PASSES,
+        _OAUTH_AUTHORIZATION_ENDPOINTS,
+        _OAUTH_DIAGNOSTIC_PARAMETER_RE,
+        _OAUTH_ENTROPY_QUERY_PARAMS,
+        _OAUTH_EXTENSION_AUDITED,
+        _OAUTH_EXTENSION_HOST_RE,
+        _OAUTH_EXTENSION_MEMO,
+        _OAUTH_EXTENSION_PATH_BAD,
+        _OAUTH_EXTENSION_PATH_MAX_LEN,
+        _OAUTH_QUERY_PARAMS,
+        _OAUTH_S256_CHALLENGE_RE,
+        _OAUTH_URL_SYMBOLS,
+        _S3_PRESIGNED_PARAMS,
+        _S3_PRESIGNED_RE,
+        _SIGNATURE_RE,
+        _SLACK_APP_CREATE_PARAMS,
+        _STRUCTURAL_VALIDATORS,
+        _STS_TOKEN_RE,
+        _URL_RE,
+        EXFILTRATION_REDACTION_TAG_PREFIX,
+        OAuthUrlCredentialDiagnostic,
+        OAuthUrlShapeProfile,
+        _approved_oauth_authorization_endpoint,
+        _check_imds_access,
+        _emit_oauth_extension_used_event,
+        _exempt_exact_hosts,
+        _exfil_exempt_hosts,
+        _exfil_rule_id_for_match,
+        _exfil_url_warning,
+        _is_safe_presigned,
+        _kirocrew_slack_app_link_alias,
+        _load_operator_oauth_endpoints,
+        _oauth_char_class,
+        _oauth_credential_scan_target,
+        _oauth_diagnostic,
+        _oauth_entropy_form_is_protocol_shaped,
+        _oauth_entropy_value_is_protocol_shaped,
+        _oauth_query_diagnostic,
+        _oauth_shape_profile,
+        _oauth_url_payload_diagnostic,
+        _safe_oauth_parameter_name,
+        _slack_manifest_payload_re,
+        _slack_manifest_re_slot,
+        _valid_oauth_extension_path,
+        _validate_operator_oauth_entries,
+        audit_bash_exfiltration,
+        bounded_blocked_links,
+        canonicalize_ip,
+        diagnose_oauth_url_credential,
+        exfil_query_min_len,
+        oauth_rejection_is_endpoint_exemptible,
+        oauth_url_contains_credential,
+        redact_exfiltration_urls,
+        redact_exfiltration_urls_with_records,
+        scan_exfiltration_urls,
+    )
+    from kiro_crew.security.helpers import (  # noqa: F401
+        _RLIMIT_DEFAULTS,
+        _bias_child_oom_score,
+        _contains_injection,
+        _resource,
+        apply_resource_limits,
+        contains_injection,
+        resource_limit_spec,
+    )
+    from kiro_crew.security.inline_payload import (  # noqa: F401
+        _INLINE_DYNAMIC_EXEC_RE,
+        _has_self_importing_inline_program,
+        _inline_payload_reaches_cli,
+    )
+    from kiro_crew.security.paths import (  # noqa: F401
+        _CREW_HOME_PREFIXES,
+        _CREW_SECRET_LEAVES,
+        _HOME_TARGETS_TTL_COST_RATIO,
+        _HOME_TARGETS_TTL_MAX_SECS,
+        _HOME_TARGETS_TTL_SECS,
+        _KEYSTONE_ARTIFACT_PARENTS,
+        _KEYSTONE_ARTIFACT_SUFFIXES,
+        _KIRO_AGENTS_DIR,
+        _ON_WINDOWS,
+        _OVERRIDE_ANCHORED_LEAVES,
+        _OVERRIDE_ROOT_ENVS,
+        _PATH_RESOLVE_COOLDOWN_MAX_SECS,
+        _PATH_RESOLVE_COOLDOWN_SECS,
+        _PATH_RESOLVE_TIMEOUT_SECS,
+        _SENSITIVE_HOME_DIRS,
+        _TTL_COST_RATIO_ENV,
+        _TTL_MAX_SECS_ENV,
+        _UNC_PREFIX_RE,
+        _WRITE_PROTECTED_HOME_PATHS,
+        DENIED_ROOT_PARTS,
+        MAX_SCANNABLE_COMMAND_CHARS,
+        MAX_SCANNABLE_SOURCE_BODY_CHARS,
+        UNVERIFIABLE_PATH_PREFIX,
+        PathResolutionStalled,
+        _BuiltTargets,
+        _candidate_forms,
+        _env_float,
+        _expanded_env_root,
+        _home_dir_targets,
+        _home_dir_targets_uncached,
+        _home_targets_cache,
+        _home_targets_ttl,
+        _is_keystone_publish_artifact,
+        _is_unc_path,
+        _lexical_root,
+        _mark_stalled,
+        _oversize_refusal,
+        _path_in_home_dirs,
+        _path_resolve_clock,
+        _path_resolve_degraded,
+        _path_resolve_lock,
+        _realpath_or_none,
+        _rebuild_targets_bounded,
+        _resolve_root_anchors,
+        _resolved_env_root,
+        _resolved_forms_bounded,
+        _resolved_root_key,
+        _resolved_spellings,
+        _ResolvedRoots,
+        _run_resolution_bounded,
+        _stall_prefix,
+        canonical_path_refusal,
+        crew_home_prefixes,
+        is_sensitive_bash_command,
+        is_sensitive_canonical_path,
+        is_sensitive_path,
+        is_sensitive_resolved_path,
+        is_sensitive_write_path,
+        is_unverifiable_path_refusal,
+        path_contains_sensitive,
+        sandbox_credential_targets,
+        sensitive_home_dirs,
+        sensitive_path_refusal,
+        write_protected_home_paths,
+    )
+    from kiro_crew.security.perm_verb_mention import (  # noqa: F401
+        _perm_verb_mention_only,
+    )
+    from kiro_crew.security.redaction import (  # noqa: F401
+        _B64_CHUNK_RE,
+        _BARE_SECRET_RUN_RE,
+        _CREDENTIAL_PATTERNS,
+        _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
+        _CREDENTIAL_PREFILTER_DISCORD_RE,
+        _CREDENTIAL_PREFILTER_GH_RE,
+        _CREDENTIAL_PREFILTER_LITERALS,
+        _CREDENTIAL_PREFILTER_TELEGRAM_RE,
+        _CREDENTIAL_PREFILTER_URI_RE,
+        _ENTROPY_TERMS_KEY_LEN,
+        _HEX_ONLY_RE,
+        _LOCAL_PATH_PLACEHOLDER,
+        _LOCAL_PATH_RE,
+        _PREFILTER_MIN_LEN,
+        _PRINTABLE_BYTES,
+        _REDACTED_CREDENTIAL_TAG,
+        _REDACTED_ENCODED_CREDENTIAL_TAG,
+        _SECRET_ENTROPY_MIN,
+        _SECRET_KEY_LEN,
+        _SECRET_MAX_LOWER_RUN,
+        _SECRET_MAX_SLASHES,
+        _SECRET_MAX_VOWEL_RATIO,
+        _SECRET_PRINTABLE_DECODE_RATIO,
+        _TOKEN_PARAM_PARTIAL_RE,
+        _TOKEN_PARAM_RE,
+        _TOKEN_PARAM_VALUE_CLASS,
+        _VOWELS,
+        CREDENTIAL_REDACTION_TAGS,
+        REDACTED_CREDENTIAL_TAG,
+        _contains_bare_secret,
+        _contains_fixed_credential,
+        _decode_b64_chunk,
+        _decode_b64_safe,
+        _decodes_to_printable_text,
+        _has_all_three_char_classes,
+        _looks_like_secret_key,
+        _lowercase_run_exceeds,
+        _might_contain_credential,
+        _shannon_entropy,
+        _text_contains_bare_secret,
+        _vowel_ratio,
+        get_credential_patterns,
+        redact_credentials,
+        redact_local_paths,
+        redact_path_segments,
+    )
+    from kiro_crew.security.shell_normalizer import (  # noqa: F401
+        _AMBIGUOUS_EXPANSION_RE,
+        _ANSI_C_LITERAL_ESCAPES,
+        _ANSI_C_NUMERIC_ESCAPE_RE,
+        _ANSI_C_QUOTE_RE,
+        _ANSI_C_SPACE_ESCAPES,
+        _ARRAY_ASSIGN_RE,
+        _ARRAY_EXPAND_RE,
+        _CARRIER_SPLIT_WINDOW,
+        _CMD_SEPARATOR_RE,
+        _CMD_SPLIT_RE,
+        _COMPUTED_VALUE_RE,
+        _CONTROL_OPERATOR_RE,
+        _DATA_CONSUMER_PROGRAMS,
+        _EMPTY_QUOTE_RE,
+        _EMPTY_SUBST_RE,
+        _ENV_SPLIT_PROGRAMS,
+        _FUNC_DEF_RE,
+        _GLOB_CHARS_RE,
+        _HOME_VAR_RE,
+        _INDIRECT_VAR_USE_RE,
+        _LOCAL_ASSIGN_RE,
+        _NESTED_SHELL_PROGRAMS,
+        _NESTED_SHELL_VERBS,
+        _NUMERIC_ESCAPE_RE,
+        _ONE_CHAR_CLASS_RE,
+        _OUTPUT_REDIRECT_RE,
+        _PARAM_DEFAULT_RE,
+        _PARAM_TRANSFORM_RE,
+        _PRINTF_ESCAPES,
+        _PROCESS_SUBSTITUTION_OPENERS,
+        _PUSH_REDIRECTION_RE,
+        _PYTHON_INLINE_PROGRAM_FLAGS,
+        _PYTHON_OPERAND_FLAGS,
+        _PYTHON_PROGRAM_RE,
+        _REDIRECT_START_RE,
+        _SCRIPT_EXECUTES_RE,
+        _SHELL_ACTIVE_CHARS,
+        _SHELL_ASSIGN_RE,
+        _SHELL_COMMAND_FLAG_RE,
+        _SHELL_COMMAND_GLUED_RE,
+        _SHELL_LINE_CONTINUATION_RE,
+        _SHELL_OPERATOR_CHARS,
+        _SHELL_SEGMENT_SEPARATORS,
+        _SHELL_VAR_NAMES,
+        _SHELL_VAR_RE,
+        _SHELL_WRAPPER_CHARS,
+        _VAR_USE_RE,
+        _argv_programs,
+        _array_assignments,
+        _backtick_closer,
+        _continuation_width,
+        _cut_at_operator,
+        _data_consumer_command_disqualified,
+        _data_consumer_exempt,
+        _debracket,
+        _decode_ansi_c_body,
+        _decode_printf_escapes,
+        _decode_shell_quoted_literals,
+        _dequote_token,
+        _ends_argv,
+        _escape_code_is_inert,
+        _fold_line_continuations,
+        _glob_could_expand_to,
+        _glob_to_regex,
+        _glued_shell_command_payload,
+        _here_string_payload,
+        _heredoc_marker,
+        _is_computed_value,
+        _is_env_split_flag,
+        _is_glued_shell_command_token,
+        _is_herestring_token,
+        _is_mint_verb,
+        _is_not_double_dash,
+        _is_self_program,
+        _is_shell_command_flag,
+        _is_shell_variable_reference,
+        _iter_shell_chars,
+        _matching_close_paren,
+        _mint_verb_in_substitution,
+        _nested_shell_payloads,
+        _next_stop_indexes,
+        _normalize_operand,
+        _numeric_escape_char,
+        _numeric_escape_code,
+        _operand_span_end,
+        _output_redirect_scan,
+        _pipes_into_evaluator,
+        _program_basename,
+        _protected_name_in_substitution,
+        _push_option_matches,
+        _push_token_redirection,
+        _push_token_shell_read,
+        _python_reads_stdin,
+        _redirect_consumes_next,
+        _redirect_glue_point,
+        _resolve_function_aliases,
+        _resolve_local_assignments,
+        _resolve_param_defaults,
+        _sed_exec_replacement,
+        _self_tokens,
+        _shell_c_carrier_glued,
+        _shell_c_carrier_payloads,
+        _shell_join_continuations,
+        _shell_payload_walk,
+        _shell_quote_walk,
+        _shell_tokens,
+        _ShellChar,
+        _ShellWalk,
+        _split_glued_operators,
+        _split_push_command_segments,
+        _split_shell_words,
+        _stdin_program_text,
+        _stdin_redirect_carriers,
+        _strip_redirect,
+        _substitution_bodies,
+        _substitution_depth_delta,
+        _substitution_program,
+        _xargs_reconstructed_command,
+        normalize_shell_command,
+    )
+    from kiro_crew.security.vocabulary import (  # noqa: F401
+        _KILL_BY_NAME_PROGRAMS,
+        _SELF_NAME_RE,
+        _SELF_PROGRAM_RE,
+        _SELF_PROGRAM_SPELLINGS,
+    )

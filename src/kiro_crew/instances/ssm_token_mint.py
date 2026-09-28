@@ -1,0 +1,242 @@
+"""Mint a remote Kiro Crew dashboard token over AWS SSM (SSM transport).
+
+The SSM-transport sibling of :mod:`kiro_crew.instances.token_mint`. Where the
+SSH transport runs ``kirocrew token`` over ``ssh <host> <command>``, the SSM
+transport runs the same subcommand over ``aws ssm send-command`` (via
+:mod:`kiro_crew.cloud.ssm`, the launcher's existing send-command chokepoint) so
+no code duplicates the AWS argv-building, polling, or output-redaction logic.
+
+Security (standard practices, mirrors ``token_mint.py``):
+
+* The minted token is a short-lived (≤20h) bearer credential. It is **never
+  logged** and is returned only to the in-memory caller.
+* ``aws ssm send-command`` is invoked via ``cloud.ssm.run_command``, itself
+  routed through the ``cloud.aws.run_aws`` chokepoint — a fixed argv list, no
+  shell on the local side. ``ssm_target``/``aws_profile``/``aws_region`` are
+  injection-validated by the caller (tunnel manager) before reaching here.
+* The *remote* command is the same ``kirocrew token``/``restart`` subcommand
+  string :mod:`token_mint` builds (shared builders), so it inherits the same
+  candidate-search / run-marker resolution and charset-validated
+  ``remote_bin``.
+* SSM send-command output transits SSM's command-invocation history (accepted
+  trade-off, same as ``cloud/connect.py::mint_token`` — short TTL, loopback-only
+  usability, and the launcher's chokepoint denies ``ssm:ListCommandInvocations``
+  to a leaked/agent credential). This module does not change that posture; it
+  reuses the existing, reviewed ``cloud.ssm.run_command`` path.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS
+
+# The subcommand builder, the ttl/port bounds AND the error-tail scrubber are
+# SHARED with the SSH transport on purpose: both transports hand the same string
+# to the same remote shell and both build an error out of a stream that can be
+# holding a live token, so a second copy of any of them could only ever drift
+# into a weaker bound.
+from kiro_crew.instances.token_mint import (
+    _OUTPUT_TAIL_CHARS,
+    TokenMintError,
+    _redacted_output_tail,
+    _token_subcommand,
+    _validate_port,
+    _validate_ttl,
+    build_remote_command,
+    parse_token_from_stdout,
+)
+from kiro_crew.instances.validation import (
+    SsmValidationError,
+    validate_aws_profile,
+    validate_aws_region,
+    validate_ssm_run_as,
+    validate_ssm_target,
+)
+
+logger = logging.getLogger(__name__)
+
+# How long to wait for the SSM send-command invocation to finish. Generous vs.
+# the SSH transport's 30s timeout: send-command has its own dispatch latency
+# (agent poll interval) on top of the remote command's own runtime. Canonical
+# default lives in instances.constants; an explicit user override of
+# ``instances.mint_timeout_secs`` wins for both transports.
+_DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_SSM_MINT_TIMEOUT_SECS
+
+
+def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
+    """Credential/exfil-redact *text* and return its last *limit* chars.
+
+    Delegates to :func:`kiro_crew.instances.token_mint._redacted_output_tail`,
+    because ``redact()`` alone is not the whole scrub this site needs: the shared
+    helper adds a ``?token=`` URL-param pass and a wider token-shape pass on top
+    of it, and both are load-bearing here. A partially-successful mint prints its
+    success URL and then exits non-zero, so the stream this tail is built from can
+    hold a live token -- and two shapes in it are invisible to ``redact()`` on its
+    own: a two-segment ``payload.signature`` token whose payload and signature do
+    not clear the bounds ``security``'s two-segment link-token pattern keys on,
+    and a ``?token=<value>`` URL whose value that pattern does not match at all.
+
+    The wider token-shape pass is borrowed at THIS site rather than pushed down
+    into ``redact()``. Over-matching here costs one masked word in an
+    operator-facing error string, whereas ``redact()``'s patterns also gate
+    request-blocking decisions, where the same widening flags ordinary dotted
+    filenames.
+
+    Scan bounding comes with the shared helper. SSM's ``GetCommandInvocation``
+    truncates ``StandardOutputContent`` to 24,000 chars and ``redact()`` over that
+    much text measures ~1.6ms, so the scan is not an event-loop stall at either
+    width; sharing the window simply leaves one fewer local bound to keep true.
+    The carried tail is ``_OUTPUT_TAIL_CHARS``, shared for the same reason.
+    """
+    return _redacted_output_tail(text, limit)
+
+
+async def _send_over_ssm(
+    target: str,
+    remote_command: str,
+    profile: str,
+    region: str,
+    run_as: str,
+    timeout_secs: float,
+) -> cloud_ssm.CommandResult:
+    """Run *remote_command* on *target* through the send-command chokepoint.
+
+    Every SSM dispatch in the ``instances`` package goes through here -- both
+    mints below and ``diagnostics._probe_remote_dashboard_ssm`` -- so the two
+    budgets are spelled once. ``total_wait`` bounds what
+    :func:`cloud.ssm.run_command` spends sleeping between
+    ``get-command-invocation`` polls, and the outer ``wait_for`` is that same
+    budget plus a fixed 15s of headroom. One spelling because an outer bound
+    BELOW the inner one abandons an invocation the remote is still running and
+    reports a timeout it never had. Each caller keeps its OWN budget value
+    (mint's tunable, the probe's constant); what is shared is the relationship
+    between the pair, not the number.
+
+    The headroom is not a proof the outer bound fires second: ``run_command``
+    counts only its own sleeps, never the ``aws`` CLI round trip per poll, so a
+    slow host can still exhaust the outer budget first.
+
+    :func:`cloud.ssm.run_command` blocks synchronously while it polls, hence the
+    thread hop -- and because a thread is not interruptible, an outer timeout
+    abandons the result rather than stopping the poll loop. Raises whatever the
+    chokepoint raises, plus :class:`asyncio.TimeoutError` on the outer bound, so
+    each caller keeps its own failure shape.
+    """
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            cloud_ssm.run_command,
+            target,
+            remote_command,
+            profile,
+            region,
+            run_as=run_as,
+            total_wait=int(timeout_secs),
+        ),
+        timeout=timeout_secs + 15,
+    )
+
+
+async def mint_remote_token_ssm(
+    ssm_target: str,
+    *,
+    aws_profile: str = "",
+    aws_region: str = "",
+    ssm_run_as: str = "",
+    remote_bin: str = "",
+    ttl: str = "20h",
+    remote_port: int | None = None,
+    embed_parent_port: int | None = None,
+    timeout_secs: float = _DEFAULT_MINT_TIMEOUT_SECS,
+) -> str:
+    """Run ``kirocrew token`` on *ssm_target* over SSM and return the parsed JWT.
+
+    Mirrors :func:`kiro_crew.instances.token_mint.mint_remote_token`'s contract
+    (same subcommand shape, same ``TokenMintError`` on failure) but dispatches
+    over ``aws ssm send-command`` instead of ``ssh``. Runs in a worker thread
+    (``asyncio.to_thread``) since :func:`cloud.ssm.run_command` blocks
+    synchronously while polling ``get-command-invocation``.
+    """
+    ttl = _validate_ttl(ttl)
+    target = validate_ssm_target(ssm_target)
+    profile = validate_aws_profile(aws_profile)
+    region = validate_aws_region(aws_region)
+    run_as = validate_ssm_run_as(ssm_run_as)
+    port = _validate_port(remote_port)
+    embed_port = _validate_port(embed_parent_port)
+
+    remote_command = build_remote_command(
+        remote_bin, _token_subcommand(ttl, port, embed_port), marker_port=port
+    )
+
+    # False positive (below): the message mentions "token" (this function's job)
+    # but the interpolated values are the SSM target id and the ttl — never the
+    # credential itself, which is returned to the in-memory caller only and is
+    # never logged (a documented invariant of both mint modules). The rule keys
+    # off the word in the format string, so it cannot see that.
+    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+    logger.info("Minting token on %s over SSM (ttl=%s)", target, ttl)
+    try:
+        result = await _send_over_ssm(target, remote_command, profile, region, run_as, timeout_secs)
+    except asyncio.TimeoutError as e:
+        raise TokenMintError(f"timed out minting token on {target} over SSM") from e
+    except SsmValidationError as e:
+        raise TokenMintError(f"invalid SSM settings for {target}: {e}") from e
+    except Exception as e:  # AWSError etc. from the aws chokepoint
+        raise TokenMintError(f"SSM send-command failed for {target}: {e}") from e
+
+    if not result.ok:
+        raise TokenMintError(
+            f"remote token mint on {target} over SSM exited "
+            f"status={result.status} code={result.exit_code}: "
+            f"stderr: {_redacted_tail(result.stderr) or '<none>'} | "
+            f"stdout tail: {_redacted_tail(result.stdout)}"
+        )
+
+    token = parse_token_from_stdout(result.stdout)
+    if not token:
+        raise TokenMintError(
+            f"could not parse a token from {target} output over SSM "
+            f"(stderr: {_redacted_tail(result.stderr) or '<none>'})"
+        )
+    return token
+
+
+async def run_remote_kirocrew_ssm(
+    ssm_target: str,
+    subcommand: str,
+    *,
+    aws_profile: str = "",
+    aws_region: str = "",
+    ssm_run_as: str = "",
+    remote_bin: str = "",
+    marker_port: int | None = None,
+    timeout_secs: float = 90.0,
+) -> tuple[int, str]:
+    """Run ``kirocrew <subcommand>`` on *ssm_target* over SSM.
+
+    The SSM-transport sibling of
+    :func:`kiro_crew.instances.token_mint.run_remote_kirocrew`. Returns
+    ``(returncode, stderr_tail)``; ``-1`` on a validation/dispatch failure.
+    """
+    try:
+        target = validate_ssm_target(ssm_target)
+        profile = validate_aws_profile(aws_profile)
+        region = validate_aws_region(aws_region)
+        run_as = validate_ssm_run_as(ssm_run_as)
+    except SsmValidationError as e:
+        return -1, f"invalid SSM settings: {e}"
+
+    remote_command = build_remote_command(
+        remote_bin, subcommand, marker_port=_validate_port(marker_port)
+    )
+    logger.info("Running 'kirocrew %s' on %s over SSM", subcommand, target)
+    try:
+        result = await _send_over_ssm(target, remote_command, profile, region, run_as, timeout_secs)
+    except asyncio.TimeoutError:
+        return -1, f"timed out after {timeout_secs}s"
+    except Exception as e:
+        return -1, f"SSM send-command failed: {e}"
+    return result.exit_code, _redacted_tail(result.stderr or "")

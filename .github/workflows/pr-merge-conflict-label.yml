@@ -1,0 +1,145 @@
+name: PR Merge-Conflict Label
+
+# Mirrors GitHub's OWN per-PR mergeability onto a single "merge conflict"
+# label. GitHub already shows a conflict on the PR page and blocks the merge
+# button, but it does NOT surface conflicts in the /pulls list -- so a reviewer
+# scanning open PRs cannot tell which green-looking PR is actually unmergeable.
+# A label renders on every row of that list, closing the gap.
+#
+# This workflow is read-only against PR content: it only reads the computed
+# `mergeable` field and toggles a label. It never checks out or executes PR
+# code, recomputes mergeability itself, or re-runs any checks. It also never
+# blocks merge (GitHub already blocks a conflicting merge) -- the label is
+# purely a visibility signal.
+on:
+  schedule:
+    # Backstop sweep. A PR flips MERGEABLE -> CONFLICTING purely because its
+    # base branch advanced, and GitHub emits NO pull_request event for that,
+    # so a periodic sweep is the only way to catch the base-moved case.
+    - cron: "*/30 * * * *"
+  push:
+    # A merge into the default branch is the usual cause of other open PRs
+    # becoming conflicted -- re-sweep immediately so the labels stay fresh
+    # without waiting for the next scheduled run.
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  # Collapse an overlapping sweep (e.g. a push landing during a scheduled run)
+  # into one. The sweep is idempotent, so cancelling an in-flight run is safe.
+  group: pr-merge-conflict-label
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: Sync merge-conflict label
+    # Schedule and dispatch stay hosted; only admitted same-repository pushes
+    # request a fleet runner. The AWS webhook remains the security boundary.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - name: Sync "merge conflict" label across open pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          LABEL: "merge conflict"
+          # See the truncation guard below.
+          PR_LIST_LIMIT: "900"
+          # See the UNKNOWN re-list below.
+          RECHECK_DELAY_SECONDS: "60"
+        run: |
+          set -euo pipefail
+
+          # Ensure the label exists (idempotent).
+          existing="$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name')"
+          if ! grep -Fxq "$LABEL" <<<"$existing"; then
+            gh label create "$LABEL" --repo "$REPO" \
+              --color "D93F0B" \
+              --description "Branch has merge conflicts with its base — author must resolve before merge"
+          fi
+
+          # Enumerate open PRs with GitHub's own mergeability + current labels.
+          # `gh pr list` returns NEWEST-first and truncates at --limit SILENTLY,
+          # so a ceiling below the real open-PR count drops the OLDEST PRs --
+          # in this sweep, the ones most likely to be missing the label. The
+          # ceiling is a variable kept clear of the real set, and a hit is
+          # reported as an action item rather than absorbed as a measurement.
+          list_prs() {
+            gh pr list --repo "$REPO" --state open --limit "$PR_LIST_LIMIT" \
+              --json number,mergeable,labels
+          }
+          prs="$(list_prs)"
+          if [ "$(jq 'length' <<<"$prs")" -ge "$PR_LIST_LIMIT" ]; then
+            echo "::warning::Open-PR list hit its ceiling of $PR_LIST_LIMIT;" \
+              "the oldest open PRs were dropped and were not considered." \
+              "Raise PR_LIST_LIMIT in this workflow."
+          fi
+
+          add_label() {
+            # Not `--arg label`: `label` is a jq keyword, and jq 1.6 (the
+            # CodeBuild fleet's jq) rejects it as a variable name.
+            jq -n --arg name "$LABEL" '{labels: [$name]}' \
+              | gh api --method POST "repos/$REPO/issues/$1/labels" --input - >/dev/null
+          }
+          remove_label() {
+            local encoded
+            encoded="$(jq -rn --arg value "$LABEL" '$value | @uri')"
+            gh api --method DELETE "repos/$REPO/issues/$1/labels/$encoded" >/dev/null
+          }
+
+          # Only a definitive CONFLICTING/MERGEABLE ever adds or removes the
+          # label; UNKNOWN never does.
+          sync_prs() {
+            jq -c '.[]' <<<"$1" | while read -r pr; do
+              number="$(jq -r '.number' <<<"$pr")"
+              mergeable="$(jq -r '.mergeable' <<<"$pr")"
+              has_label="$(jq -r --arg l "$LABEL" 'any(.labels[]?; .name == $l)' <<<"$pr")"
+
+              case "$mergeable" in
+                CONFLICTING)
+                  if [ "$has_label" != "true" ]; then
+                    add_label "$number"
+                    echo "PR #$number: CONFLICTING -> added '$LABEL'"
+                  fi
+                  ;;
+                MERGEABLE)
+                  if [ "$has_label" = "true" ]; then
+                    remove_label "$number"
+                    echo "PR #$number: MERGEABLE -> removed '$LABEL'"
+                  fi
+                  ;;
+                *)
+                  echo "PR #$number: mergeability UNKNOWN -> unchanged"
+                  ;;
+              esac
+            done
+          }
+
+          # Settle every PR whose mergeability is already known first, so a
+          # push that cancels this run during the wait below loses nothing.
+          sync_prs "$(jq '[.[] | select(.mergeable != "UNKNOWN")]' <<<"$prs")"
+
+          # GitHub computes mergeability lazily: right after main moves, most
+          # open PRs list as UNKNOWN, and reading the field is what starts the
+          # computation. Wait once and re-list -- a handful of paged calls --
+          # instead of one `gh pr view` per UNKNOWN PR, which cost hundreds of
+          # calls from the shared GITHUB_TOKEN pool per sweep. A PR still
+          # UNKNOWN, or a failed re-list, leaves it for a later sweep.
+          unknown_ids="$(jq -c '[.[] | select(.mergeable == "UNKNOWN") | .number]' <<<"$prs")"
+          if [ "$unknown_ids" = "[]" ]; then
+            exit 0
+          fi
+          echo "$(jq 'length' <<<"$unknown_ids") open PRs have UNKNOWN mergeability;" \
+            "re-listing once in ${RECHECK_DELAY_SECONDS}s."
+          sleep "$RECHECK_DELAY_SECONDS"
+          if ! relisted="$(list_prs)"; then
+            echo "::warning::Re-listing open PRs failed; UNKNOWN PRs are left for the next sweep."
+            exit 0
+          fi
+          sync_prs "$(jq --argjson ids "$unknown_ids" \
+            '[.[] | select(.number as $n | $ids | index($n))]' <<<"$relisted")"

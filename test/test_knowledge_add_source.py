@@ -1,0 +1,476 @@
+"""Tests for knowledge add_source local_file support and get_config endpoint."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from kiro_crew.dashboard.handlers.knowledge import (
+    _folder_picker_available,
+    _run_folder_dialog,
+    add_source,
+    get_config,
+    pick_folder,
+)
+from kiro_crew.knowledge.store import KnowledgeStore
+
+
+@pytest.fixture()
+def store(tmp_path, opened):
+    """A store closed on EVERY thread at teardown (``test/conftest.py``'s ``opened``).
+
+    ``add_source`` claims and ingests off the loop, so the handler opens a second
+    per-thread connection on a worker; ``close()`` releases only the calling
+    thread's and left that one to the cyclic collector.
+    """
+    return opened(KnowledgeStore(str(tmp_path / "test.db")))
+
+
+def _make_app(store, pipeline=None):
+    """Create minimal app with knowledge routes for testing."""
+    app = web.Application()
+    state = MagicMock()
+    state.knowledge_store = store
+    app["state"] = state
+    if pipeline:
+        app["knowledge_pipeline"] = pipeline
+    app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
+    app.router.add_get("/api/knowledge/config", get_config)
+    app.router.add_post("/api/knowledge/sources", add_source)
+    return app
+
+
+class TestGetConfig:
+    @pytest.mark.asyncio
+    async def test_returns_enabled_and_formats(self, store):
+        async with TestClient(TestServer(_make_app(store, pipeline=MagicMock()))) as client:
+            resp = await client.get("/api/knowledge/config")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["enabled"] is True
+            assert ".md" in data["supported_formats"]
+            assert ".py" in data["supported_formats"]
+            assert "" not in data["supported_formats"]
+
+
+class TestAddSourceLocalFile:
+    @pytest.mark.asyncio
+    async def test_rejects_relative_path(self, store):
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "test", "source_type": "local_file", "uri": "relative/path.md"
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert "absolute path" in data["error"]
+            # Machine-readable code so the frontend can translate (AGENTS.md:
+            # new non-2xx JSON bodies must carry a `code`).
+            assert data["code"] == "uri_not_absolute"
+
+    @pytest.mark.asyncio
+    async def test_rejects_extended_length_and_unc_prefixes(self, store):
+        r"""``\\?\C:\...`` survives Path.resolve() un-normalized, so
+        is_sensitive_path() does NOT match it against the credential paths that
+        the plain ``C:\...`` form hits — admitting one would route around the
+        sensitive-path floor and let ``.ssh/id_rsa`` be ingested. Neither the
+        extended-length nor the UNC prefix is something the file picker
+        produces, so both are refused before the absoluteness gate."""
+        blocked = [
+            "\\\\?\\C:\\Users\\me\\.ssh\\id_rsa",  # Win32 extended-length
+            "\\\\localhost\\C$\\Users\\me\\.aws\\credentials",  # UNC
+            "//localhost/C$/Users/me/.aws/credentials",  # UNC, forward slashes
+            # Windows accepts mixed slash flavours as a device-path prefix, so
+            # the check has to match "first two chars are any slash", not
+            # literal "\\" / "//":
+            "\\/?\\C:\\Users\\me\\.ssh\\id_rsa",  # mixed \/
+            "/\\?\\C:\\Users\\me\\.ssh\\id_rsa",  # mixed /\
+        ]
+        async with TestClient(TestServer(_make_app(store))) as client:
+            for uri in blocked:
+                resp = await client.post("/api/knowledge/sources", json={
+                    "name": "x", "source_type": "local_file", "uri": uri
+                })
+                assert resp.status == 400, (uri, resp.status)
+                data = await resp.json()
+                assert data["code"] == "uri_unsupported_prefix", (uri, data)
+
+    @pytest.mark.asyncio
+    async def test_accepts_windows_drive_path(self, store, tmp_path):
+        # The absoluteness gate must use Path.is_absolute(), not a leading-"/"
+        # test — a Windows absolute path (C:\...) never starts with "/", so the
+        # old check made single-file ingest 100% unusable on Windows.
+        from pathlib import PureWindowsPath
+
+        # A drive-letter path is absolute under Windows path semantics.
+        assert PureWindowsPath("C:\\Users\\me\\notes\\design.md").is_absolute()
+        # And the handler's own gate accepts a real absolute path on this host:
+        test_file = tmp_path / "win.md"
+        test_file.write_text("# Win")
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "win.md", "source_type": "local_file", "uri": str(test_file)
+            })
+            assert resp.status == 201
+
+    @pytest.mark.asyncio
+    async def test_rejects_sensitive_path(self, store, tmp_path):
+        # Create a symlink to a sensitive path
+        sensitive = str(Path.home() / ".ssh" / "config")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "test", "source_type": "local_file", "uri": sensitive
+            })
+            assert resp.status == 403
+            data = await resp.json()
+            assert "restricted" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_nonexistent_file(self, store, tmp_path):
+        # A platform-absolute path that does not exist: under tmp_path so it is
+        # absolute on both POSIX ("/...") and Windows ("C:\..."). A hardcoded
+        # "/tmp/..." is NOT absolute on Windows and would trip the 400
+        # absoluteness gate before reaching the not-found check.
+        missing = str(tmp_path / "nonexistent_xyz_12345.md")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "test", "source_type": "local_file", "uri": missing
+            })
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_rejects_directory(self, store, tmp_path):
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "test", "source_type": "local_file", "uri": str(tmp_path)
+            })
+            assert resp.status == 404
+            data = await resp.json()
+            assert "file not found" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_accepts_valid_file(self, store, tmp_path):
+        test_file = tmp_path / "hello.md"
+        test_file.write_text("# Hello")
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "hello.md", "source_type": "local_file", "uri": str(test_file)
+            })
+            assert resp.status == 201
+            data = await resp.json()
+            assert "id" in data
+
+    @pytest.mark.asyncio
+    async def test_duplicate_returns_409(self, store, tmp_path):
+        test_file = tmp_path / "dup.md"
+        test_file.write_text("content")
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp1 = await client.post("/api/knowledge/sources", json={
+                "name": "dup.md", "source_type": "local_file", "uri": str(test_file)
+            })
+            assert resp1.status == 201
+            resp2 = await client.post("/api/knowledge/sources", json={
+                "name": "dup.md", "source_type": "local_file", "uri": str(test_file)
+            })
+            assert resp2.status == 409
+
+    @pytest.mark.asyncio
+    async def test_resolves_symlinks(self, store, tmp_path):
+        real_file = tmp_path / "real.md"
+        real_file.write_text("content")
+        link = tmp_path / "link.md"
+        link.symlink_to(real_file)
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "link.md", "source_type": "local_file", "uri": str(link)
+            })
+            assert resp.status == 201
+            # Stored URI should be the resolved path
+            source = store.get_source_by_uri(str(real_file.resolve()))
+            assert source is not None
+
+    @pytest.mark.asyncio
+    async def test_symlink_to_sensitive_blocked(self, store, tmp_path):
+        # Create symlink pointing to sensitive location
+        link = tmp_path / "innocent.md"
+        sensitive_target = Path.home() / ".aws" / "credentials"
+        link.symlink_to(sensitive_target)
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "innocent.md", "source_type": "local_file", "uri": str(link)
+            })
+            # Either 403 (sensitive) or 404 (doesn't exist) depending on whether file exists
+            assert resp.status in (403, 404)
+
+    @pytest.mark.asyncio
+    async def test_triggers_immediate_ingestion(self, store, tmp_path):
+        test_file = tmp_path / "ingest.md"
+        test_file.write_text("# Ingest me")
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "ingest.md", "source_type": "local_file", "uri": str(test_file)
+            })
+            assert resp.status == 201
+            # The task claims 'syncing' off the loop before it ingests, so reaching
+            # ingest_file costs a worker-thread hop. Poll rather than sleep a fixed
+            # span, which races that on a loaded runner.
+            import asyncio
+            for _ in range(200):
+                if pipeline.ingest_file.called:
+                    break
+                await asyncio.sleep(0.01)
+            pipeline.ingest_file.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_blocked(self, store, tmp_path):
+        # Create a file, then try to access it via ../.. traversal
+        test_file = tmp_path / "safe.md"
+        test_file.write_text("safe")
+        # Construct a traversal path that resolves to the same file
+        traversal = str(tmp_path / "subdir" / ".." / "safe.md")
+        pipeline = MagicMock()
+        pipeline.ingest_file = AsyncMock()
+        async with TestClient(TestServer(_make_app(store, pipeline=pipeline))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "safe.md", "source_type": "local_file", "uri": traversal
+            })
+            # Should succeed but store the resolved canonical path
+            assert resp.status == 201
+            source = store.get_source_by_uri(str(test_file.resolve()))
+            assert source is not None
+
+
+def _make_pick_app(store, local_only=True):
+    app = web.Application()
+    state = MagicMock()
+    state.knowledge_store = store
+    app["state"] = state
+    app["local_only"] = local_only
+    app.router.add_post("/api/knowledge/pick-folder", pick_folder)
+    app.router.add_get("/api/knowledge/config", get_config)
+    return app
+
+
+def _fake_request(local_only=True, remote="127.0.0.1", headers=None):
+    """A request the REAL ``is_direct_local_request`` can judge.
+
+    It reads ``request.remote`` and ``request.headers``, so the stand-in has to
+    carry both rather than only ``app``. Patching the helper out instead would
+    leave the gate asserted against a mock of itself; supplying a genuine
+    loopback peer with no forwarding headers exercises the real predicate, and
+    the proxied cases below only have to add one header to flip it.
+    """
+    return SimpleNamespace(
+        app={"local_only": local_only}, remote=remote, headers=headers or {}
+    )
+
+
+def _trusted(monkeypatch, path="/usr/bin/osascript"):
+    """Answer the trusted-binary lookup without touching this host's filesystem.
+
+    Every darwin-simulating picker test needs it. The real lookup probes the
+    system directories, and the machine running these tests has no osascript in
+    them, so an unpatched probe would send every test down the unavailable arm.
+    Pass ``None`` to exercise that arm deliberately.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.knowledge.platform_compat.trusted_system_bin",
+        lambda name: path,
+    )
+
+
+class TestFolderPickerAvailable:
+    def test_available_on_mac_local(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch)
+        assert _folder_picker_available(_fake_request(local_only=True)) is True
+
+    def test_unavailable_when_osascript_is_not_trusted(self, monkeypatch):
+        """A macOS host whose osascript does not resolve out of the system
+        directories offers no picker, so the UI hides the button instead of
+        showing one whose only possible answer is a refusal."""
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch, None)
+        assert _folder_picker_available(_fake_request(local_only=True)) is False
+
+    def test_unavailable_off_mac(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "linux")
+        assert _folder_picker_available(_fake_request(local_only=True)) is False
+
+    def test_unavailable_when_remote(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        assert _folder_picker_available(_fake_request(local_only=False)) is False
+
+    def test_fail_closed_when_local_only_unset(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        assert _folder_picker_available(SimpleNamespace(app={})) is False
+
+    def test_unavailable_when_a_proxy_forwarded_the_request(self, monkeypatch):
+        """`local_only` describes the GATEWAY, not the requester.
+
+        The gateway binds loopback and remote access is delivered by a same-host
+        tunnel or reverse proxy, so a remote user's request arrives from
+        127.0.0.1 with ``local_only`` still True. Opening a native dialog for it
+        would put a modal on the gateway operator's screen -- not the
+        requester's -- and hold it there for up to ``_FOLDER_DIALOG_TIMEOUT``,
+        driven by someone else entirely.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch)
+        proxied = _fake_request(local_only=True, headers={"X-Forwarded-For": "203.0.113.7"})
+
+        assert _folder_picker_available(proxied) is False
+
+    def test_unavailable_when_the_peer_is_not_loopback(self, monkeypatch):
+        """A directly-bound non-loopback peer is remote however `local_only` reads."""
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch)
+
+        assert _folder_picker_available(_fake_request(remote="203.0.113.7")) is False
+
+    def test_the_forwarding_header_is_what_flips_it(self, monkeypatch):
+        """Guard the guard: the two requests differ ONLY by that one header.
+
+        Without this, `test_unavailable_when_a_proxy_forwarded_the_request`
+        could be passing because the fixture is malformed rather than because
+        the gate noticed the proxy.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch)
+
+        assert _folder_picker_available(_fake_request(local_only=True)) is True
+        assert (
+            _folder_picker_available(
+                _fake_request(local_only=True, headers={"X-Forwarded-For": "203.0.113.7"})
+            )
+            is False
+        )
+
+
+class TestRunFolderDialog:
+    def test_picked_returns_path(self, monkeypatch):
+        completed = MagicMock(returncode=0, stdout="/home/user/notes\n")
+        seen: dict[str, list[str]] = {}
+
+        def run(cmd, *a, **k):
+            seen["cmd"] = cmd
+            return completed
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.knowledge.subprocess.run", run,
+        )
+        _trusted(monkeypatch)
+        assert _run_folder_dialog() == "/home/user/notes"
+        # The resolved absolute path, never the bare name a planted shim answers.
+        assert seen["cmd"][0] == "/usr/bin/osascript"
+
+    def test_untrusted_binary_never_spawns(self, monkeypatch):
+        """An osascript that does not resolve out of the trusted directories is a
+        refusal: no process starts, and the caller reads it as a failed launch."""
+        def boom(*a, **k):
+            raise AssertionError("spawned a dialog with an untrusted binary")
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.knowledge.subprocess.run", boom,
+        )
+        _trusted(monkeypatch, None)
+        assert _run_folder_dialog() is None
+
+    def test_cancel_returns_none(self, monkeypatch):
+        completed = MagicMock(returncode=1, stdout="")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.knowledge.subprocess.run",
+            lambda *a, **k: completed,
+        )
+        _trusted(monkeypatch)
+        assert _run_folder_dialog() is None
+
+    def test_launch_failure_returns_none(self, monkeypatch):
+        def boom(*a, **k):
+            raise FileNotFoundError()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.knowledge.subprocess.run", boom,
+        )
+        _trusted(monkeypatch)
+        assert _run_folder_dialog() is None
+
+
+class TestPickFolderHandler:
+    @pytest.mark.asyncio
+    async def test_blocked_when_not_local_only(self, store, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        async with TestClient(TestServer(_make_pick_app(store, local_only=False))) as client:
+            resp = await client.post("/api/knowledge/pick-folder")
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_blocked_when_not_mac(self, store, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "linux")
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            resp = await client.post("/api/knowledge/pick-folder")
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_blocked_when_osascript_is_not_trusted(self, store, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch, None)
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            resp = await client.post("/api/knowledge/pick-folder")
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_returns_picked_path(self, store, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.knowledge._run_folder_dialog",
+            lambda: "/home/user/notes",
+        )
+        async with TestClient(TestServer(_make_pick_app(store))) as client:
+            resp = await client.post("/api/knowledge/pick-folder")
+            assert resp.status == 200
+            assert (await resp.json())["path"] == "/home/user/notes"
+
+    @pytest.mark.asyncio
+    async def test_returns_null_on_cancel(self, store, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.knowledge._run_folder_dialog",
+            lambda: None,
+        )
+        async with TestClient(TestServer(_make_pick_app(store))) as client:
+            resp = await client.post("/api/knowledge/pick-folder")
+            assert resp.status == 200
+            assert (await resp.json())["path"] is None
+
+
+class TestConfigFolderPickerFlag:
+    @pytest.mark.asyncio
+    async def test_reports_true_on_mac_local(self, store, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "darwin")
+        _trusted(monkeypatch)
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            resp = await client.get("/api/knowledge/config")
+            assert (await resp.json())["folder_picker"] is True
+
+    @pytest.mark.asyncio
+    async def test_reports_false_off_mac(self, store, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.knowledge.sys.platform", "win32")
+        async with TestClient(TestServer(_make_pick_app(store, local_only=True))) as client:
+            resp = await client.get("/api/knowledge/config")
+            assert (await resp.json())["folder_picker"] is False

@@ -1,0 +1,259 @@
+"""The ``mcp`` config section that carries ``extra_path_dirs``.
+
+Separate from ``mcp_gateway``, which configures the sharing broker: these
+settings govern how MCP servers are FOUND and launched, so they apply with the
+broker off too. Validation of the directories themselves belongs to the
+consumer (``kiro_crew.env.augmented_path``) -- see ``test_env.py`` -- so what is
+pinned here is only that the section parses, survives the save round-trip, and
+degrades instead of raising on a hand-edited value.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+from conftest import host_abs
+from kiro_crew.config import loader as L
+from kiro_crew.config.loader import KiroCrewConfig, McpConfig
+
+#: The published directory must survive ``augmented_path``'s ``os.path.isabs``
+#: filter, and from Python 3.13 ``ntpath.isabs("/opt/pixi/bin")`` is False (no
+#: drive) -- so the fixture is spelled absolutely for the running host.
+_PIXI_BIN = host_abs("opt", "pixi", "bin")
+
+
+def _load_from(tmp_path, monkeypatch, data: dict) -> KiroCrewConfig:
+    cfgp = tmp_path / "config.json"
+    cfgp.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(L, "config_path", lambda: cfgp)
+    monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+    return KiroCrewConfig.load()
+
+
+def test_defaults_to_empty_list():
+    assert KiroCrewConfig().mcp.extra_path_dirs == []
+
+
+def test_parses_and_preserves_order(tmp_path, monkeypatch):
+    """Order is precedence order downstream, so the loader must not reorder it."""
+    cfg = _load_from(
+        tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/a/bin", "/opt/b/bin"]}}
+    )
+    assert cfg.mcp.extra_path_dirs == ["/opt/a/bin", "/opt/b/bin"]
+
+
+def test_round_trips_through_to_dict(tmp_path, monkeypatch):
+    """A setting dropped by to_dict() would be lost the next time anything saves."""
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/a/bin"]}})
+    assert cfg.to_dict()["mcp"] == {
+        "extra_path_dirs": ["/opt/a/bin"],
+        "honour_auto_approve": True,
+    }
+
+
+def test_non_string_entries_dropped(tmp_path, monkeypatch):
+    """The field is typed list[str] and to_dict() re-emits it verbatim, so a
+    non-string must not survive the load into the saved config."""
+    cfg = _load_from(
+        tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/a/bin", 42, None, {}]}}
+    )
+    assert cfg.mcp.extra_path_dirs == ["/opt/a/bin"]
+
+
+def test_malformed_section_degrades_to_default(tmp_path, monkeypatch):
+    """config.json is hand-editable; a non-dict section must not abort the load."""
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": "yes please"})
+    assert cfg.mcp.extra_path_dirs == []
+
+
+def test_malformed_value_degrades_to_default(tmp_path, monkeypatch):
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": "/opt/a/bin"}})
+    assert cfg.mcp.extra_path_dirs == []
+
+
+def test_load_publishes_the_setting_to_the_search_path(tmp_path, monkeypatch):
+    """The setting only works because ``load()`` pushes it into
+    ``kiro_crew.env``. Pinned end-to-end: without this call the config field
+    parses correctly and changes nothing."""
+    import kiro_crew.env as env_mod
+
+    monkeypatch.setattr(env_mod, "_config_path_dirs", ())
+    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": [_PIXI_BIN]}})
+    assert _PIXI_BIN in env_mod.mcp_search_path("").split(os.pathsep)
+
+
+def test_load_republishes_so_a_removed_setting_clears(tmp_path, monkeypatch):
+    import kiro_crew.env as env_mod
+
+    monkeypatch.setattr(env_mod, "_config_path_dirs", ())
+    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": [_PIXI_BIN]}})
+    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": []}})
+    assert _PIXI_BIN not in env_mod.mcp_search_path("").split(os.pathsep)
+
+
+def test_defaults_path_also_clears_a_stale_snapshot(tmp_path, monkeypatch):
+    """The load path taken when NEITHER config file can be read returns early.
+
+    It must still publish. Otherwise a config that is later deleted or made
+    unreadable leaves the last-published directory resolving MCP commands
+    forever, with nothing on disk that explains why.
+    """
+    import kiro_crew.env as env_mod
+
+    monkeypatch.setattr(env_mod, "_config_path_dirs", ())
+    _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": [_PIXI_BIN]}})
+    assert _PIXI_BIN in env_mod.mcp_search_path("").split(os.pathsep)
+
+    # Now point the loader at a home with no config files at all.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(L, "config_path", lambda: empty / "config.json")
+    monkeypatch.setattr(L, "config_dir", lambda: empty)
+    monkeypatch.setattr(L, "config_local_path", lambda: empty / "config.local.json")
+    KiroCrewConfig.load()
+    assert _PIXI_BIN not in env_mod.mcp_search_path("").split(os.pathsep)
+
+
+def test_honour_auto_approve_defaults_to_on():
+    """An ``autoApprove`` the owner wrote is respected without opting in.
+
+    It is a deliberate statement about their own tools, and dropping it silently
+    left them with no way to express it and nothing telling them it had gone.
+    """
+    assert KiroCrewConfig().mcp.honour_auto_approve is True
+
+
+def test_an_absent_key_reads_as_on_through_the_real_load(tmp_path, monkeypatch):
+    """The DEFAULT has to survive the loader, not just the dataclass field.
+
+    ``_build_mcp_config`` sets this field on every load, so the field's own default
+    never reaches a loaded config: a default declared only there reads as off for
+    every real install while the schema and the docs claim it is on. Pinned through
+    the load path that decides it.
+    """
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": []}})
+    assert cfg.mcp.honour_auto_approve is True
+
+
+def test_a_real_false_opts_out(tmp_path, monkeypatch):
+    """The strict floor is still reachable, which is the whole point of the key."""
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": False}})
+    assert cfg.mcp.honour_auto_approve is False
+
+
+def test_honour_auto_approve_parses_a_real_true(tmp_path, monkeypatch):
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": True}})
+    assert cfg.mcp.honour_auto_approve is True
+
+
+@pytest.mark.parametrize("raw", ["true", "yes", 1, ["x"], {}, None])
+def test_a_value_that_is_not_a_boolean_degrades_to_the_default(tmp_path, monkeypatch, raw):
+    """config.json is hand-editable, and a value of the wrong type is not a decision.
+
+    The schema validator removes an invalid value before the loader parses, so the
+    documented default applies rather than a guess at what the text meant. That is
+    the same rule every other field in this section follows, and it cannot invent a
+    bypass on its own: the owner still has to have written an ``autoApprove`` for
+    this key to decide anything. Opting out takes a real ``false``.
+    """
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"honour_auto_approve": raw}})
+    assert cfg.mcp.honour_auto_approve is True
+
+
+def test_honour_auto_approve_is_in_the_schema_registry():
+    """It is the documented escape hatch, so it must reach the settings UI."""
+    from kiro_crew.config import schema
+
+    entry = next(e for e in schema.SCHEMA_REGISTRY if e.path == "mcp.honour_auto_approve")
+    assert entry.type == "boolean"
+    assert entry.label
+
+
+def test_honour_auto_approve_requires_a_restart():
+    """Turning it OFF must not read as retracting a grant already on disk.
+
+    The spec is rebuilt at startup, so a live true->false edit leaves the emitted
+    `autoApprove` in the file. Marking the field restart-requiring is what tells the
+    operator that, instead of leaving them to believe the bypass is closed.
+    """
+    from kiro_crew.config import schema
+
+    entry = next(e for e in schema.SCHEMA_REGISTRY if e.path == "mcp.honour_auto_approve")
+    assert entry.requires_restart is True
+
+
+def test_section_is_in_the_schema_registry():
+    """The setting must be reachable from the settings UI / config API, not just
+    from a hand-edited file -- that is the whole point of making it a setting."""
+    from kiro_crew.config import schema
+
+    entry = next(e for e in schema.SCHEMA_REGISTRY if e.path == "mcp.extra_path_dirs")
+    assert entry.type == "array"
+    assert entry.label
+
+
+def test_mcp_is_not_captured_as_an_unknown_section(tmp_path, monkeypatch):
+    """Being absent from _KNOWN_CONFIG_SECTIONS would round-trip a stale copy
+    alongside the parsed one."""
+    cfg = _load_from(tmp_path, monkeypatch, {"mcp": {"extra_path_dirs": ["/opt/a/bin"]}})
+    assert "mcp" not in cfg._extra_sections
+
+
+def test_distinct_from_mcp_gateway():
+    """These settings apply with the broker off, so they must not live on the
+    broker's own section."""
+    assert not hasattr(KiroCrewConfig().mcp_gateway, "extra_path_dirs")
+    assert isinstance(KiroCrewConfig().mcp, McpConfig)
+
+
+def test_the_setting_is_restart_marked():
+    """The contribution is not live for every consumer, and the mark is how the UI
+    says so.
+
+    A resolution caller (the MCP probe, the agent-config resolver, the rewriter)
+    reads the published snapshot on every call, so an edit reaches it at once. The
+    broker daemon instead receives the contribution as a process PATH baked when
+    ``manager._spawn_once`` spawns it, and every pooled backend inherits that
+    PATH; a gateway that ADOPTS a surviving daemon never applies a new one, since
+    the adoption gates compare the target-stem map and the code fingerprint and
+    neither sees a PATH. That is the "hot for one consumer and boot-only for the
+    others" case ``config.live._refuse_restart_marked`` names, and it is the same
+    mark every baked-at-spawn broker field carries.
+    """
+    from kiro_crew.config.schema import requires_restart
+
+    assert requires_restart("mcp.extra_path_dirs")
+
+
+def test_a_config_applier_on_the_setting_is_refused():
+    """The mark is enforced, not decorative.
+
+    Without this the field could gain an applier that refreshes the resolution
+    snapshot while every already-spawned daemon and backend keeps the old PATH --
+    a field the UI calls boot-only and the watcher treats as hot.
+    """
+    from kiro_crew.config.live import ConfigWatch
+
+    w = ConfigWatch()
+    with pytest.raises(ValueError, match="restart-marked"):
+        w.subscribe("mcp.extra_path_dirs", callback=lambda c: None, name="bad")
+    with pytest.raises(ValueError, match="restart-marked"):
+        w.bind("mcp.extra_path_dirs", lambda v: None)
+    assert list(w.subscriptions()) == []
+
+
+def test_the_help_states_the_spawned_process_effect():
+    """An operator reading only "search path" would expect a resolution-only
+    effect and no restart, which is why a wrapper script's bare-name ``exec``
+    kept exiting rc=127 after the setting was pointed at the right folder."""
+    from kiro_crew.config import schema
+
+    entry = next(e for e in schema.SCHEMA_REGISTRY if e.path == "mcp.extra_path_dirs")
+    help_text = entry.help.lower()
+    assert "path of the broker daemon" in help_text
+    assert "pooled mcp backend" in help_text
+    assert "when it starts" in help_text

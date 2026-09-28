@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270" fill="none">
+  <rect width="480" height="270" fill="#1a1b26"/>
+  <!-- Glow -->
+  <circle cx="220" cy="135" r="80" fill="#3b82f6" opacity="0.07"/>
+  <circle cx="220" cy="135" r="50" fill="#60a5fa" opacity="0.09"/>
+  <!-- Magnifying glass -->
+  <circle cx="210" cy="125" r="45" stroke="#60a5fa" stroke-width="2.5" fill="#3b82f6" fill-opacity="0.08"/>
+  <line x1="243" y1="158" x2="275" y2="190" stroke="#60a5fa" stroke-width="4" stroke-linecap="round"/>
+  <!-- Code lines inside lens -->
+  <rect x="185" y="110" width="30" height="3" rx="1.5" fill="#93c5fd" opacity="0.7"/>
+  <rect x="190" y="120" width="22" height="3" rx="1.5" fill="#60a5fa" opacity="0.6"/>
+  <rect x="187" y="130" width="35" height="3" rx="1.5" fill="#93c5fd" opacity="0.7"/>
+  <rect x="192" y="140" width="18" height="3" rx="1.5" fill="#60a5fa" opacity="0.5"/>
+  <!-- Diff panel right side -->
+  <rect x="300" y="80" width="120" height="110" rx="6" stroke="#334155" stroke-width="1.5" fill="#1e293b"/>
+  <!-- Diff lines -->
+  <rect x="310" y="95" width="50" height="3" rx="1.5" fill="#475569" opacity="0.6"/>
+  <rect x="310" y="108" width="65" height="3" rx="1.5" fill="#4ade80" opacity="0.7"/>
+  <rect x="310" y="121" width="40" height="3" rx="1.5" fill="#4ade80" opacity="0.6"/>
+  <rect x="310" y="134" width="55" height="3" rx="1.5" fill="#f87171" opacity="0.6"/>
+  <rect x="310" y="147" width="70" height="3" rx="1.5" fill="#475569" opacity="0.6"/>
+  <rect x="310" y="160" width="45" height="3" rx="1.5" fill="#4ade80" opacity="0.7"/>
+  <rect x="310" y="173" width="60" height="3" rx="1.5" fill="#475569" opacity="0.5"/>
+  <!-- Code brackets -->
+  <path d="M155 85 L140 105 L155 125" stroke="#60a5fa" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <path d="M275 85 L290 105 L275 125" stroke="#60a5fa" stroke-width="2" fill="none" stroke-linecap="round" opacity="0.5"/>
+  <!-- Accent dots -->
+  <circle cx="130" cy="200" r="2" fill="#3b82f6" opacity="0.4"/>
+  <circle cx="380" cy="60" r="1.5" fill="#60a5fa" opacity="0.3"/>
+  <circle cx="100" cy="70" r="1.5" fill="#93c5fd" opacity="0.3"/>
+</svg>

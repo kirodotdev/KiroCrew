@@ -1,0 +1,3767 @@
+"""Wire-contract tests for the MCP dashboard handlers' un-exercised branches.
+
+Covers the request/response surface of ``mcp.py`` that the existing suites
+(``test_mcp_apply``, ``test_mcp_sync_agent``, ``test_mcp_probe_treadmill``,
+``test_mcp_gateway_control_plane``) leave untouched: the enable/disable
+toggles (server, per-tool, all), removal, the per-agent active list, the
+probe endpoints, and the MCP-gateway metrics / server-enumeration /
+set-stub endpoints — with their validation matrix, corrupt-config and
+write-failure branches, and every documented status code.
+
+Every filesystem seam is redirected into ``tmp_path``; no network, no real
+MCP server process, no capability-manager subprocess.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from aiohttp import web
+from body_stream_helpers import BodyStreamPayload
+from dashboard_owner_helpers import owner_claims
+
+from conftest import host_abs
+from kiro_crew.dashboard.handlers import mcp as mcp_mod
+from kiro_crew.mcp_discovery import McpServerInfo
+
+# ── harness ─────────────────────────────────────────────────────────────
+
+
+def _request(
+    body: Any = None,
+    *,
+    state: Any = None,
+    query: dict[str, str] | None = None,
+    match_info: dict[str, str] | None = None,
+    method: str = "POST",
+) -> web.Request:
+    """Minimal aiohttp request double, matching the suite's existing style."""
+    req = MagicMock(spec=web.Request)
+    if isinstance(body, Exception):
+        # Malformed body: real undecodable bytes for the streaming (capped)
+        # path, a raising mock for the ``request.json()`` (uncapped) path.
+        raw = b"{not json"
+        req.json = AsyncMock(side_effect=body)
+    else:
+        if (
+            isinstance(body, dict)
+            and body.get("stub") is True
+            and isinstance(body.get("name"), str)
+            and "expected_launch" not in body
+        ):
+            from kiro_crew.mcp_gateway import launch_approval
+
+            env_hash = launch_approval.env_fingerprint({})
+            expected = launch_approval.launch_pair(
+                launch_approval.hash_command(body["name"], []), env_hash
+            )
+            body = {**body, "expected_launch": expected}
+        raw = json.dumps(body).encode() if body is not None else b""
+        # Kept alive: ``api_mcp_server_detail`` reads uncapped
+        # (``max_bytes=None``) and consumes ``request.json()``.
+        req.json = AsyncMock(return_value=body)
+    req.content = BodyStreamPayload(raw)
+    req.content_length = len(raw) if raw else None
+    req.charset = None
+    req.can_read_body = bool(raw)
+    req.app = {"state": state if state is not None else _State()}
+    req.query = query or {}
+    req.match_info = match_info or {}
+    req.method = method
+    # Every mutating handler in handlers/mcp.py is owner-gated
+    # (``handlers._shared.require_owner_dashboard_request``), so the double has to
+    # carry the claims the token-auth middleware publishes or each test lands on
+    # the gate instead of its own subject.
+    return owner_claims(req)
+
+
+class _State:
+    """Stand-in for DashboardState's background-task registry.
+
+    ``owner_id`` is ``""`` -- the standalone-local shape, where the owner gate on
+    these routes accepts the signed local bootstrap subject ``owner_claims`` sets.
+    """
+
+    owner_id = ""
+
+    def __init__(self) -> None:
+        self._background_tasks: set[asyncio.Task] = set()
+
+
+def _effective_stubs(section: dict[str, Any]) -> list[str]:
+    """The stub set IN EFFECT for a saved ``mcp_gateway`` section.
+
+    The toggle handler does not rewrite ``stub_servers``: that key is the roster
+    a distribution ships and keeps growing, and a click is recorded as a decision
+    in ``stub_overrides`` over it. What the operator sees stubbed is the two
+    resolved together, so that -- not either key alone -- is what a test about
+    toggle behaviour should assert. Reads the production resolver so these tests
+    cannot drift from the runtime's own answer.
+    """
+    from kiro_crew.config.loader import _resolve_stub_servers
+
+    return _resolve_stub_servers(section)
+
+
+def _payload(resp: web.Response) -> Any:
+    body = resp.body
+    assert isinstance(body, (bytes, bytearray))
+    return json.loads(body)
+
+
+@pytest.fixture
+def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Point every mcp.py filesystem + audit seam at ``tmp_path``.
+
+    The agent-config sync (``kirocrew.json`` read-modify-write) belongs to
+    ``handlers.agents`` and has its own suite — record the calls instead of
+    re-testing it here.
+    """
+    global_json = tmp_path / "kiro" / "settings" / "mcp.json"
+    global_json.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", global_json)
+    monkeypatch.setattr(mcp_mod, "_MCP_LOCK_PATH", global_json.with_suffix(".lock"))
+    monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "crew" / "mcp.json")
+    monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", list)
+    sel = MagicMock()
+    monkeypatch.setattr(mcp_mod, "sel", lambda: sel)
+
+    synced: list[tuple[str, bool, bool]] = []
+    batched: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(
+        mcp_mod,
+        "_sync_mcp_to_agent",
+        lambda name, enabled, remove=False: synced.append((name, enabled, remove)),
+    )
+    monkeypatch.setattr(
+        mcp_mod,
+        "_sync_mcp_to_agent_batch",
+        lambda names, enabled: batched.append((list(names), enabled)),
+    )
+    return SimpleNamespace(
+        global_json=global_json,
+        synced=synced,
+        batched=batched,
+        sel=sel,
+    )
+
+
+def _write_global(sandbox: SimpleNamespace, servers: dict[str, Any]) -> None:
+    sandbox.global_json.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+
+def _read_global(sandbox: SimpleNamespace) -> dict[str, Any]:
+    data = json.loads(sandbox.global_json.read_text(encoding="utf-8"))
+    servers = data.get("mcpServers", {})
+    assert isinstance(servers, dict)
+    return servers
+
+
+def _known(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+    """Make ``list_servers()`` report ``names`` as configured somewhere."""
+    import kiro_crew.mcp_discovery as disc
+
+    rows = [McpServerInfo(name=n, command="/bin/true") for n in names]
+    monkeypatch.setattr(disc, "list_servers", lambda *a, **k: list(rows))
+
+
+# ── POST /api/mcp/toggle ────────────────────────────────────────────────
+
+
+class TestToggleServer:
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_toggle(_request(ValueError("boom")))
+        assert resp.status == 400
+        assert _payload(resp)["error"] == "invalid JSON"
+
+    @pytest.mark.asyncio
+    async def test_missing_name_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_toggle(_request({"enabled": False}))
+        assert resp.status == 400
+        assert "name is required" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_corrupt_global_config_is_500(self, sandbox: SimpleNamespace) -> None:
+        sandbox.global_json.write_text("{not json", encoding="utf-8")
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv"}))
+        assert resp.status == 500
+        assert "cannot parse" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_server_is_404(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _known(monkeypatch)  # nothing configured anywhere
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "ghost"}))
+        assert resp.status == 404
+        assert "not found" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_disable_writes_flag_and_syncs(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {"srv": {"command": "x"}})
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": False}))
+        assert resp.status == 200
+        assert _payload(resp) == {
+            "ok": True,
+            "name": "srv",
+            "enabled": False,
+            "applied": True,
+        }
+        assert _read_global(sandbox)["srv"]["disabled"] is True
+        assert sandbox.synced == [("srv", False, False)]
+
+    @pytest.mark.asyncio
+    async def test_enable_clears_flag(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {"srv": {"command": "x", "disabled": True}})
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": True}))
+        assert resp.status == 200
+        assert "disabled" not in _read_global(sandbox)["srv"]
+        assert sandbox.synced == [("srv", True, False)]
+
+    @pytest.mark.asyncio
+    async def test_toggle_mutes_the_raw_slash_named_entry_the_row_stands_for(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The table asks by the canonical alias; the file holds the raw key.
+        The flag lands on the raw entry -- the one the rebuild mounts -- and no
+        stub is written beside it. Red under ``name not in servers``: a
+        ``{"disabled": true}`` stub under ``playwright-mcp`` showed the row
+        Disabled while ``npm:@playwright/mcp`` kept mounting untouched."""
+        _write_global(sandbox, {"npm:@playwright/mcp": {"command": "npx"}})
+        resp = await mcp_mod.api_mcp_toggle(
+            _request({"name": "playwright-mcp", "enabled": False})
+        )
+        assert resp.status == 200
+        servers = _read_global(sandbox)
+        assert set(servers) == {"npm:@playwright/mcp"}
+        assert servers["npm:@playwright/mcp"]["disabled"] is True
+        # And back on, through the same resolution.
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "playwright-mcp", "enabled": True}))
+        assert resp.status == 200
+        assert "disabled" not in _read_global(sandbox)["npm:@playwright/mcp"]
+
+    @pytest.mark.asyncio
+    async def test_toggle_refuses_an_ambiguous_alias_without_writing_a_stub(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """Two raw keys alias to the row's name and neither is exact: the flag
+        has no one entry to land on, and a stub under the alias would show the
+        row Disabled while both raw entries kept mounting. 409, file untouched."""
+        _write_global(sandbox, {"team/foo": {"command": "a"}, "other:team/foo": {"command": "b"}})
+        before = sandbox.global_json.read_bytes()
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "team-foo", "enabled": False}))
+        assert resp.status == 409
+        assert "alias of 2 entries" in _payload(resp)["error"]
+        assert _payload(resp)["code"] == "mcp_server_name_ambiguous"
+        assert sandbox.global_json.read_bytes() == before
+
+    @pytest.mark.asyncio
+    async def test_server_known_elsewhere_gets_a_stub_entry(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server configured only in another scope still records its state here."""
+        _known(monkeypatch, "elsewhere")
+        resp = await mcp_mod.api_mcp_toggle(
+            _request({"name": "elsewhere", "enabled": False})
+        )
+        assert resp.status == 200
+        assert _read_global(sandbox)["elsewhere"] == {"disabled": True}
+
+    @pytest.mark.asyncio
+    async def test_string_spec_is_coerced_to_a_command_dict(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        _write_global(sandbox, {"srv": "run-me"})
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": False}))
+        assert resp.status == 200
+        assert _read_global(sandbox)["srv"] == {"command": "run-me", "disabled": True}
+
+    @pytest.mark.asyncio
+    async def test_non_mapping_spec_is_500(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {"srv": ["not", "a", "spec"]})
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv"}))
+        assert resp.status == 500
+        assert "invalid config type: list" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_write_failure_is_500(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_global(sandbox, {"srv": {"command": "x"}})
+
+        def _boom(_data: dict) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mcp_mod, "_write_mcp_json", _boom)
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": False}))
+        assert resp.status == 500
+        assert "disk full" in _payload(resp)["error"]
+        assert sandbox.synced == []  # never syncs on a failed write
+
+    @pytest.mark.asyncio
+    async def test_missing_global_file_is_treated_as_empty(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No mcp.json yet: the handler starts from an empty document.
+
+        With discovery reporting nothing either, that empty document yields the
+        documented 404 rather than an unhandled ``FileNotFoundError``.
+        """
+        sandbox.global_json.unlink(missing_ok=True)
+        _known(monkeypatch)
+        resp = await mcp_mod.api_mcp_toggle(_request({"name": "srv", "enabled": False}))
+        assert resp.status == 404
+
+
+# ── POST /api/mcp/toggle-tool ───────────────────────────────────────────
+
+
+class TestToggleTool:
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_toggle_tool(_request(ValueError("boom")))
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [{"tool": "ReadFile"}, {"server": "srv"}, {}],
+    )
+    async def test_missing_fields_are_400(
+        self, sandbox: SimpleNamespace, body: dict
+    ) -> None:
+        resp = await mcp_mod.api_mcp_toggle_tool(_request(body))
+        assert resp.status == 400
+        assert "server and tool are required" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_corrupt_global_config_is_500(self, sandbox: SimpleNamespace) -> None:
+        sandbox.global_json.write_text("nope", encoding="utf-8")
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "srv", "tool": "T"})
+        )
+        assert resp.status == 500
+
+    @pytest.mark.asyncio
+    async def test_unknown_server_is_404(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _known(monkeypatch)
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "ghost", "tool": "T"})
+        )
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_disable_then_reenable_round_trips(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        _write_global(sandbox, {"srv": {"command": "x"}})
+
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "srv", "tool": "ReadFile", "enabled": False})
+        )
+        assert resp.status == 200
+        assert _payload(resp)["tool"] == "ReadFile"
+        assert _read_global(sandbox)["srv"]["disabledTools"] == ["ReadFile"]
+
+        # Disabling the same tool twice must not duplicate it.
+        await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "srv", "tool": "ReadFile", "enabled": False})
+        )
+        assert _read_global(sandbox)["srv"]["disabledTools"] == ["ReadFile"]
+
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "srv", "tool": "ReadFile", "enabled": True})
+        )
+        assert resp.status == 200
+        # Emptying the list drops the key entirely rather than leaving [].
+        assert "disabledTools" not in _read_global(sandbox)["srv"]
+
+    @pytest.mark.asyncio
+    async def test_server_known_elsewhere_gets_a_stub_entry(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server configured only in another scope still records tool state here."""
+        _known(monkeypatch, "elsewhere")
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "elsewhere", "tool": "T", "enabled": False})
+        )
+        assert resp.status == 200
+        assert _read_global(sandbox)["elsewhere"] == {"disabledTools": ["T"]}
+
+    @pytest.mark.asyncio
+    async def test_string_spec_is_coerced(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {"srv": "run-me"})
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "srv", "tool": "T", "enabled": False})
+        )
+        assert resp.status == 200
+        assert _read_global(sandbox)["srv"] == {
+            "command": "run-me",
+            "disabledTools": ["T"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_mapping_spec_is_500(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {"srv": 7})
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "srv", "tool": "T"})
+        )
+        assert resp.status == 500
+        assert "invalid config type: int" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_write_failure_is_500(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_global(sandbox, {"srv": {"command": "x"}})
+
+        def _boom(_data: dict) -> None:
+            raise OSError("read-only fs")
+
+        monkeypatch.setattr(mcp_mod, "_write_mcp_json", _boom)
+        resp = await mcp_mod.api_mcp_toggle_tool(
+            _request({"server": "srv", "tool": "T", "enabled": False})
+        )
+        assert resp.status == 500
+        assert "read-only fs" in _payload(resp)["error"]
+
+
+# ── POST /api/mcp/toggle-all ────────────────────────────────────────────
+
+
+class TestToggleAll:
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_toggle_all(_request(ValueError("boom")))
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_corrupt_global_config_is_500(self, sandbox: SimpleNamespace) -> None:
+        sandbox.global_json.write_text("[", encoding="utf-8")
+        resp = await mcp_mod.api_mcp_toggle_all(_request({"enabled": False}))
+        assert resp.status == 500
+
+    @pytest.mark.asyncio
+    async def test_disables_every_mapping_spec_and_skips_others(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        _write_global(
+            sandbox, {"a": {"command": "x"}, "b": {"command": "y"}, "junk": "str-spec"}
+        )
+        resp = await mcp_mod.api_mcp_toggle_all(_request({"enabled": False}))
+        assert resp.status == 200
+        assert _payload(resp) == {"ok": True, "enabled": False, "count": 3}
+        servers = _read_global(sandbox)
+        assert servers["a"]["disabled"] is True
+        assert servers["b"]["disabled"] is True
+        assert servers["junk"] == "str-spec"  # non-mapping specs are left alone
+        # Only the two toggleable names reach the batch sync.
+        assert sandbox.batched == [(["a", "b"], False)]
+
+    @pytest.mark.asyncio
+    async def test_enable_all_clears_flags(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {"a": {"command": "x", "disabled": True}})
+        resp = await mcp_mod.api_mcp_toggle_all(_request({"enabled": True}))
+        assert resp.status == 200
+        assert "disabled" not in _read_global(sandbox)["a"]
+        assert sandbox.batched == [(["a"], True)]
+
+    @pytest.mark.asyncio
+    async def test_missing_global_file_reports_zero_servers(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """No mcp.json yet: the handler starts from an empty document, not a 500."""
+        sandbox.global_json.unlink(missing_ok=True)
+        resp = await mcp_mod.api_mcp_toggle_all(_request({"enabled": False}))
+        assert resp.status == 200
+        assert _payload(resp) == {"ok": True, "enabled": False, "count": 0}
+
+    @pytest.mark.asyncio
+    async def test_write_failure_is_500(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_global(sandbox, {"a": {"command": "x"}})
+        monkeypatch.setattr(
+            mcp_mod,
+            "_write_mcp_json",
+            lambda _d: (_ for _ in ()).throw(OSError("nope")),
+        )
+        resp = await mcp_mod.api_mcp_toggle_all(_request({"enabled": False}))
+        assert resp.status == 500
+        assert sandbox.batched == []
+
+
+# ── POST /api/mcp/remove ────────────────────────────────────────────────
+
+
+@pytest.fixture
+def no_capability_manager(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Pin the capability-manager seam to 'unavailable' (a vanilla machine)."""
+    from kiro_crew.dashboard.handlers import _shared
+
+    mgr = MagicMock()
+    mgr.available.return_value = False
+    monkeypatch.setattr(_shared, "_capability_manager", lambda: mgr)
+    return mgr
+
+
+class TestRemove:
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_remove(_request(ValueError("boom")))
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_missing_name_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_remove(_request({"name": "   "}))
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_removes_entry_and_syncs_removal(
+        self, sandbox: SimpleNamespace, no_capability_manager: MagicMock
+    ) -> None:
+        _write_global(sandbox, {"srv": {"command": "x"}, "keep": {"command": "y"}})
+        resp = await mcp_mod.api_mcp_remove(_request({"name": "srv"}))
+        assert resp.status == 200
+        assert _payload(resp) == {"ok": True, "name": "srv", "removed": True}
+        assert "srv" not in _read_global(sandbox)
+        assert "keep" in _read_global(sandbox)
+        assert sandbox.synced == [("srv", False, True)]
+
+    @pytest.mark.asyncio
+    async def test_absent_entry_reports_removed_false(
+        self, sandbox: SimpleNamespace, no_capability_manager: MagicMock
+    ) -> None:
+        _write_global(sandbox, {})
+        resp = await mcp_mod.api_mcp_remove(_request({"name": "ghost"}))
+        assert resp.status == 200
+        assert _payload(resp)["removed"] is False
+        # The agent-config sync still runs so stale refs cannot survive.
+        assert sandbox.synced == [("ghost", False, True)]
+
+    @pytest.mark.asyncio
+    async def test_capability_manager_failure_is_best_effort(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An erroring package manager must not block the config removal."""
+        from kiro_crew.dashboard.handlers import _shared
+
+        mgr = MagicMock()
+        mgr.available.return_value = True
+        mgr.uninstall_mcp = AsyncMock(side_effect=RuntimeError("aim exploded"))
+        monkeypatch.setattr(_shared, "_capability_manager", lambda: mgr)
+
+        _write_global(sandbox, {"srv": {"command": "x"}})
+        resp = await mcp_mod.api_mcp_remove(_request({"name": "srv"}))
+        assert resp.status == 200
+        assert _payload(resp)["removed"] is True
+        assert "srv" not in _read_global(sandbox)
+
+    @pytest.mark.asyncio
+    async def test_capability_manager_success_is_reported_ok(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import _shared
+
+        mgr = MagicMock()
+        mgr.available.return_value = True
+        mgr.uninstall_mcp = AsyncMock(
+            return_value=SimpleNamespace(ok=True, message="gone")
+        )
+        monkeypatch.setattr(_shared, "_capability_manager", lambda: mgr)
+
+        _write_global(sandbox, {"srv": {"command": "x"}})
+        resp = await mcp_mod.api_mcp_remove(_request({"name": "srv"}))
+        assert resp.status == 200
+        mgr.uninstall_mcp.assert_awaited_once_with("srv")
+
+    @pytest.mark.asyncio
+    async def test_corrupt_global_config_is_tolerated(
+        self, sandbox: SimpleNamespace, no_capability_manager: MagicMock
+    ) -> None:
+        """Removal treats an unparseable mcp.json as empty, never 500s."""
+        sandbox.global_json.write_text("}}}", encoding="utf-8")
+        resp = await mcp_mod.api_mcp_remove(_request({"name": "srv"}))
+        assert resp.status == 200
+        assert _payload(resp)["removed"] is False
+
+
+# ── PUT/DELETE /api/mcp/servers/{name} ──────────────────────────────────
+
+
+class TestServerDetail:
+    @pytest.mark.asyncio
+    async def test_blank_name_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request({}, match_info={"name": "  "}, method="PUT")
+        )
+        assert resp.status == 400
+        assert "server name is required" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name",
+        ["../../evil", "..", "a/../b", "a" * 129, "-leading-dash"],
+        ids=["traversal", "bare-dotdot", "embedded-dotdot", "overlong", "bad-leading-char"],
+    )
+    async def test_put_rejects_a_name_the_rest_of_the_tree_would_refuse(
+        self, sandbox: SimpleNamespace, name: str
+    ) -> None:
+        """PUT is the writer, so it must not plant a key nothing else can address.
+
+        ``_is_valid_mcp_name`` is the predicate the validation-dependent readers
+        in this tree enforce (several call sites in ``mcp.py`` itself, plus
+        ``mcp_custom.py``, ``mcp_discover.py`` and ``connections.py``). A name
+        carrying ``..`` or exceeding ``_MAX_MCP_NAME_LEN`` written through this
+        route is invisible to those, so the entry cannot be managed through them.
+        """
+        _write_global(sandbox, {})
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request({"command": "node"}, match_info={"name": name}, method="PUT")
+        )
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_server_name"
+        # The refusal must land before the write, not after it.
+        assert _read_global(sandbox) == {}
+
+    @pytest.mark.asyncio
+    async def test_delete_still_removes_a_malformed_junk_key(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """DELETE stays permissive on purpose, so a junk key remains clearable.
+
+        This mirrors the documented grant/revoke asymmetry in ``security.py``:
+        the writer validates, the remover does not, because guarding a remover
+        would strand exactly the entries the writer guard prevents. ``DELETE``
+        and ``api_mcp_remove`` are both such removers. Guarding this handler's
+        DELETE half is the specific regression this test forbids.
+        """
+        _write_global(sandbox, {"../../evil": {"command": "x"}})
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(None, match_info={"name": "../../evil"}, method="DELETE")
+        )
+        assert resp.status == 200
+        assert _payload(resp)["removed"] is True
+        assert _read_global(sandbox) == {}
+
+    @pytest.mark.asyncio
+    async def test_put_accepts_the_names_the_validator_allows(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The guard must not narrow the accepted set beyond the shared validator.
+
+        ``_VALID_MCP_NAME_RE`` deliberately admits ``@``, ``/``, ``.``, ``:`` and
+        ``_`` so scoped package ids (``@scope/pkg``) keep working.
+        """
+        _write_global(sandbox, {})
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(
+                {"command": "node"}, match_info={"name": "@scope/pkg.name_v2:1"}, method="PUT"
+            )
+        )
+        assert resp.status == 200
+        assert "@scope/pkg.name_v2:1" in _read_global(sandbox)
+
+    @pytest.mark.asyncio
+    async def test_delete_absent_is_404(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {})
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(None, match_info={"name": "ghost"}, method="DELETE")
+        )
+        assert resp.status == 404
+        assert _payload(resp)["removed"] is False
+
+    @pytest.mark.asyncio
+    async def test_delete_present_is_200(self, sandbox: SimpleNamespace) -> None:
+        _write_global(sandbox, {"srv": {"command": "x"}})
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(None, match_info={"name": "srv"}, method="DELETE")
+        )
+        assert resp.status == 200
+        assert _payload(resp)["removed"] is True
+        assert "srv" not in _read_global(sandbox)
+
+    @pytest.mark.asyncio
+    async def test_delete_tolerates_a_corrupt_global_config(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """An unparseable mcp.json is treated as empty — a 404, never a 500."""
+        sandbox.global_json.write_text("]]]", encoding="utf-8")
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(None, match_info={"name": "srv"}, method="DELETE")
+        )
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_put_invalid_json_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(ValueError("boom"), match_info={"name": "srv"}, method="PUT")
+        )
+        assert resp.status == 400
+        assert _payload(resp)["error"] == "invalid JSON"
+
+    @pytest.mark.asyncio
+    async def test_put_without_command_is_400(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request({"args": ["x"]}, match_info={"name": "srv"}, method="PUT")
+        )
+        assert resp.status == 400
+        assert "command is required" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_put_registers_full_spec(self, sandbox: SimpleNamespace) -> None:
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(
+                {"command": "node", "args": ["s.js"], "env": {"K": "v"}},
+                match_info={"name": "srv"},
+                method="PUT",
+            )
+        )
+        assert resp.status == 200
+        assert _read_global(sandbox)["srv"] == {
+            "command": "node",
+            "args": ["s.js"],
+            "env": {"K": "v"},
+        }
+        assert sandbox.synced == [("srv", True, False)]
+
+    @pytest.mark.asyncio
+    async def test_put_expands_a_declared_env_path(
+        self, sandbox: SimpleNamespace, monkeypatch
+    ) -> None:
+        """The global file is consumed by the ACP runtime (per-key env), so a
+        registered PATH fragment must be emitted complete. See env.emit_env."""
+        import os
+
+        # Spelled for the host (conftest.host_abs): declared entries pass through
+        # the ``os.path.isabs`` filter in env._spec_path_entries, and from Python
+        # 3.13 a bare ``/opt/shims`` is not absolute under ntpath (no drive).
+        shims, usr_bin = host_abs("opt", "shims"), host_abs("usr", "bin")
+        monkeypatch.setenv("PATH", usr_bin)
+        resp = await mcp_mod.api_mcp_server_detail(
+            _request(
+                {"command": "node", "env": {"PATH": shims, "K": "v"}},
+                match_info={"name": "srv"},
+                method="PUT",
+            )
+        )
+        assert resp.status == 200
+        written = _read_global(sandbox)["srv"]["env"]
+        entries = written["PATH"].split(os.pathsep)
+        assert entries[0] == shims, "caller-authored entries stay first"
+        assert usr_bin in entries, "inherited PATH must survive the override"
+        assert written["K"] == "v"
+
+
+# ── GET /api/mcp/active ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def agents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect ``kiro_agents_dir_path()`` at a tmp agents directory."""
+    import kiro_crew.agent as agent_mod
+
+    d = tmp_path / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", d)
+    return d
+
+
+@pytest.fixture
+def identity_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bind every Kiro Crew agent name to a same-named kiro agent.
+
+    Without this the real resolver maps an unknown name onto the ``kirocrew``
+    default, so ``/api/mcp/active`` would always take the global-scope branch
+    and the per-agent branch would be unreachable.
+    """
+    import kiro_crew.config.loader as loader
+
+    monkeypatch.setattr(
+        loader,
+        "resolve_agent_bindings",
+        lambda cfg, name: SimpleNamespace(kiro_agent=name),
+    )
+
+
+class TestActive:
+    @pytest.mark.asyncio
+    async def test_named_agent_lists_its_own_servers_sorted(
+        self, sandbox: SimpleNamespace, agents_dir: Path, identity_bindings: None
+    ) -> None:
+        (agents_dir / "other.json").write_text(
+            json.dumps({"name": "other", "mcpServers": {"zeta": {}, "alpha": {}}}),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_active(_request(query={"agent": "other"}))
+        assert resp.status == 200
+        assert _payload(resp) == [
+            {"name": "alpha", "enabled": True},
+            {"name": "zeta", "enabled": True},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unknown_named_agent_is_empty_list(
+        self, sandbox: SimpleNamespace, agents_dir: Path, identity_bindings: None
+    ) -> None:
+        resp = await mcp_mod.api_mcp_active(_request(query={"agent": "nope"}))
+        assert resp.status == 200
+        assert _payload(resp) == []
+
+    @pytest.mark.asyncio
+    async def test_malformed_agent_file_is_skipped(
+        self, sandbox: SimpleNamespace, agents_dir: Path, identity_bindings: None
+    ) -> None:
+        """An unparseable agent file must not abort the scan."""
+        (agents_dir / "broken.json").write_text("{oops", encoding="utf-8")
+        resp = await mcp_mod.api_mcp_active(_request(query={"agent": "other"}))
+        assert resp.status == 200
+        assert _payload(resp) == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_binding_lookup_falls_back_to_the_raw_name(
+        self, sandbox: SimpleNamespace, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken resolver must not 500 — the query name is used verbatim."""
+        import kiro_crew.config.loader as loader
+
+        monkeypatch.setattr(
+            loader,
+            "resolve_agent_bindings",
+            lambda cfg, name: (_ for _ in ()).throw(RuntimeError("no bindings")),
+        )
+        (agents_dir / "other.json").write_text(
+            json.dumps({"name": "other", "mcpServers": {"alpha": {}}}), encoding="utf-8"
+        )
+        resp = await mcp_mod.api_mcp_active(_request(query={"agent": "other"}))
+        assert resp.status == 200
+        assert _payload(resp) == [{"name": "alpha", "enabled": True}]
+
+    @pytest.mark.asyncio
+    async def test_default_agent_uses_the_global_scope_and_prepends_builtins(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_global(sandbox, {"on": {"command": "x"}, "off": {"disabled": True}})
+        _known(monkeypatch, "on", "off")
+        resp = await mcp_mod.api_mcp_active(_request(query={}))
+        assert resp.status == 200
+        rows = _payload(resp)
+        by_name = {r["name"]: r["enabled"] for r in rows}
+        assert by_name["on"] is True
+        assert by_name["off"] is False
+        # The managed servers are always present, ahead of the configured ones.
+        for builtin in ("kirocrew-cron", "kirocrew-core", "kirocrew-computer"):
+            assert by_name[builtin] is True
+        assert rows[0]["name"].startswith("kirocrew-")
+
+    @pytest.mark.asyncio
+    async def test_default_agent_reads_the_store_and_the_row_flag_not_only_the_shared_file(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A registry install awaiting consent is ``disabled: true`` in the Kiro
+        Crew store and absent from the shared file; a server switched off in a
+        provider global is in neither map. Both are off for the sessions, so
+        both answer ``enabled: false`` here. Red under the shared-file-only read,
+        which answered ``true`` for each."""
+        import kiro_crew.mcp_discovery as disc
+
+        _write_global(sandbox, {"on": {"command": "x"}})
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"pending": {"command": "y", "disabled": True}}}),
+            encoding="utf-8",
+        )
+        # ``pending`` carries no row flag here, so only the store read can flip
+        # it; ``cc-off`` is in neither map, so only the row flag can.
+        rows = [
+            McpServerInfo(name="on", command="/bin/true"),
+            McpServerInfo(name="pending", command="/bin/true"),
+            McpServerInfo(name="cc-off", command="/bin/true", disabled=True),
+        ]
+        monkeypatch.setattr(disc, "list_servers", lambda *a, **k: list(rows))
+        resp = await mcp_mod.api_mcp_active(_request(query={}))
+        assert resp.status == 200
+        by_name = {r["name"]: r["enabled"] for r in _payload(resp)}
+        assert by_name["on"] is True
+        assert by_name["pending"] is False
+        assert by_name["cc-off"] is False
+
+    @pytest.mark.asyncio
+    async def test_agent_alias_resolves_to_the_global_scope(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Kiro Crew agent name bound to ``kirocrew`` reads the global scope."""
+        import kiro_crew.config.loader as loader
+
+        monkeypatch.setattr(
+            loader,
+            "resolve_agent_bindings",
+            lambda cfg, name: SimpleNamespace(kiro_agent="kirocrew"),
+        )
+        _write_global(sandbox, {"on": {"command": "x"}})
+        _known(monkeypatch, "on")
+        resp = await mcp_mod.api_mcp_active(
+            _request(query={"agent": "default"})
+        )
+        assert {r["name"] for r in _payload(resp)} >= {"on", "kirocrew-core"}
+
+    @pytest.mark.asyncio
+    async def test_corrupt_global_scope_falls_back_to_empty(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sandbox.global_json.write_text("{{{", encoding="utf-8")
+        _known(monkeypatch, "on")
+        resp = await mcp_mod.api_mcp_active(_request(query={}))
+        assert resp.status == 200
+        # With no readable disabled-state, every configured row reads enabled.
+        assert {r["name"]: r["enabled"] for r in _payload(resp)}["on"] is True
+
+
+# ── /api/mcp/probe (POST live, GET cached) ──────────────────────────────
+
+
+def _probed(name: str, **extra: Any) -> MagicMock:
+    srv = MagicMock()
+    srv.name = name
+    srv.to_dict.return_value = {"name": name, "status": "ok", **extra}
+    return srv
+
+
+class TestProbe:
+    @pytest.mark.asyncio
+    async def test_live_probe_overlays_enabled_and_disabled_tools(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.mcp_discovery as disc
+
+        _write_global(
+            sandbox,
+            {
+                "off": {"disabled": True},
+                "on": {"command": "x", "disabledTools": ["ReadFile"]},
+            },
+        )
+        monkeypatch.setattr(
+            disc, "probe_all", AsyncMock(return_value=[_probed("off"), _probed("on")])
+        )
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_ts", 0.0)
+
+        resp = await mcp_mod.api_mcp_probe(_request({}))
+        assert resp.status == 200
+        rows = {r["name"]: r for r in _payload(resp)}
+        assert rows["off"]["enabled"] is False
+        assert rows["on"]["enabled"] is True
+        assert rows["on"]["disabledTools"] == ["ReadFile"]
+        assert "disabledTools" not in rows["off"]
+        # The live result becomes the handler cache.
+        assert [r["name"] for r in mcp_mod._mcp_probe_cache] == ["off", "on"]
+        assert mcp_mod._mcp_probe_ts > 0.0
+
+    @pytest.mark.asyncio
+    async def test_live_probe_tolerates_a_missing_global_config(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.mcp_discovery as disc
+
+        sandbox.global_json.unlink(missing_ok=True)
+        monkeypatch.setattr(disc, "probe_all", AsyncMock(return_value=[_probed("on")]))
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
+        resp = await mcp_mod.api_mcp_probe(_request({}))
+        assert _payload(resp)[0]["enabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_live_probe_rows_carry_the_same_config_state_as_the_list(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe response REPLACES the table's list on the client,
+        so its rows must say what ``GET /api/mcp`` says. A store-disabled
+        (consent) row and a row ``list_servers`` flagged disabled from another
+        scope both read disabled, and ``kirocrewManaged`` rides along so the
+        Edit action does not vanish between a probe and the next GET."""
+        import kiro_crew.mcp_discovery as disc
+
+        _write_global(sandbox, {"on": {"command": "x"}})
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "on": {"command": "x"},
+                        "consent": {"command": "y", "disabled": True},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            disc,
+            "probe_all",
+            AsyncMock(
+                return_value=[
+                    _probed("on"),
+                    _probed("consent", status="disabled", disabled=True),
+                    # Disabled in a scope neither file above holds: only the
+                    # row's own aggregate flag says so.
+                    _probed("shared-off", status="disabled", disabled=True),
+                ]
+            ),
+        )
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_ts", 0.0)
+
+        rows = {r["name"]: r for r in _payload(await mcp_mod.api_mcp_probe(_request({})))}
+        assert rows["on"]["enabled"] is True
+        assert rows["on"]["kirocrewManaged"] is True
+        assert rows["on"]["disabledIn"] is None
+        assert rows["consent"]["enabled"] is False
+        assert rows["consent"]["status"] == "disabled"
+        assert rows["consent"]["kirocrewManaged"] is True
+        # The store's own flag: the consent step in the table lifts it.
+        assert rows["consent"]["disabledIn"] == "kirocrew"
+        assert rows["consent"]["disabledInFile"] is None
+        assert rows["shared-off"]["enabled"] is False
+        assert rows["shared-off"]["status"] == "disabled"
+        assert rows["shared-off"]["kirocrewManaged"] is False
+        # Only the aggregate flag says so: inert here, and no file to name.
+        assert rows["shared-off"]["disabledIn"] == "shared"
+        assert rows["shared-off"]["disabledInFile"] is None
+
+    @pytest.mark.asyncio
+    async def test_live_probe_survives_a_non_mapping_store(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hand-edited store whose ``mcpServers`` is a list must not turn the
+        probe response into a 500 after the fan-out already ran: it reads as an
+        empty map, so the row keeps the state the other sources give it."""
+        import kiro_crew.mcp_discovery as disc
+
+        _write_global(sandbox, {"on": {"command": "x"}})
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"mcpServers": []}), encoding="utf-8")
+        monkeypatch.setattr(disc, "probe_all", AsyncMock(return_value=[_probed("on")]))
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
+
+        resp = await mcp_mod.api_mcp_probe(_request({}))
+        assert resp.status == 200
+        row = _payload(resp)[0]
+        assert row["enabled"] is True
+        assert row["kirocrewManaged"] is False
+
+    def test_stamp_config_state_tolerates_non_mapping_inputs(self) -> None:
+        d: dict[str, Any] = {"name": "srv", "status": "ok"}
+        mcp_mod._stamp_config_state(d, [], "not a map")
+        assert d["enabled"] is True
+        assert d["kirocrewManaged"] is False
+        assert d["status"] == "ok"
+        assert d["disabledIn"] is None
+        assert d["disabledInFile"] is None
+
+    def test_stamp_config_state_names_the_scope_that_disabled_the_row(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """``disabledIn`` is the backend's own answer to "which config switched
+        this off", so the table never infers it from ``enabled`` +
+        ``kirocrewManaged``. The shared Kiro-global flag names its file; the
+        store's flag is the consent state the table can lift itself."""
+        shared: dict[str, Any] = {"name": "figma", "status": "ok"}
+        mcp_mod._stamp_config_state(shared, {"figma": {"command": "x", "disabled": True}}, {})
+        assert shared["enabled"] is False
+        assert shared["status"] == "disabled"
+        assert shared["disabledIn"] == "shared"
+        assert shared["disabledInFile"] == mcp_mod._KIRO_GLOBAL_SURFACE
+        assert shared["disabledInFile"].endswith("mcp.json")
+
+        consent: dict[str, Any] = {"name": "weather", "status": "ok"}
+        mcp_mod._stamp_config_state(consent, {}, {"weather": {"command": "y", "disabled": True}})
+        assert consent["enabled"] is False
+        assert consent["kirocrewManaged"] is True
+        assert consent["disabledIn"] == "kirocrew"
+        assert consent["disabledInFile"] is None
+
+    def test_stamp_config_state_dual_scope_disable_reads_shared(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """A store-managed server that the SHARED config disables is inert, not a
+        consent row: lifting the store's flag (the consent step) would leave the
+        shared flag standing, so the table must not offer it. Both flags set
+        reads the same way, for the same reason."""
+        managed_shared_off: dict[str, Any] = {"name": "figma", "status": "ok"}
+        mcp_mod._stamp_config_state(
+            managed_shared_off,
+            {"figma": {"command": "x", "disabled": True}},
+            {"figma": {"command": "x"}},
+        )
+        assert managed_shared_off["kirocrewManaged"] is True
+        assert managed_shared_off["enabled"] is False
+        assert managed_shared_off["disabledIn"] == "shared"
+        assert managed_shared_off["disabledInFile"] == mcp_mod._KIRO_GLOBAL_SURFACE
+
+        both_off: dict[str, Any] = {"name": "figma", "status": "ok"}
+        mcp_mod._stamp_config_state(
+            both_off,
+            {"figma": {"command": "x", "disabled": True}},
+            {"figma": {"command": "x", "disabled": True}},
+        )
+        assert both_off["disabledIn"] == "shared"
+
+    def test_stamp_config_state_provider_global_plus_store_disable_reads_shared(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """A server disabled in a PROVIDER global (a scope this helper never
+        reads) and in the store is inert, not a consent row: ``list_servers``
+        records the provider-global mute on the row (``disabledInShared``), and
+        that verdict outranks the store flag the two maps in hand explain. Red
+        under ``store_off and not shared_off -> "kirocrew"``, which offered a
+        consent step that lifted the store flag and left the provider-global one
+        standing. The row's marker is consumed, not forwarded."""
+        row: dict[str, Any] = {
+            "name": "figma",
+            "status": "ok",
+            "disabled": True,
+            "disabledInShared": True,
+        }
+        mcp_mod._stamp_config_state(row, {}, {"figma": {"command": "x", "disabled": True}})
+        assert row["kirocrewManaged"] is True
+        assert row["enabled"] is False
+        assert row["disabledIn"] == "shared"
+        # Not the Kiro-global file: the helper cannot name a provider global.
+        assert row["disabledInFile"] is None
+        assert row["disabledReason"] is None
+        assert "disabledInShared" not in row
+        # The same store flag WITHOUT the row's verdict is the consent row.
+        consent: dict[str, Any] = {"name": "figma", "status": "ok", "disabled": True}
+        mcp_mod._stamp_config_state(consent, {}, {"figma": {"command": "x", "disabled": True}})
+        assert consent["disabledIn"] == "kirocrew"
+
+    def test_stamp_config_state_resolves_a_slash_named_entry_by_its_alias(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The row is canonical (``playwright-mcp``), the files keep the key as
+        written (``npm:@playwright/mcp``). Both maps are read by alias too, so
+        the shared disable is seen, the file is named, and the store entry
+        counts as managed. Red under ``global_mcps.get(name)``: the row stamped
+        from nothing -- ``enabled: true`` beside a launch gate that refused it,
+        and no Edit action for a store it does own."""
+        row: dict[str, Any] = {"name": "playwright-mcp", "status": "ok", "disabled": True}
+        mcp_mod._stamp_config_state(
+            row,
+            {"npm:@playwright/mcp": {"command": "npx", "disabled": True}},
+            {"npm:@playwright/mcp": {"command": "npx"}},
+        )
+        assert row["kirocrewManaged"] is True
+        assert row["enabled"] is False
+        assert row["disabledIn"] == "shared"
+        assert row["disabledInFile"] == mcp_mod._KIRO_GLOBAL_SURFACE
+        # Both spellings in one file: the EXACT key is the row's source (it is the
+        # entry step 3b keeps as the representative), so the muted raw key beside
+        # it is not read as this row's entry. The disable still reaches the row
+        # through the verdict ``list_servers`` stamped over every raw key.
+        both: dict[str, Any] = {
+            "name": "playwright-mcp",
+            "status": "ok",
+            "disabled": True,
+            "disabledInShared": True,
+            "disabledReason": "invalid",
+        }
+        mcp_mod._stamp_config_state(
+            both,
+            {
+                "playwright-mcp": {"command": "npx"},
+                "npm:@playwright/mcp": {"command": "npx", "disabled": "false"},
+            },
+            {},
+        )
+        assert both["enabled"] is False
+        assert both["disabledIn"] == "shared"
+        assert both["disabledInFile"] is None
+        assert both["disabledReason"] == "invalid"
+
+    def test_stamp_config_state_never_touches_the_filesystem(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stamping runs on the event loop for every row of every listing and
+        probe response, so it may not stat anything: ``disabledInFile`` is the
+        constant display form of the Kiro-global file, not a resolution of it.
+        Every resolver a path display could reach raises here. Red under
+        ``display_path(_GLOBAL_MCP_JSON)``, which resolved the home directory
+        (``Path.home().resolve()``) per row -- a slow home mount stalled the
+        gateway and its heartbeat."""
+
+        def boom(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("filesystem touched on the event-loop stamp path")
+
+        shared: dict[str, Any] = {"name": "figma-mcp", "status": "ok"}
+        consent: dict[str, Any] = {"name": "weather", "status": "ok", "disabled": True}
+        with monkeypatch.context() as m:
+            m.setattr(Path, "resolve", boom)
+            m.setattr(Path, "home", classmethod(lambda cls: boom()))
+            m.setattr(Path, "stat", boom)
+            m.setattr(os, "stat", boom)
+            m.setattr(os, "lstat", boom)
+            mcp_mod._stamp_config_state(
+                shared,
+                {"npm:@figma/mcp": {"command": "x", "disabled": "false"}},
+                {"figma-mcp": {"command": "x"}},
+            )
+            mcp_mod._stamp_config_state(
+                consent, {}, {"weather": {"command": "y", "disabled": True}}
+            )
+        assert shared["disabledIn"] == "shared"
+        assert shared["disabledInFile"] == "~/.kiro/settings/mcp.json"
+        assert shared["disabledReason"] == "invalid"
+        assert shared["kirocrewManaged"] is True
+        assert consent["disabledIn"] == "kirocrew"
+        assert consent["disabledInFile"] is None
+
+    def test_config_key_for_resolves_to_one_key_or_refuses(self) -> None:
+        """Exact key first; else the single raw key whose alias is the name;
+        two raw keys and no exact key are a refusal, never a set. ``team/foo``
+        and ``team-foo`` are two servers: the row ``team-foo`` resolves to its
+        own key and leaves ``team/foo`` alone."""
+        servers = {
+            "team-foo": {"command": "a"},
+            "team/foo": {"command": "b"},
+            "npm:@playwright/mcp": {"command": "npx"},
+            "plain": {"command": "p"},
+        }
+        assert mcp_mod._config_key_for(servers, "team-foo") == "team-foo"
+        assert mcp_mod._config_key_for(servers, "playwright-mcp") == "npm:@playwright/mcp"
+        assert mcp_mod._config_key_for(servers, "plain") == "plain"
+        assert mcp_mod._config_key_for(servers, "absent") is None
+        assert mcp_mod._config_key_for("not a map", "plain") is None
+        collide = {"team/foo": {"command": "b"}, "other:team/foo": {"command": "c"}}
+        with pytest.raises(mcp_mod.AmbiguousServerKey) as excinfo:
+            mcp_mod._config_key_for(collide, "team-foo")
+        assert excinfo.value.count == 2
+        assert "edit the file directly" in str(excinfo.value)
+        # The READ side treats the refusal as "no entry in this map".
+        assert mcp_mod._config_entry_for(collide, "team-foo") is None
+        assert mcp_mod._config_entry_for(servers, "team-foo") == {"command": "a"}
+
+    def test_stamp_config_state_reads_a_non_boolean_disabled_fail_closed(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """``"disabled": "false"`` (a string) is a config error read FAIL-CLOSED
+        by the launch predicate the stamping shares with the sessions: the row is
+        off in both the shared and the store map, and says WHY --
+        ``disabledReason == "invalid"`` -- so the table can name the value to
+        repair rather than a switch to flip. A literal ``True`` is a real switch
+        and carries no reason. Red under the ``is True`` read this replaced,
+        which listed the row enabled beside a gate that refused to start it."""
+        for value in ("false", "true", 1, "yes", None):
+            shared: dict[str, Any] = {"name": "srv", "status": "ok"}
+            mcp_mod._stamp_config_state(shared, {"srv": {"command": "x", "disabled": value}}, {})
+            assert shared["enabled"] is False, value
+            assert shared["status"] == "disabled", value
+            assert shared["disabledIn"] == "shared", value
+            assert shared["disabledInFile"] == mcp_mod._KIRO_GLOBAL_SURFACE
+            assert shared["disabledReason"] == "invalid", value
+            store: dict[str, Any] = {"name": "srv", "status": "ok"}
+            mcp_mod._stamp_config_state(store, {}, {"srv": {"command": "x", "disabled": value}})
+            assert store["enabled"] is False, value
+            assert store["kirocrewManaged"] is True, value
+            assert store["disabledIn"] == "kirocrew", value
+            assert store["disabledReason"] == "invalid", value
+        # A real switch: off, and no reason to add. An enabled row carries the
+        # key too, as ``None``, so a client never reads absence as a reason.
+        real: dict[str, Any] = {"name": "srv", "status": "ok"}
+        mcp_mod._stamp_config_state(real, {"srv": {"command": "x", "disabled": True}}, {})
+        assert real["enabled"] is False
+        assert real["disabledReason"] is None
+        on: dict[str, Any] = {"name": "srv", "status": "ok"}
+        mcp_mod._stamp_config_state(on, {"srv": {"command": "x", "disabled": False}}, {})
+        assert on["enabled"] is True
+        assert on["disabledReason"] is None
+        # The aggregate flag ``list_servers`` stamps is the one other disable
+        # source; neither map in hand explains it, so its reason is the row's
+        # own verdict -- carried when ``list_servers`` set it, ``None`` otherwise.
+        aggregate: dict[str, Any] = {"name": "srv", "status": "ok", "disabled": True}
+        mcp_mod._stamp_config_state(aggregate, {}, {})
+        assert aggregate["enabled"] is False
+        assert aggregate["disabledIn"] == "shared"
+        assert aggregate["disabledInFile"] is None
+        assert aggregate["disabledReason"] is None
+        aggregate_invalid: dict[str, Any] = {
+            "name": "srv",
+            "status": "ok",
+            "disabled": True,
+            "disabledReason": "invalid",
+        }
+        mcp_mod._stamp_config_state(aggregate_invalid, {}, {})
+        assert aggregate_invalid["disabledIn"] == "shared"
+        assert aggregate_invalid["disabledReason"] == "invalid"
+
+    def test_enable_lifts_a_non_boolean_disabled_in_the_store(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The consent step must be able to land on a row the fail-closed read
+        shows as Disabled: enabling lifts WHATEVER mutes the store entry, not
+        only a literal ``true`` -- under the ``is True`` test the string stayed
+        put as a "noop" and the row could never be switched on from here. The
+        disable direction still writes the boolean over an odd value (a repair),
+        and a spec edit keeps a muted entry muted, as the boolean."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "x", "disabled": "false"}}}),
+            encoding="utf-8",
+        )
+        assert mcp_mod._set_kirocrew_entry("srv", enabled=True) == "enabled"
+        assert "disabled" not in json.loads(store.read_text())["mcpServers"]["srv"]
+        # Disable over an odd value: written as the boolean, not a no-op.
+        store.write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "x", "disabled": "yes"}}}),
+            encoding="utf-8",
+        )
+        assert mcp_mod._set_kirocrew_entry("srv", enabled=False) == "disabled"
+        assert json.loads(store.read_text())["mcpServers"]["srv"]["disabled"] is True
+        assert mcp_mod._set_kirocrew_entry("srv", enabled=False) == "noop"
+        # A spec edit is not consent: the mute survives, as the boolean.
+        store.write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "x", "disabled": "false"}}}),
+            encoding="utf-8",
+        )
+        assert mcp_mod._replace_kirocrew_spec("srv", {"command": "y", "disabled": "false"})
+        assert json.loads(store.read_text())["mcpServers"]["srv"] == {
+            "command": "y",
+            "disabled": True,
+        }
+        # The same lift for a provider-global file.
+        shared = sandbox.global_json
+        shared.write_text(
+            json.dumps({"mcpServers": {"srv": {"command": "x", "disabled": None}}}),
+            encoding="utf-8",
+        )
+        assert mcp_mod._set_scope_entry(shared, "srv", enabled=True) == "enabled"
+        assert "disabled" not in json.loads(shared.read_text())["mcpServers"]["srv"]
+
+    def test_edit_reaches_a_raw_keyed_store_entry_through_its_canonical_row(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The table stamps ``kirocrewManaged`` from the store entry the row's
+        canonical name resolves to (``npm:@playwright/mcp`` for ``playwright-mcp``)
+        and advertises Edit on it; the editor's GET and PUT must resolve the same
+        way, or the action it offers answers 404. The PUT replaces the entry under
+        its OWN raw key -- one entry, not a canonical twin beside it -- and keeps
+        a mute as the boolean. An ambiguous name reads as absent, as the row's
+        stamping does. Red under the exact-key reads: ``None`` / ``False``."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps(
+                {"mcpServers": {"npm:@playwright/mcp": {"command": "npx", "disabled": "false"}}}
+            ),
+            encoding="utf-8",
+        )
+        assert mcp_mod._get_kirocrew_entry("playwright-mcp") == {
+            "command": "npx",
+            "disabled": "false",
+        }
+        assert mcp_mod._replace_kirocrew_spec("playwright-mcp", {"command": "npx", "args": ["-y"]})
+        assert json.loads(store.read_text())["mcpServers"] == {
+            "npm:@playwright/mcp": {"command": "npx", "args": ["-y"], "disabled": True}
+        }
+        # Two raw keys, no exact one: nothing to read or edit.
+        store.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "npm:@team/foo": {"command": "a"},
+                        "other:team/foo": {"command": "b"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert mcp_mod._get_kirocrew_entry("team-foo") is None
+        assert mcp_mod._replace_kirocrew_spec("team-foo", {"command": "c"}) is False
+        assert set(json.loads(store.read_text())["mcpServers"]) == {"npm:@team/foo", "other:team/foo"}
+
+    def test_consent_lifts_a_raw_keyed_store_entry_in_place(self, sandbox: SimpleNamespace) -> None:
+        """The table offers the consent step (Kiro Crew badge + Apply) on a
+        ``disabledIn: "kirocrew"`` row stamped from a raw-keyed store entry; the
+        writer must reach that same entry. Red under ``servers.get(name)``:
+        without a spec it answered ``noop`` (row stuck Disabled), and with the
+        preserved spec the apply passes it wrote a canonical twin beside the muted
+        raw entry -- the row stayed Disabled and its provenance read ``shared``."""
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        muted = {"mcpServers": {"npm:@playwright/mcp": {"command": "npx", "disabled": True}}}
+        store.write_text(json.dumps(muted), encoding="utf-8")
+        assert mcp_mod._scope_has_entry("playwright-mcp", store) is True
+        assert mcp_mod._set_kirocrew_entry("playwright-mcp", enabled=True) == "enabled"
+        assert json.loads(store.read_text())["mcpServers"] == {"npm:@playwright/mcp": {"command": "npx"}}
+        # With the preserved spec the apply passes: still the one entry, lifted.
+        store.write_text(json.dumps(muted), encoding="utf-8")
+        assert (
+            mcp_mod._set_kirocrew_entry("playwright-mcp", enabled=True, spec={"command": "npx"})
+            == "enabled"
+        )
+        assert set(json.loads(store.read_text())["mcpServers"]) == {"npm:@playwright/mcp"}
+        # Disable lands on the same entry, and an ambiguous name writes nothing.
+        assert mcp_mod._set_kirocrew_entry("playwright-mcp", enabled=False) == "disabled"
+        assert json.loads(store.read_text())["mcpServers"]["npm:@playwright/mcp"]["disabled"] is True
+        store.write_text(
+            json.dumps({"mcpServers": {"npm:@team/foo": {"command": "a"}, "other:team/foo": {"command": "b"}}}),
+            encoding="utf-8",
+        )
+        before = store.read_bytes()
+        assert mcp_mod._set_kirocrew_entry("team-foo", enabled=True, spec={"command": "c"}) == "ambiguous"
+        assert mcp_mod._scope_has_entry("team-foo", store) is False
+        assert store.read_bytes() == before
+
+    def test_uninstall_by_alias_removes_the_raw_slash_named_entry_everywhere(
+        self, sandbox: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Uninstall carries the row's canonical name; the store and the shared
+        file hold the raw ``npm:@...`` key. The one key that names the server
+        goes, in every scope and in the rendered agent file. Red under
+        ``name not in servers``: both scopes answered ``noop`` and the
+        definitions stayed while the table reported the row removed."""
+        import kiro_crew.dashboard.handlers.mcp as handler
+
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"mcpServers": {"npm:@playwright/mcp": {"command": "npx"}}}),
+            encoding="utf-8",
+        )
+        _write_global(
+            sandbox,
+            {"npm:@playwright/mcp": {"command": "npx", "disabled": True}, "other": {"command": "y"}},
+        )
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        rendered = agents_dir / "kirocrew.json"
+        rendered.write_text(
+            json.dumps({"mcpServers": {"playwright-mcp": {"command": "npx"}}}), encoding="utf-8"
+        )
+        monkeypatch.setattr(handler, "kiro_agents_dir", lambda: agents_dir)
+        actions = mcp_mod._purge_server_config("playwright-mcp")
+        assert actions == {"kirocrew": "removed", "kiroGlobal": "removed"}
+        assert json.loads(store.read_text())["mcpServers"] == {}
+        assert _read_global(sandbox) == {"other": {"command": "y"}}
+        assert json.loads(rendered.read_text())["mcpServers"] == {}
+        # Idempotent: a second purge finds nothing.
+        assert mcp_mod._purge_server_config("playwright-mcp") == {
+            "kirocrew": "noop",
+            "kiroGlobal": "noop",
+        }
+
+    def test_uninstall_leaves_a_distinct_server_whose_alias_collides(
+        self, sandbox: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``team/foo`` and ``team-foo`` both alias to ``team-foo`` and are two
+        servers. Uninstalling the row ``team-foo`` removes ITS key and leaves
+        ``team/foo`` byte for byte; the row the survivor then stands for is
+        uninstalled by its own, second, Uninstall. Red under the collision set
+        ``_config_keys_for`` returned: one Uninstall deleted both configurations."""
+        import kiro_crew.dashboard.handlers.mcp as handler
+
+        survivor = {"command": "uvx", "args": ["team-foo-server", "--port", "9"], "env": {"A": "1"}}
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"mcpServers": {"team-foo": {"command": "npx"}}}))
+        _write_global(
+            sandbox,
+            {"team/foo": survivor, "team-foo": {"command": "npx", "disabled": True}},
+        )
+        survivor_bytes = json.dumps(_read_global(sandbox)["team/foo"], sort_keys=True)
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "kirocrew.json").write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+        monkeypatch.setattr(handler, "kiro_agents_dir", lambda: agents_dir)
+
+        actions = mcp_mod._purge_server_config("team-foo")
+        assert actions == {"kirocrew": "removed", "kiroGlobal": "removed"}
+        assert json.loads(store.read_text())["mcpServers"] == {}
+        remaining = _read_global(sandbox)
+        assert set(remaining) == {"team/foo"}
+        assert json.dumps(remaining["team/foo"], sort_keys=True) == survivor_bytes
+        # With ``team-foo`` gone, ``team/foo`` is the single key the alias names.
+        assert mcp_mod._purge_server_config("team-foo")["kiroGlobal"] == "removed"
+        assert _read_global(sandbox) == {}
+
+    def test_uninstall_refuses_an_ambiguous_alias_and_changes_nothing(
+        self, sandbox: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two raw keys alias to ``team-foo`` and neither is keyed ``team-foo``:
+        nothing says which the row is, so the scope reports ``ambiguous`` and the
+        file is untouched byte for byte -- a guess either way edits or deletes a
+        server the user did not name."""
+        import kiro_crew.dashboard.handlers.mcp as handler
+
+        _write_global(
+            sandbox,
+            {"team/foo": {"command": "a"}, "other:team/foo": {"command": "b"}},
+        )
+        before = sandbox.global_json.read_bytes()
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        monkeypatch.setattr(handler, "kiro_agents_dir", lambda: agents_dir)
+        actions = mcp_mod._purge_server_config("team-foo")
+        assert actions == {"kirocrew": "noop", "kiroGlobal": "ambiguous"}
+        assert sandbox.global_json.read_bytes() == before
+        assert mcp_mod._set_scope_entry(sandbox.global_json, "team-foo", enabled=True) == "ambiguous"
+        assert sandbox.global_json.read_bytes() == before
+
+    def test_uninstall_is_one_read_and_one_write_per_store_under_the_lock(
+        self, sandbox: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structural pin of the uninstall's shape: under the MCP lock, every
+        config store is read exactly once and written exactly once, and the key
+        removed is computed from that same read (``_rmw_remove_entry``). The only
+        other read of a store is the read-only preflight, which runs BEFORE the
+        lock and decides nothing about presence. With reads and writes adjacent
+        under one lock, nothing a dashboard writer does can land between them."""
+        import kiro_crew.dashboard.handlers.mcp as handler
+
+        store = mcp_mod._kirocrew_mcp_json()
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"mcpServers": {"npm:@team/foo": {"command": "s"}}}))
+        _write_global(sandbox, {"npm:@team/foo": {"command": "a"}, "other": {"command": "o"}})
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        rendered = agents_dir / "kirocrew.json"
+        rendered.write_text(json.dumps({"mcpServers": {"team-foo": {"command": "s"}}}))
+        monkeypatch.setattr(handler, "kiro_agents_dir", lambda: agents_dir)
+
+        held = {"lock": False}
+        reads: list[tuple[Path, bool]] = []
+        writes: list[tuple[Path, bool]] = []
+        real_load, real_write = mcp_mod._load_json_or_empty, mcp_mod._atomic_write
+
+        def spy_load(path: Path) -> dict:
+            reads.append((Path(path), held["lock"]))
+            return real_load(path)
+
+        def spy_write(path: Path, data: Any) -> None:
+            writes.append((Path(path), held["lock"]))
+            real_write(path, data)
+
+        monkeypatch.setattr(mcp_mod, "_load_json_or_empty", spy_load)
+        monkeypatch.setattr(mcp_mod, "_atomic_write", spy_write)
+
+        class _FlagLock:
+            async def __aenter__(self):
+                held["lock"] = True
+
+            async def __aexit__(self, *a):
+                held["lock"] = False
+
+        class _NoSync:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, *a):
+                return None
+
+        monkeypatch.setattr(mcp_mod, "_get_mcp_lock", lambda: _FlagLock())
+        monkeypatch.setattr(mcp_mod, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr(mcp_mod, "_get_mcp_lock_sync", lambda: _NoSync())
+
+        async def run() -> None:
+            resp = await mcp_mod.api_mcp_apply(
+                _request({"changes": [{"name": "team-foo", "uninstall": True}]})
+            )
+            assert resp.status == 200, resp.text
+
+        asyncio.run(run())
+
+        stores = [store, sandbox.global_json, rendered]
+        for path in stores:
+            locked_reads = [p for p, h in reads if p == path and h]
+            locked_writes = [p for p, h in writes if p == path and h]
+            assert len(locked_reads) == 1, (path, reads)
+            assert len(locked_writes) == 1, (path, writes)
+        # Every write happened under the lock; the only unlocked reads are the
+        # preflight's, one per store.
+        assert all(h for _, h in writes), writes
+        unlocked_reads = [p for p, h in reads if not h and p in stores]
+        assert sorted(map(str, unlocked_reads)) == sorted(map(str, stores)), unlocked_reads
+        assert json.loads(store.read_text())["mcpServers"] == {}
+        assert _read_global(sandbox) == {"other": {"command": "o"}}
+        assert json.loads(rendered.read_text())["mcpServers"] == {}
+
+    def test_an_entry_re_aliased_between_preflight_and_purge_is_still_removed(
+        self, sandbox: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The preflight saw ``team-foo`` under its exact key; before the purge a
+        writer re-keyed that same server as ``npm:@team/foo``. The purge's own
+        read resolves the alias and removes it. Red under the pinned design: the
+        pinned key ``team-foo`` is absent from the file, so the store answers
+        ``noop`` and the server the user uninstalled stays configured."""
+        import kiro_crew.dashboard.handlers.mcp as handler
+
+        _write_global(sandbox, {"team-foo": {"command": "a"}})
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        monkeypatch.setattr(handler, "kiro_agents_dir", lambda: agents_dir)
+        keys, ambiguous = mcp_mod._preflight_change_keys(["team-foo"])
+        assert ambiguous == {} and keys["team-foo"]["kiroGlobal"] == "team-foo"
+        # The concurrent re-alias.
+        _write_global(sandbox, {"npm:@team/foo": {"command": "a"}})
+        actions = mcp_mod._purge_server_config("team-foo", preferred=keys["team-foo"])
+        assert actions["kiroGlobal"] == "removed"
+        assert _read_global(sandbox) == {}
+
+    def test_keys_added_between_preflight_and_purge_survive(
+        self, sandbox: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whatever lands between the preflight and the purge goes back exactly as
+        the purge's read found it: an unrelated server added meanwhile survives,
+        and a colliding sibling (the r10 race) survives while the entry the row
+        stood for -- the preflight's key, the one tie the read cannot break alone
+        -- is the one removed. A read that stays ambiguous with no usable
+        tiebreaker writes nothing to that store."""
+        import kiro_crew.dashboard.handlers.mcp as handler
+
+        _write_global(sandbox, {"npm:@team/foo": {"command": "a"}})
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        monkeypatch.setattr(handler, "kiro_agents_dir", lambda: agents_dir)
+        keys, _ = mcp_mod._preflight_change_keys(["team-foo"])
+        assert keys["team-foo"]["kiroGlobal"] == "npm:@team/foo"
+        # Concurrent additions: an unrelated server and a colliding sibling.
+        _write_global(
+            sandbox,
+            {
+                "npm:@team/foo": {"command": "a"},
+                "other:team/foo": {"command": "b"},
+                "newcomer": {"command": "n"},
+            },
+        )
+        actions = mcp_mod._purge_server_config("team-foo", preferred=keys["team-foo"])
+        assert actions["kiroGlobal"] == "removed"
+        assert _read_global(sandbox) == {"other:team/foo": {"command": "b"}, "newcomer": {"command": "n"}}
+        # No usable tiebreaker (the preferred key itself is gone): nothing written.
+        _write_global(sandbox, {"x:team/foo": {"command": "c"}, "y:team/foo": {"command": "d"}})
+        before = sandbox.global_json.read_bytes()
+        assert mcp_mod._purge_server_config("team-foo", preferred=keys["team-foo"])["kiroGlobal"] == "ambiguous"
+        assert sandbox.global_json.read_bytes() == before
+
+    @pytest.mark.asyncio
+    async def test_cached_probe_returns_the_warm_cache_without_reprobing(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        cache = [{"name": "on", "status": "ok"}]
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", list(cache))
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_ts", time.time())
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_in_progress", False)
+        bg = AsyncMock()
+        monkeypatch.setattr(mcp_mod, "_bg_mcp_probe", bg)
+
+        state = _State()
+        resp = await mcp_mod.api_mcp_probe_cached(_request(state=state))
+        assert resp.status == 200
+        assert _payload(resp) == cache
+        assert not state._background_tasks
+        bg.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cached_probe_arms_a_background_reprobe_when_stale(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_ts", 0.0)  # never probed
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_in_progress", False)
+        bg = AsyncMock()
+        monkeypatch.setattr(mcp_mod, "_bg_mcp_probe", bg)
+
+        state = _State()
+        resp = await mcp_mod.api_mcp_probe_cached(_request(state=state))
+        assert resp.status == 200
+        assert _payload(resp) == []
+        assert mcp_mod._mcp_probe_in_progress is True
+        assert len(state._background_tasks) == 1
+        await asyncio.gather(*state._background_tasks)
+        bg.assert_awaited_once()
+        # The done-callback deregisters the task from the state registry.
+        assert not state._background_tasks
+
+    @pytest.mark.asyncio
+    async def test_cached_probe_does_not_stack_reprobes(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An in-flight probe suppresses a second one even on a cold cache."""
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_ts", 0.0)
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_in_progress", True)
+        bg = AsyncMock()
+        monkeypatch.setattr(mcp_mod, "_bg_mcp_probe", bg)
+
+        state = _State()
+        await mcp_mod.api_mcp_probe_cached(_request(state=state))
+        assert not state._background_tasks
+        bg.assert_not_awaited()
+
+
+# ── GET /api/mcp-gateway/metrics ────────────────────────────────────────
+
+
+class TestGatewayMetrics:
+    @pytest.mark.asyncio
+    async def test_reports_not_running_without_a_manager(self) -> None:
+        resp = await mcp_mod.api_mcp_gateway_metrics(_request(state=SimpleNamespace()))
+        assert resp.status == 200
+        assert _payload(resp) == {"running": False, "backends": []}
+
+    @pytest.mark.asyncio
+    async def test_reports_not_running_when_the_broker_is_down(self) -> None:
+        manager = SimpleNamespace(is_running=False)
+        state = SimpleNamespace(_mcp_gateway_manager=manager)
+        resp = await mcp_mod.api_mcp_gateway_metrics(_request(state=state))
+        assert _payload(resp)["running"] is False
+
+    @pytest.mark.asyncio
+    async def test_merges_the_pool_snapshot_and_drops_the_type_tag(self) -> None:
+        manager = MagicMock()
+        manager.is_running = True
+        manager.stats = AsyncMock(
+            return_value={
+                "type": "pool_stats",
+                "size": 1,
+                "max_backends": 4,
+                "backends": [{"server": "slack-mcp", "pid": 1, "alive": True}],
+            }
+        )
+        state = SimpleNamespace(_mcp_gateway_manager=manager)
+        resp = await mcp_mod.api_mcp_gateway_metrics(_request(state=state))
+        body = _payload(resp)
+        assert body["running"] is True
+        assert body["size"] == 1
+        assert body["backends"][0]["server"] == "slack-mcp"
+        assert "type" not in body  # internal envelope tag never leaks
+
+
+class TestGatewayStatusPing:
+    @pytest.mark.asyncio
+    async def test_ping_is_reported_when_the_broker_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        manager = MagicMock()
+        manager.is_running = True
+        manager.ping = AsyncMock(return_value=True)
+        state = SimpleNamespace(_mcp_gateway_manager=manager)
+        resp = await mcp_mod.api_mcp_gateway_status(_request(state=state))
+        body = _payload(resp)
+        assert body["running"] is True
+        assert body["ping_ok"] is True
+
+
+# ── POST /api/mcp-gateway/enable — error branches ───────────────────────
+
+
+class TestSharingToggleFreezesTheLegacyAlias:
+    """The sharing toggle must not change WHICH servers are stubbed.
+
+    ``_resolve_stub_servers`` is conditional on ``enabled``, so on a config still
+    riding the deprecated ``poolable_servers`` the resolved set moves when
+    ``enabled`` moves. Writing only ``enabled`` would let the global sharing
+    switch silently rewrite the per-server stub set in both directions.
+    """
+
+    @pytest.mark.asyncio
+    async def test_enabling_sharing_does_not_stub_the_alias_entries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ON from ``enabled:false`` must keep the EMPTY set the page showed.
+
+        The page truthfully reports "0 stubbed" for this config, because a
+        gateway that was off ran no stub. One click on *sharing* must not stub
+        every alias entry and share it — that is the unrequested topology change
+        this design exists to make opt-in.
+        """
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"enabled": False, "poolable_servers": ["x-mcp"]}}),
+            encoding="utf-8",
+        )
+        state = SimpleNamespace(
+            _mcp_gateway_apply=AsyncMock(return_value={"running": True, "ping_ok": True})
+        )
+        resp = await mcp_mod.api_mcp_gateway_enable(_request({"enabled": True}, state=state))
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))["mcp_gateway"]
+        assert saved["enabled"] is True
+        assert saved["stub_servers"] == []
+
+    @pytest.mark.asyncio
+    async def test_disabling_sharing_keeps_the_servers_stubbed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OFF from ``enabled:true`` must leave the stub set intact.
+
+        Otherwise the alias stops firing, the set empties, and "stubbed but
+        private" — the whole middle state this PR adds — becomes unreachable for
+        exactly the migrated operator. Turning sharing off narrows sharing only.
+        """
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"enabled": True, "poolable_servers": ["x-mcp"]}}),
+            encoding="utf-8",
+        )
+        state = SimpleNamespace(
+            _mcp_gateway_apply=AsyncMock(return_value={"running": True, "ping_ok": True})
+        )
+        resp = await mcp_mod.api_mcp_gateway_enable(_request({"enabled": False}, state=state))
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))["mcp_gateway"]
+        assert saved["enabled"] is False
+        assert saved["stub_servers"] == ["x-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_empty_set_is_never_repopulated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Key presence, not truthiness: an operator who cleared ``stub_servers``
+        chose to stub nothing, and a stale ``poolable_servers`` must not revive
+        the servers they just cleared."""
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "mcp_gateway": {
+                        "enabled": True,
+                        "stub_servers": [],
+                        "poolable_servers": ["x-mcp"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = SimpleNamespace(
+            _mcp_gateway_apply=AsyncMock(return_value={"running": True, "ping_ok": True})
+        )
+        resp = await mcp_mod.api_mcp_gateway_enable(_request({"enabled": False}, state=state))
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))["mcp_gateway"]
+        assert saved["stub_servers"] == []
+
+
+class TestFreezeStubServersOrdering:
+    def test_freeze_resolves_against_the_pre_write_enabled_value(self) -> None:
+        """Ordering guard: the helper must run BEFORE ``enabled`` is reassigned.
+
+        Freezing afterwards would resolve against the NEW value — the exact
+        inversion the two toggle-direction tests above exist to prevent — so this
+        pins the helper's own contract independently of its call sites.
+        """
+        section = {"enabled": True, "poolable_servers": ["x-mcp"]}
+        mcp_mod._freeze_stub_servers(section)
+        assert section["stub_servers"] == ["x-mcp"]
+
+        # After the freeze, `enabled` does not speak for the stub set at all.
+        section["enabled"] = False
+        mcp_mod._freeze_stub_servers(section)
+        assert section["stub_servers"] == ["x-mcp"]
+
+    def test_freeze_is_idempotent_and_sorted(self) -> None:
+        section: dict = {"enabled": True, "poolable_servers": ["b-mcp", "a-mcp", "b-mcp"]}
+        mcp_mod._freeze_stub_servers(section)
+        first = section["stub_servers"]
+        assert first == ["a-mcp", "b-mcp"]
+        mcp_mod._freeze_stub_servers(section)
+        assert section["stub_servers"] == first
+
+
+class TestLocalOverlayOwnsTheStubKeys:
+    """``config.local.json`` is deep-merged OVER ``config.json`` and is
+    user-owned, so the base file is NOT the effective config.
+
+    A read-modify-write that resolves from the base section alone gets the stub
+    set wrong, and a base write is inert for any key the overlay defines. Both
+    directions silently contradict what the operator sees.
+    """
+
+    @pytest.mark.asyncio
+    async def test_toggling_sharing_keeps_an_overlay_owned_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Legacy allowlist lives in the OVERLAY; the toggle's own key does not.
+
+        Effective set before the click is ``[x-mcp]`` (resolver falls back to
+        ``poolable_servers``). Freezing from the base section alone would write
+        ``stub_servers: []``, and because key PRESENCE wins in the resolver that
+        empty base value then beats the overlay's allowlist — silently unstubbing
+        a server the operator never touched.
+
+        ``enabled`` deliberately lives in the BASE here: that is the key this
+        endpoint writes, so the write can actually land. (An overlay that owns
+        ``enabled`` is the refusal case covered by the next test.)
+        """
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        base = config_path()
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(json.dumps({"mcp_gateway": {"enabled": True}}), encoding="utf-8")
+        config_local_path().write_text(
+            json.dumps({"mcp_gateway": {"poolable_servers": ["x-mcp"]}}),
+            encoding="utf-8",
+        )
+
+        state = SimpleNamespace(
+            _mcp_gateway_apply=AsyncMock(return_value={"running": True, "ping_ok": True})
+        )
+        resp = await mcp_mod.api_mcp_gateway_enable(_request({"enabled": False}, state=state))
+        assert resp.status == 200
+
+        saved = json.loads(base.read_text(encoding="utf-8"))["mcp_gateway"]
+        assert saved.get("stub_servers") == ["x-mcp"], (
+            "the overlay's allowlist was discarded: freezing must resolve from the "
+            "MERGED effective section, not from config.json alone"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_write_the_overlay_would_shadow_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the overlay itself defines the key we are about to write, a base
+        write cannot take effect — the overlay wins the deep merge. Reporting
+        success would be the same lie as a 200 with ``applied: false``."""
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        base = config_path()
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(json.dumps({"mcp_gateway": {"enabled": False}}), encoding="utf-8")
+        config_local_path().write_text(
+            json.dumps({"mcp_gateway": {"enabled": False}}), encoding="utf-8"
+        )
+
+        state = SimpleNamespace(_mcp_gateway_apply=AsyncMock())
+        resp = await mcp_mod.api_mcp_gateway_enable(_request({"enabled": True}, state=state))
+        assert resp.status == 409, "an inert write must be refused, not reported as applied"
+        assert "config.local.json" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_the_per_server_setter_also_freezes_from_the_merged_view(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same invariant on the other writer: stubbing one server must not drop
+        an allowlist that lives in the overlay."""
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        base = config_path()
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(json.dumps({"mcp_gateway": {"enabled": True}}), encoding="utf-8")
+        config_local_path().write_text(
+            json.dumps({"mcp_gateway": {"poolable_servers": ["x-mcp"]}}), encoding="utf-8"
+        )
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "y-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+        saved = json.loads(base.read_text(encoding="utf-8"))["mcp_gateway"]
+        assert _effective_stubs(saved) == ["x-mcp", "y-mcp"]
+        # The overlay's migrated roster is frozen into the base, and the click is a
+        # decision on top of it -- the allowlist is preserved either way, which is
+        # what this test is about.
+        assert saved["stub_servers"] == ["x-mcp"]
+        assert saved["stub_overrides"] == {"y-mcp": True}
+
+    @pytest.mark.asyncio
+    async def test_the_per_server_setter_refuses_a_shadowed_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Overlay owns ``stub_servers`` -> the row toggle cannot land either."""
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        base = config_path()
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(json.dumps({"mcp_gateway": {}}), encoding="utf-8")
+        config_local_path().write_text(
+            json.dumps({"mcp_gateway": {"stub_servers": ["x-mcp"]}}), encoding="utf-8"
+        )
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "y-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "overlay_owns_stub_servers"
+
+    @pytest.mark.asyncio
+    async def test_an_overlay_owning_the_override_map_also_refuses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard must cover the key the toggle actually writes.
+
+        The decision lands in ``stub_overrides``, and the overlay wins the deep
+        merge per-key. Checking only ``stub_servers`` would let the click write base
+        ``config.json`` and answer 200 while the overlay kept the server on its own
+        value -- the silent never-takes-effect failure the guard exists to prevent,
+        reintroduced by relocating the write.
+        """
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        base = config_path()
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(
+            json.dumps({"mcp_gateway": {"stub_servers": ["a-mcp"]}}), encoding="utf-8"
+        )
+        config_local_path().write_text(
+            json.dumps({"mcp_gateway": {"stub_overrides": {"a-mcp": False}}}),
+            encoding="utf-8",
+        )
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 409, (
+            "the toggle wrote a value the gateway would not read -- the overlay "
+            "shadows stub_overrides, so this had to be refused"
+        )
+        body = _payload(resp)
+        assert body["code"] == "overlay_owns_stub_servers"
+        assert "stub_overrides" in body["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_corrupt_overlay_is_treated_as_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loader logs and ignores an unparseable overlay, so this path must
+        agree with it. Letting the error escape would turn a broken user file into
+        a 500 on a settings click."""
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        base = config_path()
+        base.parent.mkdir(parents=True, exist_ok=True)
+        base.write_text(
+            json.dumps({"mcp_gateway": {"enabled": True, "poolable_servers": ["x-mcp"]}}),
+            encoding="utf-8",
+        )
+        config_local_path().write_text("{ not json", encoding="utf-8")
+
+        state = SimpleNamespace(
+            _mcp_gateway_apply=AsyncMock(return_value={"running": True, "ping_ok": True})
+        )
+        resp = await mcp_mod.api_mcp_gateway_enable(_request({"enabled": False}, state=state))
+        assert resp.status == 200
+        saved = json.loads(base.read_text(encoding="utf-8"))["mcp_gateway"]
+        # Base's own legacy allowlist still migrates; the corrupt overlay is ignored.
+        assert saved["stub_servers"] == ["x-mcp"]
+
+
+class TestGatewayEnableErrors:
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_enable(
+            _request(ValueError("boom"), state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert _payload(resp)["error"] == "invalid JSON"
+
+    @pytest.mark.asyncio
+    async def test_corrupt_config_json_is_500(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ nope", encoding="utf-8")
+        apply_cb = AsyncMock()
+        state = SimpleNamespace(_mcp_gateway_apply=apply_cb)
+        resp = await mcp_mod.api_mcp_gateway_enable(
+            _request({"enabled": True}, state=state)
+        )
+        assert resp.status == 500
+        assert "corrupt" in _payload(resp)["error"]
+        apply_cb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_object_section_is_500(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcp_gateway": "on"}), encoding="utf-8")
+        state = SimpleNamespace(_mcp_gateway_apply=AsyncMock())
+        resp = await mcp_mod.api_mcp_gateway_enable(
+            _request({"enabled": True}, state=state)
+        )
+        assert resp.status == 500
+        assert "not an object" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_apply_failure_is_500_and_audited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sel = MagicMock()
+        monkeypatch.setattr(mcp_mod, "sel", lambda: sel)
+        monkeypatch.setattr(mcp_mod, "is_gateway_supported", lambda: True)
+        state = SimpleNamespace(
+            _mcp_gateway_apply=AsyncMock(side_effect=RuntimeError("broker died"))
+        )
+        resp = await mcp_mod.api_mcp_gateway_enable(
+            _request({"enabled": True}, state=state)
+        )
+        assert resp.status == 500
+        # The raw exception text stays server-side (in the SEL log below); the
+        # verbatim-rendered client body gets a generic message + machine code.
+        body = _payload(resp)
+        assert "broker died" not in body["error"]
+        assert body["error"] == "apply failed"
+        assert body["code"] == "mcp_apply_failed"
+        outcomes = [c.kwargs.get("outcome") for c in sel.log_api_access.call_args_list]
+        assert "error" in outcomes
+
+
+# ── GET /api/mcp-gateway/servers ────────────────────────────────────────
+
+
+@pytest.fixture
+def routed_allowlist(monkeypatch: pytest.MonkeyPatch):
+    """Pin ``KiroCrewConfig.load().mcp_gateway.stub_servers``."""
+    import kiro_crew.config.loader as loader
+
+    def _set(names: list[str], *, enabled: bool = False, forward_declared_env: bool = False) -> None:
+        # ``socket_path`` is part of the real ``McpGatewayConfig`` and the
+        # handler reads it to locate the observed-hazard ledger. A double that
+        # omitted it would make the row builder raise on a field production
+        # always has — empty is the honest stand-in for "no broker configured".
+        #
+        # ``enabled`` + ``forward_declared_env`` are read for the same reason:
+        # together they decide whether stubbing a server could produce a SHARED
+        # backend at all, which the row reports as ``pooling_blocked_by_env``.
+        # Defaults match a fresh install (sharing off, no forwarding), so the
+        # existing cases keep describing the state they were written for.
+        cfg = SimpleNamespace(
+            mcp_gateway=SimpleNamespace(
+                stub_servers=list(names),
+                socket_path="",
+                enabled=enabled,
+                forward_declared_env=forward_declared_env,
+            )
+        )
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", staticmethod(lambda: cfg))
+
+    return _set
+
+
+def _seed_probe(monkeypatch, *names: str) -> None:
+    """Make ``probe_metadata`` report a probed server that declares caller identity.
+
+    Without this the verdict stops at "never probed" for every row, and a test of
+    the preflight gate would pass whether or not the gate works.
+    """
+    meta = SimpleNamespace(
+        status="ok",
+        capabilities={"experimental": {"kirocrew.caller-identity": {}}},
+        protocol_version="2024-11-05",
+        tool_annotations=[],
+        tools=[SimpleNamespace(name="t")],
+    )
+    monkeypatch.setattr(mcp_mod, "probe_metadata", lambda n: meta if n in names else None)
+
+
+class TestGatewayServers:
+    @pytest.mark.asyncio
+    async def test_the_write_resolves_eligibility_against_the_state_it_writes_under(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The sharing state the rule reads is the one the write itself sees.
+
+        A client filtering its own rows can only answer for the moment it read
+        them, and sharing is a separate switch another dashboard or the CLI can
+        flip. So the client sends candidates and the decision happens here, inside
+        the lock hold that performs the write: a server whose evidence supports a
+        stub but not co-tenancy is written while sharing is off and skipped once it
+        is on, with no guard, expectation or retry in between.
+        """
+        import kiro_crew.config.loader as loader
+
+        cfg_path = tmp_path / "config.json"
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "a.json").write_text(
+            json.dumps({"name": "alpha", "mcpServers": {"a-mcp": {"command": "run"}}}),
+            encoding="utf-8",
+        )
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+        # Patch the LOADER's name: the handler re-imports ``config_path`` from
+        # ``kiro_crew.config.loader`` inside the function body, so patching this
+        # module's copy is silently ignored.
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        # Supports a stub, does not support co-tenancy -- the case where the two
+        # sharing states must disagree.
+        from kiro_crew.mcp_gateway.shareability import ShareVerdict, Strength
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "_assess_server",
+            lambda name, **kw: ShareVerdict(
+                name=name,
+                strength=Strength.MEASURED,
+                recommend_stub=True,
+                recommend_share=False,
+                reasons=(),
+            ),
+        )
+
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": False, "stub_servers": []}}))
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True, "resolve_eligibility": True})
+        )
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body["stubbed"] == ["a-mcp"]
+        assert body["skipped"] == []
+        saved = json.loads(cfg_path.read_text())["mcp_gateway"]
+        assert _effective_stubs(saved) == ["a-mcp"]
+        # Recorded as a decision over the roster, which the write leaves alone.
+        assert saved["stub_servers"] == []
+        assert saved["stub_overrides"] == {"a-mcp": True}
+
+        # Same request, same verdict, sharing now ON: the write must decline it and
+        # say which name it declined, rather than co-tenanting on the weaker flag.
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": True, "stub_servers": []}}))
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True, "resolve_eligibility": True})
+        )
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body["stubbed"] == []
+        assert body["skipped"] == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
+        # Nothing qualified means the file is not rewritten at all.
+        assert json.loads(cfg_path.read_text())["mcp_gateway"]["stub_servers"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_overlay_decides_forward_declared_env_for_the_batch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``config.local.json`` wins, because the rewriter reads the merged value.
+
+        Whether a declared key is forwarded decides whether a pooled spawn happens
+        at all, so reading the base value while the rewriter reads the overlay would
+        let the batch report a stub whose backend is left direct. The sharing switch
+        beside it is already read this way.
+        """
+        import kiro_crew.config.loader as loader
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "mcp_gateway": {
+                        "enabled": True,
+                        "stub_servers": [],
+                        "forward_declared_env": True,
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(
+            mcp_mod, "_local_overlay_section", lambda: {"forward_declared_env": False}
+        )
+
+        seen: dict[str, bool] = {}
+
+        def _record(names, *, sharing_on, forward_declared_env, probe_current=None):  # type: ignore[no-untyped-def]
+            seen["forward"] = forward_declared_env
+            return list(names), []
+
+        monkeypatch.setattr(mcp_mod, "_stub_eligibility", _record)
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True, "resolve_eligibility": True})
+        )
+        assert resp.status == 200
+        assert seen["forward"] is False, (
+            "the batch must use the effective value the rewriter sees, not the base"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unstubbing_never_asks_the_evidence_for_permission(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Removing a stub needs no verdict.
+
+        Eligibility gates ADDING co-tenancy. Applying it to a removal would strand
+        an operator with a stub they explicitly asked to drop, on the grounds that
+        the evidence for keeping it had weakened.
+        """
+        import kiro_crew.config.loader as loader
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(
+            json.dumps({"mcp_gateway": {"enabled": True, "stub_servers": ["a-mcp"]}})
+        )
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"names": ["a-mcp"], "stub": False, "resolve_eligibility": True})
+        )
+        assert resp.status == 200
+        assert _effective_stubs(json.loads(cfg_path.read_text())["mcp_gateway"]) == []
+
+    @pytest.mark.asyncio
+    async def test_a_single_toggle_writes_exactly_the_name_it_was_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Absent ``resolve_eligibility`` means "write exactly what I named".
+
+        The per-row switch is a direct instruction about one server the operator is
+        looking at, so it needs no verdict lookup; and an older dashboard served
+        from a previous build sends no such field. Neither may be filtered.
+        """
+        import kiro_crew.config.loader as loader
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": True, "stub_servers": []}}))
+        # Patch the LOADER's name: the handler re-imports ``config_path`` from
+        # ``kiro_crew.config.loader`` inside the function body, so patching this
+        # module's copy is silently ignored.
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(
+            loader.KiroCrewConfig,
+            "load",
+            staticmethod(
+                lambda: SimpleNamespace(
+                    mcp_gateway=SimpleNamespace(
+                        enabled=True, stub_servers=[], socket_path="", forward_declared_env=False
+                    )
+                )
+            ),
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True})
+        )
+        assert resp.status == 200
+        assert _effective_stubs(json.loads(cfg_path.read_text())["mcp_gateway"]) == ["a-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_the_stub_write_goes_through_the_locked_config_primitive(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The stub write is only sound inside a CROSS-PROCESS lock.
+
+        ``_MCP_GATEWAY_APPLY_LOCK`` and ``_get_config_lock`` are asyncio locks:
+        they serialize this gateway's own handlers and say nothing about another
+        process. The CLI writes ``mcp_gateway.enabled`` through the same file, so
+        reading the sharing state outside the lock would let it change before the
+        write -- and stub-only servers land in a pool that is now shared. The
+        eligibility rule reads that state INSIDE this hold, which is what makes the
+        decision and the write see one config.
+
+        ``update_config_locked`` holds an advisory ``flock`` for the whole
+        read-modify-write, and its own docstring names it the required path for new
+        config.json mutations. This asserts the batch actually uses it rather than
+        re-implementing the read-then-write it replaced; a regression to
+        ``write_config_atomically`` would reopen the window silently, since every
+        behavioural test still passes with the lock removed.
+        """
+        import kiro_crew.config.loader as loader
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": True, "stub_servers": []}}))
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+
+        seen: list[str] = []
+        real = loader.update_config_locked
+
+        def _recording_update(path=None, **kwargs):  # type: ignore[no-untyped-def]
+            seen.append("locked")
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(loader, "update_config_locked", _recording_update)
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True, "resolve_eligibility": False})
+        )
+        assert resp.status == 200
+        # Empty means the handler wrote config.json some other way, which is the
+        # regression: a direct ``write_config_atomically`` passes every behavioural
+        # test in this file while reopening the cross-process window.
+        assert seen == ["locked"]
+        assert _effective_stubs(json.loads(cfg_path.read_text())["mcp_gateway"]) == ["a-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_request_still_waits_for_the_write_to_finish(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cancellation must not unwind the locks while the worker is mid-write.
+
+        A worker thread cannot be cancelled. With a bare ``asyncio.to_thread`` the
+        ``CancelledError`` propagates immediately, both locks unwind, and the thread
+        keeps mutating config.json -- so an agent-CRUD save can interleave with a
+        write the caller already gave up on, which is exactly the interleaving those
+        locks exist to prevent.
+
+        The property asserted is ORDERING, not merely that the file was written:
+        the write lands either way, since nothing stops the thread. What
+        distinguishes the two is whether the write had FINISHED by the time
+        cancellation was observable.
+        """
+        import kiro_crew.config.loader as loader
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": True, "stub_servers": []}}))
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+
+        entered = threading.Event()
+        finished = threading.Event()
+        real = loader.update_config_locked
+
+        def _slow_update(path=None, **kwargs):  # type: ignore[no-untyped-def]
+            entered.set()
+            # Long enough that the cancellation below lands while this is running.
+            time.sleep(0.4)
+            try:
+                return real(path, **kwargs)
+            finally:
+                finished.set()
+
+        monkeypatch.setattr(loader, "update_config_locked", _slow_update)
+
+        task = asyncio.create_task(
+            mcp_mod.api_mcp_gateway_set_stub(_request({"name": "a-mcp", "stub": True}))
+        )
+        await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert finished.is_set(), (
+            "cancellation was observable before the offloaded write completed, so "
+            "both locks were released while the worker was still writing"
+        )
+        assert _effective_stubs(json.loads(cfg_path.read_text())["mcp_gateway"]) == ["a-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_the_stub_write_also_holds_the_lock_agent_crud_writes_under(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The file lock excludes other PROCESSES; it does not exclude this one.
+
+        Agent CRUD saves config through ``cfg.save()`` ->
+        ``write_config_atomically``, which takes no advisory file lock and
+        serializes only on ``_get_config_lock``. So the two guards cover disjoint
+        sets of writers: holding only the file lock leaves an in-process agent
+        save free to interleave with this read-modify-write and silently drop one
+        of the two changes.
+
+        The offload is what makes this reachable -- ``await asyncio.to_thread``
+        yields the event loop mid-write. Asserting the lock is HELD while the
+        offloaded write runs is what a behavioural test cannot see: removing
+        ``_get_config_lock`` leaves every stub assertion in this file passing.
+        """
+        import kiro_crew.config.loader as loader
+        from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": True, "stub_servers": []}}))
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+
+        held_during_write: list[bool] = []
+        real = loader.update_config_locked
+        # ``_get_config_lock`` calls ``asyncio.get_running_loop()``, so it can only
+        # be resolved here on the event loop -- the recorder below runs on a
+        # ``to_thread`` worker. ``Lock.locked()`` needs no loop, so capture the
+        # object now and only read its state from the thread.
+        lock = _get_config_lock()
+
+        def _checking_update(path=None, **kwargs):  # type: ignore[no-untyped-def]
+            held_during_write.append(lock.locked())
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(loader, "update_config_locked", _checking_update)
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True, "resolve_eligibility": False})
+        )
+        assert resp.status == 200
+        assert held_during_write == [True], (
+            "the config lock agent CRUD writes under must be held across the "
+            "offloaded write, not merely taken somewhere in the handler"
+        )
+
+    @pytest.mark.asyncio
+    async def test_declared_env_blocks_pooling_only_while_sharing_is_on(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        """The row has to say when stubbing could not produce a SHARED backend.
+
+        The rewriter leaves an env-declaring entry unwrapped rather than spawn a
+        pooled backend without a declared key, so a bulk action that stubbed it
+        would report work the broker then silently skips. With sharing OFF there
+        is no pooled spawn to withhold anything, so the same server is not
+        blocked — the flag describes the pooled path, not the server.
+        """
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {
+                        "declares-env": {"command": "run", "env": {"HOME_DIR": "/x"}},
+                        "no-env": {"command": "run"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        routed_allowlist([], enabled=True)
+        rows = {r["name"]: r for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]}
+        assert rows["declares-env"]["pooling_blocked_by_env"] is True
+        assert rows["no-env"]["pooling_blocked_by_env"] is False
+
+        # Same config, sharing off: nothing is pooled, so nothing is withheld.
+        routed_allowlist([], enabled=False)
+        rows = {r["name"]: r for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]}
+        assert rows["declares-env"]["pooling_blocked_by_env"] is False
+
+        # Forwarding on: only the rotating-secret and credential classes are
+        # withheld, so an ordinary declared key stops blocking.
+        routed_allowlist([], enabled=True, forward_declared_env=True)
+        rows = {r["name"]: r for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]}
+        assert rows["declares-env"]["pooling_blocked_by_env"] is False
+
+    @pytest.mark.asyncio
+    async def test_missing_agents_dir_yields_no_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, routed_allowlist
+    ) -> None:
+        import kiro_crew.agent as agent_mod
+
+        routed_allowlist([])
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", tmp_path / "absent")
+        resp = await mcp_mod.api_mcp_gateway_servers(_request())
+        assert resp.status == 200
+        assert _payload(resp) == {"servers": []}
+
+    @pytest.mark.asyncio
+    async def test_dedupes_across_agents_and_computes_effective_stub_state(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        routed_allowlist(["allowed-mcp"])
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {
+                        "allowed-mcp": {"command": "run"},
+                        "opted-in": {"command": "run", "poolable": True},
+                        "plain": {"command": "run"},
+                        "remote": {"url": "https://example.invalid/sse"},
+                        "junk": "not-a-mapping",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agents_dir / "b.json").write_text(
+            json.dumps({"name": "beta", "mcpServers": {"allowed-mcp": {"command": "run"}}}),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_servers(_request())
+        rows = {r["name"]: r for r in _payload(resp)["servers"]}
+
+        assert "junk" not in rows  # non-mapping entries are ignored
+        assert rows["allowed-mcp"]["agents"] == ["alpha", "beta"]  # deduped + sorted
+        assert rows["allowed-mcp"]["stub"] is True
+        assert rows["allowed-mcp"]["in_allowlist"] is True
+        # A spec-level opt-in is NOT sufficient any more, and the row must say so:
+        # only ``stub_servers`` produces a stub, so reporting one here would claim
+        # a stub the broker never created. ``entry_poolable`` is still surfaced as
+        # information about the spec.
+        assert rows["opted-in"]["stub"] is False
+        assert rows["opted-in"]["in_allowlist"] is False
+        assert rows["opted-in"]["entry_poolable"] is True
+        # Neither allowlisted nor opted in.
+        assert rows["plain"]["stub"] is False
+        # HTTP/SSE transports are shared by nature, never pooled.
+        assert rows["remote"]["transport"] == "http"
+        assert rows["remote"]["stub"] is False
+        assert list(rows) == sorted(rows)  # response is name-sorted
+
+    @pytest.mark.asyncio
+    async def test_denylisted_server_can_never_be_pooled(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, routed_allowlist
+    ) -> None:
+        from kiro_crew.mcp_gateway import rewriter
+
+        monkeypatch.setattr(rewriter, "UNPOOLABLE_SERVERS", frozenset({"never-mcp"}))
+        routed_allowlist(["never-mcp"])
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {"never-mcp": {"command": "run", "stub": True}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        rows = {
+            r["name"]: r for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows["never-mcp"]["denylisted"] is True
+        assert rows["never-mcp"]["stub"] is False
+
+    @pytest.mark.asyncio
+    async def test_two_agents_disagreeing_on_the_command_withhold_the_measurement(
+        self, agents_dir: Path, routed_allowlist, monkeypatch
+    ) -> None:
+        """A merged row must not inherit a measurement of one of its definitions.
+
+        Discovery merges by NAME before probing, so only the definition that wins
+        the merge is ever measured. If two agents disagree about the command, the
+        row covers something nobody ran — and reporting the measured one's verdict
+        would tell the operator it is safe to share a backend that was never
+        started.
+        """
+        routed_allowlist([])
+        (agents_dir / "alpha.json").write_text(
+            json.dumps({"name": "alpha", "mcpServers": {"two-faced": {"command": "/bin/a"}}}),
+            encoding="utf-8",
+        )
+        (agents_dir / "beta.json").write_text(
+            json.dumps({"name": "beta", "mcpServers": {"two-faced": {"command": "/bin/b"}}}),
+            encoding="utf-8",
+        )
+        # A clean, sharing-granting measurement exists under that name. The probe
+        # metadata declares caller-identity so that consuming the measurement
+        # WOULD grant sharing — without that, both branches look the same and the
+        # test would pass whether or not the gate works.
+        _seed_probe(monkeypatch, "two-faced")
+        monkeypatch.setattr(
+            mcp_mod, "_load_shareability_state", lambda: ({}, {"two-faced": (True, False)})
+        )
+
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+
+        rec = rows["two-faced"]["recommendation"]
+        assert sorted(rows["two-faced"]["agents"]) == ["alpha", "beta"]
+        assert rec["recommendShare"] is False, rec
+        assert "preflight_not_run" in [r["code"] for r in rec["reasons"]], rec
+
+    @pytest.mark.asyncio
+    async def test_one_definition_in_two_agents_still_gets_its_measurement(
+        self, agents_dir: Path, routed_allowlist, monkeypatch
+    ) -> None:
+        """The ordinary case must keep working: same server, several agents.
+
+        Withholding on agent count instead of distinct launches would silently
+        drop the recommendation for most real configurations.
+        """
+        routed_allowlist([])
+        spec = {"mcpServers": {"shared-mcp": {"command": "/bin/a", "args": ["--x"]}}}
+        (agents_dir / "alpha.json").write_text(
+            json.dumps({"name": "alpha", **spec}), encoding="utf-8"
+        )
+        (agents_dir / "beta.json").write_text(
+            json.dumps({"name": "beta", **spec}), encoding="utf-8"
+        )
+        _seed_probe(monkeypatch, "shared-mcp")
+        monkeypatch.setattr(
+            mcp_mod, "_load_shareability_state", lambda: ({}, {"shared-mcp": (True, False)})
+        )
+
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+
+        rec = rows["shared-mcp"]["recommendation"]
+        assert rec["recommendShare"] is True, rec
+        assert "preflight_passed" in [r["code"] for r in rec["reasons"]], rec
+
+    @pytest.mark.asyncio
+    async def test_unreadable_and_non_object_agent_files_are_skipped(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        routed_allowlist([])
+        (agents_dir / "broken.json").write_text("{oops", encoding="utf-8")
+        (agents_dir / "list.json").write_text("[1, 2]", encoding="utf-8")
+        (agents_dir / "nomcp.json").write_text(
+            json.dumps({"name": "x", "mcpServers": "wrong-type"}), encoding="utf-8"
+        )
+        (agents_dir / "ok.json").write_text(
+            json.dumps({"mcpServers": {"good": {"command": "run"}}}), encoding="utf-8"
+        )
+        rows = _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        assert [r["name"] for r in rows] == ["good"]
+        # No "name" key in ok.json → the file stem is used as the agent label.
+        assert rows[0]["agents"] == ["ok"]
+
+
+# ── POST /api/mcp-gateway/servers/stub ──────────────────────────────
+
+
+class TestGatewaySetStub:
+    @pytest.mark.asyncio
+    async def test_invalid_json_is_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(ValueError("boom"), state=SimpleNamespace())
+        )
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            ({"stub": True}, "name is required"),
+            ({"name": "../evil", "stub": True}, "invalid server name"),
+            ({"name": "ok-mcp", "stub": "yes"}, "stub must be a boolean"),
+            ({"name": "ok-mcp"}, "stub must be a boolean"),
+        ],
+    )
+    async def test_validation_matrix_is_400(
+        self, monkeypatch: pytest.MonkeyPatch, body: dict, expected: str
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(body, state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert expected in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_corrupt_config_json_is_500(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{ nope", encoding="utf-8")
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "ok-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 500
+        assert "corrupt" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_non_object_section_is_500(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcp_gateway": []}), encoding="utf-8")
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "ok-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 500
+        assert "not an object" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_persists_allowlist_without_an_apply_callback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With the gateway unwired the allowlist is persisted AND reported pending.
+
+        The write happens before the callback is ever reached, so an unwired
+        gateway means the change was recorded -- the same state the callback
+        reports. Answering ``applied: false`` alone would drop the client onto its
+        fault branch and blame the gateway for a change that is safely saved.
+        """
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "ok-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body == {
+            "ok": True,
+            "name": "ok-mcp",
+            "stub": True,
+            "applied": False,
+            "restart_required": True,
+        }
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert _effective_stubs(saved["mcp_gateway"]) == ["ok-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_an_unwired_batch_that_wrote_nothing_claims_no_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The unwired answer must stay tied to something having been WRITTEN.
+
+        A server-resolved batch where no candidate qualified persists nothing, so
+        there is no pending change and nothing for a restart to pick up. Claiming
+        ``restart_required`` here would send the operator to restart the gateway
+        for a write that never happened.
+        """
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        monkeypatch.setattr(
+            mcp_mod,
+            "_collect_server_rows",
+            lambda *a, **k: {},
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(
+                {"name": "nope-mcp", "stub": True, "resolve_eligibility": True},
+                state=SimpleNamespace(),
+            )
+        )
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body.get("applied") is False
+        assert "restart_required" not in body
+        assert body.get("stubbed") == []
+
+    @pytest.mark.asyncio
+    async def test_the_first_toggle_keeps_the_migrated_legacy_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A legacy config's effective set survives the first write.
+
+        The runtime resolves the stub set through the deprecated
+        ``poolable_servers`` when ``stub_servers`` is absent. Seeding this
+        read-modify-write from the raw key instead would start from nothing, so
+        enabling one server would persist only that server and silently unstub
+        everything the migration was preserving.
+        """
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"enabled": True, "poolable_servers": ["x-mcp"]}}),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "y-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert _effective_stubs(saved["mcp_gateway"]) == ["x-mcp", "y-mcp"]
+        # The migrated set is frozen into the roster, not merged with the click.
+        assert saved["mcp_gateway"]["stub_servers"] == ["x-mcp"]
+        assert saved["mcp_gateway"]["stub_overrides"] == {"y-mcp": True}
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_legacy_config_is_not_seeded_by_the_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same guard the resolver applies: a gateway that was off ran no
+        stub, so its inert allowlist must not be revived by a toggle either."""
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"enabled": False, "poolable_servers": ["x-mcp"]}}),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "y-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert _effective_stubs(saved["mcp_gateway"]) == ["y-mcp"]
+        # The inert allowlist stays unrevived: the roster froze empty.
+        assert saved["mcp_gateway"]["stub_servers"] == []
+
+    @pytest.mark.asyncio
+    async def test_removal_dedupes_and_drops_non_string_entries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"mcp_gateway": {"stub_servers": ["b-mcp", "a-mcp", "a-mcp", 7]}}
+            ),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": False}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert _effective_stubs(saved["mcp_gateway"]) == ["b-mcp"]
+        # The write still normalizes the roster's FORM -- the duplicate and the
+        # non-string are gone -- while leaving its membership to the roster's owner.
+        # A surviving duplicate would make the dashboard's stub_count overcount.
+        assert saved["mcp_gateway"]["stub_servers"] == ["a-mcp", "b-mcp"]
+        assert saved["mcp_gateway"]["stub_overrides"] == {"a-mcp": False}
+
+    @pytest.mark.asyncio
+    async def test_toggling_back_to_agree_with_the_roster_drops_the_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-following the roster, not freezing its current value.
+
+        An override that agrees with the roster is identical in effect today and
+        differs tomorrow: stored, it would pin that server against the next roster
+        change. So an operator who toggles a server back to what the roster says is
+        asking to follow the roster again, and the entry must go.
+        """
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"stub_servers": ["a-mcp"]}}), encoding="utf-8"
+        )
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": False}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))["mcp_gateway"]
+        assert saved["stub_overrides"] == {"a-mcp": False}
+        assert _effective_stubs(saved) == []
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))["mcp_gateway"]
+        assert "stub_overrides" not in saved, (
+            "the override survived a toggle back to the roster's own answer, so "
+            "this server is now pinned against any later roster change"
+        )
+        assert _effective_stubs(saved) == ["a-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_a_deviation_does_not_shadow_a_later_roster_addition(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end through the handler: the reason the two layers are separate.
+
+        The operator turns one shipped server off; the edition then ships another.
+        The new server must arrive, and the one they turned off must stay off.
+        """
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"stub_servers": ["a-mcp", "b-mcp"]}}),
+            encoding="utf-8",
+        )
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "b-mcp", "stub": False}, state=SimpleNamespace())
+        )
+        assert resp.status == 200
+
+        # Checked BEFORE the release is simulated: overwriting the roster below
+        # would otherwise hide a handler that had already taken it over, and the
+        # claim being made here is precisely that the click did not.
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["mcp_gateway"]["stub_servers"] == ["a-mcp", "b-mcp"], (
+            "the click rewrote the roster, so the edition no longer owns it"
+        )
+        assert saved["mcp_gateway"]["stub_overrides"] == {"b-mcp": False}
+
+        # The edition's next release grows the roster. Nothing else is touched.
+        saved["mcp_gateway"]["stub_servers"] = ["a-mcp", "b-mcp", "c-mcp"]
+        path.write_text(json.dumps(saved), encoding="utf-8")
+
+        assert _effective_stubs(saved["mcp_gateway"]) == ["a-mcp", "c-mcp"], (
+            "the roster addition did not arrive, or the operator's opt-out was "
+            "overwritten -- the click took ownership of the roster"
+        )
+
+    @pytest.mark.asyncio
+    async def test_apply_result_is_merged_into_the_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        apply_cb = AsyncMock(return_value={"applied": True, "sessions_relinked": 2})
+        state = SimpleNamespace(_mcp_gateway_apply_stub=apply_cb)
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "ok-mcp", "stub": True}, state=state)
+        )
+        assert resp.status == 200
+        assert _payload(resp)["sessions_relinked"] == 2
+        apply_cb.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_apply_failure_is_500_and_audited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        sel = MagicMock()
+        monkeypatch.setattr(mcp_mod, "sel", lambda: sel)
+        state = SimpleNamespace(
+            _mcp_gateway_apply_stub=AsyncMock(side_effect=RuntimeError("relink"))
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "ok-mcp", "stub": True}, state=state)
+        )
+        assert resp.status == 500
+        # Raw exception text stays server-side; client body is generic + coded.
+        body = _payload(resp)
+        assert "relink" not in body["error"]
+        assert body["error"] == "apply failed"
+        assert body["code"] == "mcp_apply_failed"
+        # The config write happens BEFORE apply, so it survives the failure.
+        saved = json.loads(config_path().read_text(encoding="utf-8"))
+        assert _effective_stubs(saved["mcp_gateway"]) == ["ok-mcp"]
+        outcomes = [c.kwargs.get("outcome") for c in sel.log_api_access.call_args_list]
+        assert "error" in outcomes
+
+
+# ── the batch ("toggle all") form of the same endpoint ──────────────────
+
+
+class TestGatewaySetStubBatch:
+    """``{"names": [...]}`` writes the allowlist once for the whole set."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            ({"names": "a-mcp", "stub": True}, "names must be a list of strings"),
+            (
+                {"names": ["a-mcp", 7], "stub": True},
+                "names must be a list of strings",
+            ),
+            ({"names": [], "stub": True}, "names is required"),
+            ({"names": ["  "], "stub": True}, "names is required"),
+            ({"names": ["../evil"], "stub": True}, "invalid server name"),
+            ({"names": ["a-mcp"]}, "stub must be a boolean"),
+        ],
+    )
+    async def test_validation_matrix_is_400(
+        self, monkeypatch: pytest.MonkeyPatch, body: dict, expected: str
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(body, state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert expected in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_oversized_batch_is_400(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        names = [f"srv{i}-mcp" for i in range(mcp_mod._MAX_STUB_BATCH + 1)]
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"names": names, "stub": True}, state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert "at most" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_non_object_body_is_400(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(["a-mcp"], state=SimpleNamespace())
+        )
+        assert resp.status == 400
+        assert "object" in _payload(resp)["error"]
+
+    @pytest.mark.asyncio
+    async def test_adds_every_name_in_one_write(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mcp_gateway": {"stub_servers": ["kept-mcp"]}}),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(
+                {"names": ["b-mcp", "a-mcp", "a-mcp"], "stub": True},
+                state=SimpleNamespace(),
+            )
+        )
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "batch_stub_requires_individual"
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert _effective_stubs(saved["mcp_gateway"]) == ["kept-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_removes_every_name_and_leaves_the_rest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.config.loader import config_path
+
+        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"mcp_gateway": {"stub_servers": ["a-mcp", "b-mcp", "kept-mcp", 7]}}
+            ),
+            encoding="utf-8",
+        )
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request(
+                # A name that is not in the allowlist must not fail the batch.
+                {"names": ["a-mcp", "b-mcp", "absent-mcp"], "stub": False},
+                state=SimpleNamespace(),
+            )
+        )
+        assert resp.status == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert _effective_stubs(saved["mcp_gateway"]) == ["kept-mcp"]
+
+    @pytest.mark.asyncio
+    async def test_re_applies_the_pool_once_for_the_whole_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """N names must not mean N re-links — that is the point of the form."""
+        sel = MagicMock()
+        monkeypatch.setattr(mcp_mod, "sel", lambda: sel)
+        apply_cb = AsyncMock(return_value={"applied": True, "sessions_relinked": 3})
+        state = SimpleNamespace(_mcp_gateway_apply_stub=apply_cb)
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"names": ["a-mcp", "b-mcp"], "stub": True}, state=state)
+        )
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "batch_stub_requires_individual"
+        apply_cb.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_single_name_form_still_answers_with_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`names` absent keeps the pre-existing single-server contract."""
+        sel = MagicMock()
+        monkeypatch.setattr(mcp_mod, "sel", lambda: sel)
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "ok-mcp", "stub": True}, state=SimpleNamespace())
+        )
+        body = _payload(resp)
+        assert body == {
+            "ok": True,
+            "name": "ok-mcp",
+            "stub": True,
+            "applied": False,
+            "restart_required": True,
+        }
+        audited = [c.kwargs.get("resources") for c in sel.log_api_access.call_args_list]
+        assert any("name=ok-mcp" in (r or "") for r in audited)
+
+
+# ── the synchronous cleanup-sweep file lock ─────────────────────────────
+
+
+class TestSyncFileLock:
+    def test_creates_the_lock_sidecar_and_releases_it(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        """The sweep's lock must be re-entrant across sequential acquires."""
+        lock_path = mcp_mod._MCP_LOCK_PATH
+        assert not lock_path.exists()
+        with mcp_mod._get_mcp_lock_sync():
+            assert lock_path.exists()
+        # Released: a second acquire in the same process must not block.
+        with mcp_mod._get_mcp_lock_sync():
+            assert lock_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_async_lock_shares_the_same_sidecar(
+        self, sandbox: SimpleNamespace
+    ) -> None:
+        async with mcp_mod._get_mcp_lock():
+            assert mcp_mod._MCP_LOCK_PATH.exists()
+        with mcp_mod._get_mcp_lock_sync():
+            pass
+
+
+# ── POST /api/mcp-gateway/apps-enable ───────────────────────────────────
+
+# ── GET/POST /api/mcp/measure ───────────────────────────────────────────
+
+
+class TestMeasureProgressPayload:
+    """The measurement readout's wire contract.
+
+    ``done`` and ``measured`` are separate fields because a pass can attempt a
+    server and produce no verdict: a pre-flight that could not run leaves the row
+    unmeasured on purpose. The dashboard advances its progress line on ``done``
+    and builds its closing claim from ``measured``, so collapsing them is what let
+    a pass that measured nothing report that it measured everything it tried.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_status_payload_carries_both_counts(self) -> None:
+        body = _payload(await mcp_mod.api_mcp_measure_progress(_request(method="GET")))
+        assert body["ok"] is True
+        # Named individually: a reader of this test should see that the two counts
+        # are both on the wire, which is the whole change.
+        assert "done" in body, body
+        assert "measured" in body, body
+        assert "total" in body, body
+
+    @pytest.mark.asyncio
+    async def test_starting_a_pass_clears_the_previous_pass_counts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale ``measured`` would render as this pass's result.
+
+        The progress dict outlives the pass that wrote it, and the closing line is
+        built from ``measured``, so a new pass that has not measured anything yet
+        would inherit the previous pass's number and close on it.
+        """
+        # Stand in for a finished earlier pass. Restored by monkeypatch, so this
+        # cannot leak into another test through the module global.
+        monkeypatch.setitem(mcp_mod._measure_progress, "running", False)
+        monkeypatch.setitem(mcp_mod._measure_progress, "done", 7)
+        monkeypatch.setitem(mcp_mod._measure_progress, "measured", 7)
+        monkeypatch.setitem(mcp_mod._measure_progress, "total", 7)
+        monkeypatch.setitem(mcp_mod._measure_progress, "error", "RuntimeError")
+
+        # The pass itself spawns processes; this test is about the reset, so the
+        # background body is replaced rather than run.
+        started = asyncio.Event()
+
+        async def _noop() -> None:
+            started.set()
+
+        monkeypatch.setattr(mcp_mod, "_bg_measure_all", _noop)
+
+        state = _State()
+        body = _payload(
+            await mcp_mod.api_mcp_measure_start(_request(method="POST", state=state))
+        )
+        assert body["ok"] is True and body["running"] is True
+        assert body["measured"] == 0, body
+        assert body["done"] == 0, body
+        assert body["error"] == "", body
+
+        # Let the stubbed task run so it does not outlive the test.
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.gather(*state._background_tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_a_second_start_while_running_is_reported_not_queued(self) -> None:
+        """Refusing is what keeps a second press from doubling the spawn load."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _running():
+            prior = dict(mcp_mod._measure_progress)
+            mcp_mod._measure_progress.update(running=True, done=1, measured=1, total=4)
+            try:
+                yield
+            finally:
+                mcp_mod._measure_progress.clear()
+                mcp_mod._measure_progress.update(prior)
+
+        with _running():
+            body = _payload(
+                await mcp_mod.api_mcp_measure_start(_request(method="POST"))
+            )
+        assert body["ok"] is False and body["running"] is True
+        # The in-flight pass's own numbers, not a reset: the operator pressing a
+        # second time is still watching the first pass.
+        assert (body["measured"], body["done"], body["total"]) == (1, 1, 4), body
+
+    @pytest.mark.asyncio
+    async def test_measure_all_survives_a_disabled_row_with_a_malformed_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One disabled row whose config is malformed must not take the pass down.
+
+        The probe response carries a disabled server as an unprobed placeholder so
+        the table can list it, and Measure All feeds that response straight to the
+        evaluator. A disabled row with a dict for ``command`` made the evaluator
+        raise before its per-server boundary, so the readout closed on
+        ``AttributeError`` with nothing measured. The healthy row is measured and
+        the readout closes clean; the disabled row is never spawned.
+        """
+        import kiro_crew.mcp_discovery as disc
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        monkeypatch.setattr(mcp_mod, "records_dir", lambda _socket: runtime)
+        rows = [
+            McpServerInfo(name="good-mcp", command="/bin/true", status="ok"),
+            McpServerInfo(
+                name="off-mcp", command={"not": "a string"}, disabled=True, status="disabled"
+            ),
+        ]
+
+        async def _probe_all(**_kw):
+            return list(rows)
+
+        monkeypatch.setattr(disc, "probe_all", _probe_all)
+        spawned: list[str] = []
+
+        async def _preflight(server):
+            spawned.append(server.name)
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", _preflight)
+        for key, value in (("running", True), ("done", 0), ("measured", 0), ("error", "")):
+            monkeypatch.setitem(mcp_mod._measure_progress, key, value)
+
+        await mcp_mod._bg_measure_all()
+
+        progress = dict(mcp_mod._measure_progress)
+        assert progress["error"] == "", progress
+        assert (progress["measured"], progress["done"]) == (1, 1), progress
+        assert progress["running"] is False
+        assert spawned == ["good-mcp"]
+
+
+class TestStubEligibility:
+    """The eligibility rule, which lives on the server rather than in the browser.
+
+    A client can only answer for the moment it read the rows: sharing is a separate
+    switch another dashboard or the CLI can flip, and verdicts move as measurements
+    land. Resolving it inside the write's own lock hold is what makes the decision
+    and the write see one state, so these are the tests of the rule itself.
+    """
+
+    @staticmethod
+    def _spec(agents_dir: Path, servers: dict[str, dict]) -> None:
+        (agents_dir / "a.json").write_text(
+            json.dumps({"name": "alpha", "mcpServers": servers}), encoding="utf-8"
+        )
+
+    @staticmethod
+    def _verdict(monkeypatch: pytest.MonkeyPatch, *, stub: bool, share: bool) -> None:
+        """Pin the verdict so these test the RULE, not the engine behind it."""
+        from kiro_crew.mcp_gateway.shareability import ShareVerdict, Strength
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "_assess_server",
+            lambda name, **kw: ShareVerdict(
+                name=name,
+                strength=Strength.NO_OBJECTION,
+                recommend_stub=stub,
+                recommend_share=share,
+                reasons=(),
+            ),
+        )
+
+    def test_the_sharing_state_picks_which_flag_the_rule_reads(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same server, same verdict, two answers.
+
+        With sharing OFF a stub keeps the backend 1:1 with the session, so the
+        weakest useful verdict is enough. With sharing ON the identical write hands
+        that server co-tenants, which is what ``recommend_share`` means.
+        """
+        self._spec(agents_dir, {"a-mcp": {"command": "run"}})
+        self._verdict(monkeypatch, stub=True, share=False)
+
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=False, forward_declared_env=False
+        )
+        assert eligible == ["a-mcp"]
+        assert skipped == []
+
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
+
+    def test_a_server_claiming_isolation_is_allowed_to_co_tenant(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._spec(agents_dir, {"a-mcp": {"command": "run"}})
+        self._verdict(monkeypatch, stub=True, share=True)
+        eligible, _ = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == ["a-mcp"]
+
+    def test_declared_env_a_shared_backend_would_withhold_skips_the_server(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rewriter leaves that entry unwrapped, so stubbing produces no pool.
+
+        Counting it would report work the broker never does. With sharing OFF there
+        is no pooled spawn to withhold anything, so the same server qualifies.
+        """
+        self._spec(agents_dir, {"a-mcp": {"command": "run", "env": {"HOME_DIR": "/x"}}})
+        self._verdict(monkeypatch, stub=True, share=True)
+
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": "a-mcp", "reason": "pooling_blocked_by_env"}]
+
+        eligible, _ = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=False, forward_declared_env=False
+        )
+        assert eligible == ["a-mcp"]
+
+    def test_a_server_with_no_stdio_pipe_is_never_eligible(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._spec(agents_dir, {"http-mcp": {"url": "https://example.test"}})
+        self._verdict(monkeypatch, stub=True, share=True)
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["http-mcp"], sharing_on=False, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": "http-mcp", "reason": "cannot_stub"}]
+
+    def test_a_denylisted_server_is_never_eligible(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``UNPOOLABLE_SERVERS`` is empty today, so the branch is patched in.
+
+        Testing it against the live set would pass by vacuum: an empty denylist
+        makes the assertion unfalsifiable, and the day a name is added is exactly
+        when this needs to already work.
+        """
+        import kiro_crew.mcp_gateway.rewriter as rewriter_mod
+
+        monkeypatch.setattr(rewriter_mod, "UNPOOLABLE_SERVERS", frozenset({"walled-mcp"}))
+        self._spec(agents_dir, {"walled-mcp": {"command": "run"}})
+        self._verdict(monkeypatch, stub=True, share=True)
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["walled-mcp"], sharing_on=False, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": "walled-mcp", "reason": "cannot_stub"}]
+
+    def test_a_measurement_of_a_replaced_command_does_not_count(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cache rows are keyed by NAME, so a replaced command keeps the old row.
+
+        That is tolerable for a rendered row, which only shows a stale verdict
+        until the next probe. It is not tolerable for an automatic write: stubbing
+        on it pools a program nobody measured, and with sharing on that hands one
+        session's state to another. The eligibility read therefore goes through
+        ``VerdictCache.get`` with the CURRENT identity, where a mismatch reads as
+        no measurement.
+        """
+        from kiro_crew.mcp_gateway.evaluate import identity_for
+        from kiro_crew.mcp_gateway.verdict_cache import CachedPreflight, load_cache
+
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        monkeypatch.setattr(mcp_mod, "records_dir", lambda _socket: runtime)
+
+        # Measure the server as it stands, storing a clean row under its identity.
+        self._spec(agents_dir, {"a-mcp": {"command": "orig-server"}})
+        measured = SimpleNamespace(command="orig-server", args=[], env={})
+        cache = load_cache(runtime)
+        cache.put(
+            "a-mcp",
+            identity_for(measured),
+            CachedPreflight(ran=True, caller_sensitive=False, reasons=(), evaluated_at=0.0),
+        )
+        cache.flush()
+
+        # First leg: with the command unchanged the measurement is honoured, so
+        # the assertion below is about identity rather than about an empty cache.
+        self._verdict(monkeypatch, stub=True, share=True)
+        eligible, _ = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == ["a-mcp"]
+
+        # Same name, different program. The stored row still exists and
+        # ``get_by_name`` would return it; the identity-checked read must not.
+        self._spec(agents_dir, {"a-mcp": {"command": "replaced-server"}})
+        monkeypatch.setattr(
+            mcp_mod,
+            "_assess_server",
+            lambda name, **kw: SimpleNamespace(
+                recommend_stub=kw["preflight"] is not None,
+                recommend_share=kw["preflight"] is not None,
+            ),
+        )
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
+
+    def test_a_recorded_hazard_survives_an_identity_change(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Hazards are read name-wide, and that asymmetry is deliberate.
+
+        A preflight can promote a server, so it must belong to the program being
+        written about. A hazard only ever demotes, so filtering it by the current
+        identity would DISCARD a recorded objection -- the permissive direction --
+        every time a command changed. The cautious read is the wider one.
+        """
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        monkeypatch.setattr(mcp_mod, "records_dir", lambda _socket: runtime)
+        self._spec(agents_dir, {"a-mcp": {"command": "run"}})
+
+        seen: dict[str, tuple[str, ...]] = {}
+
+        def _capture(name, **kw):  # type: ignore[no-untyped-def]
+            seen[name] = kw["observed_hazards"]
+            return SimpleNamespace(recommend_stub=False, recommend_share=False)
+
+        monkeypatch.setattr(
+            mcp_mod, "_assess_server", _capture
+        )
+        monkeypatch.setattr(
+            mcp_mod.hazards,
+            "load_ledger",
+            lambda _rt: SimpleNamespace(as_dict=lambda: {"a-mcp": ("caller_state_leak",)}),
+        )
+
+        mcp_mod._stub_eligibility(["a-mcp"], sharing_on=True, forward_declared_env=False)
+        assert seen["a-mcp"] == ("caller_state_leak",)
+
+    def test_two_agents_declaring_one_name_differently_have_no_usable_measurement(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Definitions that differ only in env are different programs to the pool.
+
+        ``PoolKey`` includes the effective env, so these two declarations never
+        share a backend with each other -- but the write is per NAME and covers
+        both. A measurement of one is therefore not evidence for the other, and
+        accepting it would pool a program nobody probed.
+
+        The command and args are byte-identical here on purpose: that is the case a
+        command+args launch hash cannot see, so this fails if eligibility consults
+        that proxy instead of the full identity.
+        """
+        from kiro_crew.mcp_gateway.evaluate import identity_for
+        from kiro_crew.mcp_gateway.verdict_cache import CachedPreflight, load_cache
+
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        monkeypatch.setattr(mcp_mod, "records_dir", lambda _socket: runtime)
+
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {"name": "alpha", "mcpServers": {"a-mcp": {"command": "run", "env": {"K": "1"}}}}
+            ),
+            encoding="utf-8",
+        )
+        (agents_dir / "b.json").write_text(
+            json.dumps(
+                {"name": "beta", "mcpServers": {"a-mcp": {"command": "run", "env": {"K": "2"}}}}
+            ),
+            encoding="utf-8",
+        )
+
+        # A clean measurement exists for the FIRST declaration.
+        cache = load_cache(runtime)
+        cache.put(
+            "a-mcp",
+            identity_for(SimpleNamespace(command="run", args=[], env={"K": "1"})),
+            CachedPreflight(ran=True, caller_sensitive=False, reasons=(), evaluated_at=0.0),
+        )
+        cache.flush()
+
+        monkeypatch.setattr(
+            mcp_mod,
+            "_assess_server",
+            lambda name, **kw: SimpleNamespace(
+                recommend_stub=kw["preflight"] is not None,
+                recommend_share=kw["preflight"] is not None,
+            ),
+        )
+        # ``forward_declared_env`` on, so a plainly-named declared key is forwarded
+        # rather than withheld. Without it the env-withheld branch answers first
+        # and this would pass without exercising identity at all.
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=True
+        )
+        assert eligible == []
+        assert skipped == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
+
+    def test_a_name_no_agent_declares_is_reported_rather_than_written(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale client can name a server that has since been removed.
+
+        Writing it would put a name in ``stub_servers`` that nothing can ever spawn,
+        so it is skipped and named instead.
+        """
+        self._spec(agents_dir, {"a-mcp": {"command": "run"}})
+        self._verdict(monkeypatch, stub=True, share=True)
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["ghost-mcp"], sharing_on=False, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": "ghost-mcp", "reason": "unknown"}]
+
+
+class TestShareabilityRefusesAProbeFromBeforeAnEdit:
+    """``probe_metadata`` is keyed by name, so the verdict readers gate it.
+
+    Each test pins one call site. Reverting that site's ``probe_current``
+    argument leaves the verdict grounded in the previous target's handshake,
+    and only a test that goes through the site can see it.
+    """
+
+    _ROW = {
+        "agents": {"alpha"},
+        "transport": "stdio",
+        "entry_poolable": False,
+        "env_names": set(),
+        "launch_ids": {"x"},
+    }
+
+    def test_a_refused_probe_reads_as_never_probed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seed_probe(monkeypatch, "a-mcp")
+        args = dict(is_stdio=True, env_names=(), observed_hazards=(), preflight=None)
+        measured = mcp_mod._assess_server("a-mcp", **args).to_dict()
+        refused = mcp_mod._assess_server("a-mcp", probe_current=False, **args).to_dict()
+        monkeypatch.setattr(mcp_mod, "probe_metadata", lambda n: None)
+        never = mcp_mod._assess_server("a-mcp", **args).to_dict()
+        # Guard the guard: the seeded probe has to change the verdict at all.
+        assert measured != never
+        assert refused == never
+
+    @pytest.mark.asyncio
+    async def test_the_rows_endpoint_passes_the_edit_check_through(
+        self, monkeypatch: pytest.MonkeyPatch, routed_allowlist
+    ) -> None:
+        routed_allowlist([])
+        monkeypatch.setattr(mcp_mod, "_collect_server_rows", lambda: {"a-mcp": dict(self._ROW)})
+        monkeypatch.setattr(mcp_mod, "_load_shareability_state", lambda: ({}, {}))
+        monkeypatch.setattr(mcp_mod, "_probe_currency", lambda: {"a-mcp": False})
+        seen: dict[str, Any] = {}
+        real = mcp_mod._assess_server
+
+        def spy(name: str, **kw: Any):
+            seen[name] = kw.get("probe_current")
+            return real(name, **kw)
+
+        monkeypatch.setattr(mcp_mod, "_assess_server", spy)
+
+        await mcp_mod.api_mcp_gateway_servers(_request())
+
+        assert seen == {"a-mcp": False}
+
+    @pytest.mark.asyncio
+    async def test_the_stub_write_passes_the_edit_check_through(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import kiro_crew.agent as agent_mod
+        import kiro_crew.config.loader as loader
+        from kiro_crew.mcp_gateway.shareability import ShareVerdict, Strength
+
+        cfg_path = tmp_path / "config.json"
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "a.json").write_text(
+            json.dumps({"name": "alpha", "mcpServers": {"a-mcp": {"command": "run"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(mcp_mod, "_probe_currency", lambda: {"a-mcp": False})
+        seen: dict[str, Any] = {}
+
+        def spy(name: str, **kw: Any) -> ShareVerdict:
+            seen[name] = kw.get("probe_current")
+            return ShareVerdict(
+                name=name,
+                strength=Strength.MEASURED,
+                recommend_stub=True,
+                recommend_share=False,
+                reasons=(),
+            )
+
+        monkeypatch.setattr(mcp_mod, "_assess_server", spy)
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": False, "stub_servers": []}}))
+
+        # One server per request with its displayed launch: a stub approval is a
+        # compare-and-set on that launch, and ``_request`` fills in the
+        # launch of a command named after the server, which the agent below runs.
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"name": "a-mcp", "stub": True, "resolve_eligibility": True})
+        )
+
+        assert resp.status == 200, resp.text
+        assert seen == {"a-mcp": False}
+
+    def test_probe_currency_compares_against_the_current_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.mcp_discovery as disc
+
+        disc._probe_cache.clear()
+        try:
+            disc._cache_probe(McpServerInfo(name="edited", command="old-bin", status="ok"))
+            disc._cache_probe(McpServerInfo(name="same", command="bin", status="ok"))
+            servers = [
+                McpServerInfo(name="edited", command="new-bin"),
+                McpServerInfo(name="same", command="bin"),
+            ]
+            monkeypatch.setattr(disc, "list_servers", lambda *a, **k: list(servers))
+
+            assert mcp_mod._probe_currency() == {"edited": False, "same": True}
+        finally:
+            disc._probe_cache.clear()

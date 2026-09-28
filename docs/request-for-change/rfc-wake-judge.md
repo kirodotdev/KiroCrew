@@ -1,0 +1,732 @@
+---
+title: Wake judge — a System One model screens auto-nudge ticks
+status: partial
+author: Raymond Chen
+created: 2026-09-22
+last-audited: 2026-09-23
+audited-at: 2fdadc71ac
+doc-pr: 12735
+implementation-prs: [12776, 12787, 13759]
+tracking-issues: []
+supersedes: []
+superseded-by: []
+---
+
+# RFC: Wake judge — a System One model screens auto-nudge ticks
+
+- Feature preview; default off
+- Companion: [`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md) Phase 3
+  (typed wake gate). The judge is the other half: it screens evidence only a
+  model can read.
+
+Status: partial. The LLM lane is on main: `decisions/impl_llm.py` answers the
+judge's questions over one tool-less model call, `gate.py` carries `nudge.wake`
+in `DECISION_POINT_NAMES` beside `JUDGE_POINT` and the two lane names, and
+`decisions.nudge_wake.provider` and `.llm_model` are live config keys the config
+route may edit. The judge core is on main as well, from
+[#12787](https://github.com/kirodotdev/KiroCrew/pull/12787) (merged `2d5a800ee`):
+`decisions/points/nudge_wake.py`, the `nudge_evidence` entry in
+`POINT_SCOPE_KEYS`, the evidence collectors, the autonudge tick hook, `judge` on
+`monitor_start` / `monitor_update` and the transcript notice are all on the base
+tree. What is still outstanding is the reader placement §8's PR G entry records,
+the skills
+that author a brief, and the calibration corrections §8's PR H entry records —
+the narrowed action override §3 states and the mutating-only `owner_acted` §3.1a
+states, both decided in this document and neither on base. No `kirocrew-judge` agent
+template is coming: the landed lane runs on the bundled `kirocrew-lite`
+(`JUDGE_AGENT_NAME`), because a judge template would differ from it only in the
+model, which the runner passes per call, and a standing prompt the call already
+states. Code references below were read at `ccba8886cc`.
+
+## 1. Problem
+
+An auto-nudge loop (`monitor_start`) fires a full model turn on its owning
+session every interval. A tick whose evidence is TYPED can already be made free:
+a pull-request watch whose bar is a check conclusion returns quiet without
+spending a turn. What costs a turn whether or not the evidence needs it is
+everything a typed reading cannot settle — a conductor patrolling worker
+transcripts, a babysitter reading bot comment bodies, a loop watching a log, and a
+pull-request watch whose owner's bar is a sentence of their own rather than a
+check conclusion. Measured on this
+repository today: a conductor watching
+three workers at 45 min spends ~48 turns over two days to act on about five
+events; ten patrol loops died together on a gateway restart and nobody noticed
+for hours because the only reader was the loop itself. A second measurement, from
+this document's own review cycle: one patrol ran 9 cycles at 45 minutes across 5
+workers, and roughly two thirds of those reads found nothing new.
+
+The typed wake gate ([`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md)
+§Wake gate, Phase 3) removes the turn for facts that arrive as typed fields
+(item status, PR checks). It cannot read a transcript tail, a review comment, or
+a log line. Those still need judgment, and today the only judge available is the
+main session at full price.
+
+## 2. Idea
+
+Keep the loop. Keep the poll. On each tick, do not wake the main session; wake
+a **judge** — a fast, cheap, typed decision — that reads the new evidence and
+answers one question: does the owner need to act now? Only a yes fires the
+main session. The judge is a decision point on the shipped `decisions` seam
+(`src/kiro_crew/decisions/`, PR #11490 and successors), the same seam Joe used
+for sampled skill selection (`skills.select`), risky-tool flags and model-tier
+routing. Jev (TypeSafe's System One model: state + typed questions in,
+calibrated probabilities out, ~100 ms, no strings, no hallucinated shapes) is
+the intended judge. Where Jev is not consented, the same interface is served by
+a text-only small model behind a strict parser, so the mechanism is one and the
+provider is a setting.
+
+Kahneman's split is the design: the judge is System One (a gut check in
+milliseconds), the main session is System Two (slow, deliberate, expensive).
+The judge never acts; it only decides whether System Two is needed.
+
+## 3. Design
+
+```
+autonudge tick ─▶ evidence collectors ─▶ state (bounded, scrubbed)
+                                             │
+                                             ▼
+                              decide("nudge.wake", state, questions)
+                              Jev (consented)  |  LLM lane (kirocrew-lite)
+                                             │
+                     ┌───────────────────────┴──────────────────────┐
+                     ▼                                              ▼
+                 QUIET: re-arm,                               WAKE: fire the
+                 no turn, notice                               main session
+                                                                    ▲
+        provider failure / invalid answer / timeout ─▶ FALLBACK ─────┘
+```
+
+TERMINAL is not a judge verdict. The auto-nudge core ends a loop on one typed
+fact it maps itself — a merged or closed pull request — and the judge can never
+stop one, so no prose can buy permanent silence. The reader that supplies that
+fact does not act on it either: it fetches, and the mapping lives in the core.
+
+### 3.1 The decision point `nudge.wake`
+
+State (one object, ≤ 8 000 chars after scrubbing). The shed rule: the typed
+summaries `pr_state` and `pr_checks` are pinned, and when the budget binds the
+oldest PROSE item goes. Pinned because the built-in criteria are answered from
+them, so shedding them would delete the evidence the question is asked against,
+and because they are bounded and small -- one `pr_checks` item renders a 90-lane
+board in 42 characters -- so they are never the pressure on the budget. Oldest
+prose because a comment body is as old as its comment, while a summary is observed
+on the tick that sends it:
+
+- `loop`: the owner's instruction, truncated to 1 500 chars, and the
+  `wake_when` / `quiet_when` text of the brief in force — the built-in one, or
+  the `judge` spec's where the loop arms one.
+- `since_last_tick`: a list of evidence items, each `{source, kind, age_s, text}`
+  where `source` names the collector and the target (`session:chat-1751`,
+  `pr:kirodotdev/KiroCrew#12735`, `work-ledger:it_42`), `kind` is a closed set
+  (`transcript_tail`, `pr_state`, `pr_checks`, `pr_comment`, `pr_review`), and
+  `text` is bounded per item (1 000 chars). `ledger_event` arrives with the work
+  ledger collector.
+- `last_verdict`: `{outcome, evidence_items, at}` and nothing else -- the previous
+  tick's answer, how many items it rested on, and when. Deliberately text-free and
+  carrying no fingerprint of the evidence, so a judge can see that it already
+  answered on a comparable amount without being handed that evidence again. It
+  cannot establish that the evidence was the SAME evidence.
+
+Questions, asked in parallel, each atomic. The shipped seam speaks Jev's
+`choice` type only (`decisions/types.py`; `_to_wire` refuses anything else), so
+every question is a Choice; widening the wire to `noul`/`score` is a later PR.
+That widening is PR D's: the seam must gain `noul` and `score` wire types before
+a question here can ask for a bare probability or a bounded number instead of
+encoding one as a Choice.
+
+| id | type | instructions | options |
+|---|---|---|---|
+| `needs_owner` | choice | Does the new evidence require the owning session to act now? | `wake`: the loop's `wake_when` text; `quiet`: its `quiet_when` text |
+| `outcome` | choice | What state is the watched work in? | `nothing_new`, `progress_only`, `needs_action`, `needs_human`, `finished`, `broken` |
+| `urgency` | choice | How urgent is any action? | `none`, `next_tick_is_fine`, `now` |
+
+The probability of `wake` plays the yes/no role below.
+
+Mapping, in code, not in the model:
+
+- `finished` or `broken` with `confidence ≥ 0.6` → **WAKE** with the verdict
+  attached, so the woken session can report and decide to stop; the judge itself
+  never ends the loop.
+- `P(wake) ≥ 0.5` → **WAKE**.
+- `outcome ∈ {needs_action, needs_human}` → **WAKE**.
+- **NOT ON BASE — decided here, implemented by §8's PR H entry
+  ([#14663](https://github.com/kirodotdev/KiroCrew/pull/14663)).** That action
+  backstop is narrowed: it stops overriding a `needs_owner` that answered `quiet`
+  when the outcome's own confidence sits in `0.4 ≤ P < ACTION_OVERRIDE_MIN_P` (a
+  proposed constant, 0.6), and the verdict is then **QUIET** naming both readings.
+  `needs_owner` is the only question carrying the owner's `wake_when` / `quiet_when`,
+  so a barely-confident answer to a question carrying no owner criterion must not veto
+  a confident one that does. The band starts at 0.4 because the low-confidence rule
+  below owns everything under it and wakes: an unsure judge never buys silence,
+  whatever `needs_owner` said. The veto also requires the `quiet` answer to be the
+  MORE confident of the two — `P(quiet) > P(outcome)` — as well as clearing
+  `NEEDS_OWNER_MIN_P`. The ranking is what carries the rule, because with two options
+  the chosen answer is the argmax and so already clears 0.5 on its own: without it a
+  `quiet` at 0.51 would silence a `needs_action` at 0.59, which is the very inversion
+  this exception exists to prevent. `NEEDS_OWNER_MIN_P` stays as the floor that
+  excludes a non-argmax provider's unsure answer.
+  Landing this replaces `QUIET_OUTCOMES`-as-an-allowlist as the sole route to silence
+  and retires `test_quiet_is_an_allowlist`'s universal form, both of which pin the
+  un-narrowed rule on base today.
+- otherwise → **QUIET**: re-arm, no turn.
+- Low confidence (`< 0.4` on `outcome`) → WAKE. A judge that is unsure hands
+  the call to System Two; it never guesses quiet.
+- Any provider failure, timeout, or answer that fails validation → **FALLBACK**:
+  fire, exactly as the ungated timer would. The judge can only remove turns
+  that were safe to remove; it can never silence a loop.
+- Quiet-streak floor: after N consecutive QUIET verdicts the tick fires anyway,
+  so a miscalibrated judge cannot starve a loop forever. N defaults to the
+  shipped `_MAX_QUIET_STREAK` (10 today), the same floor the PR probe already
+  has, and is configurable per point.
+
+Thresholds are constants in one module with tests, tuned from the JSONL log,
+not prompt text.
+
+### 3.1a Calibration feedback
+
+The thresholds above are tunable from a curve, and a curve needs labels. Each
+verdict is therefore labelled after the fact, deterministically, with no second
+model reading the first one's work.
+
+A verdict row is in one of three states, and the third is what keeps the labels
+honest:
+
+| state | means | label it can earn |
+|---|---|---|
+| suppressed | the tick withheld the turn | `missed` |
+| delivered | a turn really went out | `owner_acted` |
+| neither | the tick decided to wake; nothing went out yet | none |
+
+`delivered` is stamped by the fire path at the point delivery is confirmed, not
+by the tick that asked for it. A fire is refused when the slot is busy, the timer
+is cancelled when the owner types, and the process can stop in between — in all
+three the verdict asked for a turn that never happened, and a row marked
+delivered at decision time would be handed the actions of whatever turn finished
+next. A row loaded from disk as delivered but unlabelled is marked `forfeited` and
+remains a permanent cycle boundary: it accepts no `owner_acted`, and its
+suppressions accept no label from a later turn. A re-owed delivery has its own new
+row.
+
+`owner_acted` on base is `true` when the woken turn called at least one tool, or
+answered longer than a quiet-cycle reply, or answered with a link; `false` when it
+called nothing and answered short. The whole rule lives in one function,
+`autonudge_judge.owner_acted`, and an unknown tool-call count reads as acted, which is
+the direction that does not teach the judge to suppress.
+
+**NOT ON BASE — decided here, implemented by §8's PR H entry
+([#14663](https://github.com/kirodotdev/KiroCrew/pull/14663)).** That count is not the
+rule it should be: counting a read the same as a write makes the label constant, and a
+label with no variance cannot tune the thresholds above. So the TOOL-CALL limb alone
+becomes "at least one dispatch that could have CHANGED something", where a dispatch is
+read-only only when its name is positively known to be — a host-known read-only
+built-in with trusted provenance, or a first-party MCP server's read tool — and anything
+else counts as having changed something. The reply-length and link limbs are unchanged
+and still answer `true` on their own, so a turn that dispatched only reads but answered
+at length or with a link stays `owner_acted: true` — which is what §3.1a's note about
+weighting a tool-call-only delivery already assumes. `monitor_update` is not read-only, so the
+mutating count still carries it without a second signal. `autonudge_stop` is not
+read-only either, but it needs no mention here: a turn that calls it deactivates or
+removes the loop, and the turn-completion hook returns before it reaches the labelling
+block, so that delivery is left unlabelled — the case the paragraph below on a loop
+that stops during a delivered turn already records. This needs the
+per-dispatch NAMES plumbed to `notify_turn_complete`, which today receives a bare
+count; where an adapter's dispatches arrive unnamed the count decides and the label row
+records a proposed `tool_names_known: false`, so a threshold read excludes those rows
+rather than pooling two rules as one. A quiet verdict
+that hits the streak floor spends a turn, so it is labelled as a delivery rather
+than counted as a suppression.
+
+`missed` is read off the next delivery's label: when that delivery is
+`owner_acted: true`, every suppressed verdict since the previous delivery is
+`missed: true` — the owner had something to do and the judge sat on it. When the
+delivery is `owner_acted: false`, they are `missed: false`. A verdict the judge
+never answered is skipped: a tick that read nothing new, or could not read a
+target, returns a verdict without asking, so it sat on nothing and scoring it
+would bias the curve it is meant to measure.
+
+The labels live on the loop's own record beside the quiet streak, and the store
+is sized from the QUIET-STREAK FLOOR rather than from the window the judge reads:
+a full streak is the floor's worth of suppressions followed by the delivery that
+labels them, so a smaller store would evict the earliest suppressions before
+their label arrives.
+
+Each label is also written to the decisions log as its own `kind="wake_label"`
+row keyed by the verdict's id. That row carries the id, the point name, the
+session digest, one label name, one boolean, the tool-call count and the stripped
+reply length: no reply, no transcript, no target. An unknown tool-call count is
+`null`. The decision row carries the same `verdict_id`, so the curve joins in one
+file. An id is minted only for a verdict the judge answered, because a label
+pointing at a decision row that was never written is a row nobody can read.
+
+Two fields on `loop` carry the elapsed-time half of the same reading:
+
+- `since_last_wake_s`: seconds since this loop last delivered a turn. Omitted
+  for a loop that has never delivered, because a zero there would read as a
+  delivery this instant.
+- `quiet_streak`: consecutive quiet verdicts, the counter the streak floor is
+  measured against.
+
+And `recent_verdicts` replaces `last_verdict` in the state once a loop has any
+history: a list of `{outcome, evidence_items, owner_acted|missed, age_s}`, newest
+first, so the judge sees its own recent hit rate on THIS loop. It carries
+`evidence_items` because that is the field `last_verdict` held for meaning — what
+lets a judge tell "still nothing" from "the same thing again" — so the supersede
+is a widening rather than a trade. It is text-free — the id and the state flags
+are stripped on the way out — and it survives the char budget, which spends only
+evidence: a history that thinned out on a busy tick would read as a better rate
+than the loop earned.
+
+The labels reach a loop on a dashboard slot. A loop bound to a messaging channel
+gets no turn-completion hook, so its verdicts stay unlabelled and its history
+carries the outcome and the evidence count alone. This creates SAMPLING BIAS: the
+calibration curve represents only dashboard-slot loops, while thresholds tuned
+from it apply to every loop, including channel-bound loops.
+
+A loop that stops or is deactivated during a delivered turn leaves that delivery
+unlabelled, and leaves the suppressions behind it unlabelled too. The label is
+absent rather than false, so the curve loses a sample instead of gaining a wrong
+one. This joins the channel-bound gap as a known limit on coverage, to be weighed
+by the first change that tunes a threshold from the curve.
+
+Replacing a loop's criteria clears its labelled history. Those rows record verdicts
+the previous criteria produced, and carrying them across the change would mix two
+different judges' samples into one curve. A smaller sample whose rows all answer the
+same question is worth more than a larger one whose rows do not, so the history
+starts again with the criteria. This is the third limit on coverage, and the same
+reader weighs all three.
+
+Retroactive `missed` labels otherwise weight every suppression since the prior
+delivery alike even when action appeared only near the labelling delivery; each
+`wake_label` row therefore carries numeric `position_back` and `age_s` from that
+delivery so a threshold reader can weight or discard far-back samples.
+
+A threshold read segments rows on the logged `recent_verdicts` count. A verdict
+decided with no history and one decided with five recent verdicts came from
+different inputs; comparing them as one population reads two judges as one.
+
+A threshold read must not treat every `owner_acted` alike. A delivery whose only
+evidence is a tool call is weaker evidence of a useful wake than one that answered
+at length or with a link, so pooling them overstates the hit rate. The label row
+carries the tool-call count and stripped reply length so the read can separate them.
+
+The judge stays stateless and tool-less. Everything above is data the gateway
+renders into the state; nothing tells the judge what to do with a poor hit rate,
+because the thresholds that consume the curve are constants in the point.
+
+### 3.2 Evidence collectors
+
+The tick runs in the gateway (in `AutoNudgeService`, ON its event loop, since the
+caller is already a coroutine and the collectors it awaits are async), so
+collectors read in-process state; no tool call, no model. The pull-request fetch is
+the part deliberately pushed off that loop, because a `gh` spawn would block it.
+
+- `pr`: for each PR URL in the message or `judge.targets`, the reading the gh-pr
+  fetcher published this tick — state, mergeability, review decision, head, the
+  deduped check board with its completeness flag, and comment and review bodies
+  (bounded per item and in total). A reading whose own status is not `ok` counts
+  as a target nobody read whole, which fires.
+- `session`: for each `chat-*` key in `judge.targets`, the transcript rows
+  appended since the last tick, assistant and tool rows only, last status line
+  first. Creator-only: the same check `session_read_message` applies. A target
+  the owner may not read is dropped and noted, never fetched.
+- `work-ledger`: when the owning session is a conductor with a work ledger,
+  the new events per open item (typed; they also feed the Phase 3 probe).
+- `self`: the owning session's own ledger `next`, so the judge knows what the
+  owner said it was waiting for.
+
+Every collector output goes through the seam's scrub (`has_credential`, the
+canonical redaction pass) before it enters state; a scrub hit drops the item
+and records `scrubbed`. Nothing leaves the machine that the owner's own
+session would not have read.
+
+### 3.3 Arming: a built-in brief, and the owner's own
+
+`monitor_start` and `monitor_update` gain one optional object, feature-gated:
+
+```json
+"judge": {
+  "targets": ["chat-1751-1790052364", "https://github.com/kirodotdev/KiroCrew/pull/12735"],
+  "wake_when": "a worker line starts with RULING or BLOCKED or GREEN; a PR check turns red; a bot comment raises a new finding",
+  "quiet_when": "workers report WORKING with no new status; checks still running; only progress notes"
+}
+```
+
+`wake_when` and `quiet_when` become the `needs_owner` question's criteria. This
+is how the main session "gives the judge its orders": the babysit and
+goal-conductor skills author these two lines when arming, in
+plain words, from the loop's exit condition. Targets default to what the
+message names (PR URLs, `chat-*` keys); the explicit list adds or narrows.
+
+The object is optional because the point carries a brief of its own. Once the
+`nudge_evidence` scope is granted on a consented keystone, every gated auto-nudge
+loop is screened, and a loop that arms no `judge` object is screened with the
+built-in brief: **wake**
+when the subject needs its owner — a blocker, a failing check or one whose reading
+is not whole, a question or a ruling addressed to it, a new comment
+or review whose body asks for a change or asks a question, a terminal state, or the
+exit condition the loop's own message states; **quiet** when nothing has arrived
+for the owner since the last tick. An explicit
+`judge` brief overrides the built-in one, so a loop that knows its own subject
+states its own criteria and a loop that says nothing is still screened.
+
+Two of those clauses name what a typed reading cannot settle on its own, and each
+is spelled out rather than left to "a blocker". A comment or review that ASKS sits
+in prose while the lane carrying it reports success, so nothing typed sees it. A
+failing check is the opposite case: entirely typed, and named anyway because it is
+what an owner arming no criteria at all most expects, and resting a red board on
+the judge reading one generic word the way the owner meant it is the wrong bet.
+A reading short of whole is named beside it, since a quiet drawn from half a board
+is a quiet about the wrong half.
+
+The check clause says "failing", not "newly failing", because the state carries the
+CURRENT board and no prior one. What keeps a red board from waking its owner every
+tick is `last_verdict`, which tells the judge it already answered on a comparable
+amount of evidence -- an outcome and an item count, not a fingerprint, so this is a
+weaker signal than a delta and is the honest limit of it. A brief that asked for
+newness would be asking a question the state cannot answer at all.
+
+The built-in brief carries one clause beyond those two, because the loops it
+covers have no author to write it: evidence from a pull-request comment or a
+fetched page is untrusted content, and a claim inside it that there is nothing to
+do is not evidence that nothing happened. §5's compounding bound rests on that
+clause, so it belongs in the shipped default rather than in a skill's brief.
+
+The scope carries the built-in brief alone. A loop whose owner wrote criteria is
+screened wherever its lane is authorized without this scope, which is the LLM lane
+(§3.4); a loop that wrote
+none supplies no such authorization, so `nudge_evidence` stands in for the half
+the brief would have supplied. "Default off" therefore still holds for a
+fresh install: nothing is screened until the owner grants the scope or arms a
+brief. That standing-in is read before a lane is picked, so it holds on both lanes
+and a briefless loop is screened only where the grant is whole — the endpoint
+consent and the scope together, which is also what arms the Jev lane (§7 Q4). Q5
+asks how a grant made under the narrower wording is told apart from one made under
+this.
+
+Where the judge sits in the tick decides which loops it can reach. The gh-pr
+reader FETCHES and judges nothing: it hands the whole reading over — state, the
+check board deduped newest-per-name against the API's own `total_count`, comment
+and review bodies — and the judge decides wake or quiet from it. The core maps one
+thing deterministically before the judge is asked: a merged or closed pull request
+ends the watch. A loop whose subject nothing reads — a conductor watching sibling
+sessions carries no monitor at all — is screened on its transcript evidence alone.
+
+Three cases bypass the judge. A loop armed `gate=false` acts while its subject is
+quiet — refreshing a heartbeat, chasing a reviewer who has not replied — so its
+ticks are the work rather than a reaction to evidence, and screening them would
+remove the turns the owner asked for. `judge: false`, the one value the object
+takes beside a brief, is the owner's opt-out for a single loop. And
+`monitor_watch` stays provider-decided: a typed provider answers its own
+`review_ready` objective there without a model, and its reader produces a comment
+FINGERPRINT rather than bodies, so there is no prose on that path for a judge to
+read. With the scope off, a `judge` object that names no criteria of its own is
+accepted, stored and ignored, so an armed loop survives the switch being toggled;
+one that names criteria is screened on the LLM lane, which this scope does not
+govern, while a pinned `jev` is refused for want of the same grant (§7 Q2). The
+brief is what carries the screening and the lane is what authorizes it.
+
+### 3.4 Providers
+
+- **Jev lane** (what `auto` resolves to when the keystone consents and the scope
+  is granted): the shipped `JevOracle`, keystone
+  consent bound to the endpoint (`decisions_consent.json`), key only via
+  `secret://TYPESAFE_API_KEY`, bounded wait, strict `_from_wire`. No change to
+  the seam's trust model; `nudge.wake` is one more entry in `gate.POINTS`.
+- **LLM lane** (`impl_llm.py`): the same `Answers` shape produced by a
+  text-only, tool-less run of the bundled `kirocrew-lite` agent (`JUDGE_AGENT_NAME`)
+  on whatever model that agent already resolves: `JUDGE_MODEL_DEFAULT` is `auto`,
+  so the default inherits the session's own background-role model and pins no
+  model class, and an operator who wants a specific one picks it on the card.
+  It is prompted with the state and the
+  questions and required to
+  answer in one JSON object with exactly the question ids, each value a
+  probability. The parser is as strict as `_from_wire`: any extra key, missing
+  id, non-finite number or prose → invalid answer → FALLBACK. The LLM lane is
+  what makes the interface real for people without a Jev key; it is slower
+  (seconds) and costs a small model call, still far below a main-session turn.
+  No judge-specific agent template ships: it would differ from `kirocrew-lite`
+  only in the model, which the runner passes per call, and in a standing prompt
+  that `render_prompt` already states more completely on every call.
+- **Provider selection** is a per-point setting, `decisions.nudge_wake.provider
+  ∈ {auto, jev, llm}` (`auto` = Jev when the keystone consents, else LLM),
+  written through the config route like the `decisions.model_route.<tier>`
+  pins. The keystone is consent to send state to the Jev endpoint, and its
+  scopes are categories of that egress, so the Jev lane requires the main
+  switch plus the `nudge_evidence` scope (§3.6). The LLM lane adds no
+  destination (the model provider the owner's sessions already send every
+  turn to) and no data class (the owner's own children's transcripts,
+  creator-only), decides only quiet-or-fire, and is fail-open; it is
+  authorised by `provider = llm` plus the `judge` spec the owner's session
+  arms, with no keystone involvement. A loop that arms no spec is authorised by the
+  `nudge_evidence` grant instead, on this lane as on the Jev one: the tick reads
+  `gate.judge_evidence_scope_granted` — the endpoint consent plus this point's own
+  scope — before a lane is picked, so an install with no consent recorded has no
+  built-in brief on either lane (§7 Q4). That function states the rule;
+  `_judge_authority` beside it states the spec half for a loop that wrote criteria,
+  and `config/sections.py` repeats that half as its section's rationale. Neither
+  names the briefless case, and they sit in files this document does not change.
+
+### 3.5 Rendering
+
+Every verdict is visible without a turn:
+
+- a transcript notice on the owning session: `Wake judge · quiet (needs_owner
+  0.08, outcome progress_only 0.91) · 2 new rows in chat-1751, checks pending
+  on #12735` — one line, so a human reading the tab sees why nothing fired;
+- the monitor popover shows the last verdict and the quiet streak;
+- the decisions JSONL log records call metadata and the verdict (no state
+  text), under `point=nudge.wake`, for calibration.
+
+### 3.6 Where the switch lives: a row on the Decisions card
+
+The Decisions (Jev) card in Settings → Developer → Feature Previews is a
+list-and-detail over the gateway's own point registry (PR #12598): every entry
+in `gate.POINTS` draws a row with a status chip, and a point that declares a
+scope gets a consent switch on its detail panel, with no frontend edit. The
+judge uses exactly that:
+
+- `nudge.wake` is registered in `gate.POINTS` with a new scope
+  `nudge_evidence` in `POINT_SCOPE_KEYS`. The switch text bounds what the grant
+  buys, and the built-in brief makes that population wider than the words a
+  reviewer of an opt-in feature would have read: not "the loops I arm" but every
+  gated loop the owner runs. No machine falls through to the other destination:
+  the grant a briefless loop runs on is the endpoint consent and the scope
+  together, so one holding the scope alone screens nothing rather than screening
+  on the LLM lane. An owner who pins `provider = llm` does send a briefless loop's
+  evidence to the model provider instead (§7 Q4), which is their own naming of a
+  lane rather than this switch's words reaching further than they say. One
+  consequence stays a question this document does not
+  settle: a consent authorizes the words it was recorded against and
+  nothing wider — the rule `gate.py` states for the `tool_args` scope — while the
+  keystone records one boolean per scope and no wording, so nothing distinguishes
+  a grant made under narrower text (Q5).
+  For the Jev lane that scope switch is the on switch; there is
+  no separate feature toggle. Scope off → the Jev lane is off and a `judge` spec
+  naming no criteria is stored and ignored, so a tick with no brief of its own
+  behaves exactly as today; a spec that names criteria still runs on the LLM
+  lane, which this scope does not govern (§3.4).
+- The row's detail panel carries the point's own settings: provider
+  (auto / Jev / LLM), the LLM model (from the advertised model list, "keep the
+  session's own model" by default), and the quiet-streak floor. All three write
+  `decisions.nudge_wake.*` keys registered in the config route's editable set.
+  Choosing LLM is what turns the LLM lane on (§3.4).
+- Status is the server's verdict, as for every row, and for this point it is read
+  from the lane the gate would actually pick rather than from the keystone alone.
+  The row reports that lane as running where it can answer, and where the picked
+  lane cannot run it says which grant is missing rather than a flat off. The
+  vocabulary is the card's and this document does not restate it; what belongs
+  here is the consequence: a machine that grants the scope without an endpoint
+  consent is screening the loops that wrote their own criteria on the LLM lane, and
+  its row says so rather than reading as switched off.
+
+Default off, in the sense a fresh install has no scope granted and screens
+nothing. Turning the scope off mid-loop returns a loop running the built-in brief
+to plain timer behaviour on its next tick. It is not a kill switch for the judge
+as a whole: a loop whose owner wrote criteria was never screened on that grant and
+keeps running wherever its lane is authorized without it, so `judge: false` is what
+stops one
+(§3.3).
+
+## 4. Cost
+
+| loop | today | with judge (Jev) | with judge (LLM) |
+|---|---|---|---|
+| conductor, 3 workers, 45 min, 48 h | 64 main turns | ~6 main turns + 64 judge calls (~$0.01) | ~6 main turns + 64 small-model calls |
+| PR babysit with bot-comment reading, 5 min | 288 main turns / day | ~a few main turns + one judge call per tick that has new evidence | same, on the small-model lane |
+| judge provider down | — | identical to today (fallback fires) | identical to today |
+
+Every tick with new evidence is screened, so on a busy subject the judge-call
+count approaches the tick count rather than the wake count. A tick whose delta is
+EMPTY costs no provider call at all: `judge_tick` answers QUIET locally when every
+target was read and none had anything new, which is the row above's quiet case.
+
+That local gate has a cost of its own worth recording rather than claiming as pure
+saving. A criterion about an ABSENCE -- "no reviewer has replied in two hours",
+"the branch is still behind its base" -- becomes true on a tick where nothing
+changed, which is exactly the tick the gate answers without asking. So the judge
+cannot serve an absence criterion today, and an owner who needs one arms
+`gate=false` and pays a turn per interval. Closing that means letting a loop mark
+its criteria as time-dependent so an empty delta still reaches the judge, and it is
+not in this design.
+
+The trade on a busy subject is one small-model call per tick against one
+main-session turn per tick: a judge call is a bounded state and a three-question
+answer on the cheapest lane, where a main turn carries the loop's whole context.
+
+## 5. Security
+
+- Egress: the Jev lane is behind the existing keystone consent, endpoint-bound;
+  the LLM lane reuses the session's own model provider. Both receive scrubbed,
+  bounded state; the decisions scanners run first; redirects are refused.
+- Authority: the judge decides only QUIET vs fire; it cannot inject text into
+  a turn, choose a target, or write anything. A single wrong answer costs one
+  delayed or one extra turn.
+- Compounding: a QUIET answer sustained across ticks compounds, and two
+  populations are exposed to it on different conditions. A gated loop whose owner
+  wrote criteria is screened on whatever authorizes its lane: the LLM lane needs no
+  keystone grant, so `provider = llm` and the `auto` default with Jev unarmed both
+  screen it, while a pinned `jev` needs the same consent and scope as anything else
+  on that lane. A gated loop that wrote none is screened only where the ruled
+  condition holds — the endpoint consent and this point's own scope together (§7
+  Q4). So an install that granted the scope alone exposes the first population on
+  the LLM lane and not the second, and one that pinned `jev` without the grant
+  exposes neither.
+  The evidence sustaining a QUIET is untrusted content
+  crossing a trust boundary (a
+  PR comment, a fetched page). Worst case, an input crafted to read as
+  "nothing to do" suppresses delivery for `quiet_streak_floor × interval_secs`:
+  with the default floor (`_MAX_QUIET_STREAK`, 10) and a 45-minute interval,
+  7.5 hours. That is the silence a gated loop already tolerates today when
+  its subject does not change; what is new is that text can now buy it. The
+  bound is enforced by the floor itself, and it is the judge's own counter rather
+  than the probe's: a per-loop `judge_quiet_streak` counts every tick the judge
+  answered QUIET, resets only on a delivered turn, and is compared against
+  `decisions.nudge_wake.quiet_streak_floor` (clamped, never off). A per-loop
+  counter is what makes the bound reach a loop carrying no monitor at all, which
+  the monitor's own streak field could not. Owners watching public repositories
+  should set a lower floor.
+  Evidence is labelled per source in `state`, and the warning that a comment or a
+  fetched page is untrusted is part of the built-in brief (§3.3), so it reaches the
+  briefless population too. The
+  babysit skill's brief states it again for the loops that write their own.
+- Targets: `session` collection is creator-only; a `judge.targets` entry the
+  owner may not read is dropped and logged, never fetched.
+- Fail-open by construction: every error path is the ungated timer.
+- Injection: evidence is data; it is placed in `state`, never in
+  `instructions`. The question texts come only from the owner's `judge` spec
+  and the point's fixed strings.
+
+## 6. Alternatives considered
+
+- **Event-driven wakes only** ([`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md)
+  Phase 3, and the earlier draft of this RFC's sibling). Correct for typed
+  facts; blind to prose evidence. The two compose: the reader fetches the typed
+  facts, the judge reads them together with the prose.
+- **[`rfc-token-efficient-monitors`](rfc-token-efficient-monitors.md)**
+  (in-progress). That RFC's monitor controller is what adds "fingerprints,
+  budgets, terminal outcomes, and completed-turn accounting", and it leaves the
+  AutoNudge timer in place as "the durable scheduling primitive" rather than
+  replacing it. Terminal outcomes are therefore its vocabulary and not the
+  judge's, which is why the mapping in §3.1 gives the judge no terminal verdict.
+  The judge adds one decision at the tick and changes none of that controller's
+  typed verdicts; `monitor_watch` stays provider-decided.
+- **[`rfc-consolidated-monitor`](rfc-consolidated-monitor.md)** (draft). It
+  merges three streams, one of which is `autonudge.py`, and states "the target
+  shape, what gets deleted, and the order". The judge is a field on an existing
+  loop's record (`judge`) rather than a second loop, so consolidation has
+  nothing extra to merge. One dependency does follow: that document's deletion
+  list includes "irq's own delivered-cycle counting and quiet-streak floor",
+  on the grounds that "the structured budgets subsume them". §5's compounding
+  bound is enforced by a quiet-streak floor, so when that consolidation lands
+  the bound has to be restated against whatever subsumes the floor.
+- **Let the main session decide with a cheaper model tier.** Still a full turn
+  with the whole context; the model-tier route (#12267) shows the seam can
+  pick a tier, but the cost is the context, not the model.
+- **Rules (regex on status prefixes).** That is the status quo for conductor
+  tails (`GREEN:` / `BLOCKED:` prefixes) and it is exactly what the typed work
+  ledger replaces; regex cannot read a review comment.
+- **Always-on shadow arm first.** #11490 deliberately shipped no shadow arm; the
+  fallback-fires design means the live arm is already safe to run, and the
+  JSONL log gives the calibration curve without a second arm.
+
+## 7. Open questions
+
+1. Threshold defaults (0.5 / 0.6 / 0.4) and the streak floor: tune from the
+   first two weeks of logs on this repository's own loops.
+2. Should the LLM lane require its own consent row on the keystone? **Ruled: no**,
+   for the reason in §3.4. `auto` resolves to the Jev lane only when the keystone
+   consents and the `nudge_evidence` scope is granted, otherwise to the LLM lane;
+   a pinned `jev` without the scope stores the brief and runs the plain timer.
+   Revisit if the lane ever sends more than the session itself would.
+3. Name. Mechanism: wake judge (decision point `nudge.wake`). The fallback lane
+   runs the bundled `kirocrew-lite` agent rather than a judge-specific template.
+   User-facing metaphor in the toggle copy: "a secretary who
+   screens the interruptions".
+4. Which switch authorizes the built-in brief on each lane. **Ruled: the
+   `nudge_evidence` grant, read as the narrower question, on both lanes.** PR D's
+   tick reads `gate.judge_evidence_scope_granted` before any lane is picked and
+   leaves the tick untouched when it answers no, so a loop that arms no criteria is
+   screened only where the owner both granted the Decisions consent for the
+   configured endpoint and granted this point's own scope on the keystone. Those two
+   conditions are exactly what arms the Jev lane, so `auto` — the default — sends a
+   briefless loop to the Jev lane the switch names, and the destination cannot
+   differ from the words: a machine holding the scope without the endpoint consent
+   screens nothing rather than falling to the other lane. The LLM lane screens a
+   briefless loop only where the owner holds that grant and pins `provider = llm`,
+   so an install that never consented to the Jev endpoint has no built-in brief at
+   all; a loop that wrote criteria still runs there on the LLM lane's own authority
+   (§3.4). `gate = false` is never screened and `judge: false` opts out, both read
+   before the built-in brief is assembled.
+5. How a widened consent is recognised. A consent authorizes the words it was
+   recorded against and nothing wider, but the keystone records one boolean per
+   scope and no wording or version, so an install that granted `nudge_evidence`
+   under opt-in wording is indistinguishable from one that granted it under the
+   wider population. Either the scope is versioned, or the wider population needs
+   a scope key of its own, which is the mechanism the seam already uses to keep an
+   already-consented install inert for a category it never reviewed.
+6. What becomes of a script cron whose driver is retired. DECIDED: it is
+   auto-paused, not deleted. The refusal itself is settled -- the watch identity
+   raises and the kernel ends the run -- but ending it on the kernel's default path
+   REMOVES the registration, and that registration is the only durable record the
+   watch existed. The owner is told: the runner reports the ending with its message
+   and the scheduler delivers that message before removing the job. What no message
+   survives is the fact that a watch was ever armed, so an owner who reads it days
+   later has nothing to look at.
+   The cron layer already offers the alternative. A job whose run keeps failing
+   crosses the auto-pause threshold and then stays LISTED with `auto_paused`, a
+   `last_error` that can name `monitor_start` as the replacement, and an audit
+   entry. Evidence kept, reason readable on the schedule page, and the job fires no
+   more. That is what PR G implements: the refusal stands, the deletion does not.
+
+## 8. Rollout
+
+1. PR D — judge core: `decisions/points/nudge_wake.py`, `nudge.wake` in
+   `gate.POINTS` with the `nudge_evidence` scope, collectors, the autonudge
+   tick hook with fail-open mapping, `judge` on `monitor_start` /
+   `monitor_update`, transcript notice, `decisions.nudge_wake.*` keys, tests.
+   Q4 is settled here rather than in prose: the built-in brief rests on the
+   `nudge_evidence` grant read as `gate.judge_evidence_scope_granted` — the endpoint
+   consent plus this point's own scope — asked before a lane is picked, so it holds
+   on both lanes and `auto` sends a briefless loop to the Jev lane the switch names
+   (§7 Q4). The day-one path for a Jev key holder is to grant the scope and
+   have their gated loops screened with the built-in brief, with a `judge` spec
+   stating criteria of a loop's own. An install with no key pins `provider = llm`
+   and gets the same screening for the loops that state criteria.
+2. PR E — LLM lane: `decisions/impl_llm.py` running the bundled `kirocrew-lite`
+   agent, the provider setting, and on the Decisions card (after #12598) the
+   row label for `nudge.wake` plus the provider and LLM-model pickers in its
+   detail panel. Depends on D's point name and on #12598's card shape.
+3. PR F — skills: `babysit` and `goal-conductor` author `wake_when` /
+   `quiet_when` when arming; after D merges.
+4. PR G — the reader fetches and the judge decides: `probes/gh_pr.py` keeps the
+   transport and drops every wake decision, the whole reading reaches the judge as
+   evidence (`pr_state`, `pr_checks`, `pr_comment`, `pr_review`), the core keeps the
+   one mapping it can act on (a merged or closed pull request ends the watch), and
+   the script-cron driver goes, because a subprocess holds no decisions provider and
+   so cannot reach a judge at all. This is the placement §3.1 rests on rather than a
+   later revision of it: a typed reader that answers first decides the owner's
+   criterion for them, and the criterion is what differs between two loops on one
+   board. Depends on D's decision point and collectors.
+
+   A job a user already registered from the babysit skill's copy-then-register
+   recipe keeps its own copy of the script, so removing the bundled one does not
+   reach it. Those jobs are REFUSED at run rather than left polling: the watch
+   identity raises, and the kernel turns that into one message naming `monitor_start`
+   as the thing to arm instead. The alternative is a cron that fires on schedule,
+   decides nothing and reports nothing, which reads to its owner as a watch still
+   running. `docs/system-specs/modules/babysit-pr-watch.md` carried the guarantee
+   that the adapter remains a compatibility asset for registered jobs; PR G replaces
+   that guarantee with this one and records the refusal there. The refused job is
+   AUTO-PAUSED rather than deleted, per §7 Q6: it stays listed with `auto_paused`
+   and a `last_error` naming the replacement, because removing it would destroy the
+   only durable record that the watch existed.
+5. PR H — calibration corrections, from two defects measured on the landed judge
+   ([#14663](https://github.com/kirodotdev/KiroCrew/pull/14663), not on base): the
+   narrowed action override §3's mapping records, gated on a new
+   `ACTION_OVERRIDE_MIN_P`; and `owner_acted` counting only dispatches that could have
+   changed something, which needs the per-dispatch names carried to
+   `notify_turn_complete` and records a new `tool_names_known` on the label row for the
+   adapters that name none. Both are decisions this document records; neither is base
+   behaviour until that PR merges. Depends on D's point and on the label rows §3.1a
+   defines.
+6. This RFC lands as `docs/request-for-change/rfc-wake-judge.md`.

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- One room, drawn as a single bubble: the app's thesis is that there is no
+       private agent-to-agent channel, so every participant and every link has to
+       sit INSIDE one container rather than beside it. -->
+  <path d="M5.8,3.4 L18.2,3.4 Q21.4,3.4 21.4,6.6 L21.4,14.4 Q21.4,17.6 18.2,17.6 L10.6,17.6 L6.6,21.2 L6.6,17.6 L5.8,17.6 Q2.6,17.6 2.6,14.4 L2.6,6.6 Q2.6,3.4 5.8,3.4 Z" fill="var(--ico-a, currentColor)" fill-opacity="0.16" stroke="var(--ico-a, currentColor)" stroke-width="1.7" stroke-linejoin="round"/>
+  <!-- Three role-assigned agents, mutually linked: the closed triangle is the
+       readable transcript — each pair's exchange is visible to the third. -->
+  <path d="M8.2,8.2 L15.8,8.2 L12,13.2 Z" stroke="var(--ico-b, currentColor)" stroke-width="1.3" stroke-opacity="0.6" stroke-linejoin="round"/>
+  <circle cx="8.2" cy="8.2" r="1.75" fill="var(--ico-b, currentColor)"/>
+  <circle cx="15.8" cy="8.2" r="1.75" fill="var(--ico-b, currentColor)" fill-opacity="0.8"/>
+  <circle cx="12" cy="13.2" r="1.75" fill="var(--ico-b, currentColor)" fill-opacity="0.8"/>
+</svg>

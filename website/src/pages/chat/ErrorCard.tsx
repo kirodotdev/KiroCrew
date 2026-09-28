@@ -1,0 +1,501 @@
+import { memo, type ReactNode } from 'react'
+import { ExternalLink, KeyRound, Loader2, RotateCw, Settings, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+
+import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
+import { isStopEvent } from '../../lib/stopEvent'
+import { isSystemNoticeKind } from '../../lib/systemNotice'
+import type { ChatMessage } from '../../types'
+import { withOriginLink } from '../../components/withOriginLink'
+import { injectOpensTurn } from './RecoveryCard'
+
+/** Error code the backend stamps (`meta.code`) when a crew member's private
+ *  agent file no longer matches what was last reviewed in Capabilities
+ *  (`agent_capabilities.prepare_member_capabilities`). A retry re-runs the same
+ *  check, so the row links to the member's Capabilities pane instead. */
+const MATERIALIZATION_CHANGED = 'materialization_changed'
+
+export const isCapabilitiesChanged = (m: Pick<ChatMessage, 'meta'>): boolean =>
+  (m.meta as { code?: string } | undefined)?.code === MATERIALIZATION_CHANGED
+
+/** Row kind the backend stamps on a terminal model-entitlement rejection
+ *  (`chat_utils.MODEL_UNENTITLED_KIND`). Both carriers are load-bearing for the
+ *  same reason as `isRetryNotice`: the live broadcast ships `kind`, a rebuilt
+ *  transcript `meta.kind`. */
+const MODEL_UNENTITLED_KIND = 'model_unentitled'
+
+export const isModelUnentitled = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === MODEL_UNENTITLED_KIND || (m.meta as { kind?: string } | undefined)?.kind === MODEL_UNENTITLED_KIND
+
+/** Row kind the backend stamps on the terminal error an `AcpAuthRequired` turn
+ *  produces (`chat_utils.AUTH_REQUIRED_KIND`): the agent process reported it is
+ *  not signed in. Same two carriers as above. */
+const AUTH_REQUIRED_KIND = 'auth_required'
+
+export const isAuthRequired = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === AUTH_REQUIRED_KIND || (m.meta as { kind?: string } | undefined)?.kind === AUTH_REQUIRED_KIND
+
+/** Row kind the backend stamps on the terminal error a SPENT PLAN ALLOWANCE
+ *  produces (`chat_utils.USAGE_LIMIT_KIND`): the provider refused the turn
+ *  because the account's usage limit is reached. Decided from the raw frame on
+ *  the backend, never from the prose here -- a copy edit or a translation moves
+ *  the words, not the kind. Same two carriers as above. */
+const USAGE_LIMIT_KIND = 'usage_limit'
+
+export const isUsageLimit = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === USAGE_LIMIT_KIND || (m.meta as { kind?: string } | undefined)?.kind === USAGE_LIMIT_KIND
+
+/** Row kind the backend stamps on the terminal error a SESSION START that never
+ *  answered produces (`chat_utils.SESSION_START_FAILED_KIND`): `session/new`
+ *  timed out, so the turn has no agent session at all. Decided from the
+ *  exception's tag on the backend, never from the prose here -- the timeout
+ *  message carries a diagnostic suffix that changes, and a translation moves
+ *  the words. Same two carriers as above. */
+const SESSION_START_FAILED_KIND = 'session_start_failed'
+
+export const isSessionStartFailed = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === SESSION_START_FAILED_KIND || (m.meta as { kind?: string } | undefined)?.kind === SESSION_START_FAILED_KIND
+
+/** Consecutive tagged session-start failures at which the card stops offering
+ *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
+ *  one: a single timed-out start is host weather and the first Resume is the
+ *  retry it deserves; the second identical failure is the signal that nothing
+ *  a retry can change is wrong. Mirrors `_SESSION_START_REPEAT_REFUSAL_AT` in
+ *  `src/kiro_crew/dashboard/chat_handlers.py`. */
+export const SESSION_START_REPEAT_REFUSAL_AT = 2
+
+/**
+ * How many session starts in a row failed at the tail of the transcript.
+ *
+ * Mirrors `session_start_failure_streak` in
+ * `src/kiro_crew/dashboard/chat_handlers.py` -- the two must agree, or the card
+ * hides a Resume the server would honour (or offers one it refuses). Walks back
+ * from the newest row counting `error` rows of the `session_start_failed` kind.
+ * Rows that are not the conversation's floor are walked past -- tool rows,
+ * notices, and the `recovery` inject a Resume press lands as, which resumes the
+ * SAME turn and is what makes two Resume-separated failures consecutive. The
+ * walk stops at the first row that IS new information: a user or assistant row
+ * with content (a typed retry is a new attempt and starts the count over), a
+ * Stop card, an error row of any OTHER kind (a connection-lost row is a
+ * different failure, not a third start), or a row that OPENS a turn of its own
+ * -- a nudge, a sub-agent completion, or an `inject` that `injectOpensTurn`
+ * classifies as new work -- since a failure before such a row belongs to a
+ * different turn and must not cost this turn its first Resume.
+ */
+export function sessionStartFailureStreak(messages: readonly ChatMessage[]): number {
+  let streak = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'error') {
+      if (isSessionStartFailed(m)) { streak++; continue }
+      break
+    }
+    if (isStopEvent(m)) break
+    if (m.role === 'nudge' || m.role === 'subagent') break
+    if (injectOpensTurn(m as { role: string; meta?: Record<string, unknown> | null })) break
+    if ((m.role === 'user' || m.role === 'assistant') && m.content) {
+      if (m.role === 'assistant' && isSystemNoticeKind(m.kind ?? (m.meta as { kind?: string } | undefined)?.kind)) continue
+      break
+    }
+  }
+  return streak
+}
+
+/**
+ * WIRE SHAPES, never rendered — the gateway's own English error prose, matched
+ * byte-for-byte against `chat_runner.py` (`_emit_error` / `_emit_stale` /
+ * `_emit_stall` and the `slot.append("error", …)` sites). On a row that offers
+ * Resume, a match is replaced by the catalog copy beside it, so the banner
+ * speaks the same verb as the button and translates with the rest of the card.
+ * Anything that does not match renders verbatim, so an unknown or newer gateway
+ * string still reaches the screen.
+ *
+ * Only "Connection lost" carries a detail — the process exit code, ` (exit N)` —
+ * captured and re-interpolated so the diagnostic survives the swap.
+ *
+ * Keyed by wire id with literal catalog keys so `check-i18n-keys.mjs` can
+ * resolve every `i18nT` target statically.
+ */
+const RETRY_PROSE = {
+  connection_lost: {
+    key: 'pages.chat.errorCard.retry_connection_lost',
+    wire: /^⟳ Connection lost( \(exit -?\d+\))? — please retry\.$/,
+  },
+  session_busy: { key: 'pages.chat.errorCard.retry_session_busy', wire: /^⟳ Session busy — please retry\.$/ },
+  turn_stalled: { key: 'pages.chat.errorCard.retry_turn_stalled', wire: /^⟳ Turn stalled — please retry\.$/ },
+  tool_stalled: { key: 'pages.chat.errorCard.retry_tool_stalled', wire: /^⟳ Tool appeared stalled — please retry\.$/ },
+  backend_hiccup: { key: 'pages.chat.errorCard.retry_backend_hiccup', wire: /^⟳ Backend hiccup — please retry\.$/ },
+} as const
+
+/**
+ * Localised, Resume-worded copy for a known gateway retry row, or `null` for
+ * anything else. Call it ONLY for a row that renders the Resume button: on a
+ * row with no control (a settled or historical error, or a surface with no turn
+ * to resume) the wire text must stand, because "resume to pick up where it
+ * stopped" beside nothing sends the reader looking for a button that is not
+ * there.
+ */
+export function retryProse(content: string): string | null {
+  for (const { key, wire } of Object.values(RETRY_PROSE)) {
+    const m = wire.exec(content)
+    if (m) return i18nT(key, { detail: m[1] ?? '' })
+  }
+  return null
+}
+
+export interface ErrorCardProps {
+  /**
+   * Server- or client-authored error prose; typed diagnostic prefixes are
+   * display-only. Rendered verbatim, except that on a row offering Resume a
+   * known gateway "please retry" string is shown as its localised Resume-worded
+   * equivalent (see {@link retryProse}).
+   */
+  content: string
+  meta?: ChatMessage['meta']
+  /**
+   * True on a `model_unentitled` row rendered by a surface that cannot offer
+   * one or both fix actions (a pane has no picker; an embed or popout has no
+   * settings route). The prose still names "the model picker" and "Settings →
+   * Chat", so the card says where those live instead of leaving the reader
+   * with an instruction and nothing to press.
+   */
+  unentitledElsewhere?: boolean
+  /**
+   * Continue handler. Passed ONLY for the newest error row of a slot whose last
+   * turn ended without a reply — a historical error further up the transcript is
+   * settled and must not offer to resume anything.
+   */
+  onContinue?: () => void
+  /** True while a continue request is in flight, so the press cannot double-fire. */
+  continuing?: boolean
+  /**
+   * The fix affordances for a model-entitlement rejection. When set, the card
+   * offers them INSTEAD of Continue: the backend has said retrying cannot help,
+   * so a resume button on this row would only replay the same rejection.
+   * `onPickModel` opens the session's model picker; `onOpenDefaultModel` deep
+   * links to Settings → Chat → Default Model, the value every new session
+   * inherits and the one that keeps re-creating this error until it changes.
+   */
+  onPickModel?: () => void
+  onOpenDefaultModel?: () => void
+  /**
+   * The fix affordance for an `auth_required` row: deep link to the Kiro
+   * sign-in card in Settings, where the user signs in to Kiro Crew's own
+   * identity again. Offered INSTEAD of Continue for the same reason as the
+   * entitlement actions -- a retry hits the same signed-out wall -- and on
+   * EVERY such row, because a lapsed sign-in is settled state the user still
+   * has to act on. Omitted on a surface with no settings route (embed, popout).
+   */
+  onOpenSignIn?: () => void
+  /**
+   * True on the newest `session_start_failed` row when the same session start
+   * has already failed `SESSION_START_REPEAT_REFUSAL_AT` times in a row with
+   * nothing but Resume presses between the attempts. The host withholds
+   * `onContinue` for that row (the server refuses the re-run too, with
+   * `session_start_repeat`), and this flag makes the card say WHY there is no
+   * Resume and what does end it: restarting the gateway. Without it the row
+   * would be a bare red line where the button used to be, and the loop from
+   * the field report -- Resume, same 90 s wall, Resume -- would simply become
+   * a dead end with no next step on it.
+   */
+  sessionStartRepeat?: boolean
+  /**
+   * The non-inference exit for a `usage_limit` row in a slot the header's
+   * "Request a Feature" action created (#13342): the repo's feature-request
+   * issue form. That action is an agent turn by design, so a spent allowance
+   * refuses it -- and this row was where the request dead-ended, at the one
+   * moment the user had no inference left. Offered INSTEAD of Continue, which
+   * would replay the rejection; the backend's own sentence (which limit, the
+   * request id) stays. The host passes it only for that slot: a usage limit in
+   * an ordinary chat has no form to offer and keeps today's card.
+   */
+  featureRequestFormUrl?: string
+  /**
+   * The fix affordance for a `materialization_changed` row: open this crew
+   * member's Capabilities pane, where the changed agent file is reviewed and
+   * saved. Offered INSTEAD of Continue: a retry repeats the same check.
+   * Omitted on a surface with no crew editor route (embed, popout).
+   */
+  onOpenCapabilities?: () => void
+}
+
+// No `shrink-0` and no `truncate`: every action sits in a flex row, and a
+// label longer than the card (the feature-request form's, which names its
+// destination and its cost, runs 44 chars in English and 62 in German) must
+// break into lines inside the card rather than run past its edge. The control
+// shrinks to its longest word and `text-balance` splits the label into two
+// even lines instead of a long line and a stray word. The icon beside the
+// label keeps its own `shrink-0`, so only the text gives.
+const ACTION_BTN =
+  'inline-flex items-center gap-2 text-[12px] leading-5 font-medium text-balance px-3 py-1 rounded-md border-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+
+/** The restart hint with its command as a `<code>` chip. The command is
+ *  interpolated verbatim (never translated) inside the `i18nT` call, and the
+ *  chip's position is found by rendering the same key once more with a
+ *  sentinel in the placeholder's place, so the chip lands wherever the
+ *  translation put `{{command}}`; a catalog that dropped the placeholder
+ *  renders the sentence unchanged rather than nothing. The two `i18nT` calls
+ *  are the only place the command text lives in this module. */
+function restartHint(): ReactNode {
+  const text = i18nT('pages.chat.errorCard.session_start_repeat_hint', { command: 'kirocrew restart' })
+  const marked = i18nT('pages.chat.errorCard.session_start_repeat_hint', { command: '\u0000' })
+  const at = marked.indexOf('\u0000')
+  if (at < 0) return text
+  const tail = marked.length - at - 1
+  const command = text.slice(at, text.length - tail)
+  if (!command) return text
+  return (
+    <>
+      {text.slice(0, at)}
+      <code className="font-mono text-[12px] px-1 py-0.5 rounded bg-bg-elevated ring-1 ring-inset ring-border" data-testid="error-card-restart-command">
+        {command}
+      </code>
+      {text.slice(text.length - tail)}
+    </>
+  )
+}
+/**
+ * The error row in a chat transcript.
+ *
+ * When the turn is genuinely resumable the card carries a Resume action beside
+ * the prose, and the gateway's own "please retry" wording is swapped for
+ * catalog copy that names the same verb ({@link retryProse}), so the banner
+ * never says "retry" next to a control that says "Resume". A row with no
+ * Resume control keeps the gateway text as written.
+ *
+ * The button is deliberately absent rather than disabled when the turn is not
+ * resumable — a permanently greyed control on a red card reads as a broken
+ * feature, and there is no state the user could reach that would enable it.
+ *
+ * A model-entitlement rejection is the one error whose fix is NOT a retry, so
+ * its row swaps Resume for the two actions that actually end it: pick a model
+ * the account is served, and change the default the next session would start on.
+ */
+export const ErrorCard = memo(function ErrorCard({
+  content: wireContent,
+  meta,
+  onContinue,
+  continuing,
+  onPickModel,
+  onOpenDefaultModel,
+  onOpenSignIn,
+  unentitledElsewhere,
+  featureRequestFormUrl,
+  sessionStartRepeat,
+  onOpenCapabilities,
+}: ErrorCardProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Swap the gateway's "please retry" wording ONLY on a row that renders the
+  // Resume button. A row with no control keeps the wire text: telling the
+  // reader to resume beside nothing is worse than the mismatch it would fix.
+  const content = (onContinue && retryProse(wireContent)) || wireContent
+  if (featureRequestFormUrl) {
+    // A feature request the plan could not afford: the one action that still
+    // ends it is the tracker's own form, which needs no agent turn. The prose
+    // (the provider's sentence, request id included) stays first, the one-line
+    // explanation says why a form and not a retry, and the link is styled as
+    // the row's primary action so it reads as the way forward rather than a
+    // footnote. A plain anchor, like Report a Problem's issue link: the desktop
+    // shell routes `_blank` to the system browser, and `noopener noreferrer`
+    // hands the new tab no handle back to this window.
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-usage-limit-fallback="true"
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {content}
+        </div>
+        <div className="text-[12px] leading-5 text-muted" data-testid="error-card-feature-request-hint">
+          {i18nT('pages.chat.errorCard.feature_request_form_hint')}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            href={featureRequestFormUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover no-underline`}
+            data-testid="error-card-feature-request-form"
+          >
+            <ExternalLink size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+            {i18nT('pages.chat.errorCard.feature_request_form')}
+          </a>
+        </div>
+      </div>
+    )
+  }
+  if (onOpenCapabilities) {
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-capabilities-changed="true"
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {i18nT('pages.chat.errorCard.capabilities_changed')}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenCapabilities}
+            className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+            data-testid="error-card-open-capabilities"
+          >
+            <ShieldCheck size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+            {i18nT('pages.chat.errorCard.open_capabilities')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+  if (onOpenSignIn) {
+    // A signed-out agent process: the one action that ends it is signing in
+    // again from Settings. The prose (the backend's own wording, which may
+    // still mention `kiro-cli login` for a kiro-cli-owned process) stays; the
+    // button is the in-product path for the Crew-owned one.
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-auth-required="true"
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {withOriginLink(content)}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenSignIn}
+            className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+            title={i18nT('pages.chat.errorCard.sign_in_hint')}
+            data-testid="error-card-sign-in"
+          >
+            <KeyRound size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+            {i18nT('pages.chat.errorCard.sign_in')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+  const displayText = chatErrorDisplayText(content, meta)
+  const unentitledActions = onPickModel || onOpenDefaultModel
+  // Name only the affordance THIS surface lacks: a pane has neither, an
+  // embed/popout has the picker but not the settings route. Saying "the
+  // picker is elsewhere" beside a live picker button misleads.
+  const elsewhereKey = !unentitledElsewhere
+    ? null
+    : !onPickModel && !onOpenDefaultModel
+      ? 'pages.chat.errorCard.elsewhere_hint'
+      : onPickModel && !onOpenDefaultModel
+        ? 'pages.chat.errorCard.elsewhere_settings_hint'
+        : null
+  const elsewhere = elsewhereKey !== null
+  if (unentitledActions) {
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {withOriginLink(displayText)}
+        </div>
+        {onPickModel && onOpenDefaultModel && (
+          // Both actions are needed, and a primary/secondary pair reads as
+          // pick-one. Say the dependency on the card itself, not in a tooltip,
+          // and quote the two button labels so the pair cannot read as the
+          // same action twice.
+          <div className="text-[12px] leading-5 text-muted" data-testid="error-card-both-hint">
+            {i18nT('pages.chat.errorCard.both_hint', {
+              pick: i18nT('pages.chat.errorCard.pick_model'),
+              default: i18nT('pages.chat.errorCard.default_model'),
+            })}
+          </div>
+        )}
+        {elsewhere && (
+          <div className="text-[12px] leading-5 text-muted" data-testid="error-card-elsewhere-hint">
+            {i18nT(elsewhereKey!)}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {onPickModel && (
+            <button
+              type="button"
+              onClick={onPickModel}
+              className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+              title={i18nT('pages.chat.errorCard.pick_model_hint')}
+              data-testid="error-card-pick-model"
+            >
+              <SlidersHorizontal size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+              {i18nT('pages.chat.errorCard.pick_model')}
+            </button>
+          )}
+          {onOpenDefaultModel && (
+            <button
+              type="button"
+              onClick={onOpenDefaultModel}
+              className={`${ACTION_BTN} bg-transparent text-text ring-1 ring-inset ring-border hover:bg-bg-elevated`}
+              title={i18nT('pages.chat.errorCard.default_model_hint')}
+              data-testid="error-card-default-model"
+            >
+              <Settings size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+              {i18nT('pages.chat.errorCard.default_model')}
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+  if (!onContinue) {
+    return (
+      <div
+        className="bg-danger-subtle text-danger text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-danger/15 self-center animate-scale-in"
+        data-testid="error-card"
+        style={{ overflowWrap: 'anywhere' }}
+      >
+        {withOriginLink(displayText)}
+        {elsewhere && (
+          <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
+            {i18nT(elsewhereKey!)}
+          </div>
+        )}
+        {sessionStartRepeat && (
+          // The same start failed twice; a third Resume would only fail the
+          // same way, so the button is gone and this line is the card's ONLY
+          // remaining next step. It therefore renders at body weight in the
+          // card's own colour, not as a muted footnote, and the command is a
+          // code chip so it reads as a thing to copy. The dashboard has no
+          // restart control on this surface, so the terminal is the next step.
+          <div className="text-[13px] leading-5 mt-1" data-testid="error-card-session-start-repeat-hint">
+            {restartHint()}
+          </div>
+        )}
+      </div>
+    )
+  }
+  return (
+    <div
+      className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex items-center gap-3 animate-scale-in"
+      data-testid="error-card"
+      data-continuable="true"
+    >
+      <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+        {withOriginLink(displayText)}
+      </div>
+      <button
+        type="button"
+        onClick={onContinue}
+        disabled={continuing}
+        className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+        title={i18nT('pages.chat.errorCard.resume_hint')}
+        data-testid="error-card-continue"
+      >
+        {continuing
+          ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+          : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+        {i18nT('pages.chat.errorCard.resume')}
+      </button>
+    </div>
+  )
+})

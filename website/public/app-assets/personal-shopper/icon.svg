@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M4.5 8h15l-1.1 11.2a1.6 1.6 0 0 1-1.6 1.4H7.2a1.6 1.6 0 0 1-1.6-1.4L4.5 8Z" stroke="var(--ico-a, currentColor)" stroke-width="1.4" stroke-linejoin="round" opacity="0.55"/>
+  <path d="M8.8 8V6.4a3.2 3.2 0 0 1 6.4 0V8" stroke="var(--ico-b, currentColor)" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M4.5 8h15l-.45 4.6H4.95L4.5 8Z" fill="var(--ico-b, currentColor)" fill-opacity="0.22"/>
+  <circle cx="12" cy="15.4" r="2.5" stroke="var(--ico-b, currentColor)" stroke-width="1.4" opacity="0.8"/>
+  <path d="M10.9 15.5l0.85 0.85 1.5-1.7" stroke="var(--ico-b, currentColor)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,5776 @@
+"""App backend process management — spawn, health check, stop, and proxy config.
+
+When an app declares a ``backend`` section in its manifest, KiroCrew manages
+the backend process lifecycle: spawn on enable, health-check, stop on disable.
+"""
+from __future__ import annotations
+
+import concurrent.futures
+import contextlib
+import hashlib
+import hmac
+import http.client
+import json
+import logging
+import os
+import platform
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import sysconfig
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
+from collections.abc import Iterator
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal
+
+from kiro_crew import pinned_fs, platform_compat
+from kiro_crew import shutdown_event as _gateway_shutdown_event
+from kiro_crew.apps import deps_boot as _deps_boot_module
+from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.execution import (
+    app_execution_denied,
+    is_builtin_app,
+    shipped_builtin_app_root,
+    shipped_builtin_module_path,
+    third_party_ceiling_closed,
+)
+from kiro_crew.apps.interpreter import app_deps_dir, path_command_is_abi_matched, resolve_app_python
+from kiro_crew.apps.manager import (
+    _DEPS_STAGING_SWEEP_RE,
+    _app_activation_denied,
+    _read_installed,
+    app_dir,
+    app_enabled_state,
+    get_app_manifest,
+    list_apps,
+)
+from kiro_crew.apps.registry import minimal_env
+from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.loader import config_dir
+from kiro_crew.constants import (
+    KIROCREW_SPAWN_INSTANCE_ENV,
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+)
+from kiro_crew.loopback_http import loopback_urlopen
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance_profiles import GOVERNANCE_ERROR_REASON
+from kiro_crew.sandbox import (
+    MD_NOTEBOOK_APP_NAME,
+    RLIMIT_PROFILE_BUILD,
+    RLIMIT_PROFILE_TOOL,
+    app_backend_visible_targets,
+    carveout_shadowed_by_foreign_mask,
+    cgroup_scope_argv,
+    popen_limited,
+    run_limited,
+    wrap_argv,
+)
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.sel import sel
+from kiro_crew.session_pid import group_vouching_available, signal_orphaned_spawn_group
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+
+class _BackendShutdownEvent:
+    """Expose timeout-aware waits for synchronous backend supervisor threads.
+
+    The process-wide shutdown signal is asyncio-native and cannot be awaited from these
+    threads. Polling it through a private never-set threading event preserves prompt
+    shutdown without changing the shared async API.
+    """
+
+    _POLL_INTERVAL = 0.1
+
+    def is_set(self) -> bool:
+        return _gateway_shutdown_event.is_set()
+
+    def wait(self, timeout: float) -> bool:
+        if self.is_set():
+            return True
+        deadline = time.monotonic() + max(0.0, timeout)
+        sleeper = threading.Event()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.is_set()
+            sleeper.wait(min(remaining, self._POLL_INTERVAL))
+            if self.is_set():
+                return True
+
+
+shutdown_event = _BackendShutdownEvent()
+
+try:  # optional dependency: the digest has a platform-module fallback
+    from packaging.markers import default_environment as _default_marker_environment
+except Exception:  # pragma: no cover - packaging ships with pip but is not guaranteed
+    _default_marker_environment = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
+_MIN_PORT = 9100
+_MAX_PORT = 9200
+_HEALTH_CHECK_TIMEOUT = 5
+# How much of a failed probe's exception message reaches the log. Part of it is the app
+# backend's own bytes (see _probe_failure_detail), and a status line may be 64 KB long.
+_PROBE_DETAIL_MAX_CHARS = 120
+_HEALTH_CHECK_RETRIES = 15
+_HEALTH_CHECK_INTERVAL = 2.0
+# ``healthCheck`` is app-authored text. A leading slash terminates the URL authority;
+# the remaining class is the ordinary RFC 3986 path/query set with characters that
+# can be parsed inconsistently (userinfo, fragments, backslashes, brackets) excluded.
+_HEALTH_PATH_RE = re.compile(r"\A/[A-Za-z0-9._~!$&'()*+,;=:/?%-]*\Z")
+_warned_health_paths: set[str] = set()
+_health_warn_lock = threading.Lock()
+
+# Post-startup liveness watch (see _watch_backend_health). The startup poll above only
+# establishes that a backend CAME UP; without a standing watch `healthy` would be a
+# write-once cache and a backend that died later would keep the reverse proxy routing to
+# a dead port. The interval is far coarser than the startup one because it runs for the
+# whole life of every backend, and nothing is waiting on it — a demotion that lands one
+# interval late costs a few refused requests, whereas a tight poll costs one HTTP round
+# trip per backend forever.
+_HEALTH_WATCH_INTERVAL = 15.0
+# Consecutive failed probes of a process that is still ALIVE before it is demoted. A
+# backend can be briefly busy (a slow request, a GC pause), so demoting on a single miss
+# would take a working app offline; an exited process needs no threshold at all because
+# it cannot recover. See _watch_backend_health.
+_HEALTH_WATCH_FAILURES = 3
+# Consecutive successful liveness sweeps before a replacement is considered stable enough
+# to reset its crash-restart budget. A startup health gate proves only that the backend
+# came up; this window prevents a post-gate flapper from restarting forever at 1s.
+_RESTART_STABLE_SWEEPS = 4
+# A spawned backend that exits cannot recover by itself. The health watch first uses a
+# bounded fast exponential ramp while the app is positively enabled. The first
+# replacement attempt is immediate; seven subsequent waits cover a transient per-user
+# service-manager outage of roughly 45 seconds with margin
+# (0+1+2+4+8+16+30+30 = 91 seconds). After that ramp, retries continue indefinitely at
+# a slow steady interval: an enabled app must not remain dead waiting for an operator,
+# while the interval keeps persistent failures cheap. The counter resets only after the
+# replacement remains healthy for `_RESTART_STABLE_SWEEPS`.
+_RESTART_ON_EXIT_INITIAL_DELAY = 1.0
+_RESTART_ON_EXIT_MAX_DELAY = 30.0
+_RESTART_ON_EXIT_FAST_ATTEMPTS = 8
+_RESTART_STEADY_INTERVAL = 300.0
+_SETTLE_UNRESOLVED_WARN_AFTER = 20
+# Serializes health-driven MCP reconciliation (see _set_backend_health). Deliberately
+# NOT `_lock`: the reconcile does manifest + config file I/O, and holding `_lock` across
+# it would block the reverse proxy's get_app_backend_port on every request and risk a
+# deadlock through the bridges <-> backend import cycle.
+# RE-ENTRANT: the health path acquires this and then calls into bridges, whose MCP and
+# agent writers acquire it too (see health_reconcile_lock). A plain Lock would deadlock
+# on that re-entry, and dropping it from either side would leave the two families of
+# writer unordered again.
+_health_reconcile_lock = threading.RLock()
+
+# Spawn survival check: poll the freshly-spawned child over a short grace window to
+# confirm it survived its initial bind (an immediate exit -> EADDRINUSE crash-loop must
+# be caught, see _start_app_backend_body). The loop returns early on either outcome -
+# the child exiting, or our own child owning the listener - so a healthy backend pays
+# the full window only where ownership cannot be proven (no port to observe, or no
+# port->PID tool on the host); see _survived_spawn. Exposed as module constants so the
+# test harness can widen the window: under heavy pytest-xdist parallelism (-n auto, ~32
+# workers) a sandboxed child can take longer than the default window just to reach its
+# exit, which would otherwise make the immediate-exit detection test flaky.
+_SPAWN_SURVIVAL_CHECKS = 8
+_SPAWN_SURVIVAL_INTERVAL = 0.2
+_PID_ANCESTRY_MAX_DEPTH = 8  # bound the parent walk when proving listener ownership
+_PORT_PROBE_TIMEOUT = 0.15  # cheap loopback gate before the costly port->PID lookup
+# Ceiling on parallel boot spawns. Each one forks a sandboxed interpreter, so an
+# unbounded fan-out on a host with many installed apps would trade boot latency
+# for a CPU/memory spike at the worst possible moment.
+_BOOT_SPAWN_MAX_WORKERS = 8
+
+#: Said once per process: a centrally governed host with no OS confinement (see the spawn).
+_warned_unconfined_cache = False
+
+# Startup stale-reap timing (see _reap_stale_app_backends). The SIGTERM grace is
+# applied PER orphan, not shared across the batch.
+_REAP_SIGTERM_GRACE = 3.0  # seconds to wait for an orphan to exit after SIGTERM
+_REAP_POLL_INTERVAL = 0.1  # liveness re-poll cadence during the grace window
+
+
+# ---------------------------------------------------------------------------
+# Port allocation
+# ---------------------------------------------------------------------------
+
+_allocated_ports: dict[str, int] = {}  # app_name -> port
+
+
+class PortUnavailableError(RuntimeError):
+    """A fixed manifest port is already reserved by a different app."""
+
+
+def _find_free_port() -> int:
+    """Find a free TCP port in the app range.
+
+    Callers that go on to SPAWN must use ``_reserve_free_port`` instead: this
+    function only probes, so two concurrent callers can be handed the same port.
+    """
+    for port in range(_MIN_PORT, _MAX_PORT):
+        if port in _allocated_ports.values():
+            continue
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
+                return port
+        except OSError:
+            continue
+    raise RuntimeError(f"No free ports in range {_MIN_PORT}-{_MAX_PORT}")
+
+
+def _survived_spawn(proc: Any, port: int | None = None) -> bool:
+    """Return whether a just-spawned child survived its initial bind.
+
+    Detects the failure this guards against — an immediate exit, e.g. EADDRINUSE
+    from a port collision — while NOT paying the full grace window when the child
+    is healthy. Sleeping the whole ~1.6s budget on the happy path would add that
+    much pure boot latency per app, which under concurrent boot is the single
+    largest startup cost.
+
+    The early exit is driven by POSITIVE evidence: once OUR OWN child owns the
+    listening socket on *port*, it has completed the very bind whose failure this
+    function exists to catch, so waiting longer cannot change the answer.
+
+    Two things are deliberately NOT accepted as success:
+
+    * **Elapsed liveness alone** — a child that crashes a few polls in (slow
+      sandboxed interpreter, loaded host) would be mis-reported as started.
+    * **Someone else's listener** — "the port is open" is not the same claim as
+      "our child bound it". With a fixed manifest port, another app (or any
+      unrelated process) can already hold it, and our child is then the one about
+      to die of EADDRINUSE; treating that as survival would report a doomed pid as
+      started and route two apps at one backend.
+
+    Ownership accepts our pid OR any descendant of it, because the sandbox
+    launcher execs the real server as a child. When ownership cannot be
+    established at all (no port to observe, or no port->PID tool on the host), it
+    degrades to polling the full budget.
+
+    The ownership probe shells out to lsof (~150ms), so it is gated behind a cheap
+    loopback connect and is not run on every poll: the deadline below stays honest
+    about wall-clock rather than adding the probe's cost to each interval, which
+    would otherwise make the failure path take LONGER than that budget.
+    """
+
+    can_check_owner = port is not None and platform_compat.listening_pid_tool_available()
+    deadline = time.monotonic() + _SPAWN_SURVIVAL_CHECKS * _SPAWN_SURVIVAL_INTERVAL
+    while True:
+        time.sleep(_SPAWN_SURVIVAL_INTERVAL)
+        if proc.poll() is not None:
+            return False
+        if (
+            can_check_owner
+            # Cheap gate first: no listener at all means there is nothing to
+            # attribute, so skip the expensive port->PID lookup entirely.
+            and _port_is_listening(port)  # type: ignore[arg-type]
+            and _spawn_owns_listener(port, proc.pid)  # type: ignore[arg-type]
+        ):
+            return True
+        if time.monotonic() >= deadline:
+            return proc.poll() is None
+
+
+def _port_is_listening(port: int) -> bool:
+    """Whether anything accepts TCP connections on *port* (loopback, cheap)."""
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=_PORT_PROBE_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
+def _listening_pids(port: int) -> list[int]:
+    """PIDs holding a LISTEN socket on *port* (best-effort, never raises)."""
+
+    try:
+        return platform_compat.find_listening_pids(port)
+    except Exception:  # noqa: BLE001 — a probe failure must never fail a spawn
+        return []
+
+
+def _probe_adoption_health(port: int, health_path: str) -> bool:
+    """Whether an already-running backend answers its health check."""
+
+    return _health_probe(port, health_path, timeout=3).healthy
+
+
+def _capture_adopted_owners(
+    app_name: str, port: int, health_path: str
+) -> tuple[list[int], dict[int, str]] | None:
+    """Owner PIDs + start-time identities for the backend answering on loopback.
+
+    The health probe and the owner lookup are separate observations, so the
+    responder can exit between them and the lookup would attribute ownership to
+    a bystander (e.g. a coexisting v6-only wildcard listener the probe never
+    reached). Close that window with a consistency sandwich: capture owners and
+    identities, then require the health check to STILL answer and the owner set
+    to read back unchanged. Any drift means the observations do not describe one
+    stable backend — refuse adoption; the next start simply re-probes.
+
+    Returns ``None`` (with a logged reason) when no owner is attributable, an
+    owner's start-time identity is unreadable (an owner that cannot be
+    positively named later cannot be stopped — refuse rather than adopt a
+    backend the gateway could never revoke), or the sandwich detects drift.
+    """
+    owners: list[int] = platform_compat.loopback_owner_pids(
+        platform_compat.find_port_listeners(port)
+    )
+    if not owners:
+        logger.warning(
+            "App %s: cannot record owning PIDs on 127.0.0.1:%d "
+            "(port->PID tool unavailable?) — skipping adoption",
+            app_name, port,
+        )
+        return None
+    start_times: dict[int, str] = {}
+    for pid in owners:
+        st = _proc_start_time(pid)
+        if st is not None:
+            start_times[pid] = st
+    if set(start_times) != set(owners):
+        # An owner with no readable identity could never be signalled later —
+        # stop and uninstall would skip it, leaving a third-party backend
+        # running after its trust was revoked. Adoption is only offered when
+        # every owner can be positively named, so refusal here fails closed:
+        # the gateway declines to manage what it could not later stop.
+        logger.warning(
+            "App %s: start-time identity unreadable for owner PID(s) %s on "
+            "port %d — refusing adoption (an owner that cannot be identified "
+            "cannot be stopped later)",
+            app_name, sorted(set(owners) - set(start_times)), port,
+        )
+        return None
+    if not _probe_adoption_health(port, health_path):
+        logger.warning(
+            "App %s: backend on port %d stopped answering its health check "
+            "while ownership was being recorded — skipping adoption",
+            app_name, port,
+        )
+        return None
+    owners_recheck = platform_compat.loopback_owner_pids(platform_compat.find_port_listeners(port))
+    if set(owners_recheck) != set(owners):
+        logger.warning(
+            "App %s: port %d owners changed while ownership was being recorded "
+            "(%s -> %s) — skipping adoption",
+            app_name, port, owners, owners_recheck,
+        )
+        return None
+    return owners, start_times
+
+
+def _pid_is_self_or_descendant_of(pid: int, ancestor: int) -> bool:
+    """Whether *pid* is *ancestor* or is descended from it (bounded walk)."""
+
+    if pid == ancestor:
+        return True
+    current = pid
+    for _ in range(_PID_ANCESTRY_MAX_DEPTH):
+        try:
+            parent = platform_compat.get_ppid(current)
+        except Exception:  # noqa: BLE001
+            return False
+        if parent <= 0:
+            return False
+        if parent == ancestor:
+            return True
+        current = parent
+    return False
+
+
+def _spawn_owns_listener(port: int, spawn_pid: int) -> bool:
+    """Whether the listener on *port* is our spawn (or one of its descendants)."""
+
+    return any(_pid_is_self_or_descendant_of(pid, spawn_pid) for pid in _listening_pids(port))
+
+
+class _SpawnOwnershipLost(RuntimeError):
+    """The spawn does not own the placeholder that authorizes reservation."""
+
+
+def _reserve_free_port(app_name: str) -> int:
+    """Atomically pick a free port and record it against *app_name*.
+
+    Boot starts app backends CONCURRENTLY, so selection and reservation must be
+    one critical section. Probing without reserving lets two apps be handed the
+    same port — both children then bind it and the loser dies with EADDRINUSE,
+    which is the crash-loop the post-spawn survival check exists to catch. The
+    reservation is overwritten with the real port on success and cleared on
+    failure by the existing spawn bookkeeping.
+
+    When the current spawn has an owner, its placeholder identity is checked in
+    the same critical section as the reservation. A retired spawn therefore cannot
+    claim a port after a later start has replaced its placeholder.
+    """
+    _spawn_owner = _spawn_publication_owner.get()
+    with _lock:
+        if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
+            raise _SpawnOwnershipLost(app_name)
+        port = _find_free_port()
+        # Reservation ownership follows the process-table slot: a runtime writer must
+        # own `_processes[app_name]`. Boot pre-claims run before placeholders exist;
+        # the first owning spawn's identity-gated failure cleanup releases that claim.
+        _allocated_ports[app_name] = port
+    return port
+
+
+def _claim_port(app_name: str, port: int) -> None:
+    """Reserve a FIXED manifest port, refusing one another app already holds.
+
+    ``_find_free_port`` skips ports already in ``_allocated_ports``, but
+    without this up-front claim a fixed-port app's port would be recorded only
+    AFTER spawning. During concurrent
+    boot an auto-port app selecting inside that window could be handed the same
+    number, so one of the two children would die of EADDRINUSE and its backend
+    would stay unavailable. Claiming the fixed port up front closes that window.
+
+    The claim must also FAIL when the port is already reserved: fixed ports are
+    required to sit inside the auto range, so the reverse race is real (the auto
+    app gets there first). Recording it anyway would map two apps to one port and
+    reintroduce exactly the EADDRINUSE crash this is meant to prevent. Re-claiming
+    the SAME app's own port is idempotent, so a retry/restart is never refused.
+
+    Raises:
+        PortUnavailableError: another app already holds *port*.
+    """
+    _spawn_owner = _spawn_publication_owner.get()
+    with _lock:
+        if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
+            raise _SpawnOwnershipLost(app_name)
+        holder = next(
+            (name for name, taken in _allocated_ports.items() if taken == port),
+            None,
+        )
+        if holder is not None and holder != app_name:
+            raise PortUnavailableError(
+                f"app {app_name} declares fixed port {port}, already reserved by {holder}"
+            )
+        # Reservation ownership follows the process-table slot: a runtime writer must
+        # own `_processes[app_name]`. Boot pre-claims run before placeholders exist;
+        # the first owning spawn's identity-gated failure cleanup releases that claim.
+        _allocated_ports[app_name] = port
+
+
+# ---------------------------------------------------------------------------
+# Process tracking
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AppProcess:
+    """Tracks a running app backend process."""
+
+    app_name: str = ""
+    port: int = 0
+    pid: int = 0
+    proc: subprocess.Popen | None = field(default=None, repr=False)
+    log_fh: Any = field(default=None, repr=False)
+    healthy: bool = False
+    # The `healthy` value last SUCCESSFULLY reconciled into mcp.json, or None if nothing
+    # has been written for this record yet. Distinct from `healthy` because the flag
+    # moves even when the mcp.json write fails; the gap between them is what the watch
+    # retries. Deliberately absent from to_dict(): internal bookkeeping, not API.
+    mcp_healthy: bool | None = None
+    started_at: float = 0.0
+    log_path: str = ""
+    # Stable identity persisted beside ``pid``. Restart/stop cleanup removes a pidfile
+    # row only while both values still identify this process, so a concurrently-recorded
+    # successor under the same app name cannot be forgotten.
+    pid_start_time: str | None = None
+    # The per-spawn ``KIROCREW_SPAWN_INSTANCE`` token stamped on this backend's
+    # environment (None for an adopted record). It is what vouches the members of
+    # the backend's process group once the leader itself has exited, so a stop that
+    # finds the root dead can still drain the tree the root left behind.
+    spawn_instance: str | None = None
+    adopted_pids: list[int] = field(default_factory=list)
+    # PID-reuse guard for the adopted set: pid -> platform_compat.process_start_time
+    # token captured at adoption. stop signals a recorded PID only when its live
+    # start time still POSITIVELY matches (same convention as the spawned-backend
+    # reap); a missing or mismatched token means the PID may name another process
+    # now, and it is never signalled.
+    adopted_start_times: dict[int, str] = field(default_factory=dict)
+    # True only for the transient placeholder a single-flighting spawn inserts while it
+    # allocates a port + launches the process; replaced by the real record on success or
+    # popped on failure. Concurrent start_app_backend calls see it and skip duplicate spawn.
+    starting: bool = False
+    # True when the GATEWAY created this record by starting or adopting the backend,
+    # which is what makes the execution ceiling applicable to it. Set by
+    # `_start_app_backend_body` alone, so it cannot be influenced by anything the app
+    # writes: the alternative, reading the app's `installed.json` to decide whether the
+    # ceiling applies, let an app trusted to run code delete its own metadata and have
+    # the revocation sweep skip it. A record the gateway did not create carries no claim
+    # about a process the gateway started, so the sweep leaves it alone.
+    gateway_started: bool = False
+    # The builtin CLASSIFICATION the admission gate reached on the validated execution
+    # target, decided once when this record was created. A later re-check reads this
+    # boolean and never re-resolves anything, which is the point: storing the path
+    # instead deferred the decision to a `Path.resolve` at re-check time, and the app
+    # owns that filesystem -- replacing its entry point with a symlink into the shipped
+    # builtin root would have won the exemption after the fact. Re-deriving it from
+    # `installed.json` is worse still, since `origin` is read verbatim from a file the
+    # app can write. False denies, so anything unclassified is judged third-party.
+    # Deliberately absent from to_dict(): internal bookkeeping.
+    admitted_builtin: bool = False
+
+    def is_running(self) -> bool:
+        """Whether the tracked process is still alive.
+
+        A backend we spawned answers from its own already-reaped exit status, so this
+        costs no syscall to the app and cannot block. An ADOPTED backend belongs to
+        another supervisor and we hold no handle for it, so the only honest answer is
+        that we still track it — there, ``healthy`` (kept current by
+        :func:`_watch_backend_health`) is the load-bearing signal.
+        """
+        if self.proc is None:
+            return True
+        return self.proc.poll() is None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "app_name": self.app_name,
+            "port": self.port,
+            "pid": self.pid,
+            "healthy": self.healthy,
+            "running": self.is_running(),
+            "started_at": self.started_at,
+            "log_path": self.log_path,
+        }
+
+
+_processes: dict[str, AppProcess] = {}  # app_name -> AppProcess
+# Carries the exact placeholder owned by the current spawn body without widening
+# that body's long-standing two-argument seam (many tests replace it directly).
+_spawn_publication_owner: ContextVar[AppProcess | None] = ContextVar(
+    "app_backend_spawn_publication_owner", default=None
+)
+# Consecutive restart attempts survive replacement generations and reset only after one
+# remains healthy for the sustained liveness window. Protected by `_lock` together with
+# `_processes`.
+_restart_attempts: dict[str, int] = {}
+# Monotonic lifecycle identity for restart handoffs. Every deliberate stop and every
+# public/external start advances the generation and records which transition won; the
+# restart's own spawn deliberately does neither. Protected by ``_lock``. Transition
+# bumps additionally take ``_health_reconcile_lock`` so a post-spawn compare + teardown
+# is atomic with respect to a later explicit start.
+_LIFECYCLE_START = "start"
+_LIFECYCLE_STOP = "stop"
+_lifecycle_generation: dict[str, tuple[int, str]] = {}
+
+
+def _advance_lifecycle_locked(app_name: str, transition: str) -> tuple[int, str]:
+    """Advance one app's lifecycle; caller holds ``_lock``."""
+    generation = _lifecycle_generation.get(app_name, (0, _LIFECYCLE_START))[0] + 1
+    state = (generation, transition)
+    _lifecycle_generation[app_name] = state
+    return state
+
+
+# Apps whose backends spawn real build workloads (vite/pip) and need the
+# elevated-but-finite NOFILE ceiling as the workload's ANCESTOR. Every other
+# app backend keeps the standard (operator-configurable) resource policy.
+_BUILD_CAPABLE_APPS = frozenset({"dev-fleet"})
+
+# requirements.txt provisioning (pip --target into apps/interpreter.app_deps_dir).
+# The stamp records the digest a successful install came from (requirements
+# bytes + the installing interpreter's ABI tag - see _deps_digest), so a start
+# where neither changed skips pip entirely. Staging/prior are transient swap
+# directories: pip fills staging, success renames it live, and prior briefly
+# holds the outgoing install so a failure at any point leaves either the old
+# tree or the new one - never a half-replaced mix.
+_DEPS_STAMP_NAME = ".requirements-sha256"
+_DEPS_STAGING_NAME = ".kirocrew-deps-staging"
+
+
+#: Read caps for app-controlled provisioning inputs: the gateway buffers
+#: these in ITS OWN memory, so an oversized requirements.txt or stamp file
+#: (or a build hook flooding stderr) must exhaust a bounded buffer, not the
+#: gateway. 1 MiB is orders of magnitude beyond any real requirements.txt.
+_DEPS_REQ_MAX_BYTES = 1024 * 1024
+_DEPS_STAMP_MAX_BYTES = 4096
+_DEPS_PIP_STDERR_TAIL = 16 * 1024
+_DEPS_PRIOR_NAME = ".kirocrew-deps-prior"
+
+
+def _requirements_volatile(requirements: bytes) -> bool:
+    """True when the stamp digest cannot prove the resolved set unchanged.
+
+    The digest covers the top-level requirements.txt bytes only, so any line
+    whose RESOLUTION can change while the line itself does not defeats the
+    stamp: file references (``-r``/``-c``, attached or spaced), editables,
+    local paths, VCS and URL requirements, and ``name @ url`` direct
+    references. For these the caller disables stamp reuse entirely
+    (reprovision every start) rather than re-implementing pip's requirements
+    grammar here - over-matching a rare exotic line costs one redundant pip
+    run, under-matching serves stale dependencies.
+    """
+    for raw in requirements.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(b"#"):
+            continue
+        if line.startswith(
+            (
+                b"-r",
+                b"-c",
+                b"-e",
+                b"-f",
+                b"--requirement",
+                b"--constraint",
+                b"--editable",
+                b"--find-links",
+                b"--no-index",
+                b"--index-url",
+                b"--extra-index-url",
+            )
+        ):
+            # File/constraint references, editables, and RESOLUTION-LOCATION
+            # options: an unchanged `--find-links wheelhouse` line resolves
+            # against local wheels whose CONTENT can change - the stamp
+            # cannot prove the installed set unchanged for any of these.
+            return True
+        if b"://" in line or re.search(rb"\s@\s", line):
+            return True
+        if line.startswith((b".", b"/", b"~")) or re.match(rb"[A-Za-z]:[\\/]", line):
+            return True
+        # A BARE relative path (wheels/pkg.whl) is a local artifact whose
+        # content can change under an unchanged line - any non-option line
+        # carrying a path separator is volatile. Over-matching an exotic
+        # marker expression costs one redundant pip run; under-matching
+        # serves a stale local wheel.
+        if b"/" in line or b"\\" in line:
+            return True
+        # A bare ARCHIVE filename (vendor.whl - no separator at all) is
+        # still a local artifact: pip resolves it against the cwd (the app
+        # root), and its content can change under an unchanged line.
+        if line.lower().endswith(
+            (b".whl", b".zip", b".tar.gz", b".tgz", b".tar.bz2", b".tar.xz", b".tar")
+        ):
+            return True
+    return False
+
+
+def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
+    """True when the provisioned tree's stamp names the digest for the
+    CURRENT interpreter and the CURRENT requirements bytes.
+
+    The activation gate, not the provisioning gate: after a Python upgrade a
+    reprovision is attempted, but if it FAILS the stale tree (wheels built
+    for the old ABI) is still on disk - injecting it via PYTHONPATH crashes
+    the backend at import. The stamp digest folds the interpreter's cache
+    tag, platform and full version, so an old-ABI tree can never present a
+    matching stamp. Reads are bounded and no-follow, mirroring the
+    provisioning path; every failure reads as "not current" (no activation -
+    safe direction: the backend runs without the deps and surfaces the
+    provisioning error, instead of crashing on foreign wheels).
+    """
+    try:
+        # Same reader shape as provisioning: resolve, containment-check
+        # against the app root, then a component-pinned no-follow open. A
+        # SUPPORTED in-tree symlink (which provisioning accepts) must also
+        # activate - a direct O_NOFOLLOW open on the link name would refuse
+        # it and strand a successfully provisioned app without its deps.
+        root_resolved = root.resolve(strict=True)
+        open_target = req_file.resolve(strict=True)
+        if root_resolved != open_target and root_resolved not in open_target.parents:
+            return False
+        rfd = _open_contained_nofollow(root_resolved, open_target)
+        with os.fdopen(rfd, "rb") as rfh:
+            if not stat.S_ISREG(os.fstat(rfh.fileno()).st_mode):
+                return False
+            req_bytes = rfh.read(_DEPS_REQ_MAX_BYTES + 1)
+        if len(req_bytes) > _DEPS_REQ_MAX_BYTES:
+            return False
+        digest = _deps_digest(req_bytes)
+
+        def _read_marker(name: str) -> str | None:
+            marker = app_deps_dir(root) / name
+            if platform_compat.is_link_or_junction(marker):
+                return None
+            try:
+                mfd = os.open(str(marker), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            except OSError:
+                return None
+            with os.fdopen(mfd, "rb") as mfh:
+                if not stat.S_ISREG(os.fstat(mfh.fileno()).st_mode):
+                    return None
+                return mfh.read(_DEPS_STAMP_MAX_BYTES).decode("utf-8").strip()
+
+        if digest:
+            stamp_val = _read_marker(_DEPS_STAMP_NAME)
+            if stamp_val is not None and stamp_val == digest:
+                return True
+        # Fall back to the ABI tag: a stamp that mismatches only because the
+        # REQUIREMENTS (or their marker environment) changed still names a
+        # tree of importable wheels - the last good install keeps serving
+        # when a refresh fails (offline pip), exactly as it did before the
+        # stamp gate. A missing or foreign-ABI tag never activates.
+        return _read_marker(_DEPS_ABI_NAME) == _deps_abi_tag()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+_DEPS_ABI_NAME = ".abi-sha256"
+
+
+def _deps_abi_tag() -> str:
+    """ABI identity of the CURRENT interpreter, independent of requirements.
+
+    What makes ``pip --target`` wheels importable or not: the implementation
+    cache tag (``cpython-312``) and the build platform. Recorded beside the
+    full stamp so activation can tell "stale REQUIREMENTS on the right ABI"
+    (the prior tree still serves - a failed refresh must not strand the
+    backend without its last good install) from "wrong ABI" (never inject).
+    """
+    tag = sys.implementation.cache_tag or ""
+    plat = sysconfig.get_platform()
+    return hashlib.sha256(f"{tag}\n{plat}\n".encode()).hexdigest()
+
+
+def _deps_digest(requirements: bytes) -> str:
+    """Stamp digest for a provisioned deps dir.
+
+    Folds the installing interpreter's cache tag (e.g. ``cpython-312``), the
+    platform tag (e.g. ``macosx-11.0-arm64``), AND the full interpreter
+    version in with the requirements bytes: wheels installed by
+    ``pip --target`` are ABI- and architecture-specific, and a
+    requirements.txt can carry ``python_full_version`` environment markers
+    that flip on a PATCH upgrade - so after a gateway Python upgrade of any
+    granularity, or a cross-architecture home migration, an UNCHANGED
+    requirements.txt must still reprovision. A requirements-only stamp would
+    skip pip and leave a stale or incompatible install live.
+
+    Scope: the digest covers the top-level requirements.txt bytes only.
+    The stamp-skip caller compensates: a requirements.txt that references
+    other files (``-r``/``-c``) disables the skip entirely, so a change
+    confined to an included file can never be masked by a matching stamp.
+    """
+    tag = sys.implementation.cache_tag or ""
+    plat = sysconfig.get_platform()
+    pyver = platform.python_version()
+    # The FULL PEP 508 marker environment, not just the interpreter tuple:
+    # a requirement conditioned on platform_release / platform_version /
+    # implementation details flips on an OS update while the requirements
+    # bytes (and interpreter) stay identical - the stamp must not prove
+    # such a set unchanged. Sorted key=value lines make the digest stable.
+    if _default_marker_environment is not None:
+        marker_env = "\n".join(
+            f"{k}={v}" for k, v in sorted(_default_marker_environment().items())
+        )
+    else:  # packaging unavailable: fall back to the platform module
+        marker_env = "\n".join(
+            (
+                f"platform_release={platform.release()}",
+                f"platform_version={platform.version()}",
+                f"platform_machine={platform.machine()}",
+                f"platform_system={platform.system()}",
+                f"implementation_name={sys.implementation.name}",
+            )
+        )
+    return hashlib.sha256(
+        f"{tag}\n{plat}\n{pyver}\n{marker_env}\n".encode() + requirements
+    ).hexdigest()
+
+
+_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Node.js binary resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_nvm_path(binary_name: str) -> str | None:
+    """Resolve a binary via nvm, returning its full path or None.
+
+    Sources ~/.nvm/nvm.sh to find the nvm-managed node path, then resolves
+    the requested binary relative to that directory.
+    """
+    nvm_dir = os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm"))
+    nvm_sh = os.path.join(nvm_dir, "nvm.sh")
+    if not os.path.isfile(nvm_sh):
+        return None
+    try:
+        result = subprocess.run(
+            ["bash", "-c", f'source "{nvm_sh}" --no-use && nvm which current'],
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            nvm_node = result.stdout.strip()
+            target = os.path.join(os.path.dirname(nvm_node), binary_name)
+            if os.path.isfile(target):
+                return target
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _find_node_binary() -> str | None:
+    """Find a usable node binary.
+
+    Search order:
+    1. nvm-managed node (via ~/.nvm/nvm.sh)
+    2. System PATH
+    """
+    nvm_path = _resolve_nvm_path("node")
+    if nvm_path:
+        return nvm_path
+    return shutil.which("node")
+
+
+def _find_npm_binary() -> str | None:
+    """Find npm binary, same search order as node."""
+    nvm_path = _resolve_nvm_path("npm")
+    if nvm_path:
+        return nvm_path
+    return shutil.which("npm")
+
+
+def _is_asgi_entry(entry: Any) -> bool:
+    """Heuristic: check if a Python entry point looks like an ASGI app."""
+    try:
+        content = entry.read_text(encoding="utf-8", errors="replace")
+        return "FastAPI(" in content and "uvicorn" in content.lower()
+    except OSError:
+        return False
+
+
+def _is_shell_entry(entry: Path) -> bool:
+    """Heuristic: is this entry point a shell launcher script?
+
+    True for a ``.sh`` file, or an extensionless executable whose first line
+    is a non-Python shebang (e.g. ``bin/<name>`` with
+    ``#!/usr/bin/env bash``). Files with any other extension (``.py``,
+    ``.js``, ...) and python-shebang launchers are NOT shell entries — they
+    keep their existing interpreter branches.
+    """
+    name = entry.name
+    if name.endswith(".sh"):
+        return True
+    if "." in name:
+        return False  # some other extension — not a bare launcher
+    if not os.access(entry, os.X_OK):
+        return False
+    try:
+        with open(entry, "rb") as fh:
+            first_line = fh.readline(256)
+    except OSError:
+        return False
+    return first_line.startswith(b"#!") and b"python" not in first_line
+
+
+def _shebang_argv(entry: Path) -> list[str]:
+    """Interpreter argv from a script's shebang, or ``["/bin/sh"]`` fallback.
+
+    A non-executable script can't rely on kernel shebang exec, so re-create
+    it: parse ``#!<interp> [arg]`` and return ``[interp, arg]`` (the kernel
+    passes at most one argument; whitespace-splitting covers the
+    ``#!/usr/bin/env bash`` form). Running bash source under ``/bin/sh``
+    breaks on bash-isms like ``set -euo pipefail`` wherever sh is dash, so
+    /bin/sh is only the last resort for a script with no shebang at all.
+    """
+    try:
+        with open(entry, "rb") as fh:
+            first = fh.readline(256)
+    except OSError:
+        return ["/bin/sh"]
+    if not first.startswith(b"#!"):
+        return ["/bin/sh"]
+    try:
+        parts = first[2:].decode("utf-8", "strict").strip().split()
+    except UnicodeDecodeError:
+        return ["/bin/sh"]
+    return parts if parts else ["/bin/sh"]
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ActivationVerdict:
+    """Result of re-vetting an app before a restart attempt.
+
+    ``denied`` carries an affirmative policy denial or evaluation error.
+    ``transient`` identifies governance-evaluator errors so restart supervision
+    refuses the current attempt while preserving its retry cadence.
+    """
+
+    denied: str | None = None
+    transient: bool = False
+
+
+def _activation_denied(app_name: str, action: str) -> ActivationVerdict:
+    """Re-vet restart activation; only governance-evaluator errors are transient."""
+    try:
+        denied = _app_activation_denied(app_name, fail_closed=True)
+    except PlatformCompositionError as exc:
+        return ActivationVerdict(denied=f"platform composition error: {exc}")
+    except Exception as exc:  # noqa: BLE001 — unexpected governance errors deny restart
+        return ActivationVerdict(denied=f"governance re-vet error: {exc}")
+    if denied:
+        return ActivationVerdict(
+            denied=denied,
+            transient=denied.startswith(GOVERNANCE_ERROR_REASON)
+            or denied.startswith("governance evaluation error:"),
+        )
+    installed = _read_installed(app_name)
+    if installed is None or installed.origin != "builtin":
+        try:
+            admission_denied = app_admission_denied(
+                app_name,
+                manifest=get_app_manifest(app_name),
+                action=action,
+            )
+        except Exception as exc:  # noqa: BLE001 — admission uncertainty is a hard denial
+            return ActivationVerdict(denied=f"admission re-vet error: {exc}")
+        if admission_denied:
+            return ActivationVerdict(denied=admission_denied)
+    return ActivationVerdict()
+
+
+def start_app_backend(app_name: str) -> AppProcess | None:
+    """Start an app's backend process if it declares one.
+
+    Returns the AppProcess on success, None if no backend declared.
+    """
+    # This public entry point represents an explicit enable/boot-reconcile start. It
+    # supersedes an older stop racing a health-driven restart. The restart itself calls
+    # the internal entry point below so it does not manufacture a lifecycle transition.
+    with _health_reconcile_lock:
+        with _lock:
+            _advance_lifecycle_locked(app_name, _LIFECYCLE_START)
+    return _start_app_backend(app_name)
+
+
+def _start_app_backend(app_name: str) -> AppProcess | None:
+    """Single-flight spawn implementation without an external lifecycle transition."""
+    manifest = get_app_manifest(app_name)
+    if not manifest or not manifest.backend.entryPoint:
+        return None
+
+    await_inflight = False
+    spawn_placeholder: AppProcess | None = None
+    with _lock:
+        if app_name in _processes:
+            existing = _processes[app_name]
+            # Already running (spawned proc alive, OR an adopted external instance) — reuse.
+            if existing.proc and existing.proc.poll() is None:
+                logger.info("App %s backend already running (pid %d)", app_name, existing.pid)
+                return existing
+            if existing.proc is None and existing.adopted_pids:
+                logger.info(
+                    "App %s backend already adopted (pids %s)", app_name, existing.adopted_pids
+                )
+                return existing
+            # A concurrent start_app_backend is mid-spawn for this app (placeholder with
+            # ``starting=True``). Without this guard two callers (gateway boot-reconcile
+            # + an enable event) both passed the check, both allocated the SAME port
+            # (the bind-test in _find_free_port closes its probe socket → TOCTOU), both
+            # spawned, and the loser crash-looped on EADDRINUSE forever. Defer the wait
+            # to OUTSIDE this lock (the await re-acquires _lock — calling it here would
+            # self-deadlock the non-reentrant lock), then return the in-flight result.
+            if getattr(existing, "starting", False):
+                await_inflight = True
+        if not await_inflight:
+            # Reserve a STARTING placeholder so a concurrent call sees this spawn in flight.
+            spawn_placeholder = AppProcess(
+                app_name=app_name, starting=True, started_at=time.time()
+            )
+            _processes[app_name] = spawn_placeholder
+    if await_inflight:
+        logger.info("App %s backend is already starting — awaiting the in-flight spawn", app_name)
+        return _await_inflight_spawn(app_name)
+
+    assert spawn_placeholder is not None
+    # From here the spawn is single-flighted for this app. The body returns the real
+    # AppProcess on success, or None on any failure / no-op path; in EITHER the None
+    # case or an exception we must clear THIS call's STARTING placeholder so a later
+    # retry isn't permanently blocked (and a success path replaces it with the real
+    # record). A stop followed by a later start may replace our placeholder while we
+    # wait for the cross-process flock; such a retired call must not spawn or clean up
+    # the successor's state.
+    # Held across the whole body: the backend exists as a PROCESS before its
+    # pidfile record does, and a CLI uninstall probing in that window reads
+    # "no record" as "no backend". Under this cross-process lock the probe
+    # waits until the record is persisted (or the spawn torn down) - see
+    # app_backend_lifecycle_flock.
+    # Ordering invariant: while holding the lifecycle flock, revalidate ownership,
+    # run the body, and clean every failed/retired reservation before release. A
+    # successor can reserve only after that cleanup is complete.
+    flock_entered = False
+    try:
+        with app_backend_lifecycle_flock(app_name):
+            flock_entered = True
+            with _lock:
+                still_owner = _processes.get(app_name) is spawn_placeholder
+            if not still_owner:
+                _clear_failed_spawn_state(app_name, spawn_placeholder)
+                return None
+
+            try:
+                owner_context = _spawn_publication_owner.set(spawn_placeholder)
+                try:
+                    result = _start_app_backend_body(app_name, manifest)
+                finally:
+                    _spawn_publication_owner.reset(owner_context)
+            except Exception:
+                _clear_failed_spawn_state(app_name, spawn_placeholder)
+                raise
+            if result is None:
+                _clear_failed_spawn_state(app_name, spawn_placeholder)
+            return result
+    except Exception:
+        # If flock acquisition itself failed, no successor was serialized behind
+        # this call. Identity/value checks still prevent clearing another caller.
+        if not flock_entered:
+            _clear_failed_spawn_state(app_name, spawn_placeholder)
+        raise
+
+
+def _clear_failed_spawn_state(app_name: str, spawn_placeholder: AppProcess) -> None:
+    """Release this failed spawn's STARTING placeholder and port reservation.
+
+    Identity is load-bearing: a stop followed by a later start can replace the
+    placeholder while this call is still inside the lifecycle flock. Clearing by
+    app name or by ``starting`` alone would delete that later caller's placeholder
+    and reopen the duplicate-spawn race.
+    """
+    with _lock:
+        if _processes.get(app_name) is spawn_placeholder:
+            _processes.pop(app_name, None)
+            _allocated_ports.pop(app_name, None)
+
+
+def _signal_backend_tree(
+    app_name: str, proc: subprocess.Popen, start_time: str | None, sig: int
+) -> None:
+    """Signal a spawned backend's whole tree, identity-pinned on Windows.
+
+    POSIX is ``kill_process_tree`` unchanged: the backend leads its own process
+    group, so ``killpg`` reaches every member whether or not the root is still
+    running. Windows has no group to signal. ``taskkill /T /PID <root>`` walks the
+    tree FROM the root, so once the root has exited it reaches nothing -- which is
+    how a launcher that forks its real server and returns leaves that server
+    running with no way to stop it. With the root's creation identity
+    recorded at spawn, ``kill_process_tree_pinned`` opens the exact process object
+    instead and drains the descendants it still anchors, confirming their exit.
+
+    Falls back to the numeric ``taskkill`` -- the behaviour before the pinned path
+    existed, so a stop is never weaker than it was -- when no identity was
+    recorded, when the identity cannot be pinned, when cleanup capacity refuses
+    the tree, or when the exact-handle drain raises (its pinned handles stay
+    registered for maintenance either way). Exceptions from the fallback
+    propagate exactly as ``kill_process_tree``'s do.
+    """
+    if platform_compat.IS_WINDOWS and start_time is not None:
+        try:
+            if platform_compat.kill_process_tree_pinned(proc.pid, start_time, sig):
+                return
+            logger.info(
+                "App %s: pid %d identity could not be pinned for the tree drain; "
+                "falling back to taskkill",
+                app_name,
+                proc.pid,
+            )
+        except platform_compat.WindowsCleanupCapacityError as exc:
+            logger.warning(
+                "App %s: Windows cleanup capacity refused the pid %d tree drain (%s); "
+                "falling back to taskkill",
+                app_name,
+                proc.pid,
+                exc,
+            )
+        except (ProcessLookupError, OSError) as exc:
+            logger.warning(
+                "App %s: exact-handle drain of pid %d did not complete (%s); "
+                "falling back to taskkill",
+                app_name,
+                proc.pid,
+                exc,
+            )
+    platform_compat.kill_process_tree(proc.pid, sig)
+
+
+def _drain_exited_root_tree(
+    app_name: str,
+    proc: subprocess.Popen,
+    root_start_time: str | None,
+    spawn_instance: str | None,
+) -> bool | None:
+    """Terminate whatever a launcher that has already exited left behind. Never raises.
+
+    The root has exited -- that is why the caller is here -- but the processes it
+    forked have not necessarily: a launcher that starts the real server and returns
+    0 is the shape this guards. Three callers: the startup-survival failure branch,
+    where no ``AppProcess`` and no pidfile row exist yet, so nothing later would
+    ever name those survivors; ``stop_app_backend`` for a tracked record whose root
+    exited after startup while a child kept serving; and the health supervisor's
+    restart, which drops that same record before spawning a replacement. In each
+    the record is being dropped, so this is the last exit that can still reach the
+    tree.
+
+    Returns what the caller may CONCLUDE about the tree, because a stop under a
+    withdrawn trust ceiling has to refuse rather than report a success it cannot
+    support: ``True`` when the tree is positively gone, ``False`` when a member
+    positively survives the drain, ``None`` when nothing can be concluded (no
+    identity or token to vouch by, a host that cannot read the vouch, a cleanup
+    capacity refusal). Absence is never inferred from an empty census.
+
+    Windows: the exact-handle drain, keyed on the root identity the caller read
+    BEFORE the survival check (an exited root's creation time cannot be probed
+    afresh once its ``Popen`` handle goes). It confirms exit or raises, so its
+    ``True`` is the conclusion. A capacity refusal or a drain that raises leaves
+    the tree to the cleanup registry's maintenance, as the stale reaper does; a
+    numeric ``taskkill`` fallback is pointless here because the root it would walk
+    from is the exited one.
+
+    POSIX: the group outlives its leader and its id is the leader's pid, but
+    ``kill_process_tree`` cannot be used -- ``getpgid`` raises for a reaped pid --
+    and signalling the bare group NUMBER is refused for the reason
+    ``_reap_orphaned_backend_group`` gives. So it takes the same route as that
+    reaper: members vouched by this spawn's instance token, each signalled pinned
+    to its own identity, then a SIGKILL pass after the reap's grace that is ALSO
+    the final census. That pass runs unconditionally, exactly as the reaper's does:
+    the opening census cannot contain a member the SIGTERM itself caused to be
+    forked (a server whose handler forks a replacement into the same group), so
+    the conclusion is read off the final reading -- no live vouched member AND
+    ``pgroup_exists`` False -- never off the signalled set or the opening snapshot.
+    Off Linux the vouch cannot be read, nothing is signalled and the decline is
+    logged -- the same trade the reaper makes.
+    """
+    if platform_compat.IS_WINDOWS:
+        if root_start_time is None:
+            logger.warning(
+                "App %s: root pid %d exited and its identity was not captured; any "
+                "surviving descendants are left running",
+                app_name,
+                proc.pid,
+            )
+            return None
+        try:
+            drained = platform_compat.kill_process_tree_pinned(
+                proc.pid, root_start_time, platform_compat.SIGTERM
+            )
+        except platform_compat.WindowsCleanupCapacityError as exc:
+            logger.warning(
+                "App %s: Windows cleanup capacity refused the tree drain of exited root "
+                "pid %d (%s); its survivors are left to maintenance",
+                app_name,
+                proc.pid,
+                exc,
+            )
+            return None
+        except (ProcessLookupError, OSError) as exc:
+            logger.warning(
+                "App %s: exact-handle drain of exited root pid %d did not complete (%s); "
+                "retained for maintenance",
+                app_name,
+                proc.pid,
+                exc,
+            )
+            return False
+        if drained:
+            logger.info(
+                "App %s: drained the process tree of exited root pid %d", app_name, proc.pid
+            )
+            return True
+        logger.info(
+            "App %s: exited root pid %d identity could not be pinned; nothing signalled",
+            app_name,
+            proc.pid,
+        )
+        return None
+    if spawn_instance is None:
+        logger.info(
+            "App %s: exited root pid %d carries no spawn instance to vouch its group by; "
+            "any surviving descendants are left running",
+            app_name,
+            proc.pid,
+        )
+        return None
+    if not group_vouching_available():
+        logger.info(
+            "App %s: cannot vouch exited root pid %d's group on this platform; any "
+            "surviving descendants are left running",
+            app_name,
+            proc.pid,
+        )
+        return None
+    try:
+        vouched, signalled = signal_orphaned_spawn_group(
+            proc.pid, platform_compat.SIGTERM, spawn_instance
+        )
+        if vouched:
+            logger.info(
+                "App %s: SIGTERM %d of %d surviving member(s) of exited root pid %d's group",
+                app_name,
+                len(signalled),
+                len(vouched),
+                proc.pid,
+            )
+        deadline = time.monotonic() + _REAP_SIGTERM_GRACE
+        while any(_pid_alive(m) for m in signalled) and time.monotonic() < deadline:
+            time.sleep(_REAP_POLL_INTERVAL)
+        # Final census AND escalation in one reading. ``expected`` keeps the SIGKILL
+        # to the members that took the SIGTERM; a member first seen now is observed
+        # (it decides the conclusion) but never signalled -- it owes no grace, and it
+        # is what a fresh occupant of a recycled group number would look like.
+        final_vouched, killed = signal_orphaned_spawn_group(
+            proc.pid, platform_compat.SIGKILL, spawn_instance, expected=signalled
+        )
+        if killed:
+            logger.info(
+                "App %s: SIGKILL %d surviving member(s) of exited root pid %d's group",
+                app_name,
+                len(killed),
+                proc.pid,
+            )
+        alive = [m for m in final_vouched if _pid_alive(m)]
+        if alive:
+            logger.warning(
+                "App %s: %d member(s) of exited root pid %d's group still alive after the "
+                "drain: %s",
+                app_name,
+                len(alive),
+                proc.pid,
+                sorted(alive),
+            )
+            return False
+        # An empty final reading is fail-open (every /proc read swallows OSError),
+        # so absence is confirmed by the probe that cannot fail open.
+        return not platform_compat.pgroup_exists(proc.pid)
+    except Exception as exc:  # noqa: BLE001 — a failed drain must not crash the caller
+        logger.warning(
+            "App %s: draining exited root pid %d's group failed: %s", app_name, proc.pid, exc
+        )
+        return None
+
+
+def _terminate_retired_spawn(
+    app_name: str, proc: subprocess.Popen, log_fh: Any
+) -> None:
+    """Terminate a child whose caller does not own the STARTING placeholder."""
+    pid_start_time = _proc_start_time(proc.pid)
+    try:
+        _signal_backend_tree(app_name, proc, pid_start_time, platform_compat.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+    _forget_app_pid_if(app_name, proc.pid, pid_start_time)
+    try:
+        log_fh.close()
+    except OSError:
+        pass
+
+
+def _await_inflight_spawn(app_name: str, timeout: float = 20.0) -> AppProcess | None:
+    """Block until the concurrently-running spawn for ``app_name`` resolves — i.e. the
+    STARTING placeholder is replaced by a real AppProcess (success) or cleared (failure).
+    Returns the resolved process or None. Prevents a second caller from returning the
+    bare port-0 placeholder (which would proxy to nothing)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _lock:
+            cur = _processes.get(app_name)
+            if cur is None:
+                return None  # the in-flight spawn failed and cleared the placeholder
+            if not getattr(cur, "starting", False):
+                return cur  # resolved to a real process
+        time.sleep(0.1)
+    # Timed out waiting. If the spawn resolved to a real process right at the deadline,
+    # return it. Otherwise, before clearing, PROBE the spawn owner's lifecycle
+    # flock: provisioning (pip install) routinely outlives this timeout, and
+    # clearing a placeholder whose owner is merely SLOW would let a retry
+    # spawn a SECOND backend and overwrite the first one's tracking. The
+    # owner holds app_backend_lifecycle_flock for the whole body, so a
+    # non-blocking acquire failing means "still working" (leave the
+    # placeholder, return None - the caller reports not-ready, it does not
+    # respawn); acquiring it means the owner is GONE without cleanup (a hang
+    # that escaped its own exception handling) - only then clear so a later
+    # retry is possible.
+    owner_gone = False
+    try:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", app_name) or "_"
+        lock_dir = config_dir() / "app_backend_locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        _probe_fd = os.open(str(lock_dir / f"{safe}.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            if platform_compat.try_acquire_lock(_probe_fd, exclusive=True):
+                owner_gone = True
+        finally:
+            os.close(_probe_fd)  # closing releases the probe's own lock
+    except OSError:
+        owner_gone = False  # cannot prove the owner is gone: do not clear
+    with _lock:
+        cur = _processes.get(app_name)
+        if cur is None:
+            return None
+        if not getattr(cur, "starting", False):
+            return cur  # resolved to a real process at the deadline
+        if not owner_gone:
+            logger.info(
+                "App %s backend spawn still in flight past the wait window "
+                "(provisioning?) - leaving the placeholder in place",
+                app_name,
+            )
+            return None
+        _processes.pop(app_name, None)
+        logger.warning("App %s backend spawn timed out — cleared stale placeholder", app_name)
+        return None
+
+
+def _abi_shebang_of(root: Path, script: str) -> str | None:
+    """The ABI-matched interpreter a script's shebang names, or None.
+
+    Thin composition of the bridges shebang reader (sensitive-path gated,
+    bare direct spelling only - argument-bearing shebangs read as None) and
+    the ABI match check. Deferred import: bridges imports THIS module's
+    symbols lazily, and the apps package initializer loads bridges first.
+    """
+    from kiro_crew.apps.bridges import _python_shebang_interpreter
+
+    cand = _python_shebang_interpreter(script)
+    if cand and path_command_is_abi_matched(root, cand):
+        return cand
+    return None
+
+
+def _deps_boot_path() -> Path:
+    """Absolute path of the stdlib-only launch shim (see apps.deps_boot)."""
+    return Path(os.path.abspath(_deps_boot_module.__file__))
+
+
+def _open_contained_nofollow(base: Path, target: Path) -> int:
+    """Open ``target`` under ``base`` with every component no-follow.
+
+    A thin consumer of :mod:`kiro_crew.pinned_fs` (see its module docstring
+    for why per-site pinning is banned): the parent chain is pinned one
+    openat per component and the final name is opened O_NOFOLLOW through
+    it, so neither an ancestor swap nor a final-component link can escape
+    the app root. Where the platform cannot pin
+    (``supports_pinned_walk()`` is False - Windows), the fallback is a
+    single O_NOFOLLOW-less open behind the caller's is_symlink pre-check,
+    backed by symlink creation being privileged there; junction swaps of
+    the DATA dir are separately caught by _PinnedDir.verify.
+    """
+    rel_parts = target.relative_to(base).parts
+    if not rel_parts:
+        raise OSError("requirements path resolves to the app root itself")
+    if not pinned_fs.supports_pinned_walk():
+        return os.open(str(target), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    return pinned_fs.open_in_pinned_parent(
+        str(target.parent),
+        rel_parts[-1],
+        flags=os.O_RDONLY | os.O_NOFOLLOW,
+        mode=0o644,
+        what="app requirements file",
+        refusal=OSError,
+    )
+
+
+def _pinned_ancestors(path: Path) -> Path:
+    """Return *path* with its ancestors canonical and its own name literal.
+
+    The form :func:`kiro_crew.pinned_fs.pin_parent` asks its callers for: its
+    O_NOFOLLOW walk refuses an ancestor that has always been a link - a home
+    reached through one - exactly like one swapped mid-transaction. The final
+    name is left alone, or the walk follows a link planted AT the directory it
+    is pinning. ``realpath``, not ``Path.resolve``, which raises RuntimeError
+    on a cycle and escapes the OSError callers refuse with.
+    """
+    return Path(os.path.realpath(path.parent)) / path.name
+
+
+class _PinnedDir:
+    """Pin the app data dir against link swaps for one provision transaction.
+
+    The path is pinned exactly as handed in, so the CALLER owns
+    :func:`_pinned_ancestors`: splitting it here would guess this one's depth.
+
+    A path-based check-then-use is a TOCTOU window: a RUNNING app can swap
+    ``data/`` for a symlink after the validation and have every later rename
+    or delete land in another app's tree. On POSIX the directory is opened
+    O_NOFOLLOW|O_DIRECTORY and HELD: renames go through ``dir_fd`` (they are
+    the operations with delete/replace power over a victim's live tree), and
+    the path-based steps that cannot take a dir_fd (rmtree, mkdir, pip's
+    ``--target``, the stamp write) are each preceded by :meth:`verify`, which
+    re-checks that the path still names the pinned inode. On Windows there
+    is no O_NOFOLLOW or dir_fd; the caller's is_link_or_junction pre-check
+    stands, backed by symlink creation being privileged there.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.fd: int | None = None
+        self._win_id: tuple[int, int] | None = None
+        if pinned_fs.supports_pinned_walk():
+            # pin_parent walks every component openat+O_NOFOLLOW (see
+            # kiro_crew.pinned_fs for the invariants); a link anywhere on
+            # the way - or at the target - is refused, not followed.
+            self.fd = pinned_fs.pin_parent(
+                str(path), what="app data directory", refusal=OSError
+            )
+        else:
+            # Windows: capture the directory identity (volume serial + file
+            # index via st_dev/st_ino) so verify() can detect a junction
+            # swapped in mid-transaction - junction creation needs no
+            # privilege, so the pre-check alone is a TOCTOU window there.
+            if platform_compat.is_link_or_junction(path):
+                raise OSError("app data directory is a symlink/junction; refusing")
+            st = os.stat(str(path))
+            self._win_id = (st.st_dev, st.st_ino)
+
+    def close(self) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def verify(self) -> None:
+        """Refuse to proceed when the path names something other than the pinned dir.
+
+        POSIX compares the held fd's identity against a fresh lstat. On
+        Windows there is no held fd, but JUNCTION creation needs no
+        privilege (unlike symlinks), so the swap threat is real there too:
+        re-check that the path is still not a link/junction and still names
+        the directory identity captured at pin time (st_dev/st_ino -
+        Python's stat on Windows fills these from the volume serial and
+        file index).
+        """
+        if self.fd is not None:
+            st_fd = os.fstat(self.fd)
+            st_path = os.lstat(str(self.path))
+            if (st_fd.st_dev, st_fd.st_ino) != (st_path.st_dev, st_path.st_ino):
+                raise OSError("app data directory was replaced mid-provisioning; refusing")
+            return
+        if platform_compat.is_link_or_junction(self.path):
+            raise OSError("app data directory was replaced mid-provisioning; refusing")
+        st_now = os.stat(str(self.path))
+        if self._win_id is not None and (st_now.st_dev, st_now.st_ino) != self._win_id:
+            raise OSError("app data directory was replaced mid-provisioning; refusing")
+
+    def rename(self, src_name: str, dst_name: str) -> None:
+        """Rename WITHIN the pinned dir, immune to a swapped path.
+
+        POSIX renames are dir_fd-relative (cannot be redirected at all);
+        on Windows the identity is revalidated immediately before the
+        path-based rename, shrinking the swap window to the single rename
+        syscall.
+        """
+        if self.fd is not None:
+            os.rename(src_name, dst_name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        else:
+            self.verify()
+            os.rename(str(self.path / src_name), str(self.path / dst_name))
+
+    def rename_out(self, src_name: str, dst: Path) -> None:
+        """Move an entry OUT of the pinned dir to a path destination.
+
+        The SOURCE side is the security boundary (it names an entry inside
+        the app-writable pinned dir); it goes through the held fd on POSIX
+        and an identity re-check on Windows. os.rename never follows the
+        final component of the destination, so a link planted at the
+        destination name is replaced, not traversed.
+        """
+        if self.fd is not None:
+            os.rename(src_name, str(dst), src_dir_fd=self.fd)
+        else:
+            self.verify()
+            os.rename(str(self.path / src_name), str(dst))
+
+
+def _pinned_remove_entry(pin: "_PinnedDir", parent: Path, name: str) -> None:
+    """Best-effort delete of ``parent/name`` without a path-follow window.
+
+    A thin consumer of :func:`kiro_crew.pinned_fs.remove_tree_pinned`: the
+    parent chain is re-pinned, the target opened through it, and the whole
+    tree removed by descriptor - approval binds the opened directory to the
+    inode this transaction just observed through its own pin, so a swap
+    between observation and removal is refused, not followed. Links are
+    unlinked via the held descriptor and never traversed. Best-effort by
+    contract: every refusal outcome leaves the entry (or its staged rename)
+    in place and the transaction continues.
+    """
+    if pin.fd is not None:
+        st = pinned_fs.stat_at(pin.fd, name)
+        if st is None:
+            return
+        if not stat.S_ISDIR(st.st_mode):
+            try:
+                os.unlink(name, dir_fd=pin.fd)
+            except OSError:
+                pass
+            return
+        expect = (st.st_dev, st.st_ino)
+
+        def _approve(root_fd: int, _tree: pinned_fs.PinnedTree) -> str | None:
+            opened = os.fstat(root_fd)
+            if (opened.st_dev, opened.st_ino) != expect:
+                return "identity changed since this transaction observed it"
+            return None
+
+        try:
+            pinned_fs.remove_tree_pinned(
+                str(parent / name),
+                what="app generated dependency tree",
+                approve=_approve,
+                refusal=OSError,
+            )
+        except OSError:
+            pass
+        return
+    # No pinned walk on this platform: identity re-check plus path delete,
+    # behind the privileged-symlink argument (junction swaps of data/ are
+    # caught by pin.verify's identity check).
+    try:
+        pin.verify()
+    except OSError:
+        return
+    target = parent / name
+    try:
+        if platform_compat.is_link_or_junction(target):
+            platform_compat.unlink_link_or_junction(target)
+        elif target.exists():
+            shutil.rmtree(str(target), ignore_errors=True)
+    except OSError:
+        pass
+
+
+# Hard on-disk ceiling for a child's captured output spill.
+_DEPS_SPILL_HARD_CAP = 8 * 1024 * 1024
+
+
+@contextlib.contextmanager
+def _capped_spill(spill, hard_cap_bytes: int, poll_secs: float = 0.5):
+    """Bound a subprocess output SPILL file's on-disk growth.
+
+    The child owns the write end of ``spill`` after exec, so the parent
+    cannot bound it per write; without a ceiling a noisy build hook or
+    probe can fill the host disk before the run's own timeout fires. A
+    watchdog thread polls the spill size and, on breach, truncates it back
+    to empty - the child's subsequent writes re-extend from zero, so total
+    on-disk residency never exceeds the cap plus one poll interval's worth
+    of writes, and the run's timeout still bounds wall-clock. The bounded
+    TAIL the caller reads afterwards is unaffected (a flooded run loses old
+    output to the truncation, which is the correct trade: the tail is a
+    diagnostic, not a transcript). No child pid needed, so this composes
+    with a mocked run_limited that spawns nothing.
+    """
+    stop = threading.Event()
+    tripped = threading.Event()
+
+    def _watch() -> None:
+        while not stop.wait(poll_secs):
+            try:
+                if os.fstat(spill.fileno()).st_size > hard_cap_bytes:
+                    tripped.set()
+                    spill.seek(0)
+                    spill.truncate(0)
+            except OSError:
+                return
+
+    t = threading.Thread(target=_watch, daemon=True)
+    t.start()
+    try:
+        yield tripped
+    finally:
+        stop.set()
+        t.join(timeout=2)
+
+
+def _audit_provision_failure(app_name: str, provision_error: str) -> str:
+    """The common failure epilogue for EVERY provisioning refusal arm.
+
+    One ERROR log plus one SEL event per failed provisioning, whatever the
+    arm (pip failure, requirements-read refusal, lock failure) - a refusal
+    that skips this is invisible to operators and to the audit trail.
+    Returns the error so callers can ``return _audit_provision_failure(...)``.
+    """
+    logger.error("%s", provision_error)
+    try:
+        sel().log_api_access(
+            caller="gateway",
+            operation="app_backend_spawn",
+            outcome="deps_provision_failed",
+            resources=app_name,
+        )
+    except Exception as sel_exc:
+        logger.debug("SEL audit failed for app %s deps failure: %s", app_name, sel_exc)
+    return provision_error
+
+
+def provision_app_deps(app_name: str, root: Path) -> str:
+    """Provision ``root/requirements.txt`` into the app's deps dir.
+
+    The entire provision transaction (requirements read, interrupted-swap
+    recovery, stamp check, pip into staging, live swap) runs under an
+    exclusive per-app file lock: the backend spawn and a backend-less
+    registration - or two concurrent registrations - would otherwise delete
+    each other's staging tree mid-install and both fail. flock excludes
+    across processes AND across threads (each caller opens its own
+    descriptor), and the stamp check runs inside the lock, so a waiter that
+    blocked behind a successful install skips pip on the stamp it left.
+    """
+    # Every pinned call below derives its path from root, so one canonical
+    # base reaches all of them: requirements, staging snapshot, tree removals.
+    root = _pinned_ancestors(root)
+    _req = root / "requirements.txt"
+    if not _req.is_file():
+        # is_file() follows a symlink, so it answers False for a DANGLING
+        # requirements.txt link (target missing) as well as for genuine
+        # absence. Only true ABSENCE is "nothing to provision": a present
+        # entry that is not a readable regular file (a broken link, a
+        # non-file) is a provisioning FAILURE, surfaced so the backend does
+        # not spawn importing dependencies that were never installed.
+        if os.path.lexists(_req):
+            return _audit_provision_failure(
+                app_name,
+                f"Refusing requirements.txt for app {app_name}: it is present "
+                f"but not a readable regular file (a dangling symlink or a "
+                f"non-file entry); refusing to skip provisioning silently.",
+            )
+        # Genuine absence: skip the pin and the lock entirely - the
+        # transaction machinery must not create lock files (or take
+        # platform-specific lock paths) for every app without declared
+        # dependencies. The locked body re-checks under the lock, so this
+        # is only a fast path, never the security boundary.
+        return ""
+    deps_parent = app_deps_dir(root).parent
+    lock_path = deps_parent / ".kirocrew-deps.lock"
+    provision_error = ""
+    try:
+        # The deps dir lives under app-writable data/, and every operation
+        # below (lock file, staging, swap) would FOLLOW a link planted
+        # there - an app pointing data/ at another app's tree would have
+        # this provisioning swap attacker-chosen dependencies into the
+        # victim's dir (the same shape the uninstall purge refuses in
+        # manager.py). The gateway creates data/ as a real directory, so a
+        # link is never legitimate: refuse before touching anything through
+        # it.
+        if platform_compat.is_link_or_junction(deps_parent):
+            raise OSError("app data directory is a symlink/junction; refusing to provision")
+        deps_parent.mkdir(parents=True, exist_ok=True)
+        pin = _PinnedDir(deps_parent)
+        try:
+            # The lock file is opened through the PIN (dir_fd on POSIX), so
+            # a link swapped in at data/ cannot redirect its creation; the
+            # O_NOFOLLOW arm refuses a link planted at the lock name itself.
+            # O_RDWR (not read-only): Windows msvcrt.locking requires write
+            # access on the fd (same reason as bridges' _mcp_lock).
+            lflags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+            lock_name = lock_path.name if pin.fd is not None else str(lock_path)
+            # Concurrent openat(O_CREAT) of an absent file can return ENOENT on
+            # macOS. Elect one creator, then let contenders open its existing
+            # inode. Never recreate a lock that disappears before the reopen.
+            try:
+                lfd = os.open(
+                    lock_name, lflags | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=pin.fd
+                )
+            except FileExistsError:
+                lfd = os.open(lock_name, lflags, dir_fd=pin.fd)
+            with os.fdopen(lfd, "r+") as lf:
+                with platform_compat.file_lock(lf.fileno(), exclusive=True):
+                    provision_error = _provision_app_deps_locked(app_name, root, pin)
+        finally:
+            pin.close()
+    except OSError as exc:
+        # file_lock fails CLOSED; an unserialized install could corrupt the
+        # live deps tree, so surface the failure instead of proceeding.
+        provision_error = (
+            f"Failed to serialize dependency provisioning for app {app_name}: {exc}"
+        )
+    if provision_error:
+        return _audit_provision_failure(app_name, provision_error)
+    return provision_error
+
+
+def _write_staging_marker(
+    staging_pin: "_PinnedDir", staging: Path, name: str, content: str
+) -> None:
+    """Write a provisioning marker into staging through its HELD descriptor.
+
+    The markers are written AFTER pip - after arbitrary build-hook code has
+    run with write access to data/ - so a by-name write here is the classic
+    swap window: replace staging with a symlink and the gateway's own write
+    lands outside the app root. Through the descriptor pinned at staging
+    creation the write cannot be redirected (the fd is the directory,
+    whatever the NAME points at now), O_NOFOLLOW refuses a planted link at
+    the marker name, and O_EXCL refuses a planted regular file (a build
+    hook pre-creating a marker is an attack signal - provisioning fails
+    loud rather than trusting it). Windows has no dir_fd: the existing
+    verify()+atomic_write floor stands (junction identity revalidation,
+    same as every other Windows arm of this transaction).
+    """
+    if staging_pin.fd is not None:
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=staging_pin.fd,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+    else:
+        staging_pin.verify()
+        atomic_write(staging / name, content)
+
+
+def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> str:
+    """The provision transaction body - caller holds the per-app deps lock.
+
+    Shared by the backend spawn and by backend-less stdio registration (an
+    app can ship only MCP servers - with no backend start, nothing else ever
+    runs pip, and the shim/PYTHONPATH transports would reference a forever-
+    empty tree). Stamp-gated, so repeat calls with unchanged requirements do
+    no network work. Returns an error message ('' when provisioning
+    succeeded or was skipped). CALLERS gate trust: a module-style builtin
+    executes trusted code from inside the kiro_crew package, and provisioning
+    an app-dir requirements.txt for it would let agent-authored wheels load
+    ahead of the trusted module - so this is only ever called for apps whose
+    code runs from the writable app dir itself.
+    """
+    # Install Python dependencies into a per-app deps dir (isolated from the
+    # Kiro Crew runtime). `pip install --target` rather than a venv: packaged
+    # installs bundle an interpreter that ships pip but no ensurepip, so
+    # `-m venv` dies after creating the directory skeleton - and the venv-first
+    # interpreter policy would then prefer that skeleton while it holds none of
+    # the app's dependencies. A --target install needs no bootstrap and works
+    # identically under packaged and source installs; the deps dir reaches the
+    # child via PYTHONPATH (set where the spawn env is built below).
+    # sys.executable, never a bare "python3": the bare name relies on PATH
+    # (absent on some hosts, a Store stub on Windows) - the same policy every
+    # app spawn path applies via apps/interpreter.
+    #
+    # The install is stamp-gated and staged:
+    # - A hash of requirements.txt is stamped into the deps dir on success, and
+    #   a matching stamp skips pip entirely - so a restart with unchanged
+    #   requirements does no network work and an OFFLINE restart of a healthy
+    #   backend raises no alarm (pip --target cannot answer "already
+    #   satisfied" the way a venv install could).
+    # - pip installs into a staging dir that is swapped in only on success, so
+    #   an interrupted or failed (re)install can never corrupt the live deps
+    #   dir in place - the prior good install keeps serving the spawn below.
+    req_file = root / "requirements.txt"
+    provision_error = ""
+    req_bytes: bytes | None = None
+    if req_file.is_file():
+        # The app dir is app-writable, so requirements.txt can be a planted
+        # symlink - and a resolve-then-read pair would be a TOCTOU window a
+        # concurrent writer could race (validate a real file, swap in a
+        # symlink, gateway reads protected bytes and stamps their digest).
+        # The open is O_NOFOLLOW-bound: for a regular file the kernel refuses
+        # any link swapped in before the open, and the fstat regular-file
+        # check runs on the very handle the bytes come from. A LINK at
+        # requirements.txt is legitimate app layout when it stays in-tree
+        # (requirements.txt -> requirements/prod.txt), so a link is accepted
+        # ONLY when its strict resolution stays inside the app root - then
+        # the RESOLVED path is opened, itself O_NOFOLLOW-bound. Every race
+        # collapses to a refusal or to reading a different in-root file
+        # (app-controlled either way: no out-of-root bytes can ever be read
+        # or digested). On Windows os.O_NOFOLLOW is absent; the is_symlink
+        # pre-check substitutes (symlink creation is privileged there).
+        try:
+            root_resolved = root.resolve(strict=True)
+            open_target = req_file.resolve(strict=True)
+            if not open_target.is_relative_to(root_resolved):
+                raise OSError("requirements.txt resolves outside the app root")
+            # Descriptor-relative, every-component-no-follow open: the
+            # containment check above is only a fast refusal - an ancestor
+            # of the resolved path could be swapped for a link between the
+            # check and the open, so the traversal itself is pinned
+            # component by component (see _open_contained_nofollow).
+            fd = _open_contained_nofollow(root_resolved, open_target)
+            with os.fdopen(fd, "rb") as fh:
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    raise OSError("requirements.txt is not a regular file")
+                # Bounded read: this buffer lives in the GATEWAY's memory
+                # and the file is app-controlled - cap it instead of letting
+                # a giant file take the gateway down.
+                req_bytes = fh.read(_DEPS_REQ_MAX_BYTES + 1)
+                if len(req_bytes) > _DEPS_REQ_MAX_BYTES:
+                    raise OSError("requirements.txt exceeds the size cap")
+        except OSError:
+            req_bytes = None
+        if req_bytes is None:
+            provision_error = (
+                f"Refusing requirements.txt for app {app_name}: it is a "
+                f"symlink escaping the app directory, not a regular file, or "
+                f"unreadable (out-of-root symlinked requirements are not "
+                f"installed)"
+            )
+    if req_bytes is not None:
+        deps_dir = app_deps_dir(root)
+        prior = deps_dir.parent / _DEPS_PRIOR_NAME
+        # Recover from an interrupted swap: a crash between the two renames
+        # below leaves only the outgoing tree under the prior name. Put it
+        # back before the stamp check, so an offline restart still has its
+        # last good install (and a matching stamp skips pip entirely).
+        if not deps_dir.exists() and prior.exists():
+            try:
+                pin.rename(prior.name, deps_dir.name)
+            except OSError as exc:
+                logger.warning("App %s: could not recover interrupted deps swap: %s", app_name, exc)
+        stamp = deps_dir / _DEPS_STAMP_NAME
+        digest = _deps_digest(req_bytes)
+        # The digest covers the top-level file's bytes only: any requirement
+        # whose RESOLUTION can change while its line does not (file
+        # references, local paths, VCS/URL and direct references) defeats the
+        # stamp, so those disable the skip - reprovision on every start
+        # (correct, just slower) instead of silently serving a stale install.
+        volatile = _requirements_volatile(req_bytes)
+        # The stamp lives in the app-writable tree too, so its read is
+        # no-follow-bound exactly like the requirements read above: a
+        # planted symlink at the stamp name must not make the gateway read
+        # an arbitrary path. Any open/read/decode failure reads as
+        # "unprovisioned" (pip runs - safe direction).
+        provisioned = False
+        if bool(digest) and not volatile:
+            try:
+                # On Windows os.O_NOFOLLOW is absent; the is_link pre-check
+                # substitutes (same pattern as the requirements read) - a
+                # planted stamp link must read as "unprovisioned", not
+                # through to an arbitrary file.
+                if platform_compat.is_link_or_junction(stamp):
+                    raise OSError("stamp is a symlink/junction")
+                sfd = os.open(str(stamp), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(sfd, "rb") as sfh:
+                    if stat.S_ISREG(os.fstat(sfh.fileno()).st_mode):
+                        # Bounded read: a real stamp is one digest line; an
+                        # oversized file reads its head, fails the compare,
+                        # and safely reprovisions.
+                        provisioned = (
+                            sfh.read(_DEPS_STAMP_MAX_BYTES).decode("utf-8").strip() == digest
+                        )
+            except (OSError, UnicodeDecodeError):
+                provisioned = False
+        if not provisioned:
+            # UNIQUE staging name per transaction, created through the PIN:
+            # a fixed name plus path-based mkdir was the last re-pointable
+            # step - a data/ swap after verification would have pip fill (or
+            # a cleanup delete) another app's staging. The dir_fd mkdir
+            # cannot be redirected; the fresh name means no pre-existing
+            # tree to delete through a path; and pip receives the path only
+            # after a final verify, with the flock guaranteeing no sibling
+            # transaction races the window.
+            staging = deps_dir.parent / f"{_DEPS_STAGING_NAME}-{os.getpid()}-{os.urandom(4).hex()}"
+            _env = minimal_env()  # don't leak secrets to pip subprocesses
+            try:
+                # Stale staging trees from crashed transactions (the old
+                # fixed name or unique names another pid left) are swept
+                # best-effort AFTER a verify; pip --target does not replace
+                # a distribution already present, so installs never reuse a
+                # stale tree - the fresh unique name guarantees that
+                # structurally instead of by strict pre-delete.
+                pin.verify()  # path-based steps below cannot take a dir_fd
+                # Stale-staging sweep, DESCRIPTOR-relative: a path glob plus
+                # path rmtree could follow a data/ swapped in after the
+                # verify. Enumerate through the held fd, quarantine each
+                # match to a fresh random name via dir_fd rename (cannot be
+                # redirected), then delete by path - the random name cannot
+                # pre-exist in a victim tree the attacker cannot write, so a
+                # post-swap delete is a harmless ENOENT.
+                if pin.fd is not None:
+                    _stale_names = [
+                        e
+                        for e in os.listdir(pin.fd)
+                        if _DEPS_STAGING_SWEEP_RE.fullmatch(e) is not None
+                        and e != staging.name
+                    ]
+                else:
+                    _stale_names = [
+                        p.name
+                        for p in deps_dir.parent.glob(f"{_DEPS_STAGING_NAME}*")
+                        if _DEPS_STAGING_SWEEP_RE.fullmatch(p.name) is not None
+                        if p.name != staging.name
+                    ]
+                for _stale in _stale_names:
+                    _pinned_remove_entry(pin, deps_dir.parent, _stale)
+                if pin.fd is not None:
+                    os.mkdir(staging.name, 0o755, dir_fd=pin.fd)
+                else:
+                    staging.mkdir(parents=True, exist_ok=True)
+                # Pin staging ITSELF for the rest of the transaction: pip
+                # runs arbitrary build-hook code with write access to data/,
+                # so every gateway step after it that addresses staging by
+                # NAME (the marker writes, the publish rename) needs an
+                # identity the hook cannot re-point. Same tool as the parent
+                # pin; closed on every exit of the transaction.
+                staging_pin = _PinnedDir(staging)
+                pin.verify()  # pip receives a PATH; last re-check before it runs
+                # Stamp-vs-install atomicity: pip RE-OPENS the requirements
+                # path, and a concurrent rewrite after the hash above would
+                # install the replacement while stamping the ORIGINAL digest
+                # - later starts then skip repair and serve the wrong deps.
+                # When the stamp will be trusted (non-volatile), pip installs
+                # from an immutable SNAPSHOT of the very bytes the digest
+                # covers. Volatile requirements never take the stamp
+                # shortcut, and only they can carry file references whose
+                # resolution is relative to the requirements file - so they
+                # keep reading the validated live path, where includes
+                # resolve correctly, with no stamp to skew.
+                req_src = open_target
+                if not volatile:
+                    req_src = staging / "._kirocrew-requirements.snapshot"
+                    # The write is the GATEWAY's own and staging lives in
+                    # app-writable data/: a staging dir swapped for a link
+                    # after its dir_fd mkdir would have a path write land in
+                    # an arbitrary same-user file. Open through the pinned
+                    # parent chain (every component O_NOFOLLOW) with O_EXCL,
+                    # so neither a swapped ancestor nor a planted entry at
+                    # the snapshot name can redirect it. Windows keeps the
+                    # verify+path write behind the junction identity check.
+                    if pinned_fs.supports_pinned_walk():
+                        _sfd = pinned_fs.open_in_pinned_parent(
+                            str(staging),
+                            req_src.name,
+                            flags=os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                            mode=0o644,
+                            what="requirements snapshot",
+                            refusal=OSError,
+                        )
+                        with os.fdopen(_sfd, "wb") as _sfh:
+                            _sfh.write(req_bytes)
+                    else:
+                        pin.verify()
+                        req_src.write_bytes(req_bytes)
+                # pip reads the VALIDATED open_target, not the manifest
+                # name: for an in-tree symlinked requirements.txt a nested
+                # include (`-r base.txt`) resolves relative to the
+                # requirements FILE, so handing pip the symlink path would
+                # resolve includes beside the LINK instead of its target.
+                # The no-follow handle above already refused an out-of-root
+                # requirements.txt before any bytes were hashed; pip's own
+                # re-open is a follow-open, but by then provisioning is
+                # committed to THIS app's tree and the digest was taken from
+                # the validated handle. Include-bearing requirements never
+                # take the stamp shortcut (_requirements_volatile), so they
+                # reprovision on every start - a change confined to an
+                # included file cannot be masked.
+                pip_cmd, _ = wrap_argv(
+                    platform_compat.isolated_python_argv(
+                        "-m",
+                        "pip",
+                        "install",
+                        "--quiet",
+                        "--disable-pip-version-check",
+                        "--target",
+                        str(staging),
+                        "-r",
+                        str(req_src),
+                    ),
+                    mode="standard",
+                )
+                pip_cmd = cgroup_scope_argv(pip_cmd)  # cgroup DoS ceiling
+                # check=True: a non-zero pip exit IS a provisioning failure. It
+                # must not be discarded - the backend would spawn without its
+                # dependencies and die on an import error pointing at the app.
+                # cwd=root: relative references (`-e ./lib`) resolve against
+                # the app root, not whatever directory the gateway happens to
+                # be running from.
+                # Bounded capture: capture_output buffers the child's whole
+                # stdout/stderr in the GATEWAY's memory, and a noisy build
+                # hook can flood it. stderr goes to a temp FILE and only a
+                # bounded TAIL is ever read back (attached as exc.stderr for
+                # the redaction pipeline below); stdout is discarded.
+                with tempfile.TemporaryFile() as _pipbuf, _capped_spill(
+                    _pipbuf, _DEPS_SPILL_HARD_CAP
+                ):
+                    try:
+                        run_limited(
+                            pip_cmd,
+                            check=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=_pipbuf,
+                            timeout=60,
+                            env=_env,
+                            cwd=str(root),
+                        )
+                    except subprocess.CalledProcessError as _pip_exc:
+                        # stderr went to the file, so the exception carries
+                        # none - attach the bounded tail (never clobber a
+                        # stderr some other spawn shape already set).
+                        if not getattr(_pip_exc, "stderr", None):
+                            _pipbuf.seek(0, os.SEEK_END)
+                            _sz = _pipbuf.tell()
+                            _start = max(0, _sz - _DEPS_PIP_STDERR_TAIL)
+                            _pipbuf.seek(_start)
+                            _tail = _pipbuf.read()
+                            if _start > 0:
+                                # The first line is PARTIAL: the seek can
+                                # sever a URL's scheme, and the downstream
+                                # exfil/credential redaction anchors on
+                                # https?:// - a scheme-less remainder would
+                                # carry its query token straight into the
+                                # logs. Drop through the first newline; a
+                                # tail that is one giant line is dropped
+                                # whole (never worth a credential).
+                                _nl = _tail.find(b"\n")
+                                _tail = (
+                                    _tail[_nl + 1 :]
+                                    if _nl != -1
+                                    else b"[pip stderr tail elided: unterminated first line]\n"
+                                )
+                            _pip_exc.stderr = _tail
+                        raise
+                # Editable installs (`-e ./lib`) materialise as
+                # __editable__*.pth hooks. They are RETAINED: python children
+                # launch through the deps_boot shim, whose site.addsitedir
+                # processes .pth files, so editable installs work through
+                # the shim. (Deps-provided python console scripts route
+                # through the same shim via the shebang sniff in bridges, so
+                # editables work there too.)
+                if digest:
+                    _write_staging_marker(staging_pin, staging, _DEPS_STAMP_NAME, digest)
+                # ABI tag is written even for volatile requirements (digest
+                # empty): activation uses it to keep serving the last good
+                # tree when only the requirements resolution went stale, and
+                # to refuse a wrong-ABI tree always.
+                _write_staging_marker(staging_pin, staging, _DEPS_ABI_NAME, _deps_abi_tag())
+                # Swap the fresh install live. Two renames, not an in-place
+                # upgrade, so no state mixes old and new trees; the recovery
+                # above (and the restore in the except arm) covers the window
+                # in which only the prior name exists.
+                pin.verify()
+                # The publish rename moves whatever ENTRY sits at
+                # staging.name - verify it is still the directory this
+                # transaction created (held fd vs fresh lstat), or a build
+                # hook that re-pointed the name would have its tree
+                # published as the live install.
+                staging_pin.verify()
+                _pinned_remove_entry(pin, deps_dir.parent, prior.name)
+                if deps_dir.exists():
+                    pin.rename(deps_dir.name, prior.name)
+                pin.rename(staging.name, deps_dir.name)
+                staging_pin.close()
+                _pinned_remove_entry(pin, deps_dir.parent, prior.name)
+            except Exception as exc:
+                if "staging_pin" in locals():
+                    staging_pin.close()
+                _pinned_remove_entry(pin, deps_dir.parent, staging.name)
+                # If the failure hit between the swap renames (e.g. a locked
+                # directory on Windows), the live name is empty and the good
+                # tree sits under the prior name - put it back.
+                if not deps_dir.exists() and prior.exists():
+                    try:
+                        pin.rename(prior.name, deps_dir.name)
+                    except OSError as restore_exc:
+                        logger.warning(
+                            "App %s: could not restore prior deps after failed swap: %s",
+                            app_name,
+                            restore_exc,
+                        )
+                detail = str(exc)
+                stderr = getattr(exc, "stderr", None)
+                if stderr:
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", "replace")
+                    # Redact BEFORE truncating: a suffix cut can split a
+                    # credential from the marker the redactor matches on,
+                    # leaving the secret's tail to survive the pass below -
+                    # the same split-across-a-length-cap shape the MCP report
+                    # capture guards against. pip errors can echo an index
+                    # URL carrying credentials
+                    # (`--index-url https://user:token@host/`); this detail
+                    # reaches the gateway log and the user-visible backend log
+                    # (and /api/logs). Exfiltration-URL redaction runs FIRST:
+                    # an agent-authored requirements path can embed a
+                    # suspicious URL that pip echoes verbatim, and the
+                    # credential/query passes below do not catch a bare
+                    # exfil host.
+                    stderr, _ = redact_exfiltration_urls(stderr.strip())
+                    stderr, _ = redact_credentials(stderr)
+                    # Same order rule for the query-strip below: applied to
+                    # the FULL stderr before the tail cut, or the cut could
+                    # split a URL from its query and leave the token's tail.
+                    stderr = re.sub(r"(https?://[^\s?#]+)\?\S+", r"\1?<redacted-query>", stderr)
+                    detail = f"{detail}: {stderr[-400:]}"
+                detail, _ = redact_exfiltration_urls(detail)
+                detail, _ = redact_credentials(detail)
+                # redact_credentials catches user:pass@ URL forms; a failed
+                # SIGNED or tokenized URL carries its secret in the QUERY
+                # STRING (?X-Amz-Signature=..., ?token=...), which pip echoes
+                # verbatim. Strip query strings from every URL in the detail
+                # (covers URLs arriving via str(exc), not just stderr).
+                detail = re.sub(r"(https?://[^\s?#]+)\?\S+", r"\1?<redacted-query>", detail)
+                provision_error = (
+                    f"Failed to install requirements.txt dependencies for app "
+                    f"{app_name}: {detail}"
+                )
+                # The spawn is still attempted: the deps dir may hold a
+                # previous successful install, and some requirements are
+                # optional. The failure is surfaced instead of swallowed: the
+                # provision_app_deps wrapper's failure epilogue emits the
+                # ERROR log and the deps_provision_failed SEL event for EVERY
+                # nonempty error - this arm, the requirements-read refusal,
+                # and a lock failure - so neither is duplicated here; a
+                # header line in the backend's own log points the import
+                # errors missing deps produce back at provisioning.
+    return provision_error
+
+
+def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
+    """The spawn body, single-flighted by the STARTING placeholder set in
+    :func:`start_app_backend`. Returns the real AppProcess on success or None on any
+    failure; the caller clears the placeholder on None/exception."""
+    _spawn_owner = _spawn_publication_owner.get()
+    root = app_dir(app_name)
+    entry_point = manifest.backend.entryPoint
+    # Module-style entry point (e.g. "kiro_crew.apps.builtins.<name>"):
+    # used by built-in apps that live inside the KiroCrew package itself.
+    # Heuristics:
+    #   - no path separator,
+    #   - no script-file extension (.py/.js/.ts/.mjs/.cjs/.sh) — those are
+    #     paths, not module dotted-names,
+    #   - has a dot (i.e. is a dotted module path),
+    #   - and no file with that literal name exists under the app root.
+    is_module_entry = (
+        "/" not in entry_point
+        and not entry_point.endswith((".py", ".js", ".ts", ".mjs", ".cjs", ".sh"))
+        and "." in entry_point
+        and not (root / entry_point).exists()
+    )
+
+    # Bind the exemption to the code this spawn will actually execute.  A
+    # module-style builtin is trusted only when its real package manifest names
+    # this app and the ``python -m`` target exists under that package.  File
+    # backends execute from the mutable installed-app tree and remain third-party.
+    execution_path = (
+        shipped_builtin_module_path(app_name, entry_point)
+        if is_module_entry
+        else root / entry_point
+    )
+    denied = app_execution_denied(
+        app_name,
+        action="backend_spawn",
+        app_root=execution_path,
+        caller="gateway",
+    )
+    if denied:
+        logger.warning("Refusing to spawn third-party app %s backend: %s", app_name, denied)
+        return None
+
+    # Classified HERE, on the same execution target the gate just vetted, and carried on
+    # the record so a later ceiling re-check never re-resolves a path the app owns.
+    _admitted_builtin = is_builtin_app(app_name=app_name, app_root=execution_path)
+
+    # Whether this spawn executes the SHIPPED md-notebook backend — provenance on the
+    # executed path the admission gate above vetted. Only the isolated-startup branch
+    # below reads it: that is the one spawn whose namespace holds an unmasked PAT, so
+    # interpreter startup hooks must not ride along. The state-file carve-out further
+    # down is keyed off the GENERIC ``is_builtin_app`` check instead, because it applies
+    # to every app that owns hidden leaves.
+    _shipped_md_notebook = app_name == MD_NOTEBOOK_APP_NAME and is_builtin_app(
+        app_name=app_name, app_root=execution_path
+    )
+
+    if is_module_entry:
+        entry = None  # sentinel; no file path for module-style entries
+    else:
+        entry = root / entry_point
+        if not entry.is_file():
+            logger.error("App %s backend entry point not found: %s", app_name, entry)
+            return None
+        # Path containment backstop (mirrors module_loader hook-path check): the
+        # persisted manifest is spawned at boot without re-running validate(), so
+        # reject an entryPoint that resolves outside the app root (absolute path
+        # or '..' traversal).
+        try:
+            if not entry.resolve().is_relative_to(root.resolve()):
+                logger.error(
+                    "App %s backend entry point escapes app root: %s (resolved %s)",
+                    app_name, entry, entry.resolve(),
+                )
+                return None
+        except (OSError, ValueError):
+            logger.error(
+                "App %s backend entry point path resolution failed: %s", app_name, entry,
+            )
+            return None
+
+    # Resolve port. An auto port is RESERVED under the lock, not merely probed:
+    # boot spawns run concurrently, so select-then-spawn would hand the same port
+    # to two apps and crash-loop the loser on EADDRINUSE.
+    port_str = manifest.backend.port
+    if port_str == "auto":
+        try:
+            port = _reserve_free_port(app_name)
+        except _SpawnOwnershipLost:
+            return None
+    else:
+        try:
+            port = int(port_str)
+            if not (_MIN_PORT <= port <= _MAX_PORT):
+                logger.error(
+                    "App %s: port %d outside allowed range %d-%d",
+                    app_name, port, _MIN_PORT, _MAX_PORT,
+                )
+                return None
+            # Claim it immediately so a concurrently-starting auto-port app cannot
+            # be handed this same number before we bind it. If that app already
+            # took the port, refuse THIS spawn rather than double-book it: the
+            # bind would fail anyway, and reporting it here names the real cause
+            # instead of surfacing an opaque EADDRINUSE crash.
+            try:
+                _claim_port(app_name, port)
+            except PortUnavailableError as exc:
+                logger.error("App %s backend cannot start: %s", app_name, exc)
+                return None
+            except _SpawnOwnershipLost:
+                return None
+        except ValueError:
+            try:
+                port = _reserve_free_port(app_name)
+            except _SpawnOwnershipLost:
+                return None
+
+    # Prepare log directory (needed early for adopt path)
+    log_dir = root / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "backend.log"
+
+    # Check if the port is already in use by a healthy instance
+    if port_str != "auto":
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                s.connect(("127.0.0.1", port))
+            # Port occupied — probe health endpoint before giving up
+            healthy = _probe_adoption_health(port, manifest.backend.healthCheck)
+
+            if healthy:
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_adopt",
+                        outcome="adopted", resources=f"{app_name} port={port}",
+                    )
+                except Exception as exc:
+                    logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
+                # Record owning PIDs at adoption time, scoped to the listener
+                # the health probe actually reached. The probe above only ever
+                # talks to 127.0.0.1:<port>; loopback_owner_pids mirrors the
+                # kernel's most-specific-bind dispatch (exact 127.0.0.1 beats a
+                # v4 wildcard, which beats a dual-stack v6 one), so a process
+                # holding a different local address — or a v6-only wildcard
+                # next to the real v4 owner — was never health-checked and is
+                # not recorded. Each owner's start-time identity rides along so
+                # stop can refuse a recycled PID, and the capture is sandwiched
+                # between health checks so a responder that exits mid-capture
+                # cannot hand ownership to a bystander.
+                adopted = _capture_adopted_owners(app_name, port, manifest.backend.healthCheck)
+                if adopted is None:
+                    return None
+                adopted_pids, adopted_start_times = adopted
+                logger.info("App %s: healthy instance already on port %d — adopting (pids=%s)", app_name, port, adopted_pids)
+                ap = AppProcess(
+                    app_name=app_name, port=port, pid=0, proc=None,
+                    healthy=True, started_at=time.time(), log_path=str(log_path),
+                    adopted_pids=adopted_pids,
+                    adopted_start_times=adopted_start_times,
+                    gateway_started=True,
+                    # NOT `_admitted_builtin`. That classification is sound only for a
+                    # process the gateway itself launched from the path the gate vetted.
+                    # Here the gateway launched nothing: it found a listener already
+                    # answering on the port and adopted it, and no check establishes
+                    # that the listener is executing the shipped code the manifest
+                    # declares. Carrying the exemption across would let anything that
+                    # answers a builtin's port inherit "shipped provenance" and be
+                    # skipped by the revocation sweep for good -- the next boot re-probes
+                    # and re-adopts to the same verdict, so it would never self-correct.
+                    # The ceiling therefore applies to an adopted backend. A genuinely
+                    # shipped one is stopped and respawned BY the gateway, which vets
+                    # its execution path and classifies it correctly on that path.
+                    admitted_builtin=False,
+                )
+                # Adopted (externally-managed) backends are deliberately NOT
+                # recorded for the startup stale-reap: the reap SIGTERMs a whole
+                # process GROUP (safe only for our own start_new_session children),
+                # whereas an external process's group may hold unrelated processes.
+                # If the gateway dies, the external instance keeps running and is
+                # simply re-probed and re-adopted on the next start — so reaping it
+                # would kill a healthy service we would immediately re-adopt. stop's
+                # adopted path kills only the re-validated PIDs for this reason.
+                with _lock:
+                    if (
+                        _spawn_owner is not None
+                        and _processes.get(app_name) is not _spawn_owner
+                    ):
+                        return None
+                    _processes[app_name] = ap
+                    _allocated_ports[app_name] = port
+                # Register through the SERIALIZED transition, before the watch is armed.
+                # Registering afterwards — from a caller that returns and queues the work
+                # — leaves a window in which the watch demotes and scrubs first and the
+                # queued registration lands after it, restoring the dead url. Going
+                # through _set_backend_health also records `mcp_healthy`, so the watch
+                # can tell whether what it believes matches what is on disk.
+                _set_backend_health(ap, healthy=True)
+                _start_adopted_health_watch(ap, manifest.backend.healthCheck)
+                return ap
+            else:
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_spawn",
+                        outcome="rejected_port_unhealthy",
+                        resources=f"{app_name} port={port}",
+                    )
+                except Exception as exc:
+                    logger.debug("SEL audit failed for app %s port rejection: %s", app_name, exc)
+                logger.warning(
+                    "App %s: port %d occupied by unhealthy process — "
+                    "kill it manually then retry", app_name, port,
+                )
+                return None
+        except OSError:
+            pass  # port is free — proceed to spawn
+
+    req_file = root / "requirements.txt"
+    # entry is None means a module-style builtin: it executes TRUSTED code
+    # from inside the kiro_crew package, not from this writable app dir.
+    # Provisioning a requirements.txt found here (or injecting a
+    # .kirocrew-deps the agent could have written) would let agent-authored
+    # wheels load ahead of the trusted module on its PYTHONPATH - a
+    # trust-boundary crossing. Builtins declare their dependencies in the
+    # package's own pyproject, so they never need this path; gate it (and
+    # the PYTHONPATH/shim transports below) on a real file entry point.
+    provision_error = ""
+    if entry is not None:
+        provision_error = provision_app_deps(app_name, root)
+
+    # Spawn process — use manifest backend type if available, fall back to heuristic
+    # Pass the gateway's resolved config home explicitly: under pods or any
+    # KIROCREW_HOME override, the backend must read the SAME apps dir the
+    # gateway minted the app secret into — minimal_env() strips the var.
+    _platform_extra: dict[str, str] = {}
+    if os.environ.get("KIROCREW_PROJECT_DIR"):
+        # Platform var (same class as KIROCREW_HOME): the resolved project
+        # checkout. minimal_env() strips it; backends need it to locate the
+        # gateway's source checkout (e.g. dev-fleet worktree discovery).
+        _platform_extra["KIROCREW_PROJECT_DIR"] = os.environ["KIROCREW_PROJECT_DIR"]
+    if os.environ.get("KIROCREW_EDITION_DIR"):
+        # Platform var, same class as the above: whether this gateway is an
+        # EDITION composition root. A backend that stages frontend build output
+        # into the served static/dist must know, because a rebuild it drives
+        # cannot recompose the edition (the build env deliberately withholds the
+        # edition opt-in) and staging a stock SPA would silently replace the
+        # edition dashboard with upstream's. minimal_env() strips it, so without
+        # this the backend cannot tell an edition install from a stock one and
+        # any such guard reads as "stock" everywhere. A path, not a secret; the
+        # opt-in (KIROCREW_ALLOW_EDITION) is deliberately NOT propagated, so a
+        # backend can detect an edition but never manufacture consent to compile
+        # one.
+        _platform_extra["KIROCREW_EDITION_DIR"] = os.environ["KIROCREW_EDITION_DIR"]
+    if os.environ.get("KIROCREW_DEVFLEET_REPO"):
+        # Operator-declared main-checkout override (same trust class as the
+        # KIROCREW_DEVFLEET_BIN_* overrides below). dev-fleet reads it as the
+        # highest-priority repo discovery hint, ahead of KIROCREW_PROJECT_DIR
+        # — which packaged installs point at the app bundle (no .git), leaving
+        # only the ~/kirocrew fallback. minimal_env() strips the var, so
+        # without this forward the documented override silently never reaches
+        # the backend and the fleet renders empty. A path, not a secret.
+        _platform_extra["KIROCREW_DEVFLEET_REPO"] = os.environ["KIROCREW_DEVFLEET_REPO"]
+    if os.environ.get("KIROCREW_PROFILE"):
+        # Forward the edition-profile override to the backend subprocess.
+        # minimal_env() strips it otherwise, so a gateway launched with an
+        # explicit KIROCREW_PROFILE (e.g. =standalone to override an installed
+        # companion) would have the child re-resolve the profile from on-disk
+        # markers and diverge from the parent. Since the backend now boots the
+        # platform context at startup (fail-closed), that divergence would make
+        # the subprocess refuse to start rather than fail lazily. Forwarding it
+        # keeps the child on the SAME profile the gateway resolved. A profile
+        # name, not a secret.
+        _platform_extra["KIROCREW_PROFILE"] = os.environ["KIROCREW_PROFILE"]
+    for _policy_env in ("KIROCREW_SECURITY_POLICY", "KIROCREW_ADMISSION_POLICY"):
+        # Forward the governance trust-root path overrides alongside the profile.
+        # These are the operator's local policy sources
+        # (governance.load_security_policy / admission), and minimal_env() strips
+        # them. Now that the backend boots the platform context itself, dropping
+        # them would make the child resolve its ceiling from the on-disk /
+        # packaged default instead of the administrator-pinned policy — a looser
+        # ceiling for governed app commands.
+        #
+        # Absolutize against THIS process's cwd before forwarding: the loaders
+        # read the value as a bare Path() with no resolve()/expanduser(), and the
+        # backend subprocess runs with a different cwd (the package root, set
+        # below), so forwarding a RELATIVE override verbatim would make the child
+        # look in the wrong directory and fail closed. Resolving here binds the
+        # child to the exact file the gateway resolved. A path, not a secret.
+        _policy_val = os.environ.get(_policy_env)
+        if _policy_val:
+            _platform_extra[_policy_env] = os.path.abspath(os.path.expanduser(_policy_val))
+    # Imported here rather than at module scope: this module is on the app-serving
+    # import path and the policy engine pulls the governance evaluator in behind it.
+    from kiro_crew.platform.policy_distribution import (
+        POLICY_CACHE_ONLY_ENV,
+        POLICY_MAX_AGE_ENV,
+    )
+    from kiro_crew.platform.policy_distribution import cache_dir as policy_cache_dir
+    from kiro_crew.platform.policy_distribution import (
+        central_ceiling_installed,
+        effective_max_cache_age,
+    )
+
+    # The backend boots its own platform context, and minimal_env() strips the
+    # central-distribution settings — so on a fleet using that channel the child would
+    # resolve its ceiling from the on-disk or packaged default instead of the
+    # administrator's published document: the looser-ceiling failure the comment above
+    # describes, for exactly the code that most needs a ceiling.
+    #
+    # It is put in CACHE-ONLY mode rather than handed the source. An app backend is
+    # arbitrary third-party code, so giving it the fetch configuration would give it the
+    # fleet's control plane: KIROCREW_POLICY_HEADERS is a live bearer token, and a
+    # pre-signed KIROCREW_POLICY_URL is itself the credential. Neither is needed — the
+    # gateway has already written the last-known-good cache, so the cache IS the
+    # administrator's ceiling and the child adopts it with no URL, no token and no
+    # network. The staleness bound is forwarded because it is the one setting that
+    # decides whether that cached copy is still an acceptable answer.
+    # Gated on whether the gateway's OWN ceiling came from that tier, not merely on
+    # the variables being set. The child FAILS CLOSED on an absent cache, so the flag
+    # must mean "there is a fleet ceiling to inherit" — a gateway that itself degraded
+    # to a local tier has nothing to pass on, and flagging that child would refuse to
+    # start an app on a host that is running perfectly well.
+    if central_ceiling_installed():
+        _platform_extra[POLICY_CACHE_ONLY_ENV] = "1"
+        # The EFFECTIVE bound, not the env var: a fleet is just as likely to declare
+        # max_cache_age_secs in the published document, and reading only the environment
+        # would leave this child with no bound at all — accepting an arbitrarily stale
+        # ceiling on a fleet that set one.
+        _max_age = effective_max_cache_age()
+        if _max_age:
+            _platform_extra[POLICY_MAX_AGE_ENV] = str(_max_age)
+    for _k, _v in os.environ.items():
+        # Operator-declared trusted-binary overrides (unit-file owned):
+        # backends resolve credential-bearing tools through these instead of
+        # the inherited PATH; minimal_env() would otherwise strip them.
+        if _k.startswith("KIROCREW_DEVFLEET_BIN_"):
+            _platform_extra[_k] = _v
+    # The port the gateway ACTUALLY bound (``dashboard.server._export_bound_port``),
+    # handed to the ONE backend that calls back into the gateway: Dev Fleet reads
+    # live-target pointer state through an in-gateway route, because the pointer
+    # itself is masked from its namespace. Scoped by app name exactly as the
+    # ``KIROCREW_DEVFLEET_BIN_`` loop above is — no other backend has a consumer, and
+    # ``pod/runtime.py`` deliberately scrubs this variable from spawns that must not
+    # aim at the live gateway. Not a secret: it is the port every dashboard client
+    # already connects to, and the gateway's own auth governs what a caller may do
+    # there. Absent (a foreground gateway before its site is up, or a test) it is not
+    # passed and the backend degrades as documented.
+    if app_name == DEV_FLEET_APP_NAME:
+        _bound = os.environ.get("KIROCREW_BOUND_PORT", "")
+        if _bound.isdigit():
+            _platform_extra["KIROCREW_BOUND_PORT"] = _bound
+    env = minimal_env(
+        PORT=str(port),
+        KIROCREW_APP_NAME=app_name,
+        KIROCREW_HOME=str(config_dir()),
+        **_platform_extra,
+    )
+    # Identity this backend's whole tree carries, so the startup stale-reap can
+    # still find it once the LEADER is gone. The backend is spawned with
+    # start_new_session=True, so its group outlives it: when the gateway is
+    # SIGKILLed the leader can exit while a uvicorn worker or a build child keeps
+    # the assigned PORT bound, and the next generation then spawns onto a port an
+    # orphan still owns (the observed 502). The group number is the dead leader's
+    # pid and a bare number is indistinguishable from a recycled one, so the reap
+    # signals VOUCHED MEMBERS instead -- see _reap_orphaned_backend_group and
+    # session_pid.signal_orphaned_spawn_group.
+    #
+    # KIROCREW_SPAWNED says a Kiro Crew spawned the process; the instance says
+    # WHICH spawn, and is minted here (before the process exists) because it has
+    # to travel in the child's environment where /proc/<pid>/environ can read it
+    # back. Random rather than pid-derived so a recycled pid cannot false-match.
+    spawn_instance = uuid.uuid4().hex[:16]
+    env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+    env[KIROCREW_SPAWN_INSTANCE_ENV] = spawn_instance
+    # Trusted gateway origin for the backend's own callbacks to this gateway
+    # (e.g. POST /api/notifications/push on a declared channel). It is injected
+    # ONLY from hard evidence of the port THIS gateway actually owns:
+    # KIROCREW_BOUND_PORT, which the gateway exports into its own environment
+    # the moment it reserves its port (bound and listening, not yet accepting;
+    # before this spawn pass can run — dashboard.server._reserve_dashboard_port).
+    # We require it to be present and to parse as an integer in 1..65535. We never fall back to KIROCREW_PORT (an
+    # inherited/--port guess), the app's own PORT, a config value, a run-marker,
+    # or a built-in default: any of those could point the child at a sibling
+    # gateway or at a port nothing is listening on. Absent or invalid evidence
+    # => omit the origin entirely, so a backend that needs a callback base fails
+    # closed (dormant) rather than trusting a guessed address. Generic name
+    # only; no app-specific env is set here.
+    bound_port = os.environ.get("KIROCREW_BOUND_PORT", "").strip()
+    bound_host_env = os.environ.get("KIROCREW_BOUND_HOST", "").strip()
+    gateway_origin = ""
+    if (
+        bound_port.isdigit()
+        and 1 <= int(bound_port) <= 65535
+        and bound_host_env in ("", "::1")
+    ):
+        # Host evidence: absent means loopback (the default bind shapes —
+        # loopback itself, or a wildcard bind loopback reaches); "::1" is the
+        # v6-loopback family marker. Only these two shapes are injected: a
+        # backend's callback arrives with no Origin header, and the gateway's
+        # CSRF barrier (origin.check_origin) trusts an Origin-less mutating
+        # request ONLY from a loopback peer. A gateway bound to a SPECIFIC
+        # interface exports that address, but injecting it would mint an
+        # origin whose every mutating callback is refused at the barrier —
+        # a half-alive backend, worse than designed dormancy — so that shape
+        # is omitted (fail closed, warned below) until such a request path is
+        # admitted. IPv6 literals are bracketed per RFC 3986.
+        bound_host = bound_host_env or "127.0.0.1"
+        if ":" in bound_host and not bound_host.startswith("["):
+            bound_host = f"[{bound_host}]"
+        gateway_origin = f"http://{bound_host}:{int(bound_port)}"
+        env["KIROCREW_GATEWAY_ORIGIN"] = gateway_origin
+    else:
+        # Dormancy is the DESIGNED outcome here, so the operator must be able
+        # to see it: an app that declares notification channels but gets no
+        # origin will silently never push. Warn for those; stay at debug for
+        # apps with no push surface. getattr defense: tests hand this function
+        # reduced manifest stand-ins without a notifications field.
+        _declares_channels = bool(
+            getattr(getattr(manifest, "notifications", None), "channels", None)
+        )
+        _why = (
+            "gateway bound to a specific interface"
+            if bound_host_env not in ("", "::1")
+            else "no valid KIROCREW_BOUND_PORT"
+        )
+        (logger.warning if _declares_channels else logger.debug)(
+            "%s; omitting KIROCREW_GATEWAY_ORIGIN for %s backend%s",
+            _why,
+            app_name,
+            (
+                " -- it declares notification channels and cannot push until"
+                " restarted with a valid origin"
+                if _declares_channels
+                else ""
+            ),
+        )
+    # Inject the per-app proxy secret so the backend can verify the
+    # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
+    # (CWE-306). Without it the loopback backend would trust any local caller.
+    # The same secret keys KIROCREW_GATEWAY_ORIGIN_PROOF, an
+    # HMAC-SHA256(secret, origin) the backend recomputes to confirm the origin
+    # value was minted by the gateway that alone holds this secret, rather than
+    # an inherited or spoofed env value. The proof is injected ONLY when the
+    # secret is readable AND the origin was injected above; a missing
+    # .app_secret is tolerated as before and yields neither the secret nor the
+    # proof (a secret-less legacy backend gets the origin only).
+    try:
+        _proxy_secret = (root / ".app_secret").read_text().strip()
+        if _proxy_secret:
+            env["KIROCREW_PROXY_SECRET"] = _proxy_secret
+            if gateway_origin:
+                env["KIROCREW_GATEWAY_ORIGIN_PROOF"] = hmac.new(
+                    _proxy_secret.encode("utf-8"),
+                    gateway_origin.encode("utf-8"),
+                    hashlib.sha256,
+                ).hexdigest()
+    except OSError:
+        pass
+    # Expose the provisioned deps dir (pip --target, above) to the child.
+    # PYTHONPATH rather than an interpreter switch: it is honored identically
+    # by the app's own venv interpreter and the gateway fallback, on every
+    # platform. Prepended so the app's pinned requirements win over anything
+    # the operator's own PYTHONPATH (passed through by minimal_env) carries.
+    # Gated on the dir existing AND a real file entry point: a module-style
+    # builtin (entry is None) runs trusted package code, and must not have an
+    # agent-writable app dir injected ahead of it (same trust boundary as the
+    # provisioning gate above).
+    _deps_dir = app_deps_dir(root)
+    # Activation additionally requires the stamp to name the digest for the
+    # CURRENT interpreter: a failed reprovision after a Python upgrade leaves
+    # the old-ABI tree on disk, and injecting it would crash the backend at
+    # import (native wheels are ABI-specific).
+    _deps_ready = (
+        entry is not None
+        and _deps_dir.is_dir()
+        and req_file.is_file()
+        and _deps_tree_stamp_current(root, req_file)
+    )
+    entry_str = str(entry) if entry else entry_point
+
+    # Prefer explicit backend type from manifest over content sniffing
+    backend_type = manifest.backend.type
+
+    # --- Node.js backend ---
+    # Note: module-style entry points (entry is None) are always Python
+    # builtin apps and never declare a Node.js backend, so this branch is
+    # safe to evaluate before the module-style branch below.
+    if entry is not None and (
+        backend_type == "node" or (not backend_type and entry_str.endswith((".js", ".mjs", ".cjs")))
+    ):
+        node_bin = _find_node_binary()
+        if not node_bin:
+            logger.error(
+                "App %s declares a Node.js backend but no node binary found. "
+                "Searched: nvm, PATH.",
+                app_name,
+            )
+            return None
+        cmd = [node_bin, entry_str]
+        cwd = str(root)
+        # Pass PORT as env var — Node.js apps typically read process.env.PORT
+        env["NODE_ENV"] = "production"
+
+        # Install npm dependencies if package.json exists and node_modules is missing
+        pkg_json = root / "package.json"
+        node_modules = root / "node_modules"
+        if pkg_json.is_file() and not node_modules.is_dir():
+            npm_bin = _find_npm_binary()
+            if npm_bin:
+                logger.info("Installing npm deps for app %s", app_name)
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_npm_install",
+                        outcome="started", resources=f"{app_name}",
+                    )
+                except Exception as exc:
+                    logger.debug("SEL audit failed for npm install %s: %s", app_name, exc)
+                try:
+                    sandboxed_npm, _ = wrap_argv(
+                        [npm_bin, "install", "--production", "--no-audit", "--no-fund"],
+                        mode="standard",
+                    )
+                    sandboxed_npm = cgroup_scope_argv(sandboxed_npm)  # cgroup DoS ceiling
+                    run_limited(
+                        sandboxed_npm,
+                        cwd=str(root), env=env, capture_output=True, timeout=120,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to install npm deps for app %s: %s", app_name, exc)
+
+    # --- Module-style Python builtin (e.g. kiro_crew.apps.builtins.<name>) ---
+    # Module-style entries have no file path — the module runs under the gateway's own
+    # interpreter (sys.executable) so it resolves against the gateway's installed
+    # packages, with cwd at the kiro_crew source root so relative imports inside the
+    # module work without venv setup.
+    #
+    # Bundled app backends start with the user site disabled through the shared
+    # helper. A non-bundled module-style child keeps its parent's policy because
+    # Kiro Crew may itself be installed in the user site, and this ``-m`` launch
+    # supplies no independent import path. md-notebook keeps its stronger ``-I``
+    # contract because it re-admits the exact package root in its script body.
+    #
+    # ``-I`` drops cwd-on-sys.path and ``PYTHONPATH`` (it implies ``-E``), so the
+    # import universe md-notebook needs is restated EXPLICITLY: ``runpy`` (the
+    # machinery behind ``-m``) runs the module after inserting the root Kiro Crew
+    # itself was imported from. Correct across a venv install, a --user install,
+    # and a source tree; ``repr`` keeps both injected strings inert literals.
+    elif entry is None:
+        python_bin = sys.executable
+        _import_root = str(Path(__file__).resolve().parent.parent.parent)
+        cwd = _import_root
+        if _shipped_md_notebook:
+            cmd = platform_compat.isolated_python_argv(
+                "-I",
+                "-c",
+                (
+                    "import runpy, sys; "
+                    f"sys.path.insert(0, {_import_root!r}); "
+                    f"runpy.run_module({entry_point!r}, run_name='__main__', alter_sys=True)"
+                ),
+                executable=python_bin,
+            )
+        else:
+            cmd = platform_compat.isolated_python_argv(
+                "-m",
+                entry_point,
+                executable=python_bin,
+            )
+
+    # --- Exec (shell-launcher) backend ---
+    # Explicit `backend.type: "exec"` (exec the entry point file as-is — also
+    # the escape hatch for compiled/binary launchers the auto-detect can't
+    # identify), a `.sh` entry point, or an extensionless executable with a
+    # non-Python shebang (e.g. `bin/<name>` with `#!/usr/bin/env bash` — the
+    # common launcher-script pattern) is executed directly rather than
+    # falling through to the Python branch (which would run bash source under
+    # the Python interpreter and die on `set -euo pipefail`). Same
+    # wrap_argv() sandbox + cgroup scope as every other branch.
+    elif backend_type == "exec" or (not backend_type and _is_shell_entry(entry)):
+        if not platform_compat.IS_POSIX:
+            # Exec backends rely on POSIX shebang exec and /bin/sh — neither
+            # exists on native Windows. Fail fast with a clear message instead
+            # of an undefined Popen crash.
+            logger.error(
+                "App %s declares an exec (shell launcher) backend (%s) which "
+                "is not supported on native Windows. Use a Python or Node "
+                "entry point instead.",
+                app_name,
+                entry_str,
+            )
+            return None
+        if os.access(entry, os.X_OK):
+            cmd = [entry_str]
+        else:
+            # Not executable (e.g. lost the exec bit in transit) — the kernel
+            # won't honor the shebang, so invoke its interpreter explicitly.
+            # /bin/sh only for a script with no shebang at all (bash source
+            # under dash-as-sh dies on `set -euo pipefail`).
+            cmd = [*_shebang_argv(entry), entry_str]
+        cwd = str(root)
+
+    # --- ASGI (Python) backend ---
+    elif backend_type == "asgi" or (
+        not backend_type and _is_asgi_entry(entry)
+    ):
+        # Prefer the app's venv interpreter, else the gateway's own (sys.executable) —
+        # never a bare "python3": a bare name relies on PATH, which isn't guaranteed
+        # (e.g. some build environments ship only a versioned interpreter, so
+        # execvp("python3") raises FileNotFoundError and the backend dies immediately).
+        # One policy shared with the stdio MCP registration path — see
+        # kiro_crew.apps.interpreter.
+        python_bin = resolve_app_python(root)
+        # Derive the module path for uvicorn (e.g. backend.app:app)
+        rel = entry.relative_to(root)
+        parts = list(rel.parts)
+        if len(parts) > 2 and parts[0] == "src":
+            cwd = str(root / "src")
+            module_path = ".".join(parts[1:]).removesuffix(".py")
+        else:
+            cwd = str(root)
+            module_path = ".".join(parts).removesuffix(".py")
+        cmd = platform_compat.isolated_python_argv(
+            "-m",
+            "uvicorn",
+            f"{module_path}:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
+            executable=python_bin,
+        )
+
+    # --- Plain Python backend (default) ---
+    else:
+        # See the ASGI branch: venv python first, else the gateway's own interpreter —
+        # one policy shared with the stdio MCP registration path.
+        python_bin = resolve_app_python(root)
+        cmd = platform_compat.isolated_python_argv(
+            entry_str,
+            executable=python_bin,
+        )
+        cwd = str(root)
+
+    # Provisioned-deps launch shim: PYTHONPATH entries are not site dirs, so
+    # .pth files in the deps tree (editable installs, namespace shims, import
+    # hooks) would silently never be processed - packages that rely on them
+    # install "successfully" and crash at import. Route the child through
+    # deps_boot, which site.addsitedir()s the deps dir (processing .pth) and
+    # then runs the original target with an unchanged argv view. Only when
+    # the child runs the GATEWAY interpreter (deps pin sys.executable; a venv
+    # interpreter means no deps were provisioned) - the shim is gateway code
+    # and must not be imported by a foreign interpreter.
+    #
+    # Shim XOR PYTHONPATH, never both: `python -m kiro_crew.apps.deps_boot`
+    # resolves kiro_crew through sys.path, and a deps-provided kiro_crew copy
+    # on PYTHONPATH would SHADOW the gateway's shim - app code running as the
+    # "shim" on the gateway's own interpreter. A shimmed child therefore gets
+    # NO deps PYTHONPATH (addsitedir supplies the deps only after the trusted
+    # shim has imported); non-shimmable children (node entries - inert there,
+    # and non-gateway interpreters) keep the PYTHONPATH transport.
+    if _deps_ready and cmd and cmd[0] == sys.executable:
+        # By ABSOLUTE PATH, not -m: the child runs with cwd=app root, and
+        # an app-root kiro_crew.py (or kiro_crew/ dir) would shadow the
+        # gateway package for `-m` resolution - the backend would die (or
+        # run app code as the shim) before startup. deps_boot is
+        # stdlib-only, so the path spelling has no import to shadow.
+        # Inserted at the python LAUNCH TARGET, never blindly at argv[1]:
+        # a shebang can carry interpreter flags (#!<python> -I), and a shim
+        # placed before them makes deps_boot read the flag as its script
+        # path. The same walk bridges uses finds the target; a shape with
+        # no resolvable target keeps its launch untouched.
+        from kiro_crew.apps.bridges import _py_target_index
+
+        _ti = _py_target_index(cmd[1:])
+        if _ti is not None:
+            cmd = platform_compat.isolated_python_argv(
+                *cmd[1 : 1 + _ti],
+                str(_deps_boot_path()),
+                str(_deps_dir),
+                *cmd[1 + _ti :],
+                executable=cmd[0],
+                force_isolation=True,
+            )
+    elif _deps_ready and cmd and os.path.isabs(cmd[0]) and _abi_shebang_of(root, cmd[0]):
+        # An EXECUTABLE python script entry (cmd[0] is the script, not an
+        # interpreter): the ABI check on the script path answers no-match,
+        # but its shebang can name an ABI-matched interpreter - exactly the
+        # bridges stdio case. Launch through deps_boot under that
+        # interpreter so the provisioned deps (and their .pth hooks) reach
+        # the backend. The shared shebang reader refuses argument-bearing
+        # shebangs (#!<python> -I keeps its kernel launch, flags intact)
+        # and sensitive paths, so both contracts hold here by construction.
+        _si = _abi_shebang_of(root, cmd[0])
+        cmd = platform_compat.isolated_python_argv(
+            str(_deps_boot_path()),
+            str(_deps_dir),
+            *cmd,
+            executable=_si,
+            force_isolation=True,
+        )
+    elif _deps_ready and path_command_is_abi_matched(root, cmd[0] if cmd else ""):
+        # PYTHONPATH transport only on a POSITIVE ABI match: the deps tree
+        # is built by the GATEWAY's pip, and an exec backend running a PATH
+        # python of another minor version would import mismatched binary
+        # wheels and die. Anything not positively matched (foreign pythons,
+        # node, shell) gets no deps env at all - the pre-deps status quo.
+        _existing_pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            f"{_deps_dir}{os.pathsep}{_existing_pp}" if _existing_pp else str(_deps_dir)
+        )
+        cmd = platform_compat.isolated_python_argv(
+            *cmd[1:],
+            executable=cmd[0],
+            force_isolation=True,
+        )
+
+    # Apply OS-level sandbox to app backend process.
+    #
+    # ``policy_cache`` is bind-mount-hidden in every tier so the AGENT's own
+    # subprocesses cannot read or rewrite the ceiling. This child is the one exception
+    # that has to see it: cache-only mode makes it resolve the fleet ceiling FROM that
+    # file and fail closed without it, so hiding it here would stop every app backend on
+    # a centrally-governed host. Reading the ceiling it is about to be bound by is not an
+    # escalation — the exposure the mask exists to prevent is the model-driven agent
+    # learning the deny patterns, and this is Kiro Crew's own spawn, not a tool call.
+    # Passed only when cache-only mode is actually on, so an ungoverned host is unchanged.
+    #
+    # READ is all it gets WHERE A SANDBOX APPLIES. ``wrap_argv`` seals this particular
+    # directory read-only rather than honouring the blanket "visible" meaning, because an
+    # app backend is arbitrary third-party code and the cache metadata records the source
+    # the next boot trusts — write access here would let an app pick the ceiling for every
+    # later boot on the host. That is enforced in ``sandbox``, not here, so this call site
+    # cannot widen it.
+    #
+    # On a host running unconfined — no sandbox backend, or ``agent.sandbox='off'`` with the
+    # ``sandbox_allow_no_isolation`` opt-in — there is no seal to apply, and this argument
+    # is inert: the child has the whole filesystem, so the cache is one of many things it
+    # can write and singling it out would neither restore the seal nor be the tightest
+    # control available. What still bounds a forged cache there is provenance rather than
+    # permissions: with ``require_policy_signature`` set in the admission policy, a document
+    # nobody trusted is refused however it got onto disk.
+    # The app's OWN hidden state leaves (e.g. md-notebook's vault registry, PAT, and
+    # sync settings) are unmasked for exactly this spawn: the mask fences agent
+    # subprocesses, but this backend is each leaf's only legitimate reader/writer, and
+    # leaving the mask on breaks the app outright. Unlike the governance cache
+    # these are the app's own read-write state, so the blanket "visible" meaning is the
+    # correct one. Empty for every app without declared owned leaves.
+    #
+    # Gated on IMMUTABLE PACKAGE PROVENANCE of the code this spawn executes, not on the
+    # app name alone: a trusted third-party app that claimed the name could otherwise
+    # spawn with the builtin's credential leaves (the Notes PAT) unmasked. The same
+    # ``execution_path`` the admission gate above vetted is what the provenance check
+    # binds to, so a file-entry install under the builtin's name gets no exemption.
+    _cache_visible = bool(_platform_extra.get(POLICY_CACHE_ONLY_ENV))
+    _visible: tuple[str, ...] = ()
+    if is_builtin_app(app_root=execution_path, app_name=app_name):
+        _visible = app_backend_visible_targets(app_name)
+    if _cache_visible:
+        # SECURITY: refuse rather than carve when the cache sits beneath an
+        # independently masked directory (a data home relocated under a credential
+        # tree). ``extra_visible_dirs`` cancels any hidden mask entry that CONTAINS
+        # a visible path, so carving the cache out would unmask that whole foreign
+        # tree for this spawn. With the mask kept, the cache-only child fails
+        # closed on the unreadable cache — strictly safer — and the guard's log
+        # line names the offending ancestor so the misconfiguration is actionable.
+        _cache_target = str(policy_cache_dir())
+        if not carveout_shadowed_by_foreign_mask(_cache_target):
+            _visible = _visible + (_cache_target,)
+    sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
+    if _cache_visible and list(sandboxed_cmd) == list(cmd):
+        # The wrap was a no-op, so this host has no OS confinement at all: no sandbox backend,
+        # or agent.sandbox='off' with the sandbox_allow_no_isolation opt-in. Said once,
+        # because the combination is worth naming — a centrally governed host running app code
+        # unconfined — and because the actionable answer is not obvious. It is NOT a refusal:
+        # the read-only seal is only one of the protections absent here, and an unconfined
+        # process can rewrite security_policy.json and the admission policy directly (the
+        # keystone gate covers TOOL CALLS, not an arbitrary process's open()), so refusing to
+        # let an app read the ceiling while it can replace the ceiling protects nothing.
+        global _warned_unconfined_cache
+        if not _warned_unconfined_cache:
+            _warned_unconfined_cache = True
+            logger.warning(
+                "SECURITY: this host follows a central governance policy but has no OS "
+                "sandbox, so app backends run unconfined and the policy cache is writable by "
+                "them. Set require_policy_signature in the admission policy: a signed "
+                "document is the control that still holds when confinement does not."
+            )
+    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
+
+    logger.info(
+        "Spawning app %s backend: %s", app_name, " ".join(sandboxed_cmd),
+    )
+    try:
+        sel().log_api_access(
+            caller="gateway", operation="app_backend_spawn",
+            outcome="started", resources=f"{app_name} port={port}",
+        )
+    except Exception as exc:
+        logger.debug("SEL audit failed for app %s backend spawn: %s", app_name, exc)
+
+    try:
+        # UTF-8 with replacement, not the locale codec. A text handle opened
+        # without ``encoding=`` takes the platform default, which on Windows is
+        # the ANSI code page (cp1252), and the provision-error line below can
+        # carry non-ASCII text -- a Unicode traceback glyph, an accented
+        # install path. Under cp1252 that write raises UnicodeEncodeError and
+        # the spawn aborts on the one branch whose whole point is to record
+        # why provisioning failed. ``errors="replace"`` keeps the write total
+        # for any codepoint; the child's own output is appended as raw bytes
+        # through the inherited fd and is not affected by this wrapper.
+        log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
+        if provision_error:
+            # Put the real cause at the top of the backend's own (user-visible)
+            # log: the import error missing deps produce reads as an app bug,
+            # and this line points it back at provisioning. Written and flushed
+            # before the spawn, so the child's inherited fd appends after it.
+            log_fh.write(f"[kiro-crew] {provision_error}\n")
+            log_fh.flush()
+        # Process-group isolation so stop_app_backend can tree-kill the app. Pass
+        # both flags explicitly (NOT via **dict unpack — that breaks mypy's Popen
+        # overload resolution on the build fleet): start_new_session=True is a
+        # no-op on Windows, creationflags resolves to 0 (no-op) on POSIX.
+        try:
+            proc = popen_limited(
+                sandboxed_cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                cwd=cwd,
+                env=env,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                # Build-capable apps get the elevated-but-finite NOFILE
+                # ceiling: the backend is the ANCESTOR of its build workloads
+                # (vite/pip) and a 1024 hard cap starves every descendant.
+                # All other apps keep the standard configured policy.
+                profile=(
+                    RLIMIT_PROFILE_BUILD if app_name in _BUILD_CAPABLE_APPS else RLIMIT_PROFILE_TOOL
+                ),
+            )
+        except OSError:
+            log_fh.close()
+            raise
+    except OSError as exc:
+        logger.error("Failed to start app %s backend: %s", app_name, exc)
+        return None
+
+    # Pin the ROOT's creation identity before the survival check. On Windows a
+    # launcher that spawns its real server and exits leaves a tree anchored by an
+    # exited root, and the exact-handle drain locates that tree through the root's
+    # (pid, creation time) -- which must be read now, while this Popen still holds
+    # the process open. POSIX does not need it: the group id IS the leader's pid,
+    # and its single identity probe stays in _record_app_pid on the success path.
+    root_start_time = _proc_start_time(proc.pid) if platform_compat.IS_WINDOWS else None
+
+    # Verify the child SURVIVED its initial bind. A port collision (e.g. another
+    # process grabbed the assigned port between our free-port probe and the child's
+    # bind) makes the backend exit almost immediately with EADDRINUSE. Without this
+    # check we'd return a 'started' record for a dead pid, the caller would proxy to a
+    # dead port (502), and repeated enable/health calls would respawn onto the SAME
+    # doomed port forever (the observed crash-loop). Poll over a short grace window
+    # (the sandbox launcher adds startup latency, so a single 0.4s check can miss a
+    # crash); if it exits, surface the real reason from its log and fail (caller clears
+    # the placeholder; a fresh spawn then re-runs free-port selection).
+    if not _survived_spawn(proc, port):
+        tail = ""
+        try:
+            # Same codec as the write above; the child's stdout bytes follow
+            # the header and may be any encoding, so decode with replacement
+            # rather than letting one stray byte turn the tail into "(no output)".
+            with open(log_path, "r", encoding="utf-8", errors="replace") as _lf:
+                tail = "".join(_lf.readlines()[-8:]).strip()[-600:]
+        except Exception:  # noqa: BLE001
+            pass
+        log_fh.close()
+        collided = "address already in use" in tail.lower() or "errno 98" in tail.lower()
+        logger.error(
+            "App %s backend exited immediately (rc=%s) on port %d%s — %s",
+            app_name, proc.returncode, port,
+            " [PORT COLLISION]" if collided else "",
+            tail or "(no output)",
+        )
+        # The launcher is dead; whatever it forked may not be. Nothing tracks that
+        # tree yet, so it is drained here or never.
+        _drain_exited_root_tree(app_name, proc, root_start_time, spawn_instance)
+        return None
+
+    # Surviving the bind check does not mean the backend is healthy: we have only
+    # confirmed it did not crash on startup. It is intentionally returned with
+    # healthy=False; the background health-check loop started below flips it to
+    # healthy=True once the health endpoint responds.
+    ap = AppProcess(
+        app_name=app_name,
+        port=port,
+        pid=proc.pid,
+        proc=proc,
+        log_fh=log_fh,
+        healthy=False,
+        started_at=time.time(),
+        log_path=str(log_path),
+        gateway_started=True,
+        admitted_builtin=_admitted_builtin,
+        spawn_instance=spawn_instance,
+    )
+
+    retired = False
+    with _lock:
+        if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
+            retired = True
+        else:
+            _processes[app_name] = ap
+            _allocated_ports[app_name] = port
+
+    if retired:
+        logger.info(
+            "App %s backend spawn lost publication ownership; terminating pid %d",
+            app_name,
+            proc.pid,
+        )
+        _terminate_retired_spawn(app_name, proc, log_fh)
+        return None
+
+    logger.info("Started app %s backend on port %d (pid %d)", app_name, port, proc.pid)
+
+    # Persist identity for the startup stale-reap (see _reap_stale_app_backends).
+    ap.pid_start_time = _record_app_pid(app_name, proc.pid, port, spawn_instance)
+
+    # Health check in background, then a standing liveness watch for as long as the
+    # backend is tracked — see _supervise_backend_health.
+    _start_health_supervisor(ap, manifest.backend.healthCheck)
+
+    return ap
+
+
+def _wait_for_pids(pids: list[int], timeout: float = 2.0) -> None:
+    """Poll until all PIDs have exited or timeout is reached.
+
+    Uses short sleeps (0.1s) to avoid blocking the thread for the full
+    timeout duration when processes exit quickly.
+
+    Uses pid_liveness (tri-state), NOT pid_exists (which collapses EPERM to
+    True): an adopted app-backend PID can be recycled between
+    kill_pid_pinned(SIGTERM) and this poll to a different user's process. pid_exists would keep it in
+    still_alive for the whole 2.0s deadline; pid_liveness returns UNSIGNALABLE
+    for the not-ours case and we treat that as done, so a recycled PID returns
+    fast instead of holding the deadline. Never raw ``os.kill(pid, 0)`` — that
+    TERMINATES the target on Windows.
+    """
+    deadline = time.monotonic() + timeout
+    remaining = list(pids)
+    while remaining and time.monotonic() < deadline:
+        still_alive: list[int] = []
+        for pid in remaining:
+            if platform_compat.pid_liveness(pid) == platform_compat.PID_ALIVE:
+                still_alive.append(pid)
+        remaining = still_alive
+        if remaining:
+            time.sleep(0.1)
+
+
+def stop_app_backend(
+    app_name: str,
+    *,
+    _expected: AppProcess | None = None,
+    _retry_if_serving: str | None = None,
+) -> bool:
+    """Stop an app's backend process.
+
+    ``_retry_if_serving`` is a health path, and passing one asks for the stricter
+    reading of ONE ambiguous case: an adopted backend none of whose recorded PIDs
+    still match their adoption identity. By default that reads as "the backend
+    exited and its PID was recycled", so the stop reports success. With a health
+    path the port is probed, and one that still answers reports failure with
+    tracking restored instead, so the caller can retry. Only a caller enforcing a
+    withdrawn trust ceiling needs that, and it pays for the probe.
+    """
+    # Teardown participates in the health serialization, so the pop cannot land in the
+    # middle of a reconcile. Without this, a watcher that had already passed its identity
+    # check could still be inside `_gate_mcp_registration` when the caller's subsequent
+    # `deregister_app` scrubs — and its write would land AFTER, restoring the dead url
+    # this whole gate exists to keep out of mcp.json. Holding it across the pop makes the
+    # two mutually exclusive: either the reconcile completes and this pop follows it (the
+    # caller's scrub then wins), or this pop lands first and the reconcile's identity
+    # check fails. Lock order matches `_set_backend_health`: reconcile lock, then `_lock`.
+    with _health_reconcile_lock:
+        with _lock:
+            if _expected is not None and _processes.get(app_name) is not _expected:
+                return False
+            _advance_lifecycle_locked(app_name, _LIFECYCLE_STOP)
+            ap = _processes.pop(app_name, None)
+            _allocated_ports.pop(app_name, None)
+            _restart_attempts.pop(app_name, None)
+        # Keep cleanup inside the lifecycle transition's serialization. A later explicit
+        # start cannot record its successor between the pop and this identity check.
+        if ap is not None and ap.proc is not None:
+            _forget_app_pid_if(app_name, ap.pid, ap.pid_start_time)
+        else:
+            _forget_app_pid(app_name)
+
+    if not ap:
+        return False
+
+    if ap.proc and ap.proc.poll() is None:
+        try:
+            sel().log_api_access(
+                caller="gateway", operation="app_backend_stop",
+                outcome="sigterm", resources=f"{app_name} pid={ap.proc.pid}",
+            )
+        except Exception as exc:
+            logger.debug("SEL audit failed for app_backend_stop %s: %s", app_name, exc)
+        try:
+            # killpg(getpgid) on POSIX; on Windows the exact-handle drain pinned to the
+            # identity recorded at spawn, so descendants of an exited root are reached.
+            _signal_backend_tree(app_name, ap.proc, ap.pid_start_time, platform_compat.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            ap.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                platform_compat.kill_process_tree(ap.proc.pid, platform_compat.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                sel().log_api_access(
+                    caller="gateway", operation="app_backend_stop",
+                    outcome="sigkill_escalation",
+                    resources=f"{app_name} pid={ap.proc.pid}",
+                )
+            except Exception as exc:
+                logger.debug("SEL audit failed for sigkill_escalation %s: %s", app_name, exc)
+        if (
+            _retry_if_serving is not None
+            and ap.port
+            and _health_probe(ap.port, _retry_if_serving).healthy
+        ):
+            # A DESCENDANT outlived its root, which the root's exit status cannot show.
+            #
+            # The signal above goes to the process GROUP, but the wait watches only
+            # ``ap.proc``, so a root that exits promptly on SIGTERM skips the escalation
+            # entirely. App code is free to ignore SIGTERM in a child it forked, or to
+            # leave the group with ``setsid`` before binding, and either way the port
+            # keeps being served while this returns True and the record is popped. For
+            # an ordinary stop that is tolerable. Under a WITHDRAWN ceiling it is the
+            # whole failure: un-trusted code still serving, with nothing tracked left to
+            # retry against.
+            #
+            # NOT escalated with another signal here, deliberately. The root has been
+            # reaped by the wait above, so the OS may already have reused its pid, and
+            # ``kill_process_tree`` would resolve that number to whatever group owns it
+            # now. The descendant is an UNKNOWN process -- the gateway recorded no
+            # identity for it -- which is the same position as an adopted record with no
+            # recorded PIDs, and that branch refuses for the same reason rather than
+            # signalling blind.
+            #
+            # So this reports the refusal instead of a success it cannot support:
+            # tracking is restored, the ceiling stays engaged on the next sweep, the MCP
+            # entry the revocation scrubbed stays scrubbed, and the operator gets a row
+            # and a warning naming the port rather than a silent claim that the app was
+            # stopped.
+            logger.warning(
+                "App %s: something is still answering port %d after its backend was "
+                "stopped; a descendant outlived the process we spawned, so the stop is "
+                "reported as refused rather than successful",
+                app_name, ap.port,
+            )
+            try:
+                sel().log_api_access(
+                    caller="gateway", operation="app_backend_stop",
+                    outcome="rejected_descendant_serving",
+                    resources=f"{app_name} port={ap.port}",
+                )
+            except Exception as exc:
+                logger.debug(
+                    "SEL audit failed for rejected_descendant_serving %s: %s",
+                    app_name, exc,
+                )
+            with _lock:
+                _processes.setdefault(app_name, ap)
+                if ap.port:
+                    _allocated_ports.setdefault(app_name, ap.port)
+            return False
+    elif ap.proc is not None:
+        # The tracked ROOT has already exited, but the record is only now being
+        # dropped -- a launcher that died after startup while the server it forked
+        # kept serving, and a stop (disable, uninstall, ceiling revocation, gateway
+        # shutdown) arriving before the health supervisor replaced the record. The
+        # group signal above needs a live root to resolve from, so without this the
+        # stop dropped the record and left that server running. Same drain as the
+        # startup-failure branch: the identity recorded at spawn on Windows, the
+        # spawn-instance vouch on POSIX, nothing aimed at a bare number.
+        gone = _drain_exited_root_tree(app_name, ap.proc, ap.pid_start_time, ap.spawn_instance)
+        # The same refusal the live-root branch makes above, on the same grounds and
+        # under the same condition: a WITHDRAWN ceiling cannot be told the app was
+        # stopped while un-trusted code may still be serving. Positive survivors
+        # refuse outright; an inconclusive drain (nothing to vouch by, or a host
+        # that cannot read the vouch) is settled by the same port probe the live
+        # branch uses. An ordinary stop tolerates a survivor, as it does above,
+        # and says so.
+        if gone is not True:
+            refuse = _retry_if_serving is not None and (
+                gone is False
+                or bool(ap.port and _health_probe(ap.port, _retry_if_serving).healthy)
+            )
+            if refuse:
+                logger.warning(
+                    "App %s: descendants of its exited backend root (pid %d) may still be "
+                    "serving on port %d, so the stop is reported as refused rather than "
+                    "successful",
+                    app_name,
+                    ap.proc.pid,
+                    ap.port,
+                )
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_stop",
+                        outcome="rejected_descendant_serving",
+                        resources=f"{app_name} port={ap.port}",
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "SEL audit failed for rejected_descendant_serving %s: %s",
+                        app_name, exc,
+                    )
+                with _lock:
+                    _processes.setdefault(app_name, ap)
+                    if ap.port:
+                        _allocated_ports.setdefault(app_name, ap.port)
+                return False
+            if gone is False:
+                logger.warning(
+                    "App %s: a descendant outlived its exited backend root (pid %d) and "
+                    "survived the drain; the stop is reported as successful, as an "
+                    "ordinary stop tolerates",
+                    app_name,
+                    ap.proc.pid,
+                )
+    elif not ap.proc and ap.port:
+        # Adopted process (proc=None) — kill only PIDs we recorded at adoption
+        if not ap.adopted_pids:
+            logger.warning(
+                "Cannot stop adopted backend for %s on port %s: no recorded PIDs — "
+                "refusing to kill unknown processes",
+                app_name, ap.port,
+            )
+            try:
+                sel().log_api_access(
+                    caller="gateway", operation="app_backend_stop_adopted",
+                    outcome="rejected_no_pids",
+                    resources=f"{app_name} port={ap.port}",
+                )
+            except Exception as exc:
+                logger.debug("SEL audit failed for rejected_no_pids %s: %s", app_name, exc)
+            # Restore tracking so a retry is possible after re-adoption
+            with _lock:
+                _processes.setdefault(app_name, ap)
+                if ap.port:
+                    _allocated_ports.setdefault(app_name, ap.port)
+            return False
+        try:
+            # PID-reuse guard: signal a recorded PID only when its live
+            # start-time identity still POSITIVELY matches the token captured
+            # at adoption (same convention as the spawned-backend reap). This
+            # is process identity, not a port/address heuristic, so every
+            # recycling shape — same address, another local address, a
+            # v6-only wildcard, or a non-listener — fails the match and is
+            # never signalled. A PID with no recorded token (identity was
+            # unreadable at adoption) or an unreadable live value reads as
+            # "identity unconfirmed" and is skipped, per the
+            # process_start_time contract: do not kill what you cannot name.
+            target_pids: set[int] = set()
+            unconfirmed: list[int] = []
+            for pid in ap.adopted_pids:
+                recorded_st = ap.adopted_start_times.get(pid)
+                if recorded_st is not None and _proc_start_time(pid) == recorded_st:
+                    target_pids.add(pid)
+                elif platform_compat.pid_exists(pid):
+                    unconfirmed.append(pid)
+            if unconfirmed:
+                logger.warning(
+                    "Adopted backend for %s on port %s: skipping live PIDs %s — "
+                    "start-time identity does not match the adoption record "
+                    "(recycled PID or unreadable identity); not signalling them",
+                    app_name, ap.port, unconfirmed,
+                )
+
+            pids: list[int] = []
+            for pid in target_pids:
+                if pid <= 0:
+                    continue
+                try:
+                    # Identity-PINNED (kill_pid_pinned): on Windows the handle
+                    # that re-verifies the start time stays open across the
+                    # terminate, so the PID taskkill resolves cannot have been
+                    # recycled between the identity check above and the signal.
+                    # False means the pin could not be established (the process
+                    # exited since the check) — nothing to stop, skip it.
+                    # POSIX delegates straight through to os.kill.
+                    if (
+                        platform_compat.kill_pid_pinned(
+                            pid, ap.adopted_start_times[pid], platform_compat.SIGTERM
+                        )
+                        is False
+                    ):
+                        logger.info(
+                            "Adopted backend for %s: pid %d exited before the "
+                            "pinned SIGTERM — nothing to signal",
+                            app_name, pid,
+                        )
+                        continue
+                    pids.append(pid)
+                except (ProcessLookupError, OSError):
+                    pass
+            try:
+                sel().log_api_access(
+                    caller="gateway", operation="app_backend_stop_adopted",
+                    outcome="sigterm",
+                    resources=f"{app_name} port={ap.port} pids={pids}",
+                )
+            except Exception as exc:
+                logger.debug("SEL log_api_access failed for app_backend_stop_adopted: %s", exc)
+            # Wait for graceful shutdown (non-blocking poll)
+            _wait_for_pids(pids, timeout=2.0)
+            # Escalate to SIGKILL if still alive
+            escalated: list[int] = []
+            for pid in pids:
+                # pid_exists (not os.kill(pid,0), which terminates on Windows).
+                # The graceful-shutdown wait above is exactly the window in
+                # which the backend can exit and its PID be recycled, and
+                # SIGKILL is the destructive half — so the escalation re-reads
+                # the start-time identity here (this is what covers POSIX,
+                # where kill_pid_pinned delegates straight through) and the
+                # pinned kill then holds the Windows handle across the signal.
+                if (
+                    platform_compat.pid_exists(pid)
+                    and _proc_start_time(pid) == ap.adopted_start_times[pid]
+                ):
+                    try:
+                        if (
+                            platform_compat.kill_pid_pinned(
+                                pid,
+                                ap.adopted_start_times[pid],
+                                platform_compat.SIGKILL,
+                            )
+                            is not False
+                        ):
+                            escalated.append(pid)
+                    except (ProcessLookupError, OSError):
+                        pass
+            if escalated:
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_stop_adopted",
+                        outcome="sigkill_escalation",
+                        resources=f"{app_name} port={ap.port} pids={escalated}",
+                    )
+                except Exception as exc:
+                    logger.debug("SEL log_api_access failed for app_backend_stop_adopted sigkill: %s", exc)
+        except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+            logger.warning(
+                "Failed to stop adopted backend for %s on port %s: %s",
+                app_name, ap.port, exc,
+            )
+            # Restore tracking so a retry is possible
+            with _lock:
+                _processes.setdefault(app_name, ap)
+                if ap.port:
+                    _allocated_ports.setdefault(app_name, ap.port)
+            return False
+        if (
+            _retry_if_serving is not None
+            and _health_probe(ap.port, _retry_if_serving).healthy
+        ):
+            # AMBIGUOUS observation, resolved by the caller who cares.
+            #
+            # An adopted backend can reach here two ways: nothing was signalled
+            # because no recorded PID matched its adoption identity, or the recorded
+            # PIDs were signalled and its supervisor started a replacement. Both read
+            # the same from here, and the DEFAULT reading covers both: the app's
+            # process is gone, so the stop succeeded (see TestStopAdoptedBackend,
+            # which pins that an identity mismatch means the PID was recycled).
+            #
+            # A caller enforcing a WITHDRAWN trust ceiling cannot accept that reading
+            # on faith: if something is still answering the port, reporting success
+            # hands it un-trusted code that is serving, with tracking popped and
+            # nothing left to retry against. Such a caller passes a health path and
+            # pays for one probe, and a port that still answers becomes the same
+            # refusal shape as the two branches above: tracking restored, False
+            # returned. Only a silent port ends the sequence.
+            logger.warning(
+                "Adopted backend for %s is answering on port %s again after the "
+                "stop; restoring tracking so the stop can be retried",
+                app_name, ap.port,
+            )
+            try:
+                sel().log_api_access(
+                    caller="gateway", operation="app_backend_stop_adopted",
+                    outcome="rejected_replacement_serving",
+                    resources=f"{app_name} port={ap.port}",
+                )
+            except Exception as exc:
+                logger.debug(
+                    "SEL audit failed for rejected_replacement_serving %s: %s",
+                    app_name, exc,
+                )
+            with _lock:
+                _processes.setdefault(app_name, ap)
+                if ap.port:
+                    _allocated_ports.setdefault(app_name, ap.port)
+            return False
+
+    if ap.proc:
+        logger.info("Stopped app %s backend (pid %d)", app_name, ap.pid)
+    else:
+        logger.info("Stopped adopted app %s backend on port %s", app_name, ap.port)
+    if ap.log_fh:
+        try:
+            ap.log_fh.close()
+        except OSError:
+            pass
+    return True
+
+
+def get_app_process(app_name: str) -> AppProcess | None:
+    """Get the process info for a running app backend."""
+    with _lock:
+        return _processes.get(app_name)
+
+
+def list_app_processes() -> list[dict[str, Any]]:
+    """List all running app backend processes."""
+    with _lock:
+        return [ap.to_dict() for ap in _processes.values()]
+
+
+def spawned_backend_names() -> list[str]:
+    """App names whose backend THIS gateway process spawned (``proc`` set).
+
+    The gateway-shutdown sweep stops exactly these. Adopted records
+    (``proc is None``) are deliberately excluded: an adopted backend is an
+    externally managed instance whose contract is to SURVIVE gateway exit and
+    be re-probed and re-adopted on the next start (see the adoption comment in
+    ``_start_app_backend_body``) — signalling it from shutdown would take down
+    an independent service. Deriving the sweep from this tracking table rather
+    than from persisted ``enabled`` metadata also keeps it honest in both
+    directions: a child whose app was disabled cross-process (metadata-only)
+    is still stopped, and an app with nothing running is never passed to
+    :func:`stop_app_backend`, whose ``_forget_app_pid`` would otherwise erase
+    the pidfile record that lets ``_reap_stale_app_backends`` recover a
+    prior-generation orphan.
+    """
+    with _lock:
+        return sorted(name for name, ap in _processes.items() if ap.proc is not None)
+
+
+def spawned_backend_owns_pid(pid: int) -> bool:
+    """Whether a backend THIS gateway spawned owns *pid*.
+
+    Owning means *pid* is the spawned root or descends from it, because
+    ``wrap_argv`` places a sandbox launcher between us and the real server —
+    the same ownership shape :func:`_spawn_owns_listener` reads off a listener.
+
+    Only a record holding a LIVE ``Popen`` answers, and that is the whole
+    security value: an unreaped child's pid cannot be recycled by the kernel, so
+    a root that answers here is a process this gateway started and still owns.
+    ``poll() is None`` is what carries that, not ``proc is not None`` on its own —
+    once a child exits and is reaped its pid is free for anyone. An ADOPTED
+    backend belongs to another supervisor and carries no handle at all (see
+    :func:`spawned_backend_names`), so it is refused rather than trusted on a pid
+    this gateway cannot vouch for.
+
+    The ancestry walk runs OUTSIDE ``_lock``: it reads ``/proc`` per candidate,
+    and the snapshot taken under the lock is all the registry state it needs.
+    """
+    with _lock:
+        roots = [
+            ap.pid
+            for ap in _processes.values()
+            if ap.proc is not None and ap.pid > 0 and ap.proc.poll() is None
+        ]
+    return any(_pid_is_self_or_descendant_of(pid, root) for root in roots)
+
+
+def get_app_backend_port(app_name: str) -> int | None:
+    """Get the port for a running app backend (used by reverse proxy)."""
+    with _lock:
+        ap = _processes.get(app_name)
+        return ap.port if ap and ap.healthy else None
+
+
+def recorded_backend_port(app_name: str) -> int | None:
+    """The port THIS GATEWAY recorded for *app_name*'s backend, or None.
+
+    Gateway-owned provenance, in preference order: the live tracking entry, then
+    the pidfile written at spawn/adoption. Neither is reachable by the app — the
+    pidfile lives under ``KIROCREW_HOME``, not in the app directory — which is
+    what makes this usable as evidence when the app's own manifest is not.
+
+    Must be read BEFORE :func:`stop_app_backend`, which drops both records.
+    """
+    with _lock:
+        ap = _processes.get(app_name)
+        if ap and ap.port:
+            return int(ap.port)
+    entry = _read_pidfile().get(app_name)
+    if isinstance(entry, dict):
+        port = entry.get("port")
+        if isinstance(port, int) and _MIN_PORT <= port <= _MAX_PORT:
+            return port
+    return None
+
+
+def unstopped_backend_port(app_name: str, *, port_hint: int | None = None) -> int | None:
+    """The port *app_name*'s backend is still listening on after a stop, else None.
+
+    Answers the one question :func:`stop_app_backend`'s boolean cannot: it returns
+    ``False`` both for "there was nothing to stop" (never started, already dead,
+    crashed) and for "something is running that I did not stop" (never adopted at
+    boot, or adopted with no usable PIDs) — and ``True`` only means the process it
+    was TRACKING is gone, which says nothing about a detached worker the app
+    spawned for itself. Those need opposite handling, so the caller observes the
+    port instead of reading a flag.
+
+    ``port_hint`` is the gateway-recorded port from :func:`recorded_backend_port`,
+    captured before the stop. It is preferred over the manifest because the
+    manifest is ``app.json`` INSIDE the app directory — writable by any app trusted
+    to run code, so an app could otherwise relabel its port (or claim ``auto``) to
+    hide from this probe. The hint also covers ``port: auto`` backends, whose real
+    port only the gateway ever knew.
+
+    The manifest is the fallback for the case the hint cannot cover: a fixed-port
+    backend this gateway never tracked at all (adoption skipped at boot), where the
+    declared port is the only lead available. Only ``backend.entryPoint`` apps are
+    considered there — an app whose backend is a loopback ``mcpServers`` URL is a
+    process the gateway never spawned and does not own, so a listener on it is not
+    an unstopped child. ``None`` means "nothing observed", not "definitely stopped".
+    """
+    if port_hint is not None:
+        return port_hint if _port_is_listening(port_hint) else None
+    try:
+        manifest = get_app_manifest(app_name)
+        if manifest is None or not manifest.backend.entryPoint:
+            return None
+        port_str = str(manifest.backend.port)
+        if not port_str or port_str == "auto":
+            return None
+        port = int(port_str)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not (_MIN_PORT <= port <= _MAX_PORT):
+        return None
+    return port if _port_is_listening(port) else None
+
+
+# ---------------------------------------------------------------------------
+# Health checking
+# ---------------------------------------------------------------------------
+
+def health_reconcile_lock() -> Any:
+    """The serialization every writer of an app's MCP + agent state must hold.
+
+    Exported for ``apps/bridges.py``, which acquires it around its mcp.json and agent
+    materialization so a lifecycle registration and a health transition cannot interleave
+    their decisions. Held re-entrantly: the health path already owns it before it calls
+    into those writers.
+
+    Ordering is always this lock FIRST, then ``_lock`` or bridges' ``_mcp_lock`` — never
+    the reverse — so the two families of writer cannot deadlock against each other.
+    """
+    return _health_reconcile_lock
+
+
+def _gate_mcp_registration(app_name: str, port: int, *, healthy: bool) -> bool:
+    """Register the app's MCP servers once its backend is healthy, or scrub them if not.
+
+    Called from the health-check loop so the global mcp.json never carries an HTTP MCP url
+    for an app whose backend isn't actually serving (registering with an optimistic
+    pre-health port would leave a dead url for an enabled app whose backend never
+    became healthy, breaking every kiro-cli session). On
+    health success we (re)register with the confirmed live port; on failure we deregister
+    so no dead entry survives. Never raises — registration must not crash the health loop.
+
+    Returns whether the reconcile landed. The caller records that, because the health
+    FLAG moves whether or not mcp.json could be written: without a success signal a
+    transient write failure would strand a dead (or missing) entry until the next health
+    transition, which for a backend that then stays put never comes."""
+    try:
+        if healthy:
+            # circular import: bridges imports backend.get_app_backend_port, so deferring
+            # this import to call time breaks the backend ↔ bridges module cycle.
+            from kiro_crew.apps.bridges import reregister_app_mcp_servers
+
+            # Symmetric with the scrub below: the agent JSONs carry the server spec, so a
+            # registration whose agent half failed has not made the tools reachable — and
+            # letting `mcp_healthy` advance on it would strand the app's agent without
+            # its MCP tools, with nothing left to retry.
+            register_io_failures: list[str] = []
+            reregister_app_mcp_servers(app_name, live_port=port, io_failures=register_io_failures)
+            if register_io_failures:
+                logger.warning(
+                    "App %s: %d agent(s) could not be rewritten after MCP registration "
+                    "(%s); reporting the reconcile unlanded so the watch retries",
+                    app_name, len(register_io_failures), ", ".join(register_io_failures),
+                )
+                return False
+        else:
+            # circular import: see above — bridges ↔ backend cycle, deferred to call time.
+            from kiro_crew.apps.bridges import scrub_backend_mcp_url
+
+            # NOT a blanket deregister. An app's stdio MCP servers are launched by
+            # kiro-cli itself and have no port to be dead, so dropping them because an
+            # HTTP backend died takes working tools away for a reason that has nothing to
+            # do with them. scrub_backend_mcp_url pops the HTTP entry and keeps the rest
+            # — falling back to removing everything when the manifest cannot say which is
+            # which, since the dead url must not survive on the strength of not knowing.
+            scrub_unreconciled: list[str] = []
+            kept = scrub_backend_mcp_url(app_name, unreconciled=scrub_unreconciled)
+            if scrub_unreconciled:
+                logger.warning(
+                    "App %s: the scrub could not be completed (%s); reporting it "
+                    "unlanded so the watch retries",
+                    app_name, "; ".join(scrub_unreconciled),
+                )
+                return False
+            if kept:
+                logger.info(
+                    "App %s: kept %d backend-independent MCP server(s) after the scrub",
+                    app_name, len(kept),
+                )
+            # The scrub is only half the removal: an app's materialized agent JSONs COPY
+            # the server's launch spec, and the agent config is what kiro-cli loads. So
+            # clearing the global map alone leaves the agents still naming the dead url —
+            # the exact outage this gate exists to prevent, just one file over.
+            # Registration already refreshes agents for this reason; mirror it here.
+            #
+            # A failed refresh makes the whole reconcile UNLANDED rather than being
+            # swallowed. Registration treats its own refresh as non-fatal, but that path
+            # has no retry behind it, so non-fatal there means "do not fail the
+            # registration". Here the watch retries, an idempotent re-scrub is cheap, and
+            # the alternative is a dead url left permanently in the file kiro-cli reads.
+            from kiro_crew.apps.bridges import refresh_app_agents
+
+            # refresh_app_agents, NOT a hand-rolled re-materialization: it already
+            # carries the two guards this path must honour — a `resources="app"` app
+            # registers its own agents and the gateway must not publish duplicates, and
+            # a denied app's agents must be SCRUBBED rather than rewritten back into
+            # dispatchable existence. Both return an empty list, which is "nothing for us
+            # to do" rather than a failure; only the io_failures collector means retry.
+            # The agent refresh RE-MATERIALIZES this app's agent configs. Unlike the
+            # scrub above — always safe, and therefore never gated — that is a WRITE, and
+            # for an app the operator has disabled it puts back the very files a
+            # concurrent `deregister_app` just removed. Checked BEFORE and AFTER: the CLI
+            # runs in another process, so neither check can be atomic with the write, and
+            # only the pair converges.
+            # Deleting happens only on a CONFIRMED disable. `_drop_disabled_app_resources`
+            # unlinks materialized agents, taking user-owned fields with them, and
+            # `installed.json` can fail to read transiently — so an UNKNOWN state must
+            # not be collapsed into "disabled". It reports unlanded instead and the watch
+            # retries. The cleanup's own result is the reconcile's result, because
+            # deregister_app reports softly and discarding it would record a removal that
+            # never happened.
+            enabled = _app_enabled_state(app_name)
+            if enabled is False:
+                return _drop_disabled_app_resources(app_name)
+            if enabled is None:
+                return False  # unknown: neither refresh nor delete; try again next sweep
+            scrub_io_failures: list[str] = []
+            refresh_app_agents(app_name, io_failures=scrub_io_failures)
+            enabled = _app_enabled_state(app_name)
+            if enabled is False:
+                return _drop_disabled_app_resources(app_name)
+            if enabled is None:
+                return False
+            if scrub_io_failures:
+                logger.warning(
+                    "App %s: %d agent(s) could not be rewritten after the MCP scrub (%s); "
+                    "reporting the reconcile unlanded so the watch retries",
+                    app_name, len(scrub_io_failures), ", ".join(scrub_io_failures),
+                )
+                return False
+        return True
+    except Exception as exc:  # noqa: BLE001 — health loop must never crash on reconcile
+        logger.warning("Health-gated MCP registration failed for app %s: %s", app_name, exc)
+        return False
+
+
+def _warn_bad_health_path(health_path: str) -> None:
+    """Log a rejected manifest health path once per distinct value."""
+
+    with _health_warn_lock:
+        if health_path in _warned_health_paths:
+            return
+        _warned_health_paths.add(health_path)
+    logger.warning(
+        "App backend health path %r is unsafe; healthCheck must be an absolute "
+        "loopback path such as /health",
+        health_path,
+    )
+
+
+def _health_probe_url(port: int, health_path: str) -> str | None:
+    """Build a loopback health URL without letting app text change its authority."""
+
+    if not 0 < port < 65536:
+        return None
+    if not _HEALTH_PATH_RE.fullmatch(health_path or ""):
+        _warn_bad_health_path(health_path)
+        return None
+    return f"http://127.0.0.1:{port}{health_path}"
+
+
+@dataclass(frozen=True)
+class HealthProbeOutcome:
+    """What one unsigned loopback health GET observed.
+
+    Carries the observed HTTP status so a failure can be READ rather than investigated:
+    a 403 (the health path sits behind the app's own auth), a 404 (no handler) and a dead
+    port are the same single log line otherwise. ``status`` is None when no HTTP response
+    was produced at all, and ``detail`` is the short phrase the logs print.
+
+    ``healthy`` is recorded by the probe rather than derived from ``status``, because the
+    two ways a status arrives do NOT share a verdict: the opener REFUSES redirects, so a
+    3xx reaches us as an ``HTTPError`` whose code is below 400 while nothing served the
+    health check. Deriving the verdict from the number would promote exactly that.
+    """
+
+    status: int | None
+    detail: str
+    healthy: bool = False
+
+    @classmethod
+    def answered(cls, status: int) -> HealthProbeOutcome:
+        """A status on a response the opener RETURNED — the unchanged verdict, < 400."""
+        return cls(status, f"HTTP {status}", healthy=status < 400)
+
+    @classmethod
+    def refused(cls, status: int) -> HealthProbeOutcome:
+        """A status the opener raised: a 4xx/5xx, or a redirect it would not follow."""
+        return cls(status, f"HTTP {status}")
+
+
+def _probe_failure_detail(exc: BaseException) -> str:
+    """Name why an unsigned loopback GET produced no status, in one short phrase.
+
+    Unwraps ``URLError``, whose ``reason`` is the interesting exception; the wrapper's own
+    ``str`` buries it in ``<urlopen error ...>``.
+
+    The fallback renders the message with ``repr`` and a length cap because an app backend
+    is arbitrary third-party code and part of that message is ITS bytes: a ``BadStatusLine``
+    carries the raw first line off the socket, up to 64 KB of it, which is free to hold a
+    carriage return or a terminal escape. Printed as-is into the gateway log, those bytes
+    could add a line the gateway never wrote. ``repr`` escapes them and the cap keeps one
+    failed probe from writing a screenful.
+    """
+    inner = exc
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+        inner = exc.reason
+    if isinstance(inner, ConnectionRefusedError):
+        return "connection refused"
+    if isinstance(inner, TimeoutError):  # socket.timeout is an alias for it
+        return "timed out"
+    message = str(inner)
+    if len(message) > _PROBE_DETAIL_MAX_CHARS:
+        message = message[:_PROBE_DETAIL_MAX_CHARS] + "..."
+    return f"{type(inner).__name__}: {message!r}"
+
+
+def _health_probe(
+    port: int,
+    health_path: str,
+    *,
+    timeout: float = _HEALTH_CHECK_TIMEOUT,
+) -> HealthProbeOutcome:
+    """What the validated loopback health endpoint answered. Never raises.
+
+    `http.client.HTTPException` is caught alongside the socket errors because it is NOT
+    an `OSError` or `URLError` subclass (only `RemoteDisconnected` is, via
+    `ConnectionResetError`), and `urllib`'s `do_open` re-raises `getresponse()` failures
+    unwrapped. An app backend is arbitrary third-party code — an `exec` backend, or an
+    adopted process we do not own — so a non-HTTP first line on the port is a real
+    condition, and `BadStatusLine` escaping here would kill the standing watch thread
+    and freeze `healthy` at its last value: silently reinstating the write-once bug this
+    module's watch exists to prevent.
+    """
+    url = _health_probe_url(port, health_path)
+    if url is None:
+        return HealthProbeOutcome(None, "unsafe healthCheck path")
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with loopback_urlopen(req, timeout=timeout) as resp:
+            return HealthProbeOutcome.answered(int(resp.status))
+    except urllib.error.HTTPError as exc:
+        # `urlopen` RAISES instead of returning the response for every status the probe
+        # must call unhealthy — a 403 from an auth-gated health path, a 404 from a missing
+        # handler, and a 3xx the loopback opener will not follow — so the status an
+        # operator needs arrives HERE, never above. Caught before URLError, its base class.
+        with exc:  # the error IS the response; closing it releases the socket
+            return HealthProbeOutcome.refused(int(exc.code))
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        return HealthProbeOutcome(None, _probe_failure_detail(exc))
+
+
+def _health_failure_hint(outcome: HealthProbeOutcome) -> str:
+    """The misconfigurations a status alone does not explain, or "".
+
+    Both are cases where the backend is up and answering, so the number on its own reads
+    like a working service. 401/403: the health path most likely sits behind auth the probe
+    cannot satisfy, because the probe is deliberately UNSIGNED — though the backend is free
+    to refuse for a reason of its own, so this one names the likely cause rather than
+    asserting it. 3xx: the loopback opener refuses redirects, so a status a reader would
+    call success never reached a handler.
+    """
+    if outcome.status in (401, 403):
+        return (
+            " — usually the healthCheck path is behind auth the unsigned probe cannot "
+            "satisfy; point backend.healthCheck at an unauthenticated route"
+        )
+    if outcome.status is not None and 300 <= outcome.status < 400:
+        return (
+            " — the probe does not follow redirects; point backend.healthCheck at the "
+            "route that answers directly"
+        )
+    return ""
+
+
+def _health_check_loop(ap: AppProcess, health_path: str) -> AppProcess | None:
+    """Poll the health endpoint until it responds or we give up.
+
+    Takes the RECORD rather than a name and a port, which is what binds the whole poll to
+    one generation. A name plus a port are two independent inputs that can disagree: a
+    stop/start landing between the spawn and this thread's first statement would hand a
+    name lookup the SUCCESSOR while the port argument still named the predecessor, and
+    the poll would then promote — or on exhaustion scrub — a backend whose port it never
+    probed. Deriving both from the record leaves nothing to disagree.
+
+    Returns the record if this call promoted it to healthy, else None (never answered, or
+    not the tracked entry).
+    """
+    app_name = ap.app_name
+    port = ap.port
+    last = HealthProbeOutcome(None, "no probe completed")
+    for attempt in range(_HEALTH_CHECK_RETRIES):
+        time.sleep(_HEALTH_CHECK_INTERVAL)
+        with _lock:
+            if _processes.get(app_name) is not ap:
+                return None  # replaced or stopped — this poll is a retired generation
+        # The ceiling is re-read HERE too, not only by the standing watch. This poll owns
+        # the record for up to `_HEALTH_CHECK_RETRIES * _HEALTH_CHECK_INTERVAL` seconds,
+        # and the watch does not take over until it ends and then sleeps its own first
+        # interval. An operator closing the ceiling during an app's startup is an
+        # ordinary race, and without this the spawn would keep polling and could still
+        # PROMOTE — which is what writes the app's url into mcp.json — under a ceiling
+        # that is already closed.
+        #
+        # The same call the watch makes, on the same record, so the population rule and
+        # the builtin exemption cannot read differently on the two paths. Any verdict but
+        # `proceed` abandons the promotion; `_supervise_backend_health` then hands a
+        # still-tracked record to the watch, which keeps retrying a refused stop.
+        if _revoke_if_ceiling_closed(ap, health_path) != "proceed":
+            return None
+        last = _health_probe(port, health_path)
+        if last.healthy:
+            # Health-gated MCP registration: only now that the
+            # backend has passed /health do we write its HTTP MCP url (live port) to
+            # global mcp.json. Registering before this could leave a dead-but-enabled
+            # url for an app whose backend never became healthy — the kiro-cli outage.
+            # Routed through the shared transition, which re-checks that `ap` is still
+            # the tracked record, so this is ordered against the watch's demotions
+            # rather than racing them.
+            if not _set_backend_health(ap, healthy=True):
+                return None
+            logger.info(
+                "App %s backend healthy (port %d, attempt %d)",
+                app_name, port, attempt + 1,
+            )
+            return ap
+
+    logger.warning(
+        "App %s backend failed health check after %d attempts (last: %s)%s",
+        app_name, _HEALTH_CHECK_RETRIES, last.detail, _health_failure_hint(last),
+    )
+    # Backend never became healthy: scrub any optimistic/stale MCP entry so kiro-cli does
+    # not keep dialing a dead port on every session (the reverted-outage shape).
+    #
+    # Identity-guarded like every other transition, on the one record this loop probed.
+    # `_deregister_mcp_servers` removes by app NAME, so a restart during the startup
+    # window — whose successor may already have come up and registered — would otherwise
+    # have this retiring loop scrub the healthy successor's entry. That scrub also
+    # bypasses the record, so the successor's `mcp_healthy` would still read True and the
+    # watch's retry condition would never fire to put it back.
+    _set_backend_health(ap, healthy=False)
+    return None
+
+
+def _rebind_adopted_owners(ap: AppProcess, health_path: str) -> bool:
+    """Re-capture an adopted backend's owning PIDs, or refuse to confirm ownership.
+
+    Reuses the adoption-time consistency sandwich (:func:`_capture_adopted_owners`), so a
+    responder that exits mid-capture cannot hand ownership to a bystander. Returns False
+    when ownership cannot be established, which the caller treats as "do not promote".
+    """
+    try:
+        captured = _capture_adopted_owners(ap.app_name, ap.port, health_path)
+    except Exception as exc:  # noqa: BLE001 — the watch must never die on a probe
+        logger.warning(
+            "App %s: could not re-capture adopted owners on port %d: %s",
+            ap.app_name, ap.port, exc,
+        )
+        return False
+    if captured is None:
+        logger.warning(
+            "App %s: adopted backend on port %d answered again but its ownership could "
+            "not be confirmed — leaving it unhealthy", ap.app_name, ap.port,
+        )
+        return False
+    pids, start_times = captured
+    with _lock:
+        if _processes.get(ap.app_name) is not ap:
+            return False
+        ap.adopted_pids = pids
+        ap.adopted_start_times = start_times
+    return True
+
+
+def _settle_superseding_start(
+    app_name: str,
+    ap: AppProcess,
+    replacement: AppProcess | None,
+) -> Literal["continue", "return_true", "return_false"]:
+    """Resolve a process-table handoff without abandoning restart supervision.
+
+    The caller holds neither ``_health_reconcile_lock`` nor ``_lock``. A STARTING
+    record is intent, not a successor, so wait until it settles. Only a tracked
+    non-STARTING successor, STOP/disable/shutdown, or restoration of ``ap`` is
+    decisive; failed spawn cleanup owns port reservations.
+    """
+    unresolved_awaits = 0
+    warned_unresolved = False
+    while True:
+        _await_inflight_spawn(app_name)
+        with _health_reconcile_lock:
+            with _lock:
+                lifecycle_now = _lifecycle_generation.get(
+                    app_name, (0, _LIFECYCLE_START)
+                )
+            if (
+                lifecycle_now[1] == _LIFECYCLE_STOP
+                or shutdown_event.is_set()
+                or _app_enabled_state(app_name) is not True
+            ):
+                if replacement is not None:
+                    stop_app_backend(app_name, _expected=replacement)
+                return "return_false"
+            with _lock:
+                current = _processes.get(app_name)
+                if current is ap:
+                    return "continue"
+                if current is None:
+                    _processes[app_name] = ap
+                    return "continue"
+                if not current.starting:
+                    return "return_true"
+        # A timed-out await can leave a genuinely slow STARTING owner in place.
+        # Keep waiting rather than treating unresolved intent as a successor.
+        unresolved_awaits += 1
+        if (
+            not warned_unresolved
+            and unresolved_awaits >= _SETTLE_UNRESOLVED_WARN_AFTER
+        ):
+            logger.warning(
+                "App %s: superseding start unresolved after %d awaits; "
+                "STARTING placeholder is not settling",
+                app_name,
+                unresolved_awaits,
+            )
+            warned_unresolved = True
+
+
+def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
+    """Replace one exited, still-tracked backend through the ordinary spawn path.
+
+    The caller reaches this only after the dead generation's MCP scrub landed. Keeping
+    the dead record through the backoff lets ``stop_app_backend`` win naturally: its
+    identity pop makes the final check fail before this function removes the record and
+    starts anything. The replacement uses the normal spawn implementation (pidfile,
+    health gate, MCP promotion, and single-flight) without recording an external START.
+    A lifecycle generation snapshot then distinguishes a later STOP from a later START.
+    Fast retries transition to a slow steady cadence rather than giving up while the app
+    remains enabled.
+
+    Exit invariant: this loop returns only after it published its own replacement, a
+    tracked non-STARTING successor has assumed supervision, or STOP, disable, or
+    shutdown made restart supervision unnecessary. A START generation records intent,
+    not success, so its in-flight spawn is awaited with neither
+    ``_health_reconcile_lock`` nor ``_lock`` held before that intent is decisive.
+    """
+    app_name = ap.app_name
+    activation_error_warned = False
+    steady_state_warned = False
+    while True:
+        entered_steady_state = False
+        identity_moved = False
+        with _health_reconcile_lock:
+            with _lock:
+                proc = ap.proc
+                if _processes.get(app_name) is not ap:
+                    identity_moved = True
+                elif proc is None or proc.poll() is None:
+                    return False
+                else:
+                    previous_attempts = _restart_attempts.get(app_name, 0)
+            if not identity_moved:
+                # ``None`` is deliberately fail-closed: an unreadable installed.json
+                # must not bring an app back after the operator may have disabled it.
+                if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                    return False
+                attempt_number = previous_attempts + 1
+                steady_state = previous_attempts >= _RESTART_ON_EXIT_FAST_ATTEMPTS
+                if steady_state:
+                    delay = _RESTART_STEADY_INTERVAL
+                    with _lock:
+                        if _processes.get(app_name) is not ap:
+                            identity_moved = True
+                        else:
+                            entered_steady_state = not steady_state_warned
+                else:
+                    delay = (
+                        0.0
+                        if previous_attempts == 0
+                        else min(
+                            _RESTART_ON_EXIT_INITIAL_DELAY
+                            * (2 ** (previous_attempts - 1)),
+                            _RESTART_ON_EXIT_MAX_DELAY,
+                        )
+                    )
+                if not identity_moved:
+                    if steady_state:
+                        logger.info(
+                            "App %s backend exited (rc=%s); restarting "
+                            "(attempt %d, steady) in %.1fs",
+                            app_name,
+                            returncode,
+                            attempt_number,
+                            delay,
+                        )
+                    else:
+                        logger.info(
+                            "App %s backend exited (rc=%s); restarting "
+                            "(fast attempt %d/%d) in %.1fs",
+                            app_name,
+                            returncode,
+                            attempt_number,
+                            _RESTART_ON_EXIT_FAST_ATTEMPTS,
+                            delay,
+                        )
+
+        if identity_moved:
+            settlement = _settle_superseding_start(app_name, ap, None)
+            if settlement == "continue":
+                continue
+            return settlement == "return_true"
+
+        if entered_steady_state:
+            logger.warning(
+                "App %s backend still failing after %d fast restart attempts; "
+                "retrying every %.0fs while the app stays enabled (disable the app to stop)",
+                app_name,
+                _RESTART_ON_EXIT_FAST_ATTEMPTS,
+                _RESTART_STEADY_INTERVAL,
+            )
+            steady_state_warned = True
+
+        if shutdown_event.wait(delay):
+            return False
+
+        # Re-check after waiting. ``stop_app_backend`` takes the same serialization
+        # before popping, so a deliberate stop cannot race this removal into a respawn.
+        post_wait_identity_moved = False
+        with _health_reconcile_lock:
+            if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                return False
+            with _lock:
+                proc = ap.proc
+                if _processes.get(app_name) is not ap:
+                    post_wait_identity_moved = True
+                elif proc is None or proc.poll() is None:
+                    return False
+                else:
+                    _processes.pop(app_name, None)
+                    _allocated_ports.pop(app_name, None)
+                    _restart_attempts[app_name] = previous_attempts + 1
+                    lifecycle_snapshot = _lifecycle_generation.get(
+                        app_name, (0, _LIFECYCLE_START)
+                    )
+
+        if post_wait_identity_moved:
+            settlement = _settle_superseding_start(app_name, ap, None)
+            if settlement == "continue":
+                continue
+            return settlement == "return_true"
+
+        _forget_app_pid_if(app_name, ap.pid, ap.pid_start_time)
+        # The dead root's tree goes before its replacement is spawned: a launcher
+        # whose forked server outlived it would otherwise keep the app's files (and
+        # possibly its port) while a second server comes up beside it. Same drain
+        # as the stop path; a root that took its whole tree with it costs one probe.
+        if proc is not None and (
+            _drain_exited_root_tree(app_name, proc, ap.pid_start_time, ap.spawn_instance)
+            is False
+        ):
+            logger.warning(
+                "App %s: a descendant of the exited backend root (pid %d) survived the "
+                "drain; the replacement is spawned beside it",
+                app_name,
+                proc.pid,
+            )
+        if ap.log_fh:
+            try:
+                ap.log_fh.close()
+            except OSError:
+                pass
+
+        verdict = _activation_denied(app_name, "restart")
+        if verdict.denied and not verdict.transient:
+            logger.warning(
+                "App %s backend not restarted: blocked by activation policy: %s",
+                app_name,
+                verdict.denied,
+            )
+            try:
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_backend_restart",
+                    outcome="denied",
+                    resources=app_name,
+                    error=verdict.denied,
+                )
+            except Exception as exc:  # noqa: BLE001 — denial remains fail-closed
+                logger.debug("SEL audit failed for app %s restart deny: %s", app_name, exc)
+            return False
+
+        backend_still_declared = True
+        if verdict.transient:
+            evaluation_error = verdict.denied or "activation evaluation error"
+            if not activation_error_warned:
+                logger.warning(
+                    "App %s backend restart activation evaluation failed; "
+                    "refusing this attempt and retrying on the restart cadence: %s",
+                    app_name,
+                    evaluation_error,
+                )
+                activation_error_warned = True
+            try:
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_backend_restart",
+                    outcome="error",
+                    resources=app_name,
+                    error=evaluation_error,
+                )
+            except Exception as exc:  # noqa: BLE001 — evaluation remains fail-closed
+                logger.debug("SEL audit failed for app %s restart error: %s", app_name, exc)
+            replacement = None
+        else:
+            # The permit is a gateway-initiated exercise of the app's execution
+            # grant with no operator in the loop, so SEL records it as it does the
+            # denial: an operator reconstructing a trust timeline must see the
+            # decision, not infer it from the spawn that followed.
+            try:
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_backend_restart",
+                    outcome="allowed",
+                    resources=f"{app_name} attempt={attempt_number}",
+                )
+            except Exception as exc:  # noqa: BLE001 — the permit stands without its audit line
+                logger.debug("SEL audit failed for app %s restart allow: %s", app_name, exc)
+            try:
+                replacement = _start_app_backend(app_name)
+                if replacement is None:
+                    manifest = get_app_manifest(app_name)
+                    backend_still_declared = bool(
+                        manifest is not None and manifest.backend.entryPoint
+                    )
+            except Exception as exc:  # noqa: BLE001 — a raised spawn is a retryable failure
+                logger.warning(
+                    "App %s backend restart attempt %d failed to spawn: %s",
+                    app_name,
+                    attempt_number,
+                    exc,
+                )
+                replacement = None
+
+        # The compare and any teardown are serialized with public START generation
+        # bumps. A later START is intent only: the shared handoff below waits outside
+        # both locks before deciding whether another supervisor really took over.
+        with _health_reconcile_lock:
+            with _lock:
+                lifecycle_now = _lifecycle_generation.get(
+                    app_name, (0, _LIFECYCLE_START)
+                )
+            superseding_start = (
+                lifecycle_now != lifecycle_snapshot
+                and lifecycle_now[1] == _LIFECYCLE_START
+            )
+            if lifecycle_now != lifecycle_snapshot and not superseding_start:
+                logger.info(
+                    "App %s backend restart was cancelled after spawn; stopping replacement",
+                    app_name,
+                )
+                if replacement is not None:
+                    stop_app_backend(app_name, _expected=replacement)
+                return False
+            if not superseding_start:
+                if shutdown_event.is_set() or _app_enabled_state(app_name) is not True:
+                    logger.info(
+                        "App %s backend restart was cancelled after spawn; stopping replacement",
+                        app_name,
+                    )
+                    if replacement is not None:
+                        stop_app_backend(app_name, _expected=replacement)
+                    return False
+                if not backend_still_declared:
+                    return True
+                if replacement is not None:
+                    return True
+
+        settlement = _settle_superseding_start(app_name, ap, replacement)
+        if settlement == "continue":
+            continue
+        return settlement == "return_true"
+
+
+def _watch_backend_health(ap: AppProcess, health_path: str) -> None:
+    """Run the liveness watch, surviving an unexpected fault in any single sweep.
+
+    The whole point of the guard is the failure MODE: an exception escaping the sweep
+    kills this daemon thread, and a dead watch freezes ``healthy`` at its last value —
+    silently restoring the write-once behaviour this watch exists to remove, with the
+    proxy still routing to a port nothing serves. A logged fault that costs one sweep is
+    strictly better. Restarting resets the consecutive-failure counter, which is the
+    conservative direction (it delays a demotion rather than causing a spurious one), and
+    the inner loop sleeps before its first probe, so a persistent fault cannot spin.
+    """
+    while True:
+        try:
+            _watch_backend_health_sweeps(ap, health_path)
+            return
+        except Exception:  # noqa: BLE001 — see the docstring; a dying watch is the bug
+            logger.warning(
+                "App %s: health watch sweep failed on port %d; restarting the watch",
+                ap.app_name, ap.port, exc_info=True,
+            )
+            with _lock:
+                if _processes.get(ap.app_name) is not ap:
+                    return  # not the tracked record — nothing left to watch
+
+
+def _revoke_if_ceiling_closed(
+    ap: AppProcess, health_path: str
+) -> Literal["stopped", "retry", "proceed"]:
+    """Stop *ap* when its app is not admitted to execute.
+
+    ``stopped`` - it is gone; the watch is done. ``retry`` - the ceiling is closed
+    and the stop did not take, so the caller must SKIP its health judgement this
+    sweep (see the promotion hazard where that is returned). ``proceed`` - nothing
+    was revoked, so the sweep carries on: the ceiling does not apply, or a fault
+    left the question unanswered and the liveness watch must keep working.
+
+    Turning ``agent.apps_allow_third_party`` off has to stop the code it was
+    admitting, and the setting has three writers: the dashboard endpoint, which
+    sweeps on the falling edge; the CLI; and a text editor. Only the endpoint
+    sweeps, and the boot reconcile in :func:`start_enabled_app_backends` revokes
+    at the NEXT start, so without this a backend admitted solely by the blanket
+    flag keeps serving under a ceiling the operator has closed: trust withdrawn
+    on paper only, the one failure this control exists to prevent.
+
+    This watch is the only thing that already revisits every live backend, so
+    enforcing here adds no task, no interval, and no setting: a closed ceiling
+    stops the process within one sweep whatever route closed it.
+
+    Scope is the EXECUTING surface and stops there. An app holding its own
+    ``agent.apps_trusted`` grant is untouched: that permission is independent of
+    the blanket flag. Builtins are exempt at the gate on shipped provenance.
+    Non-executable derivative resources (agents, skills, MCP declarations, cron
+    definitions) sit outside the ceiling by contract and belong to the lifecycle
+    lock's owners; a cron or hook that tries to RUN app code meets
+    ``app_execution_denied`` and fails closed on its own.
+
+    No ``on_shutdown`` hook is attempted, and that is not an oversight. The flag
+    is already false by the time this observes it, so ``load_app_module`` refuses
+    to load the hook, which is the state the endpoint's post-write second pass
+    also runs in. Pretending to run it would report a teardown that cannot happen.
+    This is why the endpoint remains the better route for withdrawing trust.
+
+    Never raises: the enclosing sweep is wrapped, but a fault here costs the
+    liveness watch that other code depends on, so a failed revocation is logged
+    and retried on the next sweep instead.
+    """
+    name = ap.app_name
+    try:
+        # POPULATION: records the gateway itself created. Nothing the app writes can
+        # move it out of scope, which is the point. Reading the app's
+        # ``installed.json`` to decide whether the ceiling applies let an app trusted
+        # to run code delete its own metadata and be skipped by the sweep that exists
+        # to stop it. A record the gateway did not create carries no claim about a
+        # process the gateway started, so it is left alone.
+        if not ap.gateway_started:
+            return "proceed"
+        # Shipped code is exempt at the gate, and the classification was made once on
+        # the execution target the gate vetted. Reading it here rather than re-resolving
+        # anything is what closes the two ways the exemption was forgeable: `origin` in
+        # `installed.json` is written by the app, and a stored PATH is resolved against a
+        # filesystem the app owns, so an entry point replaced by a symlink into the
+        # shipped root would have won the exemption after admission.
+        if ap.admitted_builtin:
+            return "proceed"
+        if third_party_ceiling_closed(name) is None:
+            return "proceed"
+        # Audited through the gate itself, ONCE, at the point of acting: the poll
+        # above deliberately writes no row (see third_party_ceiling_closed), so this
+        # is what puts the revocation in the audit trail, with the gate's own reason.
+        #
+        # The audited answer is also the one ACTED on, and the re-ask is not
+        # ceremony: the poll and this call are two separate reads, and an operator
+        # can turn the flag back on between them. The gate then ADMITS the app, so
+        # stopping it would revoke trust that was restored, while the audit row for
+        # the stop would read "allowed". Deferring to this answer costs one extra
+        # admission row in a window that is rarely entered.
+        reason = app_execution_denied(
+            name,
+            action="health_watch_ceiling_revocation",
+            caller="gateway",
+        )
+        if reason is None:
+            return "proceed"
+        logger.warning(
+            "App %s: third-party execution is not permitted; stopping its "
+            "backend on port %d — %s",
+            name, ap.port, reason,
+        )
+        # Scrub the MCP registration FIRST, while `ap` is still the tracked record.
+        # `stop_app_backend` does no MCP work at all, and returning below skips the
+        # exited-backend branch that is the only other place an entry is reconciled
+        # — so the app's url would stay in mcp.json pointing at a port nothing
+        # serves, which breaks EVERY kiro session (connect failure, retries, hard
+        # error) until the next boot reconcile. That is the same damage the boot MCP
+        # reconcile in `start_enabled_app_backends` exists to repair. `_demote`
+        # reaches the scrub through `_set_backend_health(healthy=False)`, under the
+        # health serialization this thread already uses; the tri-state
+        # `mcp_healthy` branch mirrors the exited-backend one, because a demote that
+        # does not change `healthy` still has to unwind an entry that never landed.
+        with _lock:
+            was_healthy = ap.healthy
+            mcp_state = ap.mcp_healthy
+        if was_healthy:
+            _demote(ap, reason=f"third-party execution revoked ({reason})")
+        elif mcp_state is not False:
+            _retry_mcp_reconcile(ap, healthy=False)
+        # `_expected` so a record that was replaced between the sweep's identity
+        # check and here is not stopped on its predecessor's evidence.
+        # `_retry_if_serving` buys the stricter reading of an adopted backend whose
+        # recorded PIDs fail to confirm: a port that still answers reports failure
+        # with tracking intact rather than success, which is what this caller needs.
+        stopped = stop_app_backend(name, _expected=ap, _retry_if_serving=health_path)
+        with _lock:
+            still_tracked = _processes.get(name) is ap
+        if still_tracked:
+            # `stop_app_backend` RESTORES tracking whenever it signalled NOTHING —
+            # an adopted backend with no recorded PIDs, one whose recorded PIDs no
+            # longer match their adoption identity (a supervisor replaced the
+            # process), or a stop that raised. In every one of those the app is
+            # very likely still serving, so exiting here would abandon the worst
+            # case: un-trusted code answering its port, nothing retrying the
+            # revocation, nothing watching its liveness. Keep sweeping instead, one
+            # attempt per interval — the same shape the exited-backend branch below
+            # uses — and let the denial row repeat, because "code the operator
+            # un-trusted is still running" is a fact that stays true until it is not.
+            #
+            # Re-bind the owners so the retry has PIDs it can name. Without it every
+            # retry re-reads the same stale identity token and can never signal, so
+            # the loop would log forever without converging. The ``retry`` verdict is
+            # what keeps the health judgement from running while this is true: a
+            # still-serving port would otherwise be read as a recovery and promoted.
+            rebound = ap.proc is None and _rebind_adopted_owners(ap, health_path)
+            logger.warning(
+                "App %s: could not stop a backend the ceiling does not admit; "
+                "retrying next sweep (owners %s)",
+                name, "re-bound" if rebound else "unchanged",
+            )
+            return "retry"
+        if not stopped:
+            logger.warning(
+                "App %s: backend record was already gone when the closed ceiling "
+                "was enforced; nothing left to stop",
+                name,
+            )
+        # RETAINED cleanup. `_set_backend_health` advances `mcp_healthy` only on a
+        # landed write, so a transient failure leaves it not-False while the demote
+        # above still reported success — and the record is popped by now, so the
+        # identity-gated reconcile can never land it. The exited-backend branch keeps
+        # sweeping until the entry is confirmed gone; this path cannot, so it scrubs
+        # by NAME instead, which needs no record. Recovery otherwise waits for the
+        # next boot reconcile while a dead url breaks every kiro session.
+        if ap.mcp_healthy is not False:
+            try:
+                # circular import: bridges imports from backend, so defer to call time.
+                from kiro_crew.apps.bridges import _deregister_mcp_servers
+
+                # The scrub is keyed on the app NAME, so it cannot tell this record's
+                # stale entry from a SUCCESSOR's live one. A re-enable racing this
+                # revocation can have started and registered a replacement already, and
+                # removing its entry would leave a running backend with no reachable
+                # tools. Held under the reconcile lock so the successor's registration
+                # cannot land between the check and the scrub, and skipped when a
+                # successor is TRACKED AND PAST ITS START: that record owns the
+                # registration, and a successor admitted under a closed ceiling is the
+                # sweep's next candidate anyway.
+                #
+                # A ``starting`` placeholder is NOT such a successor. It is installed
+                # before the spawn to claim the name, so it owns no registration yet,
+                # and a start that then fails removes it — leaving no record for any
+                # later sweep to act on, and this record's dead url in `mcp.json` with
+                # nothing left that would ever scrub it. Scrubbing past a placeholder is
+                # safe in the other direction too: it has registered nothing to remove,
+                # and a start that succeeds registers fresh afterwards, serialized
+                # behind the same reconcile lock this holds.
+                with _health_reconcile_lock:
+                    with _lock:
+                        successor = _processes.get(name)
+                    if successor is not None and not successor.starting:
+                        logger.info(
+                            "App %s: leaving its MCP entry to the successor record that "
+                            "now owns it",
+                            name,
+                        )
+                        return "stopped"
+                    removed = _deregister_mcp_servers(name)
+            except Exception:  # noqa: BLE001 - reported, never swallowed
+                logger.error(
+                    "App %s: could not scrub its MCP entry after revoking execution; "
+                    "a dead url may remain until the next gateway start",
+                    name, exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "App %s: scrubbed %d MCP server entr(y/ies) by name after "
+                    "revoking execution, because the reconcile did not land",
+                    name, removed,
+                )
+        return "stopped"
+    except Exception:  # noqa: BLE001 - see the docstring; a dead watch is worse
+        logger.warning(
+            "App %s: could not act on a closed execution ceiling; retrying next sweep",
+            name, exc_info=True,
+        )
+        return "proceed"
+
+
+def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
+    """Keep re-checking an already-healthy backend so ``healthy`` can go back to False.
+
+    Without this the startup poll would leave ``healthy`` a write-once cache: a backend
+    that died an hour later would still be routed to by the reverse proxy
+    (:func:`get_app_backend_port` gates purely on the flag) and still reported
+    ``healthy`` by ``/api/apps``.
+
+    Liveness is checked cheapest-first. For a backend we spawned, ``Popen.poll()``
+    answers from an already-reaped exit status with no syscall to the app at all and is
+    DECISIVE — an exited process cannot come back on its own, so one observation demotes
+    it and the watch stops. An adopted backend has no ``Popen`` handle (it belongs to
+    another supervisor) and is judged by the health endpoint alone.
+
+    An HTTP failure from a process that is still alive is NOT decisive: it may be a slow
+    request or a GC pause, so demotion needs `_HEALTH_WATCH_FAILURES` consecutive misses
+    and stays REVERSIBLE — the watch keeps running and re-promotes on the next success,
+    which is what lets an app that wedged briefly heal without operator action.
+
+    Exits when the record stops being the tracked one for its app: ``stop_app_backend``
+    pops it and a restart replaces it, so this needs no separate teardown — the same
+    "not the tracked record" guard the startup poll uses.
+    """
+    consecutive_failures = 0
+    consecutive_healthy_sweeps = 0
+    while True:
+        time.sleep(_HEALTH_WATCH_INTERVAL)
+        with _lock:
+            # Identity, not name: a stop/start under the same name installs a NEW record
+            # with its own watch, and demoting that one from here would take a backend
+            # offline on evidence gathered about its predecessor.
+            if _processes.get(ap.app_name) is not ap:
+                return
+            was_healthy = ap.healthy
+            mcp_healthy = ap.mcp_healthy
+            proc = ap.proc
+
+        # Re-read the execution ceiling before judging health, because a backend the
+        # operator does not admit must stop whether it is healthy or not.
+        ceiling = _revoke_if_ceiling_closed(ap, health_path)
+        if ceiling == "stopped":
+            return
+        if ceiling == "retry":
+            # The ceiling is closed and the backend would not stop, so this sweep is
+            # NOT allowed to judge health. The revocation demoted the record, which
+            # makes `was_healthy` False from the next sweep on; the probe below then
+            # sees the port an external supervisor keeps alive, reads
+            # `healthy != was_healthy`, and PROMOTES — re-registering in mcp.json the
+            # tools the revocation just scrubbed. The app would be dispatchable again
+            # for half of every interval, flapping in and out while the operator
+            # believes its trust is withdrawn. The stop keeps being retried; nothing
+            # is re-promoted under a closed ceiling.
+            continue
+
+        if proc is not None and proc.poll() is not None:
+            # A dead Popen never revives, so there is no health verdict left to reach —
+            # but the watch may not leave until the MCP entry is actually out. This is
+            # the one place where giving up strands the dead URL permanently: nothing
+            # else revisits an exited backend, so a scrub that did not land would stay
+            # unlanded and kiro-cli would keep dialing it every session. Keep sweeping
+            # (one attempt per interval) until the entry is reconciled or the record is
+            # dropped by stop_app_backend.
+            #
+            # `mcp_healthy` gates this as well as `healthy`: an entry that still says
+            # healthy has to come out even when the flag was moved without the write
+            # landing. It is TRI-STATE, and only `False` means "confirmed scrubbed" —
+            # `None` is *unknown*, which is what a failed startup reconcile leaves
+            # behind, and treating it as "nothing to unwind" would abandon exactly the
+            # entry that most needs removing.
+            if was_healthy:
+                _demote(ap, reason=f"process exited (rc={proc.returncode})")
+            elif mcp_healthy is not False:
+                _retry_mcp_reconcile(ap, healthy=False)
+            with _lock:
+                dropped = _processes.get(ap.app_name) is not ap
+                reconciled = ap.mcp_healthy is False
+            if dropped:
+                return
+            if reconciled:
+                _restart_exited_backend(ap, proc.returncode)
+                return
+            continue
+
+        probed = _health_probe(ap.port, health_path)
+        if probed.healthy:
+            consecutive_failures = 0
+            consecutive_healthy_sweeps += 1
+            healthy = True
+        else:
+            consecutive_failures += 1
+            consecutive_healthy_sweeps = 0
+            healthy = was_healthy and consecutive_failures < _HEALTH_WATCH_FAILURES
+
+        if healthy != was_healthy:
+            if healthy:
+                # An ADOPTED record carries the PIDs `stop_app_backend` will signal and
+                # `uninstall` will act behind. Those were captured at adoption, and a
+                # recovery means the EXTERNAL supervisor put something back — quite
+                # possibly a different process. Promoting without re-binding ownership
+                # would mark the record freshly-valid while its identities name a process
+                # that is gone, so stop would signal the wrong PIDs (or none) and leave
+                # the live replacement running while its files are mutated or removed.
+                # Refuse the promotion instead: unhealthy-but-serving is recoverable on
+                # the next sweep, a mis-bound owner set is not.
+                if ap.proc is None and not _rebind_adopted_owners(ap, health_path):
+                    continue
+                _promote(ap)
+            else:
+                _demote(
+                    ap,
+                    reason=(
+                        f"{consecutive_failures} consecutive failed health probes "
+                        f"(last: {probed.detail}){_health_failure_hint(probed)}"
+                    ),
+                )
+        elif mcp_healthy != healthy:
+            # The verdict is unchanged but mcp.json never caught up — a previous
+            # reconcile failed. Retry it here rather than waiting for the next health
+            # transition, which for a backend that now stays put would never arrive.
+            _retry_mcp_reconcile(ap, healthy=healthy)
+
+        if consecutive_healthy_sweeps >= _RESTART_STABLE_SWEEPS:
+            with _lock:
+                recovered_attempts = (
+                    _restart_attempts.pop(ap.app_name, 0)
+                    if _processes.get(ap.app_name) is ap and ap.healthy
+                    else 0
+                )
+            if recovered_attempts:
+                logger.info("App %s backend recovered after restart", ap.app_name)
+
+
+def _app_enabled_state(app_name: str) -> bool | None:
+    """Tri-state enablement: True, False, or None when it could not be read.
+
+    The distinction is load-bearing, because the two callers want OPPOSITE defaults on an
+    unreadable state. Refusing to ADD resources when enablement is unknown is safe — the
+    app stays as it is. DELETING them when it is unknown is not: `_drop_disabled_app_resources`
+    unlinks materialized agents, taking the user-owned fields `_preserve_user_agent_edits`
+    carries, and `installed.json` can fail to read transiently. Collapsing "unknown" into
+    "disabled" would destroy data over a temporary fault.
+    """
+    try:
+        # `app_enabled_state`, NOT `is_app_enabled`: the latter returns False for BOTH a
+        # deliberate disable and an unreadable metadata file, because `_read_installed`
+        # answers None to both. Trusting that collapsed False would make this whole
+        # tri-state a no-op for the transient fault it exists to catch — the read error
+        # never raises, so the `except` below would never see it.
+        return app_enabled_state(app_name)
+    except Exception as exc:  # noqa: BLE001 — unknown is a state, not a crash
+        logger.warning(
+            "App %s: could not read its enabled state: %s", app_name, exc,
+        )
+        return None
+
+
+def _drop_disabled_app_resources(app_name: str) -> bool:
+    """Remove everything registered for an app that turned out to be disabled.
+
+    Returns whether the removal COMPLETED. ``deregister_app`` reports most problems
+    softly, in ``RegistrationResult.errors`` rather than by raising, so a failed removal
+    looks identical to a clean one unless that list is read. Idempotent with the CLI's
+    own deregistration, so running it a second time costs nothing.
+    """
+    try:
+        # circular import: bridges ↔ backend, deferred to call time.
+        from kiro_crew.apps.bridges import deregister_app
+
+        result = deregister_app(app_name)
+    except Exception as exc:  # noqa: BLE001 — must not crash the watch
+        logger.warning("App %s: could not drop a disabled app's resources: %s", app_name, exc)
+        return False
+    errors = list(getattr(result, "errors", None) or [])
+    if errors:
+        logger.warning(
+            "App %s: dropping a disabled app's resources did not complete (%s)",
+            app_name, "; ".join(errors),
+        )
+        return False
+    return True
+
+
+def _undo_promotion_of_disabled_app(ap: AppProcess) -> bool:
+    """Remove what a promotion registered for an app disabled while it was being written.
+
+    The enabled check and the write CANNOT be atomic: ``kirocrew app disable`` runs in
+    another process, so there is no lock to share with it. Ordering closes the interleave
+    where the flag is read after the resources come down; this closes the other one,
+    where the check passes and the disable completes before the write lands. Verifying
+    afterwards and undoing is the convergence that is actually available.
+
+    ``deregister_app`` is idempotent and removes exactly what the promotion put back, so
+    running it a second time after the CLI's own call costs nothing.
+
+    Returns whether the removal COMPLETED. ``deregister_app`` reports most problems
+    softly, in ``RegistrationResult.errors`` rather than by raising, so a failed removal
+    looks identical to a clean one unless that list is read. ``mcp_healthy`` therefore
+    only moves to False on a complete success — leaving it otherwise is what makes the
+    next sweep try again, instead of recording a removal that did not happen and letting
+    a disabled app stay dispatchable.
+    """
+    with _lock:
+        if _processes.get(ap.app_name) is ap:
+            ap.healthy = False
+    if not _drop_disabled_app_resources(ap.app_name):
+        logger.warning(
+            "App %s: undoing the registration of a now-disabled app did not complete; "
+            "retrying on the next sweep", ap.app_name,
+        )
+        return False
+    with _lock:
+        if _processes.get(ap.app_name) is ap:
+            ap.mcp_healthy = False
+    logger.warning(
+        "App %s was disabled while its recovery was being registered; the registration "
+        "has been undone", ap.app_name,
+    )
+    return True
+
+
+def _set_backend_health(ap: AppProcess, *, healthy: bool) -> bool:
+    """Flip ``ap.healthy`` and move its MCP entry, only while ``ap`` is still tracked.
+
+    The identity re-check has to stay effective THROUGH the reconcile, not merely
+    alongside the flag write, because the MCP writers key on the app NAME rather than on
+    this record: `_deregister_mcp_servers` removes every ``<app>:`` entry, so a verdict
+    formed about a record that has since been replaced would scrub the SUCCESSOR's live
+    servers, and a stale re-register would publish the predecessor's dead port — the
+    dead-URL outage the health gating exists to prevent.
+
+    `_lock` cannot simply be held across the reconcile (it does manifest and config file
+    I/O, and the proxy's get_app_backend_port must not block behind it), so the ordering
+    is established with `_health_reconcile_lock` instead. That is sufficient because
+    every health-driven reconcile takes it: passing the identity check proves the
+    successor is not yet in `_processes`, hence has not registered, and its own
+    registration must then queue behind this one — so the last write is always the
+    live record's.
+
+    Returns True if the transition was applied.
+    """
+    with _health_reconcile_lock:
+        # IDENTITY FIRST. The undo below deregisters by app NAME, so running it for a
+        # record that is not the tracked one would delete the SUCCESSOR's
+        # resources — and an unreadable enabled state is exactly the case that would
+        # send a retired watcher down that path.
+        with _lock:
+            if _processes.get(ap.app_name) is not ap:
+                return False
+        # Only a promotion is gated; a demotion's scrub must never be blocked — and must
+        # not even READ the enabled state, which is a file access it has no use for.
+        enabled = _app_enabled_state(ap.app_name) if healthy else True
+        if enabled is not True:
+            # Undo ONLY on a CONFIRMED disable. The undo deregisters, which unlinks
+            # materialized agents and takes the user-owned fields with them, and
+            # `installed.json` can fail to read transiently — an unknown state must not
+            # be allowed to destroy data over a temporary fault. Unknown simply refuses
+            # the promotion and tries again next sweep.
+            #
+            # When it IS confirmed disabled and the record still believes something of
+            # ours is registered, an earlier undo did not land; this is where it is
+            # retried, because nothing else revisits a disabled app.
+            if enabled is False and ap.mcp_healthy is not False:
+                _undo_promotion_of_disabled_app(ap)
+            return False
+        with _lock:
+            if _processes.get(ap.app_name) is not ap:
+                return False
+            unchanged = ap.healthy == healthy
+            ap.healthy = healthy
+            # Short-circuit ONLY when the verdict did not change. `mcp_healthy` can be
+            # stale in the other direction after a partial reconcile — an MCP write that
+            # landed followed by an agent write that did not leaves it unmoved — so on a
+            # TRANSITION the reconcile has to run even when the two happen to agree, or
+            # a demotion would skip the scrub and leave the dead url registered.
+            if unchanged and ap.mcp_healthy == healthy:
+                return True  # already reconciled — nothing to rewrite
+        if _gate_mcp_registration(ap.app_name, ap.port, healthy=healthy):
+            with _lock:
+                # Only a reconcile that LANDED updates the record, so a transient
+                # failure leaves `mcp_healthy` out of step with `healthy` and the
+                # watch's next sweep tries again. Re-check identity: the write
+                # happened outside `_lock`.
+                if _processes.get(ap.app_name) is ap:
+                    ap.mcp_healthy = healthy
+        # VERIFY, because the check above could not be atomic with the write: a disable
+        # in the CLI's process can complete in between, and leaving the registration
+        # would keep a disabled app dispatchable.
+        # Same asymmetry on the verify: only a CONFIRMED disable undoes. An unknown
+        # state here leaves the registration standing — the pre-check had confirmed the
+        # app enabled, so the likely reading is a momentary read fault, and deleting on
+        # that basis is the unrecoverable direction.
+        if healthy and _app_enabled_state(ap.app_name) is False:
+            _undo_promotion_of_disabled_app(ap)
+            return False
+        return True
+
+
+def _demote(ap: AppProcess, *, reason: str) -> None:
+    """Mark a backend unhealthy and scrub its MCP entry. Reversible — see _promote."""
+    if _set_backend_health(ap, healthy=False):
+        logger.warning(
+            "App %s backend went unhealthy on port %d — %s", ap.app_name, ap.port, reason,
+        )
+
+
+def _promote(ap: AppProcess) -> None:
+    """Mark a backend healthy again after a demotion and re-register its MCP servers."""
+    if _set_backend_health(ap, healthy=True):
+        logger.info("App %s backend recovered on port %d", ap.app_name, ap.port)
+
+
+def _retry_mcp_reconcile(ap: AppProcess, *, healthy: bool) -> None:
+    """Re-attempt a reconcile that did not land, without re-announcing its transition.
+
+    The health verdict has not changed here — only mcp.json is behind — so this logs at
+    debug rather than repeating the demote/recover line every sweep until it succeeds.
+    """
+    if _set_backend_health(ap, healthy=healthy):
+        logger.debug(
+            "App %s: retried MCP reconcile (healthy=%s) on port %d",
+            ap.app_name, healthy, ap.port,
+        )
+
+
+def _supervise_backend_health(ap: AppProcess, health_path: str) -> None:
+    """Thread target: wait for the backend to come up, then watch it for as long as it
+    stays tracked."""
+    if _health_check_loop(ap, health_path) is not None:
+        _watch_backend_health(ap, health_path)
+        return
+    # A process can stay unhealthy through the short startup poll and exit later.
+    # Hand every still-tracked record to the ordinary watch so it can demote a live
+    # unhealthy backend, observe a later exit, and enter the restart sequence.
+    with _lock:
+        still_tracked = _processes.get(ap.app_name) is ap
+    if still_tracked:
+        _watch_backend_health(ap, health_path)
+
+
+def _start_health_supervisor(ap: AppProcess, health_path: str) -> None:
+    """Run :func:`_supervise_backend_health` on this backend's own daemon thread.
+
+    The record is handed over directly, so the supervisor is bound to this generation
+    from the moment of the spawn — there is no window between inserting the record and
+    the thread resolving it in which a restart could substitute a different one.
+    """
+    threading.Thread(
+        target=_supervise_backend_health,
+        args=(ap, health_path),
+        daemon=True,
+        name=f"app-health-{ap.app_name}",
+    ).start()
+
+
+def _start_adopted_health_watch(ap: AppProcess, health_path: str) -> None:
+    """Watch an ADOPTED backend, which skipped the startup poll by already being healthy.
+
+    Adoption proves the instance is serving right now, so there is nothing to wait for —
+    but that made ``healthy`` write-once on this path too, and an external instance is
+    exactly the kind we do not control the lifetime of. It has no ``Popen`` handle, so
+    the watch judges it by its health endpoint alone.
+    """
+    threading.Thread(
+        target=_watch_backend_health,
+        args=(ap, health_path),
+        daemon=True,
+        name=f"app-health-{ap.app_name}",
+    ).start()
+
+
+# ---------------------------------------------------------------------------
+# Gateway startup — start backends for all enabled apps
+# ---------------------------------------------------------------------------
+
+# ── App-backend PID persistence + startup stale-reap ──────────────────────────
+#
+# App backends run in their OWN session (start_new_session=True) and are NOT in
+# the gateway's process group, so when the liveness probe SIGKILLs a wedged
+# gateway (no on_cleanup runs) they orphan, reparent to PID 1, and accumulate
+# across restarts. We persist each spawned backend's (pid, start_time) to a
+# pidfile and reap any survivors of a PRIOR generation on the next clean start.
+# See docs/system-specs/modules/app-kit-platform.md.
+
+
+# Serializes the pidfile read-modify-write. _record_app_pid runs on the
+# to_thread worker that spawns a backend (both the runtime app-enable path and
+# the startup reconcile offload start_app_backend via asyncio.to_thread) while
+# _forget_app_pid runs on the to_thread worker that stops one — distinct OS
+# threads, so without this lock their non-atomic read-modify-writes of the
+# whole JSON dict lose each other's entries.
+_pidfile_lock = threading.Lock()
+
+
+def _pidfile_path() -> Path:
+    return config_dir() / "app_backends.pids.json"
+
+
+def _proc_start_time(pid: int) -> str | None:
+    """Stable per-process start time, or None if unavailable.
+
+    PID-reuse guard: a recorded pid whose live start_time does not match has
+    been recycled to an unrelated process and MUST NOT be killed. The value must
+    be stable across gateway restarts (the reap compares a string recorded by a
+    prior generation against one read now), so it cannot use ``hash()`` — that
+    is salted per interpreter by ``PYTHONHASHSEED``.
+
+    Per-platform sources live in ``platform_compat.process_start_time``: Linux
+    reads ``/proc/<pid>/stat`` field 22, Windows the process creation FILETIME
+    through a query-only handle, and other POSIX ``ps -o lstart=``. Resolving it
+    there is what keeps the guard alive on Windows — a ``/proc``-or-``ps`` probe
+    answers None for every pid there, and a recorded None makes the reap decline
+    to confirm ANY backend, so nothing is ever reaped and the entries accumulate.
+    """
+    return platform_compat.process_start_time(pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if ``pid`` names a live process.
+
+    ``PermissionError`` (EPERM) means the process EXISTS but is owned by another
+    uid — alive, not gone — so it must NOT be conflated with
+    ``ProcessLookupError``. Treating EPERM as "gone" would skip the SIGKILL of a
+    SIGTERM-ignoring orphan whose credentials changed.
+
+    Routed through ``platform_compat.pid_exists`` — a raw ``os.kill(pid, 0)``
+    on Windows does NOT probe liveness (sig 0 is CTRL_C_EVENT there); the shim
+    uses ``OpenProcess`` on Windows and the identical ``os.kill(pid, 0)`` /
+    EPERM-is-alive logic on POSIX, so POSIX behavior is unchanged.
+    """
+    return platform_compat.pid_exists(pid)
+
+
+@contextlib.contextmanager
+def app_backend_lifecycle_flock(app_name: str) -> Iterator[None]:
+    """CROSS-PROCESS per-app lock over a backend's spawn transaction.
+
+    The spawn path holds this lock across the whole body - provisioning
+    (pip can run for minutes) through the pidfile record - and the
+    in-flight-spawn waiter probes it non-blockingly: a held lock means the
+    spawn owner is still working, so the waiter leaves the STARTING
+    placeholder alone instead of clearing it and letting a retry spawn a
+    SECOND backend mid-provisioning.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", app_name) or "_"
+    lock_dir = config_dir() / "app_backend_locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_dir / f"{safe}.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        with platform_compat.flock_exclusive(fd):
+            yield
+    finally:
+        os.close(fd)
+
+
+def _read_pidfile() -> dict[str, dict[str, Any]]:
+    try:
+        with open(_pidfile_path()) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        # A corrupt/half-written pidfile (e.g. a SIGKILL mid-write before atomic
+        # writes landed, or a leftover from an older build) silently disabling
+        # the reap is exactly the leak this feature exists to prevent — log it.
+        logger.warning("App-backend pidfile unreadable (%s); stale-reap skipped this start", exc)
+        return {}
+
+
+def _write_pidfile(data: dict[str, dict[str, Any]]) -> None:
+    # Atomic temp-file + rename (fsync): the whole point of the pidfile is to
+    # survive a gateway SIGKILL, so a non-atomic open("w") that truncates first
+    # would leave an empty/partial file if the kill lands mid-write.
+    try:
+        atomic_write(_pidfile_path(), json.dumps(data), fsync=True)
+    except OSError as exc:
+        logger.debug("Could not write app-backend pidfile: %s", exc)
+
+
+def _record_app_pid(
+    app_name: str, pid: int, port: int, spawn_instance: str | None = None
+) -> str | None:
+    """Persist a spawned backend's identity for the startup stale-reap. Never raises.
+
+    *spawn_instance* is the per-spawn ``KIROCREW_SPAWN_INSTANCE`` stamped on the
+    backend's environment and inherited by its whole tree. It is what lets the
+    reap vouch the group's MEMBERS once the leader itself is gone; a row written
+    by an older build carries none, and the reap then declines to touch that
+    group rather than aim a signal at a bare (possibly recycled) group number.
+    """
+    if pid <= 0:
+        return None
+    start_time: str | None = None
+    try:
+        # Compute start_time BEFORE taking the lock: the probe is slow on the
+        # platforms that cannot answer from memory (a `ps` spawn on macOS, an
+        # OpenProcess round trip on Windows), and holding _pidfile_lock across
+        # that IO would serialize concurrent enable/stop/uninstall ops behind
+        # it. Mirrors the reap path's validate-lock-free / store-under-lock
+        # discipline.
+        start_time = _proc_start_time(pid)
+        with _pidfile_lock:
+            data = _read_pidfile()
+            entry: dict[str, Any] = {"pid": pid, "start_time": start_time, "port": port}
+            if spawn_instance:
+                entry["spawn_instance"] = spawn_instance
+            data[app_name] = entry
+            _write_pidfile(data)
+    except Exception as exc:  # noqa: BLE001 — persistence must never break a spawn
+        logger.debug("Could not record app pid for %s: %s", app_name, exc)
+    return start_time
+
+
+def _forget_app_pid(app_name: str) -> None:
+    """Drop an app's pidfile entry (called when no process identity is tracked)."""
+    try:
+        with _pidfile_lock:
+            data = _read_pidfile()
+            if data.pop(app_name, None) is not None:
+                _write_pidfile(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not forget app pid for %s: %s", app_name, exc)
+
+
+def _forget_app_pid_if(app_name: str, pid: int, start_time: str | None) -> None:
+    """Drop a pidfile row only if it still identifies the expected process."""
+    try:
+        with _pidfile_lock:
+            data = _read_pidfile()
+            entry = data.get(app_name)
+            if (
+                isinstance(entry, dict)
+                and entry.get("pid") == pid
+                and entry.get("start_time") == start_time
+            ):
+                data.pop(app_name, None)
+                _write_pidfile(data)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not conditionally forget app pid for %s: %s", app_name, exc)
+
+
+def retire_windows_app_tracking(pid: int, creation: int) -> None:
+    """Retire only this incarnation's app rows, while its cleanup pin is held.
+
+    This mandatory writer does not use the best-effort readers/writers: an
+    unreadable file or failed atomic write must leave the cleanup receipt owed.
+    No app name or caller callback is retained by the cleanup registry.
+    """
+    with _pidfile_lock:
+        try:
+            with open(_pidfile_path(), encoding="utf-8") as stream:
+                data = json.load(stream)
+        except FileNotFoundError:
+            return
+        if not isinstance(data, dict):
+            raise OSError("Windows app tracking file is malformed")
+        remove = [
+            name
+            for name, entry in data.items()
+            if isinstance(entry, dict)
+            and entry.get("pid") == pid
+            and entry.get("start_time") == str(creation)
+        ]
+        if remove:
+            for name in remove:
+                del data[name]
+            atomic_write(_pidfile_path(), json.dumps(data), fsync=True)
+
+
+def _reap_orphaned_backend_group(
+    app_name: str, pid: int, entry: dict[str, Any]
+) -> tuple[dict[int, str | None], dict[int, str | None], bool]:
+    """SIGTERM the members a DEAD backend leader left behind in its group.
+
+    The gap this closes: the leader is the only thing the pidfile names, and the
+    live-leader branch reaches its whole tree because ``kill_process_tree``
+    resolves the group through ``getpgid(pid)``. Once the leader has exited there
+    is no pid to resolve the group from -- ``getpgid`` raises -- yet the group
+    itself outlives it and its members keep the app's PORT bound. Dropping the
+    row there leaks exactly the orphan that makes the next generation's spawn
+    collide and serve 502s.
+
+    The group number is recoverable from the contract rather than from the dead
+    pid: a backend is spawned with ``start_new_session=True``, so its pgid IS its
+    leader's pid. What is NOT safe is signalling that number -- the kernel may
+    have reissued it to an unrelated session leader, and ``killpg`` would take a
+    stranger's tree. So this hands the number to
+    :func:`session_pid.signal_orphaned_spawn_group`, which lists the group's live
+    members, keeps only those whose ``/proc/<pid>/environ`` carries THIS spawn's
+    instance token, and signals each of them pinned to its own pid + start
+    instant. No vouching member means no signal.
+
+    Returns ``(vouched, signalled, keep_row)``.
+
+    *vouched* is every live member this census FOUND, and it answers exactly one
+    question: is there a group here worth escalating at all. It is NOT the basis for
+    retention -- it is a snapshot taken BEFORE the SIGTERM, so it cannot contain a
+    member the SIGTERM itself caused to be forked, and the caller re-reads the group
+    at decision time instead. *signalled* is the subset a signal actually reached,
+    and is ONLY the escalation's target set: a member that never took a SIGTERM owes
+    no grace and no SIGKILL. Keeping the two apart is the whole point -- a signal can
+    fail on one member and land on another (``pidfd_open`` answering EMFILE, or
+    EPERM), so the signalled set is an INCOMPLETE census and anything that treats it
+    as the membership will call a group gone while a live member holds the port.
+
+    *keep_row* is consulted only when *vouched* is empty, and answers whether the
+    pidfile row -- this orphan's only handle -- should survive a start that took no
+    census at all: a scan that raised tells us nothing, so the row stays for a later
+    attempt, while the two declines detected BEFORE any signal (no instance token,
+    a host that cannot read the vouch) are permanent on this host and drop it
+    rather than growing the pidfile forever. When *vouched* is non-empty the caller
+    decides retention from that census's liveness instead. Never raises: a failed
+    reap must not abort the rest of the startup sweep.
+    """
+    instance = entry.get("spawn_instance")
+    if not isinstance(instance, str) or not instance:
+        # Written by a build that did not stamp the token (or hand-edited). There
+        # is nothing to vouch the group with, and a signal aimed at the bare
+        # number could hit a recycled leader's tree, so decline. The row goes: a
+        # token is never added to an existing row, so every later start would
+        # decline identically. Self-healing forward -- the next spawn records one.
+        logger.info(
+            "Not reaping %s's orphaned group (pid %d): no spawn instance recorded", app_name, pid
+        )
+        return {}, {}, False
+    if not group_vouching_available():
+        # The vouch reads /proc/<pid>/environ, which exists on Linux alone. Say so
+        # rather than reporting a reap that did not happen. Nothing else picks
+        # these up: the periodic orphan sweep's positive-identity paths are an
+        # agent runtime, an MCP entrypoint, a gatewayd, a browser daemon and a
+        # TEST-RUNNER argv, and an app backend's worker is none of those -- so
+        # these survivors are neither reaped NOR reported anywhere, and this log
+        # line is the only record they exist. A leak we can name beats a signal to
+        # a stranger; the operator's recourse is to kill the process holding the
+        # port by hand. The row goes: the platform is the same on the next start.
+        logger.info(
+            "Cannot vouch %s's orphaned group (pid %d) on this platform; its members are "
+            "left running and are not covered by the periodic orphan sweep",
+            app_name,
+            pid,
+        )
+        return {}, {}, False
+    try:
+        vouched, signalled = signal_orphaned_spawn_group(pid, platform_compat.SIGTERM, instance)
+    except Exception as exc:  # noqa: BLE001 — one app's reap must not end the sweep
+        # A /proc scan that raised mid-listing: no census, so KEEP the row and let
+        # a later start look again.
+        logger.warning("Orphaned-group reap of %s (pid %d) failed: %s", app_name, pid, exc)
+        return {}, {}, True
+    if vouched:
+        logger.info(
+            "Startup stale-reap: SIGTERM %d of %s's %d orphaned group member(s) (group %d)",
+            len(signalled),
+            app_name,
+            len(vouched),
+            pid,
+        )
+    # An EMPTY census is not evidence of an empty group. Every read the vouch makes
+    # is fail-OPEN: ``_marked_group_members`` swallows OSError on the /proc scan and
+    # on each stat, and ``_env_spawn_instance`` returns None when it cannot read a
+    # member's environ -- so under fd exhaustion (EMFILE/ENFILE) every member is
+    # silently dropped and the census comes back empty WITHOUT raising, which means
+    # the caller's ``except`` above never sees it. Keying the drop on the census
+    # would then discard the orphan's only handle at precisely the moment the host
+    # is under pressure. So absence has to be confirmed POSITIVELY, by a probe that
+    # cannot fail open: ``pgroup_exists`` is ``killpg(pgid, 0)``, which answers False
+    # only on ESRCH and reads an unsignalable group as alive. A group that still
+    # exists keeps its row even when the census could not name anything in it.
+    return vouched, signalled, platform_compat.pgroup_exists(pid)
+
+
+def _reap_stale_app_backends() -> int:
+    """Reap app backends left running by a prior gateway generation.
+
+    Runs at gateway startup BEFORE the new generation spawns (off the event loop
+    — see start_enabled_app_backends' caller). A recorded pid is terminated only
+    when it is still alive AND its current start_time POSITIVELY matches the
+    recorded one (PID-reuse guard); if identity cannot be confirmed the pid is
+    left alone — declining to reap leaks a recoverable orphan, whereas killing an
+    unverifiable pid could signal an unrelated recycled process group. Returns
+    the count terminated.
+
+    A leader that is already DEAD is not the end of the story: its process group
+    outlives it and its members can still hold the app's port, so that branch
+    hands the group to :func:`_reap_orphaned_backend_group` instead of merely
+    dropping the row. The row is that orphan's ONLY handle, so retention follows a
+    census taken at DECISION time rather than the signals or the opening snapshot:
+    the row is dropped once that final reading finds no live member, kept while it
+    finds any (one no signal could reach, or one forked after the first census), and
+    a declined reap drops it only when no later start could do better -- no instance
+    token, or a host that cannot read the vouch. That retention is bounded by the
+    spawn path: a successful respawn of the same app re-records the row, so the
+    handle survives to a later start only while the app stays down. Group members
+    are reported separately from leaders in the log and are not counted in the
+    return value, which stays "leaders terminated" for the callers that read it.
+    """
+    with _pidfile_lock:
+        data = _read_pidfile()
+    if not data:
+        return 0
+    # ``handled`` = entries we either terminated or confirmed already-gone; they
+    # are removed from the pidfile at the end. Entries left out of ``handled``
+    # (identity unconfirmed but still alive) are KEPT for a later attempt so a
+    # transient ps failure does not permanently abandon a real orphan.
+    # ``handled`` maps each handled app_name -> the exact pidfile entry we acted
+    # on. The final merge drops an entry ONLY if it is still identical: a
+    # concurrent enable that re-recorded the app with a NEW pid mid-scan writes a
+    # different entry, which must survive (clobbering it would re-introduce the
+    # orphan leak this feature prevents).
+    handled: dict[str, Any] = {}
+    reaped: list[tuple[str, int, Any]] = []
+    # Groups whose opening census found live members, as ``(app, pgid, instance,
+    # signalled, entry)``. Only the SIGNALLED set is carried: it is the escalation's
+    # target set, and it is the one thing a later pass cannot re-derive. The opening
+    # census is deliberately NOT carried -- retention re-reads the group at decision
+    # time, because a snapshot taken before the SIGTERM cannot contain a member the
+    # SIGTERM caused to be forked. The entry rides along because the final merge
+    # drops a row only when it still equals the exact entry we acted on.
+    # Escalated in the same second pass as the leaders, for the same reason: the
+    # grace window is seconds long and must not be paid serially inside the scan.
+    group_reaped: list[tuple[str, int, str, dict[int, str | None], dict[str, Any]]] = []
+    for app_name, entry in data.items():
+        try:
+            pid = int(entry.get("pid", 0))
+        except (TypeError, ValueError):
+            handled[app_name] = entry  # malformed entry — drop
+            continue
+        if pid <= 0:
+            handled[app_name] = entry
+            continue
+        if platform_compat.windows_tree_cleanup_pending(pid, entry.get("start_time")):
+            # Maintenance owns the pins and mandatory metadata retirement. Even
+            # a dead root cannot retire an unresolved descendant tree's record.
+            continue
+        # NEVER raw ``os.kill(pid, 0)`` — that TERMINATES the process on Windows.
+        # ``pid_liveness`` returns DEAD/ALIVE/UNSIGNALABLE (uid-owned-by-other on
+        # POSIX; unknown errno also maps to UNSIGNALABLE). Preserve the original
+        # three-way policy: drop-dead, skip-unsignalable, proceed-alive.
+        liveness = platform_compat.pid_liveness(pid)
+        if liveness == platform_compat.PID_DEAD:
+            # The leader is gone, but its GROUP may not be: the leader was a
+            # session leader, so the group survives it holding the app's port.
+            # This is the leak that made the next spawn collide; see
+            # _reap_orphaned_backend_group.
+            #
+            # The row is this orphan's ONLY handle, so it is NOT dropped up front:
+            # a signalled group's retention is decided after the escalation, by
+            # whether its members actually died, and an outcome a later start
+            # could do better on keeps the row for that retry. Only an outcome
+            # nothing can improve on drops it.
+            group_vouched, group_signalled, keep_row = _reap_orphaned_backend_group(
+                app_name, pid, entry
+            )
+            if group_vouched:
+                # A non-empty census proves the row carried a usable instance —
+                # the helper returns {} otherwise — so this read cannot be None.
+                group_reaped.append(
+                    (app_name, pid, str(entry["spawn_instance"]), group_signalled, entry)
+                )
+            elif not keep_row:
+                handled[app_name] = entry
+            continue
+        if liveness == platform_compat.PID_UNSIGNALABLE:
+            handled[app_name] = entry
+            logger.info("Skipping stale-reap of %s pid %d: not owned by gateway", app_name, pid)
+            continue
+        recorded_st = entry.get("start_time")
+        live_st = _proc_start_time(pid)
+        if not recorded_st or live_st is None or live_st != recorded_st:
+            # Identity unconfirmed: no baseline captured, ps failed now, or the
+            # pid was recycled. Do NOT kill, and KEEP the entry (omit from
+            # ``handled``) so a future start can retry once ps recovers.
+            logger.info(
+                "Skipping stale-reap of %s pid %d: start_time unconfirmed (recycled or unreadable)",
+                app_name, pid,
+            )
+            continue
+        try:
+            # Identity-PINNED: on Windows the handle that re-verifies the start
+            # time stays open across the terminate, so the pid taskkill resolves
+            # cannot have been recycled between the check above and the signal.
+            # False means the identity could not be pinned -- keep the entry
+            # (omit from ``handled``) and retry on a later start, exactly as the
+            # unconfirmed-start_time branch above does. POSIX delegates straight
+            # through and is unchanged.
+            signalled = platform_compat.kill_process_tree_pinned(
+                pid,
+                recorded_st,
+                platform_compat.SIGTERM,
+                **({"app_tracking": True} if platform_compat.IS_WINDOWS else {}),
+            )
+        except platform_compat.WindowsCleanupCapacityError:
+            logger.warning(
+                "Windows cleanup capacity refused stale backend %s; keeping tracking", app_name
+            )
+            continue
+        except (ProcessLookupError, OSError):
+            if platform_compat.IS_WINDOWS:
+                # A failed exact-handle drain is not proof of absence.
+                continue
+            handled[app_name] = entry  # gone between the probe and the signal
+            continue
+        if not signalled:
+            logger.info(
+                "Skipping stale-reap of %s pid %d: identity could not be pinned for the kill",
+                app_name, pid,
+            )
+            continue
+        handled[app_name] = entry
+        # Carry recorded_st so the delayed SIGKILL can re-confirm identity before
+        # signalling (PID-reuse guard, below).
+        reaped.append((app_name, pid, recorded_st))
+        try:
+            sel().log_api_access(
+                caller="gateway", operation="app_backend_stale_reap",
+                outcome="sigterm", resources=f"{app_name} pid={pid}",
+            )
+        except Exception as exc:
+            logger.debug("SEL audit failed for app_backend_stale_reap %s: %s", app_name, exc)
+    # Escalate to SIGKILL for any matched orphan that ignored SIGTERM. Each pid
+    # gets its OWN grace window — a shared deadline would let the first slow
+    # exiter consume the whole budget and SIGKILL the rest instantly. No lock is
+    # held here: the kill/poll touches no shared file and can sleep for seconds.
+    for app_name, pid, recorded_st in reaped:
+        deadline = time.monotonic() + _REAP_SIGTERM_GRACE
+        while _pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(_REAP_POLL_INTERVAL)
+        if not _pid_alive(pid):
+            continue
+        # Re-confirm identity before the destructive SIGKILL. The pid may have
+        # exited and been recycled to an unrelated process during the grace
+        # window (macOS's ~99998 PID space makes reuse materially likely within
+        # _REAP_SIGTERM_GRACE); without this, os.killpg below could signal an
+        # innocent recycled process group. Same PID-reuse guard the SIGTERM path
+        # applies — skip the kill on mismatch (leak-not-mis-kill).
+        if _proc_start_time(pid) != recorded_st:
+            logger.info(
+                "Skipping stale-reap SIGKILL of %s pid %d: start_time changed (PID recycled)",
+                app_name, pid,
+            )
+            continue
+        try:
+            # Same pinning as the SIGTERM path, and it matters more here: this is
+            # the destructive escalation, and the grace window above is exactly
+            # the interval in which the pid can be recycled.
+            if platform_compat.IS_WINDOWS:
+                # The first exact-handle call already drained the whole tree.
+                # Never re-open a numeric PID for a Windows escalation.
+                continue
+            if not platform_compat.kill_process_tree_pinned(
+                pid, recorded_st, platform_compat.SIGKILL
+            ):
+                logger.info(
+                    "Skipping stale-reap SIGKILL of %s pid %d: identity could not be pinned",
+                    app_name, pid,
+                )
+                continue
+        except (ProcessLookupError, OSError):
+            continue
+        try:
+            sel().log_api_access(
+                caller="gateway", operation="app_backend_stale_reap",
+                outcome="sigkill", resources=f"{app_name} pid={pid}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("SEL audit failed for app_backend_stale_reap sigkill %s: %s", app_name, exc)
+    # Escalate the orphaned GROUP members that ignored SIGTERM. Same per-group
+    # grace as the leaders above, and the same re-verification discipline: the
+    # escalation passes back the exact members the first pass vouched, so
+    # signal_orphaned_spawn_group signals only those still alive under the SAME
+    # start id. A member seen for the first time now is not escalated — it owes no
+    # grace, and it is what a fresh occupant of the recycled group number would
+    # look like.
+    for app_name, pgid, instance, group_signalled, entry in group_reaped:
+        # The grace is owed to the members that actually TOOK a SIGTERM, so it is
+        # waited out over ``group_signalled``; a member the signal never reached has
+        # nothing to respond to, and waiting on it would just spend the window.
+        deadline = time.monotonic() + _REAP_SIGTERM_GRACE
+        while any(_pid_alive(m) for m in group_signalled) and time.monotonic() < deadline:
+            time.sleep(_REAP_POLL_INTERVAL)
+        # One call does both remaining jobs, and it must be made even when nothing
+        # is left to kill: it re-censuses the group, and THAT fresh reading -- not
+        # the pre-SIGTERM snapshot -- is what retention is allowed to trust. A
+        # backend whose SIGTERM handler forks a replacement into the same session
+        # group (a supervisor/worker server does) produces a live member that the first
+        # census could not have seen, and deciding on the snapshot would drop the
+        # row while that replacement holds the port, with nothing left naming it.
+        # ``expected`` still restricts the SIGNAL to the members the first pass
+        # vouched, so the newcomer is observed but never signalled -- it owes no
+        # grace, and it is indistinguishable from a fresh occupant of a recycled
+        # group number. The next start reaps it with a census of its own.
+        try:
+            final_vouched, killed = signal_orphaned_spawn_group(
+                pgid, platform_compat.SIGKILL, instance, expected=group_signalled
+            )
+        except Exception as exc:  # noqa: BLE001 — one app's reap must not end the sweep
+            # No final reading, so nothing may be concluded: KEEP the row.
+            logger.warning(
+                "Orphaned-group SIGKILL of %s (group %d) failed: %s", app_name, pgid, exc
+            )
+            continue
+        if killed:
+            logger.info(
+                "Startup stale-reap: SIGKILL %d orphaned member(s) of %s's group %d",
+                len(killed),
+                app_name,
+                pgid,
+            )
+        # Retention reads the FINAL census, never the subset a signal reached and
+        # never the opening snapshot. A member the signal could not reach
+        # (``pidfd_open`` answering EMFILE, or EPERM) and a member forked after the
+        # first census are both alive and both still holding the port.
+        alive = [m for m in final_vouched if _pid_alive(m)]
+        # The final reading is fail-open in the same way the opening one is, so an
+        # empty ``alive`` is only half the question. The row is dropped only once the
+        # GROUP is positively gone -- ``pgroup_exists`` answers False on ESRCH alone,
+        # so an unreadable or unsignalable group keeps its handle. The cost of being
+        # wrong this way is one retained pidfile row that the app's next successful
+        # spawn replaces; the cost of being wrong the other way is a port held
+        # forever by a process nothing names.
+        if not alive and not platform_compat.pgroup_exists(pgid):
+            handled[app_name] = entry
+            continue
+        # Row deliberately KEPT (omitted from ``handled``) so a later start reaps
+        # this group again. The retention is real but not unconditional: a
+        # successful respawn of this app re-records the row under the same app name
+        # (_record_app_pid), so the handle survives to a later start only while the
+        # app does not come back up -- disabled, failing to spawn, or not restarted.
+        logger.warning(
+            "Orphaned group %d of %s still has %d live member(s) after the kill pass; keeping "
+            "its pidfile record, though a successful respawn of this app replaces that row",
+            pgid,
+            app_name,
+            len(alive),
+        )
+    # Drop only the entries we handled, re-reading under the lock so a concurrent
+    # enable/disable that wrote during the scan is merged, not clobbered. Drop an
+    # entry ONLY if it still equals what we handled: a mid-scan re-record (new
+    # pid) yields a different entry that must be kept.
+    with _pidfile_lock:
+        current = _read_pidfile()
+        for app_name, handled_entry in handled.items():
+            if current.get(
+                app_name
+            ) == handled_entry and not platform_compat.windows_tree_cleanup_pending(
+                handled_entry.get("pid"), handled_entry.get("start_time")
+            ):
+                current.pop(app_name, None)
+        _write_pidfile(current)
+    if reaped:
+        logger.info("Startup stale-reap: terminated %d orphaned app backend(s)", len(reaped))
+    if group_reaped:
+        # Reported separately because the count this function RETURNS is leaders
+        # terminated, and a group reap has no live leader to count. A start that
+        # reaps only groups would otherwise log nothing at all, which is exactly
+        # the case a port-collision investigation needs to see.
+        logger.info(
+            "Startup stale-reap: signalled orphaned group members for %d app backend(s) "
+            "whose leader was already gone",
+            len(group_reaped),
+        )
+    return len(reaped)
+
+
+#: The one app backend that needs the gateway's ACTUALLY-bound port at spawn
+#: (``KIROCREW_BOUND_PORT``): it reads live-target pointer state through an
+#: in-gateway route. ``start_dashboard`` starts every other backend before
+#: ``runner.setup()`` so an app's startup hooks find its backend running, and starts
+#: this one only after ``_export_bound_port`` — the value does not exist before the bind.
+DEV_FLEET_APP_NAME: str = "dev-fleet"
+
+
+def start_enabled_app_backends() -> list[str]:
+    """Start backends for all enabled apps that declare one.
+
+    Called during gateway startup to restore app backends.
+    Returns list of app names that were started.
+
+    The :data:`DEV_FLEET_APP_NAME` backend is vetted and reconciled like
+    every other app but NOT spawned here; ``start_dashboard`` starts it with
+    :func:`start_deferred_app_backends` once the bound port exists.
+    """
+    # Reap app backends left running by a prior (e.g. SIGKILLed) gateway
+    # generation before starting the new one. See the RFC,
+    # "Apps as supervised sandboxed children".
+    _reap_stale_app_backends()
+
+    apps = list_apps()
+
+    # Boot reconcile (regression fix): scrub global
+    # mcp.json entries for any installed-but-NOT-enabled app that declares MCP servers.
+    # A disabled app's backend is not running, so its HTTP MCP url points at a dead port;
+    # left in ~/.kiro/settings/mcp.json it breaks EVERY kiro session (connect failure →
+    # "transient 5xx" → 3 retries → hard error). Enable's deregister can be missed (crash
+    # mid-enable, a resources-mismatch branch), so reconcile at boot before starting any
+    # backend. Enabled apps are (re)registered with their live port via the health-gate.
+    for app_info in apps:
+        if app_info.get("enabled"):
+            continue
+        name = app_info.get("name", "")
+        manifest = app_info.get("manifest", {})
+        if not name or not manifest.get("mcpServers"):
+            continue
+        try:
+            # circular import: bridges imports from backend, so defer to call time.
+            from kiro_crew.apps.bridges import _deregister_mcp_servers
+
+            removed = _deregister_mcp_servers(name)
+            if removed:
+                logger.info(
+                    "Boot reconcile: scrubbed %d stale MCP server(s) for disabled app %s",
+                    removed, name,
+                )
+        except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
+            logger.warning("Boot MCP reconcile failed for disabled app %s: %s", name, exc)
+
+    # Executable-resource reconcile: restore agents, skills, cron definitions,
+    # and MCP config only for apps admitted by every activation boundary. A
+    # policy tightened after install must revoke stale derivative resources,
+    # not merely decline to start the backend.
+    for app_info in apps:
+        if not app_info.get("enabled"):
+            continue
+        name = app_info.get("name", "")
+        try:
+            from kiro_crew.apps.bridges import (
+                _deregister_agents,
+                _deregister_mcp_servers,
+                _deregister_skills,
+                reconcile_app_skills,
+                register_app,
+            )
+        except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
+            logger.warning("Boot resource reconcile unavailable: %s", exc)
+            break
+
+        # Governance/admission/execution vetting is deny-by-default. Builtins
+        # remain exempt from signature/allowlist admission, but their execution
+        # exemption still requires immutable shipped name + path provenance.
+        try:
+            gov_denied = _app_activation_denied(name)
+            adm_denied = None
+            if not gov_denied and app_info.get("origin") != "builtin":
+                adm_denied = app_admission_denied(
+                    name, manifest=get_app_manifest(name), action="boot"
+                )
+            execution_denied = None
+            if not gov_denied and not adm_denied:
+                execution_denied = app_execution_denied(
+                    name,
+                    action="resource_boot_reconcile",
+                    app_root=shipped_builtin_app_root(name),
+                    caller="gateway",
+                )
+        except Exception as exc:  # noqa: BLE001 — vetting error == denial
+            gov_denied = f"governance/admission/execution vetting raised: {exc}"
+            adm_denied = None
+            execution_denied = None
+
+        denied = gov_denied or adm_denied or execution_denied
+        if denied:
+            try:
+                _deregister_agents(name)
+                _deregister_skills(name)
+                _deregister_mcp_servers(name)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Boot resource reconcile: FAILED to revoke resources for " "denied app %s: %s",
+                    name,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "Boot resource reconcile: revoked executable resources for "
+                    "denied app %s: %s",
+                    name,
+                    denied,
+                )
+            continue
+
+        try:
+            registration = register_app(name)
+            if registration.errors:
+                logger.warning(
+                    "Boot resource reconcile for app %s completed with errors: %s",
+                    name,
+                    registration.errors,
+                )
+            reconcile_app_skills(name)
+        except Exception as exc:  # noqa: BLE001 — boot must never crash on reconcile
+            logger.warning("Boot resource reconcile failed for app %s: %s", name, exc)
+
+    # Vet first, then spawn the admitted set CONCURRENTLY. Vetting is cheap and
+    # order-dependent bookkeeping; spawning is the slow part (each child is polled
+    # for a grace window), so serializing it would make boot latency scale linearly
+    # with the number of installed apps.
+    admitted: list[str] = []
+    for app_info in apps:
+        if not app_info.get("enabled"):
+            continue
+        name = app_info.get("name", "")
+        # Governance: the ``apps`` allowlist is an activation ceiling, so it must
+        # gate startup re-activation too — not just the manual enable transition.
+        # A policy tightened AFTER an app was enabled would otherwise let the app
+        # load on the next restart (its persisted enabled=true bypasses the
+        # enable_app gate). Re-vet here so a now-forbidden app stays down.
+        gov_denied = _app_activation_denied(name)
+        if gov_denied:
+            logger.warning("App %s not started: blocked by governance policy: %s", name, gov_denied)
+            continue
+        manifest = app_info.get("manifest", {})
+        if not manifest.get("backend", {}).get("entryPoint"):
+            continue
+        # Re-vet admission at boot: an app enabled before a policy tightened
+        # (banned / allowlist-removed / now-unsigned) must NOT keep running
+        # across restarts. Builtins (origin == "builtin") are trusted first-party
+        # code shipped unsigned, so they are exempt (same carve-out as enable_app)
+        # — otherwise a require_signature policy would strand every core app.
+        if app_info.get("origin") != "builtin":
+            try:
+                denied = app_admission_denied(name, manifest=get_app_manifest(name), action="boot")
+            except Exception as exc:  # noqa: BLE001 — boot must never crash on re-vet
+                # Fail CLOSED: if the re-vet itself errors (transient I/O, a bug
+                # in the admission logic), treat the app as denied rather than
+                # booting it unchecked. The loop still continues to the next app,
+                # so a single failure never crashes boot — it just declines to
+                # start the app whose admission we could not confirm.
+                logger.error(
+                    "Boot admission re-vet failed for app %s: %s — treating as denied "
+                    "(fail-closed)",
+                    name, exc,
+                )
+                denied = f"admission re-vet error: {exc}"
+            if denied:
+                logger.warning(
+                    "Boot: skipping enabled app %s — blocked by admission policy: %s",
+                    name, denied,
+                )
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_boot",
+                        outcome="denied", resources=name, error=denied,
+                    )
+                except Exception as exc:
+                    logger.debug("SEL audit failed for app %s boot deny: %s", name, exc)
+                continue
+        admitted.append(name)
+
+    global _DEV_FLEET_DEFERRED
+    _DEV_FLEET_DEFERRED = DEV_FLEET_APP_NAME in admitted
+    return _start_backends_concurrently([n for n in admitted if n != DEV_FLEET_APP_NAME])
+
+
+#: Whether the boot wave admitted Dev Fleet and held its spawn back for the bound port.
+_DEV_FLEET_DEFERRED: bool = False
+
+
+def start_deferred_app_backends() -> list[str]:
+    """Spawn the Dev Fleet backend ``start_enabled_app_backends`` held back.
+
+    Its admission and reconcile work already ran in the same boot, but the deferral
+    leaves a window (the rest of ``start_dashboard``) in which the operator can
+    disable the app or a policy can tighten — so enablement and governance are
+    re-checked here, fail-closed, immediately before the spawn. Same per-app
+    isolation as the main wave. Returns the names that started; a second call is a
+    no-op.
+    """
+    global _DEV_FLEET_DEFERRED
+    from kiro_crew.apps.manager import _app_activation_denied
+
+    deferred, _DEV_FLEET_DEFERRED = _DEV_FLEET_DEFERRED, False
+    if not deferred:
+        return []
+    name = DEV_FLEET_APP_NAME
+    # ``True`` only: an unreadable state (None) is not a licence to spawn.
+    if _app_enabled_state(name) is not True:
+        logger.info("Deferred boot: %s is no longer enabled — not started", name)
+        return []
+    try:
+        gov_denied = _app_activation_denied(name)
+    except Exception as exc:  # noqa: BLE001 — fail closed, never crash boot
+        gov_denied = f"activation re-vet error: {exc}"
+    if gov_denied:
+        logger.warning("Deferred boot: %s not started: %s", name, gov_denied)
+        return []
+    return _start_backends_concurrently([name])
+
+
+def _preclaim_fixed_ports(names: list[str]) -> None:
+    """Reserve every declared fixed port before concurrent spawns are submitted.
+
+    Best-effort and non-fatal: an unreadable manifest or an out-of-range/duplicate
+    port is simply left to the spawn itself, which already validates and reports
+    it. This only removes the ordering hazard; it never decides whether an app may
+    start.
+    """
+
+    for name in names:
+        try:
+            manifest = get_app_manifest(name)
+            if manifest is None:
+                continue
+            port_str = str(manifest.backend.port)
+            if not port_str or port_str == "auto":
+                continue
+            port = int(port_str)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not (_MIN_PORT <= port <= _MAX_PORT):
+            continue
+        try:
+            _claim_port(name, port)
+        except PortUnavailableError as exc:
+            # Two apps declaring the same fixed port: a real conflict the spawn
+            # path reports per app. Log once here for the boot-time picture.
+            logger.warning("Boot: fixed-port pre-claim for app %s skipped: %s", name, exc)
+
+
+def _start_backends_concurrently(names: list[str]) -> list[str]:
+    """Spawn the given app backends in parallel; return those that started.
+
+    Each app's spawn blocks on a survival grace window, so starting them one at a
+    time would cost roughly N x that window. They are independent (ports are
+    reserved atomically — see ``_reserve_free_port``), so they run concurrently,
+    ``_BOOT_SPAWN_MAX_WORKERS`` at a time: boot costs about one window per wave
+    rather than one per app.
+
+    Declared FIXED ports are reserved up front, before any spawn is submitted.
+    A fixed port is a requirement, not a preference, so it must not be lost to an
+    auto-port app that merely happened to select it first — pre-claiming removes
+    that race entirely, leaving `PortUnavailableError` to signal only a genuine
+    conflict (two apps declaring the same port, or a foreign holder).
+
+    Failure isolation is per app: one app's spawn raising or returning None must
+    never take down the gateway (Slack + dashboard + every session) or affect the
+    other apps.
+    """
+
+    if not names:
+        return []
+
+    _preclaim_fixed_ports(names)
+
+    started: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(names), _BOOT_SPAWN_MAX_WORKERS),
+        thread_name_prefix="app-boot",
+    ) as pool:
+        futures = {pool.submit(start_app_backend, name): name for name in names}
+        for future in concurrent.futures.as_completed(futures):
+            name = futures[future]
+            try:
+                ap = future.result()
+            except Exception as exc:  # noqa: BLE001 — boot must never crash on one app
+                # A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing when
+                # no OS-level sandbox backend is available — macOS 26 removed
+                # sandbox-exec) must NOT take down the whole gateway. Log, audit,
+                # and skip this app — same fail-isolated posture as the admission
+                # re-vet and MCP reconcile branches above.
+                logger.error(
+                    "Boot: failed to start backend for app %s: %s — skipping "
+                    "(gateway continues)",
+                    name, exc,
+                )
+                try:
+                    sel().log_api_access(
+                        caller="gateway", operation="app_backend_boot",
+                        outcome="error", resources=name, error=str(exc),
+                    )
+                except Exception as sel_exc:
+                    logger.debug("SEL audit failed for app %s boot error: %s", name, sel_exc)
+                continue
+            if ap:
+                started.append(name)
+                logger.info("Auto-started backend for app %s on port %d", name, ap.port)
+                # MCP re-registration is HEALTH-GATED: the health-check loop started
+                # by start_app_backend calls _gate_mcp_registration once /health
+                # passes, writing the HTTP MCP url with the real allocated port
+                # (which may differ from the manifest's illustrative port).
+                # Registering here — before health — is exactly what could leave a
+                # dead url for an enabled-but-never-healthy app and break every
+                # kiro-cli session. EXCEPTION: an adopted already-healthy instance
+                # runs no health loop, so register it synchronously now.
+                # Routed through the shared transition so this shares one order with
+                # the watch that _start_adopted_health_watch has by now armed on the
+                # same record — the two must not interleave their mcp.json writes.
+                if ap.healthy:
+                    _set_backend_health(ap, healthy=True)
+    return started

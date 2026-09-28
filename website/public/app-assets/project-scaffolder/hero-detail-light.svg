@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288">
+  <defs>
+    <linearGradient id="bg-detail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#065f46"/>
+      <stop offset="100%" stop-color="#064e3b"/>
+    </linearGradient>
+    <linearGradient id="beam-detail" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity=".4"/>
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#bg-detail)"/>
+  <!-- left: the scanned project tree (plain directories) -->
+  <g stroke="#6ee7b7" stroke-width="1.2" fill="none" opacity=".8">
+    <path d="M150 84 H190 M150 84 V204 M150 124 H190 M150 164 H190 M150 204 H190"/>
+  </g>
+  <rect x="118" y="66" width="110" height="30" rx="6" fill="#ecfdf5" fill-opacity=".12" stroke="#6ee7b7" stroke-width="1.2"/>
+  <rect x="128" y="76" width="56" height="4" rx="2" fill="#a7f3d0" opacity=".7"/>
+  <rect x="196" y="110" width="96" height="26" rx="5" fill="#ecfdf5" fill-opacity=".09" stroke="#34d399" stroke-width="1"/>
+  <rect x="204" y="119" width="44" height="3.5" rx="1.5" fill="#6ee7b7" opacity=".6"/>
+  <rect x="196" y="150" width="96" height="26" rx="5" fill="#ecfdf5" fill-opacity=".09" stroke="#34d399" stroke-width="1"/>
+  <rect x="204" y="159" width="44" height="3.5" rx="1.5" fill="#6ee7b7" opacity=".6"/>
+  <rect x="196" y="190" width="96" height="26" rx="5" fill="#ecfdf5" fill-opacity=".07" stroke="#34d399" stroke-width="1" stroke-dasharray="4 3"/>
+  <rect x="204" y="199" width="44" height="3.5" rx="1.5" fill="#6ee7b7" opacity=".4"/>
+  <!-- manifest badges on the scanned dirs -->
+  <circle cx="292" cy="112" r="5" fill="#fbbf24" opacity=".9"/>
+  <circle cx="292" cy="152" r="5" fill="#fbbf24" opacity=".9"/>
+  <rect x="287" y="187" width="10" height="10" rx="2" fill="none" stroke="#fbbf24" stroke-width="1.3"/>
+  <!-- center: the scan beam carrying candidates across -->
+  <path d="M340 144 H560" stroke="url(#beam-detail)" stroke-width="46" opacity=".9"/>
+  <circle cx="600" cy="144" r="34" fill="#fbbf24" opacity=".12"/>
+  <circle cx="600" cy="144" r="24" fill="none" stroke="#fbbf24" stroke-width="1.5" opacity=".7"/>
+  <circle cx="600" cy="144" r="16" fill="none" stroke="#fde68a" stroke-width="1" opacity=".5"/>
+  <path d="M593 144 l5 5 10-11" stroke="#fbbf24" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M640 144 H860" stroke="#34d399" stroke-width="1.5" opacity=".6"/>
+  <path d="M852 138 l10 6 -10 6" fill="none" stroke="#34d399" stroke-width="1.5" opacity=".7"/>
+  <!-- right: the created folder tree -->
+  <path d="M902 96 Q902 88 910 88 L938 88 L948 98 L1032 98 Q1040 98 1040 106 L1040 142 Q1040 150 1032 150 L910 150 Q902 150 902 142 Z" fill="#ecfdf5" fill-opacity=".16" stroke="#6ee7b7" stroke-width="1.8"/>
+  <rect x="918" y="112" width="62" height="5" rx="2.5" fill="#a7f3d0" opacity=".75"/>
+  <rect x="918" y="126" width="42" height="4" rx="2" fill="#a7f3d0" opacity=".45"/>
+  <path d="M971 150 V170 M971 170 H916 V184 M971 170 H1026 V184" fill="none" stroke="#34d399" stroke-width="1.5" opacity=".6"/>
+  <path d="M884 184 Q884 179 889 179 L904 179 L910 185 L943 185 Q948 185 948 190 L948 214 Q948 219 943 219 L889 219 Q884 219 884 214 Z" fill="#ecfdf5" fill-opacity=".1" stroke="#34d399" stroke-width="1.1"/>
+  <rect x="894" y="196" width="30" height="3.5" rx="1.5" fill="#6ee7b7" opacity=".6"/>
+  <path d="M994 184 Q994 179 999 179 L1014 179 L1020 185 L1053 185 Q1058 185 1058 190 L1058 214 Q1058 219 1053 219 L999 219 Q994 219 994 214 Z" fill="#ecfdf5" fill-opacity=".1" stroke="#34d399" stroke-width="1.1"/>
+  <rect x="1004" y="196" width="30" height="3.5" rx="1.5" fill="#6ee7b7" opacity=".6"/>
+  <!-- floating accents -->
+  <circle cx="420" cy="58" r="3" fill="#fbbf24" opacity=".4"/>
+  <circle cx="760" cy="52" r="2.5" fill="#34d399" opacity=".4"/>
+  <circle cx="520" cy="238" r="2.5" fill="#6ee7b7" opacity=".3"/>
+  <circle cx="1120" cy="70" r="2.5" fill="#fbbf24" opacity=".35"/>
+  <circle cx="70" cy="240" r="2.5" fill="#34d399" opacity=".3"/>
+</svg>

@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288">
+  <defs>
+    <linearGradient id="bg-detail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f0f4ff"/><stop offset="100%" stop-color="#e8eeff"/>
+    </linearGradient>
+    <linearGradient id="g1-detail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5"/><stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="g2-detail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8"/><stop offset="100%" stop-color="#a5b4fc"/>
+    </linearGradient>
+    <linearGradient id="g3-detail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#60a5fa"/>
+    </linearGradient>
+    <linearGradient id="g4-detail" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#4338ca"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#bg-detail)"/>
+
+  <!-- Connection lines (full-width DAG) -->
+  <path d="M136 144L296 144M356 132L551 100M356 156L551 188M599 100L786 140M599 188L786 148M846 144L1050 144"
+        stroke="#c7d2fe" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <!-- Arrowheads -->
+  <polygon points="292,140 300,144 292,148" fill="#c7d2fe"/>
+  <polygon points="545,96 553,100 546,105" fill="#c7d2fe"/>
+  <polygon points="546,184 553,189 545,193" fill="#c7d2fe"/>
+  <polygon points="782,136 790,140 781,143" fill="#c7d2fe"/>
+  <polygon points="781,146 790,149 782,153" fill="#c7d2fe"/>
+  <polygon points="1046,140 1054,144 1046,148" fill="#c7d2fe"/>
+
+  <!-- Start node -->
+  <circle cx="110" cy="144" r="26" fill="url(#g1-detail)" opacity="0.9"/>
+  <circle cx="110" cy="144" r="14" fill="none" stroke="#fff" stroke-width="2" opacity="0.6"/>
+
+  <!-- Process node (rounded square) -->
+  <rect x="300" y="116" width="56" height="56" rx="12" fill="url(#g4-detail)"/>
+  <rect x="312" y="128" width="32" height="32" rx="5" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Branch node top -->
+  <circle cx="575" cy="96" r="24" fill="url(#g3-detail)"/>
+  <circle cx="575" cy="96" r="12" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Branch node bottom -->
+  <circle cx="575" cy="192" r="24" fill="url(#g2-detail)"/>
+  <rect x="565" y="182" width="20" height="20" rx="4" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Merge node (pill) -->
+  <rect x="790" y="116" width="56" height="56" rx="28" fill="url(#g1-detail)"/>
+  <circle cx="818" cy="144" r="12" fill="none" stroke="#fff" stroke-width="2" opacity="0.7"/>
+
+  <!-- End node -->
+  <circle cx="1080" cy="144" r="26" fill="url(#g4-detail)" opacity="0.9"/>
+  <rect x="1068" y="132" width="24" height="24" rx="5" fill="none" stroke="#fff" stroke-width="2" opacity="0.6"/>
+
+  <!-- Accent dots spread across full width -->
+  <circle cx="60" cy="52" r="4" fill="#a5b4fc" opacity="0.4"/>
+  <circle cx="230" cy="238" r="3" fill="#6366f1" opacity="0.3"/>
+  <circle cx="430" cy="44" r="3" fill="#818cf8" opacity="0.3"/>
+  <circle cx="690" cy="246" r="4" fill="#818cf8" opacity="0.3"/>
+  <circle cx="900" cy="48" r="3" fill="#6366f1" opacity="0.25"/>
+  <circle cx="1000" cy="240" r="5" fill="#a5b4fc" opacity="0.35"/>
+  <circle cx="1150" cy="60" r="4" fill="#818cf8" opacity="0.3"/>
+  <circle cx="1140" cy="228" r="3" fill="#6366f1" opacity="0.3"/>
+</svg>

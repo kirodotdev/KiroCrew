@@ -1,0 +1,148 @@
+name: App Store listing request
+description: Request that your Kiro Crew app be listed in the official App Store catalog.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The official App Store catalog is maintainer-curated: its repository is
+        not publicly writable, so outside authors do not open the listing pull
+        request themselves. This issue is how you request a listing — a
+        maintainer authors the catalog entry from what you provide here.
+
+        Before filing, self-run the review checklist in
+        [publishing-guide.md section 14](https://github.com/kirodotdev/KiroCrew/blob/main/docs/app-kit/publishing-guide.md).
+        Your app repository must be public and git-cloneable so the publish
+        pipeline can resolve and pin a commit. If your app has any **executable**
+        surface (install scripts, backend, hooks, lifecycle scripts,
+        `detectInstalled`, `openCommand`), your README must say so: a user who
+        has not set `agent.apps_allow_third_party` to `true` in `config.json`
+        will see `app_execution_denied` rather than a working install (see
+        section 9).
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched open issues and this app is not already listed or requested.
+          required: true
+
+  - type: input
+    id: name
+    attributes:
+      label: App name
+      description: >-
+        kebab-case, and must match the `name` in your `app.json`.
+      placeholder: commit-oracle
+    validations:
+      required: true
+
+  - type: input
+    id: git-url
+    attributes:
+      label: Git repository URL
+      description: >-
+        A public, git-cloneable URL for the app source.
+      placeholder: https://github.com/you/your-app
+    validations:
+      required: true
+
+  - type: input
+    id: ref
+    attributes:
+      label: Ref to pin
+      description: >-
+        The branch, tag, or commit SHA the publish pipeline should resolve and
+        pin. A specific SHA is safest; a branch or tag is fine and will be
+        resolved to the commit it points at.
+      placeholder: main, or a 40-character commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: display-name
+    attributes:
+      label: Display name
+      description: The human-readable name shown in the store.
+      placeholder: Commit Oracle
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: >-
+        Plain text, no markdown. Two or three sentences describing what the app
+        does — this becomes the store `description`, which Discover truncates to
+        one or two lines and the detail page shows in full.
+    validations:
+      required: true
+
+  - type: input
+    id: categories-tags
+    attributes:
+      label: Category and tags
+      description: >-
+        Lowercase tags. These decide the app's Discover category (see section 3
+        of the publishing guide); pick tags that land it in the right one.
+      placeholder: developer-tools, code-quality, git, code-review
+    validations:
+      required: true
+
+  - type: input
+    id: author
+    attributes:
+      label: Author name and profile URL
+      description: >-
+        Shown as provenance next to the app's category and source. Include a
+        display name and a profile URL.
+      placeholder: reprodev — https://github.com/reprodev
+    validations:
+      required: true
+
+  - type: input
+    id: license
+    attributes:
+      label: License
+      description: SPDX identifier for the app's license.
+      placeholder: MIT
+    validations:
+      required: false
+
+  - type: textarea
+    id: entry-json
+    attributes:
+      label: Ready-to-paste entry (optional)
+      description: >-
+        If you have already drafted a published-schema catalog entry against the
+        schema served at `apps.crew.kiro.dev/official-registry.json`, paste it
+        here. This is a convenience for the maintainer authoring the entry — it
+        is not authoritative and the pipeline pins whatever commit it resolves.
+      render: json
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: review-checklist
+    attributes:
+      label: Review checklist (self-attestation)
+      description: >-
+        These mirror the review checklist in section 14 of the publishing guide.
+        Confirm each item for your app.
+      options:
+        - label: "`app.json` validates: kebab-case `name`, semver `version`, all required fields non-empty."
+          required: true
+        - label: "No `..` or absolute paths in `agents`, `skills`, `sops`, `ui.entry`, `ui.pages[].entryPoint`, `backend.entryPoint`."
+          required: true
+        - label: "UI bundle built and committed (`ui/dist/index.mjs`) if the app ships a UI."
+          required: true
+        - label: "Agent JSON files are valid, and each skill `SKILL.md` has proper frontmatter."
+          required: true
+        - label: "Opaque icon committed, square, 512x512, plus a hero image (16:9), a detail banner, and at least one screenshot committed."
+          required: true
+        - label: "`README.md` documents what the app does, how to use it, and the `agent.apps_allow_third_party` prerequisite if any executable surface is present."
+          required: true
+        - label: "The app installs and enables cleanly from a local clone."
+          required: true

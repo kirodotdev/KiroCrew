@@ -1,0 +1,1058 @@
+"""Whether a harness's tool decisions reach Kiro Crew's PreToolUse gate.
+
+One place resolves the verdict, so the refusal message, the doctor row and any
+future dashboard surface cannot disagree about why a session was allowed.
+
+The gate itself -- the bundled denied-command rules, the sensitive-path block,
+the governance ceiling -- runs only from ``HookManager.on_tool_call``, reached
+only from the permission-request branch of the dispatch parser. A harness that
+does not send ``session/request_permission`` per tool call is a harness where
+none of those controls execute, so "does it ask?" is a security question rather
+than a compatibility one.
+
+**A LEAF module, deliberately.** It imports the vocabulary from
+:mod:`kiro_crew.agent_sdk.backends` and nothing from ``kiro_crew.acp``, which the
+SDK boundary gate treats as a forbidden root. The callers that need a verdict --
+``acp/client.py`` on the session path, and later ``kirocrew doctor`` and the
+dashboard -- can therefore all reach it, and a consumer naming a verdict does not
+buy a forbidden edge to do it.
+
+Moved here from ``kiro_crew/acp_tool_gate.py`` by RFC PR 3, which pulls the
+capability mechanism inside the boundary. That top-level path survives as a pure
+re-export shim, so ``acp/client.py`` still calls through it by attribute and the
+tests that patch it still reach what the client calls.
+
+**Enforcement scope.** Three mechanisms are ENFORCED here --
+:data:`~kiro_crew.agent_sdk.backends.Routing.SESSION_CONFIG`,
+:data:`~kiro_crew.agent_sdk.backends.Routing.VERIFIED_SEEDED_SETTINGS` and
+:data:`~kiro_crew.agent_sdk.backends.Routing.VERIFIED_GATE_EXTENSION` -- because
+they are the three this core implements end to end. ``AGENT_SPEC`` needs no
+enforcement (it holds by construction), and ``SEEDED_SETTINGS`` is
+declared-but-unenforced, and the reason is a read-back
+gap rather than a missing writer. ``AcpClient._write_claude_local_settings`` does
+seed ``permissions.defaultMode`` into ``<work_dir>/.claude/settings.local.json``,
+but it writes only the file it OWNS -- created this session and still carrying the
+bytes Crew wrote -- and declines otherwise, and nothing reads back whether the
+adapter honoured the mode. A ``bypassPermissions`` already sitting in a user's own
+``settings.local.json`` or ``~/.claude`` is therefore neither detected nor
+stripped, so the precondition this mechanism would need is not established.
+``routing_verdict`` reports that honestly as INDETERMINATE -- what is scoped is
+whether a non-ROUTED verdict REFUSES, not whether it is told truthfully. Widening the scope
+means implementing a mechanism, not editing an allowlist.
+
+``VERIFIED_SEEDED_SETTINGS`` is what closes that read-back gap for one harness
+rather than in general: the client supplies the required setting as the session
+starts, READS THE HARNESS'S OWN RESOLVED CONFIGURATION BACK, and hands the observed
+value to :func:`seeded_setting_issue` before the first prompt. So the two members
+are not the same mechanism at different confidence levels -- one has an observation
+and the other does not, which is exactly why enforcement follows the member and not
+the harness id. Reading the harness's resolution rather than the bytes Crew supplied
+is also what makes a PRECEDENCE change visible: the answer is what the session will
+use, not what the seed hoped it would.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections.abc import Sequence
+from enum import Enum
+from pathlib import PurePosixPath
+
+from kiro_crew import platform_compat
+from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_PI,
+    Readback,
+    Routing,
+    gate_probe_command_for,
+    gate_readback_for,
+    permission_config_for,
+    permission_setting_for,
+    routing_for,
+)
+
+logger = logging.getLogger(__name__)
+
+#: Routing mechanisms whose non-ROUTED verdict actually refuses a session.
+#:
+#: Scoped to what this core implements rather than to a list of harness ids: a
+#: harness declaring an implemented mechanism is enforced automatically, and
+#: adding a mechanism here without implementing it would assert a guarantee
+#: nothing performs.
+#:
+#: KNOWN SEAM GAP, recorded here because this is where a reader meets it.
+#: :func:`is_enforced` reads this set to answer TWO different questions: "does a
+#: non-ROUTED verdict refuse this session?" and, through
+#: :func:`adapter_hidden_credential_dirs`, "does this harness get the OS credential
+#: mask?". Those are not the same question. The mask compensates for a harness whose
+#: passive READS bypass the gate, which is a property of the harness, not of whether
+#: its routing verdict is capable of refusing. They agree for every harness carried
+#: today, so nothing is wrong now and nothing here is a workaround -- but a harness
+#: that needs the mask while declaring a mechanism that cannot refuse would get
+#: neither, and one that refuses without doing passive reads would carry a mask it
+#: does not need. Splitting them is a change to a security control and belongs in its
+#: own change; tracked at
+#: docs/system-specs/modules/harness-onboarding.md#worked-example-the-deepseek-harness,
+#: which records the run that surfaced it.
+ENFORCED_ROUTINGS: frozenset = frozenset(
+    {
+        Routing.SESSION_CONFIG,
+        Routing.VERIFIED_SEEDED_SETTINGS,
+        Routing.VERIFIED_GATE_EXTENSION,
+    }
+)
+
+#: What is NOT consulted when a harness's tool calls bypass the gate. Named in
+#: full in the refusal, because "bypasses the security gate" does not tell an
+#: operator what they are giving up.
+UNENFORCED_CONTROLS = (
+    "the bundled denied-command rules, the sensitive-path block and the governance ceiling"
+)
+
+#: Operator-facing harness labels. The refusal text is the only consumer, and a
+#: Codex host must never be told to run ``kiro-cli login``-style advice aimed at a
+#: different harness.
+#:
+#: Rows for the harnesses that serve ACP from their own binary come from their
+#: ``ACP_BACKEND_LAUNCH`` records, which already carry the display name for the
+#: install panel -- so a harness of that shape has one name, in one place, rather
+#: than one here and one there that can disagree. The two Node adapters keep rows of
+#: their own: neither has a launch record, and the name an operator knows the harness
+#: by is not its adapter's package name.
+_LABELS: dict = {
+    ACP_BACKEND_CODEX: "OpenAI Codex",
+    ACP_BACKEND_PI: "Pi",
+    **{backend: record.label for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
+}
+
+#: The credential store an enforced harness that authenticates from a FILE must
+#: still be able to read.
+#:
+#: Such an adapter authenticates itself, so its OWN token is the one thing the mask
+#: below must not take away. Everything else on the read-gate floor is denied.
+#:
+#: Not every enforced harness has one. A harness entitled by
+#: ``host_auth.ENTITLEMENT_HOST_VAULT`` is handed its key as an environment variable
+#: at spawn (the DeepSeek Harness, from ``agent.deepseek_env``), so it authenticates
+#: with no readable file and declares ``()`` -- which is strictly tighter, because a
+#: carve-out re-opens the leaf for the harness's whole process tree including the
+#: shells it runs, while an env-fed key does not exist as a file there at all.
+#: ``test_acp_tool_gate.test_every_enforced_harness_declares_its_own_credential``
+#: states the rule in both directions: an enforced harness names its own leaf OR
+#: declares that source, and one declaring that source names NO leaf.
+#:
+#: PROJECTED from each harness's declaration in
+#: :mod:`kiro_crew.agent_sdk.host_auth`, which is also where the read-gate floor
+#: gets the leaf it fences. That is what keeps the exclusion and the fence naming
+#: the same file: a leaf spelled here but not there is an exclusion from a mask
+#: that never covered it, and the declaration refuses to make one -- a harness may
+#: only ask the mask to spare a leaf its own declaration put ON the floor.
+#:
+#: A harness that declares none is ABSENT rather than present with an empty tuple,
+#: so the ``.get(backend, ())`` reads below are unchanged.
+#:
+#: Home-relative, matching the floor's own spelling. An operator override
+#: (``CODEX_HOME``) moves the real file outside the home, and the floor re-anchors
+#: the declared leaf under it, so ``sandbox_credential_targets`` excludes the
+#: relocated spelling too.
+ADAPTER_OWN_CREDENTIAL_LEAVES: dict = {
+    declaration.backend: declaration.adapter_own_leaves
+    for declaration in host_auth.AGENT_AUTH_DECLARATIONS
+    if declaration.adapter_own_leaves
+}
+
+#: Gate-artifact leaf a gate-extension harness's child must load Crew's gate from.
+#:
+#: ``pi-gate`` holds only the launcher, sealed extensions and per-launch patches Crew
+#: writes. A ``VERIFIED_GATE_EXTENSION`` child must READ them -- pi execs the launcher
+#: and reads its extension, the DeepSeek Harness loads its plugin through the patch --
+#: while the read gate still fences the AGENT's own file tools from the leaf, so
+#: excluding it from this mask separates two readers instead of weakening the floor.
+#: Every child whose routing is not ``VERIFIED_GATE_EXTENSION`` still has the leaf
+#: masked. A future secret must never be placed under ``pi-gate``; one that must live
+#: there needs its own masked leaf, as ``run/voice-runtime`` does.
+#:
+#: Nothing the CHILD writes belongs here, and that is a property of the leaf rather
+#: than an accident: it is sealed read-only against every harness child
+#: (``sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES``) so none can plant what a later
+#: session loads. The DeepSeek gate's load marker is written by the child, so it lives
+#: in that session's private scratch window instead -- see ``acp/client.py``.
+#:
+#: The name is pi's because pi was the first harness to need it, and it is kept rather
+#: than widened so the sandbox seal lists that already name this leaf do not have to
+#: learn a second spelling. What the leaf holds is gate artifacts for any such
+#: harness, none of which is a credential.
+#:
+#: Spelled CREW-HOME-RELATIVE, without a data-home prefix. The prefixes are applied
+#: in :func:`adapter_hidden_credential_dirs` from ``security.crew_home_prefixes()``,
+#: the same source the floor projects its own entries through. Writing the product
+#: out here would be the hand-maintained spelling list
+#: ``sandbox_credential_targets`` names as the drift it exists to prevent: a third
+#: data-home spelling would be covered by the floor and missed here, and the pi
+#: harness would stop starting on exactly the layout nobody tests.
+PI_GATE_ARTIFACT_LEAF = "pi-gate"
+
+#: The one owner allowed to answer DeepSeek Harness approval requests. Cordis
+#: reflection-wraps callbacks, so the gate plugin records the loader entry and
+#: runtime identity retained on each listener's owning context instead of a
+#: callback source that has no stable identity.
+_DEEPSEEK_APPROVAL_ANSWERER_KEYS = frozenset({"entry", "module", "plugin"})
+_DEEPSEEK_APPROVAL_MODULE = "@deepseek-ai/dsh-acp"
+_DEEPSEEK_APPROVAL_PLUGIN = "acp"
+_DEEPSEEK_APPROVAL_POLICY = "ask"
+#: The one tool presentation under which every model action is a tool call the gate
+#: can read; ``ptc``/``both`` add a ``run_code`` transport whose programs are not.
+_DEEPSEEK_TOOLS_MODE = "native"
+
+#: Files re-exposed READ-ONLY inside a directory the mask hides, home-relative.
+#:
+#: A codex whose model provider is Bedrock AUTHENTICATES through ``~/.aws``: it
+#: reads ``~/.aws/config`` to find the ``credential_process``. With the whole
+#: directory masked every session fails at start with ``failed to load AWS
+#: credentials`` -- surfaced to the operator as an opaque ``Authentication
+#: required``. Re-exposing exactly this file is the cc tier's own Linux posture
+#: (``_CC_EXPOSE_FILES``), applied here on BOTH platforms rather than excluding
+#: the leaf: ``~/.aws/credentials`` and ``~/.aws/sso/cache`` stay hidden from a
+#: child whose passive reads never reach the gate. Each backend carries the
+#: primitive already -- the Linux launcher restores a 0444 copy of the file into
+#: the empty bind mount, and the Seatbelt builder emits a ``require-not
+#: (literal ...)`` exception on the subpath deny (the shape it uses for
+#: ``.ssh/known_hosts``). The read gate still fences ``.aws`` for the agent's
+#: own file tools.
+#:
+#: A leaf here must sit UNDER a masked directory: the mask is what makes the
+#: re-exposure a narrowing rather than a no-op, and ``test_acp_tool_gate``
+#: pins that containment.
+#:
+#: Accepted residual, carried knowingly: the AWS CLI also honours
+#: ``aws_access_key_id`` / ``aws_secret_access_key`` written directly into a
+#: ``[profile]`` block of ``~/.aws/config``. An operator with that layout hands
+#: those static keys to the child through this carve-out, exactly as the cc
+#: tier's ``_CC_EXPOSE_FILES`` already does for Claude Code. The mask cannot
+#: tell a ``credential_process`` line from a key line without parsing the file,
+#: and the Seatbelt carve-out exposes the real inode, so no per-line redaction
+#: is possible there; the Linux copy is deliberately kept byte-identical so the
+#: two platforms carry the SAME residual rather than a silent asymmetry. The
+#: launcher reads the source with the plain ``open()`` the cc tier has always
+#: used, so a symlink, hardlink or bind alias the OPERATOR plants at
+#: ``~/.aws/config`` is followed, exactly as for Claude Code today: the child
+#: cannot plant one (``~/.aws`` is bind-masked in its session and the agent's
+#: file tools are fenced from it), so this is operator self-exposure of the
+#: operator's own store, not a boundary the child can cross. Operators who
+#: keep static keys in ``config`` should move them to ``credentials``, which
+#: stays masked.
+#: HOST-owned, and deliberately NOT projected from a harness declaration like the
+#: exclusion above.
+#:
+#: The exclusion can be declared safely because the declaration constrains it: a
+#: harness may only ask the mask to spare a leaf its own declaration put ON the
+#: floor. A re-exposure has no such constraint available. It is an EDIT to the mask,
+#: and no structural rule separates the one legitimate case from the worst
+#: illegitimate one -- ``.aws/config`` and ``.ssh/id_rsa`` are both files under a
+#: directory this mask hides, so "must sit under something masked" admits them
+#: equally. So this stays where adding an entry is visibly a change to a security
+#: control, made by the host, rather than a line in a driver's own declaration.
+ADAPTER_EXPOSED_CREDENTIAL_LEAVES: dict = {
+    ACP_BACKEND_CODEX: (".aws/config",),
+}
+
+
+class Verdict(str, Enum):
+    """Whether a harness's tool decisions reach Kiro Crew's gate.
+
+    ``INDETERMINATE`` is deliberately NOT a synonym for "probably fine". A
+    guarantee that lapses whenever a file is unreadable is not a guarantee, so
+    :func:`enforce_runtime_routing` treats it exactly like ``BYPASSED``. It is a
+    distinct value only so the operator-facing message can say "could not
+    determine" instead of asserting a policy nothing established.
+    """
+
+    ROUTED = "routed"
+    BYPASSED = "bypassed"
+    INDETERMINATE = "indeterminate"
+
+
+class ToolGateUnroutable(Exception):
+    """Raised when a harness's tool calls would not reach the PreToolUse gate.
+
+    Deliberately NOT retryable: the condition is a configuration fact, so a retry
+    re-reads the same answer and refuses again while consuming a reconnect budget
+    that exists for transport faults.
+
+    A plain ``Exception`` rather than an ``AcpError`` subclass because ``AcpError``
+    lives in ``acp.client``, which imports THIS module -- subclassing would be an
+    import cycle, and it would also drag a forbidden-root import into a leaf. The
+    session path translates it into its own ACP-error type so branchless callers
+    keep degrading through their generic handling.
+    """
+
+
+def adapter_hidden_credential_dirs(backend: str) -> tuple:
+    """Absolute paths on the read-gate floor to hide from *backend*'s child.
+
+    DERIVED from ``security.sensitive_home_dirs()`` rather than enumerated, and
+    that is the whole point. This mask is the compensating control for a harness
+    whose passive reads never reach ``HookManager.on_tool_call``: the floor states
+    what an agent may never read, so anything on it the child can still open is a
+    hole in the compensation. An enumerated short list left exactly that hole --
+    ``.claude/.credentials.json``, ``.netrc``, ``.git-credentials``, ``.pypirc``
+    and ``.npmrc`` were all on the floor and still readable by the child, the first
+    of them a leaf this very change had just classified. Deriving keeps the two in
+    step, and a floor entry added later is covered with no edit here.
+
+    The harness's own credential store is excluded WHEN it declares one, because
+    such an adapter must read it to authenticate; a harness entitled from Crew's
+    secret vault declares none and keeps its credential leaves masked for its whole
+    process tree. A NARROW set of Crew runtime leaves is excluded for every
+    backend, because an in-sandbox Crew reader needs them and they hold no credential
+    -- :func:`kiro_crew.sandbox.crew_host_runtime_leaves` owns that set, and the
+    governance ceilings and consent records are deliberately NOT in it: they are
+    inputs to an authorization decision, so they stay masked and an in-sandbox
+    resolution fails closed. A gate-artifact leaf is excluded for the ONE backend
+    whose child must execute Crew's launcher there, which is narrower than the set
+    above on purpose: every other child's mask still covers it.
+
+    All three asymmetries are intentional and safe: the floor still blocks the AGENT's
+    file tools from each leaf, so the controls cover different readers rather than
+    cancelling each other.
+
+    ``.ssh`` arrives through the floor and it has a cost: git-over-SSH inside such
+    a session stops working, because the private key is unreadable to the child.
+    That is accepted rather than worked around -- leaving private keys readable would
+    not close what this exists to close, and a harness landing new has no
+    established workflow to break.
+
+    Empty for a harness this core does not enforce, so the first-class path and
+    every unenforced harness keep byte-identical sandbox arguments. Returns
+    ABSOLUTE paths: ``sandbox.wrap_argv`` runs ``os.path.abspath`` over what it is
+    handed, which would resolve a bare ``.aws`` against the CWD and silently deny
+    nothing. File leaves are fine to pass -- the Linux launcher classifies each
+    entry with its own ``isfile``/``isdir``, and the macOS profile emits both a
+    ``subpath`` and a ``literal`` deny for each one, so a plain file is covered
+    without depending on how Seatbelt treats a subpath over a non-directory.
+    """
+    if not is_enforced(backend):
+        return ()
+    # Imported here rather than at module scope: this is a LEAF that
+    # ``acp/client.py`` imports at import time, and security.py is a large module
+    # whose cost belongs on the one call that needs it. ``sandbox`` is deferred for
+    # the same reason -- and because it already is, one call below, for
+    # ``credential_mask_applies``.
+    from kiro_crew.sandbox import crew_host_runtime_leaves
+    from kiro_crew.security import crew_home_prefixes, sandbox_credential_targets
+
+    # Delegated rather than projected under ``Path.home()`` here: a credential the
+    # operator relocated with ``KIROCREW_HOME`` / ``CLAUDE_CONFIG_DIR`` /
+    # ``CLAUDE_HOME`` does NOT live under the real home, so a home-only projection
+    # would hand the sandbox a path that denies nothing while the live secret stayed
+    # readable. ``sandbox_credential_targets`` owns the same anchor rules as the read
+    # gate, so this mask cannot drift from the floor it compensates for.
+    #
+    # The credential store's leaves are already floor-spelled. The other two sets are
+    # spelled CREW-HOME-RELATIVE and gain each data-home prefix HERE, through the same
+    # ``crew_home_prefixes`` the floor projects its own entries with -- writing either
+    # product out at its source would be the hand-maintained spelling list this
+    # function exists to avoid, and a third data-home spelling would be covered by the
+    # floor and missed here.
+    prefixes = crew_home_prefixes()
+    host_runtime = {
+        f"{prefix}/{leaf}" for prefix in prefixes for leaf in crew_host_runtime_leaves()
+    }
+    # Per BACKEND, and deliberately not folded into the set above: only a harness
+    # whose child loads Crew's own gate artifacts needs this leaf, so every other child
+    # keeps it masked. That is a narrower grant than the shared set can express.
+    #
+    # Keyed on the ROUTING rather than on one backend id, because the leaf's users are
+    # exactly the harnesses that have no gate of their own and therefore run one Crew
+    # seals for them. pi execs a launcher from here; the DeepSeek Harness loads a
+    # sealed plugin and its per-launch patch from here (its load marker is written
+    # elsewhere -- into the probe's private scratch window -- because this leaf is
+    # sealed read-only against the child). A future harness that reaches
+    # ``VERIFIED_GATE_EXTENSION`` needs the same grant on the same grounds, and keying
+    # on the id would mask its artifacts from the one child that must read them --
+    # which surfaces as every session of that harness being refused for a gate that
+    # did load.
+    gate_artifacts = (
+        {f"{prefix}/{PI_GATE_ARTIFACT_LEAF}" for prefix in prefixes}
+        if routing_for(backend) is Routing.VERIFIED_GATE_EXTENSION
+        else set()
+    )
+    excluded_leaves = tuple(
+        sorted(set(ADAPTER_OWN_CREDENTIAL_LEAVES.get(backend, ())) | host_runtime | gate_artifacts)
+    )
+    return sandbox_credential_targets(excluded_leaves)
+
+
+def adapter_expose_files(backend: str, hidden: tuple) -> tuple:
+    """Absolute files to re-expose READ-ONLY inside *backend*'s masked dirs.
+
+    The companion to :func:`adapter_hidden_credential_dirs`: that mask hides a
+    whole credential directory, and this names the one file inside it the
+    adapter must still read to authenticate. Both sandbox backends carry the
+    primitive -- the Linux launcher restores a 0444 copy into the empty bind
+    mount, the Seatbelt profile carves a ``require-not (literal ...)`` out of
+    the subpath deny -- so the posture is the same on every platform:
+    ``~/.aws/config`` readable, ``~/.aws/credentials`` and the SSO cache not.
+
+    *hidden* is the mask :func:`adapter_hidden_credential_dirs` already resolved
+    for this spawn, and it is REQUIRED rather than defaulted. Resolving it here
+    instead would reach ``_realpath_or_none`` -- a filesystem read, and on Windows a
+    directory open -- from whatever thread called this, and the ONE production caller
+    runs on the event loop: a stalled home mount would freeze the gateway rather than
+    just this spawn. A default parameter would leave that failure one forgotten
+    argument away, so the type system asks for the resolved mask instead.
+
+    Empty for a harness this core does not enforce, so the first-class path and
+    every unenforced harness keep byte-identical sandbox arguments.
+    """
+    if not is_enforced(backend):
+        return ()
+    # CONTAINED, not trusted. A re-exposure is the one thing this table can ask for
+    # that OPENS a path, and the mask is what makes it a narrowing: a leaf that sits
+    # under nothing the mask hides is not a carve-out, it is a fresh hole in the
+    # read-gate floor -- a private key named here would be handed to the child
+    # read-only. Checked against *hidden*, the mask actually being applied to this
+    # spawn, and a leaf that fails is DROPPED rather than honoured: losing a
+    # re-exposure fails a session closed with a nameable error, while honouring one
+    # exposes a file silently.
+    home = os.path.expanduser("~")
+    exposed = []
+    for leaf in ADAPTER_EXPOSED_CREDENTIAL_LEAVES.get(backend, ()):
+        full = os.path.join(home, *PurePosixPath(leaf).parts)
+        if _sits_under_any(full, hidden):
+            exposed.append(full)
+        else:
+            logger.warning(
+                "refusing to re-expose %r for %s: it sits under no directory this "
+                "mask hides, so exposing it would widen the read-gate floor rather "
+                "than carve an exception out of the mask",
+                leaf,
+                label_for(backend),
+            )
+    return tuple(exposed)
+
+
+def _sits_under_any(path: str, roots: tuple) -> bool:
+    """Whether *path* is inside one of *roots*.
+
+    Prefix comparison on normcased paths with a separator appended, NOT
+    ``str.startswith`` on the bare root: ``~/.awsconfig`` starts with ``~/.aws``
+    and is a different file, so the bare form would report a sibling as contained
+    and re-expose it. ``normcase`` because the check has to hold on the two
+    platforms whose filesystems are case-insensitive, where a declaration spelled
+    in the other case names the same file.
+
+    A root that is itself a FILE cannot contain anything, and needs no special
+    case: the mask hides both files and directories, and a file's path plus a
+    trailing separator is a prefix of nothing, so the comparison answers False
+    for it on its own.
+    """
+    target = os.path.normcase(os.path.abspath(path))
+    for root in roots:
+        if not os.path.isabs(root):
+            continue
+        prefix = os.path.normcase(os.path.abspath(root)).rstrip(os.sep) + os.sep
+        if target.startswith(prefix):
+            return True
+    return False
+
+
+def enforce_sandbox_floor(backend: str, mode: str) -> None:
+    """Refuse an enforced adapter whose credential mask would never be applied.
+
+    :func:`adapter_hidden_credential_dirs` is the COMPENSATING control for a
+    harness that self-approves its own tool calls: ACP v1 cannot force a prompt for
+    a passive read, so that mask is the only thing between the child and the
+    credential homes the standard tier deliberately leaves open for kiro-cli's
+    sake. ``wrap_argv`` returns from its ``mode == "off"`` branch BEFORE it applies
+    ``extra_hidden_dirs``, so in that configuration the mask silently evaporates and
+    this adapter becomes strictly WEAKER than the gate-routed harnesses beside it --
+    whose reads still reach the PreToolUse gate under the very same setting. The
+    route's security argument assumes an OS boundary; this makes the assumption
+    explicit instead of letting it fail open.
+
+    Keyed on the EFFECTIVE tier, not the configured one: a governed host whose
+    ``sandbox.min_level`` floor raises ``"off"`` still gets the mask, and must not
+    be refused over a config value the ceiling already overrode.
+
+    Returns for a harness this core does not enforce, so the first-class path and
+    every unenforced harness reach the spawn unchanged.
+
+    Native Windows has no Crew OS sandbox backend that can apply the mask, so the
+    refusal there names that limitation and points at Kiro CLI rather than at
+    ``agent.sandbox``: changing the configured tier cannot enable a backend this
+    host does not have. The generic set-standard-or-strict remedy is kept for
+    hosts where a backend can exist. Neither message consults
+    ``sandbox_allow_unsandboxed_exec``.
+    """
+    if not is_enforced(backend):
+        return
+    # Local import for the same reason as the mask builder: this is a leaf that
+    # ``acp/client.py`` imports at import time.
+    from kiro_crew.sandbox import credential_mask_applies
+
+    # Ask whether the mask WILL BE APPLIED, never whether one particular tier is
+    # selected. An earlier revision tested ``effective_sandbox_mode(mode) != "off"``
+    # and so covered only one of the two paths that hand back an unwrapped child: a
+    # host with no sandbox backend and ``sandbox_allow_unsandboxed_exec`` opted in
+    # resolves to a non-``off`` tier, passed the guard, and still spawned the adapter
+    # with its credential mask dropped.
+    if credential_mask_applies(mode):
+        return
+    # Platform copy only: the verdict above already decided the session cannot
+    # start. Recommending standard/strict is advice that cannot succeed on native
+    # Windows, where Crew has no OS sandbox backend to apply the mask.
+    if platform_compat.IS_WINDOWS:
+        raise ToolGateUnroutable(
+            "{} cannot run on native Windows because Kiro Crew has no supported OS "
+            "sandbox backend here to protect credential files; changing agent.sandbox "
+            "cannot enable it. Select Kiro CLI in Settings → Agent Backend and start "
+            "a new session.".format(label_for(backend))
+        )
+    raise ToolGateUnroutable(
+        "{} routes tool calls through an enforced permission route whose "
+        "compensating control is an OS-level credential mask, but this session would "
+        "spawn it unsandboxed -- either agent.sandbox is 'off', or no sandbox backend "
+        "is available and agent.sandbox_allow_unsandboxed_exec is set -- so the mask "
+        "is never applied and the adapter's credential reads are unfenced. Set "
+        "agent.sandbox to 'standard' or 'strict' ON A HOST WITH A WORKING BACKEND to "
+        "select this harness, or select a harness whose tool calls reach the gate "
+        "directly.".format(label_for(backend))
+    )
+
+
+def label_for(backend: str) -> str:
+    """An operator-facing name for *backend*, falling back to the raw id."""
+    return _LABELS.get(backend) or (backend or "Kiro CLI")
+
+
+def routing_verdict(backend: str) -> tuple:
+    """Report how *backend* routes tool calls, and why.
+
+    Dispatches on the routing MECHANISM rather than the harness id, so a harness
+    declaring an already-implemented mechanism needs no change here.
+
+    Read-only and side-effect free: this is what a doctor row or a dashboard GET
+    calls, and a probe that wrote a settings file would create one on every
+    Settings page load.
+    """
+    routing = routing_for(backend)
+
+    if routing is Routing.AGENT_SPEC:
+        # kiro-cli and KAS are made to ask because the spawn names an agent, so
+        # the precondition holds by construction and there is nothing to probe.
+        return (Verdict.ROUTED, "the spawn names an agent")
+
+    if routing is Routing.SESSION_CONFIG:
+        option_id, value = permission_config_for(backend)
+        if not option_id or not value:
+            # A harness declaring the mechanism without naming its option is a
+            # registration bug, and it must not read as routed.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares session-config routing but names no config option",
+            )
+        # ROUTED on a PROMISE, not a probe: the option lives on a session that
+        # does not exist yet, so there is nothing on disk to read. The other half
+        # of the guarantee is ``session_config_issue`` + the apply, which MUST run
+        # after session/new and before the first prompt. Port this verdict without
+        # that caller and the harness reports routed while running its own default
+        # mode -- the one silent-bypass hole in this design.
+        return (
+            Verdict.ROUTED,
+            f"the client enforces {option_id}={value} before the first prompt",
+        )
+
+    if routing is Routing.VERIFIED_SEEDED_SETTINGS:
+        setting_key, value = permission_setting_for(backend)
+        if not setting_key or not value:
+            # Same registration bug as the branch above, and it must not read as
+            # routed: there would be nothing to write and nothing to read back.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares verified seeded-settings routing but names no setting",
+            )
+        # ROUTED on a PROMISE, like the branch above, because the session it would be
+        # read out of does not exist yet. What makes this member different from
+        # SEEDED_SETTINGS is that the promise is CHECKED: the other half is
+        # ``seeded_setting_issue`` fed the value the harness ITSELF resolved, which
+        # MUST run after the seed and before the first prompt. Port this verdict
+        # without that caller and the harness reports routed while running its own
+        # permissive default.
+        return (
+            Verdict.ROUTED,
+            f"the client supplies {setting_key}={value} to the session and reads the "
+            "harness's own resolved configuration back before the first prompt",
+        )
+
+    if routing is Routing.VERIFIED_GATE_EXTENSION:
+        probe = gate_probe_command_for(backend)
+        if not probe:
+            # Registration bug, same class as the two above: nothing to look for in
+            # the read-back means nothing that could fail it.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares gate-extension routing but names no probe command",
+            )
+        readback = gate_readback_for(backend)
+        if readback is None:
+            # Same class again, one field over: a harness whose read-back STYLE is
+            # unknown has no check the driver could run, so it must not read ROUTED.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares gate-extension routing but names no read-back",
+            )
+        # ROUTED on a PROMISE, like its two siblings: the harness process the
+        # extension would load into does not exist yet. The CHECK is
+        # ``gate_extension_issue`` or ``gate_marker_issue`` -- whichever this
+        # harness's read-back names -- fed the harness's own answer, which MUST run
+        # after the harness is told the extension path and before the first prompt.
+        # Port this verdict without that caller and the harness reports routed while
+        # running every tool call unasked.
+        where = (
+            f"the harness's own command registry back for {probe!r}"
+            if readback is Readback.COMMAND_REGISTRY
+            else f"the gate's own load marker back for {probe!r} under this session's nonce"
+        )
+        return (
+            Verdict.ROUTED,
+            f"the client loads Kiro Crew's gate extension into the harness and reads "
+            f"{where} before the first prompt",
+        )
+
+    if routing is Routing.SEEDED_SETTINGS:
+        # Declared, not enforced here -- and the gap is the READ-BACK, not a missing
+        # writer. ``_write_claude_local_settings`` does seed the mode, but only into
+        # the file Crew owns (created this session, bytes still Crew's) and declines
+        # otherwise, and nothing confirms the adapter honoured it, so a
+        # ``bypassPermissions`` already in the user's own settings is neither
+        # detected nor stripped. Told truthfully rather than upgraded to ROUTED;
+        # whether it REFUSES is a separate decision, and SEEDED_SETTINGS is outside
+        # ENFORCED_ROUTINGS.
+        return (
+            Verdict.INDETERMINATE,
+            "this core seeds the harness's permission settings only into a file it "
+            "owns, and nothing reads back whether they took effect",
+        )
+
+    return (
+        Verdict.INDETERMINATE,
+        "Kiro Crew has not established how this harness routes tool calls",
+    )
+
+
+def is_enforced(backend: str) -> bool:
+    """Whether a non-ROUTED verdict for *backend* refuses the session."""
+    return routing_for(backend) in ENFORCED_ROUTINGS
+
+
+def remediation_for(backend: str) -> str:
+    """The concrete change an operator can make, or ``""`` when there is none."""
+    routing = routing_for(backend)
+    if routing is Routing.VERIFIED_SEEDED_SETTINGS:
+        setting_key, value = permission_setting_for(backend)
+        if setting_key and value:
+            # Names a config source that OUTRANKS Crew's own seed, because that is the
+            # only kind an operator can act on: the seed already carries the required
+            # value, so a refusal means something above it resolved to something else.
+            # Telling them to edit the project file would be advice that cannot clear
+            # the refusal, since the seed already outranks that file.
+            return (
+                f"{label_for(backend)} resolved {setting_key} to something other than "
+                f"{value!r} even with Kiro Crew's own setting supplied, so a "
+                f"higher-precedence config source is overriding it. Remove that "
+                f"override to select this harness."
+            )
+        return ""
+    if routing is Routing.SESSION_CONFIG:
+        option_id, value = permission_config_for(backend)
+        if option_id and value:
+            return (
+                f"Install a {label_for(backend)} adapter that advertises ACP session "
+                f"config option {option_id!r} with value {value!r}."
+            )
+    if routing is Routing.VERIFIED_GATE_EXTENSION:
+        probe = gate_probe_command_for(backend)
+        if probe:
+            # The only thing an operator can act on: the harness either did not
+            # start with the extension Kiro Crew passed, or loaded the probe name
+            # from somewhere other than Kiro Crew's own file. Both point
+            # at the harness install or at an extension of the operator's that
+            # shadows the probe name. The noun differs per read-back style because
+            # what the operator would go and look at differs.
+            noun = (
+                "registers a command"
+                if gate_readback_for(backend) is Readback.COMMAND_REGISTRY
+                else "composes a plugin"
+            )
+            return (
+                f"{label_for(backend)} did not report Kiro Crew's gate extension as "
+                f"loaded from Kiro Crew's own file. Make sure the harness accepts an "
+                f"extension on its command line, and that nothing of your own "
+                f"{noun} named {probe!r}."
+            )
+    return ""
+
+
+def session_config_issue(backend: str, config_options: object) -> str:
+    """Why *backend*'s required permission config cannot be applied.
+
+    ``""`` means the exact option AND value were advertised by ``session/new``.
+
+    Permission routing is stricter than optional model or effort configuration: a
+    missing option cannot be shrugged off as lazy advertising, because the first
+    prompt would then run ungated.
+    """
+    if routing_for(backend) is not Routing.SESSION_CONFIG:
+        return ""
+    option_id, required = permission_config_for(backend)
+    if not option_id or not required:
+        return "the harness declares session-config routing but names no config option"
+    if not isinstance(config_options, list):
+        return "session/new did not advertise configOptions"
+    for option in config_options:
+        if not isinstance(option, dict) or option.get("id") != option_id:
+            continue
+        raw_values = option.get("options")
+        if not isinstance(raw_values, list):
+            return f"config option {option_id!r} has no values"
+        values = {
+            entry.get("value")
+            for entry in raw_values
+            if isinstance(entry, dict) and isinstance(entry.get("value"), str)
+        }
+        if required in values:
+            return ""
+        return f"config option {option_id!r} does not advertise required value {required!r}"
+    return f"session/new did not advertise config option {option_id!r}"
+
+
+def seeded_setting_issue(backend: str, observed: object) -> str:
+    """Why *backend*'s seeded permission setting is not in force, from what was read back.
+
+    ``""`` means the value read off disk after the seed is the required one.
+
+    *observed* is what the harness's OWN RESOLVED configuration carried when it was
+    read back -- ``None`` when the setting was absent from it. Taking it as an argument rather than reading the file
+    here is what keeps this module a leaf: the driver owns the disk, and this owns
+    the decision, so the refusal text and the doctor row cannot disagree about what
+    counts as routed.
+
+    A value the operator chose themselves is an ISSUE, not an override to honour.
+    A harness on this mechanism asks per tool call only while the setting holds the
+    required value, so a permissive one means the PreToolUse gate never runs. Note
+    what is NOT done about it: no config of theirs is rewritten. Crew's setting is
+    supplied alongside, and the harness's own precedence decides -- so a refusal here
+    means something outranked that setting, not that Crew declined to edit a file.
+    """
+    if routing_for(backend) is not Routing.VERIFIED_SEEDED_SETTINGS:
+        return ""
+    setting_key, required = permission_setting_for(backend)
+    if not setting_key or not required:
+        return "the harness declares verified seeded-settings routing but names no setting"
+    if observed is None:
+        return (
+            f"the harness's own resolved configuration does not carry {setting_key!r} "
+            "after the seed"
+        )
+    if observed != required:
+        return (
+            f"{setting_key!r} reads {observed!r} rather than the required {required!r}, "
+            "so privileged tools would not ask"
+        )
+    return ""
+
+
+def gate_extension_issue(backend: str, observed_commands: object, extension_path: str) -> str:
+    """Why *backend*'s gate extension is not loaded, from the harness's own command list.
+
+    ``""`` means the harness reported Kiro Crew's probe command, sourced from
+    *extension_path* -- the file Kiro Crew shipped and named on the command line.
+
+    *observed_commands* is what the harness's OWN command registry returned when
+    asked: a list of entries, each carrying a ``name`` and, for an extension
+    command, a ``sourceInfo`` whose ``path`` is the file it loaded from. Taken as
+    an argument rather than fetched here for the same reason
+    :func:`seeded_setting_issue` takes its observation: the driver owns the
+    process, this owns the decision, so the refusal and the doctor row agree.
+
+    Matching the NAME alone is not enough and the reason is not hypothetical: the
+    harness loads extensions from the operator's own directories too, and an
+    operator extension that happens to register the probe name would make an
+    absent gate read as present. So the source path is required to be Kiro
+    Crew's file. Anything short of that -- name absent, name present from another
+    file, an unparseable registry -- refuses.
+    """
+    if routing_for(backend) is not Routing.VERIFIED_GATE_EXTENSION:
+        return ""
+    probe = gate_probe_command_for(backend)
+    if not probe:
+        return "the harness declares gate-extension routing but names no probe command"
+    if not isinstance(observed_commands, list):
+        return "the harness's command registry could not be read"
+    sources: list = []
+    for entry in observed_commands:
+        if not isinstance(entry, dict) or entry.get("name") != probe:
+            continue
+        info = entry.get("sourceInfo")
+        sources.append(info.get("path") if isinstance(info, dict) else None)
+    if not sources:
+        return (
+            f"the harness's command registry does not list {probe!r}, so Kiro Crew's "
+            "gate extension did not load and tools would run unasked"
+        )
+    if extension_path not in sources:
+        return (
+            f"the harness lists {probe!r} but from a file that is not Kiro Crew's "
+            "gate extension, so the gate that would ask is not the one shipped here"
+        )
+    return ""
+
+
+def gate_marker_issue(
+    backend: str,
+    marker: object,
+    extension_path: str,
+    nonce: str,
+    *,
+    child_scrub_names: Sequence[str] = (),
+) -> str:
+    """Why *backend*'s gate plugin is not loaded, from the marker it writes on load.
+
+    ``""`` means the marker is the one Kiro Crew's own plugin wrote in THIS
+    session, from the file Kiro Crew shipped and named in the per-launch patch.
+
+    The :data:`~kiro_crew.agent_sdk.backends.Readback.LOAD_MARKER` half of
+    :func:`gate_extension_issue`, for a harness that publishes no registry to ask.
+    *marker* is the parsed JSON object the plugin wrote; *extension_path* is the
+    sealed file the patch named, already brought to the same spelling the plugin
+    reports; *nonce* is the per-session value Kiro Crew put in the child's
+    environment. Taken as arguments rather than read here for the reason its
+    sibling gives: the driver owns the process, this owns the decision.
+
+    The identity fields and ``approval`` snapshot are required together and none
+    is redundant. ``plugin`` is the probe name, so a marker some other tool happens
+    to leave at the path is not this one. ``nonce`` is what a STALE marker cannot
+    have -- a file left by an earlier session, or planted before the spawn, carries
+    a nonce this session never issued, and without this check a gate that failed to
+    load would read as loaded. ``module`` is what a DIFFERENT gate cannot have: the
+    operator's own configuration can compose plugins too, and one that wrote this
+    marker shape from another file would otherwise pass.
+
+    DeepSeek's snapshot closes the other replaceable hops. ``answerers`` must be
+    exactly the stock ACP bridge's root-bus listener, identified by Cordis's owning
+    loader entry and plugin runtime, and the composed approval policy must be
+    ``ask``. ``tools.mode`` -- the presentation the tools service actually
+    composed -- must be ``native``, because under ``ptc`` or ``both`` the model
+    reaches Node's own APIs through one ``run_code`` call the gate cannot read
+    inside; the per-launch patch pins it, and this is what makes the pin a verified
+    property rather than a bet on overlay precedence. And ``child_env`` must be a
+    clean PROOF, taken on a child the plugin spawned through the harness's own
+    subprocess service, that every name in *child_scrub_names* -- the
+    ``agent.deepseek_env`` names whose values arrive from Crew's vault -- was
+    withheld from that child: the set the plugin checked must be exactly the set
+    Crew configured (a plugin that checked nothing, or something else, vouches for
+    nothing), every name must have been SET in the harness's own environment
+    (an unset canary observes nothing), none may have reached the child, and the
+    child must have run. A missing or malformed private Cordis shape refuses rather
+    than treating an unverified route as intact.
+    """
+    if routing_for(backend) is not Routing.VERIFIED_GATE_EXTENSION:
+        return ""
+    probe = gate_probe_command_for(backend)
+    if not probe:
+        return "the harness declares gate-extension routing but names no probe command"
+    if not nonce:
+        # A session with no nonce cannot tell this session's marker from an older
+        # one, so there is nothing to verify AGAINST. Refuses rather than accepting
+        # an unkeyed marker.
+        return "this session issued no gate nonce, so a load marker cannot be attributed to it"
+    if not isinstance(marker, dict):
+        return "the gate's load marker is missing or could not be read"
+    if marker.get("plugin") != probe:
+        return (
+            f"the gate's load marker does not name {probe!r}, so Kiro Crew's gate "
+            "plugin did not load and tools would run unasked"
+        )
+    if marker.get("nonce") != nonce:
+        return (
+            f"the gate's load marker for {probe!r} carries another session's nonce, so "
+            "nothing confirms the gate loaded into THIS session"
+        )
+    if marker.get("module") != extension_path:
+        return (
+            f"the harness reports {probe!r} from a file that is not Kiro Crew's gate "
+            "plugin, so the gate that would ask is not the one shipped here"
+        )
+    if backend == ACP_BACKEND_DEEPSEEK:
+        approval = marker.get("approval")
+        if not isinstance(approval, dict):
+            return "the gate's load marker has no well-formed approval-routing snapshot"
+        if approval.get("policy") != _DEEPSEEK_APPROVAL_POLICY:
+            return (
+                "the gate's load marker does not report the required approval policy, "
+                "so the ACP bridge is not confirmed as reachable"
+            )
+        answerers = approval.get("answerers")
+        if not isinstance(answerers, list):
+            return "the gate's load marker has a missing or malformed approval answerer set"
+        if len(answerers) != 1:
+            return (
+                "the gate's load marker does not name exactly the DeepSeek Harness ACP "
+                "bridge as the approval answerer, so another plugin can own the decision"
+            )
+        answerer = answerers[0]
+        if (
+            not isinstance(answerer, dict)
+            or set(answerer) != _DEEPSEEK_APPROVAL_ANSWERER_KEYS
+            or not isinstance(answerer.get("entry"), str)
+            or not answerer["entry"]
+            or not isinstance(answerer.get("module"), str)
+            or not isinstance(answerer.get("plugin"), str)
+        ):
+            return "the gate's load marker carries a malformed approval answerer identity"
+        if (
+            answerer["module"] != _DEEPSEEK_APPROVAL_MODULE
+            or answerer["plugin"] != _DEEPSEEK_APPROVAL_PLUGIN
+        ):
+            return (
+                "the gate's load marker does not name exactly the DeepSeek Harness ACP "
+                "bridge as the approval answerer, so another plugin can own the decision"
+            )
+        tools = marker.get("tools")
+        if not isinstance(tools, dict) or tools.get("mode") != _DEEPSEEK_TOOLS_MODE:
+            return (
+                "the gate's load marker does not report the composed tool presentation "
+                f"as {_DEEPSEEK_TOOLS_MODE!r}, so the harness would expose a run_code "
+                "transport whose programs reach Node's own APIs around the gate"
+            )
+        return _deepseek_child_env_issue(marker.get("child_env"), child_scrub_names)
+    return ""
+
+
+def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> str:
+    """Why the marker's child-env proof does not clear the vault-fed names, or ``""``.
+
+    *proof* is the plugin's ``child_env`` snapshot; *expected_names* the names Crew
+    asked it to check. Each field is judged for the reason
+    :func:`gate_marker_issue` gives, and the messages name only the operator's own
+    env-var KEYS -- never a vault name and never a value -- so they are safe on the
+    log and in the chat error card.
+    """
+    if not isinstance(proof, dict):
+        return (
+            "the gate's load marker carries no child-environment proof, so nothing "
+            "shows the harness withholds the provider key from the shells it spawns"
+        )
+    names = proof.get("names")
+    parent_missing = proof.get("parent_missing")
+    child_visible = proof.get("child_visible")
+    if (
+        not isinstance(names, list)
+        or not all(isinstance(name, str) for name in names)
+        or not isinstance(parent_missing, list)
+        or not all(isinstance(name, str) for name in parent_missing)
+        or not isinstance(child_visible, list)
+        or not all(isinstance(name, str) for name in child_visible)
+    ):
+        return (
+            "the gate's load marker carries a malformed child-environment proof, so "
+            "nothing shows the harness withholds the provider key from the shells it spawns"
+        )
+    error = proof.get("error")
+    if error is not None:
+        return (
+            "the gate could not run its child-environment check "
+            f"({str(error)[:200]!r}), so nothing shows the harness withholds the provider "
+            "key from the shells it spawns"
+        )
+    expected = sorted(set(expected_names))
+    if sorted(set(names)) != expected:
+        return (
+            f"the gate's child-environment proof covers {sorted(set(names))!r} rather than "
+            f"the configured agent.deepseek_env names {expected!r}, so it does not vouch "
+            "for the key this session would inject"
+        )
+    if parent_missing:
+        return (
+            f"the gate's child-environment check never saw {sorted(parent_missing)!r} in "
+            "the harness's own environment, so it could not observe whether the harness "
+            "withholds them from its shells"
+        )
+    if child_visible:
+        return (
+            f"the harness forwarded {sorted(child_visible)!r} into a child it spawned, so "
+            "the provider key would be readable from every shell the model runs; this "
+            "harness release no longer withholds credential-shaped names from its children"
+        )
+    return ""
+
+
+def enforce_runtime_routing(
+    backend: str,
+    reason: str,
+    *,
+    verdict: Verdict = Verdict.BYPASSED,
+    remedy: str = "",
+) -> None:
+    """Act on a routing fact learned after the harness process started.
+
+    Raises :class:`ToolGateUnroutable` before the first prompt can run, or returns
+    for a harness this core does not enforce.
+
+    **There is deliberately no opt-out.** An earlier revision carried
+    ``agent.acp_backend_allow_ungated_tools``, a LOCAL config bool that started the
+    session anyway with a warning and an audit event. That is the precise shape the
+    central governance ceiling exists to forbid: a managed fleet could allow this
+    harness while a standard user's own config switched the compensating control
+    off, breaking POLICY-intersect-PROFILE for the calls the harness self-approves.
+    A security control with a local off-switch is not a control, and such an escape
+    hatch is not needed -- the refusal names the concrete
+    remedy (:func:`remediation_for`), and lowering the sandbox tier remains an
+    operator decision that IS clamped by the ceiling.
+
+    A harness outside :data:`ENFORCED_ROUTINGS` returns unchanged: the verdict is
+    still reported truthfully by :func:`routing_verdict`, but this core does not
+    implement its mechanism and must not refuse a session over a guarantee it
+    never attempted.
+    """
+    if not is_enforced(backend):
+        logger.debug(
+            "tool-gate routing not enforced for %s (%s): %s",
+            label_for(backend),
+            routing_for(backend).value,
+            reason,
+        )
+        return
+
+    suffix = f" {remedy}" if remedy else ""
+    raise ToolGateUnroutable(
+        f"{label_for(backend)} tool calls would not reach Kiro Crew's security gate "
+        f"({reason}), so {UNENFORCED_CONTROLS} would not be consulted for them.{suffix}"
+    )
+
+
+__all__ = [
+    "ADAPTER_EXPOSED_CREDENTIAL_LEAVES",
+    "ADAPTER_OWN_CREDENTIAL_LEAVES",
+    "ENFORCED_ROUTINGS",
+    "UNENFORCED_CONTROLS",
+    "ToolGateUnroutable",
+    "Verdict",
+    "adapter_expose_files",
+    "adapter_hidden_credential_dirs",
+    "enforce_runtime_routing",
+    "enforce_sandbox_floor",
+    "gate_extension_issue",
+    "gate_marker_issue",
+    "is_enforced",
+    "label_for",
+    "remediation_for",
+    "routing_verdict",
+    "seeded_setting_issue",
+    "session_config_issue",
+]
