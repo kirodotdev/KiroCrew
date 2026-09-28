@@ -57,7 +57,7 @@ describe('cron JobForm agent picker — crews and templates in two groups', () =
       expect.stringContaining('Agent templates'),
     ])
     // The template group says what a template pick means for the job.
-    expect(within(templates).getByText(/shared template on shared memory/)).toBeInTheDocument()
+    expect(within(templates).getByText(/default crewmate's workspace and memory/)).toBeInTheDocument()
   })
 
   it('picking a template stores its bare name, exactly as picking a crew does', () => {
@@ -69,7 +69,7 @@ describe('cron JobForm agent picker — crews and templates in two groups', () =
     expect(screen.getByLabelText('Switch agent')).toHaveTextContent('kiro-review')
   })
 
-  it('a stored template name lights the template row, not a same-named crew badge', () => {
+  it('a stored template name lights the template row and the crew keeps its default badge', () => {
     renderWithProviders(
       <JobForm
         job={{ id: 'j1', name: 'review', message: 'review', schedule: '', enabled: true, cron_expr: '0 3 * * *', agent: 'kiro-review' } as CronJob}
@@ -83,6 +83,21 @@ describe('cron JobForm agent picker — crews and templates in two groups', () =
     const [selected] = within(listbox).getAllByRole('option', { selected: true })
     expect(selected).toHaveTextContent('kiro-review')
     // Exactly one default badge, on the crew that holds the default.
+    expect(within(listbox).getAllByText('default')).toHaveLength(1)
+  })
+
+  it('a default that is only reachable as a template carries the default badge', () => {
+    // The roster is folded one row per name, so the badge follows the name
+    // wherever that one row landed — a template-only default is still the
+    // default, and the picker says so.
+    renderWithProviders(
+      <JobForm agents={catalog} defaultAgent="kiro-review" onSaved={() => {}} layout="vertical" />,
+    )
+    const listbox = openList()
+    const templates = within(listbox).getByRole('group', { name: 'Agent templates' })
+    const opt = within(templates).getAllByRole('option').find(o => o.querySelector('.font-mono')?.textContent === 'kiro-review')!
+    expect(opt).toBeDefined()
+    expect(within(opt).getByText('default')).toBeInTheDocument()
     expect(within(listbox).getAllByText('default')).toHaveLength(1)
   })
 

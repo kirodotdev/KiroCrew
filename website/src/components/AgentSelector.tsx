@@ -252,16 +252,17 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
     closeToTrigger,
   })
 
-  // One option row, shared by the flat and grouped renderings. A member and a
-  // template may share a name, so the key carries the kind too (JSON: no
-  // separator a name could contain can collide two rows). The default badge
-  // marks the crew that holds the default, never a template of the same name.
+  // One option row, shared by the flat and grouped renderings. The roster
+  // `useAgents` hands this picker is folded to one row per name (a member wins
+  // over a same-named template), so the name is the key and the default badge
+  // marks the row named as the default — a template-only default carries it
+  // truthfully.
   const renderRow = (a: KiroCrewAgent) => {
     const isCurrent = active === a.name
-    const isDefault = a.name === defaultAgent && a.selection_kind !== 'template'
+    const isDefault = a.name === defaultAgent
     return (
       <Btn
-        key={JSON.stringify([a.selection_kind ?? '', a.name])}
+        key={a.name}
         role="option"
         aria-selected={isCurrent}
         tabIndex={-1}
