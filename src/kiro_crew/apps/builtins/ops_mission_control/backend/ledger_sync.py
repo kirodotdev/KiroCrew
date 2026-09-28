@@ -728,9 +728,14 @@ def resolve_conflict() -> int:
     lock was introduced to fix in ``hygiene``, in a function added afterwards, which is the
     argument for the lock living at the read-modify-write span rather than inside the writer.
     Found in review.
+
+    Reads through ``read_entries_for_update``, so a failed OPEN raises ``OSError`` instead
+    of reading as an empty ledger. The lenient ``read_entries`` answers ``[]`` there, and
+    rewriting from that would truncate the team's shared ledger, which ``push`` then
+    publishes. The error reaches ``sync_safely``, which logs it and skips the sync step.
     """
     with ledger._LedgerLock():
-        entries = ledger.read_entries()
+        entries = ledger.read_entries_for_update()
         ledger._write_all(entries)  # same writer upsert/hygiene use, so format cannot drift
     sel().log_api_access(
         caller="core:ops-mission-control",
