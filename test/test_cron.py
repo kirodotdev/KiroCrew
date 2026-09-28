@@ -380,6 +380,144 @@ class TestCronService:
 
         assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["first"]
 
+    def test_save_fsyncs_the_cron_store_and_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A completed save requests both available durability steps."""
+        import kiro_crew.atomic_write as atomic_write_module
+
+        real_atomic_write = atomic_write_module.atomic_write
+        real_fsync_dir = atomic_write_module.fsync_dir
+        observed: dict[str, object] = {}
+        calls: list[str] = []
+
+        def recording_atomic_write(path: Path, content: str, **kwargs: object) -> None:
+            calls.append("atomic_write")
+            observed.update(kwargs)
+            real_atomic_write(path, content, **kwargs)
+
+        def recording_fsync_dir(path: Path | str, *, best_effort: bool = False) -> None:
+            calls.append("fsync_dir")
+            observed["fsync_dir"] = Path(path)
+            observed["best_effort"] = best_effort
+            real_fsync_dir(path, best_effort=best_effort)
+
+        monkeypatch.setattr(atomic_write_module, "atomic_write", recording_atomic_write)
+        monkeypatch.setattr(atomic_write_module, "fsync_dir", recording_fsync_dir)
+
+        svc = CronService(base_dir=tmp_path)
+        svc.add_job(name="durable", message="m", every_secs=300)
+
+        assert observed["fsync"] is True
+        assert observed["fsync_dir"] == tmp_path
+        assert observed["best_effort"] is True
+        assert calls == ["atomic_write", "fsync_dir"]
+
+    def test_failed_save_reloads_before_the_next_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected in-memory mutation cannot leak into a later save."""
+        import kiro_crew.atomic_write as atomic_write_module
+
+        path = tmp_path / "crons.json"
+        path.write_text('{"version": 2, "jobs": []}', encoding="utf-8")
+        svc = CronService(base_dir=tmp_path)
+        real_atomic_write = atomic_write_module.atomic_write
+        attempts = 0
+
+        def fail_once(write_path: Path, content: str, **kwargs: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("file sync failed")
+            real_atomic_write(write_path, content, **kwargs)
+
+        monkeypatch.setattr(atomic_write_module, "atomic_write", fail_once)
+        with pytest.raises(OSError, match="file sync failed"):
+            svc.add_job(name="rejected", message="m", every_secs=300)
+
+        svc.add_job(name="accepted", message="m", every_secs=300)
+
+        assert attempts == 2
+        assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["accepted"]
+
+    def test_failed_first_save_clears_before_the_next_mutation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected first job cannot land with the next successful job."""
+        import kiro_crew.atomic_write as atomic_write_module
+
+        svc = CronService(base_dir=tmp_path)
+        real_atomic_write = atomic_write_module.atomic_write
+        attempts = 0
+
+        def fail_once(write_path: Path, content: str, **kwargs: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("file sync failed")
+            real_atomic_write(write_path, content, **kwargs)
+
+        monkeypatch.setattr(atomic_write_module, "atomic_write", fail_once)
+        with pytest.raises(OSError, match="file sync failed"):
+            svc.add_job(name="rejected", message="m", every_secs=300)
+        assert not (tmp_path / "crons.json").exists()
+
+        svc.add_job(name="accepted", message="m", every_secs=300)
+
+        assert attempts == 2
+        assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["accepted"]
+
+    def test_tick_defers_while_a_local_store_mutation_holds_the_lock(
+        self, tmp_path: Path
+    ) -> None:
+        """A contended tick must not execute a local uncommitted snapshot."""
+        from kiro_crew.cron import CronStoreBusy
+
+        svc = CronService(base_dir=tmp_path)
+        svc._jobs = [CronJob(id="pending", name="pending", message="m")]
+        svc._local_store_lock_active.set()
+
+        @contextlib.contextmanager
+        def contended_lock(*_args: object, **_kwargs: object):
+            raise CronStoreBusy("local mutation")
+            yield  # pragma: no cover
+
+        svc._file_lock = contended_lock  # type: ignore[method-assign]
+
+        assert svc._tick_scan_locked() == []
+        svc._local_store_lock_active.clear()
+        svc._save_failed = True
+        assert svc._tick_scan_locked() == []
+
+    def test_tick_uses_committed_memory_on_unrelated_storage_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A disk fault alone must not starve every unrelated schedule."""
+        svc = CronService(base_dir=tmp_path)
+        committed = CronJob(id="committed", name="committed", message="m")
+        svc._jobs = [committed]
+
+        @contextlib.contextmanager
+        def broken_lock(*_args: object, **_kwargs: object):
+            raise OSError("disk unavailable")
+            yield  # pragma: no cover
+
+        svc._file_lock = broken_lock  # type: ignore[method-assign]
+
+        assert svc._tick_scan_locked() == [committed]
+        svc._save_failed = True
+        assert svc._tick_scan_locked() == []
+
+    def test_file_lock_marks_only_its_local_hold(self, tmp_path: Path) -> None:
+        """The timer guard spans the local lock body and always clears."""
+        svc = CronService(base_dir=tmp_path)
+
+        assert not svc._local_store_lock_active.is_set()
+        with svc._file_lock():
+            assert svc._local_store_lock_active.is_set()
+        assert not svc._local_store_lock_active.is_set()
+
     def test_a_repaired_store_becomes_writable_again(self, tmp_path: Path) -> None:
         """NC2, third half. The refusal must not latch.
 

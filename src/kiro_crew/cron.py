@@ -2306,6 +2306,13 @@ class CronService:
         # _save consults it so a degraded-to-empty job list is never persisted
         # over a store that still holds records — see _save's refusal.
         self._load_failed: bool = False
+        # A pre-publication save failed after memory changed. The next sync must
+        # replace that rejected snapshot from disk, including when no store exists.
+        # Separate from _load_failed: the store may be perfectly readable or absent.
+        self._save_failed: bool = False
+        # Set only while this process holds the store lock. A timer that times
+        # out behind a local mutation must not snapshot its uncommitted state.
+        self._local_store_lock_active = threading.Event()
         # job id → the claim of the run that occupies the job (see _RunClaim):
         # its trigger and start stamp, the tracked task, the in-flight marker
         # token, the generation, the monotonic start the reaper measures on and
@@ -5803,9 +5810,14 @@ class CronService:
                 self._sync()
                 drained = self._drain_pending_removals_locked()
         except CronStoreBusy:
+            if self._local_store_lock_active.is_set() or self._save_failed:
+                logger.debug("Cron timer tick: uncommitted store mutation, deferring")
+                return []
             logger.debug("Cron timer tick: store busy, using in-memory snapshot")
         except OSError as exc:
-            logger.warning("Cron timer tick: store write failed, using in-memory snapshot: %s", exc)
+            logger.warning("Cron timer tick: store write failed: %s", exc)
+            if self._save_failed:
+                return []
         # Post-lock on purpose: the emit must never extend the store-lock hold
         # (see audit_one_shot_removal). Still on this worker thread, so the
         # queue append cannot block the event loop either.
@@ -6926,7 +6938,11 @@ class CronService:
         """
         self._guard_off_event_loop()
         with cron_store_lock(self._dir, timeout=timeout, poll=poll):
-            yield
+            self._local_store_lock_active.set()
+            try:
+                yield
+            finally:
+                self._local_store_lock_active.clear()
 
     def _record_fingerprint(self) -> None:
         """Snapshot the store file's fingerprint as the last-loaded state.
@@ -7044,9 +7060,10 @@ class CronService:
             # this is the ordinary no-store path, where the reaper's in-memory
             # mutation is still waiting to be saved and wiping it would lose the
             # update (test_cron_reaper's test_reaper_persists_state).
-            if self._load_failed:
+            if self._load_failed or self._save_failed:
                 self._jobs = []
             self._load_failed = False
+            self._save_failed = False
             return
         try:
             raw = self._path.read_bytes()
@@ -7091,6 +7108,7 @@ class CronService:
         and a store repaired between two loads heals itself.
         """
         self._load_failed = False
+        self._save_failed = False
         if not self._path.exists():
             self._jobs = []
             self._reset_fingerprint()
@@ -7367,11 +7385,20 @@ class CronService:
                 for j in self._jobs
             ],
         }
-        # Atomic write: unique tmp → rename
+        # Atomic write: unique tmp → rename, then publish the directory entry.
         # Deferred import to avoid circular dependency (pre-existing)
-        from kiro_crew.atomic_write import atomic_write
+        from kiro_crew.atomic_write import atomic_write, fsync_dir
 
-        atomic_write(self._path, json.dumps(data, indent=2))
+        try:
+            atomic_write(self._path, json.dumps(data, indent=2), fsync=True)
+        except BaseException:
+            # The in-memory mutation preceded its failed write. Force the next
+            # locked mutation to reload the authoritative disk state first.
+            self._reset_fingerprint()
+            self._save_failed = True
+            raise
+        fsync_dir(self._path.parent, best_effort=True)
+        self._save_failed = False
         # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
         # our own write and does not reload it back over the in-memory state.
         self._record_fingerprint()
