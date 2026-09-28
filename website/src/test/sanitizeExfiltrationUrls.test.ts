@@ -186,12 +186,12 @@ describe('sanitizeExfiltrationUrls: both spellings of a prose body are redacted'
   })
 
   it('redacts the `%20` spelling on length once the base64 run is broken', () => {
-    // The other side of the boundary: no 40+ char run in `[A-Za-z0-9+/=]`, so this
-    // one is caught by aggregate query length alone. Asserting both properties
-    // keeps it from passing for the wrong reason if the fixture ever changes.
+    // The other side of the boundary: no 40+ char base64 run, so this one is
+    // caught by aggregate query length alone. Asserting both properties keeps it
+    // from passing for the wrong reason if the fixture ever changes.
     const query = ISSUE_URL.slice(ISSUE_URL.indexOf('?') + 1)
     expect(query.length).toBeGreaterThanOrEqual(200)
-    expect(/[A-Za-z0-9+/=]{40,}/.test(query)).toBe(false)
+    expect(/[A-Za-z0-9+/]{40,}={0,2}/.test(query)).toBe(false)
     expectRedacted(ISSUE_URL)
   })
 })

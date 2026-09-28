@@ -181,7 +181,14 @@ const EXFIL_CREDENTIAL_RE = new RegExp(
 // or splitting the query on `+` before testing — let an attacker `+`-chunk a 40+
 // char secret straight past it. A false positive on prose costs a placeholder; a
 // chunking bypass costs the payload.
-const EXFIL_B64_RE = /[A-Za-z0-9+/=]{40,}/i
+//
+// `=` is different: it counts only as trailing padding, never as a joiner, so a
+// parameter name, its `=` and a short value (`trainingId=` plus a 32-char ID) do
+// not fuse into one 40-char run. That opens no chunking channel `&`, `.`, `-` and
+// `_` do not already provide, and the aggregate length signal still bounds the
+// query. Padding still counts toward the 40 chars (38 plus `==`, 39 plus `=`),
+// so a minimum-length encoded payload is caught. Same spelling as the backend.
+const EXFIL_B64_RE = /[A-Za-z0-9+/]{40,}={0,2}|[A-Za-z0-9+/]{39}=|[A-Za-z0-9+/]{38}==/i
 
 // Aggregate query LENGTH is the one signal that names no shape at all: it fires on
 // any richly-parameterised URL, which is why prefilled issue links —
