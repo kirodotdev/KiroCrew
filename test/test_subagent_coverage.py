@@ -2233,12 +2233,13 @@ class TestAnnounceDigestFlush:
         mark.assert_not_called()
         assert [d.agent_id for d in info._digest_settle_deliveries] == ["m1"]
 
-    def test_settle_swallows_tombstone_failure(self) -> None:
+    @pytest.mark.asyncio
+    async def test_settle_swallows_tombstone_failure(self) -> None:
         mgr = _manager()
         info = _info()
         info._digest_settle_deliveries = [SubagentDelivery("m1", 1.0, 0.1)]
         with patch.object(sa, "mark_delivered", side_effect=OSError):
-            mgr._settle_digest_holds(info)
+            await mgr._settle_digest_holds(info)
         assert info._digest_settle_deliveries == []
 
 
