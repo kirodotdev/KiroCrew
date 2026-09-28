@@ -110,6 +110,12 @@ const tintField = () => {
 }
 const SHELL_PATH = 'dashboard.terminal.shell'
 
+// Tint lives on the View item, the shell field on Terminal; the optimistic
+// overlay is panel-level, so a save started on one item stays in flight while
+// the rail switches to the other.
+const renderAt = (sub: string) =>
+  renderWithProviders(<DisplayPanel />, { route: `/settings?tab=display&sub=${sub}` })
+
 function seed(shell: string, tint: number) {
   kirocrewConfigMock.mockImplementation(() =>
     Promise.resolve({ dashboard: { terminal: { shell }, recent_tint_count: tint } }),
@@ -134,23 +140,27 @@ describe('DisplayPanel — concurrent tint/shell optimistic saves', () => {
 
   it("a failed tint save does not revert an in-flight shell save's display", async () => {
     const held = deferPatchesByPath()
-    renderWithProviders(<DisplayPanel />)
-    const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
-    await waitFor(() => expect(input.value).toBe('/bin/bash'))
+    renderAt('sidebar')
+    await waitFor(() => expect(tintField().getByText('3')).toBeInTheDocument())
 
     // Tint save starts FIRST — the direction where a whole-object snapshot
     // captures the pre-shell state that a later rollback would restore.
     fireEvent.click(tintField().getByLabelText('Increase'))
     await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(TINT_PATH, 4))
 
+    // Switch to the Terminal item; the held tint PATCH stays in flight because
+    // the mutation and its overlay live on the panel, not the unmounted row.
+    fireEvent.click(screen.getByRole('option', { name: 'Terminal' }))
+    const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
+    await waitFor(() => expect(input.value).toBe('/bin/bash'))
+
     // Shell save starts while the tint PATCH is still in flight.
     fireEvent.change(input, { target: { value: '/usr/bin/fish' } })
     fireEvent.blur(input)
     await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(SHELL_PATH, '/usr/bin/fish'))
 
-    // The tint save FAILS. Only the tint display may roll back.
+    // The tint save FAILS. The in-flight shell display must not roll back.
     held[TINT_PATH].reject(new Error('boom'))
-    await waitFor(() => expect(tintField().getByText('3')).toBeInTheDocument())
 
     // The shell save succeeds; the server now reports the new shell. Hold the
     // settle-time refetch open: this is exactly the window where the old
@@ -167,12 +177,15 @@ describe('DisplayPanel — concurrent tint/shell optimistic saves', () => {
     releaseRefetch({ dashboard: { terminal: { shell: '/usr/bin/fish' }, recent_tint_count: 3 } })
     // …and the value survives the refetch too.
     await waitFor(() => expect(input.value).toBe('/usr/bin/fish'))
+
+    // Back on Sidebar Colors, the failed tint has rolled its own display back to 3.
+    fireEvent.click(screen.getByRole('option', { name: 'Sidebar Colors' }))
+    await waitFor(() => expect(tintField().getByText('3')).toBeInTheDocument())
   })
 
   it('the stepper shows the pending count immediately and stacks rapid clicks on it', async () => {
     const held = deferPatchesByPath()
-    renderWithProviders(<DisplayPanel />)
-    await screen.findByLabelText('Default shell')
+    renderAt('sidebar')
     await waitFor(() => expect(tintField().getByText('3')).toBeInTheDocument())
 
     fireEvent.click(tintField().getByLabelText('Increase'))

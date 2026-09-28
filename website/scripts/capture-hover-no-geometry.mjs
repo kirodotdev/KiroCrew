@@ -450,7 +450,7 @@ const SCENES = [
   },
   {
     name: '06-display-swatch-hovered',
-    url: '/settings/display',
+    url: '/settings/display/sidebar',
     selector: 'button[aria-label="Color 1"]',
     claim: 'a Display colour swatch paints without growing while selected scale remains static',
     genericAffordance: true,

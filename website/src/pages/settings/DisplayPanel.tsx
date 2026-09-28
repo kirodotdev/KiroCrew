@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -7,6 +7,7 @@ import { useTheme } from '../../hooks/useTheme'
 import type { ColorTheme } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
 import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput, SettingsCombobox, SettingsToggle } from '../../components/settings'
+import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
@@ -71,7 +72,7 @@ function StatusIndicator({ label }: { label: string }) {
   )
 }
 
-export function DisplayPanel() {
+export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
@@ -410,8 +411,42 @@ export function DisplayPanel() {
     }
   }
 
+  // The shell field (terminal pane) and the recency-tint stepper (sidebar pane)
+  // are both disabled while this query is not successful. The notice rides the
+  // SubNav banner slot so a failed read explains the greyed control on whichever
+  // pane the rail opens, instead of sitting in one unmounted case.
+  const configBanner = mcQ.isError ? (
+    // No hand-off: this is a config READ failure carrying its own Retry, and
+    // showing it discards nothing — the `shellDraft` and `installValue` drafts
+    // on the panes below stay put, so an ErrorNotice hand-off would only risk
+    // navigating those unsaved values away.
+    <ErrorNotice
+      className="mb-2 animate-rise"
+      message={i18nT('pages.settings.displayPanel.config_load_failed')}
+    />
+  ) : null
+
+  const railItems: SubNavItem[] = [
+    { key: 'view', label: i18nT('pages.settings.displayPanel.view'), icon: <Eye size={16} /> },
+    { key: 'zoom', label: i18nT('pages.settings.displayPanel.zoom_font'), icon: <Type size={16} /> },
+    { key: 'terminal', label: i18nT('pages.settings.displayPanel.terminal'), icon: <SquareTerminal size={16} /> },
+    { key: 'theme', label: i18nT('pages.settings.displayPanel.theme'), icon: <Palette size={16} /> },
+    { key: 'sidebar', label: i18nT('pages.settings.displayPanel.sidebar_colors'), icon: <PanelLeft size={16} /> },
+  ]
+
   return (
-    <>
+    <SettingsSubNav
+      items={railItems}
+      basePath={basePath}
+      railWidth={220}
+      listLabel={i18nT('settings.tabs.display.label')}
+      banner={configBanner}
+    >
+      {active => {
+        switch (active) {
+
+        case 'view':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.view')}>
         <SettingsCard>
           {/* Options are built from SUPPORTED_LANGUAGES, so shipping a new
@@ -463,9 +498,12 @@ export function DisplayPanel() {
             onChange={v => setUIMode(v as 'chat' | 'cli')} />
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'zoom':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.zoom_font')}>
-        <SettingsCard index={1}>
+        <SettingsCard>
           {zoomSupported ? (
             <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} description={i18nT('pages.settings.displayPanel.native_window_zoom_tip', { mod: modKey })} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
           ) : (
@@ -533,9 +571,12 @@ export function DisplayPanel() {
           )}
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'terminal':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.terminal')}>
-        <SettingsCard index={2}>
+        <SettingsCard>
           {/* Detected families, not free text alone: the fonts that matter are the
               ones installed on the machine RENDERING the terminal, which is the
               browser's machine — xterm rasterizes client-side while the pty lives on
@@ -620,20 +661,15 @@ export function DisplayPanel() {
               are unsaved local state, and the hand-off's navigation unmounts
               the whole panel with them. Same rule as the language notice. */}
           <ErrorNotice message={completionError} variant="inline" />
-          {/* The shell field and the recency-tint stepper are both disabled
-              while this query is not successful. A failed read used to leave
-              them greyed out with no reason on screen. No hand-off: the theme
-              `installValue` field on this panel is unaffected by the query and
-              may hold a half-typed source the navigation would discard. */}
-          <ErrorNotice
-            variant="inline"
-            message={mcQ.isError ? i18nT('pages.settings.displayPanel.config_load_failed') : null}
-          />
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'theme':
+          return (
+      <>
       <SettingsSection title={i18nT('pages.settings.displayPanel.theme')}>
-        <SettingsCard index={3}>
+        <SettingsCard>
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
               <SettingsSelect label={i18nT('pages.settings.displayPanel.theme')} description={i18nT('pages.settings.displayPanel.select_a_theme_for_the_dashboard')} value={colorTheme}
@@ -807,10 +843,13 @@ export function DisplayPanel() {
       >
         <ThemeEditorPanel editor={editor} />
       </Modal>
+      </>
+          )
 
-      {/* Sidebar Colors */}
+        case 'sidebar':
+          return (
       <SettingsSection title={i18nT('pages.settings.displayPanel.sidebar_colors')}>
-        <SettingsCard index={4}>
+        <SettingsCard>
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.palette')}
             description={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}
@@ -859,6 +898,12 @@ export function DisplayPanel() {
           </div>
         </SettingsCard>
       </SettingsSection>
-    </>
+          )
+
+        default:
+          return null
+        }
+      }}
+    </SettingsSubNav>
   )
 }

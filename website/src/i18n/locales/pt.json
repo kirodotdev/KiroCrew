@@ -15290,6 +15290,7 @@
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertas da área de trabalho",
+        "no_channels": "Ainda não há fontes de notificação.",
         "notify_when_a_background_chat_finishes": "Avisar quando uma conversa em segundo plano terminar",
         "notify_when_a_background_chat_finishes_description": "Mostra uma notificação do sistema com o nome da conversa que terminou, mas apenas enquanto esta janela estiver minimizada ou atrás de outro aplicativo.",
         "unread_only_when_done_or_waiting": "Marcar sessões como não lidas só quando precisarem de você",

@@ -122,7 +122,7 @@ async function main() {
     // The card itself, found from the switch upward, so the frame is the Decisions
     // card rather than a guessed crop of the pane.
     const card = memorySwitch.locator(
-      'xpath=ancestor::*[contains(@class, "rounded")][1]/ancestor-or-self::*[1]',
+      'xpath=ancestor::*[@data-settings-card][1]/ancestor-or-self::*[1]',
     )
     const target = (await card.count()) > 0 ? card.first() : memorySwitch
     await target.evaluate(el => el.scrollIntoView({ block: 'center' }))
@@ -189,7 +189,7 @@ async function main() {
         name: /snippets of recalled memories/i,
       })
       const grantedCard = grantedSwitch.locator(
-        'xpath=ancestor::*[contains(@class, "rounded")][1]/ancestor-or-self::*[1]',
+        'xpath=ancestor::*[@data-settings-card][1]/ancestor-or-self::*[1]',
       )
       const grantedTarget =
         (await grantedCard.count()) > 0 ? grantedCard.first() : grantedSwitch

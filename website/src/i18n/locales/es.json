@@ -15290,6 +15290,7 @@
       },
       "notificationsPanel": {
         "desktop_alerts": "Alertas de escritorio",
+        "no_channels": "Aún no hay fuentes de notificación.",
         "notify_when_a_background_chat_finishes": "Avisar cuando un chat en segundo plano termine",
         "notify_when_a_background_chat_finishes_description": "Muestra una notificación del sistema con el nombre del chat que terminó, pero solo mientras esta ventana esté minimizada o detrás de otra aplicación.",
         "unread_only_when_done_or_waiting": "Marcar sesiones como no leídas solo cuando te necesiten",

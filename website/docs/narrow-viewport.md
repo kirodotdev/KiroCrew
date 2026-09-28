@@ -46,7 +46,7 @@ the difference is whether the heading can ever have a sibling above it:
   gap depend on it. (A conditionally rendered `Modal` does NOT have this effect: it
   `createPortal`s to `document.body` and never occupies a sibling slot.)
 - **A heading that repeats within one tab** (`SettingsSection`, used many times per
-  Settings tab; `LocalStorageDebug`'s section headings) keeps `mt-4`, because the gap
+  Settings tab; `LocalStorageDebug`'s section headings) keeps `mt-6`, because the gap
   between two sections is real, and pairs it with `first:mt-0`. The fragment adds no DOM
   node, so every section header is a sibling in one parent and only the leading one
   matches — and when a tab renders something of its own above the first section, the

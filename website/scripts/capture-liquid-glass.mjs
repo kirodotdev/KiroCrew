@@ -463,7 +463,9 @@ async function main() {
     const page = await context.newPage()
     logPageProblems(page)
     await stubDashboardApi(page, { slots, theme, extra })
-    await page.goto(base + '/settings?tab=display', { waitUntil: 'domcontentloaded' })
+    // The Reduce glass transparency switch lives on the Theme rail item; the
+    // sub-less path resolves to View, where that row never mounts.
+    await page.goto(base + '/settings/display/theme', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
     const dialogs = await page.getByRole('dialog').count()
     if (dialogs) throw new Error(`settings-desktop/${theme}: ${dialogs} unexpected dialog(s) open`)
@@ -501,7 +503,7 @@ async function main() {
     const readSwitch = () => page.evaluate(() => ({ html: document.documentElement.dataset.reduceTransparency ?? '', stored: localStorage.getItem('mc-reduce-transparency') }))
     const off = await readSwitch()
     if (off.html === 'on' || off.stored === 'on') throw new Error(`settings-desktop/${theme}: switch already on before the click (${JSON.stringify(off)})`)
-    const card = row.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " card-glow ")][1]')
+    const card = row.locator('xpath=ancestor::*[@data-settings-card][1]')
     const target = (await card.count()) ? card : row
     const rbox = await target.boundingBox()
     const clip = { x: Math.max(0, rbox.x - 16), y: Math.max(0, rbox.y - 16), width: rbox.width + 32, height: rbox.height + 32 }

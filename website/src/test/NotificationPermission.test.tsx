@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render as rtlRender, fireEvent, screen, act, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import NotificationPermissionHint from '../components/notifications/NotificationPermissionHint'
@@ -14,9 +15,10 @@ vi.mock('../hooks/useNotificationSound', async (importOriginal) => {
   return { ...actual, playPreset: vi.fn() }
 })
 
+// The system-permission row lives on the Desktop alerts rail item.
 function render(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  return rtlRender(<MemoryRouter initialEntries={['/settings?tab=notifications&sub=alerts']}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></MemoryRouter>)
 }
 
 /** A stand-in for the platform global: static `permission`, and a

@@ -391,7 +391,7 @@ async function main() {
   const decisionsSwitch = (page) => page.getByRole('switch', { name: 'Decisions (Jev)' })
   /** The card itself — the SettingsCard wrapper the switch sits in. */
   const decisionsCard = (page) =>
-    decisionsSwitch(page).locator('xpath=ancestor::div[contains(@class,"card-glow")][1]')
+    decisionsSwitch(page).locator('xpath=ancestor::div[@data-settings-card][1]')
   /** One row of the point list, by the plain-words name a reader sees. */
   const pointPanel = (page) => page.locator('#decisions-point-panel')
 

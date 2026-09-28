@@ -69,7 +69,7 @@ export default function DisplayTab() {
           {family === 'custom' && (
             <button
               className={BTN + ' ' + active(true)}
-              onClick={() => navigate('/settings/display')}
+              onClick={() => navigate('/settings/display/zoom')}
               title={i18nT('pages.overview.displayTab.custom_font_configure_in_settings')}
             >
               <Pencil className="lucide-inline" /> {i18nT(FONT_FAMILY_LABEL_KEY.custom)}

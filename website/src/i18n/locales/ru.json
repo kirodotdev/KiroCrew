@@ -15515,6 +15515,7 @@
       },
       "notificationsPanel": {
         "desktop_alerts": "Уведомления на рабочем столе",
+        "no_channels": "Пока нет источников уведомлений.",
         "notify_when_a_background_chat_finishes": "Уведомлять о завершении фонового чата",
         "notify_when_a_background_chat_finishes_description": "Показывает системное уведомление с названием завершившегося чата, но только пока это окно свёрнуто или закрыто другим приложением.",
         "unread_only_when_done_or_waiting": "Отмечать сессии непрочитанными, только когда нужно твоё участие",

@@ -37,7 +37,11 @@ export const FIXTURE_DETAIL_DESCRIPTION = 'Runs research campaigns unattended.'
 
 export const SURFACES = [
   { id: 'chat', url: '/chat', settle: 400 },
-  { id: 'settings-display', url: '/settings?tab=display' },
+  { id: 'settings-display-view', url: '/settings/display/view' },
+  { id: 'settings-display-zoom', url: '/settings/display/zoom' },
+  { id: 'settings-display-terminal', url: '/settings/display/terminal' },
+  { id: 'settings-display-theme', url: '/settings/display/theme' },
+  { id: 'settings-display-sidebar', url: '/settings/display/sidebar' },
   { id: 'settings-overview', url: '/settings?tab=overview' },
   // Populated private-memory drill-in. The overview card above never mounts the
   // member header, memory-kind controls, provenance labels or correction actions.
@@ -47,7 +51,10 @@ export const SURFACES = [
   { id: 'settings-privacy', url: '/settings?tab=privacy' },
   { id: 'settings-computer-use', url: '/settings?tab=computer-use' },
   { id: 'settings-security', url: '/settings?tab=security' },
-  { id: 'settings-notifications', url: '/settings?tab=notifications' },
+  { id: 'settings-notifications-sources', url: '/settings/notifications/sources' },
+  { id: 'settings-notifications-alerts', url: '/settings/notifications/alerts' },
+  { id: 'settings-notifications-sound', url: '/settings/notifications/sound' },
+  { id: 'settings-notifications-percategory', url: '/settings/notifications/percategory' },
   { id: 'settings-about', url: '/settings?tab=about' },
   { id: 'capabilities-crews', url: '/capabilities?tab=crews' },
   { id: 'capabilities-mcp', url: '/capabilities?tab=mcp' },

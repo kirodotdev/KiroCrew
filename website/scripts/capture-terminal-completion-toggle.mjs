@@ -52,7 +52,7 @@ async function main() {
 
   for (const [state, fixture] of [['on', undefined], ['off', { enabled: false }]]) {
     completion = fixture
-    await page.goto(base + '/settings/display', { waitUntil: 'domcontentloaded' })
+    await page.goto(base + '/settings/display/terminal', { waitUntil: 'domcontentloaded' })
     const sw = page.getByRole('switch', { name: LABEL })
     await sw.waitFor({ timeout: 15000 })
     await page.getByLabel(SHELL).waitFor({ timeout: 5000 })
@@ -63,9 +63,10 @@ async function main() {
       { timeout: 5000 },
     )
     // Frame the Terminal card: scroll the switch into view and crop around it.
+    // Card is borderless now, so anchor the crop on the stable data hook.
     await sw.scrollIntoViewIfNeeded()
     await page.waitForTimeout(300)
-    const card = sw.locator('xpath=ancestor::*[contains(@class,"rounded")][1]')
+    const card = sw.locator('xpath=ancestor::div[@data-settings-card][1]')
     const box = await card.boundingBox()
     const clip = box
       ? { x: Math.max(0, box.x - 8), y: Math.max(0, box.y - 8), width: box.width + 16, height: box.height + 16 }

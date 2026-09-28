@@ -14852,6 +14852,7 @@
       },
       "notificationsPanel": {
         "desktop_alerts": "데스크톱 알림",
+        "no_channels": "아직 알림 소스가 없습니다.",
         "notify_when_a_background_chat_finishes": "백그라운드 채팅이 완료되면 알림",
         "notify_when_a_background_chat_finishes_description": "완료된 채팅의 이름이 담긴 시스템 알림을 표시합니다. 단, 이 창이 최소화되어 있거나 다른 앱 뒤에 있을 때만 표시됩니다.",
         "unread_only_when_done_or_waiting": "확인이 필요할 때만 세션을 읽지 않음으로 표시",

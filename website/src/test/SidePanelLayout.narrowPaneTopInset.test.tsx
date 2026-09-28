@@ -200,7 +200,7 @@ describe('SidePanelLayout — the narrow pane clears the tab strip border', () =
     const { container } = render(<SettingsSection title="Section">body</SettingsSection>)
     const head = container.firstElementChild as HTMLElement
     const classes = head.className.split(/\s+/)
-    expect(classes, 'the between-sections margin is still there').toContain('mt-4')
+    expect(classes, 'the between-sections margin is still there').toContain('mt-6')
     expect(classes, 'and it is dropped for the leading section, which the pane already spaces')
       .toContain('first:mt-0')
   })

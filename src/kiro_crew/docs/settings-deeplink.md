@@ -31,7 +31,7 @@ highlight parameter — so there is nothing to assemble and nothing to guess. Fo
 the "Highlight recent sessions" entry, the route is:
 
 ```
-/settings/display?highlight=display.highlight-recent-sessions
+/settings/display/sidebar?highlight=display.highlight-recent-sessions
 ```
 
 Present it as a link labelled with the control name — a markdown link whose
@@ -49,7 +49,7 @@ shipped prebuilt rather than described:
 
 A route is a dashboard path, so it is clickable only where a dashboard path
 resolves. On a chat channel (Slack, Telegram, Teams, …) prefix it with the
-gateway's own address — `http://localhost:5476/settings/display?highlight=…` for
+gateway's own address — `http://localhost:5476/settings/display/sidebar?highlight=…` for
 a default local install — or name the tab and the control in words if you do not
 know the address.
 

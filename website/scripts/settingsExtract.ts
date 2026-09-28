@@ -186,7 +186,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
 
 /** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;
  *  each entry gets `params.sub` from the case it is rendered under. */
-const SUBNAV_CASE_PANELS = new Set(['ChatPanel.tsx'])
+const SUBNAV_CASE_PANELS = new Set(['ChatPanel.tsx', 'DisplayPanel.tsx', 'NotificationsPanel.tsx'])
 
 /** Map component name → our type enum. */
 const PRIMITIVE_MAP: Record<string, SettingPrimitiveType> = {

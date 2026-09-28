@@ -15290,6 +15290,7 @@
       },
       "notificationsPanel": {
         "desktop_alerts": "Avvisi desktop",
+        "no_channels": "Nessuna sorgente di notifica per il momento.",
         "notify_when_a_background_chat_finishes": "Avvisa quando una chat in background termina",
         "notify_when_a_background_chat_finishes_description": "Mostra una notifica di sistema con il nome della chat terminata, ma solo mentre questa finestra è ridotta a icona o dietro un’altra app.",
         "unread_only_when_done_or_waiting": "Segna le sessioni come non lette solo quando hanno bisogno di te",

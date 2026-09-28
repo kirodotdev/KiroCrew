@@ -14840,6 +14840,7 @@
       },
       "notificationsPanel": {
         "desktop_alerts": "桌面通知",
+        "no_channels": "暂无通知来源。",
         "notify_when_a_background_chat_finishes": "后台聊天完成时通知",
         "notify_when_a_background_chat_finishes_description": "显示一条系统通知，其中包含已完成聊天的名称；仅在此窗口最小化或被其他应用遮挡时显示。",
         "unread_only_when_done_or_waiting": "仅在需要你处理时将会话标记为未读",

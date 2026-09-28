@@ -14840,6 +14840,7 @@
       },
       "notificationsPanel": {
         "desktop_alerts": "デスクトップ通知",
+        "no_channels": "通知ソースはまだありません。",
         "notify_when_a_background_chat_finishes": "バックグラウンドのチャットが完了したら通知する",
         "notify_when_a_background_chat_finishes_description": "完了したチャットの名前を含むシステム通知を表示します。ただし、このウィンドウが最小化されているか他のアプリの背後にあるときのみです。",
         "unread_only_when_done_or_waiting": "対応が必要なときだけセッションを未読にする",

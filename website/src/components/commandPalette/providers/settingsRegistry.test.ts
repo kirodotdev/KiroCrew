@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { fileURLToPath } from 'url'
 import { extractAll, generateAgentRegistryJson } from '../../../../scripts/settingsExtract'
+import { settingsRoute } from '../settingsRoute'
 import { SUBNAV_LEGACY_PARAMS, SUBNAV_PARAM } from '../../subNavParams'
 import { SETTINGS_REGISTRY } from '../settingsRegistry.gen'
 
@@ -65,6 +66,32 @@ describe('settingsRegistry.gen.ts — anti-stale guard', () => {
   it('no duplicate ids', () => {
     const ids = SETTINGS_REGISTRY.map(e => e.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe('Display and Notifications rail routing', () => {
+  // Both panels split into a SettingsSubNav rail, so every entry must open a
+  // named rail item (`/settings/<tab>/<sub>`) or the highlight lands on the
+  // tab with no pane mounted.
+  const routeFor = (id: string): string => {
+    const e = SETTINGS_REGISTRY.find(x => x.id === id)
+    expect(e, `registry entry ${id}`).toBeDefined()
+    return settingsRoute(e!).split('?')[0]
+  }
+
+  it('a Display entry opens its rail item', () => {
+    expect(routeFor('display.language')).toBe('/settings/display/view')
+  })
+
+  it('a Notifications entry opens its rail item', () => {
+    expect(routeFor('notifications.play-sound-on-new-notifications')).toBe('/settings/notifications/sound')
+  })
+
+  it('every Display and Notifications entry carries a rail sub-segment', () => {
+    for (const e of SETTINGS_REGISTRY) {
+      if (e.tab !== 'display' && e.tab !== 'notifications') continue
+      expect(settingsRoute(e).split('?')[0], e.id).toMatch(new RegExp(`^/settings/${e.tab}/[a-z-]+$`))
+    }
   })
 })
 

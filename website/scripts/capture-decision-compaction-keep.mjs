@@ -524,7 +524,7 @@ async function main() {
         await page.getByTitle('compaction.keep').count() > 0,
         `consent ${theme}: the point is named while its scope is granted`,
       )
-      const card = row.locator('xpath=ancestor::*[contains(@class,"rounded")][1]')
+      const card = row.locator('xpath=ancestor::*[@data-settings-card][1]')
       const file = `${OUT}/07-consent-${theme}.png`
       await card.screenshot({ path: file })
       shot.push(`07-consent-${theme}.png`)

@@ -38,7 +38,7 @@
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Interface setting", "route": "/settings/display?highlight=display.interface" }
+      "action": { "kind": "route", "label": "Open Interface setting", "route": "/settings/display/view?highlight=display.interface" }
     },
     {
       "id": "warm-pool",
@@ -129,7 +129,7 @@
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Terminal settings", "route": "/settings/display?highlight=key:dashboard.terminal.shell" }
+      "action": { "kind": "route", "label": "Open Terminal settings", "route": "/settings/display/terminal?highlight=key:dashboard.terminal.shell" }
     },
     {
       "id": "artifacts-library",
@@ -149,7 +149,7 @@
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Language setting", "route": "/settings/display?highlight=display.language" }
+      "action": { "kind": "route", "label": "Open Language setting", "route": "/settings/display/view?highlight=display.language" }
     },
     {
       "id": "auto-skills",

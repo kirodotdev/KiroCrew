@@ -54,9 +54,9 @@ function buildTabs() {
     { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description') },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
     { key: 'chat', tile: 'var(--tile-green)', label: i18nT('settings.tabs.chat.label'), icon: <MessageSquare size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.chat.description'), hostsSubNav: true },
-    { key: 'display', tile: 'var(--tile-indigo)', label: i18nT('settings.tabs.display.label'), icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.display.description') },
+    { key: 'display', tile: 'var(--tile-indigo)', label: i18nT('settings.tabs.display.label'), icon: <Palette size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.display.description'), hostsSubNav: true },
     { key: 'voice', tile: 'var(--tile-pink)', label: i18nT('settings.tabs.voice.label'), icon: <Mic size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.voice.description') },
-    { key: 'notifications', tile: 'var(--tile-red)', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.notifications.description') },
+    { key: 'notifications', tile: 'var(--tile-red)', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.notifications.description'), hostsSubNav: true },
     { key: 'shortcuts', tile: 'var(--tile-purple)', label: i18nT('settings.tabs.shortcuts.label'), icon: <Keyboard size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.shortcuts.description') },
     { key: 'skills', tile: 'var(--tile-orange)', label: i18nT('settings.tabs.skills.label'), icon: <Sparkles size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.skills.description') },
     { key: 'channels', tile: 'var(--tile-teal)', label: i18nT('settings.tabs.channels.label'), icon: <Link2 size={16} />, description: i18nT('settings.tabs.channels.description'), hostsSubNav: true },
@@ -236,9 +236,9 @@ export default function SettingsPage() {
         {tab === 'overview' && <OverviewPanel />}
         {tab === 'imports' && <ImportPanel />}
         {tab === 'chat' && <ChatPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'display' && <DisplayPanel />}
+        {tab === 'display' && <DisplayPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'voice' && <VoicePanel />}
-        {tab === 'notifications' && <NotificationsPanel />}
+        {tab === 'notifications' && <NotificationsPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel basePath={SETTINGS_BASE_PATH} />}

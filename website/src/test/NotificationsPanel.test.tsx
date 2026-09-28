@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render as rtlRender, fireEvent, screen, act } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import { __resetForTests, playPreset, presetForKind, loadSoundSettings } from '../hooks/useNotificationSound'
 
-// The channels section reads through React Query, so every render needs a
-// client. Same call shape as RTL's render so the cases below stay unchanged.
-function render(ui: React.ReactElement) {
+// The rail mounts one item at a time. The primary toggle, volume and "Test
+// sound" live on the Sound item (the default here); the per-category grid on
+// Per-category sounds; the channels list on Sources. Each case renders at the
+// item whose controls it drives.
+function render(ui: React.ReactElement, sub = 'sound') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  return rtlRender(<MemoryRouter initialEntries={[`/settings?tab=notifications&sub=${sub}`]}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></MemoryRouter>)
 }
 
 // Mock only playPreset: the panel's Test buttons and dropdown previews call it,
@@ -39,7 +42,7 @@ beforeEach(() => {
 
 describe('NotificationsPanel', () => {
   it('renders with defaults (toggle on, volume 35%, chime fallback)', () => {
-    const { container } = render(<NotificationsPanel />)
+    const { container, unmount } = render(<NotificationsPanel />, 'sound')
 
     // Toggle uses role="switch" with aria-checked
     const toggle = screen.getByRole('switch', { name: /Play sound on new notifications/i })
@@ -48,12 +51,15 @@ describe('NotificationsPanel', () => {
     const slider = container.querySelector('input[type="range"]') as HTMLInputElement | null
     expect(slider).not.toBeNull()
     expect(slider!.value).toBe('35')
+    unmount()
 
-    // Default fallback displayed in the "all" category selector
-    expect(container.textContent).toContain('Chime')
+    // Default fallback displayed in the "all" category selector, which lives on
+    // the Per-category sounds item.
+    const { container: pc } = render(<NotificationsPanel />, 'percategory')
+    expect(pc.textContent).toContain('Chime')
   })
 
-  it('clicking the master toggle persists enabled=false to localStorage', () => {
+  it('clicking the primary toggle persists enabled=false to localStorage', () => {
     render(<NotificationsPanel />)
     const toggle = screen.getByRole('switch', { name: /Play sound on new notifications/i })
     fireEvent.click(toggle)
@@ -76,7 +82,7 @@ describe('NotificationsPanel', () => {
       volume: 0.35,
       perCategory: { all: 'chime', cron: 'ding' },
     }))
-    render(<NotificationsPanel />)
+    render(<NotificationsPanel />, 'percategory')
     // The cron row should show "Ding" (the override), not "Use default"
     expect(screen.getAllByText(/Ding/).length).toBeGreaterThan(0)
   })
@@ -89,14 +95,14 @@ describe('NotificationsPanel', () => {
       volume: 0.35,
       perCategory: { all: 'none', agent: 'ding' },
     }))
-    render(<NotificationsPanel />)
+    render(<NotificationsPanel />, 'percategory')
     expect(screen.getAllByText('Proactive agent messages').length).toBeGreaterThan(0)
     // The agent row shows "Ding" (the override), not "Use default"
     expect(screen.getAllByText(/Ding/).length).toBeGreaterThan(0)
   })
 
   it('describes the turn sound as a conversation handoff, not an every-turn chime', () => {
-    const { container } = render(<NotificationsPanel />)
+    const { container } = render(<NotificationsPanel />, 'percategory')
     // The chime fires when a conversation hands control back (finished, or
     // paused for input), so the row must not promise audio on every turn.
     expect(screen.getByText('Conversation handoffs')).toBeTruthy()
@@ -106,7 +112,7 @@ describe('NotificationsPanel', () => {
   })
 
   it('describes the approval sound as covering questions too', () => {
-    const { container } = render(<NotificationsPanel />)
+    const { container } = render(<NotificationsPanel />, 'percategory')
     // A question card plays the same attention sound as a tool approval, so
     // the row names both instead of reading as tool-approval-only.
     expect(screen.getByText('Approvals and questions')).toBeTruthy()
@@ -131,12 +137,16 @@ describe('NotificationsPanel', () => {
     expect(saved.enabled).toBe(false)
   })
 
-  it('Test buttons are disabled when master toggle is off', () => {
-    render(<NotificationsPanel />)
+  it('Test buttons are disabled when primary toggle is off', () => {
+    // Flip the primary toggle off on the Sound item; it persists enabled=false.
+    const { unmount } = render(<NotificationsPanel />, 'sound')
     const toggle = screen.getByRole('switch', { name: /Play sound on new notifications/i })
     fireEvent.click(toggle) // disable
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    unmount()
 
-    // All Test buttons should be disabled now
+    // The per-category Test buttons read that persisted state on their own item.
+    render(<NotificationsPanel />, 'percategory')
     const testBtns = screen.getAllByRole('button', { name: 'Test' })
     expect(testBtns.length).toBeGreaterThan(0)
     testBtns.forEach(btn => expect((btn as HTMLButtonElement).disabled).toBe(true))
@@ -190,7 +200,7 @@ describe('NotificationsPanel', () => {
     // The per-row Test button plays `effective`, which now goes through
     // presetForKind — so approval with no override must play its built-in
     // 'pulse', exactly what runtime plays, not the 'all' fallback.
-    render(<NotificationsPanel />)
+    render(<NotificationsPanel />, 'percategory')
     const rowTestBtns = screen.getAllByRole('button', { name: 'Test' })
     const approvalIdx = 4
     fireEvent.click(rowTestBtns[approvalIdx])
