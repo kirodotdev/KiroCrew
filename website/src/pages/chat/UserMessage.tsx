@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X } from 'lucide-react'
+import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X, Clock } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
@@ -161,6 +161,26 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     animatedSteers.add(key)
     setPlaySteer(true)
   }, [isSteer, playSteer, meta, messageTs, content])
+
+  // A PLAIN send whose receipt never came. `markSendUnconfirmed` stamps
+  // `deliveryUnconfirmed` on the bubble when the transport deadline fires with
+  // no echo, and the receipt or echo that finally proves delivery clears it.
+  // Keyed on that mark, never on `optimistic` alone: the flag also survives a
+  // `refused` or `transport-error` send (whose error row and restored composer
+  // already say what happened) and a `queued` receipt (whose card owns the
+  // text), and a line on those rows would claim a wait nobody is waiting on.
+  // Carried on the row itself, not left to the WARN notice the same receipt
+  // posts under it: that notice is an ordinary transcript row, not an
+  // always-visible one like an error row, so once a later inject-dispatched
+  // turn (a cron prompt, a queued continuation) lands in this bubble's turn,
+  // a transcript that collapses reasoning folds the notice behind the steps
+  // toggle while the bubble stays on screen. No running-turn gate either,
+  // unlike `pendingSteer`: the mark is client-minted and never persisted, so
+  // a row re-read from history cannot carry it, and the send that most needs
+  // the line is one whose local turn has already ended. A steer bubble never
+  // carries it (the steer path drops its bubble on this receipt), so the two
+  // pending treatments stay disjoint.
+  const pendingSend = !!(meta as { deliveryUnconfirmed?: boolean } | undefined)?.deliveryUnconfirmed
 
   useEffect(() => {
     if (editing && taRef.current) {
@@ -390,6 +410,20 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
               exclusive to backend-confirmed injection (#7997). Rendering in the
               badge's slot keeps the pending -> consumed / requeued hand-off a
               content change in one place rather than a layout jump. */}
+          {pendingSend && (
+            /* The plain send's counterpart to the steer line below: same slot,
+               same muted weight, same pulse for a wait still open (a late echo
+               can still settle it), its own glyph so the two pending states
+               never read as one. No explainer of its own: the WARN notice the
+               same receipt posts directly under the bubble says what to do.
+               `role="status"` lets a screen reader hear that the message is
+               unconfirmed. */
+            <div role="status" className="inline-flex items-center gap-1 text-[12px] leading-5 font-medium text-muted mb-1 pr-1" data-testid="send-pending">
+              <span className="inline-flex items-center gap-1 animate-pulse">
+                <Clock size={12} className="shrink-0" aria-hidden="true" /> {i18nT('pages.chat.userMessage.delivery_pending')}
+              </span>
+            </div>
+          )}
           {pendingSteer && (
             /* animate-pulse (a simple loading indicator, per the animation
                conventions) marks it as in-flight; it must NOT touch

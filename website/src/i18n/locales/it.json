@@ -10730,6 +10730,7 @@
         "copied": "Copiato",
         "copy_failed": "Copia non riuscita",
         "steering": "Indirizzamento in corso…",
+        "delivery_pending": "Consegna in attesa…",
         "redirecting_the_running_turn_not_yet_confirmed": "Reindirizzamento del turno in corso — non ancora confermato.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Il turno è terminato prima che questo venisse applicato — viene eseguito come messaggio separato."
       },
@@ -11212,6 +11213,7 @@
       "send_failed_with_error": "Invio non riuscito: {{error}}",
       "send_failed_with_error_restored": "Impossibile inviare questo messaggio: {{error}}. Il testo è tornato nel campo di scrittura.",
       "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
+      "delivery_unconfirmed_pending": "Consegna non confermata: questo messaggio potrebbe essere ancora in attesa. Se non arriva alcuna risposta, invialo di nuovo.",
       "could_not_read_file_reason": "Impossibile leggere {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot non riuscito: {{reason}}",
       "http_status": "HTTP {{status}}",

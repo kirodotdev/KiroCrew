@@ -10578,6 +10578,7 @@
         "copied": "कॉपी हो गया",
         "copy_failed": "कॉपी नहीं हो सका",
         "steering": "निर्देशित किया जा रहा है…",
+        "delivery_pending": "डिलीवरी लंबित…",
         "redirecting_the_running_turn_not_yet_confirmed": "चल रहे टर्न को पुनर्निर्देशित किया जा रहा है — अभी पुष्टि नहीं हुई है।",
         "turn_ended_before_this_applied_runs_as_its_own_message": "यह लागू होने से पहले टर्न समाप्त हो गया — यह एक अलग संदेश के रूप में चलता है।"
       },
@@ -11058,6 +11059,7 @@
       "send_failed_with_error": "भेजना विफल: {{error}}",
       "send_failed_with_error_restored": "यह संदेश नहीं भेजा जा सका: {{error}}. तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है।",
       "delivery_unconfirmed": "डिलीवरी की पुष्टि नहीं हुई — तुम्हारा टेक्स्ट इनपुट बॉक्स में वापस आ गया है; दोबारा भेजने से पहले बातचीत देखो।",
+      "delivery_unconfirmed_pending": "डिलीवरी की पुष्टि नहीं हुई — यह संदेश अभी भी लंबित हो सकता है। अगर कोई जवाब नहीं आता, तो इसे दोबारा भेजो।",
       "could_not_read_file_reason": "{{path}} पढ़ा नहीं जा सका ({{reason}})",
       "screenshot_failed_reason": "स्क्रीनशॉट विफल: {{reason}}",
       "http_status": "HTTP {{status}}",

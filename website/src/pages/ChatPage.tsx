@@ -34,12 +34,13 @@ import {
   selectComposerBusy, selectSendConfirmed,
   selectContinuable,
   selectTurnInterrupted,
+  selectTrailingSendUnconfirmed,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   selectSubagent,
   truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion, ageFolderSuggestion,
-  capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer,
+  capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer,
   requestSlotReveal,
   refreshSlot,
   mcpAppKey,
@@ -2903,7 +2904,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // A busy snapshot may be stale. The server's user event supplies the
     // bubble for an immediate dispatch; a real queue has its own card.
     const _busy = selectComposerBusy(store.getState(), slot ?? null)
-    if (!_busy || forceNew) {
+    // Whether THIS send drew its own bubble. A plain send on a busy slot does
+    // not: the server's `queue_push` card represents it. The receipt arms
+    // below read this so none of them describes a row that was never rendered.
+    const bubbleMinted = !_busy || forceNew
+    if (bubbleMinted) {
       dispatch(appendMessage({ role: 'user', content: displayTxt, cls: '', ts: new Date().toISOString(), meta: metaPayload }))
     }
     if (!isolated) window.dispatchEvent(new Event('voice-stop'))
@@ -2985,7 +2990,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // - `transport-error`: the fetch rejected. Restore and report only when
     //   no correlated server echo has already proved delivery.
     // - `response-late`: the deadline fired; the request may have arrived.
-    //   The optimistic bubble stays pending and its delivery indicator says so.
+    //   The optimistic bubble stays pending -- `markSendUnconfirmed` stamps
+    //   it, which draws its delivery-pending line, and `selectTurnInterrupted`
+    //   never offers Resume for a row still carrying `meta.optimistic` -- and a
+    //   WARN notice under it says so. No restore: the text may have been
+    //   delivered late, and a duplicate turn is worse than a visible pending
+    //   row (the same ruling the steer path applies to a minted bubble).
     // - `unknown`: a 2xx whose body would not parse. The request was accepted
     //   and only its answer is mangled, so it may have started a turn that is
     //   streaming right now. Reporting a refusal would hand the payload back
@@ -3021,8 +3031,29 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       restoreComposerAfterFailedSend()
       return false
     }
-    // Keep the pending-send verdict while WS delivery settles.
-    if (receipt.status === 'response-late') return true
+    if (receipt.status === 'response-late') {
+      // Indeterminate, not failed: the local turn stays pending (a late WS
+      // frame or the next slot refresh settles it) and the bubble keeps its
+      // `optimistic` flag. A correlated echo is stronger evidence than the
+      // missing response -- a channel-linked slot can deliver one -- and then
+      // there is nothing to warn about.
+      if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
+      // A busy-slot Queue send minted no bubble, so there is no row to mark and
+      // the notice below would point at nothing. It keeps the bare pending
+      // verdict; what becomes of its text is the restore decision this arm
+      // does not take.
+      if (!bubbleMinted || !slot) return true
+      // The mark is what draws the bubble's pending line (the `optimistic` flag
+      // alone cannot, see `markSendUnconfirmed`), and the row under the bubble
+      // says what the line cannot: that the deadline passed and what to do.
+      // WARN tone via NoticeCard's lead-glyph selector (parseNotice), exactly
+      // as the steer receipt's notice above. Both addressed to the SENDING
+      // slot like the failure rows: the user can switch sessions inside the
+      // deadline window.
+      dispatch(markSendUnconfirmed({ slot, sendId }))
+      dispatch(appendSlotMessage({ slot, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_pending'), cls: '' } }))
+      return true
+    }
     if (body.queued && llmTxt === typedTxtDirs) {
       // The server queued this send and its receipt names the entry:
       // `queue_id` is the same id `queue_push` broadcasts and the card's
@@ -4363,6 +4394,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // early-returns on — a dead control in the one place recovery is promised.
   const continuable = useAppSelector(selectContinuable)
   const interrupted = useAppSelector(selectTurnInterrupted)
+  // The footer's plain running indicator yields while the newest send is a
+  // bubble whose receipt never came (see `selectTrailingSendUnconfirmed`).
+  const sendUnconfirmed = useAppSelector(selectTrailingSendUnconfirmed)
   const [continuing, setContinuing] = useState(false)
   // Why the refusal is rendered rather than logged: the server re-checks under
   // the slot lock and can refuse a press the client believed was available
@@ -7710,7 +7744,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 scrollerEl={() => scrollerRef.current}
               />
               {/* Footer */}
-              <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} />
+              <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} sendUnconfirmed={sendUnconfirmed} />
               {activeSlot && !slotLoading && !embedded && !popout && slotSwitchTarget !== activeSlot && (
                 <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
                   <SessionPulseSurveyCard

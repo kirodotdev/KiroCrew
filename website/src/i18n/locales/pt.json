@@ -10730,6 +10730,7 @@
         "copied": "Copiado",
         "copy_failed": "Falha ao copiar",
         "steering": "Direcionando…",
+        "delivery_pending": "Entrega pendente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirecionando o turno em andamento — ainda não confirmado.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "O turno terminou antes de isto ser aplicado — é executado como uma mensagem separada."
       },
@@ -11212,6 +11213,7 @@
       "send_failed_with_error": "Falha ao enviar: {{error}}",
       "send_failed_with_error_restored": "Não foi possível enviar esta mensagem: {{error}}. Seu texto voltou para a caixa de composição.",
       "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
+      "delivery_unconfirmed_pending": "Entrega não confirmada — esta mensagem ainda pode estar pendente. Se nenhuma resposta chegar, envie-a novamente.",
       "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",
       "screenshot_failed_reason": "Falha na captura de tela: {{reason}}",
       "http_status": "HTTP {{status}}",

@@ -4377,6 +4377,7 @@
         "copy_failed": "Copy failed",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirecting the running turn — not yet confirmed.",
         "steering": "Steering…",
+        "delivery_pending": "Delivery pending…",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Turn ended before this applied — runs as its own message."
       },
       "earlierMessagesBar": {
@@ -4655,6 +4656,7 @@
       "send_failed_with_error": "Send failed: {{error}}",
       "send_failed_with_error_restored": "Couldn't send this message: {{error}}. Your text is back in the composer.",
       "delivery_unconfirmed": "Delivery not confirmed — your text is back in the composer; check the conversation above before sending it again.",
+      "delivery_unconfirmed_pending": "Delivery not confirmed — this message may still be pending. If no reply arrives, send it again.",
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot failed: {{reason}}",
       "http_status": "HTTP {{status}}",
