@@ -1,5 +1,5 @@
 import React from 'react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fireEvent, screen, act, render } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -402,11 +402,10 @@ describe('useKeyboardShortcuts — route-history chord', () => {
     term.remove()
   })
 
-  it('claims the chord as a no-op on a narrow viewport, where the arrows are hidden', () => {
-    // The arrows' mobile exclusion (drill-ins navigate by component state, so
-    // a stack walk moves history the visible UI does not reflect) gates the
-    // chord too — but by CLAIMING it and doing nothing, never by unclaiming:
-    // on macOS an unclaimed ⌘← is the browser's own Back, which would pop
+  it('claims the chord as a no-op on a narrow viewport', () => {
+    // Narrow layouts drill in by component state (pushes nothing), so a stack
+    // walk would move history the visible UI does not reflect. Gate by
+    // CLAIMING the chord and doing nothing, never by unclaiming:    // on macOS an unclaimed ⌘← is the browser's own Back, which would pop
     // past the draft guard whenever its trap is unarmed (post-reload) and
     // unmount a dirty editor (the GPT round-4 blocker).
     const original = window.matchMedia
@@ -1615,5 +1614,70 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     expect(help.key).toBe('/')
     expect(help.aliases).toEqual([{ key: 'k', alt: true }])
     expect(help.browserReserved).toBeUndefined()
+  })
+})
+
+describe('desktop View > Back/Forward menu items', () => {
+  function Probe() {
+    useKeyboardShortcuts({ onToggleShortcutsModal: () => {}, onNewChat: () => {} })
+    return <div data-testid="where">{useLocation().pathname}</div>
+  }
+
+  function setup(opts: { shortcutsOff?: boolean } = {}) {
+    if (opts.shortcutsOff) localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    let send: ((delta: number) => void) | null = null
+    const unsubscribe = vi.fn()
+    window.electronAPI = { onHistoryStep: (cb: (delta: number) => void) => { send = cb; return unsubscribe } } as unknown as typeof window.electronAPI
+    const store = createTestStore({
+      dashboard: { slots: [] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: null, slotHistory: [] } as unknown as RootState['chat'],
+    })
+    const view = render(
+      <Provider store={store}>
+        <MemoryRouter initialEntries={['/chat', '/settings']} initialIndex={1}><Probe /></MemoryRouter>
+      </Provider>,
+    )
+    return { send: (d: number) => act(() => send!(d)), unsubscribe, view }
+  }
+
+  afterEach(() => {
+    delete (window as { electronAPI?: unknown }).electronAPI
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('steps back when there is somewhere to go, even with shortcuts turned off', () => {
+    // canGoBack reads react-router's idx off the platform entry.
+    window.history.replaceState({ idx: 1 }, '', '/')
+    const { send } = setup({ shortcutsOff: true })
+    send(-1)
+    expect(screen.getByTestId('where').textContent).toBe('/chat')
+  })
+
+  it('does nothing on a narrow viewport, same as the chord', () => {
+    window.history.replaceState({ idx: 1 }, '', '/')
+    const original = window.matchMedia
+    window.matchMedia = ((query: string) =>
+      ({ matches: true, media: query, addEventListener: () => {}, removeEventListener: () => {} })) as unknown as typeof window.matchMedia
+    try {
+      const { send } = setup()
+      send(-1)
+      expect(screen.getByTestId('where').textContent).toBe('/settings')
+    } finally {
+      window.matchMedia = original
+    }
+  })
+
+  it('does nothing when the store says there is nowhere to go', () => {
+    window.history.replaceState({ idx: 0 }, '', '/')
+    const { send } = setup()
+    send(-1)
+    send(1)
+    expect(screen.getByTestId('where').textContent).toBe('/settings')
+  })
+
+  it('unsubscribes on unmount', () => {
+    const { unsubscribe, view } = setup()
+    view.unmount()
+    expect(unsubscribe).toHaveBeenCalled()
   })
 })

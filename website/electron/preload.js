@@ -118,6 +118,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("navigate", handler);
     return () => ipcRenderer.removeListener("navigate", handler);
   },
+  // View > Back/Forward: main sends -1 or 1 and the SPA takes the step, so
+  // the draft guard applies (see useKeyboardShortcuts).
+  onHistoryStep: (cb) => {
+    const handler = (_e, delta) => cb(delta);
+    ipcRenderer.on("history-step", handler);
+    return () => ipcRenderer.removeListener("history-step", handler);
+  },
   onFullScreenChanged: (callback) => {
     const handler = (_event, isFullScreen) => callback(!!isFullScreen);
     ipcRenderer.on("fullscreen-changed", handler);

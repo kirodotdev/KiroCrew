@@ -11,6 +11,8 @@ function makeDeps(overrides = {}) {
     appName: "Kiro Crew",
     openSettings: record("openSettings"),
     openAbout: record("openAbout"),
+    historyBack: record("historyBack"),
+    historyForward: record("historyForward"),
     reload: record("reload"),
     forceReload: record("forceReload"),
     toggleDevTools: record("toggleDevTools"),
@@ -291,5 +293,29 @@ for (const isMac of [true, false]) {
       "refreshToken",
       "openConfigFile",
     ]);
+  });
+
+  test(`${os}: View starts with Back and Forward, wired to the injected history steps`, () => {
+    const { deps, calls } = makeDeps({ isMac });
+    const view = buildMenuTemplate(deps).find((i) => i.label === "View");
+    assert.deepStrictEqual(view.submenu.slice(0, 3).map((i) => i.label || i.type), ["Back", "Forward", "separator"]);
+    view.submenu[0].click();
+    view.submenu[1].click();
+    assert.deepStrictEqual(calls, ["historyBack", "historyForward"]);
+  });
+
+  test(`${os}: Back/Forward never register an accelerator`, () => {
+    // A registered ⌘/Ctrl+←/→ would be taken before the page sees it, so every
+    // text field would lose its caret line-start/word-jump key.
+    const { deps } = makeDeps({ isMac });
+    const view = buildMenuTemplate(deps).find((i) => i.label === "View");
+    for (const item of view.submenu.slice(0, 2)) {
+      if (isMac) assert.strictEqual(item.accelerator, undefined, `${item.label} has no accelerator on macOS`);
+      else assert.strictEqual(item.registerAccelerator, false, `${item.label} accelerator is display-only`);
+    }
+    if (!isMac) {
+      assert.strictEqual(view.submenu[0].accelerator, "Ctrl+Left");
+      assert.strictEqual(view.submenu[1].accelerator, "Ctrl+Right");
+    }
   });
 }

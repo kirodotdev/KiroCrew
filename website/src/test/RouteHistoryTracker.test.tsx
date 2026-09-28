@@ -1,17 +1,22 @@
 /**
- * The route-history position store + the top-bar Back/Forward arrows (#8258).
+ * The route-history position store and the guarded history step (#8258).
+ *
+ * `StepButtons` stands in for the real callers (the ⌘/Ctrl+←/→ chords and the
+ * desktop View > Back/Forward items): it takes the same guarded step and reads
+ * the same store, so its enabled state is the store's answer.
  *
  * Uses a real `<BrowserRouter>` over jsdom's history rather than MemoryRouter,
  * because the subject is react-router's `history.state.idx` bookkeeping and the
  * platform stack — a memory history writes neither. jsdom applies `back()` /
  * `forward()` in a task, so every assertion after one is awaited.
  */
-import React from 'react'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import React, { useSyncExternalStore } from 'react'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom'
-import { NavHistoryArrows, RouteHistoryTracker } from '../components/NavHistoryArrows'
+import { RouteHistoryTracker } from '../components/RouteHistoryTracker'
 import {
+  useGuardedHistoryStep,
   NavigationLeaveGuardProvider,
   NavigationBackGuard,
   useRegisterNavigationLeaveGuard,
@@ -28,6 +33,17 @@ import {
   subscribeRouteHistoryPosition,
 } from '../lib/routeHistoryPosition'
 
+function StepButtons() {
+  const step = useGuardedHistoryStep()
+  const pos = useSyncExternalStore(subscribeRouteHistoryPosition, getRouteHistoryPosition)
+  return (
+    <>
+      <button onClick={() => step(-1)} disabled={!pos.canGoBack}>Back</button>
+      <button onClick={() => step(1)} disabled={!pos.canGoForward}>Forward</button>
+    </>
+  )
+}
+
 function GoTo({ to }: { to: string }) {
   const navigate = useNavigate()
   return <button onClick={() => navigate(to)}>{`go ${to}`}</button>
@@ -37,7 +53,7 @@ const renderShell = () =>
   render(
     <BrowserRouter>
       <RouteHistoryTracker />
-      <NavHistoryArrows />
+      <StepButtons />
       <GoTo to="/chat" />
       <GoTo to="/settings" />
       <Routes>
@@ -61,8 +77,8 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-describe('NavHistoryArrows', () => {
-  it('renders both arrows disabled on a fresh document', () => {
+describe('route history position', () => {
+  it('reports nowhere to go on a fresh document', () => {
     renderShell()
     expect(backBtn()).toBeDisabled()
     expect(forwardBtn()).toBeDisabled()
@@ -99,49 +115,9 @@ describe('NavHistoryArrows', () => {
     expect(forwardBtn()).toBeDisabled()
     expect(backBtn()).toBeEnabled()
   })
-
-  it('labels both arrows with their chords for assistive tech', () => {
-    renderShell()
-    // jsdom reports a non-Mac platform, so the meta chord renders as Control.
-    expect(backBtn()).toHaveAttribute('aria-keyshortcuts', 'Control+ArrowLeft')
-    expect(forwardBtn()).toHaveAttribute('aria-keyshortcuts', 'Control+ArrowRight')
-    // The tooltip carries the display chord, so sighted users can discover it.
-    expect(backBtn()).toHaveAttribute('title', 'Back \u00b7 Ctrl+\u2190')
-  })
-
-  it('advertises no chord while shortcuts are globally disabled', () => {
-    // The keydown handler bails on the same toggle, so an advertisement here
-    // would teach a keypress that does nothing (the useNavShortcutHint rule).
-    localStorage.setItem('mc-keyboard-shortcuts', '0')
-    renderShell()
-    expect(backBtn()).not.toHaveAttribute('aria-keyshortcuts')
-    expect(forwardBtn()).not.toHaveAttribute('aria-keyshortcuts')
-    expect(backBtn()).toHaveAttribute('title', 'Back')
-    localStorage.removeItem('mc-keyboard-shortcuts')
-  })
-
-  it('follows a user rebind and an unbind — never the factory default', () => {
-    // A rebound Back advertises the NEW chord to assistive tech, and since the
-    // catalog tooltip can only spell the factory chord, drops to the bare
-    // label rather than teaching a chord that no longer fires. An unbound
-    // Forward advertises nothing.
-    localStorage.setItem('mc-shortcut-overrides', JSON.stringify({
-      'history-back': { key: 'b', mod: true, shift: true },
-      'history-forward': null,
-    }))
-    try {
-      renderShell()
-      expect(backBtn()).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+B')
-      expect(backBtn()).toHaveAttribute('title', 'Back')
-      expect(forwardBtn()).not.toHaveAttribute('aria-keyshortcuts')
-      expect(forwardBtn()).toHaveAttribute('title', 'Forward')
-    } finally {
-      localStorage.removeItem('mc-shortcut-overrides')
-    }
-  })
 })
 
-describe('NavHistoryArrows — draft guard interplay', () => {
+describe('guarded history step — draft guard interplay', () => {
   /** A page holding work: registers the veto and publishes the stake, like a
    *  dirty prompt editor. The guard mock IS the confirm — its call count is the
    *  number of times the user was asked. */
@@ -157,7 +133,7 @@ describe('NavHistoryArrows — draft guard interplay', () => {
         <BrowserRouter>
           <NavigationBackGuard />
           <RouteHistoryTracker />
-          <NavHistoryArrows />
+          <StepButtons />
           <GoTo to="/drafty" />
           <GoTo to="/other" />
           <Routes>
@@ -194,7 +170,7 @@ describe('NavHistoryArrows — draft guard interplay', () => {
     await waitFor(() => expect(page()).toBe('home'))
   })
 
-  it('asks exactly once when the trap IS armed — the trap prompts, the arrow does not', async () => {
+  it('asks exactly once when the trap IS armed — the trap prompts, the step does not', async () => {
     const guard = vi.fn(() => false)
     renderGuardedShell(guard)
     // A real PUSH first, so the guard can calibrate and arm (see its contract).

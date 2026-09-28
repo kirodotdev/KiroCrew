@@ -1071,6 +1071,13 @@ function createWindowLifecycle(options) {
     }
   }
 
+  // The renderer does the step itself, so the page's draft guard and the
+  // "is there anywhere to go" check apply exactly as they do for ⌘←/→.
+  function sendHistoryStep(delta) {
+    const wc = focusedDashboardWebContents();
+    if (wc && !wc.isDestroyed()) wc.send("history-step", delta);
+  }
+
   function toggleAlwaysOnTop() {
     const win = focusedDashboardWindow();
     if (!win) return;
@@ -1110,6 +1117,8 @@ function createWindowLifecycle(options) {
       appName: app.name,
       openSettings: () => openSettingsPage(),
       openAbout: () => openSettingsPage("about"),
+      historyBack: () => sendHistoryStep(-1),
+      historyForward: () => sendHistoryStep(1),
       reload: () => {
         const wc = focusedDashboardWebContents();
         if (wc) wc.reload();

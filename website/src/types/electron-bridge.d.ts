@@ -60,6 +60,8 @@ declare global {
     getAppMenuItems: (id: string) => Promise<ElectronAppMenuItem[]>
     executeAppMenuItem: (id: string, index: number) => void
     onNavigate: (cb: (path: string) => void) => () => void
+    /** Optional: a desktop shell older than the View > Back/Forward items lacks it. */
+    onHistoryStep?: (cb: (delta: number) => void) => () => void
     onFullScreenChanged: (cb: (isFullScreen: boolean) => void) => () => void
     setBadgeCount: (count: number) => void
     reportMicDenied: () => void

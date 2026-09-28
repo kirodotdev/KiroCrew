@@ -33,7 +33,8 @@ function windowsTemplate() {
   return buildMenuTemplate({
     isMac: false,
     appName: "Kiro Crew",
-    openSettings: record(), openAbout: record(), reload: record(),
+    openSettings: record(), openAbout: record(), historyBack: record(),
+    historyForward: record(), reload: record(),
     forceReload: record(), toggleDevTools: record(), zoomActualSize: record(),
     zoomIn: record(), zoomOut: record(), alwaysOnTop: false,
     toggleAlwaysOnTop: record(), openNewConnectionWindow: record(),

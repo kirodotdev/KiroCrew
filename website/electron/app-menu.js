@@ -20,6 +20,8 @@ function buildMenuTemplate(deps) {
     appName,
     openSettings, // navigate dashboard to /settings
     openAbout, // navigate dashboard to /settings/about (version + updates)
+    historyBack, // step the dashboard's route history back one entry
+    historyForward, // step it forward one entry
     reload,
     forceReload,
     toggleDevTools,
@@ -91,6 +93,22 @@ function buildMenuTemplate(deps) {
       id: "view-menu",
       label: "View",
       submenu: [
+        // Route-history Back/Forward (#8258). The dashboard owns the chords
+        // (⌘/Ctrl+←/→), so no menu item may register them: a registered
+        // accelerator would take ⌘← from every text field, where it moves the
+        // caret. macOS has no display-only accelerator, so there the items carry
+        // none; elsewhere the chord is shown but not bound.
+        {
+          label: "Back",
+          ...(isMac ? {} : { accelerator: "Ctrl+Left", registerAccelerator: false }),
+          click: historyBack,
+        },
+        {
+          label: "Forward",
+          ...(isMac ? {} : { accelerator: "Ctrl+Right", registerAccelerator: false }),
+          click: historyForward,
+        },
+        { type: "separator" },
         // Explicit handlers, not { role: ... }: the roles target the focused
         // window's own webContents, which BaseWindow doesn't have.
         { label: "Reload", accelerator: "CmdOrCtrl+R", click: reload },
