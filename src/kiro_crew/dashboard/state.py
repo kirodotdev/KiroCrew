@@ -2467,6 +2467,7 @@ class StageBoundary:
     consumed: bool = True
     retry_queue_id: str = ""
     continuation_required: bool = False
+    awaiting_guidance: bool = False
     preserve_stop_generation: int = -1
     parent_session_keys: set[str] = dataclass_field(default_factory=set)
     synthetic_recovery_inflight: int = 0
@@ -2493,6 +2494,7 @@ class StageBoundary:
         self.consumed = consumed
         self.retry_queue_id = ""
         self.continuation_required = False
+        self.awaiting_guidance = False
         self.preserve_stop_generation = -1
         self.parent_session_keys.clear()
         self.synthetic_recovery_inflight = 0
@@ -2518,6 +2520,7 @@ class StageBoundary:
         self.consumed = True
         self.retry_queue_id = ""
         self.continuation_required = False
+        self.awaiting_guidance = False
         self.preserve_stop_generation = -1
         self.parent_session_keys.clear()
         self.synthetic_recovery_inflight = 0

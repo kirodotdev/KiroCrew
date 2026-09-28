@@ -74,6 +74,7 @@ def _state(tmp_path) -> DashboardState:
     sessions.get_provider = MagicMock(return_value=None)
     sessions.resumable_sid = MagicMock(return_value=None)
     sessions.check_context_usage = MagicMock()
+    sessions.cancel_current = AsyncMock(return_value="acked")
     sessions.reset = AsyncMock()
     sessions.remove = AsyncMock()
     sessions.record_failure = AsyncMock()

@@ -284,8 +284,9 @@ entry.
 3. **Whole-plan watchdog.** Break if `tracker.is_plan_timed_out()`
    (`orchestrator.max_plan_duration_seconds`, default 2 h), clearing `_auto_run`
    and logging `auto_run_timeout` / `plan_duration_exceeded`. Checked at the
-   boundary rather than mid-turn: the running stage has its own ceiling, and
-   cutting between stages leaves every finished stage captured and resumable.
+   boundary rather than mid-turn: an admitted stage may outlast its stage budget,
+   while its running agent turn remains protected by the independent chat-turn
+   ceiling. Cutting between stages leaves every finished stage captured and resumable.
    `tracker.plan_warning_due()` posts one notice — latched in the tracker — once
    the run passes `PLAN_WARN_FRACTION` (75%) of that budget. **Enforced under
    `auto_run` only**: a stage-gated plan spends its wall-clock at approval
@@ -294,9 +295,15 @@ entry.
    Go All, so attended time does count in that one mixed case. Deliberate: the
    budget is a property of the plan, not of the mode, and a re-arm would let
    Go/Go All alternation refresh the ceiling indefinitely.
-4. Check `tracker.is_stage_timed_out()` **before** entering the stage, because
-   `start_stage` restarts the stage clock. On timeout: clear `_auto_run`, post
-   the elapsed notice, log `auto_run_timeout`, break.
+4. Under `auto_run`, check `tracker.is_stage_timed_out()` **before** entering
+   the next stage. An attended **Go** click is already the admission gate and is
+   never rejected for elapsed stage time. `start_stage` restarts the stage
+   clock. The card names the completed stage that spent the budget and the
+   pending stage that was not started. On
+   timeout: clear `_auto_run`, reset only the expired stage clock (failure and
+   round budgets remain spent), post fresh **Go / Cancel** controls, log
+   `auto_run_timeout`, and pause for human guidance. A stage already running is
+   never interrupted by this budget.
 5. `tracker.start_stage(stage_num)` and append a `───── Stage N: Title ─────`
    separator (class `stage-sep`). `start_stage` registers the stage at **zero
    rounds** and restarts the stage clock; it deliberately spends no round, because
@@ -308,8 +315,22 @@ entry.
    (completed / execute-now / pending), previous stage results, the current
    stage's title and bullets, and an explicit "execute Stage N of M now"
    instruction. It is appended as a hidden user message (`auto-go` class) and
-   passed to `_run_chat`. An exception from `_run_chat` clears `_auto_run`,
-   posts a stage-error notice, logs `auto_run_stage_error`, and breaks.
+   passed to `_run_chat`. The stage's 30-minute budget does **not** wrap this
+   running turn. `_bounded_turn` instead applies the ordinary configured chat-turn
+   ceiling (`agent.chat_turn_timeout_secs`, four hours by default), while the ACP
+   liveness watchdog separately handles model silence and in-flight tool stalls.
+   If the chat-turn ceiling cancels `_run_chat` after it acquired the session
+   lease, the runner sends native ACP `session/cancel` and waits up to
+   `agent.soft_stop_budget_secs` for acknowledgement; a pre-lease cancellation
+   owns no native turn, and an unacknowledged stop produces a visible warning.
+   Ending only the dashboard coroutine is forbidden because a tool could
+   otherwise keep running and land its result only in the discarded native
+   transcript. The controller preserves the exact interrupted boundary,
+   resets only its expired stage clock, marks it guidance-ready, and posts fresh
+   **Go / Cancel** controls. Ordinary human guidance may run during that pause,
+   but destructive history operations still see the reserved boundary; Go closes the pause and reconciles the interrupted stage before any
+   later stage starts. An exception from `_run_chat` clears `_auto_run`, posts a
+   stage-error notice, logs `auto_run_stage_error`, and breaks.
 7. **Wait for the stage's sub-agents.** Registers one
    `SubagentManager.completion_event(parent_key)` for every immutable parent key
    captured by the boundary, pulsed once per terminal report from
@@ -498,7 +519,7 @@ the wrong trade.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `orchestrator.stage_timeout_seconds` | `1800` | Wall-clock budget per stage before auto-run stops. `0` disables the check. |
+| `orchestrator.stage_timeout_seconds` | `1800` | Budget a stage may spend before the next automatic stage turn is admitted. Never interrupts a running turn. `0` disables the gate. |
 | `orchestrator.max_plan_duration_seconds` | `7200` | Wall-clock budget for the WHOLE plan, checked at each stage boundary, with one warning at 75%. `0` disables the check. |
 
 Frontend-side, `defaultAutopilot` in the browser-local chat config

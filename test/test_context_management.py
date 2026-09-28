@@ -187,6 +187,23 @@ def test_stage_timeout_resets_after_guidance():
     assert not t.is_stage_timed_out()
 
 
+def test_stage_timeout_pause_rearms_only_the_stage_clock():
+    from kiro_crew.context_management import OrchestrationTracker
+
+    t = OrchestrationTracker(stage_timeout_seconds=10)
+    t.record_failure("existing-failure")
+    t.start_stage(1)
+    t._stage_start = time.monotonic() - 11
+    assert t.is_stage_timed_out() is True
+
+    t.pause_after_stage_timeout()
+
+    assert t._stage_start == 0.0
+    assert t.failure_count("existing-failure") == 1
+    assert t._stage_rounds == {1: 0}
+    assert not t.is_stage_timed_out()
+
+
 # ── Orchestration tracker: additional coverage ──────────────────────
 
 

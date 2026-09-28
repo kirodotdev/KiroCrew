@@ -35,7 +35,11 @@ from kiro_crew.dashboard.state import (
     append_and_surface,
     stage_boundary_for,
 )
-from kiro_crew.dashboard.turn_dispatch import _bounded_turn
+from kiro_crew.dashboard.turn_dispatch import (
+    _bounded_turn,
+    chat_turn_timeout_secs,
+    format_turn_timeout_card,
+)
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import SecurityEvent, sel
@@ -1395,8 +1399,9 @@ async def _stage_loop(
             # Whole-plan watchdog. The per-stage timeout below bounds ONE stage;
             # multiplied by stage count it bounds nothing useful, so a long plan
             # could run unattended for hours. Checked at the stage
-            # boundary rather than mid-turn: the stage that is already running has
-            # its own ceiling, and cutting a plan between stages leaves the work
+            # boundary rather than mid-turn: an admitted stage may outlast its
+            # stage budget, while its agent turn has the independent chat ceiling.
+            # Cutting the plan between stages leaves the work
             # so far captured on disk and resumable.
             #
             # AUTO-RUN ONLY. The budget bounds UNATTENDED runtime, and the clock is
@@ -1436,13 +1441,22 @@ async def _stage_loop(
                     {"slot": slot.key, "html": _warn_msg, "cls": "msg msg-a"},
                 )
 
-            # Check the timeout BEFORE entering the stage: `start_stage` restarts
-            # the per-stage clock, so reading it afterwards would always be 0.
-            if tracker.is_stage_timed_out():
+            # The stage budget gates whether ANOTHER automatic turn may start;
+            # it never cancels a turn that is already making progress. At this
+            # point ``current_stage`` names the stage whose elapsed clock was
+            # just measured, while ``stage_num`` is the next turn we are about
+            # to admit. Keep both explicit so the card never claims the pending
+            # stage itself timed out before it started.
+            if auto_run and tracker.is_stage_timed_out():
+                budget_stage = tracker.current_stage
                 slot._auto_run = False
+                tracker.pause_after_stage_timeout()
+                _paused = True
                 _timeout_msg = (
-                    f"⏱️ Stage {stage_num} timed out after {tracker.timeout_human}. "
-                    "Auto-run stopped."
+                    f"⏱️ Stage {budget_stage} used its {tracker.timeout_human} "
+                    f"auto-run budget. Auto-run paused before Stage {stage_num}; "
+                    "choose **Go** to continue, or **Cancel** to end the plan.\n\n"
+                    "[OPTION: Go | Cancel]"
                 )
                 slot.append("assistant", _timeout_msg, "msg msg-a")
                 state.broadcast_ws(
@@ -1515,20 +1529,15 @@ async def _stage_loop(
             # the delivery point for the completed, paused and cancelled paths.
             slot.append("user", context, "msg msg-u auto-go")
             try:
-                # `_bounded_turn`, NOT `asyncio.wait_for`. `_run_chat` CATCHES
-                # CancelledError (it flushes the partial assistant output and
-                # returns), so wait_for would absorb its own deadline: the inner
-                # task completes "normally", wait_for hands back a value instead
-                # of raising, and a half-finished stage would advance as if it
-                # had succeeded. `_bounded_turn` records that its own timer
-                # fired and raises on that observed fact, so a swallowed
-                # cancellation still surfaces. See its docstring in
-                # turn_dispatch.py -- it exists for exactly this trap.
-                #
-                # A falsy stage_timeout_seconds means "disabled" everywhere else
-                # in the tracker, so skip the ceiling entirely rather than
-                # passing 0, which would cut every stage instantly.
-                _turn_timeout = tracker.stage_timeout_seconds
+                # The stage budget is a START gate, not this turn's deadline.
+                # A stage admitted just before its budget expires may finish;
+                # the next loop iteration checks the spent stage clock before
+                # admitting another automatic turn. The running turn still gets
+                # the independent dashboard chat ceiling (four hours by default),
+                # resolved off the event loop exactly like ordinary chat turns.
+                # `_bounded_turn` is still required because `_run_chat` absorbs
+                # CancelledError after flushing partial output.
+                _turn_timeout = await asyncio.to_thread(chat_turn_timeout_secs)
                 stage_boundary_for(slot).parent_session_keys.add(effective_session_key(slot))
                 _stage_turn_consumed = False
 
@@ -1549,8 +1558,7 @@ async def _stage_loop(
                     # ledger records the gateway rather than a user.
                     _turn_actor="gateway",
                 )
-                if _turn_timeout:
-                    _stage_turn_coro = _bounded_turn(_stage_turn_coro, _turn_timeout)
+                _stage_turn_coro = _bounded_turn(_stage_turn_coro, _turn_timeout)
                 # ``slot.task`` must name the ACTIVE LLM turn, not this outer
                 # stage controller. A subagent terminal report waits for that
                 # task before injecting its completion. Pointing it at the
@@ -1575,16 +1583,20 @@ async def _stage_loop(
                 # asyncio.TimeoutError is a DIFFERENT class, so catch both (the
                 # convention already used by _run_pending_synthesis).
                 logger.error(
-                    "Stage %d exceeded its %ds ceiling for slot %s",
+                    "Stage %d hit its %.0fs chat-turn ceiling for slot %s",
                     stage_num,
-                    tracker.stage_timeout_seconds,
+                    _turn_timeout,
                     slot.key,
                 )
                 _timeout_msg = (
-                    f"⏱️ Stage {stage_num} timed out after {tracker.timeout_human}. "
-                    "Auto-run stopped."
+                    f"{format_turn_timeout_card(_turn_timeout)}\n\n"
+                    f"Autopilot is paused in Stage {stage_num}; choose **Go** to "
+                    "resume it, or **Cancel** to end the plan.\n\n"
+                    "[OPTION: Go | Cancel]"
                 )
                 slot._auto_run = False
+                tracker.pause_after_stage_timeout()
+                _paused = True
                 slot.append("assistant", _timeout_msg, "msg msg-a")
                 state.broadcast_ws(
                     "chat_append",
@@ -1604,6 +1616,7 @@ async def _stage_loop(
                     )
                 )
                 _preserve_interrupted_stage()
+                stage_boundary_for(slot).awaiting_guidance = True
                 # stage-boundary-exit: stage-turn-timeout owned
                 break
             except Exception:
