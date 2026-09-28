@@ -338,6 +338,9 @@ def test_the_config_is_written_before_the_backend_starts(tmp_path: Path, monkeyp
     monkeypatch.setattr(entry.backend_mod, "build_backend_env", lambda s: {})
     monkeypatch.setattr(entry.backend_mod, "seed_model_identity", lambda s, **kw: True)
     monkeypatch.setattr(entry.backend_mod, "require_model_identity", lambda s: None)
+    # The kiro-cli login-check row shells out to create a store; this test is about
+    # config-vs-backend ordering, so it is stubbed like the other gates.
+    monkeypatch.setattr(entry.kiro_login_mod, "seed_kiro_cli_login", _record("kiro_login"))
     monkeypatch.setattr(
         entry.backend_mod, "write_backend_config", _record_returning("config", Path())
     )

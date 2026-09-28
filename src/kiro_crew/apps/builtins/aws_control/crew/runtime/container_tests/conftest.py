@@ -87,7 +87,7 @@ _FLOOR_MARGIN = 2
 
 # Floor on how many tests the suite must yield, checked only under _REQUIRED_ENV.
 #
-# This IS the measured collection (382 items), not the measurement less a cushion.
+# This IS the measured collection (430 items), not the measurement less a cushion.
 # The position matters as much as the number, because the two directions want their
 # slack on opposite sides: a test DISAPPEARING is the failure this guard exists to
 # catch, so it gets no tolerance at all, while a test being ADDED is ordinary work
@@ -118,7 +118,7 @@ _FLOOR_MARGIN = 2
 # long before anyone notices it drifted. It may be LOWERED only alongside a deliberate
 # deletion of tests, in the same commit, and never to make a red lane green: a floor
 # edited down to meet the measurement measures nothing.
-_MIN_COLLECTED = 405
+_MIN_COLLECTED = 430
 
 # Not collected on a non-POSIX host. This suite's SUBJECT is the source of a Linux
 # container image, built by the deploy driver and run on Fargate -- not part of the

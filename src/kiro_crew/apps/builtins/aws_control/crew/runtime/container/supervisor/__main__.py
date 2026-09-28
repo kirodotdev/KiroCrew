@@ -46,6 +46,7 @@ from .. import common
 from ..common import Settings
 from . import backend as backend_mod
 from . import bundle as bundle_mod
+from . import kiro_login as kiro_login_mod
 from .process import ProcessGroup, spawn_process_group
 
 log = logging.getLogger("container.supervisor")
@@ -763,6 +764,32 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
             "which would authenticate the task as another account without saying so."
         )
     backend_mod.require_model_identity(settings)
+    # Then satisfy kiro-cli's OWN login check, which is a separate question from
+    # whether this task has an identity.
+    #
+    # `kiro-cli acp` validates its own credential store before it offers an ACP
+    # handshake, so on a store it has never signed into it exits rc=1 "You are not
+    # logged in" and the `_kiro/auth/getAccessToken` request the vault answers is
+    # never reached: the container serves /health 200 and answers every dashboard
+    # turn with a 503. The row written here is a NON-SECRET sentinel, not a copy of
+    # the credential -- Crew is the auth owner and the engine asks the host for the
+    # token it uses, so what the store needs is the answer to "has this been signed
+    # into", which carries nothing worth reading.
+    #
+    # AFTER the vault check, because the order is what makes each refusal say the
+    # right thing: no identity is that check's verdict, and this one's is that
+    # kiro-cli would refuse to start. Both are startup refusals, because the thing
+    # they prevent is a container that starts and then 503s every turn.
+    #
+    # Handed `env`, NOT this process's own environment. The step runs kiro-cli to ask
+    # its login check a question, and this process still holds the delivered
+    # credential in its environment at this point -- the pop below has not run yet,
+    # and cannot run earlier because `build_backend_env` above is what reads it. An
+    # inherited copy would put the credential in a child that kiro-cli may outlive
+    # through a helper, readable by the later same-uid model worker. `env` is the
+    # dictionary `build_backend_env` already scrubbed of both credential shapes, and
+    # it carries the same HOME, so the store resolves to the same path either way.
+    kiro_login_mod.seed_kiro_cli_login(env=env)
     # Now drop BOTH credential shapes from this process's own environment. The front is
     # spawned with no env argument and so inherits this one whole, and
     # `build_backend_env` only ever cleaned the COPY handed to the backend -- so without

@@ -2292,6 +2292,37 @@ reason: the harness strips the key from the relay's environment and the relay as
 host for a token over `_kiro/auth/getAccessToken`, answered by
 `acp/kas_host_auth.answer_get_access_token` inside the backend process.
 
+Seeding the vault is necessary and not sufficient. `kiro-cli acp` validates its OWN
+credential store before it offers an ACP handshake, so on a store it has never signed
+into it exits `rc=1` "You are not logged in" and that token request is never reached:
+the container answers `/health` 200 and every dashboard turn with
+`503 kiro_prerequisite_required`. So `kiro_login.seed_kiro_cli_login` runs immediately
+after `require_model_identity` and writes one row into that store
+(`$XDG_DATA_HOME/kiro-cli/data.sqlite3`, falling back to `$HOME/.local/share/...`;
+table `auth_kv`, plain JSON).
+
+**That row is a non-secret sentinel, not a copy of the credential.** It carries a
+labelled placeholder access token, no refresh token, and a fixed far-future expiry;
+nothing in it comes from the vault, and it takes no argument, so nothing in it is
+worth reading. That is sound because Crew is the auth owner: the engine raises its
+credential request on the wire and `answer_get_access_token` answers it from the
+vault, which the shipped binary confirms by logging `Auth: --auth=acp-callback
+(host-mediated refresh via _kiro/auth/getAccessToken)` with this exact row in the
+store. The row answers only "has this store been signed into".
+
+A real identity here would be strictly worse, and the reason is the same threat model
+as `build_backend_env`'s: this store is pinned OUT of the sandbox masking tiers on
+purpose, so a raw `open()` from a spawned shell reads it, and the model worker
+auto-approves every tool it calls on untrusted prompt content. A sentinel's expiry is also a fixed
+far-future constant rather than the vault's, so a long-lived task's later spawns pass
+the same check as its first, and an aged delivery the vault can still renew does not
+become a startup refusal.
+
+It is written in the container supervisor and nowhere else, which is what keeps it
+internal-only: a desktop host signs kiro-cli in by itself. Every failure inside it is
+a startup refusal, because the alternative is the 503 above with a healthy-looking
+task in front of it.
+
 **That is defence in depth, not a licence to drop the sandbox.** What decides whether
 an auto-approved worker is safe is whether it can REACH a credential, not whether one
 is resident in its own environment, and the vault is a route the container cannot
