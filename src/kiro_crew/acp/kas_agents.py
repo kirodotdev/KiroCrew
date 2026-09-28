@@ -696,6 +696,7 @@ def hoist_managed_servers(
     custom_agents: list[dict[str, Any]] | None,
     agent_id: str,
     session_servers: list[dict[str, Any]],
+    session_token: str = "",
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
     """Carry the ACTIVE agent's managed declarations in the session-level array.
 
@@ -728,6 +729,32 @@ def hoist_managed_servers(
     * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
       other than ``stdio``, or no usable command -- a restriction, a registry
       marker or a malformed entry keeps the block path, where it is honoured.
+
+    *session_token* is this session's signed identity token, and every hoisted
+    element carries it (``KIROCREW_STUB_SESSION_TOKEN``). The runtime stamps the
+    token onto its session-level array BEFORE this hoist runs, so the elements
+    added here would otherwise be the only managed servers launched without it:
+    each one reads the session's tool policy behind an attestation, and without
+    the token ``kirocrew-core`` comes up present-but-unusable, refusing every call
+    as ``identity_unattested``. Only the hoisted elements receive it -- a caller
+    entry already carries its own identity, and a third-party server is not
+    Crew's to hand a session credential. Empty leaves the elements as projected.
+
+    A tokened element never launches what the spec says. KAS spawns the hoisted
+    element itself, so ``gatewayd._spawns_own_control_plane`` -- the check that
+    refuses the token to any binary that is not the managed one -- never sees it,
+    and a hand-edited spec naming another program ``kirocrew-core`` would
+    otherwise be handed this session's identity. So the launch is re-derived from
+    :func:`~kiro_crew.agent.managed_mcp_spec_entry` (``include_opt_in=True``, the
+    form the daemon compares against), exactly as
+    ``mcp_gateway.rewriter._repair_control_plane_entry`` and the native-mount
+    path in :mod:`kiro_crew.acp.session_mcp` do. The env is composed outward
+    too: only ``KIROCREW_PORT`` / ``KIROCREW_SESSION_KEY``, which the projection
+    set from the gateway's own values, then the managed env pinned last; the
+    spec's ``KIROCREW_HOME`` does not survive onto a tokened launch. A name
+    whose managed invocation does not resolve is still hoisted as projected,
+    WITHOUT the token -- the daemon would deny it anyway, and a session with an
+    unattested control plane is better than one with none.
 
     The agent's ``tools`` / ``excludedTools`` / ``permissions`` are untouched:
     ``@server`` refs resolve wherever the server was declared, which is the same
@@ -780,4 +807,72 @@ def hoist_managed_servers(
     if not hoisted:
         return custom_agents, session_servers
     hoisted.sort(key=lambda element: element["name"])
+    if session_token:
+        # Deferred like session_mcp above: the kiro path returns before this, and
+        # the token is per SESSION while the projection is per agent.
+        from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
+
+        hoisted = [
+            _tokened_managed_element(element, session_token, attach_stub_session_token)
+            for element in hoisted
+        ]
     return out_agents, [*session_servers, *hoisted]
+
+
+#: Env keys a tokened hoisted element keeps from its projection. Both are set by
+#: :func:`to_client_custom_agent` from the gateway's own values (the bound port,
+#: the session key) and never from the spec, which ``_MANAGED_ENV_KEYS_KEPT``
+#: limits to ``KIROCREW_HOME`` -- a home-deriving key a tokened launch must not
+#: take from a hand edit.
+_TOKENED_ENV_KEYS_KEPT = ("KIROCREW_PORT", "KIROCREW_SESSION_KEY")
+
+
+def _tokened_managed_element(
+    element: dict[str, Any],
+    session_token: str,
+    attach: Any,
+) -> dict[str, Any]:
+    """*element* relaunched as the managed invocation and stamped with the token.
+
+    ``None`` from the managed source (name not managed, closed ``spec_gate``,
+    unresolvable invocation) returns *element* untouched and untokened: that is
+    the verdict ``gatewayd._spawns_own_control_plane`` reaches for the same name,
+    so nothing here hands out a token the daemon would refuse.
+    """
+    from kiro_crew.agent import _managed_mcp_env, managed_mcp_spec_entry
+
+    name = str(element.get("name", ""))
+    managed = managed_mcp_spec_entry(name, include_opt_in=True)
+    if not isinstance(managed, dict) or not managed.get("command"):
+        logger.warning(
+            "hoisted MCP server %r gets no session token: its managed invocation does"
+            " not resolve, so the launch the spec declares cannot be attested",
+            name,
+        )
+        return element
+    managed_cmd = str(managed["command"])
+    managed_args = [str(a) for a in managed.get("args", [])]
+    declared_args = element.get("args")
+    if element.get("command") != managed_cmd or declared_args != managed_args:
+        # Neither value is logged: the declared args may carry a secret, and the
+        # managed invocation is enough to find the entry.
+        logger.warning(
+            "hoisted MCP server %r declares a launch that is not the managed"
+            " invocation; launching the managed one so the session token only"
+            " reaches Kiro Crew's own binary",
+            name,
+        )
+    raw_env = element.get("env")
+    pairs: list[Any] = raw_env if isinstance(raw_env, list) else []
+    env = {
+        str(pair["name"]): str(pair.get("value", ""))
+        for pair in pairs
+        if isinstance(pair, dict) and pair.get("name") in _TOKENED_ENV_KEYS_KEPT
+    }
+    env.update(_managed_mcp_env())
+    relaunched = dict(element)
+    relaunched["command"] = managed_cmd
+    relaunched["args"] = managed_args
+    relaunched["env"] = [{"name": k, "value": v} for k, v in env.items()]
+    (stamped,) = attach([relaunched], session_token)
+    return stamped

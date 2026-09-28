@@ -224,11 +224,31 @@ def kas_readiness_wire(monkeypatch, tmp_path):
                 assert name in wire_names
                 element = next(e for e in request["params"]["mcpServers"] if e["name"] == name)
                 assert element["type"] == "stdio"
-                assert element["command"] == projected["mcpServers"][name]["command"]
-                assert element["env"] == [
+                # The resume path owns its array, so its session token rides on
+                # the hoisted element; create_session is handed an explicit array
+                # here, which mints none.
+                tokens = [pair for pair in element["env"] if pair["name"] == STUB_SESSION_TOKEN_ENV]
+                assert len(tokens) == (1 if resume else 0) and all(p["value"] for p in tokens)
+                declared_env = [
                     {"name": k, "value": str(v)}
                     for k, v in (projected["mcpServers"][name].get("env") or {}).items()
                 ]
+                if not tokens:
+                    assert element["command"] == projected["mcpServers"][name]["command"]
+                    assert element["env"] == declared_env
+                    continue
+                # A tokened element launches the managed invocation, never the
+                # spec's (KAS spawns it; gatewayd's own-binary check never runs).
+                from kiro_crew.agent import _managed_mcp_env, managed_mcp_spec_entry
+
+                managed = managed_mcp_spec_entry(name, include_opt_in=True)
+                assert element["command"] == managed["command"]
+                assert element["args"] == [str(a) for a in managed.get("args", [])]
+                assert [p for p in element["env"] if p not in tokens] == [
+                    p
+                    for p in declared_env
+                    if p["name"] in ("KIROCREW_PORT", "KIROCREW_SESSION_KEY")
+                ] + [{"name": k, "value": v} for k, v in _managed_mcp_env().items()]
         if pre_ready:
             status("connected")
             tags("kirocrew-core", "kirocrew-dashboard")
@@ -6001,7 +6021,7 @@ class TestAcpRuntimeLoadSession:
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
 
-        def _hoist(agents, agent, servers):
+        def _hoist(agents, agent, servers, **_kw):
             # The shape the real hoist produces: a managed server appears on the
             # array that was not in the roster the caller passed in.
             return agents, list(servers) + [{"name": "hoisted", "command": "/bin/h"}]
@@ -6029,6 +6049,77 @@ class TestAcpRuntimeLoadSession:
             "the report reads a different array than the resume sent; rebind "
             "wire_servers at the hoist rather than only load_params['mcpServers']"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+    async def test_kas_hoisted_control_plane_carries_the_session_token(self, monkeypatch, resume):
+        """On KAS the managed servers reach the wire through the hoist, token included.
+
+        The runtime stamps the per-session token onto its array BEFORE
+        ``hoist_managed_servers`` runs, and on KAS that array is empty: every
+        managed server arrives through the hoist. A hoisted ``kirocrew-core``
+        without the token reads its tool policy unattested and refuses every call
+        as ``identity_unattested`` -- memory, logs, spawn_run -- on every session.
+        """
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        sent: list[tuple[str, dict]] = []
+
+        async def _fake_send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            if method == METHOD_SESSION_NEW:
+                return {"sessionId": "sid-kas-new"}
+            return {}
+
+        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+            from kiro_crew.acp.harness import SessionExtras
+
+            return SessionExtras(
+                custom_agents=[
+                    {
+                        "id": agent,
+                        "prompt": "p",
+                        "tools": ["@kirocrew-core", "@external"],
+                        "mcpServers": {
+                            "kirocrew-core": {
+                                "command": "kc",
+                                "args": ["mcp-core"],
+                                "env": {"KIROCREW_SESSION_KEY": session_key},
+                            },
+                            "external": {"command": "ext"},
+                        },
+                    }
+                ]
+            )
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
+        # Readiness is its own concern (see the kas_readiness_wire tests); this one
+        # is about what the request carried, so the wait returns at once.
+        monkeypatch.setattr(AcpSessionHandle, "wait_mcp_ready", AsyncMock(return_value=None))
+        rt._acp_backend = ACP_BACKEND_KAS
+
+        if resume:
+            handle = await rt.load_session(
+                "", "sid-kas-load", cwd="/work", agent="kirocrew", session_key="dashboard:chat-1"
+            )
+            method = METHOD_SESSION_LOAD
+        else:
+            handle = await rt.create_session(
+                cwd="/work", agent="kirocrew", session_key="dashboard:chat-1"
+            )
+            method = METHOD_SESSION_NEW
+        params = next(p for m, p in sent if m == method)
+        core = [e for e in params["mcpServers"] if e.get("name") == "kirocrew-core"]
+        assert len(core) == 1, "kirocrew-core must travel in the session-level array"
+        (token,) = _identity_tokens(core)
+        assert token, "the hoisted kirocrew-core was launched without the session token"
+        assert token == handle.stub_session_token, "the element must carry THIS session's token"
+        # A third-party server stays in the agent block, and never gets the token.
+        (agent_block,) = params["_meta"]["kiro"]["customAgents"]
+        assert STUB_SESSION_TOKEN_ENV not in json.dumps(agent_block)
 
     @pytest.mark.asyncio
     async def test_load_session_keeps_the_transcript_path_alongside_the_agents(self, monkeypatch):

@@ -5604,7 +5604,9 @@ class AcpRuntime:
         # global/workspace entry and 2.20.0 reports as the client's own (see
         # ``hoist_managed_servers``). The kiro path returns None here and is
         # untouched.
-        kas_agents, mcp_servers = hoist_managed_servers(kas_agents, active_agent, mcp_servers)
+        kas_agents, mcp_servers = hoist_managed_servers(
+            kas_agents, active_agent, mcp_servers, session_token=stub_token
+        )
         # The host's last word on its own tool surface. A host that reads an
         # agent spec passes the list straight back; one that has nothing else
         # describing its tools narrows it to the transports it advertised at
@@ -6332,7 +6334,9 @@ class AcpRuntime:
             # Same carriage as create_session: a resumed session re-initializes
             # its servers, and the managed ones must win the same-name contest
             # on load exactly as they did on new.
-            kas_agents, mcp_servers = hoist_managed_servers(kas_agents, active_agent, mcp_servers)
+            kas_agents, mcp_servers = hoist_managed_servers(
+                kas_agents, active_agent, mcp_servers, session_token=stub_token
+            )
             # REBIND, not just re-assign the param: the hoist changes the array, and
             # wire_servers is what the stall diagnostic and the session report read.
             # Setting only load_params would leave both describing the pre-hoist roster

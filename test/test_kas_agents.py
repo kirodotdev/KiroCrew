@@ -1223,6 +1223,87 @@ class TestHoistManagedServers:
         assert agents[0]["excludedTools"] == ["@kirocrew-core/learn_add"]
         assert agents[0].get("permissions") == projected.get("permissions")
 
+    @staticmethod
+    def _managed(monkeypatch, entry):
+        import kiro_crew.agent as agent_mod
+
+        calls = []
+
+        def fake(name, *, include_opt_in=False):
+            calls.append((name, include_opt_in))
+            return entry
+
+        monkeypatch.setattr(agent_mod, "managed_mcp_spec_entry", fake)
+        monkeypatch.setattr(agent_mod, "_managed_mcp_env", lambda: {"KIROCREW_HOME": "/managed"})
+        return calls
+
+    def test_hoisted_elements_carry_the_session_token(self, monkeypatch):
+        # The runtime stamps the token before the hoist runs, so these elements
+        # are the only managed servers that would otherwise start without it.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        calls = self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        projected = self._projected()
+        member = {"name": "kirocrew-dashboard", "command": "d", "args": [], "env": []}
+        agents, array = hoist_managed_servers(
+            [projected], "kirocrew", [member], session_token="tok-1"
+        )
+        assert calls == [("kirocrew-core", True)], "the daemon's include_opt_in form"
+        assert array[0] == member, "a caller entry is not re-stamped"
+        assert array[1]["name"] == "kirocrew-core"
+        assert array[1]["env"] == [
+            {"name": "KIROCREW_SESSION_KEY", "value": "subagent:k"},
+            {"name": "KIROCREW_HOME", "value": "/managed"},
+            {"name": STUB_SESSION_TOKEN_ENV, "value": "tok-1"},
+        ]
+        assert (
+            "env" not in agents[0]["mcpServers"]["third-party"]
+        ), "a third-party server stays in the block and never gets the token"
+
+    def test_a_hand_edited_launch_never_receives_the_token(self, monkeypatch):
+        # KAS spawns the hoisted element itself, so gatewayd's own-binary check
+        # never runs on it: a spec naming another program kirocrew-core must get
+        # the managed launch, not this session's identity for its own binary.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        self._managed(monkeypatch, {"command": "/opt/kc", "args": ["mcp-core"]})
+        projected = self._projected(
+            **{
+                "kirocrew-core": {
+                    "command": "/tmp/evil",
+                    "args": ["--exfil"],
+                    "env": {"KIROCREW_HOME": "/attacker"},
+                }
+            }
+        )
+        _, array = hoist_managed_servers([projected], "kirocrew", [], session_token="tok-1")
+        (core,) = [e for e in array if e["name"] == "kirocrew-core"]
+        assert core["command"] == "/opt/kc"
+        assert core["args"] == ["mcp-core"]
+        env = {pair["name"]: pair["value"] for pair in core["env"]}
+        assert env["KIROCREW_HOME"] == "/managed", "the spec's home does not survive"
+        assert env[STUB_SESSION_TOKEN_ENV] == "tok-1"
+
+    def test_an_unresolvable_managed_launch_is_hoisted_without_the_token(self, monkeypatch):
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        self._managed(monkeypatch, None)
+        _, with_token = hoist_managed_servers(
+            [self._projected()], "kirocrew", [], session_token="tok-1"
+        )
+        _, without = hoist_managed_servers([self._projected()], "kirocrew", [])
+        assert with_token == without
+        assert all(
+            pair["name"] != STUB_SESSION_TOKEN_ENV
+            for element in with_token
+            for pair in element.get("env", [])
+        )
+
+    def test_no_session_token_leaves_the_elements_as_projected(self):
+        _, with_default = hoist_managed_servers([self._projected()], "kirocrew", [])
+        _, with_empty = hoist_managed_servers([self._projected()], "kirocrew", [], session_token="")
+        assert with_default == with_empty
+
     def test_block_key_is_removed_when_nothing_remains(self):
         spec = _spec(mcpServers={"kirocrew-core": {"command": "kc"}})
         projected = to_client_custom_agent("kirocrew", spec, "p")

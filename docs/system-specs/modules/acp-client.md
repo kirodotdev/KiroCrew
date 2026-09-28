@@ -677,7 +677,18 @@ collision behaviour was not probed. The entries moved are the
 already projected ones (credential fields withheld, `autoApprove` dropped,
 `KIROCREW_PORT` / `KIROCREW_SESSION_KEY` applied), converted with
 `session_mcp.acp_server_element`; no spec is re-read and the derived-spec
-snapshot is unchanged. The move is bounded: only managed names, only the active
+snapshot is unchanged. Each hoisted entry also receives this session's
+`KIROCREW_STUB_SESSION_TOKEN`: the runtime stamps the token onto the
+session-level array before the hoist runs, so without it the hoisted
+`kirocrew-core` would be the one managed server launched unattested and refuse
+every call as `identity_unattested`. Caller entries keep their own identity and
+third-party servers never receive the token. A tokened entry launches the
+managed invocation (`agent.managed_mcp_spec_entry(name, include_opt_in=True)`),
+never the spec's `command` / `args`: KAS spawns it directly, so
+`gatewayd._spawns_own_control_plane` never vets it, and a hand-edited spec
+must not hand the token to another binary. Its env keeps only the projected
+`KIROCREW_PORT` / `KIROCREW_SESSION_KEY` plus the managed env; a name whose
+managed invocation does not resolve is hoisted as projected with no token. The move is bounded: only managed names, only the active
 agent, never a name the caller's array already carries (a broker stub or the
 member dispatch entry stays authoritative and a name appears once), and only a
 stdio entry whose keys are drawn only from `command`, `args`, `env`, `type` — a
