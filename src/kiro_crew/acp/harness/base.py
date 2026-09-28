@@ -449,6 +449,16 @@ class HarnessAdapter(abc.ABC):
         hanging on a callback is worse than one told its credential expired.
         """
 
+    @property
+    @abc.abstractmethod
+    def opens_external_urls(self) -> bool:
+        """This host sends ``_kiro/openExternalUrl`` for an MCP sign-in.
+
+        When true the reader loop answers that request and hands the URL to the
+        session whose sign-in the runtime started, as an ordinary OAuth request
+        frame. When false the request is answered -32601 and no sign-in starts.
+        """
+
     # ── Seam 5: notification aliases ──
 
     @property

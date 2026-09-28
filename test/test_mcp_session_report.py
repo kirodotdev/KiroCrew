@@ -413,17 +413,30 @@ class TestEventOwnershipReachesTheReport:
         ):
             marker = f"kind={kind},"
             assert marker in src, f"{kind} is no longer yielded — re-point this guard"
-            window = src[src.index(marker) : src.index(marker) + 400]
-            assert "runtime_global=not self._owns_mcp_frame(msg)" in window, (
-                f"{kind} is yielded without the frame's ownership provenance, so a "
-                "consumer gating on runtime_global would silently never fire"
-            )
-            assert "runtime_global=msg.fanout_no_owner" not in window, (
-                f"{kind} is back to deriving ownership from the runtime's fan-out "
-                "counter, which is only set once MORE THAN ONE queue is registered "
-                "— a lone session is handed a co-tenant's sessionless frame unmarked "
-                "and publishes that server as its own"
-            )
+            start = src.find(marker)
+            while start != -1:
+                window = src[start : start + 400]
+                # A sign-in completion is session-owned by construction: the
+                # sign-in tracker records only frames this session owns, so its
+                # yield states False instead of re-reading an unrelated frame.
+                before = src[max(0, start - 600) : start]
+                owned_completion = (
+                    "self._mcp_sign_in_completed.pop()" in before
+                    and "runtime_global=False" in window
+                )
+                assert (
+                    "runtime_global=not self._owns_mcp_frame(msg)" in window or owned_completion
+                ), (
+                    f"{kind} is yielded without the frame's ownership provenance, so a "
+                    "consumer gating on runtime_global would silently never fire"
+                )
+                assert "runtime_global=msg.fanout_no_owner" not in window, (
+                    f"{kind} is back to deriving ownership from the runtime's fan-out "
+                    "counter, which is only set once MORE THAN ONE queue is registered "
+                    "— a lone session is handed a co-tenant's sessionless frame unmarked "
+                    "and publishes that server as its own"
+                )
+                start = src.find(marker, start + 1)
 
     def test_every_runner_call_site_forwards_it_to_the_report(self):
         from kiro_crew.dashboard import chat_runner

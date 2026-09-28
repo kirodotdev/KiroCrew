@@ -33,6 +33,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_POD_HOME_REMAP,
     METHOD_KIRO_SESSION_UPDATE,
     METHOD_MCP_OAUTH_REQUEST,
@@ -145,6 +146,10 @@ class MembershipHarness(HarnessAdapter):
     @property
     def client_meta_settings(self) -> bool:
         return self.backend in ACP_BACKENDS_CLIENT_META_SETTINGS
+
+    @property
+    def opens_external_urls(self) -> bool:
+        return self.backend in ACP_BACKENDS_OPEN_EXTERNAL_URL
 
     def reclaim_policy(self, *, max_age_secs: float, max_rss_mb: float) -> ReclaimPolicy:
         """Pass the runtime's configured thresholds straight through.

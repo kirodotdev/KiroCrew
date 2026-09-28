@@ -46,6 +46,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -178,6 +179,14 @@ METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
 MCP_ROSTER_COMPLETE_NOTE = "the stall is later in session startup, not in those servers"
 METHOD_KAS_MCP_STATUS = "_kiro/mcp/status"
 METHOD_KAS_TOOLS_CHANGED = "_kiro/tools/didChange"
+#: The client-side reset KAS runs an explicit MCP sign-in through. With
+#: ``startOAuth`` true the engine keeps its OAuth callback listener open for the
+#: whole connect attempt; the ``authorizationUrl`` on a failed ``_kiro/mcp/status``
+#: entry comes from a passive attempt whose listener is already closed.
+METHOD_KAS_MCP_RESET_SERVER = "_kiro/mcp/resetServer"
+#: Engine -> client request carrying the consent URL of that sign-in. It names
+#: neither the session nor the server.
+METHOD_KAS_OPEN_EXTERNAL_URL = "_kiro/openExternalUrl"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
@@ -300,17 +309,24 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
 # _meta.kiro. The ones there are CALLBACK capabilities — KAS calls back into the
-# client to service them. Only the settings channel is opened, because that is
-# how a client selects KAS feature flags.
+# client to service them. The settings channel is opened because that is how a
+# client selects KAS feature flags; ``openExternalUrl`` is covered below.
 #
 # ``hooks`` stays undeclared although ``acp/kas_wire.py`` serves all three of its
 # methods. Kiro Crew's own turn loop already fires every hook event this surface
 # can serve for a KAS session, and its PreToolUse can BLOCK a tool on exit 2;
 # announcing would run each hook twice and hand the agent a path whose output is
-# only a context note. Every other callback stays undeclared (= false) too.
+# only a context note.
+#
+# ``openExternalUrl`` is declared because it is the only channel an MCP OAuth
+# consent URL reaches the client on: without it the engine has nowhere to send
+# the link of a sign-in Crew starts with ``_kiro/mcp/resetServer``, and a remote
+# OAuth server never connects. ``secretStorage`` stays undeclared, so the engine
+# holds the resulting grant in memory and Crew never stores an MCP token. Every
+# other callback stays undeclared (= false) too.
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
-    "_meta": {"kiro": {"settings": {}}},
+    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},
 }
 
 # ── Claude backend permission modes ──

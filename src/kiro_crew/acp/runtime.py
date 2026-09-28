@@ -53,6 +53,7 @@ from kiro_crew.acp.client import (
     _capture_child_records,
     _drain_oversize_line,
     _get_child_pids,
+    _is_safe_oauth_url,
     _KiroExecutableTrustError,
     _loggable_request_id,
     apply_pod_bundle_spawn,
@@ -82,9 +83,11 @@ from kiro_crew.acp.kas_transport import (
 )
 from kiro_crew.acp.mcp_ref_guard import warn_unresolved_server_refs
 from kiro_crew.acp.mcp_session_report import (
+    NAME_CAP,
     active_custom_agent,
     required_managed_servers,
     roster_names,
+    sanitize_sink_text,
 )
 from kiro_crew.acp.session_handle import (
     NATIVE_CHILD_ROSTER_CAP,
@@ -107,6 +110,8 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     MCP_ROSTER_COMPLETE_NOTE,
+    METHOD_KAS_MCP_RESET_SERVER,
+    METHOD_KAS_OPEN_EXTERNAL_URL,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -360,6 +365,14 @@ def _rc_phrase(rc: object) -> str:
 # mirrors the private constant AcpClient keeps for its own dispatch sites.
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _REQUEST_TIMEOUT = 30.0
+# How long an MCP sign-in may hold its slot. The engine answers the reset when
+# its connect attempt ends, which the server's connect timeout bounds: 60 s by
+# default and at most 600 s. This only frees the slot if no answer ever comes,
+# so it sits past the longest attempt: a slot freed while the engine can still
+# send that attempt's link would hand the link to the next sign-in.
+_MCP_SIGN_IN_TIMEOUT = 630.0
+# JSON-RPC server-error code for a consent URL Crew did not show anyone.
+_MCP_URL_NOT_OPENED = -32000
 # ``initialize`` budget while the kernel is throttling the agents slice. A
 # throttled kiro-cli is alive and making progress, only slowly, so the fixed
 # budget above kills work that would have finished; each retry then pays the
@@ -1701,6 +1714,11 @@ class AcpRuntime:
         # positive "the engine is drawing its credential from Crew" signal; later
         # ones (the engine refreshes ahead of expiry) drop to DEBUG.
         self._kas_host_auth_logged = False
+        # The one MCP sign-in in flight on this process, as (session_id,
+        # server_name). The engine's consent-URL request names neither, so at
+        # most one sign-in runs at a time and its URL goes to the session that
+        # started it -- see begin_mcp_sign_in.
+        self._mcp_sign_in: tuple[str, str] | None = None
         if model is not None:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(
@@ -4465,6 +4483,25 @@ class AcpRuntime:
                     self._answer_tasks.add(_auth_task)
                     _auth_task.add_done_callback(self._answer_tasks.discard)
                     continue
+                # The consent URL of an MCP sign-in this runtime started. It
+                # names no session, so it is answered here and handed to the
+                # session that owns the sign-in; a host that never declared the
+                # capability falls through to the -32601 answer below.
+                if (
+                    msg.id is not None
+                    and msg.result is None
+                    and msg.error is None
+                    and msg.method == METHOD_KAS_OPEN_EXTERNAL_URL
+                    and self._harness.opens_external_urls
+                ):
+                    if not await self._wait_for_answer_capacity(msg, request_kind="MCP sign-in"):
+                        continue
+                    _url_task = asyncio.ensure_future(
+                        self._answer_open_external_url(msg.id, msg.params)
+                    )
+                    self._answer_tasks.add(_url_task)
+                    _url_task.add_done_callback(self._answer_tasks.discard)
+                    continue
                 # Any other request that arrives without a sessionId is
                 # unroutable and is answered -32601 by
                 # _answer_ownerless_request below, rather than being left to
@@ -4767,6 +4804,95 @@ class AcpRuntime:
                 self._agent or "<none>",
                 self._pid,
             )
+
+    def mcp_sign_in_holds(self, session_id: str, server_name: str) -> bool:
+        """Whether the runtime holds this session and server's sign-in slot."""
+        return self._mcp_sign_in == (session_id, server_name)
+
+    def begin_mcp_sign_in(self, session_id: str, server_name: str) -> bool:
+        """Start an explicit OAuth sign-in for one MCP server of one session.
+
+        Sends ``_kiro/mcp/resetServer`` with ``startOAuth`` in the background: the
+        engine answers only when the connect attempt ends, which is after the user
+        signs in or after the server's connect timeout. The consent URL arrives
+        meanwhile as ``_kiro/openExternalUrl`` and is delivered to *session_id*.
+
+        Returns False, starting nothing, when the host sends no consent URL, the
+        session is not registered, or another sign-in is in flight: the URL
+        request names neither session nor server, so a second concurrent sign-in
+        would make its link unattributable. The caller offers again later.
+
+        The slot is held until the reset is answered, even after its session
+        unregisters: that session's link can still arrive, and it is refused
+        because the session's queue is gone rather than handed to a newer
+        sign-in.
+        """
+        if not self._harness.opens_external_urls or self._dead:
+            return False
+        if self._mcp_sign_in is not None or session_id not in self._session_queues:
+            return False
+        self._mcp_sign_in = (session_id, server_name)
+        task = asyncio.ensure_future(self._run_mcp_sign_in(session_id, server_name))
+        self._answer_tasks.add(task)
+        task.add_done_callback(self._answer_tasks.discard)
+        return True
+
+    async def _run_mcp_sign_in(self, session_id: str, server_name: str) -> None:
+        """Hold the sign-in slot until the engine's reset answer arrives."""
+        entry = (session_id, server_name)
+        try:
+            await self._send_and_await(
+                METHOD_KAS_MCP_RESET_SERVER,
+                {"sessionId": session_id, "serverName": server_name, "startOAuth": True},
+                timeout=_MCP_SIGN_IN_TIMEOUT,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the next offer retries
+            logger.info(
+                "MCP sign-in for %s ended without an answer: %s",
+                sanitize_sink_text(server_name, NAME_CAP),
+                type(exc).__name__,
+            )
+        finally:
+            if self._mcp_sign_in == entry:
+                self._mcp_sign_in = None
+
+    async def _answer_open_external_url(self, request_id: int | str, params: Any) -> None:
+        """Deliver an MCP consent URL to the session whose sign-in is in flight.
+
+        The URL becomes an ordinary ``_kiro.dev/mcp/oauth_request`` frame on that
+        session's queue, so it takes the same safety checks and banner as the
+        kiro-cli engine's own request. It is refused with a JSON-RPC error when
+        no sign-in is in flight (the link cannot be attributed to a server), when
+        the owning session is gone, or when the URL is not http(s), which the
+        banner would refuse. The engine raises on that error, so its connect
+        attempt ends at once instead of waiting for a callback no user was shown.
+        """
+        url = params.get("url") if isinstance(params, dict) else None
+        entry = self._mcp_sign_in
+        queue = self._session_queues.get(entry[0]) if entry is not None else None
+        refusal = ""
+        if entry is None:
+            refusal = "no MCP sign-in is in flight"
+        elif queue is None:
+            refusal = "the MCP sign-in's session has left"
+        elif not isinstance(url, str) or not _is_safe_oauth_url(url):
+            refusal = "the consent URL is not an http(s) URL"
+        else:
+            session_id, server_name = entry
+            await queue.put(
+                JsonRpcMessage(
+                    method=METHOD_MCP_OAUTH_REQUEST,
+                    params={"sessionId": session_id, "serverName": server_name, "oauthUrl": url},
+                )
+            )
+        try:
+            if refusal:
+                logger.info("MCP consent URL not opened: %s", refusal)
+                await self.send_error(request_id, _MCP_URL_NOT_OPENED, refusal)
+            else:
+                await self.send_response(request_id, {"success": True})
+        except AcpRuntimeDead:
+            return
 
     async def _answer_ownerless_request(self, request_id: int | str, method: str) -> None:
         """Answer a server→client request that names no session with -32601.

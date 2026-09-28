@@ -73,6 +73,9 @@ _ERROR_CAP = 240
 # Servers per bucket. A stock install runs well under ten; the cap exists so a
 # misconfigured host cannot push an unbounded list into every slots snapshot.
 _BUCKET_CAP = 64
+# Shared with the session's sign-in tracker, which reads the same status
+# snapshots and must bound them the same way.
+BUCKET_CAP = _BUCKET_CAP
 # Names a one-line summary spells out before it counts the tail. A log line is
 # read at a glance, so the bound is far below ``_BUCKET_CAP``: the point is
 # which servers are broken, and a 64-name line answers that worse than eight.
