@@ -641,6 +641,7 @@ def _holds(backend: str, spec: _LineSpec) -> bool:
             # security code builds from is one to add no import edges to from a
             # display projection.
             from kiro_crew.agent_sdk.host_auth import (
+                ENTITLEMENT_HARNESS_DEFINED,
                 UNKNOWN_AGENT_AUTH,
                 declaration_for,
                 signs_in_separately,
@@ -658,7 +659,11 @@ def _holds(backend: str, spec: _LineSpec) -> bool:
             # Reachable during a real onboarding rather than only in a test: a
             # harness joins ``ACP_BACKENDS_KNOWN`` at Stage 1 and gets its auth
             # declaration at Stage 5, and every card in between is served.
-            if declaration_for(backend) is UNKNOWN_AGENT_AUTH:
+            declaration = declaration_for(backend)
+            if (
+                declaration is UNKNOWN_AGENT_AUTH
+                or declaration.entitlement_source == ENTITLEMENT_HARNESS_DEFINED
+            ):
                 continue
             if signs_in_separately(backend):
                 return True

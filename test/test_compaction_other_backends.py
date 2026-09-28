@@ -47,6 +47,7 @@ from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
@@ -244,7 +245,13 @@ class TestEveryKnownBackendIsClassified:
     #: * ``pi``, ``goose`` -- their source says they compact inline; no driven capture
     #:   confirms it, which is the bar ``ACP_BACKENDS_COMPACT`` holds members to. The
     #:   capture is tracked as deferred follow-up work.
-    UNCLASSIFIED = frozenset({ACP_BACKEND_PI, ACP_BACKEND_GOOSE})
+    #: * ``custom`` -- the experimental Custom ACP harness is an operator-supplied
+    #:   command+argv with no spec or MCP projection, warning-only routing, and no
+    #:   steering/resume/compact support. Its manual compaction is explicitly
+    #:   unsupported and unverified, so it declines and logs a WARNING like any
+    #:   unclassified backend -- listed here to keep that a recorded choice rather
+    #:   than granting it any compaction membership.
+    UNCLASSIFIED = frozenset({ACP_BACKEND_CUSTOM, ACP_BACKEND_PI, ACP_BACKEND_GOOSE})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
         classified = (

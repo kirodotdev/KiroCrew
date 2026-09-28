@@ -20,7 +20,7 @@ import pytest
 
 from conftest import requires_symlinks
 from kiro_crew import cli_doctor, cron, extras
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CUSTOM, ACP_BACKEND_PI
 
 
 class TestManagedServicePolicyDoctor:
@@ -849,11 +849,16 @@ class TestSelectedBackendProjectionRow:
         asserts -- but it IS the state an operator gets told about, so the set is
         pinned by name and a new one is a deliberate change to this assertion.
 
-        ``pi`` is the one member, on evidence rather than absence: pi-acp accepts the
-        ``session/new`` MCP array and never hands it to the pi process (a stdio server
-        placed in it produced no error and no tool, verified live on pi-acp 0.0.33),
-        so the row below is what tells the operator a pi session carries none of
-        Kiro Crew's own tools. The case that follows pins that the row is rendered.
+        ``pi`` is a member on evidence: pi-acp accepts the ``session/new`` MCP array
+        and never hands it to the pi process (a stdio server placed in it produced no
+        error and no tool, verified live on pi-acp 0.0.33), so the row is what tells
+        the operator a pi session carries none of Kiro Crew's own tools.
+
+        ``custom`` is a member by construction: the experimental Custom ACP harness is
+        a command+argv the operator supplies, with no spec or MCP projection, so Crew
+        has no channel to carry its own servers into a custom session. The row tells
+        the operator that, the same way it does for pi. The case that follows pins that
+        the row is rendered.
         """
         from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
 
@@ -862,7 +867,10 @@ class TestSelectedBackendProjectionRow:
             for backend, declared in PROJECTIONS.items()
             if declared.kind is ProjectionKind.NO_CHANNEL
         }
-        assert gaps == {ACP_BACKEND_PI}, f"no-channel backends shipping: {sorted(gaps)}"
+        assert gaps == {
+            ACP_BACKEND_CUSTOM,
+            ACP_BACKEND_PI,
+        }, f"no-channel backends shipping: {sorted(gaps)}"
 
     def test_the_real_pi_declaration_drives_the_no_channel_row(self, capsys):
         """Read off the SHIPPED declaration: the operator is told, not left to find out."""

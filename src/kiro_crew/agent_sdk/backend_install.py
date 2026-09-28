@@ -47,6 +47,7 @@ from typing import Callable, Dict, List, Tuple
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_PI,
@@ -368,7 +369,21 @@ def _probe_pi() -> BackendInstallState:
 #: the source, and evicting the source alone leaves the copy standing. ``_probe_kas``
 #: is the only one today. Nothing can detect the delegation automatically -- it is a
 #: call inside a function body -- so this note is the forcing function.
+def _probe_custom() -> BackendInstallState:
+    """Resolve the configured executable without a version or connection subprocess."""
+    from kiro_crew.agent_sdk.custom_acp import LABEL, resolve_custom_acp
+
+    try:
+        resolve_custom_acp()
+    except ValueError:
+        return BackendInstallState(
+            ACP_BACKEND_CUSTOM, _policy_id(ACP_BACKEND_CUSTOM), MISSING, (LABEL,)
+        )
+    return BackendInstallState(ACP_BACKEND_CUSTOM, _policy_id(ACP_BACKEND_CUSTOM), INSTALLED)
+
+
 _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
+    ACP_BACKEND_CUSTOM: _probe_custom,
     ACP_BACKEND_KIRO: _probe_kiro,
     ACP_BACKEND_KAS: _probe_kas,
     ACP_BACKEND_CLAUDE: _probe_claude,
