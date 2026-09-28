@@ -138,7 +138,12 @@ from kiro_crew.executors import discovery_executor, maintenance_executor, subpro
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.members import MemberNameError, validate_member_name
+from kiro_crew.members import (
+    MemberNameError,
+    crew_id_for_display_name,
+    is_crew_id,
+    validate_member_name,
+)
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MemberAlreadyExists,
@@ -5071,9 +5076,24 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
-        if name in cfg.agents:
+        # The config key is an id, the label the user typed is `display_name`.
+        # An id-shaped name keys the crew as sent; a free-form one (spaces, CJK)
+        # is kept as the label and keyed by a derived id, so an older client
+        # sending only `name` still creates a crew. Uniqueness is by what the
+        # user sees: a free-form name another crew already shows is taken.
+        requested = name
+        if is_crew_id(requested):
+            name_taken = requested in cfg.agents
+        else:
+            name_taken = any(
+                (agent.display_name or key) == requested for key, agent in cfg.agents.items()
+            )
+            name = crew_id_for_display_name(requested, cfg.agents)
+            display_name = display_name or requested
+        if name_taken:
             return web.json_response(
-                {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
+                {"error": f"Agent '{requested}' already exists", "code": "agent_exists"},
+                status=409,
             )
         model_reason = _model_pin_rejected(
             model, request, cfg.agent.provider, backend=_pin_entitlement_backend(cfg)
@@ -5189,6 +5209,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         {
             "ok": True,
             "name": name,
+            "display_name": cfg.agents[name].display_name,
             "memory_store": cfg.agents[name].memory_store,
             "member_id": cfg.agents[name].member_id,
         }

@@ -2916,7 +2916,12 @@ Examples:
     agent_sub = agent_parser.add_subparsers(dest="agent_action")
     agent_sub.add_parser("list", help="List Kiro Crew agents")
     agent_create = agent_sub.add_parser("create", help="Create a Kiro Crew agent")
-    agent_create.add_argument("--name", required=True, help="Agent name")
+    agent_create.add_argument(
+        "--name",
+        required=True,
+        help="Agent id, or a free-form name (kept as the display name of a derived id)",
+    )
+    agent_create.add_argument("--display-name", default="", help="Label the dashboard shows")
     agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")
     agent_create.add_argument("--workspace", default="default", help="Workspace name")
     agent_create.add_argument(

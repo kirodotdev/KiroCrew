@@ -21,7 +21,7 @@ from kiro_crew.config.schema import (
     SCHEMA_REGISTRY,
     config_entry_to_dict,
 )
-from kiro_crew.members import is_valid_member_name
+from kiro_crew.members import is_crew_id, is_valid_member_name
 
 
 @pytest.fixture(autouse=True)
@@ -322,21 +322,29 @@ class TestAgentCrudProperties:
                     assert private_store != "default"
                     # The immutable identity a client binds to (never the name).
                     assert create_data["member_id"]
+                    # An id-shaped name is the key as sent; a free-form one is
+                    # the label of a derived id.
+                    key = create_data["name"]
+                    if is_crew_id(name):
+                        assert (key, create_data["display_name"]) == (name, "")
+                    else:
+                        assert is_crew_id(key)
+                        assert create_data["display_name"] == name
 
                     # List and verify
                     resp = await client.get("/api/agents")
                     assert resp.status == 200
                     data = await resp.json()
                     agents_by_name = {a["name"]: a for a in data["agents"]}
-                    assert name in agents_by_name
-                    created = agents_by_name[name]
+                    assert key in agents_by_name
+                    created = agents_by_name[key]
                     assert created["kiro_agent"] == kiro_agent
                     assert created["workspace"] == workspace
                     assert created["memory_store"] == private_store
                     persisted = json.loads(tmp.read_text())
-                    assert persisted["agents"][name]["memory_store"] == private_store
+                    assert persisted["agents"][key]["memory_store"] == private_store
                     store = persisted["memory_stores"][private_store]
-                    assert store["owner_member"] == name
+                    assert store["owner_member"] == key
                     assert store["memory_version"] == 2
         finally:
             tmp.unlink(missing_ok=True)

@@ -118,7 +118,12 @@ from kiro_crew.mcp_cron import (
     _vet_shell_command,
 )
 from kiro_crew.member_memory_auth import require_member_memory_creation
-from kiro_crew.members import MemberNameError, validate_member_name
+from kiro_crew.members import (
+    MemberNameError,
+    crew_id_for_display_name,
+    is_crew_id,
+    validate_member_name,
+)
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
@@ -1441,8 +1446,20 @@ def _handle_agent(args: argparse.Namespace) -> None:
         except MemberNameError as exc:
             print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
             sys.exit(1)
-        if args.name in cfg.agents:
-            print(f"Error: agent '{args.name}' already exists", file=sys.stderr)
+        # Same keying as POST /api/agents: an id-shaped name is the key, a
+        # free-form one becomes the display name of a derived id.
+        requested = args.name
+        display_name = (getattr(args, "display_name", None) or "").strip()
+        if is_crew_id(requested):
+            name_taken = requested in cfg.agents
+        else:
+            name_taken = any(
+                (agent.display_name or key) == requested for key, agent in cfg.agents.items()
+            )
+            args.name = crew_id_for_display_name(requested, cfg.agents)
+            display_name = display_name or requested
+        if name_taken:
+            print(f"Error: agent '{requested}' already exists", file=sys.stderr)
             sys.exit(1)
         if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
             print("Error: invalid kiro agent name", file=sys.stderr)
@@ -1463,6 +1480,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             kiro_agent=args.kiro_agent,
             workspace=args.workspace,
             memory_store=memory_store,
+            display_name=display_name,
         )
         previous_store = cfg.agents[args.name].memory_store
         previous_member_id = cfg.agents[args.name].member_id
@@ -1493,7 +1511,10 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 raise
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-        print(f"Created agent: {args.name}")
+        if display_name:
+            print(f"Created agent: {args.name} (display name: {display_name})")
+        else:
+            print(f"Created agent: {args.name}")
 
     elif action == "update":
         if args.name not in cfg.agents:

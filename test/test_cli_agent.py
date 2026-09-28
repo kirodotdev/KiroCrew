@@ -126,6 +126,44 @@ class TestAgentCreate:
         err = capsys.readouterr().err
         assert "already exists" in err
 
+    def test_create_free_form_name_keys_a_derived_id(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "agent", "create", "--name", "Release Writer"],
+            ),
+        ):
+            main()
+
+        assert "Created agent: release-writer (display name: Release Writer)" in (
+            capsys.readouterr().out
+        )
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "Release Writer" not in saved["agents"]
+        assert saved["agents"]["release-writer"]["display_name"] == "Release Writer"
+
+    def test_create_display_name_flag_labels_an_id(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "agent", "create", "--name", "scribe", "--display-name", "Scribe"],
+            ),
+        ):
+            main()
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["scribe"]["display_name"] == "Scribe"
+
     def test_create_rejects_free_form_template_identifier(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
