@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { WORK_IS_RECOVERABLE, hasUnsentComposerWork, hasComposerTextOrFiles } from '../utils/composerWork'
+import { WORK_IS_RECOVERABLE, hasUnsentComposerWork } from '../utils/composerWork'
 import type { ComposerWork } from '../utils/composerWork'
 
 const EMPTY: ComposerWork = {
@@ -39,7 +39,6 @@ describe('every unsent-work category declares a recoverability tier', () => {
 describe('the one definition of "the composer holds unsent work"', () => {
   it('reads an empty composer as holding nothing', () => {
     expect(hasUnsentComposerWork(EMPTY)).toBe(false)
-    expect(hasComposerTextOrFiles(EMPTY)).toBe(false)
   })
 
   it('does not count whitespace-only text as work', () => {
@@ -59,9 +58,8 @@ describe('the one definition of "the composer holds unsent work"', () => {
     expect(hasUnsentComposerWork({ ...EMPTY, pasteBlocks: ['a'] })).toBe(true)
   })
 
-  it('counts real text through both predicates', () => {
+  it('counts real text, and files with no text at all', () => {
     expect(hasUnsentComposerWork({ ...EMPTY, text: 'hi' })).toBe(true)
-    expect(hasComposerTextOrFiles({ text: 'hi', files: [] })).toBe(true)
-    expect(hasComposerTextOrFiles({ text: '', files: ['a'] })).toBe(true)
+    expect(hasUnsentComposerWork({ ...EMPTY, text: '', files: ['a'] })).toBe(true)
   })
 })

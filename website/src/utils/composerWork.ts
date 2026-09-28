@@ -104,18 +104,13 @@ export function hasUnsentComposerWork(work: ComposerWork): boolean {
 }
 
 /**
- * The text-and-files half of the predicate, on its own.
- *
- * `ChatInput` has its own `composerHasDraft` for the mic / hold-to-talk mode, and
- * it re-spelled exactly these two terms — a second definition of "the composer has
- * something in it" sitting beside a module whose whole premise is that there is
- * only one. Sharing the terms rather than the whole predicate is deliberate:
- * `composerHasDraft` decides whether the mic acts as a mode switch, and pulling in
- * `knowledge`, `uploading` or `sessionRefs` there would silently change the voice
- * behaviour of a refs-only composer, which is a different question from whether a
- * destructive close would lose something.
+ * The text-and-files half of the predicate. Deliberately NOT exported: `ChatInput`
+ * already spells these two terms inline as `composerHasDraft`, and a second exported
+ * spelling of "the composer has something in it" is one this module's own premise
+ * forbids. The PR that rewires `ChatInput` onto this module is the one that gets to
+ * collapse the two.
  */
-export function hasComposerTextOrFiles(
+function hasComposerTextOrFiles(
   work: Pick<ComposerWork, 'text' | 'files'>,
 ): boolean {
   return !!work.text.trim() || work.files.length > 0
