@@ -464,6 +464,44 @@ def test_retired_callback_forgets_only_its_own_card(
     assert service.publisher.last_attempt == {"one": 7}
 
 
+@pytest.mark.parametrize("cached_owner", ["retired", "replacement"])
+def test_slot_removal_evicts_a_predecessor_card_under_a_registered_replacement(
+    lifecycle, monkeypatch, cached_owner
+):
+    """A same-name replacement can be registered before the close's removal push
+    runs, and neither slot need fire a card event afterwards. The removal itself
+    judges the cached card by owner: the retired slot's card goes, so the
+    replacement never presents it. Negative control: a card the replacement
+    already owns stays, and nothing is broadcast for it."""
+    from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+
+    service, _, state = lifecycle
+    state._dynamic_cards = service
+    retired = _ChatSlot("one")
+    replacement = _ChatSlot("one")
+    state._slots = {"one": replacement}
+    owner = retired if cached_owner == "retired" else replacement
+    service.publisher.notify("one", owner._dashboard_card_identity, "dashboard:one", "done")
+    entry = service.publisher.entries["one"]
+    entry.payload = {"html": "Published evidence", "data": {}}
+    entry.pending = False
+    frames = []
+    monkeypatch.setattr(state, "broadcast_ws_owners", lambda *args: frames.append(args))
+    snapshots = []
+    state.push_slots_update = lambda: snapshots.append(True)
+
+    DashboardState.push_slot_removed(state, "one")
+
+    assert snapshots == [True]
+    assert state._slots["one"] is replacement
+    if cached_owner == "retired":
+        assert "one" not in service.publisher.entries
+        assert frames == [("dashboard_card", {"slot": "one", "removed": True})]
+    else:
+        assert service.publisher.entries.get("one") is entry
+        assert frames == []
+
+
 @pytest.mark.asyncio
 async def test_cancelled_turn_invalidates_old_card_after_same_key_recreation(
     lifecycle, monkeypatch
@@ -471,6 +509,7 @@ async def test_cancelled_turn_invalidates_old_card_after_same_key_recreation(
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
     service, _, state = lifecycle
+    state._dynamic_cards = service
     retired = _ChatSlot("one")
     retired._on_card_event = service.notify
     state._slots["one"] = retired
@@ -518,7 +557,9 @@ async def test_cancelled_turn_invalidates_old_card_after_same_key_recreation(
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
 
 
-@pytest.mark.parametrize("invalidate", ["empty", "incognito", "temporary", "remote", "executor"])
+@pytest.mark.parametrize(
+    "invalidate", ["empty", "incognito", "temporary", "remote", "executor", "worker"]
+)
 def test_registered_slot_invalidation_still_forgets_card(lifecycle, monkeypatch, invalidate):
     service, slot, state = lifecycle
     service.publisher.notify(slot.key, slot._dashboard_card_identity, "dashboard:one", "done")
@@ -531,6 +572,8 @@ def test_registered_slot_invalidation_still_forgets_card(lifecycle, monkeypatch,
         slot.memory_mode = invalidate
     elif invalidate == "remote":
         slot.is_remote = True
+    elif invalidate == "worker":
+        slot._created_by = "conductor"
     else:
         slot.executor = "remote"
     service.notify(slot, "done")
@@ -786,6 +829,149 @@ def test_safe_html_entities_and_literal_data_survive_without_reserialization():
     assert _redact_card_output(json.dumps({"data": {"renamed": literal}}), original) is None
 
 
+_SPLIT_LABEL_MARKUP = "<p><b>aws_secret_access_key:</b> <code>" + "A" * 40 + "</code></p>"
+
+
+def test_markup_cannot_hold_a_labelled_credential_apart_from_its_label():
+    """A labelled credential is one run of text; a tag between the label and the
+    value misleads a raw scan, not the browser. The output side refuses
+    the card. Negative control: the same text with the tag boundary closed is caught
+    by the raw scan, and a layout that names the label with no value publishes."""
+    import json
+
+    from kiro_crew.dashboard.card_lifecycle import _redact, _redact_card_output
+
+    # The raw scan takes the closing tag for the value: label gone, value kept.
+    assert "A" * 40 in _redact(_SPLIT_LABEL_MARKUP)
+    assert _redact_card_output(json.dumps({"html": _SPLIT_LABEL_MARKUP, "data": {}}), None) is None
+    joined = "<p>aws_secret_access_key: " + "A" * 40 + "</p>"
+    assert _redact(joined) != joined
+    # Parity with plain text is the bar: a value the text scan takes for the
+    # credential is refused here too, and a label with no value publishes.
+    assert (
+        _redact_card_output(
+            json.dumps(
+                {"html": "<p><b>aws_secret_access_key:</b> <code>rotated</code></p>", "data": {}}
+            ),
+            None,
+        )
+        is None
+    )
+    labelled = {"html": "<p><b>aws_secret_access_key:</b> <code></code></p>", "data": {}}
+    assert _redact_card_output(json.dumps(labelled), None) is not None
+
+
+@pytest.mark.parametrize("reference", ["&#65;", "&#x41;", "&sol;"])
+def test_markup_cannot_hide_a_split_credential_behind_a_character_reference(reference):
+    """The value the browser shows is compared with the markup as the browser reads
+    it. A value spelt with a character reference is the same value to the browser,
+    so the split-label refusal holds for it. Negative control: the same encoded value
+    with no label beside it is not a labelled credential, and publishes."""
+    import html
+    import json
+
+    from kiro_crew.dashboard.card_lifecycle import _hides_secret, _redact, _redact_card_output
+
+    encoded = reference + "A" * 39
+    markup = "<p><b>aws_secret_access_key:</b> <code>" + encoded + "</code></p>"
+    assert html.unescape(encoded) != encoded
+    # The raw scan neither decodes the value nor keeps the label beside it.
+    assert encoded in _redact(markup)
+    assert _hides_secret(markup)
+    assert _redact_card_output(json.dumps({"html": markup, "data": {}}), None) is None
+    unlabelled = {"html": "<p><code>" + encoded + "</code></p>", "data": {}}
+    assert not _hides_secret(unlabelled["html"])
+    assert _redact_card_output(json.dumps(unlabelled), None) == unlabelled
+
+
+@pytest.mark.parametrize(
+    "split",
+    [
+        "<span>AKIAIOSFOD</span><span>NN7EXAMPLE</span>",
+        "AKIAIOS<b></b>FODNN7EXAMPLE",
+        "<p>AKIAIOSFOD</p><p>NN7EXAMPLE</p>",
+    ],
+)
+def test_markup_cannot_split_a_credential_token_across_tags(split):
+    """An inline tag boundary joins its neighbours in the text a browser shows, so a
+    token cut by tags is still one token on screen. The scanner does not lay the
+    page out, so a block boundary is read both ways too and the split is refused
+    rather than guessed at. Negative control: the whole token inside one element is
+    caught by the raw scan and published redacted, and two tokens that form no
+    credential when joined publish untouched."""
+    import json
+
+    from kiro_crew.dashboard.card_lifecycle import _hides_secret, _redact, _redact_card_output
+
+    token = "AKIAIOSFODNN7EXAMPLE"
+    assert _redact("<p>" + token + "</p>") != "<p>" + token + "</p>"
+    markup = "<p>" + split + "</p>"
+    assert token not in markup
+    assert _redact(markup) == markup
+    assert _hides_secret(markup)
+    assert _redact_card_output(json.dumps({"html": markup, "data": {}}), None) is None
+    whole = "<p><span>" + token + "</span></p>"
+    assert not _hides_secret(whole)
+    published = _redact_card_output(json.dumps({"html": whole, "data": {}}), None)
+    assert published is not None and token not in published["html"]
+    benign = {"html": "<p><span>release</span><span>notes</span></p>", "data": {}}
+    assert _redact_card_output(json.dumps(benign), None) == benign
+
+
+def test_markup_cannot_split_a_suspicious_url_across_tags():
+    """The exfiltration heuristics judge a URL by its shape, not by a label, so a
+    URL cut by an inline tag is whole on screen and in neither half for the raw
+    scan. The shown text is scanned again after the raw scan; a URL it still
+    redacts was kept from that scan by markup, and the card is refused. Negative
+    control: the same URL inside one element is redacted by the raw scan and
+    published without it."""
+    import json
+
+    from kiro_crew.dashboard.card_lifecycle import _hides_secret, _redact, _redact_card_output
+
+    url = "https://collect.attacker.example/?payload=" + "aB3" * 70 + "&host=corp-laptop"
+    cut = url.index("?") + 1
+    markup = "<p><span>" + url[:cut] + "</span><span>" + url[cut:] + "</span></p>"
+    # Neither half is a suspicious URL on its own: the raw scan leaves the markup alone.
+    assert _redact(markup) == markup
+    assert _hides_secret(markup)
+    assert _redact_card_output(json.dumps({"html": markup, "data": {}}), None) is None
+    whole = "<p><span>" + url + "</span></p>"
+    assert not _hides_secret(whole)
+    published = _redact_card_output(json.dumps({"html": whole, "data": {}}), None)
+    assert published is not None and "aB3" * 10 not in published["html"]
+
+
+@pytest.mark.asyncio
+async def test_model_input_omits_a_message_whose_markup_splits_a_labelled_credential(
+    lifecycle, monkeypatch
+):
+    """The input side omits the whole message, as it does an oversized one: the raw
+    scan cannot place the value, so nothing of it may reach the model. A sibling
+    message without the split is delivered."""
+    import json
+
+    from kiro_crew.dashboard import card_lifecycle
+
+    service, slot, state = lifecycle
+    slot.messages = [
+        {"role": "assistant", "content": "Release evidence attached"},
+        {"role": "tool_result", "content": _SPLIT_LABEL_MARKUP},
+    ]
+    prompts = []
+
+    async def generate(sessions, prompt, **kwargs):
+        prompts.append(prompt)
+        return json.dumps({"html": "<p>ok</p>", "data": {}})
+
+    monkeypatch.setattr(card_lifecycle, "run_bg_oneliner", generate)
+    service.notify(slot, "done")
+    await asyncio.wait_for(service.worker, 2)
+    assert prompts and "A" * 40 not in prompts[0]
+    assert "aws_secret_access_key" not in prompts[0]
+    assert "Release evidence attached" in prompts[0]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("padding", ['"', "界"])
 async def test_maximum_previous_card_leaves_room_for_escaped_recent_evidence(
@@ -933,6 +1119,23 @@ async def test_private_session_does_not_start_a_worker(lifecycle):
     service.notify(slot, "done")
     assert service.worker is None
     assert not state._background_tasks
+
+
+@pytest.mark.asyncio
+async def test_a_worker_session_spends_no_attempt_and_reads_unavailable(lifecycle):
+    service, root, state = lifecycle
+    worker = SimpleNamespace(**{**vars(root), "key": "worker", "_created_by": root.key})
+    worker._dashboard_card_identity = "owner-worker"
+    state._slots[worker.key] = worker
+    service.notify(worker, "done")
+    assert worker.key not in service.publisher.entries
+    assert service.worker is None
+    assert (await service.read(worker))["status"] == "unavailable"
+    # The root of the same team stays eligible; only the creator link excludes.
+    assert service._eligible(root)
+    assert (await service.read(root))["status"] == "waiting"
+    worker._created_by = ""
+    assert service._eligible(worker)
 
 
 @pytest.mark.asyncio

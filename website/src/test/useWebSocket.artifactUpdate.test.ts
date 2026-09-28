@@ -15,6 +15,8 @@ import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { sseSlots } from '../store/dashboardSlice'
+import { store } from '../store'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { setArtifactEditing, __resetArtifactEditing } from '../utils/artifactEditGuard'
 
@@ -25,6 +27,7 @@ vi.mock('../api/client', () => ({
     approvals: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0, queue: [] }),
+    workflowRuns: vi.fn().mockResolvedValue({ runs: [] }),
   },
 }))
 
@@ -90,6 +93,56 @@ describe('useWebSocket artifact_update frame', () => {
     expect(keys).toContain(JSON.stringify(['artifact-comments', 'cr-queue']))
     // The library list ordering is driven by updated_at, so it refreshes too.
     expect(keys).toContain(JSON.stringify(['artifacts']))
+  })
+
+  it('refreshes the task-dashboard inventory the idle dock does not poll', () => {
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    send({ slug: 'release-map', version: 1, deleted: false })
+    expect(spy.mock.calls.map(c => JSON.stringify(c[0]?.queryKey))).toContain(JSON.stringify(['command-center', 'artifacts']))
+  })
+
+  it('re-reads exactly the grown slot\'s board and its ancestors\' boards, without cancelling a read in flight', async () => {
+    const team = [
+      { key: 'root', messages: 1, running: false }, { key: 'worker', messages: 1, running: false, created_by: 'root' },
+      { key: 'other', messages: 1, running: false },
+    ]
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    // Let the open's own slot refresh settle before seeding the team over it.
+    await act(async () => { ws.simulateOpen(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    // The hook reads the app's module store, as its other handlers do.
+    act(() => { store.dispatch(sseSlots(team)) })
+    spy.mockClear()
+    act(() => { ws.simulateMessage({ type: 'slot_projection', data: { slot: 'dashboard:worker' } }) })
+    const work = spy.mock.calls.filter(c => (c[0]?.queryKey as unknown[] | undefined)?.[2] === 'work')
+    expect(work.map(c => c[0]?.queryKey)).toEqual([['command-center', 'worker', 'work'], ['command-center', 'root', 'work']])
+    expect(work.every(c => c[0]?.exact === true && c[1]?.cancelRefetch === false)).toBe(true)
+    spy.mockClear()
+    act(() => { ws.simulateMessage({ type: 'slot_projection', data: {} }) })
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('hands the connect-time workflow read to the command center snapshot', async () => {
+    const { api } = await import('../api/client')
+    const out = { runs: [{ run_id: 'r9', status: 'finished', session_key: 'root' }] }
+    vi.mocked(api.workflowRuns).mockResolvedValueOnce(out)
+    renderHook(() => useWebSocket(), { wrapper })
+    await act(async () => { WS_INSTANCES[0].simulateOpen(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    expect(qc.getQueryData(['command-center', 'workflows'])).toEqual(out)
+  })
+
+  it.each(['run_finished', 'run_failed', 'run_cancelled'])('re-reads the workflow snapshot on %s, not on progress', type => {
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    spy.mockClear()
+    const workflows = () => spy.mock.calls.filter(c => JSON.stringify(c[0]?.queryKey) === JSON.stringify(['command-center', 'workflows'])).length
+    act(() => { ws.simulateMessage({ type: 'workflow_run_event', data: { run_id: 'r1', type: 'step_started', data: {} } }) })
+    expect(workflows()).toBe(0)
+    act(() => { ws.simulateMessage({ type: 'workflow_run_event', data: { run_id: 'r1', type, data: {} } }) })
+    expect(workflows()).toBe(1)
   })
 
   it('emits a window event on delete WITHOUT evicting the artifact query', () => {

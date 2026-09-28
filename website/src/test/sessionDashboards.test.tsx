@@ -24,7 +24,7 @@ describe('all session dashboards', () => {
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ dashboard: { dynamic_dashboard_cards: false } })
     vi.spyOn(api, 'dashboardCard').mockResolvedValue({ card: null, status: 'waiting', published_at: null, content_event_at: null, stale: false })
     vi.spyOn(api, 'pendingQuestions').mockResolvedValue([{ slot: 'slot-1', ask_id: 'question-1', questions: [{ question: 'Which release?', options: [{ label: 'Stable' }] }] }])
-    vi.spyOn(api, 'approvals').mockResolvedValue([{ id: 'approval-2', slot: 'slot-2', tool: 'shell', tool_input: 'git status' }])
+    vi.spyOn(api, 'approvals').mockResolvedValue([{ id: 'approval-2', instance: 'inst-2', slot: 'slot-2', tool: 'shell', tool_input: 'git status' }])
     vi.spyOn(api, 'workflowRuns').mockResolvedValue({ runs: [] })
     vi.spyOn(api, 'artifacts').mockResolvedValue({ artifacts: [] })
     vi.spyOn(api, 'sessionSummary').mockImplementation(async slot => ({ enabled: true, stale: false, constraints: [], generated_at: null, user_turns: 2, last_activity: null, intents: [{
@@ -55,7 +55,7 @@ describe('all session dashboards', () => {
     expect(approve).not.toHaveBeenCalled()
     expect(generate).not.toHaveBeenCalled()
     fireEvent.click(within(inbox).getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2' }))
+    await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
   })
 
   it('counts requests, not distinct sessions, consistently in the filter and inbox', async () => {

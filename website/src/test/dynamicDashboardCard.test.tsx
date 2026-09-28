@@ -89,6 +89,15 @@ describe('host-owned card freshness and cost controls', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith('dashboard.dynamic_dashboard_cards', true))
   })
 
+  it('never requests a card for a team worker, which the producer does not generate', () => {
+    const get = vi.spyOn(api, 'dashboardCard')
+    const store = createTestStore()
+    store.dispatch(sseSlots([{ key: 'root', messages: 2, running: false }, { key: 'worker', messages: 2, running: false, created_by: 'root' }]))
+    renderWithProviders(<SessionStatusFrame slot="worker" title="Worker" active />, { store })
+    expect(screen.getByRole('status')).toHaveTextContent('Content generation is unavailable for this session.')
+    expect(get).not.toHaveBeenCalled()
+  })
+
   it('drops an already displayed card immediately when its slot becomes private', async () => {
     const get = vi.spyOn(api, 'dashboardCard').mockResolvedValue({
       card: { html: '<p>Earlier content</p>', data: {} }, status: 'published',

@@ -9261,9 +9261,20 @@ class DashboardState:
         gets the full list, as with :meth:`push_slot_patch`.
 
         A key that is registered again (a same-name replacement landed while the
-        close was tearing down) is not removed: the full push describes it.
+        close was tearing down) is not removed: the full push describes it. The
+        closed slot's dashboard card is still evicted, so the replacement never
+        presents a card generated for another transcript.
         """
         if key in self._slots:
+            # The replacement's own card, if it has one, is its own; a card whose
+            # owner is not the live slot's identity was generated for the closed
+            # transcript and goes with it, so a replacement never presents its
+            # predecessor's card while it has none of its own.
+            if self._dynamic_cards is not None:
+                entry = self._dynamic_cards.publisher.entries.get(key)
+                live = getattr(self._slots[key], "_dashboard_card_identity", None)
+                if entry is not None and entry.owner != live:
+                    self._dynamic_cards.publisher.forget(key)
             self.push_slots_update()
             return
         if self._dynamic_cards is not None:

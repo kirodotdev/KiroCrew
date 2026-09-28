@@ -536,7 +536,9 @@ async def test_dashboard_native_stale_row_cannot_resolve_reused_id(state, replac
 
 
 @pytest.mark.parametrize("action", ["approve", "reject", "reject_once"])
-@pytest.mark.parametrize("pending", ["live", "missing", "done", "record_missing", "wrong_slot"])
+@pytest.mark.parametrize(
+    "pending", ["live", "missing", "done", "record_missing", "wrong_slot", "wrong_instance"]
+)
 @pytest.mark.asyncio
 async def test_dashboard_strict_coordinator_never_falls_into_native(state, action, pending):
     loop = asyncio.get_running_loop()
@@ -554,7 +556,39 @@ async def test_dashboard_strict_coordinator_never_falls_into_native(state, actio
         state._pending_approvals["same-id"] = {
             "id": "same-id",
             "slot": "other" if pending == "wrong_slot" else "dashboard:selected",
+            # The record a stale card was rendered from carries another instance:
+            # the caller reused the request id, and this is the replacement.
+            "instance": "replacement" if pending == "wrong_instance" else "shown",
         }
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    target = {"origin": "coordinator", "slot": "dashboard:selected", "instance": "shown"}
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(f"/api/approvals/same-id/{action}", params=target, json={})
+        assert response.status == (200 if pending == "live" else 404)
+        if pending == "live":
+            assert coordinator.result() is (action == "approve")
+            # A repeated click after resolution is stale even before record cleanup.
+            response = await client.post(f"/api/approvals/same-id/{action}", params=target, json={})
+            assert response.status == 404
+        elif pending != "done":
+            assert not coordinator.done()
+        assert all(not future.done() for future in native)
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.asyncio
+async def test_dashboard_coordinator_target_without_an_instance_is_refused(state, action):
+    """A coordinator target names the instance it saw, as a native target names its
+    row; one that names none is malformed and mutates nothing, even for a live
+    record whose id and slot it does name."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["same-id"] = coordinator
+    state._pending_approvals["same-id"] = {
+        "id": "same-id",
+        "slot": "dashboard:selected",
+        "instance": "shown",
+    }
     app = _make_mode_app(state)
     app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
     async with TestClient(TestServer(app)) as client:
@@ -563,19 +597,55 @@ async def test_dashboard_strict_coordinator_never_falls_into_native(state, actio
             params={"origin": "coordinator", "slot": "dashboard:selected"},
             json={},
         )
-        assert response.status == (200 if pending == "live" else 404)
-        if pending == "live":
-            assert coordinator.result() is (action == "approve")
-            # A repeated click after resolution is stale even before record cleanup.
-            response = await client.post(
-                f"/api/approvals/same-id/{action}",
-                params={"origin": "coordinator", "slot": "dashboard:selected"},
-                json={},
+    assert response.status == 400
+    assert not coordinator.done()
+
+
+def test_coordinator_records_carry_a_distinct_instance_per_request():
+    """The request id is the caller's and can recur; the instance is minted here,
+    once per request, so two requests sharing an id are told apart."""
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+
+    class _State:
+        _APPROVAL_TIMEOUT = 0.01
+        _BACKGROUND_APPROVAL_TIMEOUT_SECS = 0.01
+
+        def __init__(self):
+            self._approval_futures = {}
+            self._pending_approvals = {}
+            self.records = []
+
+        def broadcast_ws(self, kind, payload):
+            if kind == "approval":
+                self.records.append(dict(payload))
+
+        def push_slots_update(self):
+            pass
+
+        def _audit_and_broadcast_approval(self, *args, **kwargs):
+            pass
+
+    async def run():
+        st = _State()
+        for _ in range(2):
+            await ApprovalCoordinator.request(
+                st,
+                "same-id",
+                "dashboard",
+                "shell",
+                tool_input="",
+                tool_purpose="",
+                slot="dashboard:selected",
+                is_background=False,
+                redact_url=lambda t: (t, []),
+                redact_secret=lambda t: (t, []),
             )
-            assert response.status == 404
-        elif pending != "done":
-            assert not coordinator.done()
-        assert all(not future.done() for future in native)
+        return st.records
+
+    records = asyncio.run(run())
+    assert len(records) == 2 and all(r["id"] == "same-id" for r in records)
+    assert all(len(r["instance"]) == 32 for r in records)
+    assert records[0]["instance"] != records[1]["instance"]
 
 
 @pytest.mark.parametrize("proof", [None, "", [], {}, 1, "wrong-row"])

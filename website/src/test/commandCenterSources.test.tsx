@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { createTestStore, renderHookWithProviders, renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { useCommandCenter } from '../pages/chat/command-center/useCommandCenter'
+import { teamRoots } from '../pages/chat/command-center/model'
 import TaskDashboardFrame, { TASK_DASHBOARD_SANDBOX } from '../pages/chat/command-center/TaskDashboardFrame'
 import type { Artifact } from '../types'
 
@@ -89,6 +90,32 @@ describe('task dashboard sources and containment', () => {
     await waitFor(() => expect(result.current.attention.map(a => a.id)).toEqual(['question:root:later-question']))
     expect(idleStore.getState()).toBe(unchangedState)
     expect(result.current.dashboards.map(a => a.slug)).toEqual(['later'])
+  })
+
+  it('polls no source in any scope, leaving refresh to the frames that announce changes', async () => {
+    const intervals = (client: ReturnType<typeof useQueryClient>) => client.getQueryCache().findAll({ queryKey: ['command-center'] })
+      .flatMap(q => q.observers.map(o => o.options.refetchInterval))
+    for (const [root, scope] of [['root', 'task'], [null, 'fleet']] as const) {
+      const view = renderHookWithProviders(() => ({ ...useCommandCenter(root, true, scope), queryClient: useQueryClient() }), { store: store() })
+      await waitFor(() => expect(view.result.current.loading).toBe(false))
+      const seen = intervals(view.result.current.queryClient)
+      expect(seen.length).toBeGreaterThanOrEqual(4)
+      expect(seen.every(i => !i)).toBe(true)
+      view.unmount()
+    }
+    expect(api.pendingQuestions).toHaveBeenCalledTimes(2)
+  })
+
+  it('finds a slot\'s team roots by walking its creators, stopping on a cycle', () => {
+    const slots = [
+      { key: 'root', messages: 0, running: false }, { key: 'mid', messages: 0, running: false, created_by: 'dashboard:root' },
+      { key: 'leaf', messages: 0, running: false, created_by: 'mid' },
+      { key: 'a', messages: 0, running: false, created_by: 'b' }, { key: 'b', messages: 0, running: false, created_by: 'a' },
+    ]
+    expect(teamRoots(slots, 'dashboard:leaf')).toEqual(['leaf', 'mid', 'root'])
+    expect(teamRoots(slots, 'root')).toEqual(['root'])
+    expect(teamRoots(slots, 'unknown')).toEqual(['unknown'])
+    expect(teamRoots(slots, 'a')).toEqual(['a', 'b'])
   })
 
   it('retains only stateless drafts by exact normalized slot and card, clearing on scope changes', async () => {

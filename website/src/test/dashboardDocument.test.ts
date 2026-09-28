@@ -25,13 +25,13 @@ describe('task dashboard document isolation', () => {
   it('removes generated-text declarations from parsed blocks and inline styles, retaining layout and literal data', () => {
     const sheets = constructedSheetFixture()
     const hostStyles = document.querySelectorAll('style').length
-    const declarations = 'content:attr(title);list-style:square;list-style-type:circle;quotes:"a" "b";hyphenate-character:"hidden";display:grid;gap:12px'
+    const declarations = 'content:attr(title);list-style:square;list-style-type:circle;quotes:"a" "b";hyphenate-character:"hidden";text-emphasis:"X";text-emphasis-style:"Y";text-overflow:"Z";display:grid;gap:12px'
     const html = `<style data-dashboard-field="css">.board{${declarations}}</style><p class="board" style='${declarations}' data-dashboard-field="result">Old</p>`
     const doc = new DOMParser().parseFromString(dashboardDocument(html, {}, 'dark', { result: '<b>&amp;</b>', css: 'body{display:none}' }), 'text/html')
     const block = (sheets[0].cssRules[0] as CSSStyleRule).style
     const inline = doc.querySelector('p')!.style
     for (const style of [block, inline]) {
-      for (const name of ['content', 'list-style', 'list-style-type', 'quotes', 'hyphenate-character']) expect(style.getPropertyValue(name)).toBe('')
+      for (const name of ['content', 'list-style', 'list-style-type', 'quotes', 'hyphenate-character', 'text-emphasis', 'text-emphasis-style', 'text-overflow']) expect(style.getPropertyValue(name)).toBe('')
       expect(style.getPropertyValue('display')).toBe('grid')
       expect(style.getPropertyValue('gap')).toBe('12px')
     }
@@ -55,6 +55,28 @@ describe('task dashboard document isolation', () => {
     expect(css).toContain('opacity: 1')
     expect(css).not.toMatch(/content:|quotes:|hyphenate-character:|hidden/)
     expect(doc.body.textContent).toBe('Visible')
+  })
+
+  it('drops model fonts from automatic cards and forbids font loads, keeping them in saved views', () => {
+    constructedSheetFixture()
+    const html = '<style>@font-face{font-family:remap;src:url(data:font/woff2;base64,AAAA)}</style><p style="font-family:remap">Visible</p>'
+    const card = new DOMParser().parseFromString(dashboardDocument(html, {}, 'light', {}), 'text/html')
+    expect(card.documentElement.innerHTML).not.toMatch(/font-face|data:font/)
+    expect(card.head.firstElementChild?.getAttribute('content')?.match(/font-src ([^;]*);/)![1]).toBe("'none'")
+    vi.unstubAllGlobals()
+    const saved = dashboardDocument(html, {}, 'light')
+    expect(saved).toContain('@font-face')
+    expect(saved.match(/font-src ([^;]*);/)![1]).toBe('data:')
+  })
+
+  it('strips attributes the browser displays as text from automatic cards only', () => {
+    const html = '<p><img alt="AKIA" width="1"><img alt="SECRET"><abbr title="hidden-tip">Visible</abbr></p><ol start="31337"><li value="4242"></li></ol>'
+    const card = new DOMParser().parseFromString(dashboardDocument(html, {}, 'light', {}), 'text/html')
+    expect(card.querySelectorAll('[alt], [title], [start], [value]')).toHaveLength(0)
+    expect(card.querySelector('img')?.getAttribute('width')).toBe('1')
+    expect(card.body.textContent).toBe('Visible')
+    const saved = new DOMParser().parseFromString(dashboardDocument(html, {}, 'light'), 'text/html')
+    expect(saved.querySelector('abbr')?.getAttribute('title')).toBe('hidden-tip')
   })
 
   it('drops uninspectable rule fixtures at the root and inside grouping rules without dropping safe siblings', () => {
@@ -154,5 +176,21 @@ describe('task dashboard document isolation', () => {
     expect(doc.head.firstElementChild?.getAttribute('content')).toContain("default-src 'none'")
     expect(doc.body.textContent).toContain('Private task')
     expect(html).not.toContain('outside.invalid')
+  })
+
+  it('loads no image in either an automatic card or a saved view, keeping inline SVG', () => {
+    // A data: image is bytes the browser decodes for display. The backend scans
+    // the markup as text, so text that image would show is not text the scan
+    // can read; both surfaces are layout over text and need no image load.
+    const image = '<img src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%3E%3Ctext%3EAKIA%3C%2Ftext%3E%3C%2Fsvg%3E" srcset="data:image/svg+xml,%3Csvg%2F%3E 2x">'
+    const html = `<p style="background-image:url(data:image/svg+xml,%3Csvg%2F%3E)">Board</p>${image}<svg><image href="data:image/svg+xml,%3Csvg%2F%3E"/><path d="M0 0L10 10"/></svg>`
+    for (const output of [dashboardDocument(html, {}, 'dark', {}), dashboardDocument(html, {}, 'dark')]) {
+      const doc = new DOMParser().parseFromString(output, 'text/html')
+      const policy = doc.head.firstElementChild?.getAttribute('content') || ''
+      expect(policy.match(/img-src ([^;]*);/)![1]).toBe("'none'")
+      expect(doc.querySelectorAll('[src], [srcset], [href]')).toHaveLength(0)
+      expect(doc.body.textContent).toContain('Board')
+      expect(doc.querySelector('svg path')?.getAttribute('d')).toBe('M0 0L10 10')
+    }
   })
 })

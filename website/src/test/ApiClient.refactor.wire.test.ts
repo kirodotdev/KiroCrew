@@ -65,8 +65,8 @@ describe('dynamic dashboard facade contracts', () => {
     fetchMock.mockResolvedValue(res(200, approvals))
     await expect(api.approvals()).resolves.toEqual(approvals)
     expect(fetchMock.mock.calls[0]).toEqual(['/api/approvals'])
-    await api.resolveApproval('request/id', 'reject_once', { origin: 'coordinator', slot: 'slack:thread/id' })
-    expect(lastCall()).toEqual(['/api/approvals/request%2Fid/reject_once?origin=coordinator&slot=slack%3Athread%2Fid', {
+    await api.resolveApproval('request/id', 'reject_once', { origin: 'coordinator', slot: 'slack:thread/id', instance: 'inst-1' })
+    expect(lastCall()).toEqual(['/api/approvals/request%2Fid/reject_once?origin=coordinator&slot=slack%3Athread%2Fid&instance=inst-1', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: '{}',
     }])
     await api.resolveApproval('legacy', 'reject_once')

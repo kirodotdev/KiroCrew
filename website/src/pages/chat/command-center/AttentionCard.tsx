@@ -30,7 +30,7 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
     mutationFn: async (action: { answers: Record<string, string> } | { approval: 'approve' | 'reject_once' }) => {
       if ('approval' in action && item.approval) {
         if (item.native) await api.approveChatSlot(item.slot, action.approval === 'approve' ? 'approved' : 'rejected_once', { request_id: item.approval.id, request_mid: item.approval.request_mid || '', origin: 'native' })
-        else await api.resolveApproval(item.approval.id, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'), { origin: 'coordinator', slot: item.approval.slot || '' })
+        else await api.resolveApproval(item.approval.id, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'), { origin: 'coordinator', slot: item.approval.slot || '', instance: item.approval.instance || '' })
       } else if ('answers' in action && item.question) {
         const q = item.question
         if (q.ask_id) {
@@ -42,7 +42,7 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
             throw new Error(receipt.status === 'refused' ? receipt.reason || t('commandCenter.send_refused') : t('commandCenter.send_unknown'))
           }
           // Never resend after a confirmed acceptance, even if retiring the
-          // visual card fails. The next inventory poll reconciles server state.
+          // visual card fails. The next inventory read reconciles server state.
           setDelivered(true)
           if (q.card_id) {
             await api.dismissQuestionCard(item.slot, q.card_id)

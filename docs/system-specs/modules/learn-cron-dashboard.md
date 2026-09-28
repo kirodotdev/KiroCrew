@@ -1618,14 +1618,20 @@ registration. Both server entrypoints defer initial activation until after liste
 default-off startup leaves it absent until the first live enable. Later toggles
 retain the same instance and budgets. Cleanup disables and awaits its worker.
 Enabling queues eligible open sessions, and post-restore startup does the same
-when enabled. Live user/assistant messages, errors, turn completion and pending
+when enabled. A session another session created (a team worker, `created_by`
+set) is not eligible: every attempt comes from the one shared hourly budget, so a
+fan-out would otherwise spend it on workers and starve the session a person
+follows. A worker's card read answers `unavailable` without queuing work, and its
+team-panel tile shows host state only. Live user/assistant messages, errors, turn completion and pending
 questions enqueue subsequent updates, independently of an attached stream
 reader. Replay, token chunks, GET and polling do not enqueue model work. Card
 generation events are accepted only from the currently registered slot object.
 Scratch edit/rewind copies sharing the current identity cannot clear its card or
 queue generation. A retired owner's callback clears only a card still owned by
 that retired identity, never the replacement's card, including when cancellation
-finishes after same-key recreation. Committed transcript rewrites remain subject
+finishes after same-key recreation. The close's own removal push evicts a card
+whose owner is not the live slot's identity, so a replacement registered before
+that push never presents its predecessor's card. Committed transcript rewrites remain subject
 to source-generation validation.
 Host slot/workflow/question/approval events continue to own runtime state immediately;
 turn completion is not evidence that the whole task succeeded.

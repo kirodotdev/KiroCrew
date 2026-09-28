@@ -85,6 +85,16 @@ def _crew_log_read() -> ModuleType:
 #: The frame a growing crew log pushes. The RFC's name, kept.
 FRAME = "session_projection"
 
+#: The frame that says a SLOT's crew log grew. It carries the slot and nothing
+#: else: slot folds (the conductor work board among them) join several units and
+#: are read through the projection route, so the push only tells an observer
+#: which slot to re-read instead of polling it.
+SLOT_FRAME = "slot_projection"
+
+#: Units whose owning slot is remembered. A unit's header is written once and
+#: never rewritten, so the answer never goes stale; the bound only caps memory.
+MAX_CACHED_SLOT_OWNERS: Final[int] = 512
+
 #: Distinct refs a single page resolves. Each resolution opens the cited unit and
 #: walks to the span, so the work is bounded per request rather than left to
 #: however many citations a page happens to carry; identical refs on one page are
@@ -1783,6 +1793,7 @@ class CrewLogPublisher:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._dirty: set[str] = set()
         self._bundles: "OrderedDict[str, Any]" = OrderedDict()
+        self._slot_owners: "OrderedDict[str, str]" = OrderedDict()
         self._scheduled = False
         # A flush pass runs to completion before the next one starts. Without
         # this, a growth arriving during a slow fold would schedule a second
@@ -1868,13 +1879,24 @@ class CrewLogPublisher:
             return
         from kiro_crew.crew_log.errors import CrewLogError
 
+        grown: list[str] = []
         for session_id in sessions:
             try:
-                await self._publish(session_id)
+                if await self._publish(session_id):
+                    grown.append(session_id)
             except CrewLogError as exc:
                 logger.debug("crew log fold refused for %s: %s", session_id, exc)
             except Exception:  # pragma: no cover - a push must not kill the loop
                 logger.debug("crew log publish failed for %s", session_id, exc_info=True)
+        # One frame per slot per pass: a slot's units growing together, or a team
+        # whose sessions all grew in one burst, is one re-read, not one each.
+        slots: dict[str, None] = {}
+        for session_id in grown:
+            slot = await self._slot_of(session_id)
+            if slot:
+                slots[slot] = None
+        for slot in slots:
+            self._state.broadcast_ws_owners(SLOT_FRAME, {"slot": slot})
 
     def _watchers(self) -> bool:
         """Whether a dashboard user has a socket open."""
@@ -1886,7 +1908,8 @@ class CrewLogPublisher:
         except Exception:  # pragma: no cover - a probe failure is not a verdict
             return False
 
-    async def _publish(self, session_id: str) -> None:
+    async def _publish(self, session_id: str) -> bool:
+        """Push every projection of *session_id* that moved; whether any did."""
         projections = _crew_log()
         before = self._bundles.get(session_id)
         bundle = await asyncio.to_thread(
@@ -1907,14 +1930,31 @@ class CrewLogPublisher:
         # client holding the retired file's projection with no later growth able to
         # dislodge it. When the origin changes, every projection is new.
         rebuilt = before is None or before.origin != bundle.origin
+        moved = False
         for name, checkpoint in bundle.checkpoints.items():
             previous = before.checkpoints.get(name) if before is not None else None
             if not rebuilt and previous is not None and previous.last_seq == checkpoint.last_seq:
                 continue
             if checkpoint.last_seq == 0:
                 continue
+            moved = True
             value = projections.projection_of(checkpoint)
             self._state.broadcast_ws_owners(FRAME, {"session_id": session_id, **value.to_dict()})
+        return moved
+
+    async def _slot_of(self, session_id: str) -> str:
+        """The slot *session_id*'s unit belongs to, from its immutable header."""
+        cached = self._slot_owners.get(session_id)
+        if cached is not None:
+            self._slot_owners.move_to_end(session_id)
+            return cached
+        slot: str = await asyncio.to_thread(_crew_log().slot_of_session, session_id)
+        # An unprovable owner is not cached: the header may not be written yet.
+        if slot:
+            self._slot_owners[session_id] = slot
+            while len(self._slot_owners) > MAX_CACHED_SLOT_OWNERS:
+                self._slot_owners.popitem(last=False)
+        return slot
 
     # -- lifecycle ---------------------------------------------------------- #
 

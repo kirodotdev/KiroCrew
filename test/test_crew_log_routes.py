@@ -849,6 +849,16 @@ class _Sockets:
         self.frames.append((frame, data))
 
 
+def _frames(state: _Sockets, name: str) -> list[dict]:
+    return [data for frame, data in state.frames if frame == name]
+
+
+async def _pass(publisher: routes.CrewLogPublisher, *sessions: str) -> None:
+    """One flush pass over *sessions*, the way a coalesced growth runs."""
+    publisher._dirty.update(sessions)
+    await publisher._flush()
+
+
 @pytest.mark.asyncio
 async def test_a_growth_pushes_one_frame_per_projection():
     handle = _log()
@@ -857,13 +867,81 @@ async def test_a_growth_pushes_one_frame_per_projection():
     state = _Sockets()
     publisher = routes.CrewLogPublisher(state)
     publisher.bind(asyncio.get_running_loop())
-    await publisher._publish(SESSION)
+    assert await publisher._publish(SESSION)
     assert {frame for frame, _ in state.frames} == {routes.FRAME}
-    assert {data["name"] for _, data in state.frames} == set(crew_log.PROJECTION_NAMES)
-    for _, data in state.frames:
+    assert {data["name"] for data in _frames(state, routes.FRAME)} == set(crew_log.PROJECTION_NAMES)
+    for data in _frames(state, routes.FRAME):
         assert data["session_id"] == SESSION
         assert data["seq"] == handle.last_seq
         assert "value" in data
+
+
+@pytest.mark.asyncio
+async def test_a_growth_names_the_slot_to_reread_and_carries_nothing_else():
+    """Slot folds are read through the route; the push only says which slot moved."""
+    handle = _log(slot="dashboard:conductor")
+    _opened(handle, slot="dashboard:conductor")
+    state = _Sockets()
+    publisher = routes.CrewLogPublisher(state)
+    publisher.bind(asyncio.get_running_loop())
+    await _pass(publisher, SESSION)
+    assert _frames(state, routes.SLOT_FRAME) == [{"slot": "dashboard:conductor"}]
+    state.frames.clear()
+    _turn(handle, 1)
+    with patch.object(crew_log, "slot_of_session", side_effect=AssertionError("re-read")):
+        await _pass(publisher, SESSION)
+    assert _frames(state, routes.SLOT_FRAME) == [{"slot": "dashboard:conductor"}]
+    state.frames.clear()
+    await _pass(publisher, SESSION)
+    assert state.frames == []
+
+
+@pytest.mark.asyncio
+async def test_one_pass_sends_one_slot_frame_per_slot():
+    for unit in ("s-a", "s-b"):
+        _opened(_log(unit, slot="dashboard:team"), slot="dashboard:team")
+    _opened(_log("s-c", slot="dashboard:other"), slot="dashboard:other")
+    state = _Sockets()
+    publisher = routes.CrewLogPublisher(state)
+    publisher.bind(asyncio.get_running_loop())
+    await _pass(publisher, "s-a", "s-b", "s-c")
+    assert sorted(data["slot"] for data in _frames(state, routes.SLOT_FRAME)) == [
+        "dashboard:other",
+        "dashboard:team",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_slot_owner_cache_is_bounded(monkeypatch):
+    monkeypatch.setattr(routes, "MAX_CACHED_SLOT_OWNERS", 2)
+    state = _Sockets()
+    publisher = routes.CrewLogPublisher(state)
+    publisher.bind(asyncio.get_running_loop())
+    for index in range(3):
+        unit = f"s-owner{index}"
+        _opened(_log(unit, slot=f"dashboard:{index}"), slot=f"dashboard:{index}")
+        await _pass(publisher, unit)
+    assert list(publisher._slot_owners) == ["s-owner1", "s-owner2"]
+    assert [data["slot"] for data in _frames(state, routes.SLOT_FRAME)] == [
+        "dashboard:0",
+        "dashboard:1",
+        "dashboard:2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_unprovable_slot_sends_no_slot_frame_and_is_asked_again():
+    handle = _log()
+    _opened(handle)
+    state = _Sockets()
+    publisher = routes.CrewLogPublisher(state)
+    publisher.bind(asyncio.get_running_loop())
+    with patch.object(crew_log, "slot_of_session", return_value="") as probe:
+        await _pass(publisher, SESSION)
+        _turn(handle, 1)
+        await _pass(publisher, SESSION)
+    assert probe.call_count == 2
+    assert _frames(state, routes.SLOT_FRAME) == []
 
 
 @pytest.mark.asyncio
@@ -931,7 +1009,7 @@ async def test_a_fold_refusal_does_not_stop_the_other_sessions():
     publisher.bind(asyncio.get_running_loop())
     publisher._dirty.update({"s-good", "s-broken"})
     await publisher._flush()
-    assert {data["session_id"] for _, data in state.frames} == {"s-good"}
+    assert {data["session_id"] for data in _frames(state, routes.FRAME)} == {"s-good"}
 
 
 def test_notify_from_a_writer_thread_does_no_work_of_its_own():

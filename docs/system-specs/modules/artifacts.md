@@ -37,6 +37,7 @@ Loading, empty results, filtering, and read errors therefore keep the same mode.
 Automatic session status cards and saved task views have different owners.
 With `dashboard.dynamic_dashboard_cards` enabled, host session events queue a
 bounded background update using only that session's recent, redacted messages.
+Team workers (sessions another session created) get no automatic card.
 The model chooses the card's HTML/CSS and flat text fields; subsequent updates
 can omit HTML and reuse the prior layout with exactly the same data field names.
 A field-name change requires explicit replacement HTML; invalid data-only output
@@ -104,7 +105,15 @@ navigation before rendering. It inspects actual attributes irrespective of SVG
 namespace and keeps only fragment hrefs; empty hrefs are navigation too.
 Models freely design supported HTML/CSS/SVG layouts and native
 disclosures; dynamic evidence arrives through published revisions, not model
-JavaScript. Deny-by-default CSP permits only inline styling and data images/fonts.
+JavaScript. Deny-by-default CSP permits only inline styling and data fonts; no
+image loads, since an image is bytes the browser decodes for display and the
+backend text scan cannot read them, so image-source attributes are removed too.
+An automatic card is held to the text the backend scanned: its CSP also refuses
+fonts and its `@font-face` rules are deleted (a font remaps the glyphs shown),
+declarations that draw characters absent from the markup (`content`, `quotes`,
+`list-style*`, `hyphenate-character`, `text-emphasis*`, `text-overflow`) are
+removed, and so are the `alt`, `title`, `start` and `value` attributes the
+browser displays as text. Saved views keep their authored CSS and attributes.
 The page receives no credentials or host state. Model-authored status is labeled a
 published view; it never replaces the host's trusted approval inventory.
 Automatic card data binds through `data-dashboard-field` text containers using
@@ -116,12 +125,25 @@ session summaries are active on a page, with one automatic card and at most one
 selected saved view each: at most 24 iframe documents, not twelve mounted wrappers.
 Native attention controls remain mounted independently to preserve drafts across
 filters and pages. The task panel
-mounts at most twelve automatic cards plus its selected task publication; Crew's
+mounts at most twelve session frames (workers among them carry no automatic card)
+plus its selected task publication; Crew's
 existing protected-template renderer retains its own lifecycle.
 The optional creation request is a model-facing English prompt; translated UI
 copy names the published view, and the artifacts skill owns its technical
 publishing contract. Source failures render through the shared error notice in
 both the dock and panel, with no navigation hand-off beside unsent answer drafts.
+No command-center source polls. The dock, panel and all-session view read each
+source once and re-read it on the frame that announces its change: `approval` and
+`approval_resolved` for both approval systems, `question_card` and its retirement
+for questions, `artifact_update` for a task dashboard, the crew log's
+`slot_projection` for the work board of a team holding that slot, and workflow
+events into the store, with a finished, failed or cancelled run also re-reading
+the workflow snapshot the store's live runs are laid over, and the store's own
+workflow heal read replacing that snapshot; a reconnect re-reads all of them. The work board is the one host source the crew log
+owns, a checkpointed slot fold. Pending approvals and questions stay on the live
+host inventory rather than a crew-log projection: a card needs the request's tool
+input, which the crew log only digests, and a decision needs the live future the
+resolve endpoints check, which a recorded request cannot prove still exists.
 Incognito/temporary artifact persistence restrictions remain unchanged.
 
 ### Artifact files

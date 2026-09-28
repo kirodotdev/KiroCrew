@@ -1,10 +1,23 @@
 import DOMPurify from 'dompurify'
 
+// Declarations that make the browser draw characters the markup's text does not
+// contain, which the backend's text projection of the card therefore never reads.
+const GENERATED_TEXT = [
+  'content', 'list-style', 'list-style-type', 'quotes', 'hyphenate-character',
+  'text-emphasis', 'text-emphasis-style', '-webkit-text-emphasis', '-webkit-text-emphasis-style', 'text-overflow',
+]
+// Attributes the browser shows as text (a broken image's alt, a hover tooltip,
+// a list marker's number) that the backend's tag-stripping projection drops.
+const DISPLAYED_ATTRIBUTES = new Set(['alt', 'title', 'start', 'value'])
+
 function removeGeneratedText(style: CSSStyleDeclaration): void {
-  for (const name of ['content', 'list-style', 'list-style-type', 'quotes', 'hyphenate-character']) style.removeProperty(name)
+  for (const name of GENERATED_TEXT) style.removeProperty(name)
 }
 
 function inspectCardRule(rule: CSSRule): boolean {
+  // A font remaps the glyphs shown for the scanned text, so the scan no
+  // longer reads what the card displays.
+  if (rule.type === CSSRule.FONT_FACE_RULE) return false
   let inspected = false
   if ('style' in rule) {
     removeGeneratedText((rule as CSSStyleRule).style)
@@ -68,7 +81,8 @@ export function dashboardDocument(html: string, themeVars: Record<string, string
   })
   const doc = new DOMParser().parseFromString(sanitized, 'text/html')
   // Only automatic cards pass data (including {}). Saved views keep their CSS.
-  if (data !== undefined) restrictCardStyles(doc)
+  const card = data !== undefined
+  if (card) restrictCardStyles(doc)
   if (data) for (const element of doc.body.querySelectorAll('[data-dashboard-field]')) {
     if (element.tagName.toLowerCase() === 'style') continue
     const field = element.getAttribute('data-dashboard-field') || ''
@@ -81,11 +95,18 @@ export function dashboardDocument(html: string, themeVars: Record<string, string
     // namespaced xlink:href. Empty href also navigates (reloads the document).
     for (const attr of Array.from(element.attributes)) {
       if (attr.localName === 'href' && !attr.value.startsWith('#')) element.removeAttributeNode(attr)
+      // The markup comes from a model reading an untrusted transcript, and the
+      // backend scans it as text. A data: image is bytes the browser decodes
+      // for display, which the text scan cannot read the same way
+      // (percent-encoding, base64). Both surfaces are layout over text; inline
+      // SVG stays authorable, an image load is not.
+      if (attr.localName === 'src' || attr.localName === 'srcset') element.removeAttributeNode(attr)
+      else if (card && DISPLAYED_ATTRIBUTES.has(attr.localName)) element.removeAttributeNode(attr)
     }
   }
   const csp = doc.createElement('meta')
   csp.httpEquiv = 'Content-Security-Policy'
-  csp.content = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none';"
+  csp.content = `default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src ${card ? "'none'" : 'data:'}; connect-src 'none'; form-action 'none'; base-uri 'none';`
   doc.head.prepend(csp)
   const style = doc.createElement('style')
   // readThemeVars already sanitizes the host's computed CSS values.

@@ -164,7 +164,7 @@ and its one caller asks the registry for it by name.
 | `usage` | What it spent: credits and the four token dimensions, per model; the per-turn context bill by source kind from `context/composed`; compaction count and the context they freed; step count and time. |
 | `timeline` | The newest turn, lifecycle and cost MOMENTS, oldest first. Message, step and tool entries are deliberately absent: they are the bulk of a log, the page route and `tools` already serve them, and including them would make the timeline a second copy of the file. |
 | `tools` | Calls matched to completions by `call_id`: totals, per name, open calls, unmatched completions. An error is `status` in `refused`/`error`/`failed` OR `is_error` true -- two independent signals, and an absent `is_error` is not a claim that the call worked. |
-| `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. No emitter writes these types yet; the fold is against the declared shape. |
+| `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. The native permission path writes both types (`on_approval_requested` / `on_approval_decided` in the chat runner); coordinator approvals and question cards are not recorded. |
 | `class` (INTERNAL -- not advertised, not pushed) | What KIND of session this log belongs to, over the log's WHOLE LIFE: the memory mode, the owning app, and whether the conversation was ever published to a channel. Each of those three is held at the most RESTRICTIVE value the log ever recorded, from the `class` object on the log's first `session/opened` plus every later `session/class` move, so a session published to a channel for one turn keeps reading as channel-published after the link is dropped -- that turn's content is still in this log. It also carries `workspace`, which folds differently because it is an IDENTITY rather than a restriction: there is no more-restrictive workspace to keep, so the FIRST one stated is held and a later different one sets `workspace_moved`, which is itself the restrictive fact -- a log whose content spans two workspaces is owned by neither. `recorded` says a class was stated at all and `complete` says the history has a beginning, and a reader deciding an authorization question refuses on either being false. The only fold whose consumer is a READER of another unit rather than a panel, which is why it is held restrictive rather than current: a fold that reported the present value would answer a question nobody asks of a log. |
 
 ### The slot-keyed folds
@@ -561,6 +561,19 @@ during a slow fold does not launch an overlapping pass: two `_publish` for one
 session would otherwise share the same prior bundle and race the cache write, so
 an older `seq` could be broadcast last. When a pass finishes with more work
 marked, it schedules the next pass itself.
+
+A pass also sends one `slot_projection` frame, `{slot}`, for each distinct slot
+whose units had a projection move in it, naming the slot the unit's header
+records: several units of one slot growing in one pass are one frame. It carries no value:
+slot folds (the conductor `work` board among them) join several units and are
+read through the projection route, so the frame only tells an observer which
+slot to re-read instead of polling. The unit-to-slot answer comes from the
+header, which is written once and never rewritten, so it is cached for at most
+`MAX_CACHED_SLOT_OWNERS` units; a unit whose header names no slot yet sends no
+slot frame and is asked again on its next growth. A worker's growth names the
+worker's slot, and a work board also folds its bound workers' units, so the
+dashboard re-reads exactly the boards of the named slot and of every slot it was
+created under, letting a read already in flight absorb the frame.
 
 Fold state is cached for at most `MAX_CACHED_SESSIONS` sessions; an evicted
 session folds from the start on its next growth. When no dashboard user has a

@@ -78,10 +78,18 @@ describe('command center projection', () => {
   it('deduplicates approvals exposed by both feeds and preserves exact request IDs', () => {
     const model = buildCommandCenter(sources({
       slots: [slot('root', { pending_approval: true, pending_approval_info: { origin: 'coordinator', request_id: 'req', tool: 'shell', tool_input: 'pwd', tool_kind: 'execute' } })],
-      approvals: [{ id: 'req', slot: 'dashboard:root', tool: 'shell' }],
+      approvals: [{ id: 'req', instance: 'inst-req', slot: 'dashboard:root', tool: 'shell' }],
     }))
     expect(model.attention).toHaveLength(1)
-    expect(model.attention[0]).toMatchObject({ id: 'approval:root:req', slot: 'root', approvalMode: 'normal', approval: { id: 'req', slot: 'dashboard:root' } })
+    expect(model.attention[0]).toMatchObject({ id: 'approval:root:req:inst-req', slot: 'root', approvalMode: 'normal', approval: { id: 'req', slot: 'dashboard:root' } })
+  })
+  it('keys a coordinator replacement request separately from the decided card it replaces', () => {
+    const card = (instance: string) => buildCommandCenter(sources({
+      slots: [slot('root')],
+      approvals: [{ id: 'reused', instance, slot: 'dashboard:root', tool: 'shell' }],
+    })).attention[0]
+    expect(card('first').id).not.toBe(card('second').id)
+    expect(card('second').approval).toMatchObject({ id: 'reused', instance: 'second' })
   })
   it('requires a native request instance and keys replacement cards separately', () => {
     const base = { origin: 'native' as const, request_id: 'reused', tool: 'shell', tool_input: 'pwd', tool_kind: 'execute' }

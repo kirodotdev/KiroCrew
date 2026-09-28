@@ -2523,9 +2523,16 @@ Expiry notifications are delivered via Dashboard WebSocket and Slack DM to infor
 > them on an upstream sync.
 
 **Dynamic Dashboard one-shot consent** binds registry origin, recorded session
-and request ID. The coordinator endpoint's optional `origin=coordinator&slot=…`
-selector checks the exact inventory slot and resolves only its live state future,
-without yielding between check and resolution. The native slot endpoint's optional
+and request ID. The coordinator endpoint's optional
+`origin=coordinator&slot=…&instance=…` selector checks the exact inventory slot
+and the record's instance, and resolves only its live state future, without
+yielding between check and resolution. The instance is minted by the coordinator
+once per request and carried on the record; the request ID is the caller's and
+can recur in the same slot, so a card rendered from an expired record cannot
+resolve the request that replaced it. An earlier wait's exit removes only its own
+record and future, judged by the future it created, so a replacement registered
+under the same ID stays resolvable. A selector naming no instance is malformed
+and returns 400. The native slot endpoint's optional
 `origin: native` body selector requires an explicit request ID, `request_mid`
 and one-shot action. The host permission row's existing `meta.mid` is associated
 with the exact registered future; projection and submission both verify that

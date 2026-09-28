@@ -12,6 +12,7 @@ import { dashboardDocument } from './dashboardDocument'
 import { TASK_DASHBOARD_SANDBOX } from './TaskDashboardFrame'
 import type { DynamicDashboardCard } from '../../../types/dynamicDashboard'
 import { useAppSelector } from '../../../store'
+import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
 
 const STATUS_KEYS: Record<Exclude<DynamicDashboardCard['status'], 'published'>, string> = {
   disabled: 'commandCenter.card_disabled', waiting: 'commandCenter.card_waiting',
@@ -25,7 +26,8 @@ export default function SessionStatusFrame({ slot, title, active }: { slot: stri
   const { t } = useTranslation()
   const { theme, colorTheme, themeVersion } = useTheme()
   const owner = useAppSelector(s => s.dashboard.slots.find(item => item.key === slot))
-  const eligible = owner?.memory_mode !== 'incognito' && owner?.memory_mode !== 'temporary' && owner?.executor !== 'remote'
+  // Mirrors the producer: team workers (a creator link) get no automatic card.
+  const eligible = !isPrivateMemoryMode(owner?.memory_mode) && owner?.executor !== 'remote' && !owner?.created_by
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const vars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
   const query = useQuery({ queryKey: ['dashboard-card', slot, owner?.linked_session_key ?? '', owner?.memory_mode ?? 'persistent'], queryFn: () => api.dashboardCard(slot),

@@ -6,7 +6,7 @@ import { api, ApiError } from '../api/client'
 import * as transport from '../chat-core/transport/sendTurn'
 import { buildCommandCenter, type AttentionItem } from '../pages/chat/command-center/model'
 
-const approval: AttentionItem = { id: 'approval:child:r1', kind: 'approval', slot: 'child', native: true, approvalMode: 'normal', approval: { id: 'r1', request_mid: 'row-r1', slot: 'dashboard:child', tool: 'shell', tool_input: 'git status' } }
+const approval: AttentionItem = { id: 'approval:child:r1', kind: 'approval', slot: 'child', native: true, approvalMode: 'normal', approval: { id: 'r1', instance: 'inst-r1', request_mid: 'row-r1', slot: 'dashboard:child', tool: 'shell', tool_input: 'git status' } }
 const question: AttentionItem = { id: 'question:q1', kind: 'question', slot: 'child', question: { slot: 'child', ask_id: 'q1', questions: [{ question: 'Which scope?', options: [{ label: 'Backend' }, { label: 'Frontend' }] }] } }
 
 describe('task dashboard input routing', () => {
@@ -60,7 +60,7 @@ describe('task dashboard input routing', () => {
       await waitFor(() => expect(approve).toHaveBeenCalledWith('child', 'rejected_once', { request_id: 'r1', request_mid: 'row-r1', origin: 'native' }))
       expect(resolve).not.toHaveBeenCalled()
     } else {
-      await waitFor(() => expect(resolve).toHaveBeenCalledWith('r1', 'reject_once', { origin: 'coordinator', slot: 'dashboard:child' }))
+      await waitFor(() => expect(resolve).toHaveBeenCalledWith('r1', 'reject_once', { origin: 'coordinator', slot: 'dashboard:child', instance: 'inst-r1' }))
       expect(approve).not.toHaveBeenCalled()
     }
   })
@@ -70,7 +70,7 @@ describe('task dashboard input routing', () => {
     const approve = vi.spyOn(api, 'approveChatSlot')
     renderWithProviders(<AttentionCard item={{ ...approval, native: false }} title="Worker" />)
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(resolve).toHaveBeenCalledWith('r1', 'approve', { origin: 'coordinator', slot: 'dashboard:child' }))
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith('r1', 'approve', { origin: 'coordinator', slot: 'dashboard:child', instance: 'inst-r1' }))
     expect(approve).not.toHaveBeenCalled()
   })
 
@@ -86,9 +86,9 @@ describe('task dashboard input routing', () => {
 
   it('serializes origin/session/request selectors and leaves legacy resolution unchanged', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-    await api.resolveApproval('request/id', 'approve', { origin: 'coordinator', slot: 'slack:thread/id' })
+    await api.resolveApproval('request/id', 'approve', { origin: 'coordinator', slot: 'slack:thread/id', instance: 'inst-1' })
     let [url, init] = fetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/approvals/request%2Fid/approve?origin=coordinator&slot=slack%3Athread%2Fid')
+    expect(url).toBe('/api/approvals/request%2Fid/approve?origin=coordinator&slot=slack%3Athread%2Fid&instance=inst-1')
     expect(init.method).toBe('POST')
     await api.resolveApproval('legacy', 'reject_once')
     expect(fetch.mock.calls[1][0]).toBe('/api/approvals/legacy/reject_once')
@@ -119,7 +119,7 @@ describe('task dashboard input routing', () => {
       const item = buildCommandCenter({ root: 'child',
         slots: [{ key: 'child', messages: 0, running: true, pending_approval: true, pending_approval_info: { origin: coordinator ? 'coordinator' : 'native', request_mid: 'row-same', request_id: 'same', tool: 'shell', tool_input: 'native command', tool_kind: 'execute' } }],
         subagents: {}, workflows: [], questions: [],
-        approvals: coordinator ? [{ id: 'same', slot: 'dashboard:child', tool: 'shell', tool_input: 'coordinator command' }] : [],
+        approvals: coordinator ? [{ id: 'same', instance: 'inst-same', slot: 'dashboard:child', tool: 'shell', tool_input: 'coordinator command' }] : [],
       }).attention[0]
       return <AttentionCard key={item.id} item={item} title="Worker" />
     }
@@ -159,7 +159,7 @@ describe('task dashboard input routing', () => {
     const items = buildCommandCenter({ root: 'child',
       slots: [{ key: 'child', messages: 0, running: true, pending_approval: true, pending_approval_info: { origin: 'native', request_mid: 'row-same', request_id: 'same', tool: 'native tool', tool_input: 'native command', tool_kind: 'execute' } }],
       subagents: {}, workflows: [], questions: [],
-      approvals: [{ id: 'same', slot: 'dashboard:child', tool: 'coordinator tool', tool_input: 'coordinator command' }],
+      approvals: [{ id: 'same', instance: 'inst-same', slot: 'dashboard:child', tool: 'coordinator tool', tool_input: 'coordinator command' }],
     }).attention
     renderWithProviders(<>{items.map(item => <AttentionCard key={item.id} item={item} title="Worker" />)}</>)
     expect(screen.getAllByRole('button', { name: 'Approve once' })).toHaveLength(2)
@@ -170,7 +170,7 @@ describe('task dashboard input routing', () => {
     expect(resolve).not.toHaveBeenCalled()
     expect(within(coordinatorCard).getByRole('button', { name: 'Reject once' })).toBeEnabled()
     fireEvent.click(within(coordinatorCard).getByRole('button', { name: 'Reject once' }))
-    await waitFor(() => expect(resolve).toHaveBeenCalledWith('same', 'reject_once', { origin: 'coordinator', slot: 'dashboard:child' }))
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith('same', 'reject_once', { origin: 'coordinator', slot: 'dashboard:child', instance: 'inst-same' }))
     expect(approve).toHaveBeenCalledTimes(1)
   })
 

@@ -387,6 +387,52 @@ async def test_expired_spawn_approval_clears_the_lane_and_pushes(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_path, monkeypatch):
+    """A caller's id can recur while an earlier wait on it is open. The earlier
+    wait's exit removes only its own record and future: the replacement keeps
+    both, stays in the lane, and its buttons still resolve it. Nothing is
+    broadcast for the earlier wait, whose card the replacement's frame already
+    took over. Negative control: a wait that is not replaced retires and clears
+    the lane on expiry as before."""
+    state = _make_state(tmp_path)
+    parent = state.get_or_create_slot("parent")
+    monkeypatch.setattr(state, "_APPROVAL_TIMEOUT", 0.2)
+    resolved = []
+    monkeypatch.setattr(state, "_audit_and_broadcast_approval", lambda *a, **k: resolved.append(a))
+
+    older = await _register(state, "same", parent.key)
+    older_instance = state._pending_approvals["same"]["instance"]
+    await asyncio.sleep(0.05)
+    # _register returns once the id has a record, which the older wait's already
+    # is; wait for the replacement to have written its own.
+    replacement = await _register(state, "same", parent.key)
+    deadline = asyncio.get_running_loop().time() + _WAIT_SECS
+    while state._pending_approvals["same"]["instance"] == older_instance:
+        assert asyncio.get_running_loop().time() < deadline, "replacement never registered"
+        await asyncio.sleep(_POLL_SECS)
+    live = state._approval_futures["same"]
+    state.push_slots_update.reset_mock()
+
+    assert await older is False
+    assert state._approval_futures["same"] is live
+    assert state._pending_approvals["same"]["instance"] != older_instance
+    assert state.serialize_slot(parent)["pending_approval"] is True
+    assert resolved == []
+    assert state.push_slots_update.call_count == 0
+
+    assert state.resolve_state_approval("same", True) is True
+    assert await replacement is True
+    assert "same" not in state._pending_approvals
+    assert state.serialize_slot(parent)["pending_approval"] is False
+
+    lone = await _register(state, "lone", parent.key)
+    assert await lone is False
+    assert "lone" not in state._approval_futures
+    assert any(a[1] == "lone" for a in resolved)
+    assert state.serialize_slot(parent)["pending_approval"] is False
+
+
+@pytest.mark.asyncio
 async def test_unowned_approval_lights_no_slot(tmp_path):
     state = _make_state(tmp_path)
     parent = state.get_or_create_slot("parent")

@@ -6,10 +6,13 @@ import type { Artifact, SubagentActivity } from '../../../types'
 import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
 
 export const TASK_DASHBOARD_TAG = 'task-dashboard'
-const POLL_MS = 10_000
 const EMPTY_AGENTS: Record<string, SubagentActivity> = {}
 
-/** Shared query keys let the dock and panel observe one poll, not one per worker. */
+/** Shared query keys let the dock and panel observe one read, not one per worker.
+ * Nothing here polls: every source is refreshed by the frame that announces its
+ * change (`approval*`, `question_card*`, `artifact_update`, the crew log's
+ * `slot_projection` for the work board, workflow events into the store) and all
+ * of them again on reconnect, so an open chat tab costs no periodic requests. */
 export function useCommandCenter(root: string | null, enabled = true, scope: 'task' | 'fleet' = 'task') {
   const slots = useAppSelector(s => s.dashboard.slots)
   const approvalMode = useAppSelector(s => s.dashboard.approvalMode)
@@ -21,8 +24,9 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const fleet = scope === 'fleet'
   const scoped = useMemo(() => fleet ? slots : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
   const canRead = enabled && (fleet || !!root && scoped.length > 0)
-  const polling = { enabled: canRead, staleTime: 3_000, refetchInterval: POLL_MS }
-  const questions = useQuery({ queryKey: ['command-center', 'questions'], queryFn: api.pendingQuestions, ...polling })
+  const scopedKeySet = useMemo(() => new Set(scoped.map(s => s.key)), [scoped])
+  const sourceOptions = { enabled: canRead, staleTime: 3_000 }
+  const questions = useQuery({ queryKey: ['command-center', 'questions'], queryFn: api.pendingQuestions, ...sourceOptions })
   // Only the mounted owner's actively drafted STATELESS cards survive retirement.
   // This is presentation continuity, never a cache of live approval/ask authority.
   const draftScope = JSON.stringify([scope, root])
@@ -46,24 +50,24 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     const ids = new Set(live.map(q => JSON.stringify([slotKey(q.slot), q.card_id])))
     return [...live, ...Object.values(drafts.scope === draftScope ? drafts.cards : {}).filter(q => !ids.has(JSON.stringify([slotKey(q.slot), q.card_id])))]
   }, [questions.data, drafts, draftScope])
-  const approvals = useQuery({ queryKey: ['command-center', 'approvals'], queryFn: api.approvals, ...polling })
-  const workflows = useQuery({ queryKey: ['command-center', 'workflows'], queryFn: api.workflowRuns, ...polling })
+  const approvals = useQuery({ queryKey: ['command-center', 'approvals'], queryFn: api.approvals, ...sourceOptions })
+  const workflows = useQuery({ queryKey: ['command-center', 'workflows'], queryFn: api.workflowRuns, ...sourceOptions })
   const work = useQuery({
     queryKey: ['command-center', root, 'work'],
     queryFn: () => api.sessionWorkProjection(root!) as Promise<{ value?: { items: WorkItem[]; omitted?: number } }>,
-    ...polling, enabled: canRead && !fleet,
+    ...sourceOptions, enabled: canRead && !fleet,
   })
   const artifacts = useQuery({
     queryKey: ['command-center', 'artifacts'],
     queryFn: () => api.artifacts({ tag: TASK_DASHBOARD_TAG }) as Promise<{ artifacts?: Artifact[] }>,
-    ...polling,
+    ...sourceOptions,
   })
   const model = useMemo(() => {
     const subagents = Object.fromEntries(scoped.map(s => [s.key,
       s.key === activeSlot ? liveAgents : background?.[s.key]?.subagents || EMPTY_AGENTS,
     ]))
     // REST restores completed runs after a reload; live events win until the next
-    // authoritative poll. Neither an unavailable endpoint nor an idle slot is success.
+    // authoritative snapshot read. Neither an unavailable endpoint nor an idle slot is success.
     const runs = new Map((workflows.data?.runs || []).map(r => [r.run_id, r]))
     for (const r of Object.values(liveWorkflows || {})) {
       runs.set(r.run_id, { ...runs.get(r.run_id), run_id: r.run_id, name: r.name, status: r.status,
@@ -72,10 +76,9 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     return buildCommandCenter({ root: fleet ? null : root, slots: scoped, subagents, approvalMode, workflows: [...runs.values()],
       questions: visibleQuestions, approvals: approvals.data || [], work: fleet ? undefined : work.data?.value })
   }, [root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, approvalMode, fleet])
-  const scopedKeys = new Set(scoped.map(s => s.key))
   const dashboards = (artifacts.data?.artifacts || []).filter(a =>
     (a.kind === 'html' || a.kind === 'widget') && a.tags.includes(TASK_DASHBOARD_TAG)
-    && !!a.session_key && scopedKeys.has(slotKey(a.session_key)),
+    && !!a.session_key && scopedKeySet.has(slotKey(a.session_key)),
   )
   const sources = fleet ? [questions, approvals, workflows, artifacts] : [questions, approvals, workflows, work, artifacts]
   return {

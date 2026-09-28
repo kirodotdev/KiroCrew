@@ -61,7 +61,7 @@ import { reportVoiceFailure } from '../lib/voiceFailure'
 import {
   fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, sseMcpAppRender, setAutomations, sseAutomation, removeAutomation, sseSideQueue, reconcileWorkflowRuns,
 } from '../store/chatSlice'
-import { selectSidebarSubagentCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys, queueEntryAttachments } from '../store/chatSlice'
+import { selectSidebarSubagentCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys, queueEntryAttachments, isTerminalWorkflowStatus } from '../store/chatSlice'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
@@ -83,6 +83,7 @@ import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDe
 import { slotChangeUrls } from '../utils/pullRequestLinks'
 import type { StatusData, ChatMessage, ChatSlot, ChatFolder, Notification, PullRequestStatusBatch, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
+import { teamRoots } from '../pages/chat/command-center/model'
 import {
   dashboardAutomationSlotKey,
   isFullLegacyAutomationRecord,
@@ -1011,6 +1012,9 @@ export function useWebSocket() {
       const runs = out?.runs
       if (!Array.isArray(runs)) return
       dispatch(reconcileWorkflowRuns(runs))
+      // The command center lays live runs over the same read and does not poll
+      // it; hand it this answer so a healed run cannot reappear as running.
+      queryClient.setQueryData(['command-center', 'workflows'], out)
     } catch { /* unreadable authority — leave local state untouched */ }
   }, [dispatch, queryClient])
 
@@ -1780,6 +1784,9 @@ export function useWebSocket() {
                 queryClient.invalidateQueries({ queryKey: ['artifact-comments', slug] })
               }
               queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+              // The idle dock does not poll, so a newly published task
+              // dashboard reaches it through this frame.
+              queryClient.invalidateQueries({ queryKey: ['command-center', 'artifacts'] })
             }
             break
           }
@@ -2499,11 +2506,31 @@ export function useWebSocket() {
             // Wave lifecycle markers — no dedicated UI yet; the chip derives
             // its histogram from per-agent state. Reserved for wave grouping.
             break
-          case 'workflow_run_event':
+          case 'slot_projection': {
+            // A slot's crew log grew. A work board folds its conductor's units
+            // with its bound workers', so the boards that move are this slot's
+            // and every ancestor's. A read already in flight absorbs a burst of
+            // frames instead of being cancelled and restarted.
+            if (typeof data.slot !== 'string') break
+            for (const root of teamRoots(store.getState().dashboard.slots, data.slot)) {
+              queryClient.invalidateQueries({ queryKey: ['command-center', root, 'work'], exact: true }, { cancelRefetch: false })
+            }
+            break
+          }
+          case 'workflow_run_event': {
             // Dynamic-workflow run events folded into chat.workflowRuns and
             // surfaced by WorkflowProgressBar above the chat input.
-            dispatch(sseWorkflowEvent(data as { run_id: string; seq?: number; ts?: number; type: string; data?: Record<string, unknown> }))
+            const event = data as { run_id: string; seq?: number; ts?: number; type: string; data?: Record<string, unknown> }
+            dispatch(sseWorkflowEvent(event))
+            // The command center lays live runs over its REST snapshot and does
+            // not poll it; once a finished run's live entry is cleared, the
+            // snapshot must already say it finished.
+            // A run's terminal events are `run_<status>` for the terminal statuses.
+            if (event.type.startsWith('run_') && isTerminalWorkflowStatus(event.type.slice('run_'.length))) {
+              queryClient.invalidateQueries({ queryKey: ['command-center', 'workflows'] })
+            }
             break
+          }
           case 'chat.side_result':
             dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean }))
             break

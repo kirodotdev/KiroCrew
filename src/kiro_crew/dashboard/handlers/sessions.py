@@ -3625,10 +3625,15 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
     if "origin" in request.query:
-        # Dynamic Dashboard echoes the inventory record's origin and exact slot.
-        # Do not fall through to native futures when that displayed record expires.
+        # Dynamic Dashboard echoes the inventory record's origin, exact slot and
+        # instance. Do not fall through to native futures when that displayed
+        # record expires. The instance binds the decision to the request the card
+        # showed: the request id is minted by the caller and can recur in the same
+        # slot, so a card left up from an expired record would otherwise resolve
+        # the request that replaced it.
         slot = request.query.get("slot", "")
-        if request.query["origin"] != "coordinator" or not slot:
+        instance = request.query.get("instance", "")
+        if request.query["origin"] != "coordinator" or not slot or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
@@ -3637,6 +3642,7 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         ok = bool(
             pending
             and pending.get("slot") == slot
+            and pending.get("instance") == instance
             and state.resolve_state_approval(approval_id, action == "approve")
         )
     else:
