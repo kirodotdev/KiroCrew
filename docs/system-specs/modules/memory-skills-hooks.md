@@ -3604,7 +3604,13 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 one bounded directory. The default is the usage-ranked index with a family hint
 for omitted rows; false selects a shorter search pointer. A `false` that 0.6.x
 materialized (when it meant the full listing) is removed once on upgrade; see the
-legacy `skills.lazy_load` rewrite in [config](config.md). A `skill://` mapping
+legacy `skills.lazy_load` rewrite in [config](config.md). Both variants order the
+user's own skills ahead of shipped ones before ranking fills the budget (or the
+pointer's eight names): `_is_user_authored` counts a packaged key, a copy
+carrying the builtin sync's provenance marker, an app skill resolving into a
+provider root, and an edition root as shipped; everything else — user-created,
+`skills.extra_paths`, trusted project, mapped — is the user's, so a new install's
+empty usage ledger cannot hand every slot to shipped skills. A `skill://` mapping
 restricts availability, not eager body delivery. Directory, search, paginated
 list, exact reads and `$full/key` expansion resolve the same project-aware mapping.
 Unqualified `$leaf` fallback is permitted only when unique. External mapped files

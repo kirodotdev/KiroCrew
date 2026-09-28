@@ -881,6 +881,26 @@ def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
+def _packaged_skill_names() -> frozenset[str]:
+    """Keys of the skills this package ships, walked once per process.
+
+    Two packaged trees install into the skills dir: ``builtin_skills/`` (the
+    builtin sync) and the deploy layer's own ``deploy/skills/`` copies. Both are
+    immutable while the process runs, so the one walk is the whole cost; the
+    startup index asks this per row to tell a shipped skill from one the user
+    wrote.
+    """
+    from kiro_crew.deploy import _SKILLS_DIR as deploy_skills_dir
+
+    return frozenset(
+        name
+        for root in (_BUILTIN_SKILLS_DIR, deploy_skills_dir)
+        if root.is_dir()
+        for name, _ in _iter_skill_files(root)
+    )
+
+
 #: Basename every skill's body lives under. Used as a cheap pre-filter before
 #: any filesystem work when deciding whether a tool call touched a skill.
 _SKILL_FILE = "SKILL.md"
@@ -5528,6 +5548,43 @@ class SkillsLoader:
     def _rank_key(self, s: dict) -> tuple[float, float]:
         """Sort key for on-demand skills: (usage_hits, effective_recency). Higher sorts first. Falls back to recency-only if the ledger is absent."""
         return _delivery._rank_key(self, s)
+
+    def _is_user_authored(self, s: dict) -> bool:
+        """Whether *s* is a skill the user wrote rather than one Kiro Crew shipped.
+
+        Shipped means a packaged built-in (by key, or by the provenance marker
+        the builtin sync writes into every copy it installs — which also covers
+        a retired built-in still on disk), a skill an app registered (its file
+        resolves into a provider root), or an edition-contributed root. Anything
+        else — a skill the user created in the skills dir, a ``skills.extra_paths``
+        root, a trusted project's ``.kiro/skills``, an agent's ``skill://``
+        mapping — is the user's.
+
+        A confined project row answers before any filesystem call: resolving its
+        path would reintroduce the link probe the confined walker exists to
+        prevent, and a project skill is never shipped anyway.
+        """
+        if s.get("confine_root"):
+            return True
+        if str(s["key"]) in _packaged_skill_names():
+            return False
+        path = Path(str(s["path"]))
+        if any(path.is_relative_to(root) for root in self._edition_extra_paths):
+            return False
+        if os.path.lexists(path.parent / _PROVENANCE_MARKER):
+            return False
+        return not _within_any(os.path.realpath(path), _trusted_skill_roots())
+
+    def _user_first(self, ranked: list[dict]) -> list[dict]:
+        """Stable partition of *ranked*: user-authored skills ahead of shipped ones.
+
+        A new install has no usage history, so rank alone lets the ~60 shipped
+        skills take every slot and a skill the user just wrote is never named.
+        Each half keeps its rank order.
+        """
+        user = [s for s in ranked if self._is_user_authored(s)]
+        mine = {id(s) for s in user}
+        return user + [s for s in ranked if id(s) not in mine]
 
     @staticmethod
     def _short_desc(desc: str, suffix: str = "...") -> str:

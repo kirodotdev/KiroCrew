@@ -410,7 +410,7 @@ def get_context(
         # do not depend on directory iteration order.
         by_key = sorted(on_demand, key=lambda s: s["key"])
         named: set[str] = set()
-        for skill in sorted(by_key, key=loader._rank_key, reverse=True)[:8]:
+        for skill in loader._user_first(sorted(by_key, key=loader._rank_key, reverse=True))[:8]:
             line = f"- {skill['key']}: {loader._short_desc(skill['description'])[:100]}\n"
             if len(wrap([pointer + line])) <= optional_budget:
                 pointer += line
@@ -428,7 +428,7 @@ def get_context(
         if len(wrap([pointer])) <= optional_budget:
             optional.append(pointer)
     elif on_demand:
-        ranked = sorted(on_demand, key=loader._rank_key, reverse=True)
+        ranked = loader._user_first(sorted(on_demand, key=loader._rank_key, reverse=True))
         header = (
             "## Available Skills\n\n"
             "Search this agent's scope with skill_search(query). "

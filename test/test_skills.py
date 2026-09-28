@@ -2135,6 +2135,83 @@ class TestLazyLoadContext:
         ctx = loader.get_context(budget=100_000)
         assert ctx.index("**od3**") < ctx.index("**od0**")
 
+    @staticmethod
+    def _shipped_and_user(tmp_path, n_shipped=12):
+        """A skills dir of *n_shipped* hot shipped skills plus one cold user skill.
+
+        Shipped is marked the way the builtin sync marks every copy it installs,
+        and each shipped skill carries usage the user skill has never earned, so
+        rank alone puts the user skill last.
+        """
+        skills_dir = tmp_path / "skills"
+        for i in range(n_shipped):
+            _create_skill(
+                skills_dir,
+                f"shipped{i:02}",
+                f"---\nname: shipped{i:02}\ndescription: shipped {i}\n---\n# S\n",
+            )
+            (skills_dir / f"shipped{i:02}" / ".builtin-skill-provenance").write_text("2:x")
+        _create_skill(
+            skills_dir,
+            "zz-mine",
+            "---\nname: zz-mine\ndescription: my own procedure\n---\n# Mine\n",
+        )
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        for i in range(n_shipped):
+            loader._usage.record(f"shipped{i:02}")
+        return loader
+
+    def test_pointer_names_a_cold_user_skill_ahead_of_hot_shipped_ones(self, tmp_path):
+        # A new user has no usage history, so the eight pointer names went to
+        # shipped skills and the skill they wrote was never named at all.
+        loader = self._shipped_and_user(tmp_path)
+        text = loader.get_context(budget=100_000, discovery_only=True)
+        names = [line[2:].split(":", 1)[0] for line in text.splitlines() if line.startswith("- ")]
+        assert names[0] == "zz-mine"
+        # The cap is still eight names in total.
+        assert len(names) == 8
+
+    def test_index_admits_a_cold_user_skill_before_hot_shipped_ones(self, tmp_path):
+        loader = self._shipped_and_user(tmp_path)
+        full = loader.get_context(budget=100_000)
+        assert full.index("**zz-mine**") < full.index("**shipped00**")
+        # A budget with room for only a few rows still spends it on the user's
+        # skill first; the shipped tail goes to the omission footer.
+        tight = loader.get_context(budget=1200)
+        assert "**zz-mine**" in tight
+        assert "more skill(s) not shown" in tight
+
+    def test_user_authored_classification(self, tmp_path, monkeypatch):
+        import kiro_crew.skills as skills_mod
+
+        skills_dir = tmp_path / "skills"
+        provider = tmp_path / "provider" / "app-skill"
+        provider.mkdir(parents=True)
+        (provider / "SKILL.md").write_text("---\nname: app-skill\ndescription: d\n---\n")
+        from conftest import make_dir_link
+
+        skills_dir.mkdir()
+        make_dir_link(skills_dir / "app-skill", provider)
+        _create_skill(skills_dir, "marked", "---\nname: marked\ndescription: d\n---\n")
+        (skills_dir / "marked" / ".builtin-skill-provenance").write_text("2:x")
+        _create_skill(skills_dir, "packaged", "---\nname: packaged\ndescription: d\n---\n")
+        _create_skill(skills_dir, "team/mine", "---\nname: mine\ndescription: d\n---\n")
+        monkeypatch.setattr(
+            skills_mod, "_trusted_skill_roots", lambda: (str((tmp_path / "provider").resolve()),)
+        )
+        monkeypatch.setattr(skills_mod, "_packaged_skill_names", lambda: frozenset({"packaged"}))
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        verdict = {str(r["key"]): loader._is_user_authored(r) for r in loader.scoped_skills()}
+        assert verdict == {
+            "app-skill": False,
+            "marked": False,
+            "packaged": False,
+            # A nested key is not an app namespace: the user's own tree.
+            "team/mine": True,
+        }
+        # A confined project row is the user's without touching its path.
+        assert loader._is_user_authored({"key": "x", "path": "/nonexistent", "confine_root": "/p"})
+
     def test_short_desc_truncated(self, tmp_path):
         loader = self._make(tmp_path, n_on_demand=1)
         # Description truncation applies only on the opt-in (integer-budget) path.
