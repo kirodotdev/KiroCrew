@@ -770,7 +770,35 @@ async def _deliver_send_message_fallback(
         safe_name, _ = redact_credentials(safe_name)
         title = f"⏰ {safe_name}"
         text += "\n\n_(session closed — delivered as notification)_"
-    state.notify("agent", title, text)
+    # Carry the AUTHENTICATED producer's session into the bell note so the
+    # notification bridge vets THAT producer's own profile, not just the host's.
+    # Without it this fallback reaches `state.notify` with no session subject, and
+    # `_vet` then checks only the permissive host profile -- so a producer whose
+    # profile permits messaging but DENIES `channels/slack` has its note egress to
+    # a Slack DM anyway once `system.agent` is routed to Slack.
+    #
+    # The producer subject differs by caller TYPE, and the two must not be confused:
+    #   * a CRON caller's governance subject is its own ``cron:<job_id>`` (the form
+    #     cron.py / cli_commands.py and the bridge's `_vet` cron arm already vet
+    #     under), NOT the job's TARGET session. ``_channel_delivery_key`` resolves a
+    #     cron to where it POSTS (the job's stored ``session_key``, e.g. a dashboard
+    #     slot), which is the right link target but the WRONG governance subject --
+    #     threading it would vet the target surface's profile and leave the cron's own
+    #     ``channels/slack`` denial unchecked (GPT 6.1 F1 / Opus). ``caller_session`` is
+    #     the cron subject itself; a stateless run key ``cron:<id>:<run>`` is normalised
+    #     to ``cron:<id>`` so it matches the vet form.
+    #   * every OTHER caller is identified by the kernel-attested ``X-Session-Key``,
+    #     which is exactly what ``_channel_delivery_key`` returns for a non-cron caller.
+    # Both are server-resolved, never a body field, so neither can be forged to a
+    # subject the caller does not own. Added only when a producer resolves: a genuinely
+    # host-authored notice (`""`) keeps host-only vetting, and the added-only polarity
+    # means a resolved subject can tighten delivery and never widen it.
+    if caller_session.startswith("cron:"):
+        producer_key = "cron:" + caller_session.removeprefix("cron:").split(":")[0]
+    else:
+        producer_key = _channel_delivery_key(state, caller_session, declared_session)
+    notify_meta = {"session_key": producer_key} if producer_key else None
+    state.notify("agent", title, text, meta=notify_meta)
     # No widget on either channel path, so a parsed [OPTIONS:] trailer is
     # re-attached as a numbered list rather than dropped: the user still
     # learns the choices exist and can answer by typing one. Built from the
