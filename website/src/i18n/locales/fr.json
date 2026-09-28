@@ -438,7 +438,8 @@
     "metrics_card_cores_other": "{{count}} cœurs",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Chat",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "Les notes de version de {{release}} ne sont pas encore publiées. Affichage des notes de {{shown}} à la place."
   },
   "appSdk": {
     "chatEmbed": {

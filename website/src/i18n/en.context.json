@@ -820,6 +820,7 @@
     "components.gitPanel.repos_omitted_other": "Plural of repos_omitted_one: the agent worked in {{formattedTotal}} repositories in all, the {{formattedLimit}} most recent are listed, and each hidden one reappears by itself once the agent works in it again. Informational, not an error, not an action; avoid \"older\". Both numbers are already localized; count (the number omitted) selects the plural form.",
     "components.gitPanel.repos_retry": "Button inside the Git tab's listing-failed notice that fetches the repository list again. One word, imperative.",
     "components.gitPanel.repos_failed": "Error shown in the Git tab when the list of repositories this chat works in could not be loaded.",
-    "components.gitPanel.repos_refresh_failed": "Notice above a repository list that is still shown after its background refresh failed; says the refresh failed and that the shown list may be stale. Not an action."
+    "components.gitPanel.repos_refresh_failed": "Notice above a repository list that is still shown after its background refresh failed; says the refresh failed and that the shown list may be stale. Not an action.",
+    "app.release_notes_not_published_yet": "Notice in the post-update \"What's new\" dialog. {{release}} is the release the user is running (e.g. 0.8.0) whose notes are not written yet; {{shown}} is the older release (e.g. 0.7.1) whose notes are displayed instead. Both are bare version numbers."
   }
 }

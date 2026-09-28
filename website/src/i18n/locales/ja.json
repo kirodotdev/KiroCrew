@@ -410,7 +410,8 @@
     "metrics_card_cores_other": "{{count}} コア",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "チャット",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "{{release}} のリリースノートはまだ公開されていません。代わりに {{shown}} のリリースノートを表示しています。"
   },
   "appSdk": {
     "chatEmbed": {

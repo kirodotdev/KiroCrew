@@ -410,7 +410,8 @@
     "metrics_card_cores_other": "코어 {{count}}개",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "채팅",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "{{release}} 릴리스 노트는 아직 게시되지 않았습니다. 대신 {{shown}}의 릴리스 노트를 표시합니다."
   },
   "appSdk": {
     "chatEmbed": {

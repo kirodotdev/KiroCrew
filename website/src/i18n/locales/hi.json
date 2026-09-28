@@ -424,7 +424,8 @@
     "metrics_card_cores_other": "{{count}} कोर",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "चैट",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "{{release}} के रिलीज़ नोट्स अभी प्रकाशित नहीं हुए हैं। इसके बजाय {{shown}} के नोट्स दिखाए जा रहे हैं।"
   },
   "appSdk": {
     "chatEmbed": {

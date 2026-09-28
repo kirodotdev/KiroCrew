@@ -452,7 +452,8 @@
     "metrics_card_cores_other": "{{count}} ядра",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "Чат",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "Заметки о выпуске {{release}} ещё не опубликованы. Вместо них показаны заметки о выпуске {{shown}}."
   },
   "appSdk": {
     "chatEmbed": {

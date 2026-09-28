@@ -410,7 +410,8 @@
     "metrics_card_cores_other": "{{count}} 核",
     "tab_title": "{{label}} — {{productName}}",
     "tab_title_chat": "聊天",
-    "tab_title_session": "{{session}} — {{panel}}"
+    "tab_title_session": "{{session}} — {{panel}}",
+    "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。"
   },
   "appSdk": {
     "chatEmbed": {
