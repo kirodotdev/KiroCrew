@@ -497,12 +497,31 @@ async def test_outbox_rows_move_one_way_and_a_final_answer_is_never_demoted(
     assert f"could not finalize decision delivery for {spec_dir}" in messages
 
 
-def _two_slot_creation(tmp_path, monkeypatch):
+#: How the Stop/Delete barrier meets the creation's two slots, as ``capture`` for
+#: :func:`_two_slot_creation`.
+_OWN_FIRST = "own-slot-first"
+_EXECUTION_CLAIM_FIRST = "earlier-execution-claim-first"
+_PENDING_CLAIM_FIRST = "earlier-pending-claim-first"
+_STALE_OWN_LOOP = "stale-own-loop"
+
+
+def _two_slot_creation(tmp_path, monkeypatch, capture=_OWN_FIRST):
     """Spec ``s`` whose Stop/Delete barrier captures its own slot and a second one.
 
     The second slot is what an index rewrite leaves behind: a worker still running
-    under an earlier slot key for the same creation, reachable only through the
-    barrier's durable-loop scan."""
+    under an earlier slot key for the same creation. The live loop lookup reports
+    ``loop-own`` for the own slot -- the id Stop and Delete resolve for the spec
+    itself -- and ``loop-earlier`` for the earlier slot.
+
+    * ``_OWN_FIRST``: the own slot is observed on this directory and the earlier
+      slot is reachable only through the barrier's durable-loop scan, so the own
+      slot is captured first.
+    * ``_EXECUTION_CLAIM_FIRST`` / ``_PENDING_CLAIM_FIRST``: the name also holds a
+      handoff or an ordinary dispatch claim under the earlier slot key. The barrier
+      captures claimed slots before observed ones, so the earlier slot comes first.
+    * ``_STALE_OWN_LOOP``: the durable-loop scan reports ``loop-stale`` for the own
+      slot and ``loop-own`` -- the id the caller resolves for itself -- for the
+      earlier one, so neither captured pair equals the caller's own pair."""
     spec_dir, slot_key = _decision_spec(tmp_path)
     extra_key = f"{slot_key}-earlier"
     slots = {
@@ -510,29 +529,76 @@ def _two_slot_creation(tmp_path, monkeypatch):
         extra_key: types.SimpleNamespace(key=extra_key, running=False, _app="spec-builder"),
     }
     loops = {extra_key: "loop-earlier", slot_key: "loop-own"}
+    scanned = (
+        {slot_key: "loop-stale", extra_key: "loop-own"} if capture == _STALE_OWN_LOOP else loops
+    )
+    dir_key = routes._decision_key(spec_dir)
+    if capture == _EXECUTION_CLAIM_FIRST:
+        monkeypatch.setitem(
+            routes._EXECUTION_CLAIMS, dir_key, ("earlier-generation", extra_key, "s", None, None)
+        )
+    elif capture == _PENDING_CLAIM_FIRST:
+        monkeypatch.setitem(
+            routes._PENDING_DISPATCH_CLAIMS,
+            "earlier-generation",
+            (dir_key, extra_key, "s", None, None),
+        )
     monkeypatch.setattr(routes, "_autonudge_instance", lambda: None)
     monkeypatch.setattr(routes, "_exec_loop_id_for_slot", lambda key: loops.get(key))
-    monkeypatch.setattr(routes, "_matching_execution_loops", lambda *_a, **_k: dict(loops))
+    monkeypatch.setattr(routes, "_matching_execution_loops", lambda *_a, **_k: dict(scanned))
     state = types.SimpleNamespace(get_slot=slots.get, _background_tasks=set())
     return spec_dir, slot_key, extra_key, state
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capture", "halted_slot", "paused_slots", "removed_loops"),
+    [
+        pytest.param(_OWN_FIRST, "own", ["extra"], [("extra", "loop-earlier")], id=_OWN_FIRST),
+        pytest.param(
+            _EXECUTION_CLAIM_FIRST,
+            "extra",
+            ["own"],
+            [("extra", "loop-earlier")],
+            id=_EXECUTION_CLAIM_FIRST,
+        ),
+        pytest.param(
+            _PENDING_CLAIM_FIRST,
+            "extra",
+            ["own"],
+            [("extra", "loop-earlier")],
+            id=_PENDING_CLAIM_FIRST,
+        ),
+        pytest.param(
+            _STALE_OWN_LOOP,
+            "own",
+            ["extra"],
+            [("own", "loop-stale"), ("extra", "loop-own")],
+            id=_STALE_OWN_LOOP,
+        ),
+    ],
+)
 async def test_stop_halts_every_captured_slot_once_and_every_other_captured_loop(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capture, halted_slot, paused_slots, removed_loops
 ):
     """Stop acts on the whole creation the barrier captured.
 
-    Captured slots come in capture order -- the creation's own slot, observed on
-    this directory, first. That first slot is the one ``_halt_execution`` stops
-    together with the spec's own loop; every other captured slot has its turn
-    halted once, and every other captured loop is removed by its own slot key and
-    pinned id."""
+    Captured slots come in capture order, never with the caller's own slot moved to
+    the front: a slot held by a revoked claim is captured before one observed on
+    this directory. The FIRST captured slot is the one ``_halt_execution`` stops,
+    together with the spec's own loop as the caller resolves it (``loop-own``);
+    every other captured slot -- the own slot too, when it is not first -- has its
+    turn halted once. Every other captured loop is removed by its own slot key and
+    captured id. The one loop skipped is the pair whose slot key AND id both equal
+    the caller's, so a stale id captured for the own slot and the caller's id
+    captured under the earlier slot are each still removed."""
     client = _make_client(monkeypatch, tmp_path)
-    spec_dir, slot_key, extra_key, state = _two_slot_creation(tmp_path, monkeypatch)
+    spec_dir, slot_key, extra_key, state = _two_slot_creation(tmp_path, monkeypatch, capture)
+    keys = {"own": slot_key, "extra": extra_key}
     halted: list[tuple[str | None, str]] = []
     paused: list[str] = []
-    removed: list[tuple[str, str | None, str]] = []
+    removed: list[tuple[str, str | None]] = []
+    reasons: list[str] = []
 
     async def _halt_execution(_state, _name, _spec_dir, *, only_loop_id, only_slot, **_kw):
         halted.append((only_loop_id, only_slot.key))
@@ -542,7 +608,8 @@ async def test_stop_halts_every_captured_slot_once_and_every_other_captured_loop
         return True
 
     async def _remove(key, *, only_loop_id=None, stop_reason=""):
-        removed.append((key, only_loop_id, stop_reason))
+        removed.append((key, only_loop_id))
+        reasons.append(stop_reason)
 
     monkeypatch.setattr(routes, "_halt_execution", _halt_execution)
     monkeypatch.setattr(routes, "_halt_active_turn", _halt_active_turn)
@@ -559,20 +626,50 @@ async def test_stop_halts_every_captured_slot_once_and_every_other_captured_loop
 
     assert resp.status == 200, payload
     assert payload == {"ok": True, "status": "planning"}
-    assert halted == [("loop-own", slot_key)]
-    assert paused == [extra_key]
-    assert removed == [(extra_key, "loop-earlier", "spec_stopped")]
+    assert halted == [("loop-own", keys[halted_slot])]
+    assert paused == [keys[slot] for slot in paused_slots]
+    assert removed == [(keys[slot], loop_id) for slot, loop_id in removed_loops]
+    assert reasons == ["spec_stopped"] * len(removed), "a Stop removal does not name its stop"
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capture", "removed_loops", "torn_down"),
+    [
+        pytest.param(_OWN_FIRST, [("extra", "loop-earlier")], ["own", "extra"], id=_OWN_FIRST),
+        pytest.param(
+            _EXECUTION_CLAIM_FIRST,
+            [("extra", "loop-earlier")],
+            ["extra", "own"],
+            id=_EXECUTION_CLAIM_FIRST,
+        ),
+        pytest.param(
+            _PENDING_CLAIM_FIRST,
+            [("extra", "loop-earlier")],
+            ["extra", "own"],
+            id=_PENDING_CLAIM_FIRST,
+        ),
+        pytest.param(
+            _STALE_OWN_LOOP,
+            [("own", "loop-stale"), ("extra", "loop-own")],
+            ["own", "extra"],
+            id=_STALE_OWN_LOOP,
+        ),
+    ],
+)
 async def test_delete_tears_down_every_captured_slot_once_and_every_captured_loop(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capture, removed_loops, torn_down
 ):
-    """Delete archives each captured slot exactly once, in capture order, and removes
-    the spec's own loop by name and every other captured loop by slot key, all
-    before the entry leaves the index."""
+    """Delete archives each captured slot exactly once, in capture order -- a slot
+    held by a revoked claim before one observed on this directory -- and removes
+    the spec's own loop by name (``loop-own``, as the caller resolves it) and every
+    other captured loop by slot key and captured id, all before the entry leaves
+    the index. Only the pair whose slot key AND id both equal the caller's is left
+    to the by-name removal, so a stale id captured for the own slot and the
+    caller's id captured under the earlier slot are each still removed by slot."""
     client = _make_client(monkeypatch, tmp_path)
-    spec_dir, slot_key, extra_key, state = _two_slot_creation(tmp_path, monkeypatch)
+    spec_dir, slot_key, extra_key, state = _two_slot_creation(tmp_path, monkeypatch, capture)
+    keys = {"own": slot_key, "extra": extra_key}
     order: list[tuple] = []
 
     async def _remove_by_name(name, *, only_loop_id=None, stop_reason=""):
@@ -602,9 +699,8 @@ async def test_delete_tears_down_every_captured_slot_once_and_every_captured_loo
     assert resp.status == 200, payload
     assert order == [
         ("loop-by-name", "s", "loop-own", "spec_deleted"),
-        ("loop-by-slot", extra_key, "loop-earlier", "spec_deleted"),
-        ("teardown", slot_key, True),
-        ("teardown", extra_key, True),
+        *(("loop-by-slot", keys[slot], loop_id, "spec_deleted") for slot, loop_id in removed_loops),
+        *(("teardown", keys[slot], True) for slot in torn_down),
     ]
     assert "s" not in routes._load_index()
 
@@ -710,3 +806,108 @@ async def test_a_refused_crash_replay_leaves_the_durable_row_pending(
     # A claim is owned by the request task that reserved it and must not outlive it.
     routes._prune_finished_pending_dispatch_claims()
     assert routes._PENDING_DISPATCH_CLAIMS == {}, "a refused replay kept its dispatch claim"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_client_refusal_keeps_its_wire_text(tmp_path, monkeypatch):
+    """Every stale-client refusal answers with one shared message constant.
+
+    The text is part of the HTTP response body, so it is pinned as a literal here,
+    and a message from a tab holding another creation's slot key is refused over
+    HTTP with exactly that body, without dispatching a turn."""
+    wire_text = "spec was deleted or recreated; reload and retry"
+    assert routes._STALE_CLIENT_ERROR == wire_text
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **_k: dispatched.append(a[2]))
+    client.app["state"] = _slot_stub()[0]
+    await client.start_server()
+    try:
+        resp = await client.post(
+            f"{_BASE}/specs/s/message",
+            json={"text": "hello", "spec_dir": spec_dir, "slot_key": f"{slot_key}-other"},
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload == {"code": "stale_client", "error": wire_text}
+    assert dispatched == []
+
+
+class _RecordingNudgeService:
+    """An autonudge service with one live loop that records how it is removed."""
+
+    def __init__(self, loop_id: str) -> None:
+        self.loop = types.SimpleNamespace(id=loop_id, active=True)
+        self.removed: list[tuple[str, str]] = []
+
+    def get_by_slot(self, _key):
+        return self.loop if self.loop.active else None
+
+    def list_all(self):
+        return [self.loop] if self.loop.active else []
+
+    async def remove(self, loop_id, *, stop_reason=""):
+        self.removed.append((loop_id, stop_reason))
+        self.loop.active = False
+
+
+@pytest.mark.asyncio
+async def test_a_halted_run_names_its_stop_when_it_removes_the_loop(tmp_path, monkeypatch):
+    """Stop's halt removes the spec's own loop, pinned to the captured id, as a
+    ``spec_stopped`` stop in the loop's WARNING stop line."""
+    spec_dir, slot_key = _decision_spec(tmp_path)
+    service = _RecordingNudgeService("loop-own")
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: service)
+
+    await routes._halt_execution(
+        None,
+        "s",
+        Path(spec_dir),
+        reason="user stop",
+        only_loop_id="loop-own",
+        only_slot=None,
+        expect_slot_key=slot_key,
+    )
+
+    assert service.removed == [("loop-own", "spec_stopped")]
+
+
+@pytest.mark.asyncio
+async def test_a_handoff_that_unwinds_after_arming_names_its_stop(tmp_path, monkeypatch):
+    """A handoff that armed its nudge loop and then refuses dispatch removes that
+    loop, pinned to the armed id, as a ``spec_arm_aborted`` stop."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _slot_key = _decision_spec(tmp_path, state={"phase": "tasks"})
+    (Path(spec_dir) / "tasks.md").write_text("- [ ] a task\n", encoding="utf-8")
+    state, slot = _slot_stub()
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+
+    async def _armed_then_busy(**_kw):
+        slot.running = True
+        return types.SimpleNamespace(id="loop-armed"), "", 200
+
+    removed: list[tuple[str | None, str]] = []
+
+    async def _remove(_key, *, only_loop_id=None, stop_reason=""):
+        removed.append((only_loop_id, stop_reason))
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(routes, "authorize_and_add_nudge", _armed_then_busy)
+    monkeypatch.setattr(routes, "_remove_nudge_loop_for_slot", _remove)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **_k: dispatched.append(a[2]))
+    client.app["state"] = state
+    await client.start_server()
+    try:
+        resp = await client.post(f"{_BASE}/specs/s/handoff", json={"spec_dir": spec_dir})
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload["code"] == "spec_agent_busy"
+    assert dispatched == []
+    assert removed == [("loop-armed", "spec_arm_aborted")]
