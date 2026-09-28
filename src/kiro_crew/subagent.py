@@ -218,6 +218,7 @@ from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone reso
     list_orphans,
     mark_delivered,
     mark_result_complete,
+    orphan_recovery_can_see,
     prune_stale_tombstones,
     read_state,
     read_tombstone,
@@ -1007,6 +1008,20 @@ _MAX_DONE_RESULT_LEN = 50_000  # cap subagent_done payload to avoid bloating WS 
 # outlives the process that wrote it, so remembering means reading the store.
 _RUN_ID_HEX_CHARS = 16
 
+# Bounds on a run's queued follow-ups, as a COUNT and a per-message size. Admission
+# refuses past them (``follow_up_run``), so the in-memory queue is bounded where it
+# GROWS. Bounding only the rendered label is what leaves it unbounded -- those slices
+# scale with the message count, so N messages buy N times the budget while the list keeps
+# growing without limit.
+#
+# Refusal is the admission remedy rather than truncation: an accepted follow-up promises
+# the parent a completion event, so a silently shortened queue would owe events it can no
+# longer name. The queue lives only in memory for the life of the run; it is not
+# persisted, so a shutdown that cancels a run before its follow-ups dispatch announces the
+# drop (``cancel_all``) rather than handing the queue to the next start.
+_MAX_PENDING_FOLLOWUPS = 32
+_MAX_FOLLOWUP_MESSAGE_CHARS = 8_000
+
 
 def _done_result(text: str) -> str:
     """Redact + cap result for inclusion in subagent_done event."""
@@ -1213,6 +1228,19 @@ _BOUNDARY_CANCELLATION_SCOPE_CAP_REASON = "pending_scope_cap"
 # cannot hold cancel_all()'s untimed gather — bounded shutdown plus recoverable
 # state beats unbounded shutdown.
 _STATE_DRAIN_TIMEOUT = 5.0
+# Seconds cancel_all() holds back from a caller-supplied shutdown budget so the
+# straggler cancel + tombstone re-admission after the report drain still run inside
+# the outer deadline. Without this reserve the drain can consume the whole budget and
+# the outer wait_for cancels before re-admission, tombstoning an undelivered completion
+# out of orphan recovery permanently.
+_SHUTDOWN_READMIT_RESERVE = 1.5
+# Max seconds cancel_all() waits on ONE shutdown follow-up-drop announce. The announce
+# awaits ``_on_done`` injection, which can block on a busy parent turn; a queue of
+# watchers each announcing unbounded would let this phase alone outlast the outer
+# GRACEFUL_SHUTDOWN_SECS deadline, so persistence and the rest of cleanup never start.
+# Bounded per announce from what is LEFT of the deadline (via ``_phase``); a parent not
+# reached inside it is audited + warned exactly like an announce that could not deliver.
+_FOLLOWUP_ANNOUNCE_TIMEOUT = 2.0
 # The startup watchdog's window (``SubagentManager._startup_deadline``) covers one
 # start clock, which pauses only while the start is QUEUED (see
 # ``RunEventCoordinator._gate_exit_reset_impl``) and therefore spans every phase
@@ -2542,6 +2570,12 @@ class SubagentInfo:
     pending_followups: list = field(default_factory=list)
     # True once a followup watcher task is armed for this run (one per run).
     _followup_watcher: bool = False
+    # Set by ``cancel_all`` when the shutdown budget expired before this run finished
+    # tearing down. At that moment the run has not reached the ``finally`` that SPAWNS its
+    # terminal report, so no report task exists for the drain to find and the run's own
+    # cancel arm must not write a terminal tombstone: doing so would hide an outcome that
+    # never reached the parent from the only path left to deliver it.
+    _shutdown_outcome_abandoned: bool = False
     _stall_suspect_at: float = (
         0.0  # first reaper sweep that saw the idle threshold exceeded; 2-sweep confirmation (scale dampening)
     )
@@ -3065,6 +3099,7 @@ class _ReportFailureSnapshot:
     partial: bool
     queued: bool
     agent: str
+    app: str
     silent: bool
     conversation_key: str
     model: str
@@ -3102,6 +3137,7 @@ class _ReportFailureSnapshot:
             partial=bool(info.partial),
             queued=bool(info.queued),
             agent=bounded(info.agent),
+            app=bounded(info.app),
             silent=bool(info.silent),
             conversation_key=bounded(info.conversation_key),
             model=bounded(info.model),
@@ -3132,6 +3168,7 @@ class _ReportFailureSnapshot:
             self._stop_origin,
             self.outcome,
             self.agent,
+            self.app,
             self.conversation_key,
             self.model,
             self.requested_model,
@@ -3157,6 +3194,7 @@ class _ReportFailureSnapshot:
             _stage_boundary_owner=self._stage_boundary_owner,
             _stage_boundary_cancelled=self._stage_boundary_cancelled,
             agent=self.agent,
+            app=self.app,
             silent=self.silent,
             batch_id=self.batch_id,
             batch_total=self.batch_total,
@@ -3280,6 +3318,11 @@ DELIVERY_ROUTING_FIELDS: "dict[str, str]" = {
     # outcome reached the parent -- which is why it reads the other way round, and why
     # reading it ALONE was wrong: two routes above return having merely parked the work.
     "_reported_to_parent": PARKS_WHEN_UNSET,
+    # ``cancel_all`` gave up waiting for this run's teardown, so it never reached the
+    # ``finally`` that spawns its terminal report and no report task exists to drain.
+    # Truthy therefore means the outcome did not reach the parent, and the next start's
+    # orphan recovery is the only path that can still deliver it.
+    "_shutdown_outcome_abandoned": PARKS_WHEN_SET,
     # A synthetic record ``force_digest_flush`` builds to release an expired hold. It is a
     # CARRIER of a future injection rather than a member with a parked outcome, and it
     # carries a fresh id, so an id-keyed gate can never recognise it -- which is why the
@@ -4303,7 +4346,7 @@ class SubagentManager:
     ) -> bool:
         return await self._monitor._try_inject_orphan_notification_impl(parent_session, msg, meta)
 
-    async def _send_orphan_slack_dm(self, msg: str) -> None:
+    async def _send_orphan_slack_dm(self, msg: str) -> bool:
         return await self._monitor._send_orphan_slack_dm_impl(msg)
 
     def _live_shared_count(self, pid: int | None, agents: "list[SubagentInfo]") -> int:
@@ -6029,7 +6072,7 @@ class SubagentManager:
         reason: str,
         failure_info: SubagentInfo | None = None,
         messages: list | None = None,
-    ) -> None:
+    ) -> bool:
         return await self._continuation._announce_followup_failure_impl(
             info, reason, failure_info, messages
         )
@@ -6618,8 +6661,8 @@ class SubagentManager:
             verb=verb,
         )
 
-    async def cancel_all(self) -> None:
-        return await self._cancellation.cancel_all_impl()
+    async def cancel_all(self, budget: float | None = None) -> None:
+        return await self._cancellation.cancel_all_impl(budget=budget)
 
 
 # Component implementations deliberately resolve globals through this module:
@@ -6696,6 +6739,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     mark_result_complete,
     name_grant,
     os,
+    orphan_recovery_can_see,
     platform_compat,
     provider_fallback_active,
     prune_stale_tombstones,

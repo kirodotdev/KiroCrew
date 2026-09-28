@@ -345,6 +345,89 @@ class TestFollowUpDelivery:
         assert info.pending_followups == []
 
     @pytest.mark.asyncio
+    async def test_shutdown_announce_that_cannot_reach_the_parent_is_audited(
+        self, monkeypatch
+    ) -> None:
+        """When the shutdown announce cannot reach the parent, the drop is audited.
+
+        ``_announce_followup_failure`` reports whether the parent was told through its
+        RETURN value, not an exception: with no ``_on_done`` wired (or one that raises,
+        swallowed inside the impl) it returns False. ``cancel_all`` must act on that bool
+        and audit ``followup_announce_failed`` so a queued follow-up lost at shutdown
+        leaves a trace, rather than being discarded silently when the announce no-ops.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        # No _on_done wired: the announce returns False without raising -- the common
+        # silent sub-case. An except-only guard would never observe it.
+        mgr._on_done = None
+        audited: list = []
+        real_audit = mgr._audit_followup
+        monkeypatch.setattr(
+            mgr,
+            "_audit_followup",
+            lambda i, outcome: (audited.append(outcome), real_audit(i, outcome))[1],
+        )
+        info = SubagentInfo(id="r9b", task="t", parent_session_key="dash:7")
+        mgr._agents["r9b"] = info
+        ok, _ = await mgr.follow_up_run("r9b", "later")
+        assert ok and "r9b" in mgr._followup_watchers
+
+        await mgr.cancel_all()
+
+        assert "followup_announce_failed" in audited, (
+            "a shutdown-dropped follow-up the parent could not be told about was not "
+            "audited -- it was discarded silently"
+        )
+        assert info.pending_followups == []
+
+    @pytest.mark.asyncio
+    async def test_a_slow_shutdown_announce_cannot_consume_the_whole_budget(
+        self, monkeypatch
+    ) -> None:
+        """GPT 5.6 F3 (gateway.py:10491 -> cancel_all): the per-watcher follow-up-drop
+        announce awaits ``_on_done`` injection, which can block on a busy parent turn.
+        Unbounded, a queue of watchers each announcing lets this loop alone outlast the
+        outer GRACEFUL_SHUTDOWN_SECS deadline -- the outer ``wait_for`` then cancels the
+        whole method before run teardown, the report drain, the tombstone re-admission
+        and session persistence ever start. The announce must be bounded by what is LEFT
+        of the shutdown budget, so a slow announce times out (parent not reached ->
+        audited) and ``cancel_all`` returns well inside the budget.
+        """
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+
+        # An _on_done that blocks far longer than the budget -- the slow-injection case.
+        async def _slow_on_done(i):
+            await asyncio.sleep(30)
+
+        mgr._on_done = _slow_on_done
+        audited: list = []
+        real_audit = mgr._audit_followup
+        monkeypatch.setattr(
+            mgr,
+            "_audit_followup",
+            lambda i, outcome: (audited.append(outcome), real_audit(i, outcome))[1],
+        )
+        info = SubagentInfo(id="r9c", task="t", parent_session_key="dash:7")
+        mgr._agents["r9c"] = info
+        ok, _ = await mgr.follow_up_run("r9c", "later")
+        assert ok and "r9c" in mgr._followup_watchers
+
+        # Budget of 0.5s: the 30s announce MUST be bounded, not awaited to completion.
+        loop = asyncio.get_event_loop()
+        t0 = loop.time()
+        await asyncio.wait_for(mgr.cancel_all(budget=0.5), timeout=10)
+        elapsed = loop.time() - t0
+
+        assert elapsed < 10, "cancel_all did not return -- the slow announce wedged shutdown"
+        # The slow announce timed out: the parent was NOT reached, so the drop is audited
+        # (not discarded silently) exactly like an announce that could not deliver.
+        assert "followup_announce_failed" in audited
+        assert info.pending_followups == []
+        assert mgr._followup_watchers == {}
+
+    @pytest.mark.asyncio
     async def test_follow_up_refused_during_shutdown(self, monkeypatch) -> None:
         """A shutting-down gateway refuses new follow-ups with a typed error
         instead of accepting a message it cannot deliver."""
@@ -541,3 +624,55 @@ class TestFollowUpRestApi:
             )
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_mode"
+
+    @pytest.mark.asyncio
+    async def test_followup_client_limits_map_to_4xx_not_502(self) -> None:
+        """A follow_up refused for too_long / queue_full is a CLIENT limit.
+
+        The admission caps in ``continuation.follow_up_run`` return
+        ``too_long: …`` and ``queue_full: …``. ``api_spawn_steer`` must map
+        those to 4xx so a client reads them as "shorten / back off", not a
+        transport ``502 steer_failed`` it would blindly retry into the same
+        refusal.
+        """
+        from unittest.mock import AsyncMock
+
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_steer
+
+        subagents = MagicMock()
+        state = MagicMock()
+        state.subagents = subagents
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/spawn/{agent_id}/steer", api_spawn_steer)
+        async with TestClient(TestServer(app)) as client:
+            # too_long -> 413 Payload Too Large, code preserved.
+            subagents.follow_up_run = AsyncMock(
+                return_value=(False, "too_long: a follow_up message is capped at 8000 chars")
+            )
+            resp = await client.post(
+                "/api/spawn/abc/steer", json={"message": "x" * 10, "mode": "follow_up"}
+            )
+            assert resp.status == 413
+            assert (await resp.json())["code"] == "too_long"
+
+            # queue_full -> 429 Too Many Requests, code preserved.
+            subagents.follow_up_run = AsyncMock(
+                return_value=(False, "queue_full: this run already holds 32 queued follow-ups")
+            )
+            resp = await client.post(
+                "/api/spawn/abc/steer", json={"message": "later", "mode": "follow_up"}
+            )
+            assert resp.status == 429
+            assert (await resp.json())["code"] == "queue_full"
+
+            # An unrecognised refusal still falls through to the terminal 502.
+            subagents.follow_up_run = AsyncMock(return_value=(False, "something_else: boom"))
+            resp = await client.post(
+                "/api/spawn/abc/steer", json={"message": "later", "mode": "follow_up"}
+            )
+            assert resp.status == 502
+            assert (await resp.json())["code"] == "steer_failed"

@@ -1458,13 +1458,15 @@ class TestOrphanReconciliation:
 
     @pytest.mark.asyncio
     async def test_dead_pid_with_complete_result_tombstoned_as_delivered(self, agent_root):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
         from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
 
         sessions = MagicMock()
-        manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+        )
 
         # Simulate orphan from prior run: dead PID, has a result its run
         # finished writing (result_complete recorded at the complete event).
@@ -1490,12 +1492,14 @@ class TestOrphanReconciliation:
         therefore leaves a file that looks exactly like a finished result to
         anyone measuring its size — which is what the parent is told to go read.
         """
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
         from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
 
-        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        manager = SubagentManager(
+            sessions=MagicMock(), ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+        )
 
         create_agent_folder("orphan1p", task="old task", parent_session="dashboard:default")
         # An opening sentence, nothing more — no complete event ever arrived.
@@ -1667,13 +1671,15 @@ class TestOrphanReconciliation:
 
     @pytest.mark.asyncio
     async def test_dead_pid_no_result_tombstoned_as_notified(self, agent_root):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
         from kiro_crew.subagent_persistence import create_agent_folder, update_state
 
         sessions = MagicMock()
-        manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+        )
 
         create_agent_folder("orphan2", task="old task")
         update_state("orphan2", pid=99999)
@@ -1687,13 +1693,15 @@ class TestOrphanReconciliation:
 
     @pytest.mark.asyncio
     async def test_alive_pid_killed_and_tombstoned(self, agent_root):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
         from kiro_crew.subagent_persistence import create_agent_folder, update_state
 
         sessions = MagicMock()
-        manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+        )
 
         create_agent_folder("orphan3", task="stuck task")
         update_state("orphan3", pid=99999)
@@ -1713,12 +1721,14 @@ class TestOrphanReconciliation:
     @pytest.mark.asyncio
     async def test_recycled_pid_not_killed(self, agent_root):
         """A live PID that doesn't belong to the original agent must not be killed."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from kiro_crew.subagent import SubagentManager
         from kiro_crew.subagent_persistence import create_agent_folder, update_state
 
-        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        manager = SubagentManager(
+            sessions=MagicMock(), ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+        )
 
         create_agent_folder("recycled1", task="old task")
         update_state("recycled1", pid=99999)

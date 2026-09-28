@@ -27,6 +27,7 @@ The design under test separates all of them:
   deliberately independent of ``done``, and executed under ``asyncio.shield`` so
   an interrupted claimer cannot strand the outcome.
 """
+
 from __future__ import annotations
 
 import ast
@@ -69,9 +70,7 @@ def _wire_report_boundaries(
 ):
     from kiro_crew.dashboard.state import StageBoundary
 
-    boundaries = {
-        scope: StageBoundary(stage=1, generation=scope[1]) for scope in scopes
-    }
+    boundaries = {scope: StageBoundary(stage=1, generation=scope[1]) for scope in scopes}
     manager._stage_boundary_for_scope = lambda parent, owner: boundaries.get((parent, owner))
     return boundaries
 
@@ -173,6 +172,7 @@ async def _schedule_recovery(mgr: SubagentManager, info: SubagentInfo) -> None:
     task that then EXITS — arming it from the test body would sit through the
     real ``_RESET_TIMEOUT + 60`` handshake.
     """
+
     async def _arm() -> None:
         mgr._schedule_cancel_recovery(info)
 
@@ -247,9 +247,9 @@ async def test_done_set_during_reap_teardown_still_reports_and_frees_one_slot():
 
     assert len(_done_events(mgr)) == 1, "outcome was not reported exactly once"
     assert mgr._on_done.await_count == 1, "completion never reached the parent"
-    assert mgr._running_count == 0, (
-        f"slot not freed exactly once (_running_count={mgr._running_count})"
-    )
+    assert (
+        mgr._running_count == 0
+    ), f"slot not freed exactly once (_running_count={mgr._running_count})"
 
 
 @pytest.mark.asyncio
@@ -348,9 +348,7 @@ async def test_cancel_during_subagent_done_still_delivers_once():
     mgr._fire_event = AsyncMock(side_effect=_slow_event)
     mgr._on_done = AsyncMock(side_effect=_record_delivery)
 
-    task = asyncio.ensure_future(
-        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
-    )
+    task = asyncio.ensure_future(mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"))
     await asyncio.wait_for(entered.wait(), timeout=2)  # now inside the shielded report
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -382,9 +380,7 @@ async def test_cancel_during_on_done_produces_no_second_delivery():
 
     mgr._on_done = AsyncMock(side_effect=_slow_on_done)
 
-    task = asyncio.ensure_future(
-        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
-    )
+    task = asyncio.ensure_future(mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"))
     # Wait until _on_done is actually executing before cancelling — avoids a
     # race under heavy xdist load where asyncio.sleep(0.01) could expire after
     # _force_reap already completed, so the cancel would be a no-op.
@@ -524,9 +520,7 @@ async def test_unrelated_unowned_report_failure_neither_halts_nor_advances_stage
 
     release = asyncio.Event()
     report = asyncio.create_task(release.wait())
-    mgr._report_owners[report] = _info(
-        parent_session_key=parent, _stage_boundary_owner=owner
-    )
+    mgr._report_owners[report] = _info(parent_session_key=parent, _stage_boundary_owner=owner)
     waiter = asyncio.create_task(mgr.wait_for_parent_reports(parent, owner))
     await asyncio.sleep(0)
     assert not waiter.done(), "unrelated failure halted or advanced the owned barrier"
@@ -1038,10 +1032,7 @@ async def test_report_failure_refusals_are_boundary_local(monkeypatch):
         await manager.wait_for_parent_reports(*scopes[0])
     manager.discard_report_failures(*scopes[0])
     assert boundaries[scopes[0]].report_retention_refused is None
-    assert all(
-        boundaries[scope].report_retention_refused == "row_cap"
-        for scope in scopes[1:]
-    )
+    assert all(boundaries[scope].report_retention_refused == "row_cap" for scope in scopes[1:])
     assert await manager.wait_for_parent_reports(*scopes[0]) is False
     with pytest.raises(SubagentReportDeliveryError, match="row cap"):
         await manager.wait_for_parent_reports(*scopes[1])
@@ -1154,9 +1145,7 @@ def test_report_failure_payloads_bound_each_scope_bucket(monkeypatch):
             )
         )
     for key in ("second", "third"):
-        mgr._latch_report_failure(
-            _info(id=key, parent_session_key=key, _stage_boundary_owner=key)
-        )
+        mgr._latch_report_failure(_info(id=key, parent_session_key=key, _stage_boundary_owner=key))
 
     assert len(mgr._boundary_report_payloads) == 3
     assert all(len(rows) <= 3 for rows in mgr._boundary_report_payloads.values())
@@ -1210,10 +1199,11 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
     """A report cancelled by shutdown must not become an unrecoverable loss.
 
     The terminal RECORD (including the tombstone) is written before delivery is
-    attempted, and `list_orphans()` uses the tombstone to EXCLUDE a folder from
+    attempted, and ``list_orphans()`` uses the tombstone to EXCLUDE a folder from
     the next start's reconciliation. So cancelling a still-pending report leaves
     an outcome that was never injected AND is invisible to the only path that
-    could still inject it. Shutdown must clear the tombstone in that case.
+    could still inject it. Shutdown must clear the tombstone in that case, and
+    mark the run abandoned so the next start's orphan recovery re-admits it.
     """
     import kiro_crew.subagent as mod
 
@@ -1222,6 +1212,7 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
     info = _info()
     cleared: list[str] = []
     monkeypatch.setattr(mod, "clear_tombstone", lambda aid: (cleared.append(aid), True)[1])
+    monkeypatch.setattr(mod, "orphan_recovery_can_see", lambda aid: True)
 
     started = asyncio.Event()
 
@@ -1242,32 +1233,137 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
     await mgr.cancel_all()
 
     assert task.cancelled(), "straggler should have been cancelled"
+    assert cleared == [
+        info.id
+    ], "undelivered completion was left tombstoned -- unrecoverable on restart"
+    assert (
+        info._shutdown_outcome_abandoned is True
+    ), "the abandoned run was not marked for the next start's orphan recovery"
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_budget_bounds_the_drain_and_still_readmits(monkeypatch):
+    """A tight shutdown budget bounds the report drain AND still runs re-admission.
+
+    GPT finding: sizing each phase from the original budget lets their SUM exceed it,
+    so the outer ``wait_for`` cancels mid-drain and the straggler re-admission never
+    runs. With a module default drain of 30s but a 2s budget, ``cancel_all(budget=2)``
+    must finish in roughly the budget (not 30s) and must STILL cancel the straggler and
+    clear its tombstone -- the re-admission reserve is preserved by the absolute
+    deadline. Pins that an undelivered completion stays recoverable even under a tight
+    deadline.
+    """
+    import kiro_crew.subagent as mod
+
+    # Default drain stays long on purpose: the bound must come from the budget, not it.
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 30.0)
+    mgr = _make_manager()
+    info = _info()
+    cleared: list[str] = []
+    monkeypatch.setattr(mod, "clear_tombstone", lambda aid: (cleared.append(aid), True)[1])
+    monkeypatch.setattr(mod, "orphan_recovery_can_see", lambda aid: True)
+
+    started = asyncio.Event()
+
+    async def _wedged_delivery(_info):
+        started.set()
+        await asyncio.sleep(3600)
+
+    mgr._on_done = AsyncMock(side_effect=_wedged_delivery)
+    assert mgr._claim_finalize(info) is True
+    task = mgr._spawn_terminal_report(
+        info,
+        source="test",
+        injection_timeout_reason="r",
+        mark_delivered_on_success=True,
+    )
+    await started.wait()
+
+    loop = asyncio.get_event_loop()
+    t0 = loop.time()
+    await mgr.cancel_all(budget=2.0)
+    elapsed = loop.time() - t0
+
+    assert elapsed < 10.0, (
+        f"cancel_all spent {elapsed:.1f}s on a 2s budget -- the drain was not bounded "
+        "by the deadline and would blow the outer shutdown wait_for"
+    )
+    assert task.cancelled(), "straggler should have been cancelled within the budget"
     assert cleared == [info.id], (
-        "undelivered completion was left tombstoned — unrecoverable on restart"
+        "re-admission did not run within the budget -- the completion would be "
+        "tombstoned out of recovery permanently"
     )
 
 
 @pytest.mark.asyncio
+async def test_teardown_outlasting_the_bound_is_marked_abandoned(monkeypatch):
+    """A run whose teardown outlasts the drain bound is marked for orphan recovery.
+
+    GPT finding F2: the bounded teardown wait leaves still-tearing-down runs logged but
+    never marked, and the surviving run task then reaches run.py's cancelled-arm
+    ``_write_tombstone(info, "cancelled")`` -- gated on ``_shutdown_outcome_abandoned``.
+    Unmarked, it tombstones the folder out of the next start's ``list_orphans`` scan,
+    silently and permanently losing an undrained completion. ``cancel_all`` must set
+    the flag on every run still tearing down past the bound BEFORE moving on, so run.py
+    leaves the folder visible instead.
+    """
+    import kiro_crew.subagent as mod
+
+    # Make the teardown bound tiny so a one-second-wedged task reliably outlasts it.
+    monkeypatch.setattr(mod, "_STATE_DRAIN_TIMEOUT", 0.05)
+    mgr = _make_manager()
+    info = _info()
+    mgr._agents[info.id] = info
+
+    wedged = asyncio.Event()
+
+    async def _wedged_teardown():
+        wedged.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            # Model a teardown that does not finish promptly on cancel.
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_wedged_teardown())
+    mgr._tasks[info.id] = task
+    await wedged.wait()
+
+    assert info._shutdown_outcome_abandoned is not True, "precondition: not yet marked"
+
+    await mgr.cancel_all(budget=1.0)
+
+    assert info._shutdown_outcome_abandoned is True, (
+        "a run still tearing down past the bound was not marked abandoned -- run.py "
+        "would tombstone its undrained completion out of orphan recovery"
+    )
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=0.1)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+
+
+@pytest.mark.asyncio
 async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(monkeypatch):
-    """The converse: a report whose `_on_done` has returned is never re-admitted.
+    """The converse: a report whose ``_on_done`` has returned is never re-admitted.
 
-    Re-admitting it would make the next start inject the same completion a
-    second time — the duplicate delivery this PR exists to remove. Only
-    `_reported_to_parent == False` may be re-admitted.
+    Re-admitting it would make the next start inject the same completion a second
+    time -- the duplicate delivery this change exists to remove. Only
+    ``_reported_to_parent == False`` may be re-admitted, so this pins the guard
+    (``if info._reported_to_parent: continue``) that keeps a delivered report's
+    tombstone in place.
 
-    The teardown gate handed to the report never opens. The report waits for it
-    BEFORE it publishes (the payload names the teardown's kill verdict), for
-    `_RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE`, then publishes with the kill
-    named undecided and delivers. Both constants are pinned small here for the
-    same reason the sibling tests pin `_REPORT_DRAIN_TIMEOUT`: at their shipped
-    values (30 s + 30 s) this test spent 60 s in that wait every run, to reach
-    an assertion that does not depend on the length of the wait.
+    The teardown gate handed to the report never opens, so the report is cancelled
+    in the wait that FOLLOWS a successful delivery. Both grace constants are pinned
+    small so this is a sub-second deterministic wait rather than a ~60s sleep; the
+    path (grace timeout -> cancel drain) is unchanged, only its wall-clock cost.
     """
     import kiro_crew.subagent as mod
 
     monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 0.05)
-    monkeypatch.setattr(mod, "_RESET_TIMEOUT", 0.05)
-    monkeypatch.setattr(mod, "_TEARDOWN_REPORT_GRACE", 0.05)
+    monkeypatch.setattr(mod, "_RESET_TIMEOUT", 0.02)
+    monkeypatch.setattr(mod, "_TEARDOWN_REPORT_GRACE", 0.02)
     mgr = _make_manager()
     info = _info()
     cleared: list[str] = []
@@ -1279,9 +1375,6 @@ async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(mon
         delivered.set()
 
     mgr._on_done = AsyncMock(side_effect=_on_done)
-    # A teardown gate that never opens: the report's pre-publish wait for it runs
-    # out (see the docstring) and the delivery goes ahead with the kill named
-    # undecided. `cancel_all` then meets a report whose delivery already happened.
     never = asyncio.Event()
     assert mgr._claim_finalize(info) is True
     mgr._spawn_terminal_report(
@@ -1297,7 +1390,7 @@ async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(mon
     await mgr.cancel_all()
 
     assert info._reported_to_parent is True, "delivery marker not set after _on_done"
-    assert cleared == [], "a delivered completion was re-admitted — restart will duplicate it"
+    assert cleared == [], "a delivered completion was re-admitted -- restart will duplicate it"
 
 
 # ── every reporter goes through the claim, including recovery failure ─
@@ -1393,9 +1486,9 @@ async def test_reap_suppression_marker_is_set_before_the_teardown_await():
         "respawn suppression was not set while teardown was suspended — a "
         "recovery handshake expiring here would respawn the run being killed"
     )
-    assert seen["recovery_deregistered"] is True, (
-        "recovery task was still registered while teardown was suspended"
-    )
+    assert (
+        seen["recovery_deregistered"] is True
+    ), "recovery task was still registered while teardown was suspended"
     await asyncio.sleep(0)
     assert recovery.cancelled(), "recovery task was never actually cancelled"
 
@@ -1551,9 +1644,9 @@ async def test_cancelled_teardown_still_releases_slot_and_gate():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert mgr._running_count == 0, (
-        f"cancelled teardown leaked the slot (_running_count={mgr._running_count})"
-    )
+    assert (
+        mgr._running_count == 0
+    ), f"cancelled teardown leaked the slot (_running_count={mgr._running_count})"
     assert "a1b2c3d4" not in mgr._tasks, "cancelled teardown left the task registered"
 
 
@@ -1644,8 +1737,7 @@ async def test_user_stop_during_pending_recovery_is_not_recorded_as_failure():
         mod.Stats = orig  # type: ignore[assignment]
 
     assert failures == [], (
-        "a neutral user Stop was counted as a subagent failure by the "
-        "cancelled-recovery arm"
+        "a neutral user Stop was counted as a subagent failure by the " "cancelled-recovery arm"
     )
     assert info.error == "", f"user stop synthesized an error: {info.error!r}"
 
@@ -1695,9 +1787,9 @@ async def test_stop_during_pending_spawn_approval_reports_and_releases_once():
         "count permanently inflates apparent capacity"
     )
     total_reports = len(_done_events(mgr)) + len(announced)
-    assert total_reports == 1, (
-        f"terminal outcome delivered {total_reports} times, expected exactly once"
-    )
+    assert (
+        total_reports == 1
+    ), f"terminal outcome delivered {total_reports} times, expected exactly once"
 
 
 @pytest.mark.asyncio
@@ -1780,8 +1872,7 @@ def _terminal_report_consumer_fields() -> set[str]:
         functions = {
             node.name: node
             for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name in names
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
         }
         assert set(functions) == names
         for function in functions.values():

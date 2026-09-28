@@ -99,6 +99,13 @@ from typing import TYPE_CHECKING, Any
 # the top-level-imports guideline.
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
 
+# The one definition of the EGRESS keys. Imported rather than copied: its own
+# comment in notifications/settings.py warns that a set spelled twice is how a
+# routing key added later reaches an app token through whichever carrier was not
+# updated -- and this WS frame is one of those carriers. The notifications layer
+# imports nothing from the dashboard, so this is acyclic at module scope.
+from kiro_crew.notifications.settings import DELIVERY_SETTING_KEYS
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -163,19 +170,21 @@ def _audit_decision(app: str, event_type: str, outcome: str, dedup_reason: str) 
         # circular import: sel.py loads config that transitively pulls in
         # ``kiro_crew.dashboard`` submodules — import lazily.
         from kiro_crew.sel import sel as _sel
+
         _sel().log_api_access(
             caller=app,
             operation="ws_event_scope",
             outcome=outcome,
             source="ws_event_scope",
-            resources=(
-                f"{event_type} (suppressed={suppressed})" if suppressed else event_type
-            ),
+            resources=(f"{event_type} (suppressed={suppressed})" if suppressed else event_type),
         )
     except Exception as exc:
         logger.debug(
             "ws_event_scope: SEL audit for %s %s/%s failed: %s",
-            outcome, app, event_type, exc,
+            outcome,
+            app,
+            event_type,
+            exc,
         )
 
 
@@ -202,66 +211,112 @@ def _audit_allow(app: str, event_type: str) -> None:
 # Events that are always delivered regardless of app scope (no sensitive data)
 # ---------------------------------------------------------------------------
 
-_TIER0_ALWAYS = frozenset({
-    "dashboard",
-    # Dashboard-wide progress signals with no user data.
-    "refresh",
-    "update_progress",
-})
+_TIER0_ALWAYS = frozenset(
+    {
+        "dashboard",
+        # Dashboard-wide progress signals with no user data.
+        "refresh",
+        "update_progress",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Slot-scoped event types: events that carry a ``slot`` key and are
 # subject to slot-visibility filtering.  Subagent events are a subset.
 # ---------------------------------------------------------------------------
 
-_SLOT_SCOPED_EVENTS = frozenset({
-    # Chat content
-    "chat_chunk", "chat_thinking", "chat_status", "chat_message", "chat_done",
-    "chat_segment", "chat_append", "chat_message_update", "chat_variant_switch",
-    # Side-conversation channel (``broadcast_side_result``); carries ``slot``.
-    "chat.side_result",
-    # Reply-thread channel (``broadcast_thread_reply``); carries ``slot``.
-    "chat.thread_reply",
-    "heartbeat", "context_usage",
-    # Tool / queue
-    "tool_call", "tool_result",
-    "queue_push", "queue_cancel", "queue_edit", "queue_pop", "queue_reorder",
-    "steer_push",
-    # Slot metadata / lifecycle
-    "slot_title", "slot_clear", "slot_agent_switch", "todo_update",
-    # The slot's own MCP session report. Slot-scoped like todo_update and for the
-    # same reason: it carries ``slot`` and describes only that slot's session, so
-    # a token already scoped to the slot learns nothing wider from it.
-    "mcp_report_update",
-    "activity_event", "session_summary",
-    # Voice
-    "voice_chunk", "voice_complete", "voice_error",
-    # Approvals and question cards (carry a slot field)
-    "approval", "approval_resolved", "question_card",
-    # Subagent lifecycle. Every one of these is fired through
-    # ``SubagentManager._fire_event`` and reaches the wire via
-    # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (slack/gateway.py's
-    # ``_subagent_event``), so a guard that scans broadcast call sites for string
-    # literals cannot see them -- ``TestFireEventNamesAreClassified`` reads the
-    # emitter's own literals instead. Each payload carries id + slot.
-    "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
-    "subagent_snapshot", "subagent_status", "subagent_queued",
-    "subagent_stalled", "subagent_retrying", "subagent_recovering",
-    "subagent_waiting", "subagent_resumed",
-    "subagent_injection_failed",
-    # Slack-gateway driven, slot-scoped
-    "autonudge_state", "batch_finished", "spawn_batch_started",
-    # Workflows / misc
-    "workflow_result_injected", "refine",
-})
+_SLOT_SCOPED_EVENTS = frozenset(
+    {
+        # Chat content
+        "chat_chunk",
+        "chat_thinking",
+        "chat_status",
+        "chat_message",
+        "chat_done",
+        "chat_segment",
+        "chat_append",
+        "chat_message_update",
+        "chat_variant_switch",
+        # Side-conversation channel (``broadcast_side_result``); carries ``slot``.
+        "chat.side_result",
+        # Reply-thread channel (``broadcast_thread_reply``); carries ``slot``.
+        "chat.thread_reply",
+        "heartbeat",
+        "context_usage",
+        # Tool / queue
+        "tool_call",
+        "tool_result",
+        "queue_push",
+        "queue_cancel",
+        "queue_edit",
+        "queue_pop",
+        "queue_reorder",
+        "steer_push",
+        # Slot metadata / lifecycle
+        "slot_title",
+        "slot_clear",
+        "slot_agent_switch",
+        "todo_update",
+        # The slot's own MCP session report. Slot-scoped like todo_update and for the
+        # same reason: it carries ``slot`` and describes only that slot's session, so
+        # a token already scoped to the slot learns nothing wider from it.
+        "mcp_report_update",
+        "activity_event",
+        "session_summary",
+        # Voice
+        "voice_chunk",
+        "voice_complete",
+        "voice_error",
+        # Approvals and question cards (carry a slot field)
+        "approval",
+        "approval_resolved",
+        "question_card",
+        # Subagent lifecycle. Every one of these is fired through
+        # ``SubagentManager._fire_event`` and reaches the wire via
+        # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (slack/gateway.py's
+        # ``_subagent_event``), so a guard that scans broadcast call sites for string
+        # literals cannot see them -- ``TestFireEventNamesAreClassified`` reads the
+        # emitter's own literals instead. Each payload carries id + slot.
+        "subagent_spawn",
+        "subagent_done",
+        "subagent_tool",
+        "subagent_chunk",
+        "subagent_snapshot",
+        "subagent_status",
+        "subagent_queued",
+        "subagent_stalled",
+        "subagent_retrying",
+        "subagent_recovering",
+        "subagent_waiting",
+        "subagent_resumed",
+        "subagent_injection_failed",
+        # Slack-gateway driven, slot-scoped
+        "autonudge_state",
+        "batch_finished",
+        "spawn_batch_started",
+        # Workflows / misc
+        "workflow_result_injected",
+        "refine",
+    }
+)
 
-_SUBAGENT_EVENTS = frozenset({
-    "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
-    "subagent_snapshot", "subagent_status", "subagent_queued",
-    "subagent_stalled", "subagent_retrying", "subagent_recovering",
-    "subagent_waiting", "subagent_resumed",
-    "subagent_injection_failed",
-})
+_SUBAGENT_EVENTS = frozenset(
+    {
+        "subagent_spawn",
+        "subagent_done",
+        "subagent_tool",
+        "subagent_chunk",
+        "subagent_snapshot",
+        "subagent_status",
+        "subagent_queued",
+        "subagent_stalled",
+        "subagent_retrying",
+        "subagent_recovering",
+        "subagent_waiting",
+        "subagent_resumed",
+        "subagent_injection_failed",
+    }
+)
 
 #: Coalesced subagent frames emitted above ``SubagentEventCoalescer`` threshold
 #: (default 8 active subagents): ONE frame carries MANY subagents' rows, so
@@ -271,10 +326,12 @@ _SUBAGENT_EVENTS = frozenset({
 #: may not see (the same split already used for the ``slots`` re-push). The
 #: classification is what keeps them out of the unknown-event deny, which would
 #: cost an app all subagent status and output once the coalescer engages.
-_SUBAGENT_BATCH_EVENTS = frozenset({
-    "subagent_batch_update",
-    "subagent_batch_chunks",
-})
+_SUBAGENT_BATCH_EVENTS = frozenset(
+    {
+        "subagent_batch_update",
+        "subagent_batch_chunks",
+    }
+)
 
 #: Payload key holding the per-item list, per batch event type.
 _SUBAGENT_BATCH_ITEM_KEY = {
@@ -292,13 +349,15 @@ _SUBAGENT_BATCH_ITEM_KEY = {
 # floor so the denial is INTENTIONAL and audited with its own reason instead
 # of reading as a misconfiguration, and so a future literal broadcast of one
 # of these names cannot silently start reaching app tokens.
-_OWNER_ONLY_EVENTS = frozenset({
-    "member_projection",   # types.WS_MEMBER_PROJECTION
-    "members_subscribed",  # types.WS_MEMBERS_SUBSCRIBED
-    # Per-row slot metadata edits. Sent only to dashboard-user sockets that
-    # declared the capability; an app token gets its filtered full list.
-    "slot_patch",
-})
+_OWNER_ONLY_EVENTS = frozenset(
+    {
+        "member_projection",  # types.WS_MEMBER_PROJECTION
+        "members_subscribed",  # types.WS_MEMBERS_SUBSCRIBED
+        # Per-row slot metadata edits. Sent only to dashboard-user sockets that
+        # declared the capability; an app token gets its filtered full list.
+        "slot_patch",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +365,11 @@ _OWNER_ONLY_EVENTS = frozenset({
 # ---------------------------------------------------------------------------
 
 # Notification events whose delivery depends on WHO sent them, not just on the
-# declaration. ``notification_channel_settings`` is deliberately absent: it is
-# channel config ({muted, priority}) with no source_app, so source filtering
-# would deny it outright rather than scope it.
+# declaration. ``notification_channel_settings`` is deliberately absent: it
+# carries no source_app, so source filtering would deny it outright rather than
+# scope it. Its own owner-only half (the bridge route) is withheld by the
+# per-client strip in ``_serialize_for_client`` instead, which shapes a frame
+# the app is entitled to receive rather than refusing it.
 # Only events whose payload actually CARRIES a source. `notification_ack` /
 # `notification_unack` broadcast a bare `{"ts": ...}` (see state.py), so they are
 # absent here: filtering by a field the payload never has is not a filter, and a
@@ -316,9 +377,11 @@ _OWNER_ONLY_EVENTS = frozenset({
 # plain `notification` declaration via `_GLOBAL_EVENT_DECLARATIONS` instead,
 # which is the strongest statement available for a payload that carries a
 # timestamp and nothing else.
-_SOURCE_FILTERED_EVENTS = frozenset({
-    "notification",
-})
+_SOURCE_FILTERED_EVENTS = frozenset(
+    {
+        "notification",
+    }
+)
 
 # The canonical `source` values a note can carry, set server-side and not
 # overridable from a request body:
@@ -343,11 +406,13 @@ _APP_SOURCE_PREFIX = "app:"
 #: ``notifications_clear`` joins them for the same reason: it fires with an
 #: empty payload when the WHOLE log is cleared, not just this app's slice, so
 #: it cannot be judged "own" either.
-_UNATTRIBUTED_NOTIFICATION_EVENTS = frozenset({
-    "notification_ack",
-    "notification_unack",
-    "notifications_clear",
-})
+_UNATTRIBUTED_NOTIFICATION_EVENTS = frozenset(
+    {
+        "notification_ack",
+        "notification_unack",
+        "notifications_clear",
+    }
+)
 
 #: `<app>.<channel_id>` (handlers/notifications_push) or `system.<kind>`
 #: (notifications/bus SYSTEM_CHANNELS) -- the prefix names the owner.
@@ -359,6 +424,35 @@ def notification_channel_owner(channel: str) -> str:
     return channel.split(".", 1)[0] if "." in channel else ""
 
 
+def channel_settings_for_app(data: object) -> dict[str, Any]:
+    """Return a ``notification_channel_settings`` payload with EGRESS keys removed.
+
+    The stored row carries the owner's bridge route (``deliver_to``,
+    ``deliver_min_priority``) alongside the dashboard-local ``muted``/``priority``.
+    Those two say which chat surfaces the owner's notifications reach, so a caller
+    without routing authority may neither set them (the settings PUT refuses) nor
+    read them (the channels GET withholds them) -- and this frame is the third
+    carrier of the same row, reached whenever the OWNER changes a setting on a
+    channel that client can see.
+
+    Only the OWNER's own sockets skip this: the per-client chokepoint returns the
+    unfiltered message for a socket carrying ``_is_owner``. A dashboard user is not
+    enough, because that flag is set from the absence of an app claim and an
+    allow-listed messaging user's session satisfies it.
+    """
+    if not isinstance(data, dict):
+        # The gate must not widen on a shape it cannot read. An unexpected
+        # payload yields an empty settings row, not the original object.
+        return {"channel": "", "settings": {}}
+    settings = data.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    return {
+        **{k: v for k, v in data.items() if k != "settings"},
+        "settings": {k: v for k, v in settings.items() if k not in DELIVERY_SETTING_KEYS},
+    }
+
+
 def notification_source_app(source: str) -> str:
     """The app that produced a notification, or "" if it was not an app push.
 
@@ -366,7 +460,7 @@ def notification_source_app(source: str) -> str:
     so comparing it against a bare app name silently never matches.
     """
     if source.startswith(_APP_SOURCE_PREFIX):
-        return source[len(_APP_SOURCE_PREFIX):]
+        return source[len(_APP_SOURCE_PREFIX) :]
     return ""
 
 
@@ -377,8 +471,12 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "notification_ack": "notification",
     "notification_unack": "notification",
     "notifications_clear": "notification",
-    # Channel mute/priority metadata only ({muted, priority}) -- same domain as
-    # the notification events themselves, so it rides the same declaration.
+    # Channel settings metadata -- same domain as the notification events
+    # themselves, so it rides the same declaration. The row is NOT mute/priority
+    # only: since the bridge it also carries the owner's egress route, which no
+    # app may read, so ``_serialize_for_client`` strips those keys for an
+    # app-scoped client. The declaration decides WHETHER the frame is delivered;
+    # that strip decides WHAT it contains.
     "notification_channel_settings": "notification",
     "sessions_restarting": "sessions",
     # A bare {"ts": ...} refresh signal -- no slot, no session key, no counts.
@@ -454,9 +552,7 @@ def global_event_declared(event_type: str, allowed_events: frozenset[str]) -> bo
     return required_decl in allowed_events or f"{required_decl}:all" in allowed_events
 
 
-def slots_envelope_extras(
-    allowed_events: frozenset[str], *, yolo: bool
-) -> dict[str, bool]:
+def slots_envelope_extras(allowed_events: frozenset[str], *, yolo: bool) -> dict[str, bool]:
     """The envelope fields beyond ``data`` an app token may see on ``slots``.
 
     Returns only the permitted keys -- an omitted key must be left OUT of the
@@ -485,6 +581,7 @@ _WILDCARD_SCOPES: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 # Allowed-event set computation (called once at WS connect time)
 # ---------------------------------------------------------------------------
+
 
 def build_allowed_event_set(events_declared: list[str]) -> frozenset[str]:
     """Convert a raw ``permissions.events`` list into a normalised frozenset.
@@ -739,6 +836,7 @@ def _decide_ws_event(
 # Slot visibility helpers
 # ---------------------------------------------------------------------------
 
+
 def _slot_visible(
     slot: _ChatSlot,
     app: str,
@@ -898,9 +996,7 @@ def visible_subagent_slot_keys(
     if not app:
         return set()
     return {
-        key
-        for key, slot in slots.items()
-        if _subagent_visible(slot, app, allowed_events, state)
+        key for key, slot in slots.items() if _subagent_visible(slot, app, allowed_events, state)
     }
 
 
@@ -1080,9 +1176,7 @@ def _schedule_expose_to_refresh(target_app: str) -> None:
             # The entry is already released above, so a failed refresh just
             # leaves the previous value (or nothing) for the next broadcast to
             # retry against.
-            logger.debug(
-                "ws_event_scope: exposeToApps refresh failed for %r", target_app
-            )
+            logger.debug("ws_event_scope: exposeToApps refresh failed for %r", target_app)
 
     future.add_done_callback(_store)
 
@@ -1300,6 +1394,7 @@ def _target_exposes_to(target_app: str, requesting_app: str, state: DashboardSta
 # slots initial-push filter (applied when a new WS client connects)
 # ---------------------------------------------------------------------------
 
+
 def filter_subagent_batch_for_app(
     items: list[dict[str, Any]],
     app: str,
@@ -1388,13 +1483,10 @@ def _strip_source_link_status(slot_dict: dict[str, Any]) -> dict[str, Any]:
     the input unchanged (no needless copy on the hot path).
     """
     links = slot_dict.get("source_links")
-    if not links or not any(
-        any(k in link for k in _SOURCE_LINK_STATUS_KEYS) for link in links
-    ):
+    if not links or not any(any(k in link for k in _SOURCE_LINK_STATUS_KEYS) for link in links):
         return slot_dict
     cleaned = dict(slot_dict)
     cleaned["source_links"] = [
-        {k: v for k, v in link.items() if k not in _SOURCE_LINK_STATUS_KEYS}
-        for link in links
+        {k: v for k, v in link.items() if k not in _SOURCE_LINK_STATUS_KEYS} for link in links
     ]
     return cleaned

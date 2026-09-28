@@ -181,7 +181,6 @@ src/kiro_crew/dashboard/tailnet_serve.py
 src/kiro_crew/dashboard/terminal_commands.py
 src/kiro_crew/dashboard/theme_validate.py
 src/kiro_crew/dashboard/token_secret.py
-src/kiro_crew/dashboard/ws_event_scope.py
 src/kiro_crew/deploy/engine.py
 src/kiro_crew/deploy/handlers.py
 src/kiro_crew/deploy/pricing.py
@@ -204,7 +203,6 @@ src/kiro_crew/eval/bench/scorers.py
 src/kiro_crew/eval/runner.py
 src/kiro_crew/eval/scenario.py
 src/kiro_crew/frontend.py
-src/kiro_crew/gateway_shutdown_budget.py
 src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
 src/kiro_crew/knowledge/agent_fetch.py
@@ -246,9 +244,7 @@ src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/provider.py
 src/kiro_crew/metrics/recorder.py
-src/kiro_crew/notifications/bus.py
 src/kiro_crew/notifications/resource_pressure.py
-src/kiro_crew/notifications/settings.py
 src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/update_layout.py
@@ -696,8 +692,6 @@ test/test_node_toolchain_resolution.py
 test/test_node_version_pins.py
 test/test_notification_bus.py
 test/test_notification_legacy_actions.py
-test/test_notification_phase5.py
-test/test_notification_settings.py
 test/test_notifications_push.py
 test/test_official_catalog.py
 test/test_omc_ledger_sync_coverage.py
@@ -782,7 +776,6 @@ test/test_sel_dashboard_offload.py
 test/test_sel_prune_streaming.py
 test/test_service.py
 test/test_serving_loop_unified.py
-test/test_session_cleanup.py
 test/test_session_core_audit.py
 test/test_session_coverage.py
 test/test_session_end_interaction.py
@@ -850,7 +843,6 @@ test/test_stt_stream_cov80.py
 test/test_stub_bridge_liveness.py
 test/test_stuck_turn_watchdog.py
 test/test_subagent_cost.py
-test/test_subagent_reap_race.py
 test/test_subagent_stall.py
 test/test_subquestion_queue.py
 test/test_sweep_stale_permissions.py

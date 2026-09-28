@@ -8,10 +8,13 @@ from ._component import ManagerComponent
 
 if TYPE_CHECKING:
     from ..subagent import (
+        _FOLLOWUP_ANNOUNCE_TIMEOUT,
         _ON_DONE_TIMEOUT,
         _RECOVERY_SLOT_WAIT_SECS,
         _REPORT_DRAIN_TIMEOUT,
         _RESET_TIMEOUT,
+        _SHUTDOWN_READMIT_RESERVE,
+        _STATE_DRAIN_TIMEOUT,
         Stats,
         SubagentInfo,
         _audit_ids,
@@ -20,6 +23,7 @@ if TYPE_CHECKING:
         clear_tombstone,
         delivery_is_parked,
         logger,
+        orphan_recovery_can_see,
         stage_boundary_owner_for_run,
         time,
     )
@@ -1174,8 +1178,44 @@ class CancellationCoordinator(ManagerComponent):
         await reap
         return True
 
-    async def cancel_all_impl(self) -> None:
-        """Cancel all running subagents and wait for cleanup."""
+    async def cancel_all_impl(self, budget: float | None = None) -> None:
+        """Cancel all running subagents and wait for cleanup.
+
+        ``budget`` is the seconds LEFT of the caller's outer shutdown deadline
+        (``GRACEFUL_SHUTDOWN_SECS`` at the gateway). When given, each blocking phase
+        -- the run-teardown wait and the shielded terminal-report drain -- sizes itself
+        from what remains, and a fixed slice (``_SHUTDOWN_READMIT_RESERVE``) is held back
+        so the straggler cancel + tombstone re-admission after the drain STILL RUN inside
+        the deadline. Without that reserve the outer ``wait_for`` cancels mid-drain and
+        the re-admission -- the only thing keeping an undelivered completion visible to
+        the next start's orphan recovery -- never runs, tombstoning the completion out of
+        recovery forever. When ``budget`` is None the phases fall back to their module
+        defaults (``_STATE_DRAIN_TIMEOUT`` / ``_REPORT_DRAIN_TIMEOUT``). There is no
+        reservation counter and no follow-up handover-persist: a follow-up queued but
+        never dispatched is already on the dashboard, and at shutdown it lands there
+        rather than being flushed to chat -- an accepted degrade. The per-watcher
+        follow-up-drop announce is itself deadline-bounded (``_FOLLOWUP_ANNOUNCE_TIMEOUT``
+        via ``_phase``) so a slow ``_on_done`` injection on a busy parent cannot let the
+        announce loop alone outlast the deadline and starve the phases below it.
+        """
+
+        # An ABSOLUTE deadline, not a per-phase slice of the original budget: sizing each
+        # phase from the same starting ``budget`` lets their SUM exceed it (a slow
+        # teardown AND a non-draining report each spend up to ``budget - reserve``), so
+        # the outer ``wait_for`` cancels mid-drain and the re-admission never runs.
+        # Recomputing the remainder before each phase keeps their total within the
+        # deadline and always leaves ``_SHUTDOWN_READMIT_RESERVE`` for the straggler
+        # cancel + tombstone re-admission after the drain.
+        _deadline = None if budget is None else asyncio.get_event_loop().time() + budget
+
+        def _phase(default: float) -> float:
+            """Seconds this phase may wait: the smaller of its default and what is LEFT of
+            the deadline after reserving re-admission time, recomputed each call."""
+            if _deadline is None:
+                return default
+            remaining = _deadline - asyncio.get_event_loop().time()
+            return max(min(default, remaining - _SHUTDOWN_READMIT_RESERVE), 0.0)
+
         # Shutdown-driven cancellations must never trigger the one-shot
         # unexpected-cancel auto-continue (the loop is going away).
         self._manager._shutting_down = True
@@ -1213,34 +1253,21 @@ class CancellationCoordinator(ManagerComponent):
         if self._manager._reaper_task and not self._manager._reaper_task.done():
             self._manager._reaper_task.cancel()
             self._manager._reaper_task = None
-        # The reaps that live outside the reaper task (a Stop, a parent-end
-        # cancel, each awaited in its caller's task) are cancelled the same way
-        # and gathered here, so each one's cancellation arm has finished the
-        # record and released its report before the run tasks are cancelled and
-        # the reports drained. Left alone, such a reap sat in its hanging reset
-        # with its report waiting on a gate nobody released, and the gateway's
-        # shutdown budget hard-exited the process before the drain could abandon
-        # it -- the tombstone its run's arm wrote then excluded the folder from
-        # orphan recovery, so the parent never received the completion.
+        # The reaps that live outside the reaper task (a Stop, a parent-end cancel, each
+        # awaited in its caller's task) are cancelled and gathered so each one's arm has
+        # finished its record before the run tasks are cancelled and the reports drained.
         inflight_reaps = [t for t in self._manager._reap_tasks if not t.done()]
         for reap in inflight_reaps:
             self._manager._cancel_task_intentionally(reap, reason="shutdown reap")
         if inflight_reaps:
             await asyncio.gather(*inflight_reaps, return_exceptions=True)
-        # Follow-up watchers are cancelled and gathered before announcing.
-        # The announce awaits — _on_done injection can be slow — and
-        # a busy-retry watcher waking during that await could dispatch a
-        # continuation into the shutting-down gateway, so every watcher task
-        # must be DEAD before anything here yields. Announcing afterwards is
-        # safe: the settle-after-outcome protocol leaves undelivered messages
-        # in their queues, so each is still present to be reported. An
-        # ACCEPTED follow-up must not die silently: the spawn_steer reply
-        # promised the parent a completion event, so each non-empty queue is
-        # announced as a synthetic failure — the parent learns the message was
-        # dropped instead of waiting forever.
-        # Snapshot ids BEFORE cancelling: each watcher's done-callback pops it
-        # from the dict as the gather completes it, so a post-gather snapshot
-        # is already empty.
+        # Follow-up watchers are cancelled and gathered before announcing. The announce
+        # awaits (_on_done injection can be slow), and a busy-retry watcher waking during
+        # that await could dispatch a continuation into the shutting-down gateway, so
+        # every watcher task must be DEAD before anything here yields. An ACCEPTED
+        # follow-up is announced as a synthetic failure so the parent learns its message
+        # was dropped rather than waiting forever; the queue is NOT persisted or handed
+        # over (its content is on the dashboard).
         watcher_ids = list(self._manager._followup_watchers)
         watcher_infos = dict(self._manager._followup_watcher_infos)
         followup_watchers = [t for t in self._manager._followup_watchers.values() if not t.done()]
@@ -1255,21 +1282,58 @@ class CancellationCoordinator(ManagerComponent):
             watcher_info = watcher_infos.get(agent_id) or self._manager._agents.get(agent_id)
             if watcher_info is not None and watcher_info.pending_followups:
                 dropped = list(watcher_info.pending_followups)
-                watcher_info.pending_followups = []
                 self._manager._audit_followup(watcher_info, "followup_expired")
+                told_parent = False
                 try:
-                    await self._manager._announce_followup_failure(
-                        watcher_info,
-                        "follow_up dropped: the gateway is shutting down before "
-                        "the run completed; the queued message(s) were not "
-                        "dispatched",
-                        messages=dropped,
+                    # Returns whether the parent was ACTUALLY told. The announce
+                    # swallows its own failures internally (no ``_on_done`` wired, or
+                    # ``_on_done`` raised) and reports them through this bool, NOT an
+                    # exception -- so relying on ``except`` alone would miss the common
+                    # sub-case and discard the queue silently. The ``except`` stays only
+                    # as a backstop for an unexpected raise.
+                    #
+                    # BOUNDED per announce from what is LEFT of the deadline: the announce
+                    # awaits ``_on_done`` injection, which can block on a busy parent turn,
+                    # and a queue of watchers each announcing unbounded would let this loop
+                    # alone outlast the outer GRACEFUL_SHUTDOWN_SECS deadline -- cancelling
+                    # the whole method before run teardown, the report drain, the tombstone
+                    # re-admission and session persistence ever start. A timeout here is a
+                    # parent-not-reached, handled by the same audit + warn as a delivery
+                    # that failed. ``_phase`` keeps ``_SHUTDOWN_READMIT_RESERVE`` in hand so
+                    # the budgeted phases below still run; with no budget it falls back to
+                    # the fixed ``_FOLLOWUP_ANNOUNCE_TIMEOUT``.
+                    told_parent = bool(
+                        await asyncio.wait_for(
+                            self._manager._announce_followup_failure(
+                                watcher_info,
+                                "follow_up dropped: the gateway is shutting down before "
+                                "the run completed; the queued message(s) were not "
+                                "dispatched",
+                                messages=dropped,
+                            ),
+                            timeout=_phase(_FOLLOWUP_ANNOUNCE_TIMEOUT),
+                        )
                     )
                 except Exception:  # noqa: BLE001 - shutdown must not wedge here
-                    logger.debug(
-                        "shutdown follow_up announce failed for %s", agent_id, exc_info=True
+                    # Includes ``TimeoutError`` from the bound above: a parent not reached
+                    # inside the deadline is a dropped follow-up, not a reason to wedge.
+                    told_parent = False
+                if not told_parent:
+                    # The announce is the only notice the parent gets that its queued
+                    # message(s) were dropped; when it could not deliver, the drop is
+                    # otherwise silent. Audit the failed notice and warn so a lost
+                    # follow-up at shutdown leaves a trace rather than vanishing.
+                    self._manager._audit_followup(watcher_info, "followup_announce_failed")
+                    logger.warning(
+                        "shutdown follow_up announce for %s did not reach the parent; "
+                        "%d queued message(s) were dropped without notifying it",
+                        agent_id,
+                        len(dropped),
                     )
+                watcher_info.pending_followups = []
+        # Cancel every running run task and wait for teardown.
         tasks_to_await: list[asyncio.Task] = []  # type: ignore[type-arg]
+        task_agent_ids: dict[asyncio.Task, str] = {}  # type: ignore[type-arg]
         for agent_id, task in list(self._manager._tasks.items()):
             if not task.done():
                 # _shutting_down (set above) is the terminal marker for this
@@ -1278,35 +1342,73 @@ class CancellationCoordinator(ManagerComponent):
                     task, self._manager._agents.get(agent_id), reason="shutdown"
                 )
                 tasks_to_await.append(task)
+                task_agent_ids[task] = agent_id
         if tasks_to_await:
-            await asyncio.gather(*tasks_to_await, return_exceptions=True)
+            # BOUNDED: a cancelled run that wedges in its own teardown must not hold
+            # shutdown open. Waiting the tasks out with no bound is what let one stuck
+            # teardown spend the whole shutdown deadline, so the report drain and the
+            # re-admission below -- the steps that keep an undelivered completion
+            # recoverable -- never ran. The wait is bounded HERE rather than by wrapping
+            # the whole call, so those later steps still run after it: an outer bound
+            # would cancel in the window between the drain and the re-admission and trade
+            # a bounded shutdown for a silent, permanent loss. The bound is the
+            # shutdown-sized ``_STATE_DRAIN_TIMEOUT`` (5s), NOT ``_RESET_TIMEOUT`` (30s):
+            # the gateway runs this under a GRACEFUL_SHUTDOWN_SECS (10s) deadline, so a
+            # 30s teardown wait would blow the budget on the ordinary case. A task still
+            # tearing down past the bound is left to the closing loop.
+            try:
+                await asyncio.wait(tasks_to_await, timeout=_phase(_STATE_DRAIN_TIMEOUT))
+            except Exception:
+                logger.debug("cancel_all: run teardown wait failed", exc_info=True)
+            still_tearing_down = [t for t in tasks_to_await if not t.done()]
+            if still_tearing_down:
+                # A run that outlasts the bound has NOT had its terminal report drained,
+                # yet its own task body will still reach the cancelled-arm tombstone at
+                # run.py (``_write_tombstone(info, "cancelled")``). That write is gated on
+                # ``_shutdown_outcome_abandoned`` -- when set, run.py leaves the folder
+                # visible so the next start's orphan recovery can deliver the outcome;
+                # when unset, it tombstones the folder out of that scan permanently.
+                # Marking it HERE, before we move on, is what keeps an undrained
+                # completion recoverable: the ordinary case this bound exists to handle
+                # (a teardown slower than the deadline) must not silently lose its outcome.
+                for task in still_tearing_down:
+                    stuck_agent_id = task_agent_ids.get(task)
+                    info = self._manager._agents.get(stuck_agent_id) if stuck_agent_id else None
+                    if info is not None:
+                        info._shutdown_outcome_abandoned = True
+                logger.warning(
+                    "cancel_all: %d run(s) did not finish teardown within %.0fs -- "
+                    "marked abandoned for the next start's orphan recovery and "
+                    "continuing to the report drain so shutdown is not held open",
+                    len(still_tearing_down),
+                    _STATE_DRAIN_TIMEOUT,
+                )
         self._manager._tasks.clear()
-        # Shielded terminal reports keep running after their awaiter is
-        # cancelled (that is the point). Drain them with a BOUNDED wait so a
-        # report is not orphaned by a closing event loop, without letting a
-        # wedged injection block shutdown indefinitely.
+        # Drain shielded terminal reports with a BOUNDED wait so a report is not orphaned
+        # by a closing event loop, without letting a wedged injection block shutdown
+        # indefinitely. A report that does not drain is cancelled; its completion may not
+        # have been delivered, and the dashboard still holds the note.
         pending_reports = [t for t in self._manager._report_tasks if not t.done()]
         if pending_reports:
             try:
-                await asyncio.wait(pending_reports, timeout=_REPORT_DRAIN_TIMEOUT)
+                await asyncio.wait(pending_reports, timeout=_phase(_REPORT_DRAIN_TIMEOUT))
             except Exception:
                 logger.debug("cancel_all: report drain wait failed", exc_info=True)
-            # `asyncio.wait` RETURNS on timeout without touching the stragglers.
-            # Leaving them pending is worse than not shielding at all: shutdown
-            # would proceed while they keep invoking `_on_done` against
-            # tearing-down state, and they would then die when the loop closes —
-            # losing the very report the shield exists to guarantee. So cancel
-            # them explicitly and gather to completion, which also surfaces any
-            # exception into the log instead of an "exception was never
-            # retrieved" warning at interpreter exit.
             stragglers = [t for t in pending_reports if not t.done()]
             if stragglers:
                 logger.warning(
-                    "cancel_all: %d terminal report(s) did not drain in %.0fs — "
+                    "cancel_all: %d terminal report(s) did not drain in %.0fs -- "
                     "cancelling; their completions may not have been delivered",
                     len(stragglers),
                     _REPORT_DRAIN_TIMEOUT,
                 )
+                # Capture each straggler's owner BEFORE cancelling: a cancelled report
+                # is a LOST delivery whose terminal record was already written --
+                # including a tombstone, which is exactly what ``list_orphans`` uses to
+                # exclude a folder from the next start's reconciliation. Left alone the
+                # outcome is unrecoverable (never injected, invisible to the one path
+                # that could still inject it), so a report cancelled here before it
+                # reached the parent is re-admitted to orphan recovery for the next start.
                 abandoned = [self._manager._report_owners.get(t) for t in stragglers]
                 for report_task in stragglers:
                     report_task.cancel()
@@ -1314,38 +1416,34 @@ class CancellationCoordinator(ManagerComponent):
                     await asyncio.gather(*stragglers, return_exceptions=True)
                 except Exception:
                     logger.debug("cancel_all: straggler gather failed", exc_info=True)
-                # A cancelled report is a LOST delivery, and the terminal record
-                # for it was already written — including a tombstone, which is
-                # exactly what `list_orphans()` uses to exclude a folder from the
-                # next start's reconciliation. Left alone, the outcome is
-                # unrecoverable: never injected, and invisible to the one path
-                # that could still inject it.
-                #
-                # Extending the drain to `_ON_DONE_TIMEOUT` instead was rejected:
-                # it would hold gateway shutdown for up to 20 minutes on a single
-                # wedged injection, which is what the bounded drain exists to
-                # prevent. Bounded shutdown plus recoverable state is strictly
-                # better than unbounded shutdown.
-                #
-                # Only reports cancelled BEFORE `_on_done` returned are re-admitted
-                # — `_reported_to_parent` marks the ones that already reached the
-                # parent, so a cancellation in the later teardown/tombstone waits
-                # does not cause a duplicate delivery on restart.
-                for task, owner in zip(stragglers, abandoned):
-                    if owner is None or not task.cancelled():
+                # Only reports cancelled BEFORE ``_on_done`` returned are re-admitted --
+                # ``_reported_to_parent`` marks the ones that already reached the parent,
+                # so re-admission never causes a duplicate delivery on restart. Marking
+                # ``_shutdown_outcome_abandoned`` records that this run's completion was
+                # left for the next start's orphan recovery rather than delivered here.
+                for report_task, info in zip(stragglers, abandoned):
+                    if info is None or not report_task.cancelled():
                         continue
-                    if owner._reported_to_parent:
+                    if info._reported_to_parent:
                         continue
+                    info._shutdown_outcome_abandoned = True
                     try:
-                        if clear_tombstone(owner.id):
+                        if clear_tombstone(info.id) and orphan_recovery_can_see(info.id):
                             logger.warning(
-                                "cancel_all: %s's completion was not delivered — "
+                                "cancel_all: %s's completion was not delivered -- "
                                 "re-admitted to orphan recovery for the next start",
-                                owner.id,
+                                info.id,
+                            )
+                        else:
+                            logger.warning(
+                                "cancel_all: %s's completion was not delivered and its "
+                                "tombstone could not be removed, so the next start skips "
+                                "the run",
+                                info.id,
                             )
                     except Exception:
                         logger.debug(
                             "cancel_all: failed to re-admit %s to orphan recovery",
-                            owner.id,
+                            info.id,
                             exc_info=True,
                         )

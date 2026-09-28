@@ -321,7 +321,19 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
+    #: Re-pinned +6 per tier for notification-bridge B1 (on top of main's base
+    #: counts, which advanced during the drift). The six are the same TWO logical
+    #: names across the two crew-data-home roots (``~/.kiro/crew`` and ``~/.kirocrew``),
+    #: counted through both the ``SENSITIVE_FILES`` and ``SENSITIVE_DIRS`` planes:
+    #: ``notification_settings.json`` (the ``deliver_to`` route file that authorizes
+    #: owner-DM egress) and ``notification-settings-staging`` (the writer's atomic-rename
+    #: staging directory, a whole-directory mask exactly like the baselined
+    #: ``md-notebook-staging`` and ``aws-control-staging`` siblings above). Both sit as
+    #: direct children of the data home, whose ROOT is writable in every sandbox and so
+    #: cannot itself carry a stand-in mask -- the same reason those existing staging
+    #: siblings are leaf-only. The Security Scope Review adjudicated these additions:
+    #: 11 candidates, 0 confirmed newly-refused operations -- a reviewed tightening.
+    EXPECTED: dict[str, int] = {"standard": 268, "cc": 275, "strict": 276}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

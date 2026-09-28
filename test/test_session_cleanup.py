@@ -678,7 +678,9 @@ class TestStartupSweep:
         from kiro_crew.subagent import SubagentManager
 
         sessions = MagicMock()
-        manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+        )
 
         async with _owning(manager):
             with (
@@ -686,16 +688,14 @@ class TestStartupSweep:
                 patch("kiro_crew.subagent._cleanup_session_files_sync") as mock_cleanup,
             ):
                 await manager._reconcile_orphans()
-
-        # Retain-by-default: session files are NOT deleted at reconcile time.
         mock_cleanup.assert_not_called()
         # Every orphan is still tombstoned (reconcile happened).
         from kiro_crew.subagent_persistence import _agent_dir as _adir
 
         for i in range(len(session_ids)):
-            assert (_adir(f"orphan-{i}") / "tombstone.json").exists(), (
-                f"orphan-{i} was not tombstoned"
-            )
+            assert (
+                _adir(f"orphan-{i}") / "tombstone.json"
+            ).exists(), f"orphan-{i} was not tombstoned"
 
     @pytest.mark.asyncio
     async def test_sweep_continues_on_individual_failure(self, agent_root):
@@ -715,7 +715,9 @@ class TestStartupSweep:
         update_state("ok-orphan", session_id="ok-sid", provider="acp", pid=88889)
 
         sessions = MagicMock()
-        manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
+        manager = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+        )
 
         async with _owning(manager):
             with (
