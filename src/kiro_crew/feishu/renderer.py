@@ -1,17 +1,33 @@
 """Layer 2b -- Feishu ``Renderer``.
 
-Maps the channel-neutral ``OutputEvent`` stream onto a single Feishu REST
-reply anchored to the inbound message_id:
+Two modes, chosen per turn by the dispatcher:
 
-* ``on_turn_start``   -- no-op (no streaming placeholder in v1).
-* ``on_text_chunk``   -- buffers text; a trailing ``[OPTIONS:]`` trailer
-  becomes a numbered text list (Feishu renders no tappable chips).
-* ``on_tool_call``    -- updates a transient tool-footer in the buffer.
-* ``on_prompt_choice``-- no-op: Feishu has no interactive buttons in v1
-  (the driver only dispatches this for INTERACTIVE + a decider, and
-  FeishuDispatcher runs decider-less).
+**Buffered (default).** Maps the channel-neutral ``OutputEvent`` stream onto a
+single Feishu REST reply anchored to the inbound message_id. This is the original
+behaviour and remains the fallback for everything.
+
+**Streaming card** (``streaming=True``, DM only). Opens a CardKit card on turn
+start so the user sees the reply forming immediately, pushes the cumulative
+answer into it on a throttle, and seals it on ``on_done``. See
+:mod:`kiro_crew.feishu.streaming_card`. Any failure at any point falls back to
+the buffered reply, so the worst case is the old behaviour rather than a lost
+answer.
+
+Event handling in both modes:
+
+* ``on_turn_start``   -- opens the card in streaming mode; no-op otherwise.
+  Called TWICE per turn by the pipeline, so it must stay idempotent.
+* ``on_text_chunk``   -- buffers text; in streaming mode also pushes a live
+  frame. A trailing ``[OPTIONS:]`` trailer becomes a numbered text list in the
+  FINAL text (Feishu renders no tappable chips) and is withheld from live
+  frames, where a half-arrived marker is still reserved protocol.
+* ``on_tool_call``    -- updates a transient tool footer; forces a live frame,
+  because a tool call is often followed by a long silence.
+* ``on_prompt_choice``-- no-op: Feishu has no interactive buttons (the driver
+  only dispatches this for INTERACTIVE + a decider, and FeishuDispatcher runs
+  decider-less).
 * ``on_compaction``   -- logged only (threshold notices go post-turn).
-* ``on_done``         -- sends the complete accumulated text as one reply.
+* ``on_done``         -- seals the card, or sends the complete text as one reply.
 * ``close``           -- idempotent finalisation (sends on error if needed).
 
 Dependency direction is ``feishu -> messaging`` (allowed).
@@ -27,8 +43,19 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     redaction_notice,
     render_options_as_text,
+    split_options_trailer,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
+
+try:
+    from kiro_crew.feishu.streaming_card import StreamingCardSession
+except ImportError:  # pragma: no cover - only when the module is absent
+    # A missing streaming module must degrade to the buffered reply, never take
+    # the whole package down: ``kiro_crew.channels`` imports this module during
+    # gateway boot, so a hard import here would turn one absent file into a
+    # gateway that cannot start AT ALL -- and an absent file is exactly what an
+    # update that overwrites ``src/`` leaves behind.
+    StreamingCardSession = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
     from kiro_crew.feishu.client import LarkClient
@@ -37,12 +64,7 @@ logger = logging.getLogger(__name__)
 
 
 class FeishuRenderer(Renderer):
-    """Buffers a complete turn and sends it as one Feishu reply on ``on_done``.
-
-    v1 is intentionally simple: no streaming, no edit-in-place.  A streaming
-    variant (send a placeholder, then update with ``lark_client.im.v1.message.
-    update``) is a natural follow-up once the core integration is stable.
-    """
+    """Buffers a turn and sends one Feishu reply, or streams it into a card."""
 
     channel_type = "feishu"
 
@@ -51,6 +73,8 @@ class FeishuRenderer(Renderer):
         client: "LarkClient",
         message_id: str,
         capabilities: TransportCapabilities,
+        *,
+        streaming: bool = False,
     ) -> None:
         super().__init__(capabilities)
         self._client = client
@@ -58,21 +82,89 @@ class FeishuRenderer(Renderer):
         self._buf: list[str] = []
         self._tool: str = ""
         self._finalized = False
+        #: Streaming is opt-in per turn. Keyword-only with a False default so
+        #: every existing caller -- and the cross-channel contract tests --
+        #: keep the original buffered behaviour untouched.
+        self._streaming_enabled = bool(streaming)
+        self._card: StreamingCardSession | None = None
+        self._card_opened = False
+
+    # -- Streaming plumbing --------------------------------------------------
+
+    async def _open_card(self) -> None:
+        """Open the live card once per turn. Never raises."""
+        if self._card_opened or not self._streaming_enabled:
+            return
+        if StreamingCardSession is None:  # pragma: no cover - module absent
+            # Latch so this is reported once per turn, not once per chunk.
+            self._card_opened = True
+            logger.warning(
+                "Feishu: streaming is enabled but the streaming_card module is "
+                "missing; this turn falls back to a buffered plain-text reply"
+            )
+            return
+        # Latch BEFORE awaiting: on_turn_start is called twice and the two calls
+        # can overlap, which would otherwise create two cards for one turn.
+        self._card_opened = True
+        session = StreamingCardSession(self._client, self._message_id)
+        try:
+            started = await session.start()
+        except Exception:  # pragma: no cover - start() already swallows
+            logger.debug("Feishu: streaming card start raised", exc_info=True)
+            started = False
+        if started:
+            self._card = session
+        else:
+            if session.anchor_gone:
+                # The card reply failed because the inbound message is gone. The
+                # verdict lives on the session, so dropping it here would lose
+                # it: ``on_done`` would then send a buffered reply to a recalled
+                # anchor, which fails and is raised as a delivery error for
+                # something the user did on purpose. Keep the session -- it is
+                # not live, so it takes no frames and finishes as undelivered;
+                # all it still carries is that verdict.
+                self._card = session
+            logger.info("Feishu: no streaming card for this turn; falling back to a buffered reply")
+
+    async def _push_live(self, *, force: bool = False) -> None:
+        """Push the cumulative answer into the live card. Never raises."""
+        card = self._card
+        if card is None or not card.live:
+            return
+        # hide_partial=True: the text is still arriving, so a half-written
+        # "[OPTIONS" really may be a marker mid-flight. Safe here precisely
+        # because the next frame re-renders from the full buffer.
+        body, _choices = split_options_trailer(self.raw_text(), hide_partial=True)
+        frame = body
+        if self._tool:
+            footer = f"🔧 {self._tool}"
+            frame = f"{frame}\n\n{footer}" if frame else footer
+        if not frame:
+            return
+        # Redact here as well as in :meth:`text`. A live frame reaches the screen
+        # BEFORE the send-boundary scrub in ``text()`` runs, and the
+        # channel-neutral stream pass upstream is a literal byte scan, so a
+        # credential split by markdown (``AKIA**REST**``) or hidden in a link is
+        # reassembled by the card's own markdown rendering and shown. The final
+        # frame replaces this one, but "until then" is still an exposure.
+        frame = self.redact_for_target(frame)
+        try:
+            await card.push(frame, force=force)
+        except Exception:  # pragma: no cover - the session classifies its own errors
+            logger.debug("Feishu: live frame push raised", exc_info=True)
 
     # -- Output event handlers ----------------------------------------------
 
     async def on_turn_start(self) -> None:
-        # No streaming placeholder in v1.  A "thinking" reaction could be added
-        # here via ``lark_client.im.v1.message.reactions.create`` once proven
-        # useful.
-        pass
+        await self._open_card()
 
     async def on_text_chunk(self, text: str) -> None:
         self._buf.append(text)
         self._tool = ""  # text resumed -> clear transient tool footer
+        await self._push_live()
 
     async def on_thinking(self, text: str) -> None:
-        # Feishu v1 does not surface reasoning inline.
+        # Feishu does not surface reasoning inline.
         return None
 
     async def on_tool_call(
@@ -82,8 +174,10 @@ class FeishuRenderer(Renderer):
         tool_kind: str = "",
         tool_purpose: str = "",
     ) -> None:
-        # Record but don't push mid-turn (single-shot reply only).
         self._tool = title or tool_kind or "工具"
+        # Forced: a tool call is frequently followed by a long quiet period, and
+        # the whole point of the live card is that the user sees progress.
+        await self._push_live(force=True)
 
     async def on_prompt_choice(
         self,
@@ -93,10 +187,9 @@ class FeishuRenderer(Renderer):
         tool_purpose: str = "",
         tool_input: str = "",
     ) -> None:
-        # Feishu has no interactive buttons in v1.  The driver dispatches this
-        # only for INTERACTIVE + a decider; FeishuDispatcher runs decider-less,
-        # so this is never reached -- kept as a safe no-op to satisfy the
-        # Renderer contract.
+        # Feishu has no interactive buttons.  The driver dispatches this only for
+        # INTERACTIVE + a decider; FeishuDispatcher runs decider-less, so this is
+        # never reached -- kept as a safe no-op to satisfy the Renderer contract.
         logger.debug("Feishu: prompt_choice ignored (no interactive buttons)")
 
     async def on_compaction(self, context_usage_pct: float) -> None:
@@ -110,31 +203,53 @@ class FeishuRenderer(Renderer):
         self._finalized = True
         ok = stop_reason != "error"
         content = self.text() or ("…" if ok else "⚠️ 出错了，请重试")
+
+        card = self._card
+        if card is not None:
+            delivered = await card.finish(content)
+            if delivered:
+                # The card carried the (already redacted) body; the notice is a
+                # plain reply on the same anchor, exactly as in buffered mode.
+                await self._send_redaction_notice(content)
+                return
+            if card.anchor_gone:
+                # The inbound message was recalled or deleted. A text reply to
+                # the same anchor fails too, so stop rather than raising a
+                # delivery error for something the user did on purpose.
+                logger.info("Feishu: anchor message gone; nothing to reply to")
+                return
+            logger.info("Feishu: card delivered nothing; sending the buffered reply instead")
+
         if not await self._client.send_reply(self._message_id, content):
             # A dropped reply must NOT be recorded as a delivered turn: the user
             # sees nothing while history and the session claim success. Raising
             # routes it through the driver's failure path instead.
             raise RuntimeError(f"Feishu reply was not delivered (message_id={self._message_id})")
+        await self._send_redaction_notice(content)
+
+    async def _send_redaction_notice(self, content: str) -> None:
+        """Follow a delivered, rewritten answer with one notice reply.
+
+        Counted over the DELIVERED body, and best-effort by the shared
+        contract: the answer is already out, so a failed notice send is logged,
+        never raised. ``send_reply`` reports failure as ``False`` rather than
+        raising, so both shapes are covered.
+        """
         cred_count, url_count = count_redaction_tags(content)
-        if cred_count or url_count:
-            # The reply above carries a redaction placeholder, so a follow-up
-            # notice tells the reader the text was rewritten. Counted over the
-            # DELIVERED body, and best-effort by the shared contract: the
-            # answer is already out, so a failed notice send is logged, never
-            # raised. ``send_reply`` reports failure as ``False`` rather than
-            # raising, so both shapes are covered.
-            try:
-                if not await self._client.send_reply(
-                    self._message_id, redaction_notice(cred_count, url_count)
-                ):
-                    logger.warning(
-                        "feishu: could not deliver the redaction notice (answer already sent)"
-                    )
-            except Exception:
+        if not (cred_count or url_count):
+            return
+        try:
+            if not await self._client.send_reply(
+                self._message_id, redaction_notice(cred_count, url_count)
+            ):
                 logger.warning(
-                    "feishu: could not deliver the redaction notice (answer already sent)",
-                    exc_info=True,
+                    "feishu: could not deliver the redaction notice (answer already sent)"
                 )
+        except Exception:
+            logger.warning(
+                "feishu: could not deliver the redaction notice (answer already sent)",
+                exc_info=True,
+            )
 
     async def close(self) -> None:
         """Idempotent teardown -- finalise if ``on_done`` was never reached.
@@ -154,6 +269,15 @@ class FeishuRenderer(Renderer):
                 )
 
     # -- Helpers ------------------------------------------------------------
+
+    def raw_text(self) -> str:
+        """The accumulated answer with no options handling applied.
+
+        Live frames need this because they do their own ``hide_partial=True``
+        split; :meth:`text` would already have rendered a mid-flight marker as
+        numbered prose.
+        """
+        return "".join(self._buf).strip()
 
     def text(self) -> str:
         """The complete answer so far, with ``[OPTIONS:]`` as numbered text.
