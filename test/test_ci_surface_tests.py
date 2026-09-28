@@ -908,6 +908,97 @@ def test_the_floor_may_sit_exactly_its_margin_below_the_collection() -> None:
     _run_hook(ns, _items("test_a.py", "test_one", 10 + ns._FLOOR_MARGIN))
 
 
+def test_a_passing_collection_reports_its_count_and_remaining_headroom() -> None:
+    """A passing collection reports its count and remaining headroom.
+
+    Every failure check above is silent while the margin is unspent, so on its own a
+    green run says nothing about how close the floor sits to the collection -- the
+    drift the guard bounds is invisible until it trips. The success line closes that
+    gap: a passing collection states the observed count AND the growth headroom still
+    remaining, so the number is read while the margin is unspent rather than only when
+    it is gone.
+
+    Asserted on ``_headroom_report`` directly (the pure line-builder) so the check
+    does not depend on how the line is surfaced, and both numbers are present so a
+    future edit cannot drop the headroom and leave only a count that says nothing
+    about drift.
+    """
+    ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
+    # One test inside the margin window: floor 10, margin 2, so 11 collected leaves
+    # one more of headroom before the floor must be raised.
+    line = ns._headroom_report(11)
+    assert "collected 11 tests" in line, line
+    assert "floor 10" in line, line
+    assert f"headroom 1 of {ns._FLOOR_MARGIN} remaining" in line, line
+
+
+def test_the_reported_headroom_moves_as_the_collection_changes() -> None:
+    """The reported numbers are computed from the live collection, not remembered.
+
+    A signal that did not move with the suite would be another stale constant, the
+    very failure this line-builder exists to avoid. Sitting on the floor spends no headroom
+    (the full margin remains); each test added above the floor spends one; at the
+    ceiling it is zero, and below the floor it clamps at zero, because the failure
+    checks own that state and a positive number would read as headroom that does not
+    exist.
+    """
+    ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
+    assert f"headroom {ns._FLOOR_MARGIN} of {ns._FLOOR_MARGIN} remaining" in ns._headroom_report(10)
+    assert (
+        f"headroom {ns._FLOOR_MARGIN - 1} of {ns._FLOOR_MARGIN} remaining"
+        in ns._headroom_report(11)
+    )
+    assert "headroom 0 of" in ns._headroom_report(10 + ns._FLOOR_MARGIN)
+    # Below the floor the guard fails rather than reports, but the line-builder must
+    # not emit a negative headroom if it is ever reached.
+    assert "headroom 0 of" in ns._headroom_report(9)
+
+
+def test_the_passing_hook_emits_the_headroom_line(capsys) -> None:
+    """The line is actually emitted on the pass path, not merely computable.
+
+    The hook is driven with ``config=None`` (no live pytest session), under which
+    the emitter falls back to ``print``, so a captured run can read the number. The
+    property under test is that a green collection produces the line at all -- a
+    guard whose only output is the failure path leaves the drift it bounds invisible
+    on a passing run.
+    """
+    ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
+    _run_hook(ns, _items("test_a.py", "test_one", 11))
+    printed = capsys.readouterr().out
+    assert "crew container collection floor" in printed, printed
+    assert "collected 11 tests" in printed, printed
+    assert "headroom 1 of" in printed, printed
+
+
+def test_the_headroom_line_prefers_the_terminal_reporter() -> None:
+    """On a real run the line goes to pytest's terminal reporter, not raw stdout.
+
+    ``config=None`` in the pin above proves the fallback; a live run has a
+    ``terminalreporter`` plugin, and the line must land there so it sits in the same
+    summary a human reads rather than in captured output nobody sees. The emitter is
+    driven directly with a fake config exposing that plugin.
+    """
+    ns = _required_conftest(declared={"test_a.py": {"test_one"}}, floor=10)
+    written: list[str] = []
+
+    class _Reporter:
+        def write_line(self, line: str) -> None:
+            written.append(line)
+
+    class _PluginManager:
+        def get_plugin(self, name: str):
+            return _Reporter() if name == "terminalreporter" else None
+
+    class _Config:
+        pluginmanager = _PluginManager()
+
+    ns._emit_headroom_report(_Config(), ns._headroom_report(11))
+    assert written, "the emitter must write to the terminal reporter when one exists"
+    assert "collected 11 tests" in written[0], written
+    assert "headroom 1 of" in written[0], written
+
+
 def test_the_stale_floor_message_names_both_ways_the_margin_can_be_exceeded() -> None:
     """The message must not send a reader hunting a regression that is not there.
 
@@ -945,8 +1036,12 @@ def test_a_declared_test_that_yields_no_item_is_an_error() -> None:
 
     The module is collected and contributes items, so the presence check is
     satisfied; one name the source declares produced nothing. A decorator that
-    returns a non-function, a class body an import guard emptied, and a name
-    shadowed by a later definition all land here.
+    returns a non-function is the shape that lands here. The other shapes that
+    silence a test do NOT reach this check: two module-level ``def test_x`` collapse
+    to one name in ``_declared_tests``' set, so shadowing is never seen here, and a
+    class body an import guard emptied puts its methods under an ``ast.If`` that the
+    reader never descends into, because it scans only the direct children of a
+    ``ClassDef`` -- both drain the count instead and are caught by the floor.
     """
     ns = _required_conftest(declared={"test_a.py": {"test_one", "test_swallowed"}}, floor=1)
     with pytest.raises(pytest.UsageError, match=r"test_a\.py::test_swallowed"):

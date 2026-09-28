@@ -294,6 +294,61 @@ def _yielded_test_names(items: list[pytest.Item]) -> dict[str, set[str]]:
     return yielded
 
 
+def _headroom_report(collected: int) -> str:
+    """The one line the guard emits on a PASSING collection, stating the drift directly.
+
+    Every check above is on the failure path: silent while the margin is unspent, a
+    hard ``UsageError`` once it is spent. Between those two states the guard says
+    nothing, so the distance between the declared floor and the real collection --
+    the whole quantity the guard exists to bound -- is invisible from the check
+    itself until the moment it trips, and the fastest way to clear a trip is to bump
+    the constant, which reopens the drift. This turns that invisible-until-it-fails
+    quantity into a number printed on every green run, so a floor going stale is read
+    while the margin is still unspent rather than discovered when it is gone.
+
+    Both numbers are computed from the live collection and the current constants, so
+    they move as fixtures are added or removed -- including growth reaching the suite
+    from source, e.g. a credential name added to the production ``AWS_CRED_ENV`` that
+    ``test_review_findings`` parametrizes over. ``remaining`` is how many more tests
+    may land before ``_MIN_COLLECTED`` must be raised: the count still inside the
+    ``_FLOOR_MARGIN`` window above the floor, so it is the full margin when the
+    collection sits exactly on the floor and zero when it reaches the ceiling. Below
+    the floor it is reported as zero -- a breach the failure checks above already
+    own, where a positive number would read as headroom that does not exist.
+    """
+    if collected < _MIN_COLLECTED:
+        # A breach the failure checks above already own; there is no growth window to
+        # report below the floor, and a positive number here would read as headroom
+        # that does not exist. Reached only defensively -- the ``< _MIN_COLLECTED``
+        # check raises before the success path emits.
+        remaining = 0
+    else:
+        remaining = _MIN_COLLECTED + _FLOOR_MARGIN - collected
+    remaining = max(0, remaining)
+    return (
+        f"crew container collection floor: collected {collected} tests, floor "
+        f"{_MIN_COLLECTED}, growth headroom {remaining} of {_FLOOR_MARGIN} remaining "
+        f"before {_MIN_COLLECTED} must be raised. Raise the floor to the new "
+        f"collection in the commit that spends the last of the headroom, so the "
+        f"floor never drifts behind the suite it guards."
+    )
+
+
+def _emit_headroom_report(config: pytest.Config | None, message: str) -> None:
+    """Surface the success line where a green run's reader will see it.
+
+    Prefer pytest's terminal reporter (``write_line``) so the line lands in the same
+    summary a human reads, and fall back to ``print`` when there is no reporter --
+    the pin tests drive the hook with ``config=None``, and a bare ``print`` still
+    lets a captured run assert the number.
+    """
+    reporter = None if config is None else config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(message)
+    else:
+        print(message)
+
+
 def pytest_collection_modifyitems(
     session: pytest.Session,
     config: pytest.Config,
@@ -305,7 +360,7 @@ def pytest_collection_modifyitems(
     They are different failures, and only the second catches a module that quietly
     stops yielding tests while every dependency is still importable.
 
-    Three checks, and the first two cannot rot: what must yield tests is read off the
+    Four checks, and the first two cannot rot: what must yield tests is read off the
     filesystem, so it needs no maintenance and cannot disagree with the tree. A module
     that defines tests and contributed no collected item is an error whatever the
     reason, and so is a single named test that the source declares and the collection
@@ -322,6 +377,15 @@ def pytest_collection_modifyitems(
 
     Items outside this directory are ignored, so a wider run that happens to include
     this suite is not judged by it.
+
+    When all four checks pass, the guard emits one line stating the observed
+    collection and the growth headroom still remaining (see ``_headroom_report``).
+    Every check above is on the failure path, so without this a green run says
+    nothing about how close the floor is to the collection -- the drift this guard
+    exists to bound stays invisible until it trips. The line makes it a continuous
+    signal read while the margin is still unspent, and it composes with either of the
+    other candidate remedies (a non-fatal warn, a wider ceiling) rather than
+    replacing them.
     """
     if not _REQUIRED:
         return
@@ -348,10 +412,9 @@ def pytest_collection_modifyitems(
             f"{_REQUIRED_ENV} is set and the source declares these tests, which the "
             f"collection does not hold: {', '.join(silent)}. Their modules were "
             "collected, so each name was read off the source and then produced no "
-            "item -- a decorator that returns something pytest does not collect, a "
-            "class body that an import guard emptied, a name shadowed by a later "
-            "definition. Restore the item rather than renaming the test out of the "
-            "check."
+            "item -- a decorator that returns something pytest does not collect is "
+            "the shape this reaches. Restore the item rather than renaming the test "
+            "out of the check."
         )
     if len(mine) < _MIN_COLLECTED:
         raise pytest.UsageError(
@@ -376,6 +439,7 @@ def pytest_collection_modifyitems(
             f"without either one editing this line, so the raise is owed here rather "
             f"than being a regression to hunt."
         )
+    _emit_headroom_report(config, _headroom_report(len(mine)))
 
 
 # APPEND, never insert(0), and note the directory beside this one is named
