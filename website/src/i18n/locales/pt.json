@@ -6211,6 +6211,7 @@
       "type_label": "Digitar em vez disso",
       "transcribing": "Transcrevendo…",
       "transcribing_please_wait": "Transcrevendo, aguarde…",
+      "tree_drop_folder_refused": "Não é possível adicionar esta pasta: o caminho contém um espaço ou @. Adicione os arquivos um a um.",
       "trust_reads": "Confiar em comandos somente leitura",
       "turn_interrupted_press_resume": "O último turno foi interrompido — toque em Retomar ou apenas escreva",
       "upload_file": "Enviar arquivo",

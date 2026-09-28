@@ -1911,6 +1911,7 @@
       "that_request_already_timed_out_and_was_denied": "That {{source}} request already timed out and was denied — the job is no longer waiting. Check the approvals feed for the record.",
       "transcribing": "Transcribing…",
       "transcribing_please_wait": "Transcribing, please wait…",
+      "tree_drop_folder_refused": "This folder can't be added: its path contains a space or @. Add its files one by one instead.",
       "voice_input": "Voice input",
       "queue": "Queue",
       "queue_run_after_the_current_work_finishes_desc": "Run after the current work finishes",

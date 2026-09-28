@@ -20,6 +20,17 @@
  */
 import { pathForFile } from '../lib/electron'
 
+/**
+ * Can a folder at `p` NOT be written as a composer folder token? The token
+ * grammar (DIR_TOKEN_RE in fileTokens.ts, shared with the @-picker) cannot
+ * carry whitespace or `@` in its body, and parseDirTokens rejects slash-only
+ * bodies, so filesystem roots (`/`, `C:\`) and such paths would look like a
+ * folder reference but never parse into a chip or serialize on send.
+ */
+export function isUntokenizableDirPath(p: string): boolean {
+  return /[\s@]/.test(p) || /^[/\\]+$/.test(p) || /^[A-Za-z]:[/\\]*$/.test(p)
+}
+
 export interface ClassifiedDrop {
   /** Regular files — and directories no real path could be resolved for
    *  (browser fallback) — routed to the existing upload path. */
@@ -55,7 +66,7 @@ export function classifyDrop(dt: DataTransfer): ClassifiedDrop {
       // never parse into a chip or serialize on send: a silent dead token.
       // Route those to the upload fallback (today's behaviour) instead,
       // exactly like the no-path browser case below.
-      const untokenizable = !p || /[\s@]/.test(p) || /^[/\\]+$/.test(p) || /^[A-Za-z]:[/\\]*$/.test(p)
+      const untokenizable = !p || isUntokenizableDirPath(p)
       if (!untokenizable) {
         dirPaths.push(p)
         continue

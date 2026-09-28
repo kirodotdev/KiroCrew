@@ -6013,6 +6013,7 @@
       "type_label": "입력으로 전환",
       "transcribing": "받아쓰는 중…",
       "transcribing_please_wait": "받아쓰는 중입니다. 잠시 기다리세요…",
+      "tree_drop_folder_refused": "이 폴더는 추가할 수 없습니다. 경로에 공백이나 @가 있습니다. 대신 파일을 하나씩 추가하세요.",
       "trust_reads": "읽기 전용 명령 신뢰",
       "turn_interrupted_press_resume": "이전 턴이 중단되었습니다 — ‘재개’를 누르거나 그냥 입력하세요",
       "upload_file": "파일 업로드",

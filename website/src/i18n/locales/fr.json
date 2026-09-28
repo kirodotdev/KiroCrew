@@ -6211,6 +6211,7 @@
       "type_label": "Écrire à la place",
       "transcribing": "Transcription…",
       "transcribing_please_wait": "Transcription en cours, patiente…",
+      "tree_drop_folder_refused": "Impossible d’ajouter ce dossier : son chemin contient une espace ou @. Ajoute plutôt ses fichiers un par un.",
       "trust_reads": "Approuver les commandes en lecture seule",
       "turn_interrupted_press_resume": "Le dernier tour a été interrompu — appuie sur Reprendre, ou écris simplement",
       "upload_file": "Importer un fichier",

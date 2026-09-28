@@ -6211,6 +6211,7 @@
       "type_label": "Scrivi invece",
       "transcribing": "Trascrizione in corso…",
       "transcribing_please_wait": "Trascrizione in corso, attendi…",
+      "tree_drop_folder_refused": "Impossibile aggiungere questa cartella: il percorso contiene uno spazio o @. Aggiungi invece i suoi file uno alla volta.",
       "trust_reads": "Considera attendibili i comandi di sola lettura",
       "turn_interrupted_press_resume": "L'ultimo turno è stato interrotto — premi Riprendi, oppure scrivi",
       "upload_file": "Carica file",

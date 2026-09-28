@@ -141,6 +141,7 @@ import SkillPickerMenu from './SkillPickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
 import ProjectSkillsTrustDialog from './ProjectSkillsTrustDialog'
 import { matchFileToken, matchPathToken, matchSkillToken, PATH_TOKEN_RE, replaceTokenAtCaret } from './composerTokens'
+import { useComposerTreeDrop } from './composerTreeDrop'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
@@ -647,6 +648,11 @@ interface ChatInputProps {
    *  "@src/pages/"), computed against the picker's search root — the staging
    *  side records it so a later chip-remove can strip precisely this token. */
   onFileSelect?: (path: string, kind?: FileKind, token?: string) => void
+  /** A Files-panel tree row dropped on the composer: the host's "Add to
+   *  chat" handler (absolute path, entry kind), which inserts and stages the
+   *  same mention the row's context menu does. Absent: tree rows are not
+   *  accepted. */
+  onTreeEntryDrop?: (absPath: string, kind: FileKind) => void
   onFileOpen?: (path: string) => void
   project?: string
   /** Checked-out branch of the active project (or short SHA when detached). */
@@ -1015,6 +1021,7 @@ function ChatInput({
   hasEffort,
   providerId: _providerId,
   onFileSelect,
+  onTreeEntryDrop,
   onFileOpen,
   project,
   projectBranch,
@@ -2678,6 +2685,18 @@ function ChatInput({
   // mode each pane has its own ChatInput + mutation, so slotId always matches
   // and this reduces to the raw pending flag.
   const optimizing = optimizePending && optimizeSlotRef.current === slotId
+  // A file-tree row dropped here goes to the host's "Add to chat" handler;
+  // OS file and text drags fall through to the host's handlers.
+  const treeDrop = useComposerTreeDrop({
+    enabled: !disabled && !optimizing,
+    project: project ?? '',
+    onTreeEntryDrop,
+    getControl: composerControl,
+    containerRef: wrapperRef,
+    onDragOver,
+    onDragLeave,
+    onDrop,
+  })
   optimizingRef.current = optimizing
   // Re-entrancy guard reads the RAW lifecycle: only one optimize may be in
   // flight per ChatInput instance. Without this, the button on a *different*
@@ -4262,10 +4281,22 @@ function ChatInput({
         ref={wrapperRef}
         className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent focus-within:border-accent/50'}`}
 
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
+        data-tree-drop-active={treeDrop.state === 'accept' ? 'true' : undefined}
+        data-tree-drop-refused={treeDrop.state === 'refuse' ? 'true' : undefined}
+        onDragOver={treeDrop.onDragOver}
+        onDragLeave={treeDrop.onDragLeave}
+        onDrop={treeDrop.onDrop}
       >
+        {treeDrop.state === 'accept' && (
+          <div aria-hidden="true" data-testid="composer-tree-drop-indicator" className="pointer-events-none absolute inset-0 z-10 rounded-[inherit] border-2 border-dashed border-accent bg-accent/5" />
+        )}
+        {/* A folder whose path cannot be written as a folder reference: say why
+            instead of leaving only the no-drop cursor. */}
+        {treeDrop.state === 'refuse' && (
+          <div role="status" data-testid="composer-tree-drop-refused" className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[inherit] border-2 border-dashed border-warn bg-bg-elevated px-4 text-center text-[13px] text-text">
+            {i18nT('components.chatInput.tree_drop_folder_refused')}
+          </div>
+        )}
         <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} rootRef={sessionStripRef} />
         <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={onRemoveFile} onRemoveDir={onRemoveDir} rootRef={fileStripRef} />
 
@@ -4399,9 +4430,9 @@ function ChatInput({
           readOnly={optimizing}
           rows={1}
           value={value}
-          onDragOver={e => { e.preventDefault(); onDragOver?.(e); e.stopPropagation() }}
-          onDragLeave={e => { onDragLeave?.(e); e.stopPropagation() }}
-          onDrop={e => { e.preventDefault(); onDrop?.(e); e.stopPropagation() }}
+          onDragOver={e => { e.preventDefault(); treeDrop.onDragOver(e); e.stopPropagation() }}
+          onDragLeave={e => { treeDrop.onDragLeave(e); e.stopPropagation() }}
+          onDrop={e => { e.preventDefault(); treeDrop.onDrop(e); e.stopPropagation() }}
           onChange={e => {
             valueFromUserRef.current = true // real DOM edit, not a parent-driven draft restore
             const val = e.target.value; onChange(val); setSlashMenuOpen(typedCommandMenus && val.startsWith('/'))
