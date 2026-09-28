@@ -5,9 +5,13 @@
 # address bar after each -- the window keeps its omnibox exactly so the tester
 # can see the URL like a person would. The tabs chosen (Display, Chat) render
 # from local state and the live gateway's config alone, so their panes carry no
-# network-dependent notice. Two clicks and no scroll keep the three surviving
-# screenshots one per tab; the final expectations read the Chat landing and
-# the screenshot taken right after the Display click.
+# network-dependent notice. Chat is itself a rail of groups whose selection is
+# path-backed (SettingsSubNav in path mode, #13661): landing on the tab
+# resolves to its first group, so the address bar reads
+# /settings/chat/<group> (e.g. /settings/chat/transcript), and that is the
+# deep-linkable shape this scenario accepts for Chat. Two clicks and no scroll
+# keep the three surviving screenshots one per tab; the final expectations read
+# the Chat landing and the screenshot taken right after the Display click.
 name: settings-tab-rail-navigation
 tier: smoke
 feature: settings
@@ -23,9 +27,9 @@ preconditions:
 steps:
   - You are on the Settings page, opened directly at its Notifications tab; the pane heading reads "Notifications" with "Sound effects and per-source alert preferences" beneath it, and the browser's address bar at the top of the window ends in "/settings/notifications". Do not scroll.
   - In the settings navigation on the left of the page, under the small "Preferences" heading, click the tab labelled "Display". The pane heading changes to "Display" and the address bar now ends in "/settings/display".
-  - In the same navigation click the tab labelled "Chat". Read the pane heading and the address bar again.
+  - In the same navigation click the tab labelled "Chat". Read the pane heading and the address bar again. The Chat pane has its own inner list of groups on its left (Transcript, Composer, ...); the address bar names the selected group after "/settings/chat/".
 expectations:
-  - The browser's address bar ends in "/settings/chat" (no "?tab=" query string).
+  - The browser's address bar contains "/settings/chat" and has no "?tab=" query string; it may end there or continue with one more segment naming the selected Chat group, such as "/settings/chat/transcript".
   - The pane heading reads "Chat" with "Message behavior, history, timestamps, and context" beneath it, and "Chat" is the highlighted tab in the settings navigation while "Display" and "Notifications" are not.
   - In the screenshot taken right after you clicked "Display", the pane heading read "Display" and the address bar ended in "/settings/display".
   - The "Settings" item is highlighted as active in the left rail and no red error banner is visible.

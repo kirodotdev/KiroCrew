@@ -15,6 +15,8 @@ SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 KNOWLEDGE_NOTES_DIR = (
     Path(__file__).resolve().parents[2] / "scripts" / "gui-user-test" / "knowledge-notes"
 )
+#: boot.sh's seed step; a script, not a package, so the test loads it by path.
+SEED_HOME_PY = Path(__file__).resolve().parents[2] / "scripts" / "gui-user-test" / "seed_home.py"
 
 
 # --------------------------------------------------------------------------
@@ -63,7 +65,6 @@ SHIPPED = SHIPPED_SMOKE | {
     "crewmate-reply-thread",
     "crewmate-team-view",
     "knowledge-add-folder-source-and-scan",
-    "meet-crewmates-flow",
     "members-dm-hello",
     "members-private-memory-keeps-thread",
 }
@@ -112,6 +113,37 @@ class TestShippedScenarios:
         assert any("3 supported files found" in step for step in sc.steps)
         assert any('"3 items"' in exp for exp in sc.expectations)
         assert any("/tmp/kirocrew-gui-user-test/team-notes" in step for step in sc.steps)
+
+    def test_seeded_project_reaches_the_transcript_reader(self, tmp_path: Path) -> None:
+        # seed_home.py --project writes into the starter transcript's metadata line
+        # by hand, and the dashboard restores `slot.project` from the same record
+        # through ConversationLog. Patch the real `rich` starter and read it back
+        # with the real reader, so a metadata-shape change on either side fails
+        # here rather than as "No project directory is set" on a paid nightly run.
+        import importlib.util
+
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.testing.fixtures import seeded_home
+
+        spec = importlib.util.spec_from_file_location("gui_seed_home", SEED_HOME_PY)
+        assert spec is not None and spec.loader is not None
+        seed_home = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(seed_home)
+
+        project = tmp_path / "sample-project"
+        project.mkdir()
+        with seeded_home("rich") as home:
+            sessions = home / "sessions"
+            starter = sessions / seed_home.STARTER_SESSION
+            before = starter.read_text(encoding="utf-8").splitlines()
+            seed_home._set_session_project(starter, str(project))
+            after = starter.read_text(encoding="utf-8").splitlines()
+            assert after[1:] == before[1:]  # only the metadata line moved
+            meta = ConversationLog(base_dir=sessions).get_metadata(starter.stem)
+        assert meta["project"] == str(project)
+        assert meta["title"] == "Welcome to KiroCrew"  # brand-ok: verbatim seeded title
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "chat-files-side-panel-browse.yaml")
+        assert any(meta["title"] in step for step in sc.steps)
 
     def test_rich_seed_artifacts_are_the_ones_the_scenario_reads(self) -> None:
         # The Artifacts scenario names the three artifacts the `rich` seed ships and
@@ -194,7 +226,6 @@ class TestShippedScenarios:
                 "crewmate-panel-tabs",
                 "crewmate-reply-thread",
                 "crewmate-team-view",
-                "meet-crewmates-flow",
                 "members-dm-hello",
                 "members-private-memory-keeps-thread",
             ],
@@ -611,7 +642,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_18 of {len(scenarios.FEATURES)} features covered · 41 scenarios (32 smoke / 9 nightly)._"
+            f"_18 of {len(scenarios.FEATURES)} features covered · 40 scenarios (32 smoke / 8 nightly)._"
             in md
         )
         assert (

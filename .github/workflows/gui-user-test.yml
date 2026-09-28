@@ -32,7 +32,7 @@ name: GUI User Test
 #
 # COST GATES: per-scenario max_steps / max_seconds live in the scenario YAML;
 # the run-level USD budget is an input (default $60, and the nightly schedule
-# runs under the same $60 cap -- the 41-scenario nightly tier on Opus costs
+# runs under the same $60 cap -- the 40-scenario nightly tier on Opus costs
 # about $45 with retries, and the earlier $5 / $8 / $20 / $40 caps tripped
 # mid-run and skipped the tail of the tier); a failed scenario is
 # retried once. The per-token prices passed to the harness are Opus list prices

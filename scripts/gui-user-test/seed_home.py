@@ -12,7 +12,14 @@ renders as a fully onboarded install with a crew roster:
   name it as their agent: the config loader only materializes it when
   ``agents`` is empty, and adding a member here makes it non-empty, so without
   this row every seeded session fails to send with "Crew Member 'default' is
-  unavailable".
+  unavailable";
+* with ``--project DIR``, the pinned starter session
+  (``sessions/dashboard_starter.jsonl``) gets ``DIR`` as its project directory,
+  written into the transcript's metadata line exactly where the dashboard
+  persists a slot's ``project`` -- the chat's Files view lists that tree. The
+  fixture cannot carry the path itself (it only exists on the machine the seed
+  runs on), and only this one session gets it so the other seeded chats keep
+  reading as project-less conversations.
 
 Run with ``KIROCREW_HOME`` pointing at an EMPTY scratch directory. The seed
 module refuses the real data home, so this cannot touch an operator's install.
@@ -36,6 +43,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fixture", default="rich")
     p.add_argument(
         "--member", action="append", default=[], help="crew member slug to add (repeatable)"
+    )
+    p.add_argument(
+        "--project",
+        default="",
+        help="absolute directory to set as the pinned starter session's project",
     )
     p.add_argument(
         "--print-fake-backend",
@@ -88,8 +100,46 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    print(f"seeded {args.fixture} into {home} with members {args.member or '[]'}")
+    if args.project:
+        if not os.path.isabs(args.project) or not os.path.isdir(args.project):
+            print(
+                f"--project must be an existing absolute directory: {args.project}", file=sys.stderr
+            )
+            return 2
+        _set_session_project(Path(home).expanduser() / "sessions" / STARTER_SESSION, args.project)
+    print(
+        f"seeded {args.fixture} into {home} with members {args.member or '[]'}"
+        + (f" and project {args.project}" if args.project else "")
+    )
     return 0
+
+
+# The rich fixture's pinned starter transcript: the one session the Files
+# scenario opens, so the one that carries the staged sample project.
+STARTER_SESSION = "dashboard_starter.jsonl"
+
+
+def _set_session_project(transcript: Path, project: str) -> None:
+    """Write ``project`` into the metadata line of a seeded transcript, if present.
+
+    The first line of a session file is its ``_type: metadata`` record; the
+    dashboard's persistence loaders restore ``slot.project`` from that record's
+    ``project`` key, so this is the same shape a live slot saves.
+    """
+    if not transcript.is_file():
+        # A fixture without the starter transcript has no session for the Files
+        # scenario to open; the seed still succeeds, the project is just unused.
+        print(f"{transcript.name} not in this fixture; --project not applied", file=sys.stderr)
+        return
+    lines = transcript.read_text(encoding="utf-8").splitlines(keepends=True)
+    if not lines:
+        raise SystemExit(f"{transcript}: empty transcript, no metadata line to patch")
+    meta = json.loads(lines[0])
+    if meta.get("_type") != "metadata":
+        raise SystemExit(f"{transcript}: first line is not the metadata record")
+    meta["project"] = project
+    lines[0] = json.dumps(meta) + "\n"
+    transcript.write_text("".join(lines), encoding="utf-8")
 
 
 if __name__ == "__main__":
