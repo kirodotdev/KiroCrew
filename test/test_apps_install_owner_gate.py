@@ -9,10 +9,8 @@ Rows per route:
 
 * owner: passes the gate and reaches the side effect;
 * non-owner dashboard subject: 403, side effect never reached;
-* app token that already passed its ``permissions.api`` scope check: refused
-  by the owner gate on the install and registry-write routes, and NOT refused
-  on ``/api/apps/<self>/update``, where the repository-binding check inside
-  the handler stays the boundary.
+* app token, including one on its own ``/api/apps/<self>/update``: refused by
+  the owner gate on every route.
 
 The requests go through ``register_app_routes``, so the production route
 table is what is exercised. Only the side-effect functions are stubbed.
@@ -197,13 +195,20 @@ async def test_granted_app_token_is_refused_on_install_routes(
     assert reached == []
 
 
-async def test_app_token_on_own_update_is_not_stopped_by_the_owner_gate(
-    reached: list[str], tmp_path: Path
-) -> None:
+async def test_app_token_on_own_update_is_refused(reached: list[str], tmp_path: Path) -> None:
     method, path, body, effect = _cases(tmp_path)["update"]
     status = await _call(APP, APP, method, path, body)
-    assert status != 403
-    assert effect in reached
+    assert status == 403
+    assert reached == []
+
+
+async def test_app_token_cannot_update_itself_from_another_registry_app(
+    reached: list[str],
+) -> None:
+    body = {"source": "registry:other-app"}
+    status = await _call(APP, APP, "POST", f"/api/apps/{APP}/update", body)
+    assert status == 403
+    assert "install_from_registry" not in reached
 
 
 async def test_registries_get_stays_open_to_non_owner(reached: list[str]) -> None:

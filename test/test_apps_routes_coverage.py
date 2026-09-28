@@ -1606,6 +1606,7 @@ class TestUpdateApp:
         # repository boundary itself.
         token = generate_token(APP, ttl_seconds=300, app=APP)
         app = web.Application(middlewares=[token_auth_middleware()])
+        app["state"] = SimpleNamespace(owner_id="owner")
         register_app_routes(app)
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
@@ -1613,10 +1614,10 @@ class TestUpdateApp:
                 params={"token": token},
                 json={"source": str(attacker_source)},
             )
-            assert resp.status == 400
+            assert resp.status == 403
             body = await resp.json()
 
-        assert body["code"] == "app_trust_repository_mismatch"
+        assert body["code"] == "owner_only"
         installed = get_app(APP)
         assert installed is not None
         assert installed["version"] == "1.0.0"

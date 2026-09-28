@@ -888,14 +888,11 @@ async def _refuse_while_startup_hook_runs(name: str, *, action: str) -> web.Resp
 
 async def handle_update_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/update — update an installed app from its source path."""
-    # Dashboard subjects must be the owner. An app token reaching its own
-    # namespace is left to the repository-binding check further down.
-    if request.get("app", "") == "":
-        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-        denied = await require_owner_dashboard_request(request, "app_update")
-        if denied is not None:
-            return denied
+    denied = await require_owner_dashboard_request(request, "app_update")
+    if denied is not None:
+        return denied
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
