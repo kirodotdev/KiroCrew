@@ -229,13 +229,16 @@ const addressOf = (l: { pathname: string; search: string; hash: string }): strin
  * so Forward from one is unreachable and the same predicate serves both
  * directions.
  */
-export function useGuardedHistoryStep(): (delta: -1 | 1) => void {
+export function useGuardedHistoryStep(): (delta: -1 | 1, onStep?: () => void) => void {
   const navigate = useNavigate()
   const mayLeave = useMayLeaveForNavigation()
-  return React.useCallback((delta: -1 | 1) => {
+  return React.useCallback((delta: -1 | 1, onStep?: () => void) => {
     // Read at click time, from the platform — the trap is pushed and consumed
     // outside React's render cycle, so a rendered value could be stale.
     if (!isTrapEntry(routerEntry().state) && !mayLeave()) return
+    // Runs only once the step is allowed, so work tied to the step (a timed
+    // one-shot) neither starts during the confirm nor leaks from a veto.
+    onStep?.()
     navigate(delta)
   }, [navigate, mayLeave])
 }
