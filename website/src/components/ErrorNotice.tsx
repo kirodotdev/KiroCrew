@@ -34,11 +34,15 @@ export function ErrorNoticeMenuItem({
   message,
   describedBy,
   outcome,
+  report,
 }: {
   Item: ErrorNoticeMenuItemComponent
   message?: string | null
   describedBy: string
   outcome?: string
+  /** The structured report, for a host whose `message` is its own rewording
+   *  and so differs from the journal entry `findReport` looks up. */
+  report?: ErrorReport
 }) {
   if (!message) return null
 
@@ -47,7 +51,7 @@ export function ErrorNoticeMenuItem({
       title={i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
       aria-describedby={describedBy}
       onSelect={(event) => {
-        if (!handoffErrorToAgent({ message })) event.preventDefault()
+        if (!handoffErrorToAgent({ message, report })) event.preventDefault()
       }}
     >
       <Sparkles size={13} className="shrink-0 text-muted" aria-hidden="true" />

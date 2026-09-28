@@ -75,6 +75,7 @@ import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgen
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import MoveUndoBar from '../components/MoveUndoBar'
 import SessionActionsMenu from '../components/SessionActionsMenu'
+import ImportSessionItem from '../components/ImportSessionItem'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
@@ -8950,6 +8951,10 @@ function ChatSidebar({
                   </DropdownMenuSub>
                   )
                 })()}
+                {/* Import creates a session too, so it sits with the create rows
+                 *  rather than only in a per-session ⋯ menu that has to be opened
+                 *  on some unrelated session first. */}
+                <ImportSessionItem Item={DropdownMenuItem} />
                 {/* Crew Members is a DOOR, not a create action: it navigates to the
                  *  Members page (or, while that page is preview-gated, to the
                  *  Settings card that turns it on — see `openCrewMembers`). It sits

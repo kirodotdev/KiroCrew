@@ -146,7 +146,7 @@ function openCreateMenu() {
  *  well as this row. The role scopes the query to the menu, and the
  *  accessible name is the row's own label — the leading lucide icon
  *  contributes no text. */
-function findCreateMenuItem(label: string) {
+function findCreateMenuItem(label: string | RegExp) {
   return screen.findByRole('menuitem', { name: label })
 }
 
@@ -176,6 +176,14 @@ describe('create-button caret menu', () => {
     openCreateMenu()
     expect(await findCreateMenuItem('New chat')).toBeTruthy()
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
+  })
+
+  it('offers importing a session from a file among the create entries', async () => {
+    // Import creates a session, so it is reachable without first opening the
+    // ⋯ menu of some unrelated session.
+    renderSidebar()
+    openCreateMenu()
+    expect(await findCreateMenuItem(/import a session from a file/i)).toBeTruthy()
   })
 
   it('explains the engineered entries, at the point of choice', async () => {

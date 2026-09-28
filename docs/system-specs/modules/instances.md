@@ -1919,7 +1919,21 @@ The same bundle, written to a file instead of pushed down a tunnel. Code:
 `src/kiro_crew/dashboard/session_export.py`, with the menu action
 `ExportSessionItem` mounted beside `SendToInstanceSubmenu` in the shared
 `SessionActionsMenu`, and `ImportSessionItem` — the reverse direction — mounted
-directly beside it, because the file this reads is the file that row writes.
+directly beside it, because the file this reads is the file that row writes. The
+same row is also mounted among the create entries of the sidebar's New menu,
+since an import creates a session.
+
+**Import outlives its menu.** A native file picker blurs the window, and Radix
+menus close on window `blur`, so the row unmounts before the user confirms a
+file. The picker therefore opens from an input on `document.body` with a native
+`change` listener, and the upload runs through `useMutation` option-level
+callbacks, which still fire for an unmounted row. On success the slot list is
+refreshed and the imported session is always opened, wherever the user is; a
+failed refresh is not surfaced, because the switch loads the session by key and
+the next slot frame lists it. Only a refused import is reported: the unmounted
+row cannot show it, so `ImportSessionOutcomeNotice`, mounted once above the
+app's layout branch so the dashboard, popout and embed layouts all render it,
+does. An import in flight keeps every mounted import row disabled.
 
 **Why the hop exists.** §14.4's send is a request/response between two live
 gateways, so it needs both machines up at the same moment, reachable from one

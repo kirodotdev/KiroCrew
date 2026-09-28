@@ -137,6 +137,7 @@ import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './util
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
+import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
@@ -3878,6 +3879,9 @@ export default function App() {
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
+    {/* Above the layout branch, so every layout that can host the import row
+        also hosts its outcome: the row's menu has closed by the time it lands. */}
+    <ImportSessionOutcomeNotice />
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
