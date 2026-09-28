@@ -24,9 +24,10 @@ describe('CrewWebview docked-to-expanded transition', () => {
   it('carries one shared id across both surfaces', () => {
     // Declared once, so the two uses cannot drift into different strings.
     expect(SRC).toMatch(/^const SURFACE_LAYOUT_ID = "crew-webview-surface";$/m)
-    // The docked surface holds it unconditionally: while docked it is the only
-    // one of the two that is visible.
-    expect(SRC).toMatch(/^\s*layoutId=\{SURFACE_LAYOUT_ID\}$/m)
+    // The docked surface holds it only WHILE docked. It stays mounted through an
+    // expand (it may hold a docked frame whose document is single-use), so an
+    // unconditional id would put two elements on one id while expanded.
+    expect(SRC).toMatch(/^\s*layoutId=\{expanded \? undefined : SURFACE_LAYOUT_ID\}$/m)
     // The expanded surface holds it only WHILE expanded. Unconditional here
     // would put two elements on one id -- that subtree stays mounted through a
     // collapse to keep its single-use document -- and Framer Motion would have
@@ -36,7 +37,7 @@ describe('CrewWebview docked-to-expanded transition', () => {
 
   it('keeps the Contained bar continuous as the landing spot', () => {
     expect(SRC).toMatch(/^const CONTAINED_BAR_LAYOUT_ID = "crew-webview-contained-bar";$/m)
-    expect(SRC).toMatch(/^\s*layoutId=\{CONTAINED_BAR_LAYOUT_ID\}$/m)
+    expect(SRC).toMatch(/^\s*layoutId=\{expanded \? undefined : CONTAINED_BAR_LAYOUT_ID\}$/m)
     expect(SRC).toMatch(/^\s*layoutId=\{expanded \? CONTAINED_BAR_LAYOUT_ID : undefined\}$/m)
   })
 

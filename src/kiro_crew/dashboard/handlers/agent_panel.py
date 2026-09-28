@@ -790,6 +790,10 @@ async def api_member_panel(request: web.Request) -> web.Response:
                 # so this is a dict or the record was rejected; the guard is for
                 # the rejected case rather than for a shape the store allows.
                 "data": data if isinstance(data, dict) else {},
+                # The template's own opt-in to render in the docked card, read
+                # from the document served beside it. ``None`` keeps the native
+                # summary, which costs the drawer no mint.
+                "docked_height": agent_panel.docked_height(html),
             },
             "html": html,
         }

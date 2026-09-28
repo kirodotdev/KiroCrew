@@ -89,6 +89,10 @@ export interface CrewPanelMeta {
   crew: string
   published_at: string
   data: CrewPanelData
+  /** The template's opt-in to render ITSELF in the docked card: the fixed pixel
+   *  height of that compact frame, or null for a template that did not opt in
+   *  (the drawer then keeps its native, zero-mint summary). */
+  docked_height?: number | null
 }
 
 export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk }: ClientTransport) {

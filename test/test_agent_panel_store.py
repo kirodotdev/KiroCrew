@@ -1181,3 +1181,39 @@ def test_a_lone_surrogate_does_not_become_a_500(tmp_path, monkeypatch):
     # Round-trips through the same encoding the ceiling check uses.
     json.dumps(record, ensure_ascii=False).encode("utf-8")
     assert "\ud800" not in json.dumps(record["data"])
+
+
+# ------------------------------------------------------------ docked opt-in
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("<div>no opt-in here</div>", None),
+        ("<!--kirocrew:docked-->", agent_panel.DOCKED_DEFAULT_HEIGHT),
+        ("<!--kirocrew:docked height=180-->", 180),
+        ("<!--kirocrew:docked height=2-->", agent_panel.DOCKED_HEIGHT_RANGE[0]),
+        ("<!--kirocrew:docked height=9999-->", agent_panel.DOCKED_HEIGHT_RANGE[1]),
+        ("<!--kirocrew:docked height=abc-->", None),
+    ],
+)
+def test_docked_height_reads_the_templates_opt_in(document, expected):
+    assert agent_panel.docked_height(document) == expected
+
+
+def test_a_crew_cannot_opt_its_panel_into_the_docked_frame():
+    """The opt-in belongs to the template. Published data that spells the marker
+    lands in the island escaped, so the composed document carries no opt-in."""
+    _publish(data={"line": "<!--kirocrew:docked height=320-->"})
+    document = agent_panel.render_record(agent_panel.read(CREW))
+    assert document is not None
+    assert agent_panel.docked_height(document) is None
+
+
+def test_every_shipped_template_stays_off_the_docked_frame():
+    """A shipped template that opted in would mint a frame in every drawer that
+    falls back to it; the native summary is the default for those."""
+    for template_id in SHIPPED:
+        assert agent_panel.docked_height(agent_panel.resolve_template(template_id)) is None
