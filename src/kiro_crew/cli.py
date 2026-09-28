@@ -2051,6 +2051,20 @@ Examples:
     )
     pod_up.add_argument("--ttl", default="2h", help="Token TTL (default: 2h)")
     pod_up.add_argument(
+        "--no-token",
+        dest="no_token",
+        action="store_true",
+        help=(
+            "Boot the pod but do NOT mint a dashboard token: `token` in the "
+            "--json handle is empty and no /api/token/local call is made. The "
+            "gateway's agent pod surface uses this so it can mint in-process "
+            "instead (see agent_pod_api); a sandboxed `pod up` child is in its "
+            "own user namespace and the pod refuses to certify it as the local "
+            "owner. A human running `pod up` should omit this and let the CLI "
+            "mint, then `pod token` to re-mint."
+        ),
+    )
+    pod_up.add_argument(
         "--seed",
         default="",
         help=(

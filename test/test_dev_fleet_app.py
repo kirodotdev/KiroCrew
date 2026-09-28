@@ -7223,6 +7223,8 @@ async def test_pod_up_fails_closed_when_not_active():
     with patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "{}", "")), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
+         patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/repo/kirocrew-wt-x"}, None)), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
          patch.object(runtime_mod.rt, "active_names", return_value=set()):
         result = await mod._pod_up("kirocrew-wt-x")
@@ -7232,15 +7234,32 @@ async def test_pod_up_fails_closed_when_not_active():
 
 @pytest.mark.asyncio
 async def test_pod_up_ok_when_active():
-    """rc==0 AND the unit active -> success, parsed JSON merged in."""
+    """rc==0 AND the unit active -> success, parsed JSON merged in.
+
+    The token is minted IN THIS GATEWAY PROCESS (not by the sandboxed `pod up`
+    child, whose foreign namespace the pod refuses to certify), so the child is
+    launched with --no-token and the handle's token is the gateway's mint.
+    """
+    run_cmd = AsyncMock(return_value=(0, '{"port": 7999, "token": ""}', ""))
     with patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
-         patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, '{"port": 7999}', "")), \
+         patch.object(runtime_mod, "_run_cmd", run_cmd), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
+         patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/repo/kirocrew-wt-x"}, None)), \
+         patch.object(worktree_ops_mod, "_read_pin_strict",
+                      return_value=(True, "/repo/kirocrew-wt-x")), \
+         patch.object(runtime_mod.rt, "pod_name_mutex", return_value=MagicMock()), \
+         patch.object(runtime_mod.rt, "derive_port", return_value=7999), \
+         patch.object(runtime_mod, "_sel", return_value=MagicMock()), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
-         patch.object(runtime_mod.rt, "active_names", return_value={"kirocrew-wt-x"}):
+         patch.object(runtime_mod.rt, "active_names", return_value={"kirocrew-wt-x"}), \
+         patch.object(runtime_mod.rt, "mint_token", return_value="tok-gw"):
         result = await mod._pod_up("kirocrew-wt-x")
     assert result["ok"] is True
     assert result["port"] == 7999
+    assert result["token"] == "tok-gw"
+    # The boot child never mints: it is told --no-token.
+    assert "--no-token" in run_cmd.await_args.args[0]
 
 
 @pytest.mark.asyncio

@@ -290,6 +290,54 @@ def _reclaim_pod_locked(
         return "reclaimed", ""
 
 
+def _mint_pod_token_locked(cfg, name: str, expected_checkout: str) -> dict:
+    """Revalidate the boot's checkout and mint under one pod-name lock off-loop."""
+    outcome, audit_error = "failure", "mint failed"
+    resources = f"name={name} ttl=2h"
+    try:
+        with runtime.rt.pod_name_mutex(cfg, name):
+            env_exists, pinned = _read_pin_strict(cfg, name)
+            if not env_exists or not pinned:
+                error = f"pod {name!r} has no verifiable checkout pin — token withheld"
+            elif Path(pinned).resolve() != Path(expected_checkout).resolve():
+                error = f"pod {name!r} is pinned to a different checkout — token withheld"
+            else:
+                error = ""
+            if error:
+                outcome, audit_error = "denied", "checkout pin mismatch; credential withheld"
+                return {"ok": False, "code": "pod_checkout_mismatch", "error": error}
+            port = runtime.rt.derive_port(cfg, name)
+            resources = f"name={name} port={port} ttl=2h"
+            token = runtime.rt.mint_token(cfg, name, "2h")
+            outcome, audit_error = "allowed", ""
+            return {"ok": True, "token": token}
+    except runtime.rt.PodOwnershipUnproven as exc:
+        outcome, audit_error = "denied", "ownership unprovable; credential withheld"
+        return {
+            "ok": True,
+            "token": "",
+            "warning": f"pod is up but token withheld: {runtime._redact(str(exc))}",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "code": "pod_token_mint_failed",
+            "error": f"pod is up but token mint failed: {runtime._redact(str(exc))}",
+        }
+    finally:
+        try:
+            runtime._sel().log_api_access(
+                caller="dev_fleet",
+                operation="pod.token",
+                outcome=outcome,
+                source="app",
+                resources=resources,
+                error=audit_error,
+            )
+        except Exception as exc:  # noqa: BLE001
+            runtime.logger.warning("SEL audit failed for pod.token: %s", runtime._redact(str(exc)))
+
+
 async def _pod_up(name: str) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:
@@ -297,7 +345,18 @@ async def _pod_up(name: str) -> dict:
     # Resolve the node toolchain off the loop before building the pod env:
     # `pod up` runs the provision chain (npm ci + vite) when asked to.
     await runtime._warm_build_path()
+    cfg = runtime._load_cfg()
     cmd = runtime._find_cli() + ["pod", "up", name, "--json"]
+    # A sandboxed child has its own user namespace, which the pod refuses to
+    # certify as the local owner. Let the gateway mint only when it has config;
+    # otherwise the CLI owns the whole operation (including Windows pods).
+    expected_checkout = ""
+    if cfg is not None:
+        target, ferr = await repository._find_worktree(name)
+        if target is None:
+            return {"ok": False, "error": ferr or f"unknown worktree: {name!r}"}
+        expected_checkout = target["path"]
+        cmd.append("--no-token")
     rc, stdout, stderr = await runtime._run_cmd(
         cmd, cwd=repository._repo(), env=_pod_env(), timeout=180
     )
@@ -307,7 +366,6 @@ async def _pod_up(name: str) -> dict:
     # pod is up. Confirm the unit is actually active, else fail closed rather
     # than flash a false "started" — the same false-success class as a false
     # "stopped", in the opposite direction.
-    cfg = runtime._load_cfg()
     if runtime._POD_AVAILABLE and cfg:
         try:
             loop = asyncio.get_running_loop()
@@ -320,9 +378,20 @@ async def _pod_up(name: str) -> dict:
                 "error": f"cannot verify pod start: {runtime._redact(str(exc))}",
             }
     try:
-        return {"ok": True, **json.loads(stdout)}
+        handle = json.loads(stdout)
     except ValueError:
-        return {"ok": True, "output": stdout}
+        handle = {"output": stdout}
+    # Use the same config that selects --no-token, so boot and mint cannot
+    # disagree about which process supplies the credential.
+    if cfg is not None:
+        minted = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _mint_pod_token_locked, cfg, name, expected_checkout
+        )
+        if not minted["ok"]:
+            return minted
+        handle.update(minted)
+    handle["ok"] = True
+    return handle
 
 
 async def _pod_down(name: str) -> dict:
