@@ -156,11 +156,18 @@ function sameReleaseCore(a: Parsed, b: Parsed): boolean {
  * reported defect (an insider stepping 0.7.x -> 0.8.0-insider.N sees the 0.7.x
  * notes front-and-center, 0.8.0 hidden below the fold).
  *
- * The fix relaxes the upper bound for EXACTLY that case: a section whose release
- * core equals the running build's core is in-build even when it is the release
- * and the running build a prerelease of it. It does NOT admit a future release —
- * `[0.9.0]` on `0.8.0-insider.1` differs in core, so `section <= running` still
- * governs and still excludes it.
+ * The fix relaxes the upper bound for EXACTLY that case: a RELEASE section (no
+ * prerelease tail) whose core equals the running build's core is in-build even
+ * though it outranks the running prerelease. It does NOT admit anything newer
+ * than the build: `[0.9.0]` on `0.8.0-insider.1` differs in core, and
+ * `[0.8.0-insider.3]` on `0.8.0-insider.1` carries a tail, so for both
+ * `section <= running` still governs and still excludes them.
+ *
+ * The lower bound gets the matching treatment. `[0.8.0]` also outranks every
+ * `0.8.0-*` the reader was on before, so without it the same release notes
+ * would re-open on each prerelease step (insider.1 -> .2 -> .3). A section
+ * admitted through the relaxation is therefore new only when `lastSeen` sits on
+ * an EARLIER core: the release line's notes open once, on the step into it.
  *
  * Returns false whenever a comparison is unorderable, so a version spelling
  * nobody anticipated shows NO notes instead of the wrong ones.
@@ -172,9 +179,16 @@ export function isNewSection(section: string, lastSeen: string, running: string)
   const withinBuild = compareVersions(section, running)
   if (withinBuild === null) return false
   // Upper bound: the section is at or below the running build, OR it is the
-  // release of the very line the running build is a prerelease of (same core).
-  const inBuild = withinBuild <= 0 || sameReleaseCore(parsedSection, parsedRunning)
-  if (!inBuild) return false
+  // release (no tail) of the very line the running build is a prerelease of.
+  const ownRelease = withinBuild > 0 && parsedSection.tail === '' && sameReleaseCore(parsedSection, parsedRunning)
+  if (withinBuild > 0 && !ownRelease) return false
   const afterSeen = compareVersions(section, lastSeen)
-  return afterSeen !== null && afterSeen > 0
+  if (afterSeen === null || afterSeen <= 0) return false
+  // Lower bound, for the relaxed case: a reader already on this line has had
+  // the release's notes; only a step in from an earlier core opens them.
+  if (ownRelease) {
+    const parsedSeen = parse(lastSeen)
+    return !!parsedSeen && !sameReleaseCore(parsedSection, parsedSeen)
+  }
+  return true
 }

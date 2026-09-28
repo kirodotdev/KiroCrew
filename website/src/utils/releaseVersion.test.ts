@@ -104,6 +104,24 @@ describe('isNewSection', () => {
     expect(isNewSection('0.9.0-insider.1', '0.7.1', '0.8.0-insider.1')).toBe(false)
   })
 
+  it('refuses a NEWER prerelease of the same release on a prerelease build', () => {
+    // Only the release itself (no tail) is admitted above the running build; a
+    // later draft of the same line is still a build the reader does not have.
+    expect(isNewSection('0.8.0-insider.3', '0.7.0', '0.8.0-insider.1')).toBe(false)
+    expect(isNewSection('0.2.0rc9', '0.1.0', '0.2.0rc8')).toBe(false)
+  })
+
+  it('opens the release section once per line, not on every prerelease step', () => {
+    // insider.1 -> insider.2: the reader was already on 0.8.0 and has had its
+    // notes, so stepping within the line does not re-open them.
+    expect(isNewSection('0.8.0', '0.8.0-insider.1', '0.8.0-insider.2')).toBe(false)
+    expect(isNewSection('0.2.0', '0.2.0rc1', '0.2.0rc2')).toBe(false)
+    // Stepping in from an earlier line still opens them.
+    expect(isNewSection('0.8.0', '0.7.1', '0.8.0-insider.2')).toBe(true)
+    // And reaching the release itself is unaffected (section <= running path).
+    expect(isNewSection('0.8.0', '0.8.0-insider.2', '0.8.0')).toBe(true)
+  })
+
   it('refuses an unorderable heading instead of guessing', () => {
     expect(isNewSection('Unreleased', '0.5.0', '0.6.0')).toBe(false)
   })
