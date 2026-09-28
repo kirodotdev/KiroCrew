@@ -223,6 +223,25 @@ describe("crew webview docked opt-in", () => {
     }
   });
 
+  it("mints a fresh docked document after a panel read error recovers", async () => {
+    panelSpy.mockImplementation(() => Promise.resolve(body(180)));
+    const { client } = mount();
+    await dockedFrame();
+    expect(mintSpy).toHaveBeenCalledTimes(1);
+    // A refetch fails: the read-error state replaces the card and its frame.
+    panelSpy.mockImplementation(() => Promise.reject(new Error("gateway down")));
+    await client.invalidateQueries();
+    await waitFor(() => expect(q("crew-webview-error")).not.toBeNull());
+    expect(q("crew-webview-docked-frame")).toBeNull();
+    // Recovery returns byte-identical html. The spent URL must not be reused:
+    // the new frame gets a document minted after the error.
+    panelSpy.mockImplementation(() => Promise.resolve(body(180)));
+    fireEvent.click(q("crew-webview-error-retry") as Element);
+    const frame = await dockedFrame();
+    expect(mintSpy).toHaveBeenCalledTimes(2);
+    expect(frame.getAttribute("src")).toBe(DOCKED_URL);
+  });
+
   it("never re-mints the docked frame across expand and collapse", async () => {
     panelSpy.mockImplementation(() => Promise.resolve(body(180)));
     mount();

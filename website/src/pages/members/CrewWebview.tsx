@@ -429,10 +429,14 @@ function CrewWebviewView({ slug, member, onSetUp }: CrewWebviewProps) {
   // bare links keep navigating the frame as they always have.
   const srcdoc = useMemo(
     () =>
-      html && everExpanded
+      // The read-error state below replaces every frame, and a minted URL is
+      // single-use: an iframe re-created after it would request a spent
+      // document. Dropping the srcdoc while the read is in error resets the
+      // mint, so recovery mints a fresh one even for byte-identical html.
+      html && everExpanded && !isError
         ? buildSrcdoc({ html, themeVars, mode: theme, rewriteBareLinks: false })
         : null,
-    [html, everExpanded, themeVars, theme],
+    [html, everExpanded, isError, themeVars, theme],
   );
   const mint = useSandboxDoc(srcdoc);
   const { url, pending, retry } = mint;
@@ -455,7 +459,8 @@ function CrewWebviewView({ slug, member, onSetUp }: CrewWebviewProps) {
   const dockedHeight = dockedFrameHeight(meta);
   const dockedSrcdoc = useMemo(
     () =>
-      html && dockedHeight !== null
+      // Reset across a read error for the same reason as the expanded mint.
+      html && dockedHeight !== null && !isError
         ? buildSrcdoc({
             html: DOCKED_VIEW_MARK + html,
             themeVars,
@@ -463,7 +468,7 @@ function CrewWebviewView({ slug, member, onSetUp }: CrewWebviewProps) {
             rewriteBareLinks: false,
           })
         : null,
-    [html, dockedHeight, themeVars, theme],
+    [html, dockedHeight, isError, themeVars, theme],
   );
   const docked = useSandboxDoc(dockedSrcdoc);
   // A docked mint that outlived the pending ceiling counts as failed: with no
