@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
-from kiro_crew import cron_inflight, security
+from kiro_crew import cron_inflight, platform_compat, security
 from kiro_crew.security import (
     _SECRET_KEY_LEN,
     _SECRET_MAX_SLASHES,
@@ -6366,6 +6366,12 @@ class TestAdaptiveHomeTargetsExpiry:
                                 else roots.crew_home
                             )
                             break
+            # Both kiro-cli leaves have their ``$HOME``-rooted form resolved, so a
+            # symlink below the home root cannot move the real file out of the
+            # fence. Derived from the same tuple the build reads.
+            for _cli_leaf in gate._KIRO_CLI_WRITE_TIER_LEAVES:
+                if _cli_leaf in tier:
+                    expected.add(os.path.join(roots.home, *gate._leaf_segments(_cli_leaf)))
             if roots.kiro_home and gate._KIRO_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "agents"))
             # The registry leaf shares that class: one root, one guard shape. Derived
@@ -7343,6 +7349,86 @@ class TestKiroSettingsMcpJsonWriteProtection:
         assert is_sensitive_write_path("./settings/mcp.json", base_dir=f"{home}/.kiro") is True
         # A relative write resolving somewhere else must stay allowed.
         assert is_sensitive_write_path("settings/mcp.json", base_dir="/tmp/project") is False
+
+    def test_a_leaf_added_to_the_tuple_gets_both_halves(self, tmp_path, monkeypatch) -> None:
+        # The tuple's contract is that it drives the $HOME resolve loop AND the
+        # KIRO_HOME re-anchoring, so a third kiro-cli leaf is one tuple entry and not
+        # a third arm. Pinned by adding one, because the failure mode is silent: the
+        # leaf would be fenced under $HOME and writable under the override.
+        from kiro_crew.security import is_sensitive_write_path
+
+        home = tmp_path / "home"
+        override = tmp_path / "kirohome"
+        (override / "settings").mkdir(parents=True)
+        home.mkdir()
+        probe_leaf = ".kiro/settings/probe.json"
+
+        monkeypatch.setattr(
+            security.paths,
+            "_KIRO_CLI_WRITE_TIER_LEAVES",
+            (*security.paths._KIRO_CLI_WRITE_TIER_LEAVES, probe_leaf),
+        )
+        monkeypatch.setattr(
+            security.paths,
+            "_WRITE_PROTECTED_HOME_PATHS",
+            [*security.paths._WRITE_PROTECTED_HOME_PATHS, probe_leaf],
+        )
+        # Path.home() reads HOME on POSIX and USERPROFILE on Windows; set both.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("KIRO_HOME", str(override))
+        security._home_targets_cache.clear()
+
+        assert is_sensitive_write_path(str(home / probe_leaf)) is True
+        assert is_sensitive_write_path(str(override / "settings" / "probe.json")) is True
+
+    @pytest.mark.parametrize(
+        ("linked", "target_tail"),
+        [
+            # A dotfile-managed home links the directory, not the file.
+            (".kiro/settings", "mcp.json"),
+            # And the whole kiro dir is the other shape of the same case.
+            (".kiro", "settings/mcp.json"),
+        ],
+    )
+    def test_a_symlink_below_the_home_root_does_not_move_the_registry_out(
+        self, linked, target_tail, tmp_path, monkeypatch
+    ) -> None:
+        # Anchoring the leaf lexically covers a symlinked ``$HOME`` ITSELF but not
+        # one further down the path. Without resolving the ``$HOME``-rooted form the
+        # ``~``-spelled path stays fenced while the REAL file is writable, and an
+        # agent simply writes the destination instead.
+        from kiro_crew.security import is_sensitive_write_path
+
+        home = tmp_path / "home"
+        store = tmp_path / "dotfiles" / "kirostore"
+        # The store holds whatever the link stands in for, so the real file exists
+        # at ``<store>/<target_tail>`` in both shapes.
+        real = store / target_tail
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text("{}\n", encoding="utf-8")
+
+        link = home / linked
+        link.parent.mkdir(parents=True, exist_ok=True)
+        # A DIRECTORY redirect, so this stays ordinary cross-platform coverage
+        # instead of joining ``test/requires-real-symlinks.txt``: a plain
+        # ``os.symlink`` needs a privilege the non-admin Windows runner lacks,
+        # while a junction needs none and is followed by ``realpath`` -- which is
+        # exactly the resolution under test.
+        platform_compat.symlink_or_junction(store, link)
+
+        # Path.home() reads HOME on POSIX and USERPROFILE on Windows, and the
+        # gate anchors its targets on Path.home() -- so set both or the Windows
+        # anchor stays on the real profile and the fake home is never recognised.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        security._home_targets_cache.clear()
+
+        # The spelling the owner sees stays protected...
+        assert is_sensitive_write_path(str(home / ".kiro/settings/mcp.json")) is True
+        # ...and so does the real file the symlink points at.
+        assert is_sensitive_write_path(str(real)) is True
 
     def test_kiro_home_override_is_covered_on_the_tool_gate(self, tmp_path, monkeypatch) -> None:
         # ``KIRO_HOME`` moves kiro-cli's whole user directory including ``settings``,
