@@ -39,6 +39,10 @@ def _bundle(path: Path, extra: dict[str, bytes] | None = None) -> Path:
         "KiroCrew-aarch64.rpm": b"rpm-arm64",
         "notarized.zip": b"mac-zip",
         "KiroCrew.dmg": b"dmg",
+        "notarized-arm64.zip": b"mac-zip-arm64",
+        "KiroCrew-arm64.dmg": b"dmg-arm64",
+        "notarized-x64.zip": b"mac-zip-x64",
+        "KiroCrew-x64.dmg": b"dmg-x64",
     }
     files.update(extra or {})
     for name, body in files.items():
@@ -82,6 +86,10 @@ def test_manifest_round_trip_binds_source_and_every_shipping_file(tmp_path: Path
         "rpm_arm64",
         "mac_zip",
         "dmg",
+        "mac_zip_arm64",
+        "dmg_arm64",
+        "mac_zip_x64",
+        "dmg_x64",
     }
     assert manifest["docker"]["digest"] == IMAGE_DIGEST
     for entry in manifest["artifacts"].values():

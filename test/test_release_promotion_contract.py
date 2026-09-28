@@ -19,6 +19,7 @@ one lane disagreeing with the rest of the release.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import yaml
@@ -35,9 +36,17 @@ LINUX_LANES = tuple(
     f"publish-linux-{fmt}-{arch}" for fmt in ("appimage", "deb", "rpm") for arch in ("x64", "arm64")
 )
 MAC = WORKFLOWS / "sign-and-notarize.yml"
+#: Every macOS publish lane release.yml calls: the universal DMG plus one
+#: single-arch leg per arch. All three are one reusable workflow; the two
+#: single-arch callers differ from the universal one by ``mac_variant`` +
+#: ``mac_artifact`` alone (test_publish_feed_contract.py pins that shape).
+MAC_LANES = ("sign-and-notarize", "sign-and-notarize-arm64", "sign-and-notarize-x64")
 DOCKER = WORKFLOWS / "publish-docker.yml"
 PROMOTION_ARTIFACT = "KiroCrew-notarized-stable-${{ needs.version.outputs.version }}"
 PROMOTION_ARTIFACT_FORMAT = "format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version)"
+#: The artifact filename stem, named once: the brand gate exempts a literal
+#: ``KiroCrew.dmg`` but not the templated single-arch spelling used below.
+PRODUCT = "KiroCrew"  # brand-ok: artifact filename stem
 #: Every lane's ``promote`` input reads promote_mode, never channel, so an
 #: opt-in stable rebuild flips all of them together or none of them.
 PROMOTE_EXPRESSION = "${{ needs.version.outputs.promote_mode == 'true' }}"
@@ -166,7 +175,7 @@ def test_stable_gate_requires_the_three_version_files_to_declare_the_bare_versio
 
 def test_every_stable_lane_consumes_the_verified_handoff() -> None:
     jobs = _workflow(RELEASE)["jobs"]
-    for name in ("publish-cli", *LINUX_LANES, "publish-docker", "sign-and-notarize"):
+    for name in ("publish-cli", *LINUX_LANES, "publish-docker", *MAC_LANES):
         job = jobs[name]
         assert "resolve-promotion" in job["needs"]
         assert "needs.resolve-promotion.result == 'success'" in job["if"]
@@ -183,10 +192,13 @@ def test_every_stable_lane_consumes_the_verified_handoff() -> None:
     assert docker_inputs["promote"] == PROMOTE_EXPRESSION
     assert "resolve-promotion.outputs.docker_digest" in docker_inputs["promote_digest"]
 
-    mac_inputs = jobs["sign-and-notarize"]["with"]
-    assert PROMOTION_ARTIFACT_FORMAT in mac_inputs["promotion_artifact"]
-    assert "resolve-promotion.outputs.source_version" in mac_inputs["version"]
-    assert mac_inputs["promote"] == PROMOTE_EXPRESSION
+    for lane in MAC_LANES:
+        mac_inputs = jobs[lane]["with"]
+        # One resolved bundle for all three legs: each picks its own zip and
+        # DMG out of it by name, so every caller names the SAME artifact.
+        assert PROMOTION_ARTIFACT_FORMAT in mac_inputs["promotion_artifact"], lane
+        assert "resolve-promotion.outputs.source_version" in mac_inputs["version"], lane
+        assert mac_inputs["promote"] == PROMOTE_EXPRESSION, lane
 
 
 def _assemble_run() -> str:
@@ -337,6 +349,8 @@ def test_prerelease_record_waits_for_test_gate_and_all_publish_lanes() -> None:
         "publish-linux-rpm-arm64",
         "publish-docker",
         "sign-and-notarize",
+        "sign-and-notarize-arm64",
+        "sign-and-notarize-x64",
         "build-windows",
     }
     for dependency in (
@@ -350,6 +364,8 @@ def test_prerelease_record_waits_for_test_gate_and_all_publish_lanes() -> None:
         "publish-linux-rpm-arm64",
         "publish-docker",
         "sign-and-notarize",
+        "sign-and-notarize-arm64",
+        "sign-and-notarize-x64",
     ):
         assert f"needs.{dependency}.result == 'success'" in job["if"]
 
@@ -413,7 +429,7 @@ def test_macos_promotion_skips_transformations_and_verifies_final_bytes() -> Non
 
     final_attest = _step(MAC, "notarize", "Attest final shipping artifacts")
     subjects = final_attest["with"]["subject-path"]
-    assert "work/notarized.zip" in subjects
+    assert "work/${{ env.NOTARIZED_ZIP }}" in subjects
     assert "work/*.dmg" in subjects
 
     manifest = _step(MAC, "publish", "Verify immutable promotion bundle")
@@ -442,8 +458,47 @@ REQUIRED_PUBLICATION_LANES = (
     "publish-cli",
     *LINUX_LANES,
     "publish-docker",
-    "sign-and-notarize",
+    *MAC_LANES,
 )
+
+
+def test_the_promotion_bundle_carries_every_macos_leg_under_its_gated_name() -> None:
+    """record-promotion copies all three DMGs and their zips into the bundle,
+    under the exact names ``scripts/release_promotion.py`` requires -- and those
+    are the names the legs' gated artifacts already use (sign-and-notarize.yml's
+    ``NOTARIZED_ZIP`` / ``ARTIFACT_BASENAME``), so a promote-mode single-arch
+    leg reads the bundle with the same spelling a fresh leg reads its own
+    artifact with. A single-arch lookup is scoped to its own artifact directory:
+    a zip that landed in the wrong leg is a count error, not a promoted one."""
+    spec = importlib.util.spec_from_file_location(
+        "release_promotion", ROOT / "scripts" / "release_promotion.py"
+    )
+    assert spec and spec.loader
+    promotion = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(promotion)
+
+    run = _step(RELEASE, "record-promotion", "Assemble canonical promotion bundle")["run"]
+    required = promotion.REQUIRED_ARTIFACT_NAMES
+    for arch in ("arm64", "x64"):
+        zip_name, dmg_name = f"notarized-{arch}.zip", f"{PRODUCT}-{arch}.dmg"
+        assert required[f"mac_zip_{arch}"].fullmatch(zip_name)
+        assert required[f"dmg_{arch}"].fullmatch(dmg_name)
+        assert f"-path '*KiroCrew-notarized-*-{arch}/*' -name '{zip_name}'" in run
+        assert f"-path '*KiroCrew-notarized-*-{arch}/*' -name '{dmg_name}'" in run
+        assert f"promotion-bundle/{zip_name}" in run and f"promotion-bundle/{dmg_name}" in run
+    # The universal names stay the bare ones, so they cannot match an arch file.
+    assert required["mac_zip"].fullmatch("notarized.zip")
+    assert not required["mac_zip"].fullmatch("notarized-arm64.zip")
+    assert required["dmg"].fullmatch("KiroCrew.dmg")
+    assert not required["dmg"].fullmatch("KiroCrew-x64.dmg")
+    # And the reusable workflow spells the in-artifact zip the same way on both
+    # jobs that touch it, from the same variant input.
+    jobs = _workflow(MAC)["jobs"]
+    for job in ("notarize", "publish"):
+        assert jobs[job]["env"]["NOTARIZED_ZIP"] == (
+            "${{ format('notarized{0}.zip', inputs.mac_variant != '' "
+            "&& format('-{0}', inputs.mac_variant) || '') }}"
+        ), job
 
 
 def test_the_release_page_waits_for_every_required_publication_lane() -> None:

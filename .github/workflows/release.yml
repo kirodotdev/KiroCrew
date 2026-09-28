@@ -420,6 +420,20 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.version }}
+      # The arm64-only and x86_64-only macOS DMGs beside the universal one.
+      # Each is signed, published and fed by its own sign-and-notarize caller
+      # below (sign-and-notarize-arm64 / -x64), which are REQUIRED lanes:
+      # record-promotion carries both in the promotion bundle
+      # (scripts/release_promotion.py's mac_zip_<arch> / dmg_<arch> roles), so
+      # a stable byte-promotion republishes all three DMGs, and github-release
+      # and record-stable-promotion wait on all three. Not soft_fail_arm64:
+      # that flag is about the Linux arm64 legs and release still records
+      # "this version has both Linux arches". Not soft_fail_mac_single_arch
+      # either (default false): a failed single-arch build must fail the
+      # aggregate and skip every publisher BEFORE any immutable versioned key
+      # is written -- a soft-failed leg here would let the other lanes burn
+      # this version on a release that can never complete.
+      mac_single_arch: true
 
   # Windows builds in its own workflow because it Authenticode-signs during the
   # build (the Squirrel installer embeds already-signed executables), so unlike
@@ -776,6 +790,73 @@ jobs:
       promotion_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || '' }}
       promotion_base_version: ${{ needs.version.outputs.base_version }}
 
+  # The two single-arch macOS legs: one sign-and-notarize call each, differing
+  # from the universal caller above in `mac_variant` + `mac_artifact` alone
+  # (nightly.yml has the same pair). Same stable gate, same promotion switch:
+  # on a byte promotion every leg downloads the ONE resolved bundle
+  # (KiroCrew-notarized-stable-<version>), and picks its own zip and DMG out
+  # of it by name (notarized-<arch>.zip / the <arch> DMG -- see
+  # sign-and-notarize.yml's NOTARIZED_ZIP). NOT `needs: build-wheel`: a
+  # single-arch leg downloads only its own build artifact and attests no
+  # wheel, so on the fresh path it waits on build-desktop alone. Their build
+  # job is continue-on-error in build-desktop.yml so the universal leg is
+  # never held by them; when that build failed, the leg here fails at
+  # download-artifact -- and since both legs are REQUIRED below, that failure
+  # withholds the release page and the promotion record, as any lane's does.
+  sign-and-notarize-arm64:
+    name: Sign + Notarize macOS (arm64 only)
+    needs: [version, stable-gate, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      write_feed: true
+      promote: ${{ needs.version.outputs.promote_mode == 'true' }}
+      promotion_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || '' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
+      mac_variant: arm64
+      mac_artifact: unsigned-build-darwin-arm64
+
+  sign-and-notarize-x64:
+    name: Sign + Notarize macOS (x64 only)
+    needs: [version, stable-gate, build-desktop, resolve-promotion]
+    if: >-
+      ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-desktop.result == 'success') ||
+           (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
+    with:
+      channel: ${{ needs.version.outputs.channel }}
+      version: ${{ needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.outputs.source_version || needs.version.outputs.version }}
+      write_feed: true
+      promote: ${{ needs.version.outputs.promote_mode == 'true' }}
+      promotion_artifact: ${{ needs.version.outputs.promote_mode == 'true' && format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version) || '' }}
+      promotion_base_version: ${{ needs.version.outputs.base_version }}
+      mac_variant: x64
+      mac_artifact: unsigned-build-darwin-x64
+
   # `needs` alone is not enough here. With no `if:`, the default condition is
   # success(), which is false when ANY job in the needs closure was SKIPPED --
   # and that verdict propagates THROUGH an always()-guarded job that itself
@@ -831,6 +912,8 @@ jobs:
       - publish-linux-rpm-arm64
       - publish-docker
       - sign-and-notarize
+      - sign-and-notarize-arm64
+      - sign-and-notarize-x64
       - build-windows
     if: >-
       ${{ always() && needs.version.result == 'success' &&
@@ -843,7 +926,9 @@ jobs:
           needs.publish-linux-rpm-x64.result == 'success' &&
           needs.publish-linux-rpm-arm64.result == 'success' &&
           needs.publish-docker.result == 'success' &&
-          needs.sign-and-notarize.result == 'success' }}
+          needs.sign-and-notarize.result == 'success' &&
+          needs.sign-and-notarize-arm64.result == 'success' &&
+          needs.sign-and-notarize-x64.result == 'success' }}
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
@@ -950,23 +1035,39 @@ jobs:
             exit 1
           fi
 
+          # Three gated macOS handoffs: the universal DMG and the two single-arch
+          # ones (sign-and-notarize-arm64 / -x64). On the fresh path each leg
+          # attached its own artifact, KiroCrew-notarized-<channel>-<version>
+          # plus "-<arch>" for a single-arch leg; on a byte promotion all three
+          # sit in the ONE resolved bundle under the universal name, told apart
+          # by file name (notarized-<arch>.zip / the <arch> DMG -- see
+          # sign-and-notarize.yml's NOTARIZED_ZIP). Every one is REQUIRED: the
+          # three callers are required lanes, so a page offering two of three
+          # would announce a publication that did not complete.
           NOTARIZED_DIR="artifacts/KiroCrew-notarized-${{ needs.version.outputs.channel }}-${{ needs.version.outputs.version }}"
-          NOTARIZED_ZIP="${NOTARIZED_DIR}/notarized.zip"
-          NOTARIZED_DMG="${NOTARIZED_DIR}/KiroCrew.dmg"
-          [ -s "$NOTARIZED_ZIP" ] || {
-            echo "::error::Required gated macOS ZIP is missing or empty: ${NOTARIZED_ZIP}"
-            exit 1
-          }
-          [ -s "$NOTARIZED_DMG" ] || {
-            echo "::error::Required gated macOS DMG is missing or empty: ${NOTARIZED_DMG}"
-            exit 1
+          # $1 = gated zip, $2 = gated DMG, $3 = release-asset arch label
+          # (universal | arm64 | x64).
+          require_mac_handoff() {
+            local zip="$1" dmg="$2" label="$3"
+            [ -s "$zip" ] || {
+              echo "::error::Required gated macOS ZIP is missing or empty: ${zip}"
+              exit 1
+            }
+            [ -s "$dmg" ] || {
+              echo "::error::Required gated macOS DMG is missing or empty: ${dmg}"
+              exit 1
+            }
+            validate_mac_handoff "$zip" "$dmg"
+            cp "$zip" "release/KiroCrew-${{ needs.version.outputs.version }}-${label}-mac.zip"
+            cp "$dmg" "release/KiroCrew-${{ needs.version.outputs.version }}-${label}.dmg"
           }
 
           # Fail closed on corrupt or mis-shaped handoff files before granting
           # the GitHub Release job's contents:write capability to publish them.
           # Cryptographic Gatekeeper checks happen immediately before the
           # notarize job uploads this exact, name-bound artifact.
-          python3 - "$NOTARIZED_ZIP" "$NOTARIZED_DMG" <<'PY_VALIDATE'
+          validate_mac_handoff() {
+          python3 - "$1" "$2" <<'PY_VALIDATE'
           from pathlib import Path, PurePosixPath
           import sys
           import zipfile
@@ -1007,9 +1108,17 @@ jobs:
           except (OSError, ValueError) as exc:
               raise SystemExit(f"::error::{dmg_path} is not a valid UDIF DMG: {exc}")
           PY_VALIDATE
+          }
 
-          cp "$NOTARIZED_ZIP" "release/KiroCrew-${{ needs.version.outputs.version }}-universal-mac.zip"
-          cp "$NOTARIZED_DMG" "release/KiroCrew-${{ needs.version.outputs.version }}-universal.dmg"
+          require_mac_handoff "${NOTARIZED_DIR}/notarized.zip" "${NOTARIZED_DIR}/KiroCrew.dmg" universal
+          for ARCH in arm64 x64; do
+            if [ "${PROMOTE_MODE:-}" = "true" ]; then
+              ARCH_DIR="$NOTARIZED_DIR"
+            else
+              ARCH_DIR="${NOTARIZED_DIR}-${ARCH}"
+            fi
+            require_mac_handoff "${ARCH_DIR}/notarized-${ARCH}.zip" "${ARCH_DIR}/KiroCrew-${ARCH}.dmg" "$ARCH"
+          done
 
           # The Windows installer, selected per MODE rather than by extension.
           # A promotion run holds TWO installers: the candidate's promoted bytes
@@ -1265,8 +1374,10 @@ jobs:
           needs.publish-linux-rpm-x64.result == 'success' &&
           needs.publish-linux-rpm-arm64.result == 'success' &&
           needs.publish-docker.result == 'success' &&
-          needs.sign-and-notarize.result == 'success' }}
-    needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize, build-windows]
+          needs.sign-and-notarize.result == 'success' &&
+          needs.sign-and-notarize-arm64.result == 'success' &&
+          needs.sign-and-notarize-x64.result == 'success' }}
+    needs: [version, release-candidate-tests, publish-cli, publish-linux-appimage-x64, publish-linux-appimage-arm64, publish-linux-deb-x64, publish-linux-deb-arm64, publish-linux-rpm-x64, publish-linux-rpm-arm64, publish-docker, sign-and-notarize, sign-and-notarize-arm64, sign-and-notarize-x64, build-windows]
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -1323,8 +1434,20 @@ jobs:
           DEB_ARM64=$(one deb-arm64 -path '*build-linux-arm64*' -name '*.deb')
           RPM=$(one rpm -path '*build-linux-x64*' -name '*.rpm')
           RPM_ARM64=$(one rpm-arm64 -path '*build-linux-arm64*' -name '*.rpm')
+          # Three macOS legs, three gated artifacts on the run
+          # (KiroCrew-notarized-insider-<version>, plus -arm64 and -x64), each
+          # holding one zip and one DMG whose NAMES already carry the arch
+          # (sign-and-notarize.yml's NOTARIZED_ZIP / ARTIFACT_BASENAME): the
+          # universal leg's are the bare notarized.zip / KiroCrew.dmg, so an
+          # exact -name match is unambiguous, and the single-arch lookups are
+          # scoped to their own artifact directory as well so a misnamed file
+          # in the wrong leg is a count error here rather than a promoted one.
           MAC_ZIP=$(one notarized.zip -path '*KiroCrew-notarized-*' -name 'notarized.zip')
           DMG=$(one notarized-DMG -path '*KiroCrew-notarized-*' -name 'KiroCrew.dmg')
+          MAC_ZIP_ARM64=$(one notarized-arm64.zip -path '*KiroCrew-notarized-*-arm64/*' -name 'notarized-arm64.zip')
+          DMG_ARM64=$(one notarized-DMG-arm64 -path '*KiroCrew-notarized-*-arm64/*' -name 'KiroCrew-arm64.dmg')
+          MAC_ZIP_X64=$(one notarized-x64.zip -path '*KiroCrew-notarized-*-x64/*' -name 'notarized-x64.zip')
+          DMG_X64=$(one notarized-DMG-x64 -path '*KiroCrew-notarized-*-x64/*' -name 'KiroCrew-x64.dmg')
           INSTALLER=$(at_most_one installer -path '*build-windows-x64*' -name '*.exe')
           cp "$WHEEL" "promotion-bundle/$(basename "$WHEEL")"
           cp "$SDIST" "promotion-bundle/$(basename "$SDIST")"
@@ -1336,6 +1459,13 @@ jobs:
           cp "$RPM_ARM64" promotion-bundle/KiroCrew-aarch64.rpm
           cp "$MAC_ZIP" promotion-bundle/notarized.zip
           cp "$DMG" promotion-bundle/KiroCrew.dmg
+          # Same names they travel under in their gated artifacts, so a
+          # promote-mode single-arch leg reads the bundle with the same
+          # NOTARIZED_ZIP / ARTIFACT_BASENAME a fresh leg reads its own with.
+          cp "$MAC_ZIP_ARM64" promotion-bundle/notarized-arm64.zip
+          cp "$DMG_ARM64" promotion-bundle/KiroCrew-arm64.dmg
+          cp "$MAC_ZIP_X64" promotion-bundle/notarized-x64.zip
+          cp "$DMG_X64" promotion-bundle/KiroCrew-x64.dmg
           # The blockmap travels with the installer or not at all: promoting the
           # installer alone still updates, but silently turns every stable
           # Windows update into a full download instead of a differential one.
@@ -1412,6 +1542,8 @@ jobs:
       - publish-linux-rpm-arm64
       - publish-docker
       - sign-and-notarize
+      - sign-and-notarize-arm64
+      - sign-and-notarize-x64
       - github-release
     if: >-
       ${{ always() && needs.version.outputs.channel == 'stable' &&
@@ -1426,6 +1558,8 @@ jobs:
           needs.publish-linux-rpm-arm64.result == 'success' &&
           needs.publish-docker.result == 'success' &&
           needs.sign-and-notarize.result == 'success' &&
+          needs.sign-and-notarize-arm64.result == 'success' &&
+          needs.sign-and-notarize-x64.result == 'success' &&
           needs.github-release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1491,6 +1625,7 @@ jobs:
             publish-linux-deb-x64 publish-linux-deb-arm64
             publish-linux-rpm-x64 publish-linux-rpm-arm64
             publish-docker sign-and-notarize
+            sign-and-notarize-arm64 sign-and-notarize-x64
         run: |
           set -euo pipefail
           python3 - > stable-publication.json <<'PY'

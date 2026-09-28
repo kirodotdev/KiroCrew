@@ -30,9 +30,9 @@ name: Sign and Notarize macOS (reusable)
 #
 # Single-arch legs (mac_variant: arm64 | x64). The same three jobs run once
 # more per single-arch DMG that build-desktop.yml's mac_single_arch job
-# produced, each as its OWN workflow_call from the caller (nightly.yml today;
-# release.yml still calls the universal leg alone). One input changes four
-# names and nothing else:
+# produced, each as its OWN workflow_call from the caller (nightly.yml, and
+# release.yml on both of its channels). One input changes five names and
+# nothing else:
 #   - the run downloads ONLY `mac_artifact` (unsigned-build-darwin-<arch>)
 #     instead of every artifact on the run, so the wheel/sdist/AppImage
 #     provenance step is the universal leg's alone (`if` below);
@@ -41,7 +41,12 @@ name: Sign and Notarize macOS (reusable)
 #     ARTIFACT_BASENAME -> notarized/, desktop/ and the latest-DMG alias), so
 #     three legs signing the same channel+version cannot overwrite each
 #     other's request or read back another leg's bytes;
-#   - the gated artifact is KiroCrew-notarized-<channel>-<version>-<arch>;
+#   - the gated artifact is KiroCrew-notarized-<channel>-<version>-<arch>, and
+#     the zip INSIDE it is notarized-<arch>.zip (NOTARIZED_ZIP): the stable
+#     promotion bundle holds all three legs' files in ONE directory, so the
+#     zip has to carry its arch in its own name, and a promote-mode leg then
+#     reads the same name out of the bundle that a fresh leg wrote into its
+#     gated artifact -- one spelling, both modes;
 #   - the channel file lands at feed/<channel>/<arch>/latest-mac.yml
 #     (FEED_PREFIX), one directory below the universal one, which is how
 #     website/electron/auto-update.js's `variant` already separates the two
@@ -372,6 +377,14 @@ jobs:
       # notarized/ and desktop/ keys, the shipping DMG and the latest-DMG
       # alias, so three legs of one channel+version never share a key.
       ARTIFACT_BASENAME: ${{ format('KiroCrew{0}', inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }} # brand-ok
+      # The stapled app zip as it travels in the gated artifact and in the
+      # stable promotion bundle: notarized.zip on the universal leg,
+      # notarized-<arch>.zip on a single-arch one. The bundle holds every
+      # leg's files in one flat directory, so the arch has to live in the
+      # file name; naming it the same way on the fresh path means the publish
+      # job below reads one spelling whether its input is this leg's own
+      # gated artifact or the promoted bundle.
+      NOTARIZED_ZIP: ${{ format('notarized{0}.zip', inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -448,14 +461,14 @@ jobs:
           }
 
           # ditto preserves the resource fork carrying the stapled ticket.
-          /usr/bin/ditto -c -k --keepParent "$APP" ../notarized.zip
+          /usr/bin/ditto -c -k --keepParent "$APP" "../${NOTARIZED_ZIP}"
           echo "APP_NAME=$(basename "$APP" .app)" >> "$GITHUB_ENV"
 
       - name: Upload notarized artifact to S3
         if: env.HAS_SIGNING_SECRETS
         run: |
           KEY="notarized/${CHANNEL}/${VERSION}/${ARTIFACT_BASENAME}.zip"
-          aws s3 cp work/notarized.zip "s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}" --only-show-errors
+          aws s3 cp "work/${NOTARIZED_ZIP}" "s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}" --only-show-errors
           echo "NOTARIZED_KEY=${KEY}" >> "$GITHUB_ENV"
           echo "Notarized artifact: s3://${{ secrets.AWS_SIGNING_BUCKET }}/${KEY}"
 
@@ -535,7 +548,7 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            work/notarized.zip
+            work/${{ env.NOTARIZED_ZIP }}
             work/*.dmg
 
       # The GATED artifact: attached only after the spctl gate above. This
@@ -547,7 +560,7 @@ jobs:
         with:
           name: ${{ format('KiroCrew-notarized-{0}-{1}{2}', inputs.channel, inputs.version, inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }}
           path: |
-            work/notarized.zip
+            work/${{ env.NOTARIZED_ZIP }}
             work/*.dmg
           if-no-files-found: error
           retention-days: 14
@@ -597,6 +610,10 @@ jobs:
       # arch directory it is inert, and keeping it lets every pointer step
       # carry one gate (test_feed_chain_steps_share_one_skip_gate).
       FEED_PREFIX: ${{ inputs.mac_variant != '' && format('feed/{0}/{1}', inputs.channel, inputs.mac_variant) || format('feed/{0}', inputs.channel) }}
+      # Same spelling the notarize job wrote (see its env comment). On the
+      # promotion path work/ is the whole stable bundle, in which every leg's
+      # zip sits beside the others -- this is the name that picks this leg's.
+      NOTARIZED_ZIP: ${{ format('notarized{0}.zip', inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }}
     steps:
       # UNCONDITIONAL, and it has to stay that way. This used to be gated on
       # `inputs.promote` because only the promotion path read repo files
@@ -638,7 +655,7 @@ jobs:
       - name: Verify promoted macOS provenance
         if: env.HAS_SIGNING_SECRETS && inputs.promote
         run: |
-          gh attestation verify work/notarized.zip \
+          gh attestation verify "work/${NOTARIZED_ZIP}" \
             --repo "${{ github.repository }}" \
             --signer-workflow "${{ github.repository }}/.github/workflows/sign-and-notarize.yml"
           gh attestation verify "work/${ARTIFACT_BASENAME}.dmg" \
@@ -650,7 +667,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -la work/
-          [ -f "work/notarized.zip" ] || { echo "notarized.zip missing from gated artifact"; exit 1; }
+          [ -f "work/${NOTARIZED_ZIP}" ] || { echo "${NOTARIZED_ZIP} missing from gated artifact"; exit 1; }
           [ -f "work/${ARTIFACT_BASENAME}.dmg" ] || { echo "${ARTIFACT_BASENAME}.dmg missing from gated artifact"; exit 1; }
 
       # The versioned zip key is immutable-cached by CloudFront, so it must
@@ -668,7 +685,7 @@ jobs:
           PUT_OUT=$(aws s3api put-object \
             --bucket "${{ vars.CLI_DIST_BUCKET }}" \
             --key "${DESKTOP_KEY}" \
-            --body work/notarized.zip \
+            --body "work/${NOTARIZED_ZIP}" \
             --if-none-match '*' \
             --content-type application/zip \
             --cache-control "public, max-age=31536000, immutable" 2>&1)
@@ -780,8 +797,8 @@ jobs:
         id: feed
         run: |
           set -euo pipefail
-          ZIP_SHA512=$(openssl dgst -sha512 -binary work/notarized.zip | base64 -w 0)
-          ZIP_SIZE=$(stat -c%s work/notarized.zip)
+          ZIP_SHA512=$(openssl dgst -sha512 -binary "work/${NOTARIZED_ZIP}" | base64 -w 0)
+          ZIP_SIZE=$(stat -c%s "work/${NOTARIZED_ZIP}")
           DMG_SHA512=$(openssl dgst -sha512 -binary "work/${ARTIFACT_BASENAME}.dmg" | base64 -w 0)
           DMG_SIZE=$(stat -c%s "work/${ARTIFACT_BASENAME}.dmg")
 

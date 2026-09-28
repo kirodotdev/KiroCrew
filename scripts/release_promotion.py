@@ -38,6 +38,18 @@ REQUIRED_ARTIFACT_NAMES = {
     "rpm_arm64": re.compile(r"^KiroCrew-aarch64\.rpm$"),
     "mac_zip": re.compile(r"^notarized\.zip$"),
     "dmg": re.compile(r"^KiroCrew\.dmg$"),
+    # The two single-arch macOS legs (release.yml's sign-and-notarize-arm64 /
+    # -x64), under the names their gated artifacts already carry: the arch is in
+    # the FILE name because the bundle is one flat directory, and a promote-mode
+    # leg reads the same spelling out of it (sign-and-notarize.yml's
+    # NOTARIZED_ZIP / ARTIFACT_BASENAME). Required, like the Linux arm64 roles:
+    # an arm64-only install follows feed/stable/arm64/, so a stable that
+    # promoted the universal DMG alone would leave it on an updater that never
+    # advances -- and would burn this version's immutable keys doing so.
+    "mac_zip_arm64": re.compile(r"^notarized-arm64\.zip$"),
+    "dmg_arm64": re.compile(r"^KiroCrew-arm64\.dmg$"),
+    "mac_zip_x64": re.compile(r"^notarized-x64\.zip$"),
+    "dmg_x64": re.compile(r"^KiroCrew-x64\.dmg$"),
 }
 # Roles a candidate MAY carry. Optional is what keeps per-platform release
 # independence: `build-windows` is soft-fail precisely so a Windows problem

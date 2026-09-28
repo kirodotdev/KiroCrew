@@ -39,6 +39,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -593,7 +594,7 @@ def test_publishing_jobs_declare_prod_environment() -> None:
 def test_mac_gated_artifact_contents_fail_loudly_when_missing() -> None:
     steps = _steps(MAC_WORKFLOW, "publish")
     run = _step(steps, "Verify gated artifact contents")["run"]
-    for probe in ('[ -f "work/notarized.zip" ]', '[ -f "work/${ARTIFACT_BASENAME}.dmg" ]'):
+    for probe in ('[ -f "work/${NOTARIZED_ZIP}" ]', '[ -f "work/${ARTIFACT_BASENAME}.dmg" ]'):
         assert probe in run, f"gated-artifact verify lost its {probe} check"
     assert "exit 1" in run, "a missing gated artifact must fail the job before any publish"
 
@@ -639,12 +640,14 @@ def _mac_callers(path: Path) -> dict[str, dict]:
     }
 
 
-def test_mac_single_arch_legs_are_separate_callers_with_disjoint_artifacts() -> None:
-    """nightly.yml calls sign-and-notarize.yml once per single-arch DMG, each
-    naming its own build artifact, and the universal caller passes neither
-    input -- so the universal leg still downloads the whole run (it attests the
-    wheel/sdist/AppImage) while a single-arch leg downloads its one artifact."""
-    callers = _mac_callers(NIGHTLY_WORKFLOW)
+@pytest.mark.parametrize("workflow", (NIGHTLY_WORKFLOW, RELEASE_WORKFLOW), ids=lambda p: p.name)
+def test_mac_single_arch_legs_are_separate_callers_with_disjoint_artifacts(workflow: Path) -> None:
+    """nightly.yml and release.yml each call sign-and-notarize.yml once per
+    single-arch DMG, each naming its own build artifact, and the universal
+    caller passes neither input -- so the universal leg still downloads the
+    whole run (it attests the wheel/sdist/AppImage) while a single-arch leg
+    downloads its one artifact."""
+    callers = _mac_callers(workflow)
     universal = callers.pop("sign-and-notarize")
     assert "mac_variant" not in universal["with"] and "mac_artifact" not in universal["with"], (
         "the universal caller must not name a variant: its keys, artifact name and "
@@ -669,6 +672,9 @@ def test_mac_single_arch_legs_are_separate_callers_with_disjoint_artifacts() -> 
         assert with_["mac_artifact"].endswith(f"-{variant}"), f"{name}: artifact/variant mismatch"
         assert with_["channel"] == universal["with"]["channel"]
         assert with_["version"] == universal["with"]["version"]
+        # Both callers of build-desktop.yml turn the single-arch build on; a
+        # leg whose artifact was never built fails at download-artifact.
+        assert _jobs(workflow)["build-desktop"]["with"]["mac_single_arch"] is True
         seen[variant] = with_["mac_artifact"]
     assert sorted(seen) == sorted(_MAC_VARIANTS), f"one caller per arch, got {sorted(seen)}"
     assert len(set(seen.values())) == len(seen), "two legs must never download the same artifact"
@@ -689,6 +695,32 @@ def test_mac_single_arch_legs_carry_the_shipper_gates_and_permissions() -> None:
         assert (
             "build-wheel" not in job["needs"]
         ), f"{name}: a single-arch leg attests no wheel, so it must not wait on build-wheel"
+
+
+def test_single_arch_build_soft_fails_on_nightly_only() -> None:
+    """The single-arch macOS build job is ``continue-on-error`` only when the
+    caller asks for it. nightly.yml asks (it records no cross-arch
+    completeness claim, so the other lanes may publish around a failed arch);
+    release.yml must NOT: both single-arch DMGs are required promotion-bundle
+    roles, and every publisher writes immutable versioned keys, so a
+    soft-failed build there would let the other lanes burn the version on a
+    release that can never complete."""
+    knob = "soft_fail_mac_single_arch"
+    job = _jobs(BUILD_DESKTOP_WORKFLOW)["build-desktop-mac-single-arch"]
+    coe = job["continue-on-error"]
+    assert coe is not True, "an unconditional soft-fail would apply to release.yml too"
+    assert f"inputs.{knob} == true" in str(coe), coe
+    # PyYAML 1.1 reads the bare `on:` key as boolean True.
+    triggers = yaml.safe_load(BUILD_DESKTOP_WORKFLOW.read_text(encoding="utf-8"))[True]
+    for trigger in ("workflow_call", "workflow_dispatch"):
+        declared = triggers[trigger]["inputs"]
+        assert knob in declared and declared[knob]["default"] is False, (trigger, knob)
+    assert _jobs(NIGHTLY_WORKFLOW)["build-desktop"]["with"][knob] is True
+    release_with = _jobs(RELEASE_WORKFLOW)["build-desktop"]["with"]
+    assert release_with.get(knob, False) is False, (
+        "release.yml must not soft-fail the single-arch build: mac_zip_<arch> / "
+        "dmg_<arch> are REQUIRED roles in scripts/release_promotion.py"
+    )
 
 
 def test_mac_variant_suffixes_every_shared_name() -> None:
@@ -749,12 +781,27 @@ def test_mac_universal_leg_flattens_only_its_own_mac_bytes() -> None:
     ), "provenance is the universal leg's: a single-arch leg holds no wheel/sdist/AppImage"
 
 
-def test_release_calls_the_universal_mac_leg_alone() -> None:
-    """release.yml records a promotion bundle with exactly one DMG, so it keeps
-    calling the universal leg only until the bundle learns per-arch roles."""
+def test_release_single_arch_legs_share_the_universal_gate_and_promotion_switch() -> None:
+    """On release.yml a single-arch leg is gated by the same stable gate, flips
+    to byte-promotion by the same switch and reads the same resolved bundle as
+    the universal caller -- it differs by ``mac_variant`` + ``mac_artifact``
+    alone, and by not waiting on build-wheel (it attests no wheel).
+    test_release_promotion_contract.py pins the lane set those legs join."""
     callers = _mac_callers(RELEASE_WORKFLOW)
-    assert list(callers) == ["sign-and-notarize"], f"release.yml mac callers: {sorted(callers)}"
-    assert "mac_variant" not in callers["sign-and-notarize"]["with"]
+    universal = callers.pop("sign-and-notarize")
+    assert sorted(callers) == ["sign-and-notarize-arm64", "sign-and-notarize-x64"]
+    for name, job in callers.items():
+        assert job["permissions"] == universal["permissions"], f"{name}: permissions drift"
+        assert job["secrets"] == universal["secrets"], f"{name}: secrets drift"
+        for gate in ("version", "stable-gate", "build-desktop", "resolve-promotion"):
+            assert gate in job["needs"], f"{name}: must `needs: {gate}` like the universal caller"
+        assert "build-wheel" not in job["needs"], f"{name}: attests no wheel"
+        assert "needs.stable-gate.result == 'success'" in job["if"], name
+        assert "needs.build-wheel.result" not in job["if"], name
+        with_ = dict(job["with"])
+        assert with_.pop("mac_variant") in _MAC_VARIANTS
+        assert with_.pop("mac_artifact").startswith("unsigned-build-darwin-")
+        assert with_ == universal["with"], f"{name}: inputs drift from the universal caller"
 
 
 # ---------------------------------------------------------------------------
