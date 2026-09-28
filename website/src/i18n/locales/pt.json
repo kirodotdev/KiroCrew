@@ -5720,7 +5720,7 @@
       "new_sessions_start_with_this_agent": "As novas sessões começam com este agente",
       "no_matches": "Nenhum resultado",
       "set_default_agent": "Definir <agent/> como agente padrão para novas sessões",
-      "group_templates_hint": "Executa o modelo compartilhado com memória compartilhada; nenhum colega é inscrito."
+      "group_templates_hint": "Executa no espaço de trabalho e na memória do colega padrão; nada novo é criado."
     },
     "agentImportFlow": {
       "back": "Voltar",

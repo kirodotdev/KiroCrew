@@ -5513,7 +5513,7 @@
       "new_sessions_start_with_this_agent": "새 세션은 이 에이전트로 시작합니다",
       "no_matches": "일치하는 항목 없음",
       "set_default_agent": "<agent/>을(를) 새 세션의 기본 에이전트로 설정",
-      "group_templates_hint": "공유 템플릿을 공유 메모리로 실행하며 크루메이트로 등록되지 않습니다."
+      "group_templates_hint": "기본 크루메이트의 워크스페이스와 메모리에서 실행되며, 새로 만들어지는 것은 없습니다."
     },
     "agentImportFlow": {
       "back": "뒤로",

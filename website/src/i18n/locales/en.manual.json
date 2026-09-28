@@ -3082,7 +3082,7 @@
       "manage_agents": "Manage agents…",
       "new_sessions_start_with_this_agent": "New sessions start with this agent",
       "set_default_agent": "Set <agent/> as default agent for new sessions",
-      "group_templates_hint": "Runs the shared template on shared memory; nothing is enrolled as a crewmate."
+      "group_templates_hint": "Runs on your default crewmate's workspace and memory — nothing new is created."
     },
     "agentSkillsEditor": {
       "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",

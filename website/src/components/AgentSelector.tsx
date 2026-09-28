@@ -5,7 +5,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useProvider } from '../providers'
 import { isTouchDevice } from '../utils/isTouchDevice'
-import { Input, Btn } from './ui'
+import { Input, Btn, PanelSectionHeader } from './ui'
 import { SourceBadge } from './SourceBadge'
 import ErrorNotice from './ErrorNotice'
 
@@ -95,6 +95,14 @@ interface Props {
    * pixel-identical after every press during an outage.
    */
   rosterFailure?: { reloading: boolean; onReload: () => void }
+  /**
+   * Group the list by `selection_kind` — crewmates first, then installed agent
+   * templates — when the roster carries one (the folded execution catalog does).
+   * Opt-in: the schedule form asks for it, because a cron may name either kind
+   * and a flat list of both reads as one roster. Surfaces that did not opt in
+   * keep the flat rendering they had, whatever their rows carry.
+   */
+  groupByKind?: boolean
 }
 
 /**
@@ -113,7 +121,7 @@ interface Props {
  * Popover has no option semantics of its own, so the listbox ARIA and roving
  * focus come from `useListboxKeyboard`, unchanged.
  */
-export default function AgentSelector({ agents, defaultAgent, value, onChange, modal = false, rosterFailure }: Props) {
+export default function AgentSelector({ agents, defaultAgent, value, onChange, modal = false, rosterFailure, groupByKind = false }: Props) {
   const provider = useProvider()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -135,6 +143,18 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
       : agents,
     [agents, filter],
   )
+
+  // Grouped by namespace when asked to AND the roster carries one (the folded
+  // execution catalog: crewmates AND installed templates). A name-only roster
+  // (a channel's member list, a project's bindings) renders flat whatever the
+  // caller asked. The chrome — header and templates hint — is drawn only when
+  // the roster holds BOTH kinds: with one kind a header would name a
+  // distinction the list does not draw. Decided on the unfiltered roster so a
+  // filter that narrows to one group keeps its header instead of making it
+  // flicker. The `role="group"` label stays for assistive technology, which
+  // does not read the chrome.
+  const grouped = groupByKind && agents.some(a => a.selection_kind)
+  const showGroupChrome = new Set(agents.map(a => a.selection_kind ?? 'member')).size > 1
 
   // A load failure is only worth reporting while it costs the user the list.
   // Gated on the roster being EMPTY so a failed refresh over a roster we still
@@ -232,6 +252,70 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
     closeToTrigger,
   })
 
+  // One option row, shared by the flat and grouped renderings. A member and a
+  // template may share a name, so the key carries the kind too (JSON: no
+  // separator a name could contain can collide two rows). The default badge
+  // marks the crew that holds the default, never a template of the same name.
+  const renderRow = (a: KiroCrewAgent) => {
+    const isCurrent = active === a.name
+    const isDefault = a.name === defaultAgent && a.selection_kind !== 'template'
+    return (
+      <Btn
+        key={JSON.stringify([a.selection_kind ?? '', a.name])}
+        role="option"
+        aria-selected={isCurrent}
+        tabIndex={-1}
+        className={`w-full text-left px-3 py-2 flex items-center gap-2 min-w-0 border-0 rounded-none cursor-pointer
+          ${isCurrent ? 'bg-accent-subtle hover:bg-accent-subtle' : 'hover:bg-bg-hover'}
+        `}
+        onClick={() => handleSelect(a)}
+      >
+        <div className="flex flex-col min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{crewDisplayName(a)}</span>
+            {/* The ID stays visible when a label covers it: `agent=` in
+                spawn params, crons and the CLI all address the ID, so a
+                picker that hid it would strand anyone wiring those up. */}
+            {crewDisplayName(a) !== a.name && (
+              <span className="text-[11px] font-mono text-muted truncate max-w-[9rem]" title={i18nT('components.agentSelector.agent_id_tooltip', { name: a.name })}>{a.name}</span>
+            )}
+            {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">{i18nT('components.agentSelector.default')}</span>}
+            {a.source && (
+              <SourceBadge source={a.source} className="shrink-0">
+                {a.source}
+              </SourceBadge>
+            )}
+          </div>
+          <span className="text-[11px] text-muted truncate">{a.description || provider.resolveAgentTemplate(a)}</span>
+        </div>
+        {isCurrent && <span className="text-accent text-[11px] ml-auto shrink-0"><Check className="lucide-inline" /></span>}
+      </Btn>
+    )
+  }
+
+  const groupedRows = (['member', 'template'] as const).map(kind => {
+    const rows = filtered.filter(a => (a.selection_kind ?? 'member') === kind)
+    if (!rows.length) return null
+    const label = kind === 'member'
+      ? i18nT('components.agentDropdownList.group_members')
+      : i18nT('components.agentDropdownList.group_templates')
+    return (
+      <div key={kind} role="group" aria-label={label} className="flex flex-col">
+        {showGroupChrome && (
+          <PanelSectionHeader label={label} count={rows.length} className="px-3 pt-2 pb-1" />
+        )}
+        {showGroupChrome && kind === 'template' && (
+          // What a template pick IS, said where the pick happens: the job runs
+          // the shared template on the default crew's workspace and memory.
+          <p className="px-3 pb-1 text-[11px] leading-snug text-muted">
+            {i18nT('components.agentDropdownList.group_templates_hint')}
+          </p>
+        )}
+        <div className="divide-y divide-border">{rows.map(renderRow)}</div>
+      </div>
+    )
+  })
+
   return (
     <Popover open={open} onOpenChange={setOpen} modal={modal}>
       <PopoverTrigger
@@ -312,42 +396,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
           </div>
         )}
         <div role="listbox" aria-label={i18nT('components.agentSelector.agent_list')} className="flex-1 min-h-0 overflow-y-auto divide-y divide-border">
-          {filtered.map(a => {
-            const isCurrent = active === a.name
-            const isDefault = a.name === defaultAgent
-            return (
-              <Btn
-                key={a.name}
-                role="option"
-                aria-selected={isCurrent}
-                tabIndex={-1}
-                className={`w-full text-left px-3 py-2 flex items-center gap-2 min-w-0 border-0 rounded-none cursor-pointer
-                  ${isCurrent ? 'bg-accent-subtle hover:bg-accent-subtle' : 'hover:bg-bg-hover'}
-                `}
-                onClick={() => handleSelect(a)}
-              >
-                <div className="flex flex-col min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{crewDisplayName(a)}</span>
-                    {/* The ID stays visible when a label covers it: `agent=` in
-                        spawn params, crons and the CLI all address the ID, so a
-                        picker that hid it would strand anyone wiring those up. */}
-                    {crewDisplayName(a) !== a.name && (
-                      <span className="text-[11px] font-mono text-muted truncate max-w-[9rem]" title={i18nT('components.agentSelector.agent_id_tooltip', { name: a.name })}>{a.name}</span>
-                    )}
-                    {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">{i18nT('components.agentSelector.default')}</span>}
-                    {a.source && (
-                      <SourceBadge source={a.source} className="shrink-0">
-                        {a.source}
-                      </SourceBadge>
-                    )}
-                  </div>
-                  <span className="text-[11px] text-muted truncate">{a.description || provider.resolveAgentTemplate(a)}</span>
-                </div>
-                {isCurrent && <span className="text-accent text-[11px] ml-auto shrink-0"><Check className="lucide-inline" /></span>}
-              </Btn>
-            )
-          })}
+          {grouped ? groupedRows : filtered.map(renderRow)}
           {filtered.length === 0 && !rosterFailed && <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.agentSelector.no_matches')}</div>}
         </div>
         {/* Outside the listbox, not another childless row inside it: the retry is

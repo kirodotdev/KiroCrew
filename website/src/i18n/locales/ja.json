@@ -5513,7 +5513,7 @@
       "new_sessions_start_with_this_agent": "新しいセッションはこのエージェントで始まります",
       "no_matches": "マッチするものがありません",
       "set_default_agent": "<agent/> を新しいセッションのデフォルトエージェントに設定",
-      "group_templates_hint": "共有テンプレートを共有メモリで実行します。クルーメイトとして登録されません。"
+      "group_templates_hint": "デフォルトのクルーメイトのワークスペースとメモリで実行します。新しいものは作成されません。"
     },
     "agentImportFlow": {
       "back": "戻る",

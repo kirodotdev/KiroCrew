@@ -5540,7 +5540,7 @@
       "new_sessions_start_with_this_agent": "新会话将使用该代理",
       "no_matches": "无匹配项",
       "set_default_agent": "将 <agent/> 设为新会话的默认代理",
-      "group_templates_hint": "以共享记忆运行共享模板，不会登记为队友。"
+      "group_templates_hint": "在默认队友的工作区和记忆上运行，不会新建任何内容。"
     },
     "agentImportFlow": {
       "back": "上一步",

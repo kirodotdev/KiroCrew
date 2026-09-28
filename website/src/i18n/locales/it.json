@@ -5720,7 +5720,7 @@
       "new_sessions_start_with_this_agent": "Le nuove sessioni iniziano con questo agente",
       "no_matches": "Nessuna corrispondenza",
       "set_default_agent": "Imposta <agent/> come agente predefinito per le nuove sessioni",
-      "group_templates_hint": "Esegue il modello condiviso con memoria condivisa; nessun compagno viene registrato."
+      "group_templates_hint": "Viene eseguito nello spazio di lavoro e nella memoria del compagno predefinito; non viene creato nulla di nuovo."
     },
     "agentImportFlow": {
       "back": "Indietro",

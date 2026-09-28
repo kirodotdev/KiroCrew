@@ -5720,7 +5720,7 @@
       "new_sessions_start_with_this_agent": "Les nouvelles sessions démarrent avec cet agent",
       "no_matches": "Aucun résultat",
       "set_default_agent": "Définir <agent/> comme agent par défaut pour les nouvelles sessions",
-      "group_templates_hint": "Exécute le modèle partagé avec la mémoire partagée ; aucun coéquipier n'est inscrit."
+      "group_templates_hint": "S'exécute dans l'espace de travail et la mémoire du coéquipier par défaut – rien de nouveau n'est créé."
     },
     "agentImportFlow": {
       "back": "Retour",

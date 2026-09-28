@@ -5630,7 +5630,7 @@
       "new_sessions_start_with_this_agent": "Neue Sitzungen starten mit diesem Agenten",
       "no_matches": "Keine Treffer",
       "set_default_agent": "<agent/> als Standard-Agenten für neue Sitzungen festlegen",
-      "group_templates_hint": "Führt die geteilte Vorlage mit geteiltem Gedächtnis aus; nichts wird als Crew-Kamerad eingetragen."
+      "group_templates_hint": "Läuft im Arbeitsbereich und Gedächtnis des Standard-Crew-Kameraden – es wird nichts Neues angelegt."
     },
     "agentImportFlow": {
       "back": "Zurück",

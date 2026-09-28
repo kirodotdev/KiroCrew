@@ -90,12 +90,22 @@ typed list as `choices` (the chat agent pop-up renders it grouped under
 **Crewmates** / **Agent templates**, each member row wearing the same avatar the
 roster draws for it, the origin badge dropped because the header already says what
 a row is, and the templates group carrying a one-line hint that a template pick
-runs the shared template on the shared default memory and enrols nothing) and
+runs on the default crewmate's workspace and memory and creates nothing new) and
 the same list folded to one row per name, member first, as `agents` for the
 name-only consumers (cron `agent_id`, channel and project bindings, the cycle
 shortcuts). The pop-up draws the group headers and the templates hint only when it
 lists more than one kind: a header that separates nothing is chrome, and the hint
-contrasts a template against a crewmate the list must then be showing. Temporarily,
+contrasts a template against a crewmate the list must then be showing. The folded
+rows keep their `selection_kind`, and `AgentSelector` (the shared roster picker)
+groups by it under the same two headers and hint when a caller passes
+`groupByKind`; the schedule job form does, so a cron's agent field offers
+**Crewmates** then **Agent templates** in one dropdown, and a template pick stores
+the bare template name -- the backend's name-first resolution runs an unaliased
+template on the default crew's workspace and memory, so no cron contract changes.
+The chrome follows the same one-kind rule, decided on the unfiltered roster so a
+filter that narrows to one group keeps its header; the `role="group"` label stays
+for assistive technology either way. Callers that do not opt in, and any name-only
+roster, render flat as before. Temporarily,
 `HIDE_CREWMATE_CHOICES` in `useAgents.ts` withholds the member rows from `choices`,
 so the pop-up offers templates only -- a plain list, no header -- and a crewmate is
 reached from its DM thread instead; the folded `agents` list and the request
