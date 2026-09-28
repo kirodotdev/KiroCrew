@@ -20,10 +20,12 @@ expiring, owned entries as a Node one rather than by a second format.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
-from datetime import date, datetime, timezone
+import tomllib
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -41,6 +43,30 @@ ENVIRONMENT_KEY = "dev-environment"
 
 class AuditError(RuntimeError):
     """The audit could not produce a trustworthy count."""
+
+
+_PEP_503_SEPARATOR = re.compile(r"[-_.]+")
+
+
+def normalize_package_name(name: str) -> str:
+    """Return the normalized distribution name defined by PEP 503."""
+    return _PEP_503_SEPARATOR.sub("-", name).lower()
+
+
+def project_name(path: Path | None = None) -> str:
+    """Read the local distribution name from the project's canonical metadata."""
+    metadata_path = path or _REPO_ROOT / "pyproject.toml"
+    try:
+        document = tomllib.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise AuditError(
+            f"could not read the local project name from {metadata_path}: {exc}"
+        ) from exc
+    project = document.get("project")
+    name = project.get("name") if isinstance(project, Mapping) else None
+    if not isinstance(name, str) or not name:
+        raise AuditError(f"{metadata_path} carried no non-empty [project].name")
+    return name
 
 
 @dataclass(frozen=True)
@@ -88,9 +114,23 @@ def parse_report(output: str) -> list[PythonFinding]:
         raise AuditError("audit output carried no 'dependencies' list")
 
     findings: list[PythonFinding] = []
+    local_project_name: str | None = None
     for entry in dependencies:
         if not isinstance(entry, Mapping):
             raise AuditError("audit output carried a non-object dependency entry")
+        skip_reason = entry.get("skip_reason")
+        if isinstance(skip_reason, str) and skip_reason:
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                raise AuditError("audit output carried a skipped dependency without a name")
+            if local_project_name is None:
+                local_project_name = project_name()
+            if normalize_package_name(name) == normalize_package_name(local_project_name):
+                continue
+            raise AuditError(
+                f"pip-audit skipped dependency {name!r}: {skip_reason}; "
+                f"only the local project {local_project_name!r} may be skipped"
+            )
         name = entry.get("name")
         version = entry.get("version")
         if not isinstance(name, str) or not isinstance(version, str):
