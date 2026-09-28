@@ -66,6 +66,11 @@ from kiro_crew.connections.tool_test import _classify as _classify_tool_inventor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_grant import grant_fingerprint, grant_observed
 from kiro_crew.mcp_utils import mcp_server_alias
+from kiro_crew.runtime_ownership import (
+    RuntimeTeardownCommitted,
+    claim_runtime_tenancy,
+    release_runtime_tenancy,
+)
 from kiro_crew.security import (
     oauth_url_contains_credential,
     sanitized_oauth_endpoint_display,
@@ -120,6 +125,11 @@ class MintState(TypedDict, total=False):
     agent: str  # ephemeral spec name
     spec_path: str  # the exact file this flow wrote, and the only one it deletes
     pid: int  # sweep-protected for as long as the process is held
+    # The kill gate's claim on that same process, held for as long as the pid is.
+    # Separate from ``pid`` because the two shields answer different questions:
+    # the sweep shield hides the child from the periodic orphan scan, while this
+    # is what makes ``_sync_kill_provider`` refuse to SIGTERM it mid-exchange.
+    tenancy: str
     # Set only by the warm table (:mod:`kiro_crew.connections.warm`). A shared row
     # owns no ``client``: its URL was minted on a process it shares with every
     # other card, so redeemability is judged by generation AND activation liveness
@@ -467,9 +477,16 @@ async def _dispose_mint(entry: MintState) -> None:
     watcher = entry.pop("watcher", None)
     spec_path = entry.pop("spec_path", "")
     pid = entry.pop("pid", 0)
+    tenancy = entry.pop("tenancy", "")
     entry.pop("agent", "")
     if watcher is not None and watcher is not asyncio.current_task():
         watcher.cancel()
+    # BEFORE the teardown below, and deliberately not in the ``finally``: from
+    # here on this row is committed to ending its child, and the kill gate refuses
+    # a process that is still claimed -- so a claim held across the shutdown would
+    # make this flow refuse its own teardown and leak the very child the claim was
+    # defending. Same rule the session providers follow: release, then signal.
+    release_runtime_tenancy(tenancy or None)
     try:
         if client is not None:
             await _shutdown_quietly(client)
@@ -671,23 +688,82 @@ async def cancel_mint(slug: str, token: str | None = None) -> bool:
 
 
 def _claim_mint_pid(client: Any, holdings: MintState) -> bool:
-    """Shield the mint's child PID from the orphan sweep. Idempotent.
+    """Shield the mint's child PID from the orphan sweep AND from the kill gate.
 
-    Returns True once a PID has been claimed. False means the spawn has not
-    assigned one yet, so there is nothing to protect.
+    Idempotent. Returns True once a PID has been claimed. False means the spawn has
+    not assigned one yet, so there is nothing to protect.
+
+    Two shields, because two different reapers can end this child and only one of
+    them reads the sweep set. ``register_protected_pid`` hides it from the periodic
+    orphan scan, which is not the reaper that reaches it: a Connect click writes the
+    MCP server entry into the agent spec, that routes through ``_reset_all_sessions``,
+    and its provider drain reaches ``session_pid._sync_kill_provider`` -- so the
+    click can SIGTERM the child it just spawned, ~3s in, before the token exchange
+    persists the grant, leaving Connect to wait out its whole TTL for a grant file
+    that never appears.
+
+    The tenancy is what that killer consults. It is the honest claim to make here:
+    this process belongs to a Connect flow, the drain that signals it belongs to
+    the session layer, and nobody in that layer owns the exchange in flight. The
+    sweep shield cannot serve as the gate's answer -- every ACP runtime shields its
+    own pid for its whole life, so a gate reading that set would refuse every
+    ordinary teardown and leak every chat process.
+
+    Reconciling, not write-once. ``ensure_ready`` retries a transient spawn failure
+    inside its OWN two-attempt loop, and the documented common cause is this very
+    flow's MCP-server initialization -- so the client can be on its second child by
+    the time readiness returns. A claim keyed on "have I ever recorded a pid" would
+    hold the dead first number and leave the replacement naked for the whole mint
+    TTL, reachable by both reapers, with no re-claim anywhere to correct it. So the
+    recorded pid is compared against the client's CURRENT one on every call, and the
+    call each mint path makes after readiness is what closes that window.
     """
-    if holdings.get("pid"):
-        return True
     pid = getattr(client, "_pid", 0)
     if not isinstance(pid, int) or pid <= 0:
-        return False
+        # The spawn has assigned no number YET, or a teardown has cleared it. Either
+        # way there is nothing new to shield; an already-recorded holding stands,
+        # since it is what ``_dispose_mint`` releases.
+        return bool(holdings.get("pid"))
+    held = holdings.get("pid") or 0
+    if held == pid:
+        return True
+    if held:
+        logger.warning("mint child pid changed %s -> %s; re-shielding the replacement", held, pid)
+        # The process this pair defended is gone, so both shields have to move with
+        # the child rather than being left on a number the OS is free to reissue.
+        # The release's return value is dropped on purpose: it offers back a runtime
+        # whose kill was refused, and any refusal on this record belongs to a dead
+        # pid -- there is nothing left to tear down. A debt owed on the NEW pid is
+        # inherited by the claim taken just below.
+        release_runtime_tenancy(holdings.pop("tenancy", "") or None)
+        unregister_protected_pid(int(held))
     register_protected_pid(pid)
     holdings["pid"] = pid
+    # Claimed on the CLIENT, not the bare pid: the object carries
+    # ``is_process_alive``, so a claim that somehow outlives its release stops
+    # defending the number as soon as the process is gone rather than shielding
+    # whatever later inherits it.
+    try:
+        holdings["tenancy"] = claim_runtime_tenancy(client, holder="connections.mint") or ""
+    except RuntimeTeardownCommitted as exc:
+        # Caught rather than raised, because both mint paths call this from a
+        # ``finally``: a raise there would replace whatever exception the exchange
+        # was already failing with. There is nothing to defend either -- the signal
+        # has left and no table recalls it -- so the honest outcome is to record no
+        # tenancy and name the reason. The sweep shield above stays: it is a
+        # different reaper, and the teardown in progress does not consult it.
+        logger.warning("mint child pid %s is being torn down; no tenancy taken: %s", pid, exc)
+        holdings["tenancy"] = ""
     return True
 
 
 async def _claim_mint_pid_when_spawned(client: Any, holdings: MintState) -> None:
-    """Poll until the spawn assigns a PID, then protect it and stop."""
+    """Poll until the spawn assigns a PID, then protect it and stop.
+
+    Stopping at the first claim is deliberate and safe: a respawn can only happen
+    inside ``ensure_ready``, and both mint paths call :func:`_claim_mint_pid` again
+    after readiness -- in a ``finally``, so the failure path reconciles too.
+    """
     while not _claim_mint_pid(client, holdings):
         await asyncio.sleep(_MINT_PID_CLAIM_POLL_SECONDS)
 

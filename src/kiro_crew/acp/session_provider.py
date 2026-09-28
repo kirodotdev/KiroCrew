@@ -54,7 +54,13 @@ from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 from kiro_crew.recovery.ladder import InfraError
-from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP, RUNTIME_OWNERSHIP
+from kiro_crew.runtime_ownership import (
+    CHAT_RUNTIME_CAP,
+    RUNTIME_OWNERSHIP,
+    RuntimeTeardownCommitted,
+    claim_runtime_tenancy,
+    release_runtime_tenancy,
+)
 from kiro_crew.session_token_sig import schedule_session_token_publish
 
 logger = logging.getLogger(__name__)
@@ -162,6 +168,97 @@ class AcpSessionProvider(LLMProvider):
             cap=CHAT_RUNTIME_CAP,
         )
         self._runtime_lease = acquisition.lease
+
+    def _claim_shared_turn(self) -> str | None:
+        """Defend the SHARED runtime for the length of this subagent's turn.
+
+        A session-sharing subagent holds no lease: it is handed a runtime it did
+        not spawn and must not kill, and at ``cap=1`` an acquisition cannot join
+        an occupied runtime, so a lease of its own would either be placed on a
+        second process or found a duplicate entry for the one it already shares.
+        Without a claim of some other kind it is undefended in one window: once
+        the principal's teardown releases the principal's lease, nothing in the
+        kill gate's registry says the process is still in use, so the reset-all
+        fallback or a sweep may SIGTERM a live subagent mid-turn -- the abandoned
+        prompt keeps burning credits, its frames are dropped as unknown-session,
+        and the sessionId can wedge the next prompt.
+
+        A tenancy is the claim that fits: not a lease, so it neither consumes the
+        cap nor changes placement, and it outlives the entry the principal's last
+        release forgets. Scoped to the TURN rather than to this object's life,
+        because a turn is what a signal destroys and because a claim paired inside
+        one function cannot outlive it -- an object-lifetime claim would leak on
+        any path that drops a provider without shutting it down, and a leaked
+        claim refuses that pid's kills for the life of the gateway.
+
+        Returns None for an owning provider, which already holds a lease for its
+        whole session: a second claim would defend a process that is defended, and
+        would refuse its owner's teardown until the turn ended.
+
+        Guarded, like the stub re-claim at the top of ``stream``: a turn must never
+        fail because bookkeeping could not be done, and the worst case of not
+        claiming is the behaviour that shipped before this table existed. The state
+        is read directly rather than through defaults, so a wiring break surfaces
+        in the log instead of being papered over by a guessed value -- and a
+        provider assembled without ``__init__``, which the unit tests of this
+        class's exception translation do, is inert here rather than an
+        ``AttributeError`` raised into someone's turn.
+
+        A committed teardown is the one refusal that must NOT be swallowed. It says
+        the process is being ended right now and a claim would defend nothing -- the
+        first signal has already left -- so proceeding would run the turn on a
+        corpse and surface as a mid-stream death with no cause attached. It is
+        translated into the same ``AcpProcessDied`` a dead runtime raises, which is
+        the answer callers already handle by getting another runtime.
+
+        Raised directly rather than through ``_translate_dead``: that mapping exists
+        to tell a login-expiry death from an ordinary one by reading runtime state,
+        and reading more state inside a guard written expressly not to crash is the
+        wrong trade -- a committed teardown is a death whatever the login state says.
+        """
+        try:
+            if self._owns_runtime:
+                return None
+            return claim_runtime_tenancy(
+                self._runtime, holder=f"subagent:{self._session_key or 'unnamed'}"
+            )
+        except RuntimeTeardownCommitted as exc:
+            logger.warning("_claim_shared_turn: shared runtime is being torn down: %s", exc)
+            raise AcpProcessDied(str(exc)) from exc
+        except Exception:
+            logger.debug("_claim_shared_turn: tenancy claim skipped", exc_info=True)
+            return None
+
+    async def _end_shared_turn(self, claim: str | None) -> None:
+        """Stop defending the shared runtime, and end it if nobody is left on it.
+
+        A hand-back means the runtime is ORPHANED -- this was the last tenancy and
+        no lease owns it -- which happens when the principal's teardown was
+        refused on this turn's behalf and then returned without signalling. Its
+        own shield keeps the sweep off it and no session owns it, so the tenant
+        that just finished is the only party that will ever visit it again.
+
+        Shielded because this runs in a ``finally`` that a cancellation reaches:
+        a subagent reaped mid-turn is exactly the case that leaves an orphan, so
+        letting the cancellation skip the teardown would leak the process in the
+        one scenario it is written for.
+        """
+        try:
+            orphan = release_runtime_tenancy(claim)
+        except Exception:
+            logger.debug("_end_shared_turn: tenancy release failed", exc_info=True)
+            return
+        if orphan is None:
+            return
+        try:
+            await asyncio.shield(
+                self._runtime.kill(
+                    expected=True,
+                    reason="last shared tenant finished; runtime left with no owner",
+                )
+            )
+        except Exception:
+            logger.debug("_end_shared_turn: orphaned runtime teardown failed", exc_info=True)
 
     async def new_conversation(self) -> None:
         """Reset to a fresh conversation on the SAME warm runtime (kiro path).
@@ -469,6 +566,7 @@ class AcpSessionProvider(LLMProvider):
             self.reclaim()
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
+        claim = self._claim_shared_turn()
         try:
             async with aclosing(
                 self.essential_delivery.stream(
@@ -490,6 +588,8 @@ class AcpSessionProvider(LLMProvider):
             # keep the provider surface within AcpError so chat_runner catches
             # it instead of hitting its generic `except Exception`.
             raise AcpError(str(exc)) from exc
+        finally:
+            await self._end_shared_turn(claim)
 
     async def steer(self, message: str) -> bool:
         """Forward a mid-turn steer to the session handle (kiro _session/steer)."""
@@ -521,6 +621,7 @@ class AcpSessionProvider(LLMProvider):
         # so the next warm turn resends the complete snapshot even when the
         # status receipt is missing or arrives late.
         self.essential_delivery.prepare_command(command)
+        claim = self._claim_shared_turn()
         try:
             async with aclosing(
                 self.essential_delivery.stream(
@@ -533,6 +634,8 @@ class AcpSessionProvider(LLMProvider):
             raise self._translate_dead(exc) from exc
         except AcpRuntimeError as exc:
             raise AcpError(str(exc)) from exc
+        finally:
+            await self._end_shared_turn(claim)
 
     def _translate_dead(self, exc: AcpRuntimeDead) -> AcpProcessDied | AcpAuthRequired:
         """Map a shared-runtime death (AcpRuntimeDead — an AcpRuntimeError OUTSIDE

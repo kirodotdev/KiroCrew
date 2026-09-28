@@ -290,6 +290,15 @@ _RELEASE_BEFORE_KILL = (
         "release_runtime_lease",
         "kill",
     ),
+    # The mint's child is defended by a TENANCY rather than a lease -- it is a
+    # Connect flow's process, not a session's -- but the ordering rule is the
+    # same one: the gate refuses a claimed process, so a claim still held when
+    # this flow tears its own child down makes it refuse its own teardown.
+    (
+        "src/kiro_crew/connections/mint.py",
+        "release_runtime_tenancy",
+        "_shutdown_quietly",
+    ),
 )
 
 
@@ -349,4 +358,109 @@ def test_a_post_registration_kill_releases_its_lease_first(
     raise AssertionError(
         f"{rel_path}: no block calls {release}() before {kill}() -- a kill that "
         "does not release first is refused by the ownership gate and leaks the tree"
+    )
+
+
+def test_the_leaked_provider_killer_commits_the_teardown_before_it_signals() -> None:
+    """The gate's verdict is a statement about the past, and this killer is where
+    that matters: it runs on an executor thread while a session-sharing subagent
+    claims its turn on the event loop, and between the verdict and the first signal
+    sit a start-id read, a group resolution and an unbounded descendant walk.
+
+    Re-reading before each signal is not enough, which is why this pins a COMMIT
+    instead. A signal cannot be recalled: by the SIGKILL round the SIGTERM is long
+    delivered and its grace -- ample time for a shared turn to start -- has passed,
+    so a claim taken in that grace dies whatever the later rounds decide. The window
+    has to be closed to new tenants, once, immediately before the first signal.
+
+    And every commit needs its release: a barrier left standing refuses that pid's
+    tenancies for the life of the gateway, so the paired call is pinned too.
+    """
+    tree = _parse(SRC / "session_pid.py")
+    assert tree is not None
+    target = _function_named(tree, "_sync_kill_provider")
+    assert target is not None
+    calls = _call_names(target)
+    assert (
+        "tenancy_epoch" in calls
+    ), "_sync_kill_provider does not capture the tenancy epoch beside the gate's verdict"
+
+    def _is_guard(node: ast.AST) -> bool:
+        """An ``if not _commit_teardown(...)`` whose body leaves the function."""
+        if not isinstance(node, ast.If):
+            return False
+        test = node.test
+        if not (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)):
+            return False
+        if not (
+            isinstance(test.operand, ast.Call) and _callee_name(test.operand) == "_commit_teardown"
+        ):
+            return False
+        return any(isinstance(leaf, (ast.Return, ast.Raise)) for leaf in ast.walk(node))
+
+    guards = [node for node in ast.walk(target) if _is_guard(node)]
+    assert len(guards) >= 2, (
+        f"_sync_kill_provider has {len(guards)} teardown-commit guard(s), expected at least "
+        "2 -- one before the Windows tree kill and one before the POSIX escalation, since "
+        "a verdict checked once cannot see a turn that starts during the grace and a "
+        "delivered signal cannot be taken back"
+    )
+    releases = [
+        node
+        for node in ast.walk(target)
+        if isinstance(node, ast.Try)
+        and node.finalbody
+        and any(
+            _callee_name(leaf) == "release_runtime_teardown"
+            for body in (node.finalbody,)
+            for stmt in body
+            for leaf in ast.walk(stmt)
+            if isinstance(leaf, ast.Call)
+        )
+    ]
+    assert len(releases) >= 2, (
+        f"_sync_kill_provider drops the teardown barrier in {len(releases)} finally block(s), "
+        "expected at least 2 -- one per signal path, because a barrier left standing refuses "
+        "that pid's tenancies for the life of the gateway"
+    )
+
+
+# -- the shared-turn tenancy at the subagent's turn entry points --
+
+#: Every method that drives a TURN on a provider that may be session-sharing. A
+#: subagent holds no lease, so this claim is the only thing standing between a
+#: live turn and the provider drain; one of these left unguarded is a turn that
+#: can still be SIGTERMed mid-flight.
+_TURN_ENTRY_POINTS = ("stream", "stream_command")
+
+
+@pytest.mark.parametrize("function", _TURN_ENTRY_POINTS)
+def test_a_shared_turn_claims_tenancy_and_releases_it_in_a_finally(function: str) -> None:
+    """Commenting out either half must fail HERE, not in production.
+
+    Without the claim, the drain that follows a principal's teardown finds nothing
+    in the gate's registry and signals a live subagent turn. Without a ``finally``
+    the claim leaks on exactly the paths that matter -- a reaped or failed turn is
+    the case that leaves an orphan -- and a leaked claim refuses that pid's kills
+    for the life of the gateway.
+    """
+    tree = _parse(SRC / "acp" / "session_provider.py")
+    assert tree is not None
+    target = _function_named(tree, function)
+    assert target is not None, f"session_provider.{function} is gone; this pin needs rewriting"
+    names = _call_names(target)
+    assert "_claim_shared_turn" in names, (
+        f"session_provider.{function} does not claim tenancy for the turn: a "
+        "session-sharing subagent holds no lease, so nothing would refuse a drain "
+        "that arrives mid-turn"
+    )
+    released_in_finally = any(
+        "_end_shared_turn" in _call_names(stmt)
+        for node in ast.walk(target)
+        if isinstance(node, ast.Try)
+        for stmt in node.finalbody
+    )
+    assert released_in_finally, (
+        f"session_provider.{function} does not release its tenancy in a finally: a "
+        "cancelled or failed turn would keep defending the process forever"
     )
