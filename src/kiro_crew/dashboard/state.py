@@ -2716,6 +2716,10 @@ class _ChatSlot:
         "_model_access_recovery_session_stop_gen",
         "_model_access_recovery_session_key",
         "_model_access_recovery_queue_id",
+        "_image_recovery_queue_id",
+        "_image_recovery_stop_gen",
+        "_image_recovery_session_stop_gen",
+        "_image_recovery_session_key",
         "_posttoken_retry_used",
         "_last_turn_structural_terminal",
         "_last_turn_structural_terminal_loop_id",
@@ -3463,6 +3467,29 @@ class _ChatSlot:
         #: shared across recovery paths, so a blanket removal by kind would
         #: destroy co-queued unrelated recoveries.
         self._model_access_recovery_queue_id: str = ""
+        #: The queue id of the unsupported-history-image recovery turn, recorded
+        #: at enqueue so the drain abort removes only THIS entry. Non-empty is
+        #: the family's "pending" signal, the same shape the refusal replay uses;
+        #: SYNTHETIC_RECOVERY_KIND is shared across recovery paths, so a blanket
+        #: removal by kind would destroy co-queued unrelated recoveries.
+        self._image_recovery_queue_id: str = ""
+        #: ``_stop_generation`` snapshotted when that recovery is enqueued. The
+        #: enqueue is followed by real awaits (the conversation discard and the
+        #: pending-reset consume) before the drain dispatches, and a soft Stop
+        #: landing in that window does NOT clear the queue, so the drain compares
+        #: this snapshot against the live counter and drops the recovery rather
+        #: than running a cancelled turn's tools on the fresh conversation.
+        self._image_recovery_stop_gen: int = 0
+        #: Session-scoped counterpart of the snapshot above. A Stop issued on a
+        #: linked channel surface advances only the session-scoped counter, so
+        #: without this a linked-channel Stop would leave the cancelled recovery
+        #: in the queue head to dispatch.
+        self._image_recovery_session_stop_gen: int = 0
+        #: The session binding the image recovery was enqueued under. A live key
+        #: that differs means the slot was rebound mid-episode (a cron result
+        #: binding an unbound slot), so the recovery belongs to the OLD session
+        #: and must not dispatch onto the newly bound one.
+        self._image_recovery_session_key: str = ""
         # One-shot guard for the post-token (text-only) transient retry: a turn
         # that has already streamed answer tokens may be re-prompted at most
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a

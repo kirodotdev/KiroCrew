@@ -101,6 +101,28 @@ never drift. Notable terminal (non-retryable) classes:
   backend through the prompt transport everywhere, even on Slack, which also
   offers `!compact` as its own alias. The same rule governs the sibling
   prompt-busy branch, which for the same reason now names no command at all.
+- **Unsupported image history**: Kiro's `IMAGE_FORMAT_UNSUPPORTED` /
+  `ImageValidationError` is terminal and structural. The exception also carries
+  the narrower `image_format_unsupported` tag. A current attachment is left in
+  place with remove-or-re-encode guidance; a dashboard turn with no new
+  attachments may discard the native resume SID once and retry from Kiro Crew's
+  bounded text transcript, which excludes native binary image blocks.
+  "No new attachment" is read as TWO facts, because empty dashboard attachment
+  lists do not prove the turn shipped no image: a channel turn (and a dashboard
+  turn that types a path) carries its image as a bare path inside the message
+  text, which `build_prompt_blocks` inlines as a CURRENT-turn image block. So the
+  recovery additionally requires that the raw message match none of
+  `image_refs._PATH_RE` — the builder's own scanner on the builder's own
+  haystack — and otherwise falls through to the terminal guidance rather than
+  clearing a healthy conversation and re-inlining the same bytes.
+  The queued recovery turn is gated at DISPATCH, not only at enqueue: the
+  conversation discard and the pending-reset consume are awaited between the two,
+  and a soft Stop in that window preserves the queue while `_stopping` snaps back
+  to idle. The slot therefore records the recovery's queue id plus the slot- and
+  session-scoped stop generations at enqueue, and the queue drain drops the entry
+  (refunding the shared one-shot) when either counter moved, when user input
+  queued behind it, or when the slot was rebound to another session — the same
+  guard the model-access and refusal replays carry.
 - **Usage limit** and **model not entitled**: allowance spent, or the plan lacks
   the model; also terminal, with guidance to switch model or tier.
 
