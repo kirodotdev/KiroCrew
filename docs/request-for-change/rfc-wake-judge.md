@@ -130,7 +130,9 @@ on the tick that sends it:
 Questions, asked in parallel, each atomic. The shipped seam speaks Jev's
 `choice` type only (`decisions/types.py`; `_to_wire` refuses anything else), so
 every question is a Choice; widening the wire to `noul`/`score` is a later PR.
-That widening is PR D's: the seam must gain `noul` and `score` wire types before
+That widening is owned by
+[`rfc-jev-task-executor`](rfc-jev-task-executor.md) §3.2: the seam must gain
+`noul` and `score` wire types before
 a question here can ask for a bare probability or a bounded number instead of
 encoding one as a Choice.
 
