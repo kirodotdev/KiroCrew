@@ -512,6 +512,41 @@ class TestTheFenceOnRows:
         elsewhere.workspace = "other"
         assert _rows(_status(state, caller)) == {}
 
+    def test_a_worker_linked_to_a_channel_after_birth_is_not_listed(self, tmp_path):
+        """`display_title` for a channel-linked session is derived from a
+        conversation other people are in. The creator passes every caller-side gate
+        and did create this session, so only a TARGET-side containment check keeps
+        that title out of its roster."""
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        worker = _child(state, "chat-2", caller)
+        worker.title = "#incident-4417 payment outage"
+        worker.linked_session_key = "slack:C0ABC:1790411186.442029"
+
+        assert _rows(_status(state, caller)) == {}
+
+    def test_a_worker_mirrored_to_a_channel_after_birth_is_not_listed(self, tmp_path, monkeypatch):
+        """The mirror is the same exposure by the other mechanism, and it is bound
+        with no idle-slot requirement, so it can land long after the creator's own
+        gate passed."""
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        worker = _child(state, "chat-2", caller)
+        worker.title = "#incident-4417 payment outage"
+        monkeypatch.setattr(sc, "_has_channel_mirror", lambda _state, slot: slot.key == "chat-2")
+
+        assert _rows(_status(state, caller)) == {}
+
+    def test_an_unlinked_worker_is_still_listed_with_its_title(self, tmp_path):
+        """The containment drops a CHANGED target, not every row: the ordinary
+        roster is unaffected."""
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        worker = _child(state, "chat-2", caller)
+        worker.title = "rebase the broadcast branch"
+
+        assert _rows(_status(state, caller))["chat-2"]["title"] == "rebase the broadcast branch"
+
 
 # ── The caller gate ──────────────────────────────────────────────────────────
 

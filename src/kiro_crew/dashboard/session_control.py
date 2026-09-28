@@ -44,7 +44,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -4469,6 +4469,94 @@ class _DeliveryProgress:
     steer_await_entered: bool = False
 
 
+# Shielded steer deliveries whose awaiting frame was cancelled before they
+# finished. A shielded task is referenced only by the shield wrapper our frame
+# just dropped, so without a strong reference here the event loop may collect it
+# MID-RPC -- which is the very interruption the shield exists to prevent. Entries
+# remove themselves in the done callback, so the set holds at most the deliveries
+# currently outliving their caller.
+_ORPHANED_STEER_DELIVERIES: set["asyncio.Future[Any]"] = set()
+
+
+def _retain_orphaned_steer_delivery(
+    task: "asyncio.Future[Any]",
+    slot_key: str,
+    *,
+    unavailable_outcome: str | None = None,
+    on_unavailable: "Callable[[], Awaitable[None]] | None" = None,
+) -> None:
+    """Keep a shielded steer delivery alive after its caller stopped waiting.
+
+    The caller has already reported this delivery as cancelled-with-unknown-outcome,
+    so nothing downstream reads the result. Two things still have to happen. The
+    delivery coroutine's OWN reconciliation -- popping the per-text steer maps and
+    recording the transcript row -- which it does itself once it is not interrupted.
+    And the caller's post-outcome handling for ``unavailable_outcome``, which a
+    cancelled frame cannot run: that outcome means the text was never handed over,
+    so without ``on_unavailable`` queueing it the instruction is lost rather than
+    merely delayed. Logged either way, because this is the only trace that a
+    delivery completed after its caller moved on.
+    """
+    _ORPHANED_STEER_DELIVERIES.add(task)
+
+    def _done(finished: "asyncio.Future[Any]") -> None:
+        _ORPHANED_STEER_DELIVERIES.discard(finished)
+        if finished.cancelled():
+            # Only a loop shutdown reaches here: the shield absorbed the caller's
+            # cancellation, so nothing else cancels this task.
+            logger.warning(
+                "session_send: shielded steer delivery to %s was cancelled outright; "
+                "its steer bookkeeping may not have reconciled",
+                slot_key,
+            )
+            return
+        exc = finished.exception()
+        if exc is not None:
+            logger.warning(
+                "session_send: shielded steer delivery to %s finished with %r after "
+                "its caller stopped waiting",
+                slot_key,
+                exc,
+            )
+            return
+        outcome = finished.result()
+        logger.info(
+            "session_send: shielded steer delivery to %s finished with outcome=%s "
+            "after its caller stopped waiting",
+            slot_key,
+            outcome,
+        )
+        if on_unavailable is None or outcome != unavailable_outcome:
+            return
+        # Scheduled rather than awaited: a done callback runs on the loop and cannot
+        # await. Retained in the same set for the same reason the delivery is -- a
+        # task referenced only by a local would be collectible mid-queue.
+        fallback = asyncio.ensure_future(on_unavailable())
+        _ORPHANED_STEER_DELIVERIES.add(fallback)
+
+        def _fallback_done(done: "asyncio.Future[Any]") -> None:
+            _ORPHANED_STEER_DELIVERIES.discard(done)
+            if done.cancelled():
+                logger.warning(
+                    "session_send: the queue fallback for the orphaned steer to %s was "
+                    "cancelled; that message is not queued",
+                    slot_key,
+                )
+                return
+            exc = done.exception()
+            if exc is not None:
+                logger.warning(
+                    "session_send: the queue fallback for the orphaned steer to %s "
+                    "failed with %r; that message is not queued",
+                    slot_key,
+                    exc,
+                )
+
+        fallback.add_done_callback(_fallback_done)
+
+    task.add_done_callback(_done)
+
+
 async def send_to_target(
     state: "DashboardState",
     *,
@@ -4654,6 +4742,7 @@ async def send_to_target(
         from kiro_crew.dashboard.chat_delivery import (
             STEER_REQUEUED,
             STEER_STEERED,
+            STEER_UNAVAILABLE,
             steer_into_running_turn,
         )
 
@@ -4695,7 +4784,83 @@ async def send_to_target(
             )
 
         delivery_progress.steer_await_entered = True
-        outcome = await _await_authorized_delivery(_steer_delivery())
+
+        # Shielded, because THIS await is what `broadcast_to_targets` cancels when a
+        # target overruns `BROADCAST_TARGET_ALLOWANCE_SECS`, and
+        # `steer_into_running_turn` guards its own `client.steer` with
+        # `except Exception` -- which does not catch `CancelledError`. Awaited
+        # directly, the cancellation unwinds THROUGH the RPC and skips that
+        # coroutine's single reconciliation tail, while the bytes may already have
+        # reached kiro-cli: the turn then runs text no `slot.append` recorded, and
+        # `_steer_delivery_ids` / `_steer_send_ids` / `_steer_user_origin` /
+        # `_steer_admissions` are never popped. Nothing else pops them --
+        # `_settle_consumed_steers` clears only the attachment and decision-strip
+        # maps, and `_requeue_unconsumed_steers` returns early once settling emptied
+        # `_pending_steers`. The surviving `_steer_delivery_ids` entry then refuses
+        # this exact text on that slot forever (the one-per-text guard reads that
+        # dict) and `retained_steer_count` never falls back below
+        # `MAX_PENDING_STEERS`, after which the slot refuses every steer.
+        #
+        # The shield splits the two halves the cancellation conflated: our frame
+        # still receives it, so the broadcast reports its timeout row on schedule
+        # and the caller still hears "outcome unknown", while the delivery runs to
+        # its own end and reconciles itself. Inert on the direct `session_send`
+        # path, which has no per-target budget above it.
+
+        # The fallback a CANCELLED frame cannot reach. `STEER_UNAVAILABLE` means no
+        # live steer-capable client, an RPC that lost the text, or an identical steer
+        # already in flight -- in every case the text was never handed over and the
+        # shielded delivery has cleared its own per-text state, so nothing downstream
+        # holds it. The arm below queues it instead of dropping it; once the frame is
+        # gone that arm cannot run, and shielding the delivery
+        # without this would turn an outcome the caller recovers from into a lost
+        # instruction. Re-gated on the same terms as that arm, because the RPC
+        # suspended and the queue entry records the containment for the drain to
+        # re-assert: a snapshot taken now must not certify a link the authorization
+        # never saw.
+        async def _queue_after_orphaned_unavailable() -> None:
+            await prewarm_enabled_check()
+            regated = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=target,
+                operation="send",
+                precomputed_ownership_fenced=caller_fenced,
+            )
+            if regated is not slot:
+                # Object identity, for the reason the in-frame arm gives: a target
+                # closed and resumed under the same key is a different object whose
+                # key still compares equal, and queueing onto the detached one loses
+                # the text as surely as dropping it.
+                logger.warning(
+                    "session_send: orphaned steer to %s came back unavailable, but the "
+                    "target resolved to a different session; the message is not queued",
+                    slot.key,
+                )
+                return
+            slot.enqueue_or_run_prompt(
+                prompt,
+                _run_chat,
+                state,
+                extra_meta=send_origin_meta(state, caller_key),
+            )
+            logger.info(
+                "session_send: orphaned steer to %s came back unavailable and was "
+                "queued instead of lost",
+                slot.key,
+            )
+
+        _steer_task = asyncio.ensure_future(_steer_delivery())
+        try:
+            outcome = await _await_authorized_delivery(asyncio.shield(_steer_task))
+        except asyncio.CancelledError:
+            _retain_orphaned_steer_delivery(
+                _steer_task,
+                slot.key,
+                unavailable_outcome=STEER_UNAVAILABLE,
+                on_unavailable=_queue_after_orphaned_unavailable,
+            )
+            raise
         steered = outcome == STEER_STEERED
         # The turn ended while the steer RPC was suspended and its teardown moved
         # the text onto the queue: it WILL run, and taking the queue arm below
@@ -5065,6 +5230,10 @@ async def broadcast_to_targets(
     deny = _deny_factory(caller_session_key=caller_session_key, operation="broadcast", target="")
     caller_key = refuse_caller_identity(state, caller_session_key=caller_session_key, deny=deny)
     caller_slot = refuse_caller_surface(state, caller_key=caller_key, deny=deny)
+    # Captured for the re-check before the return below, on the same terms
+    # `created_session_status` captures it: this verb suspends many times between
+    # here and its payload, and the rows it returns name the caller's own sessions.
+    caller_workspace = str(getattr(caller_slot, "workspace", "default"))
     ownership_fenced = (
         _caller_is_ownership_fenced(state, caller_key) if caller_fenced is None else caller_fenced
     )
@@ -5314,6 +5483,29 @@ async def broadcast_to_targets(
             "chars": len(body),
         },
     )
+    # The entry gate RAN, but its verdict does not survive this verb's suspensions,
+    # and every `results` row below names one of the caller's own sessions. A channel
+    # mirror can be bound onto an already-open dashboard session while a delivery is
+    # awaiting -- the channel picker (`messaging/session_resume.py`) and the Slack
+    # link route (`slack/interactions.py`) both do it with no idle-slot requirement --
+    # so a payload built under the entry gate would reach that channel's audience
+    # carrying private session keys. Same re-check, same audited path, as
+    # `created_session_status` does after its scan; workspace is compared for the
+    # same reason (it IS reassigned on a live slot, while a live key is never rebound
+    # to a new object, so a slot-identity check could not fire).
+    #
+    # Raised AFTER the allowed audit above, deliberately: the deliveries were each
+    # individually gated and have already happened, so the trail must record them.
+    # What is refused is the report, which is why the message says so -- a caller
+    # that reads this as "the broadcast failed" and sends again delivers twice.
+    refuse_caller_surface(state, caller_key=caller_key, deny=deny)
+    if str(getattr(caller_slot, "workspace", "default")) != caller_workspace:
+        raise deny(
+            "the calling session moved workspace while this broadcast was in flight, "
+            "so the per-target report is withheld. The deliveries already happened -- "
+            "do NOT send the same text again; read the targets' own transcripts",
+            "caller_changed_mid_broadcast",
+        )
     return {
         "ok": True,
         "mode": mode,
@@ -5543,6 +5735,18 @@ async def created_session_status(
     # worker returns. Reading it inside the worker would let the result go stale
     # before these rows are built.
     live_children = broadcast_audience(state, caller_key)
+    # The SAME containment set `session_broadcast` resolves names against, resolved
+    # here once and applied to every live row below. Read after the re-check above,
+    # so a mirror bound during the scan is already reflected in it.
+    resolvable_keys = {
+        slot.key
+        for slot in _broadcast_resolution_slots(
+            state,
+            caller_key=caller_key,
+            caller_slot=caller_slot,
+            ownership_fenced=ownership_fenced,
+        )
+    }
 
     rows: list[dict[str, Any]] = []
     roster = set(tree_children) | set(history_children) | set(live_children)
@@ -5586,16 +5790,21 @@ async def created_session_status(
                 }
             )
             continue
-        if ownership_fenced and _created_by_other(slot, caller_key):
-            # The tree placed this row (an adoption), and the fence does not admit
-            # it. Dropped rather than reported without a title, because a fenced
-            # caller learning that a session it may not touch exists is the
-            # enumeration this fence prevents everywhere else.
-            continue
-        if getattr(slot, "workspace", "default") != getattr(caller_slot, "workspace", "default"):
-            # Workspaces are the memory boundary, and it is the same boundary
-            # `authorize_target` refuses across. A row the caller could not then
-            # message would be a listing of work it cannot see.
+        if slot.key not in resolvable_keys:
+            # ONE predicate for both verbs. These rows carry `display_title`, which
+            # for a channel-linked or mirrored session is derived from a conversation
+            # other people are in, and a creator whose worker is linked LATER would
+            # otherwise be handed that title on its next roster read. The row is
+            # dropped rather than reported title-less for the reason the workspace
+            # clause inside the predicate gives: `session_send` refuses this target
+            # too (`linked_session_target`, `mirrored_target`, `ephemeral_target`,
+            # `app_scoped_target`, `not_creator`), so a row here would be a listing
+            # of work the caller cannot message.
+            #
+            # Membership in `_broadcast_resolution_slots` rather than a second copy
+            # of its clauses, because one containment enforced in two places is one
+            # containment that can differ between them: a clause restated here is a
+            # clause that has to be restated again on every change to the predicate.
             continue
         queue_depth = len(slot._queue)
         # `slot.running` alone is not "busy": between a multi-stage plan's stages

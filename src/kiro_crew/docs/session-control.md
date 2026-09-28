@@ -230,6 +230,19 @@ The ownership fence applies to all three sources. A history row is shown only
 when its persisted `created_by` exactly names you and its workspace matches
 yours, so another caller's archived session and title do not appear.
 
+A LIVE row passes the same target containment `session_broadcast` resolves names
+against — one shared predicate, not a second copy of its clauses. So a session you
+created contributes no title and no live status once it becomes something you
+could not message anyway: bound to a channel thread, mirrored into one,
+app-scoped, ephemeral, or moved to another workspace. Rows carry titles, and a
+linked session's title is derived from a conversation other people are in.
+
+The containment covers LIVE rows. A session the attested tree recorded still
+leaves its titleless `gone` row once its slot is gone, which carries no title and
+no live state — it says only that a session on your own tree is not live. That
+tree follows the CURRENT parent edge, so it covers a session you adopted as well
+as one you created.
+
 The two quality fields describe the durable sources independently:
 
 | Field | Value | Meaning |
@@ -453,6 +466,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `create_rate_limited` | Per-caller creation budget spent — a fork spends the same budget |
 | `target_busy` | Model change only: the target has a turn or sub-agents in flight, so its model was not changed |
 | `invalid_broadcast_mode` | `session_broadcast` needs `mode` to be `queue` or `steer`; there is no default |
+| `caller_changed_mid_broadcast` | The calling session moved workspace while a broadcast was in flight, so its per-target report is withheld. The deliveries already happened — do not re-send |
 | `too_many_targets` | A broadcast reaches at most 50 sessions. Refused, never truncated — name a subset |
 | `target_required` | A broadcast was given a target list that names no session. Omit the list to reach everything you created |
 | `delivery_timeout` | One target exceeded its per-delivery bound, so the broadcast cancelled that call and continued. The row reflects the exact text's observed state: pending or queued means it may still run and must not be re-sent; absent from both means the hand-over was not reached and re-sending is safe; an unavailable original slot means the outcome is unknown and the row advises neither action. No case claims delivery or certain execution |
