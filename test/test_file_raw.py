@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers import api_file_raw
 
@@ -16,7 +17,7 @@ from kiro_crew.dashboard.handlers import api_file_raw
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-raw", api_file_raw)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture
@@ -337,7 +338,7 @@ async def test_the_envelope_still_rejects_a_symlink_for_both(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable on this platform/user")
 
-    app = web.Application()
+    app = as_owner(web.Application())
     app.router.add_get("/api/file-raw", api_file_raw)
     app.router.add_get("/api/file-download", api_file_download)
 

@@ -128,6 +128,15 @@ export function compareVersions(a: string, b: string): number | null {
   return compareTails(left.tail, right.tail)
 }
 
+/** True when `a` and `b` share the same numeric release core (`0.8.0` vs `0.8.0-insider.1`). */
+function sameReleaseCore(a: Parsed, b: Parsed): boolean {
+  const width = Math.max(a.core.length, b.core.length)
+  for (let i = 0; i < width; i++) {
+    if ((a.core[i] ?? 0) !== (b.core[i] ?? 0)) return false
+  }
+  return true
+}
+
 /**
  * True when a changelog section for *section* describes something this build has
  * and the reader has not been shown: `lastSeen < section <= running`.
@@ -137,12 +146,49 @@ export function compareVersions(a: string, b: string): number | null {
  * dev build was shown the last released line's notes. The lower one is what makes
  * the modal a diff rather than an archive.
  *
+ * ## The prerelease-of-its-own-release case
+ *
+ * `compareVersions` follows SemVer: a release outranks every prerelease of
+ * itself, so `compareVersions('0.8.0', '0.8.0-insider.1') === 1`. A strict
+ * `section <= running` upper bound therefore SUPPRESSES the `[0.8.0]` section on
+ * a `0.8.0-insider.1` build — the notes for the very release the reader is on —
+ * and the newest section that qualifies is `[0.7.1]` instead. That is the
+ * reported defect (an insider stepping 0.7.x -> 0.8.0-insider.N sees the 0.7.x
+ * notes front-and-center, 0.8.0 hidden below the fold).
+ *
+ * The fix relaxes the upper bound for EXACTLY that case: a RELEASE section (no
+ * prerelease tail) whose core equals the running build's core is in-build even
+ * though it outranks the running prerelease. It does NOT admit anything newer
+ * than the build: `[0.9.0]` on `0.8.0-insider.1` differs in core, and
+ * `[0.8.0-insider.3]` on `0.8.0-insider.1` carries a tail, so for both
+ * `section <= running` still governs and still excludes them.
+ *
+ * The lower bound gets the matching treatment. `[0.8.0]` also outranks every
+ * `0.8.0-*` the reader was on before, so without it the same release notes
+ * would re-open on each prerelease step (insider.1 -> .2 -> .3). A section
+ * admitted through the relaxation is therefore new only when `lastSeen` sits on
+ * an EARLIER core: the release line's notes open once, on the step into it.
+ *
  * Returns false whenever a comparison is unorderable, so a version spelling
  * nobody anticipated shows NO notes instead of the wrong ones.
  */
 export function isNewSection(section: string, lastSeen: string, running: string): boolean {
+  const parsedSection = parse(section)
+  const parsedRunning = parse(running)
+  if (!parsedSection || !parsedRunning) return false
   const withinBuild = compareVersions(section, running)
-  if (withinBuild === null || withinBuild > 0) return false
+  if (withinBuild === null) return false
+  // Upper bound: the section is at or below the running build, OR it is the
+  // release (no tail) of the very line the running build is a prerelease of.
+  const ownRelease = withinBuild > 0 && parsedSection.tail === '' && sameReleaseCore(parsedSection, parsedRunning)
+  if (withinBuild > 0 && !ownRelease) return false
   const afterSeen = compareVersions(section, lastSeen)
-  return afterSeen !== null && afterSeen > 0
+  if (afterSeen === null || afterSeen <= 0) return false
+  // Lower bound, for the relaxed case: a reader already on this line has had
+  // the release's notes; only a step in from an earlier core opens them.
+  if (ownRelease) {
+    const parsedSeen = parse(lastSeen)
+    return !!parsedSeen && !sameReleaseCore(parsedSection, parsedSeen)
+  }
+  return true
 }

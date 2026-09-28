@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
+from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_INSTRUCTION,
     extracted_lesson_applies,
@@ -222,6 +223,11 @@ def _fmt_message(message: dict) -> str:
         f"[{message.get('ts', '?')[:16]}] {message['role'].upper()}"
         f"{tools}: {message['content']}"
     )
+
+
+def _prompt_rows(messages: list[dict]) -> list[dict]:
+    """*messages* without display-only rows, which no consolidation prompt carries."""
+    return [m for m in messages if m.get("role") not in DISPLAY_ONLY_ROLES]
 
 
 _PLACEHOLDER_BODIES = frozenset(
@@ -995,6 +1001,21 @@ class HistoryConsolidator:
             unconsolidated = copy.deepcopy(unconsolidated)
             if not unconsolidated:
                 return None
+            # Display-only rows (``notice``) are text drawn for the person
+            # reading the transcript, not conversation: the Slack thread-parent
+            # row is untrusted text whose only route to a model is a fenced block.
+            # They never reach the prompt below, but they stay in
+            # ``unconsolidated`` and ``total``, so a history pass can move
+            # its offset past them. A span of nothing else has nothing to
+            # learn from, so no model call is made; a history pass also marks
+            # it consolidated, and a skill-detection pass leaves the offset
+            # to that pass as every other early return here does.
+            if not _prompt_rows(unconsolidated):
+                if include_history:
+                    await asyncio.to_thread(
+                        self._log.mark_consolidated, key, total, generation_at_snapshot
+                    )
+                return None
             # Retry-eligibility choke point: every entry point funnels through
             # this function, so a span inside its durable backoff is refused
             # here — before anything that can bill a provider turn — even if a
@@ -1117,7 +1138,7 @@ class HistoryConsolidator:
                         )
                     return None
 
-            conversation = "\n".join(_fmt_message(m) for m in unconsolidated)
+            conversation = "\n".join(_fmt_message(m) for m in _prompt_rows(unconsolidated))
 
             current_prefs, current_projects = await asyncio.to_thread(
                 lambda: (memory.read_preferences(), memory.read_projects())
@@ -1762,7 +1783,7 @@ class HistoryConsolidator:
                 "if nothing was refined. Do not fabricate refinements."
             )
         numbered = "\n\n".join(f"{i + 1}. {k}" for i, k in enumerate(skill_keys))
-        conversation = "\n".join(_fmt_message(m) for m in window)
+        conversation = "\n".join(_fmt_message(m) for m in _prompt_rows(window))
         prompt = (
             "You are a skill-extraction agent. Review this session excerpt and "
             "return a JSON object with these keys:\n\n"

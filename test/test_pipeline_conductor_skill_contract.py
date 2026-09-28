@@ -1203,13 +1203,20 @@ class TestAdmissionIsSizedOnDelivery:
         assert "`mv`" in admission
 
     def test_the_banned_pytest_rule_is_described_as_the_code_implements_it(self):
-        """The rule flags a run whose worker count was not explicitly chosen. It
-        is NOT "an unbounded -n", and a bare pytest is not the safe form: it
-        inherits the project's addopts."""
+        """The rule flags a run whose worker pool bypasses the budget: an explicit
+        numeric ``-n`` of two or more. ``auto`` and a bare pytest are the budgeted
+        forms (the bare one inherits ``-n auto`` from ``addopts``) and are quiet, as
+        are the single-process ``-n0`` / ``-n 1``."""
         admission = _flat(_skill_section(self.HEADING))
-        assert "not explicitly chosen" in admission
-        assert "bare `pytest` is therefore flagged" in admission
+        assert "bypasses the budget" in admission
+        assert "two or more" in admission
+        assert "bare `pytest` are quiet" in admission
         assert "inherits the project's `addopts`" in admission
+        assert "`-n0` and `-n 1` are quiet" in admission
+        assert "last one wins" in admission
+        # The inverted sense, which the admission must not describe.
+        assert "not explicitly chosen" not in admission
+        assert "bare `pytest` is therefore flagged" not in admission
 
     def test_the_banned_response_is_keyed_on_four_ownership_classes(self):
         """Keying it on one actionable-or-not boolean forces an unclassified line

@@ -336,7 +336,11 @@ class TestStageTreeSafe:
         real_dir = tmp_path / "elsewhere"
         real_dir.mkdir()
         os.symlink(str(real_dir), str(src / "linkdir"))
-        with pytest.raises(RuntimeError, match="symlinked directory"):
+        # Anchored on the prefix, because a bare "linked directory" is a SUBSTRING of
+        # "symlinked directory" and would pass whichever word the message carries.
+        # The fence names a link of either kind, a symlink here and a Windows
+        # junction on the arm test_junction_link_fences.py covers.
+        with pytest.raises(RuntimeError, match="in-tree: linked directory"):
             handlers._stage_tree_safe(src, tmp_path / "stage")
 
     def test_unstattable_file_blocks_staging(self, tmp_path: Path, monkeypatch):

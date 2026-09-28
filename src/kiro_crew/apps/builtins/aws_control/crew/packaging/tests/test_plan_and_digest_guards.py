@@ -283,7 +283,9 @@ def test_a_symlinked_root_is_refused_even_without_the_outer_redirect_guard(
     anything relative to it. The anchor is the subject the recursive delete is relative to, so
     a verdict about a root that was never verified is a verdict about the wrong tree.
     """
-    mod = load_build(mutate=("        if _is_redirecting_entry(candidate):", "        if False:"))
+    mod = load_build(
+        mutate=("        if _pinned._is_redirecting_entry(candidate):", "        if False:")
+    )
     home = make_crew(tmp_path / "home", skills={"faq": {"SKILL.md": "# FAQ\n"}})
     # Build a real bundle elsewhere, then point --out at a symlink to it: the ownership check
     # would otherwise follow the link and validate the target as "ours", then delete through it.
@@ -475,7 +477,7 @@ def test_MUTATION_without_the_shape_scan_a_symlinked_plan_read_is_followed(
     """
     mod = load_build(
         mutate=(
-            "    if _is_redirecting_entry(p):\n"
+            "    if _pinned._is_redirecting_entry(p):\n"
             "        # ``is_symlink()`` was the test here and it is too narrow: a Windows JUNCTION is a\n"
             "        # reparse point that is not reported as a symlink, and ``shutil.rmtree`` traverses one\n"
             "        # on Windows rather than unlinking it as it does a symlink. So a junction planted\n"

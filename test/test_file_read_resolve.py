@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers import api_file_read
 
@@ -15,7 +16,7 @@ from kiro_crew.dashboard.handlers import api_file_read
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-read", api_file_read)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture()

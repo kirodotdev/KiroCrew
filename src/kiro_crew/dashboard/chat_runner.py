@@ -21,6 +21,7 @@ from kiro_crew import (
     mcp_apps_render,
     model_registry,
     resource_status,
+    runtime_death,
     session_directive,
     shutdown_event,
 )
@@ -6257,6 +6258,14 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
     ``self_wake`` is the fire path's own marker: only the loop's OWN cycle may
     spend its stand-down budget, or a human turn that happened to be starved on a
     slot that also carries a loop would stop one the human never drove.
+
+    This does not ask whose failure the death was, so a shared runtime dying
+    during a session start advances the streak of every loop on that process.
+    Asking requires the runtime the allocation was attempting, and nothing in
+    scope at a start failure names it: the provider does not exist yet -- that is
+    what failed -- and the exception carrying the tag carries no runtime identity.
+    Closing it belongs at the raise sites, which would have to carry that
+    identity.
 
     The tag is read with ``getattr`` because the two ACP exception families carry
     it independently and share no base -- which is also why this is a helper
@@ -16907,8 +16916,24 @@ async def _run_chat(
                 # No explicit chat_message: slot.append already emits ONE, and it
                 # carries `meta` -- a second frame here would arrive untagged.
 
-            if _prompt_depth == 0 and slot._acp_pipe_death_retries < SESSION_RECOVERY_MAX_ATTEMPTS:
-                slot._acp_pipe_death_retries += 1
+            # Attribution, as in the AcpProcessDied handler: a process this slot
+            # shared dying is not this slot's failure, so it advances the
+            # shared-death streak instead of this slot's recovery budget. Both
+            # are bounded by the same ladder limit, so the re-queue stays bounded
+            # either way, and a single-tenant runtime is unchanged.
+            _own_fault = runtime_death.caused_by_this_session(client)
+            # Whichever count is further along bounds the re-queue. Reading only
+            # the shared streak here would REFUND budget the slot already spent:
+            # after three own-fault deaths a shared one would read as 1 and hand
+            # the slot fresh attempts it had used up.
+            _death_attempts = max(
+                slot._acp_pipe_death_retries, runtime_death.shared_deaths(slot.key)
+            )
+            if _prompt_depth == 0 and _death_attempts < SESSION_RECOVERY_MAX_ATTEMPTS:
+                if _own_fault:
+                    slot._acp_pipe_death_retries += 1
+                else:
+                    runtime_death.note_shared_death(slot.key)
                 _requeue_text, _requeue_payload = build_recovery_requeue(
                     message,
                     _turn_emitted,
@@ -16922,8 +16947,14 @@ async def _run_chat(
                     payload=_requeue_payload,
                 )
                 _emit_error(f"⟳ Connection lost{_rc_suffix} — retrying...", will_retry=True)
-            elif slot._acp_pipe_death_retries >= SESSION_RECOVERY_MAX_ATTEMPTS:
-                _emit_error(f"Session stuck{_rc_suffix} — please start a new chat.")
+            elif _death_attempts >= SESSION_RECOVERY_MAX_ATTEMPTS:
+                if _own_fault:
+                    _emit_error(f"Session stuck{_rc_suffix} — please start a new chat.")
+                else:
+                    _emit_error(
+                        f"The agent process this chat shares kept restarting{_rc_suffix}"
+                        " — please retry."
+                    )
             else:
                 _emit_error(f"⟳ Connection lost{_rc_suffix} — please retry.")
             return
@@ -18118,6 +18149,11 @@ async def _run_chat(
             slot._tool_stall_exhausted_emitted = False
             slot._transient_5xx_retries = 0
             slot._infra_retries = 0
+            # Same evidence, same reason, for the streak of deaths that belonged
+            # to a process this slot was sharing rather than to the slot itself:
+            # a landed turn proves recovery worked, so the next shared death
+            # starts its own count instead of inheriting one.
+            runtime_death.clear_shared_deaths(slot.key)
             # A turn that LANDED proves this session can start, so clear any
             # start-failure streak a monitoring loop bound to this slot recorded.
             # Any landed turn counts, a human's as much as a cycle's: the streak
@@ -18590,10 +18626,36 @@ async def _run_chat(
         _crew_log_error = type(exc).__name__
         needs_session_reset = True
         _persist_partial_reply()
-        slot._acp_pipe_death_retries += 1
+        # WHOSE failure was this? A process this slot was sharing -- with a
+        # sub-agent of its own, or with a co-tenant session -- died for reasons
+        # this slot has no account of, and charging it to this slot's recovery
+        # budget is what put "Session stuck — please start a new chat" in front
+        # of users who had done nothing. The death was classified ONCE where it
+        # was detected, so this reads that record rather than forming its own.
+        #
+        # Recovery still has to be bounded, so the attempt is counted either way
+        # -- against this slot when the runtime was its own, against the
+        # shared-death streak when it was not, under the SAME ladder limit. A
+        # single-tenant runtime, which is every runtime at cap 1 with no
+        # sub-agent on it, takes the first branch and behaves exactly as before.
+        _own_fault = runtime_death.caused_by_this_session(client)
+        if _own_fault:
+            slot._acp_pipe_death_retries += 1
+        else:
+            runtime_death.note_shared_death(slot.key)
+        # Both counts run side by side and the limit is tested against whichever
+        # is further along, so a shared death never refunds spent budget.
+        _death_attempts = max(slot._acp_pipe_death_retries, runtime_death.shared_deaths(slot.key))
+        if not _own_fault:
+            logger.warning(
+                "slot %s lost a turn to a SHARED runtime's death (%d running) — "
+                "re-queuing without charging this session",
+                slot.key,
+                _death_attempts,
+            )
         if _should_suppress_requeue(slot):
             pass
-        elif _prompt_depth == 0 and slot._acp_pipe_death_retries <= SESSION_RECOVERY_MAX_ATTEMPTS:
+        elif _prompt_depth == 0 and _death_attempts <= SESSION_RECOVERY_MAX_ATTEMPTS:
             # Persisted card: reliably visible at turn-teardown (an ephemeral
             # chat_status is dropped by the frontend once the streaming turn ends).
             # slot.append already emits ONE chat_message (via _on_message /
@@ -18614,8 +18676,20 @@ async def _run_chat(
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=_requeue_payload,
             )
-        elif slot._acp_pipe_death_retries > SESSION_RECOVERY_MAX_ATTEMPTS:
-            slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+        elif _death_attempts > SESSION_RECOVERY_MAX_ATTEMPTS:
+            # Two verdicts, because the user's next move differs. A session whose
+            # OWN runtime keeps dying is stuck and a fresh chat is the fix; a
+            # session riding a process that keeps being taken out from under it is
+            # not stuck at all, and telling that user to start over would discard
+            # a healthy conversation over someone else's fault.
+            if _own_fault:
+                slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+            else:
+                slot.append(
+                    "error",
+                    "The agent process this chat shares kept restarting — please retry.",
+                    "msg msg-err",
+                )
         else:
             slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
     except PromptBusyExhaustedError:
@@ -18698,9 +18772,32 @@ async def _run_chat(
             # _acp_pipe_death_retries counter with the AcpProcessDied handler;
             # genuine "already in progress" busy uses _prompt_busy_retries.
             _is_pipe_death = "process exited" in _msg or "not running" in _msg
+            # Bound BEFORE the branch, not inside it. Both arms below fall
+            # through to the same `elif _exhausted:` reporting, which reads this
+            # flag -- so binding it only where a death is involved leaves the
+            # genuine-busy path reading an unbound local and raising
+            # UnboundLocalError *inside* an except handler, which escapes past
+            # the finally and replaces the terminal card with nothing. True is
+            # also the right answer for busy: nothing shared died, the slot's own
+            # conversation is occupied, so the pre-existing "start a new chat"
+            # verdict is the correct one and stays unchanged.
+            _own_fault = True
             if _is_pipe_death:
-                slot._acp_pipe_death_retries += 1
-                _exhausted = slot._acp_pipe_death_retries > SESSION_RECOVERY_MAX_ATTEMPTS
+                # Same attribution question as the AcpProcessDied handler below,
+                # and the same answer: this arm catches the pipe-death that
+                # arrives as an AcpError instead of a typed one, so a shared
+                # process's death must not land on this slot's budget here
+                # either. A single-tenant runtime takes the first branch and is
+                # unchanged.
+                _own_fault = runtime_death.caused_by_this_session(client)
+                if _own_fault:
+                    slot._acp_pipe_death_retries += 1
+                else:
+                    runtime_death.note_shared_death(slot.key)
+                _exhausted = (
+                    max(slot._acp_pipe_death_retries, runtime_death.shared_deaths(slot.key))
+                    > SESSION_RECOVERY_MAX_ATTEMPTS
+                )
                 _status = "⟳ Connection lost — retrying…"
             else:
                 slot._prompt_busy_retries += 1
@@ -18710,9 +18807,21 @@ async def _run_chat(
                 pass
             elif _exhausted:
                 logger.info(
-                    "Retry budget exhausted for slot %s — surfacing 'Session stuck'", slot.key
+                    "Retry budget exhausted for slot %s (own_fault=%s)", slot.key, _own_fault
                 )
-                slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+                # Same two verdicts as the sibling arms: telling a user whose
+                # conversation is healthy to discard it, because a process it
+                # merely shared kept dying, is the harm this whole change removes
+                # -- and this arm reaches the same users, just via a plain
+                # AcpError rather than the typed death.
+                if _own_fault:
+                    slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
+                else:
+                    slot.append(
+                        "error",
+                        "The agent process this chat shares kept restarting — please retry.",
+                        "msg msg-err",
+                    )
             elif _prompt_depth == 0:
                 # Single emit (see AcpProcessDied note): slot.append persists +
                 # broadcasts one chat_message via _on_message; no explicit broadcast_ws.
@@ -18720,7 +18829,11 @@ async def _run_chat(
                     "Re-queuing slot %s after transient (pipe_death=%s, attempt %d)",
                     slot.key,
                     _is_pipe_death,
-                    slot._acp_pipe_death_retries if _is_pipe_death else slot._prompt_busy_retries,
+                    (
+                        max(slot._acp_pipe_death_retries, runtime_death.shared_deaths(slot.key))
+                        if _is_pipe_death
+                        else slot._prompt_busy_retries
+                    ),
                 )
                 slot.append("error", _status, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
                 _requeue_text, _requeue_payload = build_recovery_requeue(

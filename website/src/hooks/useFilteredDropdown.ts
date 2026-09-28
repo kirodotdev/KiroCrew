@@ -12,6 +12,10 @@ export function useFilteredDropdown<T extends { name: string }>(items: T[]) {
     if (!open) { setFilter(''); return }
     const close = (e: MouseEvent) => {
       if (dropdownRef.current?.contains(e.target as Node)) return
+      // A help tooltip opened from inside the dropdown (InfoTip) is portaled
+      // to document.body, so a click on its text lands outside dropdownRef.
+      // That click is aimed at the help, not at dismissing the picker.
+      if ((e.target as Element | null)?.closest?.('[role="tooltip"]')) return
       setOpen(false)
     }
     const t1 = setTimeout(() => document.addEventListener('click', close), 0)

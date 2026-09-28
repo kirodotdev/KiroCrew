@@ -686,8 +686,8 @@ composition benefit.
 
 So `api/apiTransport.ts` **exports** the blessed `apiTransport`, the same
 `get`/`post`/`put`/`del`/`patch` plus `j`/`jNullable` the core methods use
-(`client.ts` installs them via `installApiTransport` at its module load). An
-edition builds its OWN fully-typed API module on it:
+(`client.ts` defines them and installs them via `installApiTransport` at its
+module load). An edition builds its OWN fully-typed API module on it:
 
 ```ts
 import { apiTransport as t } from '../api/apiTransport'
@@ -712,6 +712,19 @@ only at runtime in the out-of-repo edition. Changing a request helper's shape or
 Each `apiTransport` method is a stable wrapper that resolves the installed helper
 at call time, so an edition may import and even destructure it at module init
 without an ordering hazard against `extensions.ts`.
+
+The core's own methods sit on the same helpers. They are defined by domain in
+`api/client/*.ts`, one module per product area (chat, memory, security, …), each
+a `create*Endpoints` factory that `client.ts` hands the transport it owns
+(`ClientTransport`, `api/client/transport.ts`): the five helpers, the two
+parsers, the shared `X-Session-Key` header, and the session-expiry hooks a
+method that reads its own response calls. None of them imports a runtime value
+from `client.ts` (the telemetry module takes the Kiro usage types defined there
+as types only), so the transport and its recovery keep one definition.
+`client.ts` spreads their
+segments into the one `api` object, in its original key order, and re-exports
+their wire types. That split is core-internal: the seam is still
+`apiTransport`, and an edition never imports a domain module.
 
 Trust boundary: the transport carries the session key. It is for the edition
 composition root, **never** for app or plugin-contributed frontend code.

@@ -1482,7 +1482,7 @@ class WebexDispatcher:
                         # they were recorded. A space shares one bubble between members,
                         # so without this the flip retires it over lines that are still
                         # queued and the second member's acknowledgement disappears.
-                        _entry_owner(envelope),
+                        owner=_entry_owner(envelope),
                     )
             if not texts or place is None:
                 return

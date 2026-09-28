@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { filterInteractiveModels, legacyCodexEffort, normalizeHiddenModels, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { effortToCarry, filterInteractiveModels, legacyCodexEffort, normalizeHiddenModels, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 
 const MODELS = [
   { name: 'auto', description: '' },
@@ -116,15 +116,131 @@ describe('interactive model visibility', () => {
     expect(legacyCodexEffort('claude-opus-4.8[1m]', '', true)).toBe('')
   })
 
-  it('commits a legacy effort before switching the grouped model', async () => {
-    const calls: string[] = []
-    await switchGroupedModel('max', async level => { calls.push(`effort:${level}`) }, async () => { calls.push('model') })
-    expect(calls).toEqual(['effort:max', 'model'])
+  it('carries a staged effort pick over the store and over a legacy pair level', () => {
+    // The store lags the slider: a pick inside its debounce is only staged,
+    // and a model pick in that window must not migrate the stale pair level
+    // back over the user's choice. An effort already on the wire is NOT a
+    // carry (it is waited for instead -- see the in-flight test below).
+    expect(effortToCarry('gpt-6-sol[max]', '', 'high', false, true)).toBe('high')
+    expect(effortToCarry('gpt-6-sol[max]', '', '', false, true)).toBe('')
+    expect(effortToCarry('gpt-6-sol[max]', '', null, false, true)).toBe('max')
+    expect(effortToCarry('gpt-6-sol[max]', 'high', null, false, true)).toBeNull()
+    expect(effortToCarry('gpt-6-sol', '', null, false, true)).toBeNull()
+    expect(effortToCarry('gpt-6-sol[max]', '', 'low', false, false)).toBe('low')
+  })
 
-    const failingModel = vi.fn()
-    await expect(switchGroupedModel('max', async () => { throw new Error('effort refused') }, failingModel))
-      .rejects.toThrow('effort refused')
-    expect(failingModel).not.toHaveBeenCalled()
+  it('does not migrate a legacy pair level over an effort write already in flight', () => {
+    // The slider's stage clears the moment its wire call begins, and the
+    // store reads '' until that write lands -- exactly the state the legacy
+    // branch matches. Migrating `max` there would queue it behind the user's
+    // `high` and win the chain, silently reverting the pick.
+    expect(effortToCarry('gpt-6-sol[max]', '', null, true, true)).toBeNull()
+    // A stage made after the in-flight write still carries over it.
+    expect(effortToCarry('gpt-6-sol[max]', '', 'low', true, true)).toBe('low')
+  })
+
+  it('registers the model pick at once and sends it only after the carried effort', async () => {
+    const calls: string[] = []
+    let releaseEffort!: () => void
+    const effortWire = new Promise<void>(resolve => { releaseEffort = resolve })
+    const run = switchGroupedModel('', async level => {
+      calls.push(`effort-begin:${JSON.stringify(level)}`)
+      await effortWire
+      calls.push('effort-done')
+    }, async afterEffort => {
+      // The model switch takes its ticket NOW -- before the effort settles --
+      // and defers only its wire send behind the effort write.
+      calls.push('model-registered')
+      await afterEffort
+      calls.push('model-sent')
+    })
+    expect(calls).toEqual(['effort-begin:""', 'model-registered'])
+    releaseEffort()
+    await run
+    expect(calls).toEqual(['effort-begin:""', 'model-registered', 'effort-done', 'model-sent'])
+
+    calls.length = 0
+    await switchGroupedModel(null, async level => { calls.push(`effort:${level}`) }, async afterEffort => { await afterEffort; calls.push('model') })
+    expect(calls).toEqual(['model'])
+  })
+
+  it('waits for an in-flight effort verdict instead of re-sending it, and aborts on its refusal', async () => {
+    // A level already on the wire must not be written twice: the repeat would
+    // queue behind the original and burn its own confirm budget waiting. The
+    // model pick waits on the original's verdict; a refusal aborts the pick
+    // exactly as a refused carried write does.
+    const calls: string[] = []
+    let settle!: () => void
+    const verdict = new Promise<void>(resolve => { settle = resolve })
+    const run = switchGroupedModel(null, async level => { calls.push(`effort:${level}`) }, async afterEffort => {
+      calls.push('model-registered')
+      await afterEffort
+      calls.push('model-sent')
+    }, () => verdict)
+    await Promise.resolve()
+    expect(calls).toEqual(['model-registered'])
+    settle()
+    await run
+    expect(calls).toEqual(['model-registered', 'model-sent'])
+
+    const sent = vi.fn()
+    await expect(switchGroupedModel(null, async () => {}, async afterEffort => {
+      await afterEffort
+      sent()
+    }, () => Promise.reject(new Error('effort refused')))).rejects.toThrow('effort refused')
+    expect(sent).not.toHaveBeenCalled()
+  })
+
+  it('waits on the carried write\'s wire verdict, not on its caller budget', async () => {
+    // persistEffort resolves or rejects on the CALLER's confirm budget; the
+    // wire call outlives it. Read after the write registered, the verdict is
+    // what the model send waits on -- so an effort released unconfirmed
+    // defers the model POST until the wire settles instead of cancelling it.
+    const calls: string[] = []
+    let settle!: () => void
+    const verdict = new Promise<void>(resolve => { settle = resolve })
+    const run = switchGroupedModel('high', async () => { throw new Error('not confirmed') }, async afterEffort => {
+      calls.push('model-registered')
+      await afterEffort
+      calls.push('model-sent')
+    }, () => verdict)
+    // The caller still hears about the unconfirmed effort.
+    await expect(run).rejects.toThrow('not confirmed')
+    expect(calls).toEqual(['model-registered'])
+    settle()
+    await verdict
+    await Promise.resolve()
+    expect(calls).toEqual(['model-registered', 'model-sent'])
+  })
+
+  it('a refused effort write aborts the model send it was carried by', async () => {
+    const sent = vi.fn()
+    await expect(switchGroupedModel('max', async () => { throw new Error('effort refused') }, async afterEffort => {
+      await afterEffort
+      sent()
+    })).rejects.toThrow('effort refused')
+    expect(sent).not.toHaveBeenCalled()
+  })
+
+  it('a newer pick made during the older effort write keeps the higher model ticket', async () => {
+    // Regression for the ordering race: with the model registered only after
+    // its effort settled, pick B (no effort) registered before pick A's
+    // model and A's later registration overwrote B. Registration order must
+    // equal click order regardless of how long each carried effort takes.
+    const registered: string[] = []
+    let releaseA!: () => void
+    const effortA = new Promise<void>(resolve => { releaseA = resolve })
+    const pickA = switchGroupedModel('high', async () => { await effortA }, async afterEffort => {
+      registered.push('A')
+      await afterEffort
+    })
+    const pickB = switchGroupedModel(null, async () => {}, async afterEffort => {
+      registered.push('B')
+      await afterEffort
+    })
+    expect(registered).toEqual(['A', 'B'])
+    releaseA()
+    await Promise.all([pickA, pickB])
   })
 
   it('trims, deduplicates, and ignores invalid config entries', () => {

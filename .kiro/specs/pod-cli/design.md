@@ -12,7 +12,7 @@ used elsewhere in the CLI.
 src/kiro_crew/pod/
   __init__.py     # exports PodConfig, PodError, derive_port, resolve_checkout, pod_home, pod_unit
   config.py       # PodConfig dataclass — every path/knob, KIROCREW_POD_*-overridable
-  runtime.py      # git worktree resolution, port derivation, systemd wrappers, boot, token mint
+  runtime.py      # git worktree resolution, systemd wrappers; facade over runtime_ports.py (port derivation), runtime_boot.py (boot), runtime_client.py (token mint)
   provision.py    # venv + SPA-dist build (the on-ramp)
   unit.py         # systemd --user template unit (generated, not shipped)
   cli.py          # thin verb layer (up/down/ls/status/token/url/logs/install/provision)

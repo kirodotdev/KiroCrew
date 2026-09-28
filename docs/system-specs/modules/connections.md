@@ -5,7 +5,7 @@ endpoints a card drives, where credential custody sits, warm prewarming, owner-o
 disconnect, the automated L0/L1 gates, and the manual L2 gate. The subsystem is
 `src/kiro_crew/connections/` (`registry.py`, `mint.py`, `warm.py`, `status.py`,
 `ownership.py`, `oauth_clients.py`, `tool_aliases.py`, `alias_record.py`,
-`l0_probe.py`, `l0_drift.py`, `l0_record.py`, `l1_smoke.py`, `tool_test.py`, and
+`l0_probe.py`, `l0_drift.py`, `l0_record.py`, `l1_smoke.py`, `tool_test.py`, `warm_runtime/`, and
 `control_plane/`), plus `dashboard/handlers/connections.py` and
 `website/src/pages/connections/`.
 
@@ -1098,7 +1098,7 @@ presented at the token endpoint) and `redirectUri` (pins the loopback host, port
 and path). `agent._apply_operator_oauth_client` writes the three at agent-spec
 emission for a server whose name is the provider slug **and** whose URL is the
 registry `mcp_url` (`provider_for_server` — name alone would land an operator's
-client on a hand-authored stranger); `warm._registry_server_entry` does the same
+client on a hand-authored stranger); `warm_runtime.spec_plan._registry_server_entry` does the same
 for the premint path and answers `None` for an unconfigured provider so nothing
 warms against a vendor that will only say "unknown client". The mint spec copies
 the emitted entry verbatim, so the cold path inherits it.

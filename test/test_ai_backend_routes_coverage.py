@@ -172,8 +172,15 @@ def _request(
     body: Any = None,
     match_info: dict[str, str] | None = None,
 ) -> web.Request:
-    """A mocked request whose ``json()`` yields ``body`` (or raises for a sentinel)."""
-    request = make_mocked_request(method, path, match_info=match_info or {})
+    """A mocked request whose ``json()`` yields ``body`` (or raises for a sentinel).
+
+    It carries the dashboard owner's claims, so owner-gated routes reach their body.
+    """
+    app = web.Application()
+    app["state"] = mock.MagicMock(owner_id="owner-subject")
+    request = make_mocked_request(method, path, match_info=match_info or {}, app=app)
+    request["app"] = ""
+    request["user"] = "owner-subject"
     if body is _BAD_JSON:
         request.json = mock.AsyncMock(  # type: ignore[method-assign]
             side_effect=ValueError("not json")

@@ -4,7 +4,7 @@
 // that move: these tests describe reality, not intention, and editing them in
 // the migration PR is itself a review red flag.
 //
-// Asserted against SOURCE TEXT (the fadeClearance suite's technique) because
+// Asserted against SOURCE TEXT (the dockClearance suite's technique) because
 // most of the shell's load-bearing contracts are invisible to jsdom: it has no
 // layout engine, so `overscrollBehavior`, `scrollbarGutter`, gradient
 // geometry, and element ORDER inside the scroller can only be pinned where
@@ -77,11 +77,12 @@ describe('scroll shell: the scroller element contract', () => {
     expect(scroller()).toContain('flex: 1,')
   })
 
-  it('carries the second half of the fade-band clearance as px padding', () => {
+  it('carries the floating dock clearance as host-owned padding', () => {
     // Pairs with TRANSCRIPT_TAIL_SPACER_PX; unlike the tail spacer it also
-    // applies to a transcript too short to scroll (fadeClearance pins the sum).
-    // HOST-owned geometry: the page supplies it, wherever the scroller lives.
-    expect(SRC).toContain('paddingBottom: 16')
+    // applies to a transcript too short to scroll (dockClearance pins the
+    // wiring). HOST-owned geometry: the page supplies it, wherever the scroller
+    // lives, as the dock's measured height plus a px constant.
+    expect(SRC).toContain('paddingBottom: dockH + DOCK_CLEARANCE_PX')
   })
 
   it('pins overflow-x so one over-wide child cannot give the list a horizontal scrollbar', () => {
@@ -240,12 +241,20 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
   })
 })
 
-describe('scroll shell: bottom mask and jump pill', () => {
-  it('keeps the measured-mask recipe (geometry itself is pinned by fadeClearance)', () => {
-    expect(SHELL).toContain('className="bg-gradient-to-t from-bg from-[62%] to-transparent pointer-events-none relative z-[1]"')
-    // Decorative: the mask must never be announced by a screen reader.
-    const mask = between('{/* Transcript bottom mask', '<div className="relative">')
-    expect(mask).toContain('aria-hidden')
+describe('scroll shell: floating dock and jump pill', () => {
+  it('follows the scroller with the floating dock root (geometry itself is pinned by dockClearance)', () => {
+    // The dock is the next positioned sibling after the scroller: that DOM order,
+    // not a z-index, is what paints it over the transcript.
+    const shellEnd = SRC.indexOf('<TranscriptScrollShell')
+    const dock = SRC.indexOf('data-testid="composer-dock-root"')
+    expect(shellEnd).toBeGreaterThan(0)
+    expect(dock).toBeGreaterThan(shellEnd)
+    // No bottom fade under the floating dock: the transcript reads through the
+    // glass. Scoped to the page — the shared <EdgeFade side="bottom"> in
+    // ChatScrollChrome stays for its other consumers (ChatPane).
+    const page = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    expect(page).not.toContain('<EdgeFade side="bottom"')
+    expect(page).not.toContain('bg-gradient-to-t from-bg')
   })
 
   it('mounts the shared jump pill: visible only away from the bottom of a non-empty transcript, jump = forced pin through the single scroll controller', () => {

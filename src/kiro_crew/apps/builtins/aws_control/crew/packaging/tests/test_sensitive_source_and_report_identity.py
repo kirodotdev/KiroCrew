@@ -17,7 +17,15 @@ import shutil
 
 import pytest
 
-from .test_producer import load_build, make_crew, sign_plan
+from .test_producer import (
+    builder_source_text,
+    load_build,
+    make_crew,
+    patch_builder_global,
+    sign_plan,
+    source_defining,
+    transaction_source,
+)
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -421,7 +429,7 @@ def test_build_bundle_calls_the_parent_guard_first() -> None:
     A guard placed after ``staging = out_dir.parent / ...`` would pass a direct test of the
     guard while the derived paths were already built from an unvalidated parent.
     """
-    src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    src = transaction_source()
     body = src[src.index("def build_bundle(") :]
     guard = body.index('_refuse_unusable_parent(out_dir, what="the bundle")')
     first_derived = body.index('staging = out_dir.parent / (out_dir.name + ".staging")')
@@ -438,7 +446,7 @@ def test_the_report_is_published_atomically_by_exclusive_link(tmp_path: pathlib.
     hard link means the destination holds either the old bytes or the complete new ones, and
     a file that raced into the path is refused (``FileExistsError``) rather than clobbered.
     """
-    src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    src = builder_source_text()
     assert (
         "os.link(tmp_name, leaf_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)" in src
     ), "the report publish is not an atomic exclusive hard link"
@@ -457,7 +465,7 @@ def test_the_atomic_publish_still_refuses_a_planted_link() -> None:
     check stated explicitly before the publish is what names WHY a planted link is refused --
     so the destination's shape is judged before the report is published.
     """
-    src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    src = transaction_source()
     publish_at = src.index("_publish_report(report_tmp, report_path")
     shape_at = src.index("_is_redirecting_entry(report_path)")
     assert 0 <= shape_at < publish_at, (
@@ -504,8 +512,8 @@ def test_MUTATION_a_linked_dir_would_not_block_without_the_redirect_check(
 
     mod = load_build(
         mutate=(
-            "(p for p in _walk_no_reparse(skill_dir) if _is_redirecting_entry(p)),",
-            "(p for p in _walk_no_reparse(skill_dir) if False),",
+            "(p for p in _pinned._walk_no_reparse(skill_dir) if _pinned._is_redirecting_entry(p)),",
+            "(p for p in _pinned._walk_no_reparse(skill_dir) if False),",
         )
     )
     crew = mod.resolve_crew("frontdesk", home)
@@ -579,7 +587,7 @@ def test_the_predicate_uses_casefold_in_source() -> None:
     difference only shows on non-ASCII, which no credential directory name has -- yet the
     shared validator casefolds, and matching it is the point.
     """
-    src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    src = source_defining("_looks_sensitive_standalone").read_text(encoding="utf-8")
     fn = src[src.index("def _looks_sensitive_standalone(") :]
     body = fn[: fn.index("\ndef ")]
     assert ".casefold()" in body, "the predicate stopped casefolding"
@@ -744,7 +752,7 @@ def test_the_claim_is_still_the_mkdir(tmp_path: pathlib.Path) -> None:
     ``exist_ok=True`` would make the refusal above unreachable while every other test still
     passed, and two builds writing one staging tree is worse than either failing.
     """
-    src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    src = builder_source_text()
     assert "staging.mkdir(parents=True)\n" in src, "the staging claim changed shape"
     assert (
         "staging.mkdir(parents=True, exist_ok=True)" not in src
@@ -1158,10 +1166,10 @@ def test_MUTATION_the_plan_read_would_follow_a_link_without_the_openat_reader(
         pytest.skip("symlink semantics")
     mod = load_build(
         mutate=(
-            "    text = _read_text_openat(\n"
+            "    text = _pinned._read_text_openat(\n"
             "        Path(abs_path.anchor), abs_path.relative_to(abs_path.anchor), "
             "refuse_hard_link=True\n    )",
-            "    text = _read_text_nofollow(path)",
+            "    text = _pinned._read_text_nofollow(path)",
         )
     )
     secret_dir = tmp_path / "secret"
@@ -1422,7 +1430,7 @@ def _descriptor_ledger(mod, monkeypatch):
         outstanding[fd] = outstanding.get(fd, 0) + 1
         return real_verdict(fd)
 
-    monkeypatch.setattr(mod, "os", _LedgerOs())
+    patch_builder_global(monkeypatch, mod, "os", _LedgerOs())
     monkeypatch.setattr(mod, "_dir_fd_closed", ledger_verdict)
     return outstanding
 
@@ -2106,7 +2114,7 @@ def test_MUTATION_dropping_the_entry_guard_stops_refusing_on_a_no_primitive_plat
     """
     mod = load_build(
         mutate=(
-            "def read_agent_spec(crew: ResolvedCrew) -> dict:\n    _refuse_without_nofollow_primitive()\n",
+            "def read_agent_spec(crew: ResolvedCrew) -> dict:\n    _pinned._refuse_without_nofollow_primitive()\n",
             "def read_agent_spec(crew: ResolvedCrew) -> dict:\n",
         )
     )
@@ -2217,7 +2225,7 @@ def test_the_report_is_published_after_the_promotion_not_before() -> None:
     Writing the report before the promotion left a report claiming success when the promotion
     then failed -- a lie in the one artifact offered as evidence the bundle exists.
     """
-    src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    src = transaction_source()
     promote_at = src.index("staging.rename(out_dir)")
     report_at = src.index("_publish_report(report_tmp, report_path")
     assert 0 <= promote_at < report_at, (
@@ -2333,8 +2341,8 @@ def test_MUTATION_without_the_anchor_check_a_symlinked_root_is_verified_by_its_t
     """
     mod = load_build(
         mutate=(
-            "    if _is_redirecting_entry(d):\n        # The ANCHOR, before anything relative to it.",
-            "    if False and _is_redirecting_entry(d):\n        # The ANCHOR, before anything relative to it.",
+            "    if _pinned._is_redirecting_entry(d):\n        # The ANCHOR, before anything relative to it.",
+            "    if False and _pinned._is_redirecting_entry(d):\n        # The ANCHOR, before anything relative to it.",
         )
     )
     target = tmp_path / "target"
@@ -2736,7 +2744,7 @@ def test_MUTATION_no_capability_probe_crashes_raw_when_the_link_is_unsupported(
     """
     mod = load_build(
         mutate=(
-            "        _refuse_report_dir_without_hard_link_support(report_path)\n",
+            "        _report._refuse_report_dir_without_hard_link_support(report_path)\n",
             "        pass  # probe removed by mutation\n",
         )
     )

@@ -367,7 +367,7 @@ _UNRESOLVABLE_REF_OK: frozenset[str] = frozenset(
         # `config/defaults.json`, which resolves.
         "agents/defaults.json",
         #
-        # -- FOREIGN homes. `onboarding_import.py` reads other tools' config dirs
+        # -- FOREIGN homes. The `onboarding_sources/` adapters read other tools' config dirs
         #    to offer an import, so naming their layout is the point.
         #
         # Antigravity / Gemini (`~/.gemini`, `_GEMINI_CONFIG_RELATIVE_PATHS`).

@@ -1,12 +1,14 @@
 """Track B pins for the packager: the sensitive-path fence and the plan's
 ``include`` truthiness.
 
-Both are mutation-tested against ``packaging/build.py`` through the same
-exec-load harness the rest of this suite uses (``test_producer.load_build``): the
-guard's source is disabled in a throwaway copy of the module and the same
-scenario is shown to leak, so each assertion proves the guard is load-bearing
-rather than decorative. See that module's ``load_build`` docstring for why a
-module-level guard has to be mutation-tested by compiling a variant of the source.
+Both are mutation-tested against the builder owner that holds each guard -- the
+sensitive-path fence in ``pipeline/prompt.py``, the include check in
+``pipeline/plan.py`` -- through the same exec-load harness the rest of this suite
+uses (``test_producer.load_build``): the guard's source is disabled in a throwaway
+copy of the builder package and the same scenario is shown to leak, so each
+assertion proves the guard is load-bearing rather than decorative. See that
+module's ``load_build`` docstring for why a module-level guard has to be
+mutation-tested by compiling a variant of the source.
 """
 
 from __future__ import annotations
@@ -126,7 +128,7 @@ def test_MUTATION_sensitive_path_fence(tmp_path):
         # after a symlink was found to walk past the link-only form, so the old
         # anchor does not exist -- see test_prompt_symlink_fence.py.
         mutate=(
-            "if refused_by_location(resolved) or refused_by_location(path):",
+            "if _sensitive.refused_by_location(resolved) or _sensitive.refused_by_location(path):",
             "if False:",
         )
     )

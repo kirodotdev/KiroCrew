@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { EyeOff, Ghost, Undo2, VenetianMask } from 'lucide-react'
+import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
 
@@ -67,14 +68,20 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
 
   return (
     <>
-      <button
+      {/* The chip IS a glass pane (components/Glass.tsx, chip variant): the
+          same primitive as the composer, rendered as the button. `glass-warn`
+          mixes the warn hue INTO the tint while a non-persistent mode is on. */}
+      <Glass
+        as="button"
+        variant="chip"
+        radius={8}
         ref={btnRef}
         type="button"
         data-testid="memory-mode-chip"
-        className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1 text-[12px] transition-colors cursor-pointer ${
+        className={`inline-flex items-center gap-1.5 rounded-lg border border-transparent px-3 py-1 text-[12px] transition-colors cursor-pointer ${
           ephemeralActive
-            ? 'border-warn bg-warn-subtle text-warn'
-            : 'border-border bg-card text-muted hover:border-accent hover:text-text'
+            ? 'glass-warn text-warn'
+            : 'glass-hover text-muted hover:text-text'
         }`}
         onClick={() => {
           if (!ephemeralActive) setOpen(!open)
@@ -83,7 +90,7 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
       >
         {!ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
         <span>{label}</span>
-      </button>
+      </Glass>
       {open && createPortal(
         <div
           ref={popRef}

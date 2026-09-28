@@ -1,11 +1,26 @@
+import { useEffect } from 'react'
 import { Trans } from 'react-i18next'
 import { Settings2, Pin, Check, Ban, ChevronRight, LoaderCircle } from 'lucide-react'
 import { Btn, Input } from './ui'
 import ErrorNotice from './ErrorNotice'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
+import ReasoningEffortDropdown from './ReasoningEffortDropdown'
+import { routeModelPickerKeys } from './modelPickerKeyRouting'
 
 import { useImeGuard } from '../hooks/useImeGuard'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { i18nT } from '../i18n/t'
+
+/** Bottom fade for a model list whose last visible row would otherwise be cut
+ *  mid-line by whatever sits under it -- the list ends at the effort block's
+ *  top border, and a half row against that border read as overlap. The
+ *  gradient ends at a third of full opacity, not at nothing: a row that faded
+ *  out completely read as no row at all, and a reader took the model below it
+ *  for filtered out. Apply only while `useScrollEdgesY` reports content below
+ *  the fold: a fade on a list that is fully visible dims a real last row for
+ *  nothing. Shared with ChatPane's picker, which renders the same list. */
+export const MORE_BELOW_MASK =
+  '[mask-image:linear-gradient(to_bottom,black_calc(100%-20px),rgba(0,0,0,0.35))] [-webkit-mask-image:linear-gradient(to_bottom,black_calc(100%-20px),rgba(0,0,0,0.35))]'
 
 interface Props {
   anchorRect: DOMRect
@@ -31,8 +46,19 @@ interface Props {
   retryingModels?: boolean
   filter: string
   setFilter: (v: string) => void
+  onClose: () => void
   modelVisibilityError?: boolean
   onRetryModelVisibility?: () => void
+  hasEffort: boolean
+  slot: string | null
+  currentEffort: string
+  /** Configured default effort for new sessions. Shown in the footer when the
+   *  slot carries no override, so the row reflects what a turn would run at. */
+  defaultEffort?: string
+  /** Effort levels to offer instead of this machine's — set for a session whose
+   *  turns run on a peer crew. Forwarded verbatim to the slider; see
+   *  `ReasoningEffortDropdown`'s `levelsOverride`. */
+  effortLevelsOverride?: string[]
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
    *  tier that applies to agents pinning no model of their own. Optional so
@@ -65,80 +91,47 @@ interface Props {
 }
 
 const WIDTH = 340
-/** Searchable model picker. Effort lives in its own composer control. */
+/** Model picker with reasoning effort embedded below the searchable model list. */
 export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
-  filter, setFilter, onListKeyDown, onSetDefault, onManageModels,
+  filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault, onManageModels,
   modelVisibilityError = false, onRetryModelVisibility,
-  onPinToAgent, agentName = '', pinModelName = '',
+  defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
   modelsFailed = false, onRetryModels, retryingModels = false,
 }: Props) {
   const ime = useImeGuard()
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  // A filter narrowing `models` changes the list's scroll height without a
+  // scroll or a box resize once the box sits at its max height, so re-measure
+  // on every render as well.
+  useEffect(remeasureList)
   // Right-align the dropdown to the button's right edge (clamped to viewport).
   const width = Math.min(WIDTH, window.innerWidth - 16)
   const left = Math.max(8, Math.min(anchorRect.right - width, window.innerWidth - width - 8))
   const maxHeight = Math.max(0, anchorRect.top - 12)
 
   return (
-    // The dialog delegates list navigation from its filter and option rows.
+    // The dialog delegates list navigation from its filter and option rows, but
+    // leaves the nested slider/switch to their native keyboard handlers (see
+    // routeModelPickerKeys).
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
     <div
       ref={dropdownRef}
       role="dialog"
       aria-label={i18nT('components.modelEffortDropdown.model_list')}
       tabIndex={-1}
-      onKeyDown={event => {
-        const target = event.target as HTMLElement
-        // Tab advances into the optional management action when present.
-        if (event.key === 'Tab') {
-          if (!ime.claimKey(event)) return
-          if (!event.shiftKey && target.tagName === 'INPUT') {
-            const nextControl = event.currentTarget.querySelector<HTMLElement>(
-              '[data-model-picker-manage]',
-            )
-            if (nextControl) {
-              event.preventDefault()
-              event.stopPropagation()
-              nextControl.focus()
-            }
-          }
-          return
-        }
-        if (target.closest('[data-model-picker-manage]')) {
-          if (event.key === 'ArrowUp') {
-            const options = Array.from(
-              event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'),
-            )
-            const lastOption = options[options.length - 1]
-            if (lastOption) {
-              event.preventDefault()
-              event.stopPropagation()
-              lastOption.focus()
-            }
-          }
-          return
-        }
-        if (event.key === 'ArrowDown' && target.getAttribute('role') === 'option') {
-          const options = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'))
-          if (target === options[options.length - 1]) {
-            const nextControl = event.currentTarget.querySelector<HTMLElement>(
-              '[data-model-picker-manage]',
-            )
-            if (nextControl) {
-              event.preventDefault()
-              event.stopPropagation()
-              nextControl.focus()
-              return
-            }
-          }
-        }
-        onListKeyDown(event)
-      }}
+      onKeyDown={event => routeModelPickerKeys(event, ime.claimKey, onListKeyDown)}
       className="fixed z-[9999] flex flex-col bg-bg-elevated border border-border rounded-xl shadow-xl overflow-hidden animate-slide-up"
       style={{ width, maxHeight, bottom: window.innerHeight - anchorRect.top + 4, left }}
     >
-          <div className="flex min-h-0 flex-1 flex-col p-1">
+          {/* Body column scrolls once the cap (space above the chip) drops
+              below the fixed rows' own height, so the effort block is reached
+              rather than clipped; the list is still the primary shrinking
+              region (flex-1), floored at about two rows so a chip that sits
+              high in a short pane never opens a picker with no model in it
+              (the fixed rows scroll in this column instead). */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-1">
             <div className="shrink-0 px-1.5 pt-1.5 pb-1">
               <Input
                 ref={inputRef}
@@ -184,10 +177,21 @@ export default function ModelEffortDropdown({
                 )}
               </div>
             )}
-            <div role="listbox" aria-label={i18nT('components.modelEffortDropdown.model_list')} className="min-h-0 flex-1 max-h-[240px] overflow-y-auto">
+            {/* Fade the list's bottom edge only while it has more rows below:
+                a row half-hidden under the effort block's border read as
+                overlap (see MORE_BELOW_MASK). */}
+            <div ref={attachList} role="listbox" aria-label={i18nT('components.modelEffortDropdown.model_list')} className={`min-h-[96px] flex-1 max-h-[240px] overflow-y-auto ${listEdges.bottom ? MORE_BELOW_MASK : ''}`}>
               <ModelDropdownList models={models} activeModel={activeModel} onSelect={onSelectModel} loading={modelsLoading} failed={modelsFailed} />
             </div>
             {onManageModels && <ManageModelsFooter onManage={onManageModels} />}
+            {/* Room between the list's faded last row and this border: with
+                the two touching, a row cut by the fold read as the effort block
+                sitting ON the list. */}
+            {hasEffort && slot && (
+              <div className="mt-2 shrink-0 border-t border-border">
+                <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} />
+              </div>
+            )}
             {onPinToAgent && agentName && (
               <Btn
                 type="button"

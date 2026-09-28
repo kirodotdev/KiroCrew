@@ -23,6 +23,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew import runtime_death
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
@@ -37,6 +38,7 @@ from kiro_crew.messaging import auto_title, turn_ceiling
 from kiro_crew.messaging.dispatch import (
     admit_inbound_callback,
     build_directive_consumer,
+    charge_turn_failure,
     consume_reinjection,
     driver_turn_landed,
     rearm_reinjection,
@@ -71,6 +73,14 @@ from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
 from kiro_crew.slack.renderer import SlackApprovalDecider
 from kiro_crew.slack.renderer import SlackApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.slack.renderer import SlackRenderer
+from kiro_crew.slack.thread_parent import (
+    ThreadParent,
+    fetch_thread_parent,
+    has_prior_turns,
+    is_slack_born,
+    parent_prompt_text,
+    record_thread_parent,
+)
 from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
@@ -625,6 +635,31 @@ async def handle_message_transport(
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
 
+        # ── Thread parent, for a Slack-born session opened inside a thread ──
+        # A reply in a thread this conversation did not start -- the owner
+        # answering an agent's DM, a reply under a cron post -- otherwise opens a
+        # session knowing only the reply. Read once, on a fresh session with no
+        # prior turns; recorded BEFORE the receipt row below so the transcript
+        # shows it above the reply. See ``slack/thread_parent.py``.
+        _thread_parent: ThreadParent | None = None
+        if (
+            is_new
+            and not resumed
+            and thread_ts
+            and thread_ts != msg_ts
+            and is_slack_born(session_key)
+            and not await has_prior_turns(conversation_log, session_key)
+        ):
+            _record_parent = bool(conversation_log and not _is_slack_restricted(session_key))
+            _thread_parent = await fetch_thread_parent(
+                slack, channel, thread_ts, with_author=_record_parent
+            )
+            if _thread_parent is not None and _record_parent:
+                assert conversation_log is not None
+                await record_thread_parent(
+                    conversation_log, session_key, _thread_parent, agent=_agent
+                )
+
         # ── Conversation log: the user's turn, at RECEIPT ──
         # Recorded BEFORE the turn runs rather than alongside the reply
         # afterwards. Writing both rows at the end meant the message did not
@@ -715,6 +750,13 @@ async def handle_message_transport(
                 blocks_reads=is_thread_temporary(session_key),
                 runtime_source="slack",
                 context_provider=client,
+                thread_parent_text=(
+                    parent_prompt_text(_thread_parent) if _thread_parent is not None else None
+                ),
+                # The user's row already landed at receipt above. Without this the
+                # history fallback replays it as the thread's history, ahead of
+                # the same text as the current request.
+                exclude_last_n=1 if _logged_user_turn else 0,
             )
         else:
             full_message = text
@@ -844,6 +886,11 @@ async def handle_message_transport(
         # context-usage accounting or conversation logging must NOT fall through
         # to the outer except and double-record the turn as a failure.
         sessions.record_success(session_key)
+        # Beside the counter it stands in for: a landed turn clears the
+        # shared-death streak exactly as it clears the consecutive-failure count,
+        # so the streak stays a consecutive run rather than a lifetime total whose
+        # bound is permanently tripped.
+        runtime_death.clear_shared_deaths(session_key)
         # The prompt (with any re-injected context) reached the model and the
         # turn completed, so the finally must NOT restore the one-shot flag --
         # unless the user cancelled it, which discards that prompt.
@@ -1082,7 +1129,18 @@ async def handle_message_transport(
         logger.exception("transport_dispatch: error handling message")
         Stats().inc_message_failed()
         if client and _acquired:
-            await sessions.record_failure(session_key)
+            # A dying runtime reaches this generic handler as one more exception,
+            # so without the attribution question every tenant of one process
+            # charges its own breaker for a single process event. ``client`` is
+            # the provider THIS turn acquired, never a lookup made while handling
+            # the failure.
+            await charge_turn_failure(
+                sessions,
+                session_key,
+                exc=exc,
+                provider=client,
+                channel_type="slack",
+            )
         # ── Rescue partial progress ──
         # A transient backend fault (the "died before streaming started" class,
         # a dropped stream) leaves the user row on disk and everything the model

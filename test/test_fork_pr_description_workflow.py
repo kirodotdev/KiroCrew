@@ -459,6 +459,38 @@ def test_up_to_three_leading_spaces_still_reads_as_a_heading(tmp_path: Path) -> 
     assert outputs["conclusion"] == "success"
 
 
+def test_a_required_heading_only_inside_a_comment_is_missing(tmp_path: Path) -> None:
+    """GitHub renders nothing inside `<!-- -->`, so a commented heading is absent."""
+    body = COMPLETE_BODY.replace("## Tests\n", "<!--\n## Tests\n") + "-->\n"
+    outputs = _evaluate(tmp_path, body, False)
+    assert outputs["conclusion"] == "failure"
+    assert outputs["title"] == "1 required description section is missing"
+    assert "`## Tests`" in outputs["summary"]
+
+
+def test_a_heading_inside_a_multi_line_comment_does_not_count(tmp_path: Path) -> None:
+    body = COMPLETE_BODY.replace("## Not a goal\n", "<!-- draft notes\n## Not a goal\n-->\n")
+    outputs = _evaluate(tmp_path, body, False)
+    assert outputs["conclusion"] == "failure"
+    assert "`## Not a goal`" in outputs["summary"]
+
+
+def test_a_commented_heading_does_not_end_the_goal_section(tmp_path: Path) -> None:
+    body = COMPLETE_BODY.replace(
+        "## Problem / Motivation\n", "## Problem / Motivation\n\n<!--\n## Why it matters\n-->\n"
+    )
+    assert _evaluate(tmp_path, body, False)["conclusion"] == "success"
+
+
+def test_a_comment_opener_inside_a_fence_does_not_hide_later_headings(
+    tmp_path: Path,
+) -> None:
+    """Inside a fence `<!--` is code text; it must not open a comment."""
+    body = "```html\n<!-- unclosed example\n```\n\n" + COMPLETE_BODY
+    outputs = _evaluate(tmp_path, body, False)
+    assert outputs["conclusion"] == "success"
+
+
 # ── The row's identity must be explicit ──────────────────────────────────────
 #
 # A check-run belongs to a COMMIT, not a pull request, and `POST` creates rather

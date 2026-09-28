@@ -5767,6 +5767,7 @@
       "trust_desc": "In diesem Chat arbeitet {{productName}}, ohne dich vorher zu fragen",
       "trust_label": "Vertrauen",
       "chat_mode_hint": "Chatmodus",
+      "trust_scope_tooltip": "Durch eine App-Freigabe für diesen Chat vertraut; sie läuft von selbst ab. Wähle Normal in diesem Menü, um sie jetzt zu beenden; die App kann sie erneut erteilen, bis du sie in der App abschaltest.",
       "trust_tooltip": "In diesem Chat arbeitet {{productName}}, ohne dich vorher zu fragen",
       "yolo_desc": "In jedem Chat arbeitet {{productName}}, ohne dich vorher zu fragen",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
@@ -6084,6 +6085,10 @@
       "show_pending_tool_call_in_chat": "Ausstehenden Werkzeugaufruf im Chat anzeigen",
       "skill": "Skill",
       "slash_commands": "Slash-Befehle",
+      "spawn_awaiting_one": "{{count}} Unteragent wartet auf deine Freigabe zum Start",
+      "spawn_awaiting_other": "{{count}} Unteragenten warten auf deine Freigabe zum Start",
+      "spawn_pending_one": "{{count}} Unteragent wartet — zuerst die Anfrage unten beantworten",
+      "spawn_pending_other": "{{count}} Unteragenten warten — zuerst die Anfrage unten beantworten",
       "steer": "Steuern",
       "alt_action_hint_queues": "{{chord}} reiht diese Nachricht stattdessen ein",
       "alt_action_hint_steers": "{{chord}} steuert stattdessen sofort mit dieser Nachricht",
@@ -6237,7 +6242,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Kommentar hinzufügen",
       "add_comment": "Kommentar hinzufügen",
       "add_instruction": "Anweisung hinzufügen",
       "additional_prompt": "Zusätzlicher Prompt",
@@ -7715,11 +7719,12 @@
       "effort": "Aufwand",
       "effort_help": "Der Denkaufwand legt fest, wie lange das Modell vor der Antwort nachdenkt. Höher bedeutet mehr Zeit zum Durchdenken schwieriger Probleme (langsamer, bessere Antworten); niedriger ist schneller. Wird die Übersteuerung pro Sitzung deaktiviert, fällt der Denkaufwand auf den Standard unter Einstellungen → Chat zurück oder, wenn kein Standard gesetzt ist, auf die Wahl des Modells selbst (nur Fable/Opus/Sonnet).",
       "faster": "Schneller",
-      "configured_default_marker": "Konfigurierter Standard",
+      "configured_default_marker": "Standardaufwand",
+      "slider_locked_hint": "Auf den Standard festgelegt. Schalter ausschalten, um eine Stufe zu wählen.",
       "reasoning_effort": "Denkaufwand",
       "smarter": "Intelligenter",
-      "use_configured_default": "Konfigurierten Standard verwenden",
-      "use_model_default": "Modellstandard verwenden"
+      "use_configured_default": "Standardaufwand verwenden ({{level}})",
+      "use_default_effort": "Standardaufwand verwenden"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Fügen Sie eine Organisations-Registry hinzu, um teamspezifische Apps zu entdecken",
@@ -7877,12 +7882,16 @@
     "selectionToolbar": {
       "ask": "Hierzu fragen",
       "ask_hint": "Öffnet den Seitenchat mit der Auswahl als Zitat — nichts wird gesendet, bis du sendest, und der Hauptchat bleibt unberührt",
+      "close_saving_continues": "Schließen – das Speichern läuft weiter",
       "comment_input": "Markierten Text kommentieren",
+      "comment_post_failed": "Dein Kommentar konnte nicht gespeichert werden. Dein Text ist noch da – versuch es erneut.",
+      "comment_post_failed_closed": "Dein Kommentar zu „{{quote}}“ wurde nicht gespeichert. Markiere diesen Text noch einmal, um ihn wieder aufzunehmen und es erneut zu versuchen.",
       "copy": "Kopieren",
       "copy_failed": "Kopieren fehlgeschlagen – dein Browser hat den Zugriff auf die Zwischenablage blockiert. Markiere den Text und kopiere ihn selbst.",
       "copy_selection_hint": "Kopiert den markierten Text – nicht deinen Kommentar – in die Zwischenablage",
       "more_actions": "Weitere Aktionen für die Markierung",
       "press_enter_to_comment": "Enter drücken oder klicken, um zu kommentieren…",
+      "saving": "Wird gespeichert…",
       "tap_to_comment": "Tippen, um einen Kommentar zu schreiben…",
       "quote": "Zitieren",
       "quote_hint": "Zitiert die Auswahl in den Verfasser dieses Gesprächs — deine Antwort geht in den Hauptchat"
@@ -10578,6 +10587,7 @@
         "copied": "Kopiert",
         "copy_failed": "Kopieren fehlgeschlagen",
         "steering": "Wird eingesteuert…",
+        "delivery_pending": "Zustellung ausstehend…",
         "redirecting_the_running_turn_not_yet_confirmed": "Der laufende Zug wird umgeleitet — noch nicht bestätigt.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Der Zug endete, bevor dies angewendet wurde — wird als eigene Nachricht ausgeführt."
       },
@@ -11058,6 +11068,7 @@
       "send_failed_with_error": "Senden fehlgeschlagen: {{error}}",
       "send_failed_with_error_restored": "Diese Nachricht konnte nicht gesendet werden: {{error}}. Dein Text steht wieder im Eingabefeld.",
       "delivery_unconfirmed": "Zustellung nicht bestätigt — dein Text steht wieder im Eingabefeld; prüfe den Verlauf, bevor du erneut sendest.",
+      "delivery_unconfirmed_pending": "Zustellung nicht bestätigt — diese Nachricht ist möglicherweise noch ausstehend. Wenn keine Antwort eintrifft, sende sie erneut.",
       "could_not_read_file_reason": "{{path}} konnte nicht gelesen werden ({{reason}})",
       "screenshot_failed_reason": "Screenshot fehlgeschlagen: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -13170,7 +13181,8 @@
         "update": "Aktualisieren",
         "validation_findings": "Validierungsergebnisse",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "Workspace"
+        "workspace": "Workspace",
+        "detail_unreadable": "Die Dateien dieses Kandidaten lassen sich nicht sicher lesen, daher ist die Prüfung nicht möglich. Verwirf ihn, um ihn aus der Warteschlange zu entfernen."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Markdown-Konventionen, die der Agent liest. Der Einbindungsmodus jeder Datei entscheidet wann: immer, nur für passende Dateien oder bei Bedarf. Globale Dateien liegen in ~/.kiro/steering und gelten überall; Workspace-Dateien liegen in <project>/.kiro/steering und gelten nur für dieses Projekt.",

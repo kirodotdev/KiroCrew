@@ -15,7 +15,7 @@ superseded-by: []
 # RFC: Off-host backup — a bundle a dead machine cannot take with it
 
 > **Partly shipped, with the off-host destination moved to the AWS Control app.**
-> `src/kiro_crew/snapshot.py` now owns the purpose/policy seam, a self-contained
+> `src/kiro_crew/snapshot_components.py` now owns the purpose/policy seam, a self-contained
 > `memory` component, and local artifact/upload components. The AWS Control backup
 > path owns the hardened S3 drive, snapshot and transcript uploads, nightly runs,
 > retention, and download-to-staging restore; see
@@ -61,7 +61,7 @@ SSH, no reboot — taking every conversation and every learned memory with it.
 
 | Mechanism | Code | Destination |
 |---|---|---|
-| CLI snapshot / restore | `snapshot.py` (`VALID_COMPONENTS`:29, `CORE_FILES`:142) | `<data home>/snapshots/` — inside what it protects |
+| CLI snapshot / restore | `snapshot.py`, `snapshot_components.py` (`VALID_COMPONENTS`, `CORE_FILES`) | `<data home>/snapshots/` — inside what it protects |
 | Dashboard export / import | `portability.py` (`EXPORT_EXCLUDE`:41, `EXCLUDE_DIRS`:59) | browser download, unscheduled |
 | Session transfer | `dashboard/session_transfer.py`, `handlers_instances.py:417` | another **live** instance over an SSH tunnel |
 
@@ -81,7 +81,7 @@ Measured on one install: 385 MB irreplaceable (322 MB transcripts, 28 MB uploads
 enough that full-bundle-per-run beats incremental.
 
 **P2 — one component ships a reference to state no component ships.**
-`CORE_FILES["config"]`:144 carries `session_map.json`, the join to kiro-cli
+`CORE_FILES["config"]` carries `session_map.json`, the join to kiro-cli
 sessions living outside the crew home (`session_transfer.py:16`), while neither
 side of what it points at is staged; a `session_map` entry is load-bearing for
 storage reclamation (`state.py:3207`). The dashboard path takes the opposite
@@ -144,7 +144,7 @@ redaction — its payload is the operator's own recall, and filtering it would
 silently drop the thing being protected. `config` and `sessions` attach their
 policies to the same hook when they arrive.
 
-**D2 — a self-contained `memory` component.** `CORE_FILES["memory"]`:143 stages
+**D2 — a self-contained `memory` component.** `CORE_FILES["memory"]` stages
 `memory.db` + `memory_index.db`, which is where lessons actually live — 121
 `lesson.*` rows in `semantic_memory` alongside 486 `project.*`, 23 `user.*` and 5
 `pref.*` on the measured install, despite `learn.py:6` naming a
@@ -160,7 +160,7 @@ inherited.
 `sessions/archive/` + `uploads/` + `artifacts/`. The two-store split is an
 implementation detail and must not surface: a component backs up a session
 completely or does not claim to have backed it up. Its tree walk goes through the
-existing `_data_filter`:49 (traversal, symlink and hardlink rejection, `0o600`
+existing `_data_filter` (traversal, symlink and hardlink rejection, `0o600`
 pinning) rather than reimplementing those properties.
 
 **D4 — session fidelity is a tier.** Default `sessions` = crew transcripts +
@@ -307,7 +307,7 @@ off-host copy behaves exactly as today.
   sensitive-path floor as the pointer deciding which checkout the gateway executes,
   which is the existing precedent for "a pointer whose writer controls where
   privileged work goes".
-* **`sel_hmac.key` stays out.** `NEVER_SNAPSHOT_FILES`:46 excludes it so audit-log
+* **`sel_hmac.key` stays out.** `NEVER_SNAPSHOT_FILES` excludes it so audit-log
   HMACs stay bound to the host that wrote them. A backup must not become the
   mechanism that clones a trust root.
 * **A bundle's secret policy must be explicit per purpose, not implied by which

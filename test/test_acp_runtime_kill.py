@@ -29,6 +29,8 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     r._session_queues = {}
     r._stderr_lines = []
     r._pid = pid
+    # No identity read at spawn: these tests pin the prefix-matched fallback.
+    r._spawn_start_token = None
     r._child_pids = {}
     r._reader_task = None
     r._stderr_task = None

@@ -50,6 +50,7 @@ from kiro_crew import (
     dep_sync,
     name_grant,
     platform_compat,
+    runtime_death,
     session_work_dir,
     shutdown_event,
     work_root,
@@ -102,6 +103,7 @@ from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY, strip_control_comm
 from kiro_crew.context import ContextBuilder, session_store_for_turn
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import (
+    _AUTO_PAUSE_THRESHOLD,
     _SUBPROC_CLEANUP_ALLOWANCE_SECS,
     CronJob,
     CronService,
@@ -116,8 +118,10 @@ from kiro_crew.dashboard import cautious_boot, start_dashboard
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import (
     _arm_queued_delivery_settlement,
+    _auto_approve_reason,
     _resolve_channel_target,
     _run_chat,
+    _slot_is_trusted,
 )
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
@@ -1142,6 +1146,12 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     # failure should always alert fresh. record_success() owns the reset now, so
     # every kind's success path gets it rather than only this one.
     job.record_success()
+    # Same reason record_success resets consecutive_failures: a run that
+    # worked proves the job can work, so the shared-death streak that
+    # substitutes for that counter is reset with it. Without this the
+    # streak is a LIFETIME total, so after enough deaths the bound is
+    # permanently tripped and the exemption silently stops applying.
+    runtime_death.clear_shared_deaths(f"cron:{job.id}")
     return False
 
 
@@ -2707,7 +2717,14 @@ class GatewayOrchestrator:
 
                 if _parent_slot_key:
                     _ps = (self.dashboard_state._slots or {}).get(_parent_slot_key)
-                    if _ps and _ps._trust and not _child_grant_eligible:
+                    # The same verdict the slot's own tool approvals take: the
+                    # human's session flag OR a live SafetyOverride scoped grant,
+                    # re-checked here per request and never renewed from here.
+                    _ps_trusted = bool(_ps) and _slot_is_trusted(_ps)
+                    _ps_via_scope = (
+                        _ps_trusted and _auto_approve_reason(_ps, False) == "trust_scope"
+                    )
+                    if _ps_trusted and not _child_grant_eligible:
                         # Slot IS trusted; the fidelity gate is what blocks
                         # the auto-approve. A distinct audit reason — an
                         # auditor reading "not_trusted" for a trusted slot
@@ -2718,7 +2735,15 @@ class GatewayOrchestrator:
                             outcome="not_auto_approved",
                             resources=_safe_title,
                         )
-                    elif _ps and _ps._trust:
+                    elif _ps_via_scope:
+                        _sel_log(
+                            caller=f"slot:{_parent_slot_key}",
+                            operation=f"{source}.trust_scope_auto_approve",
+                            outcome="ok",
+                            resources=f"scope:{getattr(_ps, '_trust_scope', '')} {_safe_title}",
+                        )
+                        return True
+                    elif _ps_trusted:
                         _sel_log(
                             caller=f"slot:{_parent_slot_key}",
                             operation=f"{source}.scoped_trust_auto_approve",
@@ -4794,6 +4819,12 @@ class GatewayOrchestrator:
                             job.last_status = "ok"
                             job.last_error = ""
                             job.record_success()
+                            # Same reason record_success resets consecutive_failures: a run that
+                            # worked proves the job can work, so the shared-death streak that
+                            # substitutes for that counter is reset with it. Without this the
+                            # streak is a LIFETIME total, so after enough deaths the bound is
+                            # permanently tripped and the exemption silently stops applying.
+                            runtime_death.clear_shared_deaths(f"cron:{job.id}")
                         else:
                             # Cleared so displays fall back to last_error below.
                             job.clear_carried_result()
@@ -4809,6 +4840,12 @@ class GatewayOrchestrator:
                     if result.get("status") == "ok":
                         job.last_status = "ok"
                         job.record_success()
+                        # Same reason record_success resets consecutive_failures: a run that
+                        # worked proves the job can work, so the shared-death streak that
+                        # substitutes for that counter is reset with it. Without this the
+                        # streak is a LIFETIME total, so after enough deaths the bound is
+                        # permanently tripped and the exemption silently stops applying.
+                        runtime_death.clear_shared_deaths(f"cron:{job.id}")
                     else:
                         job.last_status = "error"
                         job.last_error = f"command failed (exit_code={result.get('exit_code')})"
@@ -5145,6 +5182,12 @@ class GatewayOrchestrator:
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
+                        # Same reason record_success resets consecutive_failures: a run that
+                        # worked proves the job can work, so the shared-death streak that
+                        # substitutes for that counter is reset with it. Without this the
+                        # streak is a LIFETIME total, so after enough deaths the bound is
+                        # permanently tripped and the exemption silently stops applying.
+                        runtime_death.clear_shared_deaths(f"cron:{job.id}")
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
@@ -5189,6 +5232,12 @@ class GatewayOrchestrator:
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
+                        # Same reason record_success resets consecutive_failures: a run that
+                        # worked proves the job can work, so the shared-death streak that
+                        # substitutes for that counter is reset with it. Without this the
+                        # streak is a LIFETIME total, so after enough deaths the bound is
+                        # permanently tripped and the exemption silently stops applying.
+                        runtime_death.clear_shared_deaths(f"cron:{job.id}")
                         # Deliver Done message and remove job
                         await _deliver_script_result(job, script_msg, remove=True)
                         try:
@@ -5210,6 +5259,12 @@ class GatewayOrchestrator:
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
+                        # Same reason record_success resets consecutive_failures: a run that
+                        # worked proves the job can work, so the shared-death streak that
+                        # substitutes for that counter is reset with it. Without this the
+                        # streak is a LIFETIME total, so after enough deaths the bound is
+                        # permanently tripped and the exemption silently stops applying.
+                        runtime_death.clear_shared_deaths(f"cron:{job.id}")
                         # Deliver Report message (keep job running)
                         await _deliver_script_result(job, script_msg)
                         try:
@@ -5779,6 +5834,14 @@ class GatewayOrchestrator:
             # Set when the gate verdict below already counted this run, so the
             # exception handler does not count it a second time.
             _gate_counted = False
+            # The provider THIS run acquired, held for the failure handler's
+            # attribution question. Captured here rather than looked up when the
+            # failure is handled, because by then the runtime is gone: the
+            # ACP-death arm resets the session before it retries, and the retry
+            # frame's own finally resets again on unwind -- so a lookup by key
+            # answers None, or worse the REPLACEMENT provider, and either one
+            # reads as "this job's own fault".
+            _run_provider: object | None = None
             # Post-compaction re-injection bookkeeping for the finally: consumed
             # the one-shot flag / turn landed. Stop reason captured through
             # on_complete, as on the sequential path above.
@@ -5800,6 +5863,7 @@ class GatewayOrchestrator:
                     session_key, _single_kagent or cron_agent or None, _single_cwd, _single_crew
                 )
                 _acquired = True
+                _run_provider = client
                 # Same identity publish as the sequential site above — the
                 # single-agent cron turn must publish its pidfile mapping or
                 # spawn_run's parent resolution has no source to walk to.
@@ -6279,6 +6343,101 @@ class GatewayOrchestrator:
                 # and advances dedup state, duplicating the outer handler.
                 if getattr(job, "_acp_retried", False):
                     raise
+                # Was this run's failure this JOB's, or its runtime's? A cron
+                # runtime hosts the job's own sub-agents, so a death there is a
+                # process event several accounts witness -- and five of them
+                # auto-pause a job that has done nothing wrong, which is the
+                # threshold this guard protects. Read the record the death wrote
+                # once, through the provider the manager still holds for this key
+                # (never a pid, which a session must not be able to name).
+                # Unattributable, or a runtime this job was alone on: counted
+                # exactly as before.
+                _job_owns_failure = runtime_death.caused_by_this_session(_run_provider)
+                # Set only when the substitute bound reaches its limit below, and
+                # consumed only beside record_failure(), so the three steps of the
+                # hand-over stay contiguous.
+                _hand_over_streak = False
+
+                def _charge_failure() -> None:
+                    """Charge this run's failure, performing any pending hand-over first.
+
+                    The two are one indivisible move. The hand-over raises the
+                    job's counter to one below the threshold so that the charge
+                    below lands ON it, and forgets the streak whose value it just
+                    transferred -- and none of those three steps may be separated
+                    from the others by an await. ``cancel()`` is a plain
+                    ``task.cancel()`` which, unlike the wake-budget timeout,
+                    charges nothing on its way out, so a torn move would leave the
+                    counter and the streak disagreeing with no writer left to
+                    reconcile them.
+                    """
+                    if _hand_over_streak:
+                        job.consecutive_failures = max(
+                            job.consecutive_failures, _AUTO_PAUSE_THRESHOLD - 1
+                        )
+                        runtime_death.clear_shared_deaths(f"cron:{job.id}")
+                    job.record_failure()
+
+                if not _job_owns_failure:
+                    # Not charging is not the same as never charging. A job whose
+                    # shared runtime dies every run would otherwise re-fire on
+                    # every tick forever, because record_failure() is the only
+                    # actuator auto-pause has. So the exemption is bounded by the
+                    # job's own threshold, counted against the shared runtime
+                    # rather than against the job -- the same substitute bound the
+                    # chat runner and the taskrunner use.
+                    # Keyed to the JOB, never to this run's session key. The
+                    # counter this substitutes for -- job.consecutive_failures --
+                    # lives on the job, while a non-persistent job's session key
+                    # is `cron:{id}:{uuid}`, fresh every run: a streak keyed there
+                    # would never reach 2, so the bound would never fire and the
+                    # exemption would be unbounded for exactly the jobs that most
+                    # need it. A substitute bound is keyed to whatever owns the
+                    # counter it replaces.
+                    _shared_streak = runtime_death.note_shared_death(f"cron:{job.id}")
+                    if _shared_streak >= _AUTO_PAUSE_THRESHOLD:
+                        # At the limit the substitute bound HANDS OVER its
+                        # accumulated value to the counter it stood in for,
+                        # instead of adding a single charge to a counter still at
+                        # zero. Adding one would deliver twice the bound this
+                        # claims: the exemption spends the first
+                        # _AUTO_PAUSE_THRESHOLD deaths, and the job's own counter
+                        # would then need that many charges again, so a job whose
+                        # shared runtime dies every run keeps firing for about
+                        # twice as many runs as a job that was never exempted.
+                        # The hand-over leaves the one charge below to land ON the
+                        # threshold, so record_failure() stays the sole owner of
+                        # both the counter and the pause, and the alert's
+                        # displayed count is the number that actually paused it.
+                        #
+                        # The transfer itself is NOT performed here. It is a
+                        # three-step move -- raise the counter, forget the streak,
+                        # charge the failure -- and every await in this handler
+                        # precedes the counter for the reason the comment beside
+                        # record_failure() gives. Splitting the move across those
+                        # awaits leaves a window: `cancel()` is a plain
+                        # ``task.cancel()`` that charges nothing, so a cancellation
+                        # during the failure alert would leave the counter at
+                        # threshold-1 with the streak already erased, and the next
+                        # failure would pause a job that had not reached the
+                        # threshold. So the decision is recorded now and the move
+                        # happens beside record_failure(), where the three steps
+                        # are contiguous and cannot be torn apart.
+                        _hand_over_streak = True
+                        logger.warning(
+                            "Cron '%s': the runtime it shares has died %d times running — "
+                            "handing the streak to the job's own counter so it pauses now",
+                            job.name,
+                            _shared_streak,
+                        )
+                        _job_owns_failure = True
+                    else:
+                        logger.warning(
+                            "Cron '%s': the runtime it shares died (%d running) — recording the "
+                            "error but not counting it toward auto-pause",
+                            job.name,
+                            _shared_streak,
+                        )
                 # ── Failure dedup: suppress repeated identical crash notifications ──
                 # A chain-exhaustion failure carries the fallback story on the
                 # exception (llm_helpers.FALLBACK_STORY_ATTR); append it so the
@@ -6312,9 +6471,10 @@ class GatewayOrchestrator:
                     # the auto-pause threshold like every other failure path —
                     # unless the gate verdict already counted THIS run, in which
                     # case counting again would pause on arithmetic rather than
-                    # on five distinct failures.
-                    if not _gate_counted:
-                        job.record_failure()
+                    # on five distinct failures, or the failure belonged to a
+                    # shared runtime rather than to this job.
+                    if not _gate_counted and _job_owns_failure:
+                        _charge_failure()
                     if job.auto_paused:
                         logger.warning(
                             "Cron '%s' auto-paused after %d consecutive failures",
@@ -6397,13 +6557,17 @@ class GatewayOrchestrator:
                 # made the DM the only failure surface that still withheld what
                 # the caller already knows.
                 safe_reason = self._slack_safe_fenced(exc_detail)
+                # +1 only when the charge below will actually land. This run's
+                # failure is recorded after the awaited Slack attempt, so the
+                # display count has to add it explicitly -- but it is now gated on
+                # _job_owns_failure, and an exempted run that still claimed
+                # "N+1 consecutive failures" would report a number the counter
+                # driving auto-pause never reached.
+                _display_bump = 1 if (_job_owns_failure and not _gate_counted) else 0
                 if is_dup:
-                    # +1: this run's failure is recorded below, after the
-                    # awaited Slack attempt, so the display count must include
-                    # it explicitly.
                     fail_msg = (
                         f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
-                        f" ({job.consecutive_failures + 1} consecutive failures)"
+                        f" ({job.consecutive_failures + _display_bump} consecutive failures)"
                         f" — check logs._\n```{safe_reason}```"
                     )
                 else:
@@ -6426,7 +6590,7 @@ class GatewayOrchestrator:
                 if is_dup:
                     channel_fail_msg = (
                         f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
-                        f" ({job.consecutive_failures + 1} consecutive failures)"
+                        f" ({job.consecutive_failures + _display_bump} consecutive failures)"
                         f" — check logs.\n{exc_detail}"
                     )
                 else:
@@ -6467,9 +6631,10 @@ class GatewayOrchestrator:
                 # awaited Slack attempt so a timeout cancelling this handler
                 # mid-alert cannot leave the run counted here AND again by the
                 # timeout handler. For the same reason it defers when the gate
-                # verdict already counted THIS run.
-                if not _gate_counted:
-                    job.record_failure()
+                # verdict already counted THIS run, or when the failure belonged
+                # to a runtime this job was sharing rather than to the job.
+                if not _gate_counted and _job_owns_failure:
+                    _charge_failure()
                 if job.auto_paused:
                     logger.warning(
                         "Cron '%s' auto-paused after %d consecutive failures",
@@ -9194,14 +9359,27 @@ class GatewayOrchestrator:
                             info.id,
                             label,
                         )
-                        try:
-                            assert self.sessions is not None
-                            await self.sessions.reset(parent_key)
-                        except Exception:
-                            logger.debug(
-                                "Failed to reset %s after busy exhaustion",
+                        # Same ownership question as the AcpProcessDied arm below:
+                        # the provider being dead is a PROCESS fact, and on a
+                        # shared runtime the process that died was carrying the
+                        # parent and its co-tenants too. Resetting the parent for
+                        # a death it did not cause takes their sessions with it.
+                        if runtime_death.caused_by_this_session(client):
+                            try:
+                                assert self.sessions is not None
+                                await self.sessions.reset(parent_key)
+                            except Exception:
+                                logger.debug(
+                                    "Failed to reset %s after busy exhaustion",
+                                    parent_key,
+                                    exc_info=True,
+                                )
+                        else:
+                            logger.warning(
+                                "Subagent %s: the SHARED runtime died — leaving parent %s "
+                                "to re-acquire on its own next turn",
+                                info.id,
                                 parent_key,
-                                exc_info=True,
                             )
                         if self.subagent_mgr:
                             self.subagent_mgr.notify_injection_failed(
@@ -9215,14 +9393,29 @@ class GatewayOrchestrator:
                             info.id,
                             label,
                         )
-                        try:
-                            assert self.sessions is not None
-                            await self.sessions.reset(parent_key)
-                        except Exception:
-                            logger.debug(
-                                "Failed to reset %s after process death",
+                        # The parent is reset only when the death was the
+                        # PARENT's runtime ending. A sub-agent runs on its
+                        # parent's process, so this handler also catches the
+                        # child's own death -- and resetting the parent for that
+                        # tears down a healthy conversation, plus every other
+                        # tenant's session with it, over a child that failed.
+                        # A single-tenant runtime is reset exactly as before.
+                        if runtime_death.caused_by_this_session(client):
+                            try:
+                                assert self.sessions is not None
+                                await self.sessions.reset(parent_key)
+                            except Exception:
+                                logger.debug(
+                                    "Failed to reset %s after process death",
+                                    parent_key,
+                                    exc_info=True,
+                                )
+                        else:
+                            logger.warning(
+                                "Subagent %s: the SHARED runtime died — leaving parent %s "
+                                "to re-acquire on its own next turn",
+                                info.id,
                                 parent_key,
-                                exc_info=True,
                             )
                         if self.subagent_mgr:
                             self.subagent_mgr.notify_injection_failed(

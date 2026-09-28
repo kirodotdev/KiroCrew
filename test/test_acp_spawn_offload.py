@@ -41,6 +41,10 @@ from kiro_crew.acp.client import AcpClient, _resolve_spawn_env
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
+# A pid above every supported platform's pid_max: a cleanup path that signals it
+# reaches nothing on the runner (same spelling as test/test_update_provider.py).
+_UNALLOCATABLE_PID = 99_999_999_999
+
 
 @pytest.fixture(autouse=True)
 def _pinned_kiro_cli_version(monkeypatch):
@@ -260,7 +264,9 @@ class TestClientSpawnPidTrackingOffLoop:
             ),
             patch(
                 "kiro_crew.session._track_session_pid",
-                side_effect=lambda pid: session_track_threads.append(threading.current_thread()),
+                side_effect=lambda pid, token=None: session_track_threads.append(
+                    threading.current_thread()
+                ),
             ),
             # PID 12345 may be a real host process; an empty scan keeps the
             # early-descendant branch (and its own tracking write) out of
@@ -972,3 +978,176 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         assert any(
             r.levelname == "ERROR" and "5150" in r.getMessage() for r in caplog.records
         ), "a runtime that could not be recorded leaks silently unless this is an ERROR"
+
+
+class TestRuntimeRootTrackingOffLoop:
+    """The runtime's pid-tracking pair runs off the loop, and a cancellation
+    delivered at that hop still ends with the child reaped -- AFTER the worker.
+
+    Each tracker takes an exclusive file lock and, on a recycled number, now
+    rewrites the file under it: blocking syscalls the heartbeat and every session
+    would wait behind on the loop. ``AcpClient._spawn`` already hops for the same
+    reason. The hop is an await, so it is a cancellation point between the
+    method's two reap guards; the guard added for it must (1) wait for a worker
+    that may already be inside the pair -- an append landing after the reap has
+    untracked the pid resurrects a line for a dead, recyclable number -- and only
+    then (2) reap, then let the cancellation through.
+    """
+
+    @staticmethod
+    def _bare_spawn(monkeypatch, tmp_path):
+        mock_proc = MagicMock()
+        mock_proc.pid = _UNALLOCATABLE_PID
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+        mock_proc.stdout = None
+        TestRuntimeShieldSurvivesAFailedAppend._patch_prelude(monkeypatch, tmp_path, mock_proc)
+        monkeypatch.setattr(runtime_mod, "register_protected_pid", lambda pid: None)
+        return mock_proc
+
+    @pytest.mark.asyncio
+    async def test_runtime_tracks_both_files_off_the_loop_thread(self, tmp_path, monkeypatch):
+        class _StopSpawn(Exception):
+            pass
+
+        self._bare_spawn(monkeypatch, tmp_path)
+        threads: list[threading.Thread] = []
+        tokens: list[object] = []
+
+        monkeypatch.setattr(
+            runtime_mod, "_track_pid", lambda pid: threads.append(threading.current_thread())
+        )
+
+        def _session(pid, token=None):
+            threads.append(threading.current_thread())
+            tokens.append(token)
+
+        monkeypatch.setattr(runtime_mod, "_track_session_pid", _session)
+        monkeypatch.setattr(runtime_mod, "_pid_start_token", lambda pid: "tok-spawn")
+        monkeypatch.setattr(
+            AcpRuntime, "_send_and_await", AsyncMock(side_effect=_StopSpawn()), raising=True
+        )
+        monkeypatch.setattr(AcpRuntime, "_reader_loop", AsyncMock(), raising=True)
+        monkeypatch.setattr(AcpRuntime, "kill", AsyncMock(), raising=True)
+
+        runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+        with pytest.raises(_StopSpawn):
+            await runtime.spawn()
+
+        assert len(threads) == 2, "both trackers must run"
+        for t in threads:
+            assert t is not threading.current_thread(), "root tracking ran on the loop thread"
+        # The token handed down is the one spawn read, not a re-probe.
+        assert tokens == ["tok-spawn"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_at_the_tracking_hop_waits_for_the_worker_then_reaps(
+        self, tmp_path, monkeypatch
+    ):
+        self._bare_spawn(monkeypatch, tmp_path)
+        monkeypatch.setattr(runtime_mod, "_track_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_session_pid", lambda pid, token=None: None)
+
+        loop = asyncio.get_running_loop()
+        worker_done = loop.create_future()  # the executor future, parked by the test
+        reached_hop = asyncio.Event()
+        real_run_in_executor = loop.run_in_executor
+
+        def _park_root_tracking(executor, fn, *args):
+            if getattr(fn, "__name__", "") != "_track_root_pids":
+                return real_run_in_executor(executor, fn, *args)
+            reached_hop.set()
+            return worker_done
+
+        monkeypatch.setattr(loop, "run_in_executor", _park_root_tracking)
+
+        order: list[str] = []
+        kill = AsyncMock(side_effect=lambda **kw: order.append("kill"))
+        monkeypatch.setattr(AcpRuntime, "kill", kill, raising=True)
+        monkeypatch.setattr(
+            AcpRuntime,
+            "_reader_loop",
+            AsyncMock(side_effect=AssertionError("spawn continued past a cancelled hop")),
+            raising=True,
+        )
+
+        runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+        task = asyncio.ensure_future(runtime.spawn())
+        await asyncio.wait_for(reached_hop.wait(), timeout=10)
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        task.cancel()
+        # The worker is still "running": the reap must NOT have happened yet.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert order == [], "reaped before the tracking worker finished"
+        assert not worker_done.cancelled(), "the worker's future was cancelled with the task"
+
+        # The worker finishes; only now may the reap run, and the cancel propagate.
+        worker_done.set_result(None)
+        order.append("worker-done")
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert order == ["worker-done", "kill"]
+        assert kill.await_args.kwargs.get("reason") == "reap after cancelled spawn tracking"
+
+    @pytest.mark.asyncio
+    async def test_a_second_cancel_during_the_cleanup_still_reaps_exactly_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Two ordinary dashboard paths cancel the same eager-spawn task (a newer
+        slot signal, then a slot deletion). The first cancel lands at the hop; the
+        second lands while the guard is still waiting for the worker. It must be
+        absorbed until the cleanup settles -- a skipped reap here is a live,
+        sweep-shielded child with no owner -- and the reap runs exactly once."""
+        self._bare_spawn(monkeypatch, tmp_path)
+        monkeypatch.setattr(runtime_mod, "_track_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_session_pid", lambda pid, token=None: None)
+
+        loop = asyncio.get_running_loop()
+        worker_done = loop.create_future()
+        reached_hop = asyncio.Event()
+        real_run_in_executor = loop.run_in_executor
+
+        def _park_root_tracking(executor, fn, *args):
+            if getattr(fn, "__name__", "") != "_track_root_pids":
+                return real_run_in_executor(executor, fn, *args)
+            reached_hop.set()
+            return worker_done
+
+        monkeypatch.setattr(loop, "run_in_executor", _park_root_tracking)
+
+        order: list[str] = []
+        kill = AsyncMock(side_effect=lambda **kw: order.append("kill"))
+        monkeypatch.setattr(AcpRuntime, "kill", kill, raising=True)
+        monkeypatch.setattr(
+            AcpRuntime,
+            "_reader_loop",
+            AsyncMock(side_effect=AssertionError("spawn continued past a cancelled hop")),
+            raising=True,
+        )
+
+        runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+        task = asyncio.ensure_future(runtime.spawn())
+        await asyncio.wait_for(reached_hop.wait(), timeout=10)
+        await asyncio.sleep(0)
+
+        task.cancel()  # first: at the hop
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert order == [] and not task.done()
+        task.cancel()  # second: while the guard waits for the worker
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert order == [], "a repeat cancel must not skip or hurry the reap"
+        assert not task.done(), "a repeat cancel must not end spawn before the reap"
+
+        worker_done.set_result(None)
+        order.append("worker-done")
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert order == ["worker-done", "kill"]
+        kill.assert_awaited_once()

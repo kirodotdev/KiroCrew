@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from kiro_crew.safety_override import safety_override, yolo_policy_permits
+
 
 def resolved_row_identity(slot: Any) -> str:
     """The identity the sidebar renders this slot under.
@@ -30,6 +32,25 @@ def resolved_row_identity(slot: Any) -> str:
     if getattr(slot, "is_remote", False) and instance_id and remote_slot:
         return f"{instance_id}:{remote_slot}"
     return str(getattr(slot, "key", "") or "")
+
+
+def live_trust_scope(slot: Any) -> str:
+    """The slot's ``SafetyOverride`` scoped-grant key while that grant is live, else "".
+
+    Display only. It answers whether the scope the slot carries still has time on
+    it, through ``scope_remaining_secs`` -- a pure read -- because this runs on
+    every slots poll and must never expire a grant or write a SEL record. It
+    applies the same policy mask ``is_scope_active`` applies first, so a grant
+    the approval ceiling denies never shows as Trust. The approval paths decide
+    through ``is_scope_active``; nothing reads this value back into ``_trust`` or
+    into a stored approval policy.
+    """
+    scope = str(getattr(slot, "_trust_scope", "") or "")
+    if not scope:
+        return ""
+    if not yolo_policy_permits():
+        return ""
+    return scope if safety_override().scope_remaining_secs(scope) > 0 else ""
 
 
 class SlotProjection:
@@ -340,6 +361,7 @@ class SlotProjection:
             "options": [redact(option) for option in options],
             "prompt_preview": prompt_preview,
             "trust": slot._trust,
+            "trust_scope": live_trust_scope(slot),
             "trust_reads": slot._trust_reads,
             "trusted_patterns_count": len(slot._trusted_patterns),
             "slack_linked": slot._slack_linked,

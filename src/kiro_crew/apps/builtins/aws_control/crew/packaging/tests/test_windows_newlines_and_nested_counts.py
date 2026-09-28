@@ -35,7 +35,7 @@ import pathlib
 
 import pytest
 
-from .test_producer import BUILD_PY, load_build, make_crew, sign_plan
+from .test_producer import builder_source_text, builder_trees, load_build, make_crew, sign_plan
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -73,8 +73,8 @@ def _is_text_file_call(node: ast.Call) -> bool:
     return True
 
 
-def _text_write_calls() -> list[ast.Call]:
-    """Every call in the module that moves str to or from disk in TEXT mode.
+def _text_write_calls() -> list[tuple[str, ast.Call]]:
+    """Every call in the builder that moves str to or from disk in TEXT mode, with its file.
 
     ``write_text`` was the only such call when this rule was written. The staging marker
     then moved to an ``os.fdopen`` write, to get the ``O_NOFOLLOW`` and ``O_EXCL`` that
@@ -83,9 +83,11 @@ def _text_write_calls() -> list[ast.Call]:
     reason, so the rule covers all three -- which is what stops the fix from being routed
     around by changing how the file is opened.
     """
-    tree = ast.parse(BUILD_PY.read_text(encoding="utf-8"), str(BUILD_PY))
     return [
-        node for node in ast.walk(tree) if isinstance(node, ast.Call) and _is_text_file_call(node)
+        (path.name, node)
+        for path, tree in builder_trees()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _is_text_file_call(node)
     ]
 
 
@@ -110,8 +112,8 @@ def test_every_write_text_in_the_builder_pins_newline() -> None:
     is one nobody can apply from the call site.
     """
     unpinned = [
-        f"build.py:{node.lineno}"
-        for node in _text_write_calls()
+        f"{name}:{node.lineno}"
+        for name, node in _text_write_calls()
         if not any(kw.arg == "newline" for kw in node.keywords)
     ]
     assert not unpinned, (
@@ -215,7 +217,7 @@ def test_MUTATION_translating_writer_aborts_the_build(tmp_path: pathlib.Path) ->
     this test once passed while proving nothing.
     """
     anchor = "                fh.write(bytes(data))"
-    assert BUILD_PY.read_text(encoding="utf-8").count(anchor) == 1, (
+    assert builder_source_text().count(anchor) == 1, (
         "the mutation anchor is not unique, so replace(..., 1) may target the wrong call "
         "and this test would pass without exercising the guarded write"
     )
@@ -315,6 +317,6 @@ def test_the_builder_source_carries_no_prompt_injection() -> None:
     Left in the module but uncalled, the block would still be reviewed here and would
     still be one edit away from shipping, which is the situation the reviewer objected to.
     """
-    source = BUILD_PY.read_text(encoding="utf-8")
+    source = builder_source_text()
     for token in ("deployment verification", "SMC-FINGERPRINT", "fingerprint_challenge"):
-        assert token not in source, f"{token} is still in build.py"
+        assert token not in source, f"{token} is still in the builder"

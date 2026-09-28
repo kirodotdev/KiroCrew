@@ -56,34 +56,6 @@ export function effortLabel(level: string): string {
  */
 export const EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 
-/** Rendered width of the reasoning-effort popover, matching
- *  `ReasoningEffortDropdown`'s own `w-[240px]`. Its hosts portal it to <body>
- *  and position it themselves, so they need the width to keep it on screen. */
-export const EFFORT_POPOVER_WIDTH_PX = 240
-
-/** Viewport gutter kept on each side of the popover. */
-const EFFORT_POPOVER_GUTTER_PX = 8
-
-/**
- * Left offset for the effort popover anchored under a composer chip, clamped so
- * the popover's RIGHT edge stays inside the viewport.
- *
- * The hosts used to inline their own clamp with a hand-written constant, and one
- * of them was 20px short of the popover's real width — a chip near the right
- * edge pushed the slider's max notch, the toggle and the help tip off screen
- * where they could not be reached. The width belongs to the popover, so the
- * bound is derived from it here rather than copied per call site.
- *
- * The popover itself carries `max-w-[calc(100vw-16px)]`, so on a viewport too
- * narrow for its full width it shrinks to both gutters; the bound follows that
- * same shrink instead of clamping against a width the popover never renders.
- */
-export function effortPopoverLeft(anchorLeft: number, viewportWidth: number): number {
-  const width = Math.min(EFFORT_POPOVER_WIDTH_PX, viewportWidth - 2 * EFFORT_POPOVER_GUTTER_PX)
-  const rightBound = viewportWidth - width - EFFORT_POPOVER_GUTTER_PX
-  return Math.max(EFFORT_POPOVER_GUTTER_PX, Math.min(anchorLeft, rightBound))
-}
-
 /** Providers whose backend accepts a reasoning-effort level. KiroCrew is
  *  KiroACP-only, so this is just 'acp'. */
 export const REASONING_EFFORT_PROVIDERS = new Set(['acp'])

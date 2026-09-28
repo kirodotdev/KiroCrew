@@ -46,7 +46,7 @@ from __future__ import annotations
 import ast
 import collections
 
-from .test_producer import BUILD_PY
+from .test_producer import builder_trees, called_name
 
 # ---------------------------------------------------------------------------
 # what counts as touching the filesystem
@@ -257,9 +257,9 @@ class _Walk(ast.NodeVisitor):
         self._try(node)
 
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
-        func = node.func
-        if isinstance(func, ast.Name) and func.id in REPORT_WRITERS:
-            self.report_writes.append((self.scope[-1], func.id, node.lineno))
+        writer = called_name(node)
+        if writer in REPORT_WRITERS:
+            self.report_writes.append((self.scope[-1], writer, node.lineno))
         label = _call_label(node)
         if label is not None:
             self.sites.append((self.scope[-1], label, any(self.covered), node.lineno))
@@ -267,8 +267,10 @@ class _Walk(ast.NodeVisitor):
 
 
 def _walk() -> _Walk:
+    """One walk over every builder file; a site keeps its function name as its key."""
     walk = _Walk()
-    walk.visit(ast.parse(BUILD_PY.read_text(encoding="utf-8")))
+    for _path, tree in builder_trees():
+        walk.visit(tree)
     return walk
 
 

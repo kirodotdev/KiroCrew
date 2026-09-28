@@ -113,12 +113,13 @@ describe('WelcomeView', () => {
       expect(cell.className).toContain('hover:z-10')
     })
 
-    it('uses a start-aligned narrow stack and switches to the spread grid only on wide, tall viewports', () => {
+    it('safe-centres the phone stack, start-aligns short wide windows, and switches to the spread grid only on wide, tall viewports', () => {
       renderWithProviders(<WelcomeView {...defaultProps} />)
       const layout = screen.getByTestId('welcome-layout')
       expect(layout.className).toContain('flex')
       expect(layout.className).toContain('flex-col')
-      expect(layout.className).toContain('justify-start')
+      expect(layout.className).toContain('[justify-content:safe_center]')
+      expect(layout.className).toContain('sm:justify-start')
       expect(layout.className).not.toMatch(/(?:^|\s)justify-center(?:\s|$)/)
       expect(layout.className).toContain('[@media(min-width:640px)_and_(min-height:600px)]:grid')
       expect(layout.className).toContain('[@media(min-width:640px)_and_(min-height:600px)]:grid-rows-[1.3fr_auto_0.7fr]')

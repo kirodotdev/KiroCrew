@@ -292,7 +292,7 @@ class TestSpawnQueueWaitHelpMatchesTheDaemon:
         along, is exactly that trap).
         """
         sites = {
-            "src/kiro_crew/config/sections.py": _schema_help(_SPAWN_QUEUE_WAIT_PATH),
+            "src/kiro_crew/config/integration_sections.py": _schema_help(_SPAWN_QUEUE_WAIT_PATH),
             "config-baseline.json": _baseline_help(_SPAWN_QUEUE_WAIT_PATH),
             _SPAWN_QUEUE_WAIT_DOC: _doc_paragraph_about(
                 _SPAWN_QUEUE_WAIT_DOC, "spawn_queue_wait_secs"
@@ -330,7 +330,7 @@ class TestSpawnQueueWaitHelpMatchesTheDaemon:
         shipped = McpGatewayConfig().spawn_queue_wait_secs
         assert float(stub_mod._RECONNECT_TOTAL_BUDGET_SECS) == float(shipped)
         for name, text in (
-            ("src/kiro_crew/config/sections.py", _schema_help(_SPAWN_QUEUE_WAIT_PATH)),
+            ("src/kiro_crew/config/integration_sections.py", _schema_help(_SPAWN_QUEUE_WAIT_PATH)),
             ("config-baseline.json", _baseline_help(_SPAWN_QUEUE_WAIT_PATH)),
         ):
             assert f"above {shipped}" in text, (

@@ -126,12 +126,21 @@ export function useChatPageTranscriptEarlyController({
   // the same reason as the tip/survey effect above. A callback ref (not
   // useRef + effect) so the observer re-attaches when the chat column
   // unmounts and remounts.
+  //
+  // The same observer marks the band while it OVERFLOWS its `max-h` cap
+  // (`data-overflowing`, read by the `.dock-inert` rule in index.css). The band
+  // is a `dock-inert` box: it passes input through so the strip beside its
+  // column reaches the transcript, which also drops its own scrollbar as a hit
+  // target — and a scrollbar belongs to the box, not to a child. The band
+  // crosses the cap only by changing height, so every crossing is a resize
+  // this observer already sees; while it sits at the cap, the mark holds.
   const composerBandObserverRef = useRef<ResizeObserver | null>(null)
   const composerBandRef = useCallback((el: HTMLDivElement | null) => {
     composerBandObserverRef.current?.disconnect()
     composerBandObserverRef.current = null
     if (!el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
+      el.dataset.overflowing = el.scrollHeight > el.clientHeight ? 'true' : 'false'
       if (autoFollowAllowed()) scrollBottom(true)
     })
     ro.observe(el)

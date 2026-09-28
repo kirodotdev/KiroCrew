@@ -115,7 +115,7 @@ def test_MUTATION_the_plan_is_not_carried(tmp_path):
 
     bad = load_build(
         mutate=(
-            "            _write_bytes_nofollow(\n"
+            "            _destination._write_bytes_nofollow(\n"
             "                staging / PLAN_FILENAME, carried_plan, staging_fd=_sfd, "
             "rel=PLAN_FILENAME\n"
             "            )",

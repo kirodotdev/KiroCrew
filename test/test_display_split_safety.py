@@ -17,8 +17,10 @@ from kiro_crew.messaging.display_safety import (
     joins_to_a_credential,
     redact_for_display,
     safe_split_offset,
+    severs_a_credential,
 )
 from kiro_crew.messaging.renderer import _default_redactor
+from kiro_crew.telegram.renderer import _strip_hr
 
 
 class TestTheOracleIsAsStrongAsTheSendPath:
@@ -208,3 +210,199 @@ class TestSafeSplitOffset:
         # each. The ceiling is deliberately loose: the property is the ORDER, and a
         # linear walk cannot fit under it.
         assert calls < 60, calls
+
+
+class TestSeversACredential:
+    """The n-piece case: a rotation delivers a SEQUENCE, not one cut.
+
+    ``joins_to_a_credential`` answers for one boundary. A rotation hands the reader
+    several messages in order, and two readings are needed because neither subsumes
+    the other -- the whole join catches a key whose MARKUP swallows a whole piece,
+    and each boundary against the rest catches a key completed at a piece's end.
+    """
+
+    def test_one_piece_has_no_boundary(self) -> None:
+        assert not severs_a_credential(["AKIAIOSFODNN7EXAMPLE"], _default_redactor)
+
+    def test_innocent_pieces_stay_clean(self) -> None:
+        assert not severs_a_credential(["ordinary ", "prose in ", "three parts"], _default_redactor)
+
+    def test_a_key_severed_between_two_pieces_is_caught(self) -> None:
+        key = "AKIAIOSFODNN7EXAMPLE"
+        pieces = [key[:8], key[8:]]
+        for piece in pieces:
+            assert _default_redactor(piece) == piece, "each piece alone must look clean"
+        assert severs_a_credential(pieces, _default_redactor)
+
+    def test_a_key_spanning_three_pieces_is_caught_though_no_pair_shows_it(self) -> None:
+        """The reading that only the whole-sequence join can produce.
+
+        No NEIGHBOURING pair holds the key, so a scan that walked pairs alone would
+        report all three clean. This is why the middle piece being the whole of one
+        message is not a defence.
+        """
+        key = "AKIAIOSFODNN7EXAMPLE"
+        pieces = [key[:6], key[6:13], key[13:]]
+        assert severs_a_credential(pieces, _default_redactor)
+
+    def test_a_markup_span_covering_a_whole_piece_is_caught(self) -> None:
+        """Canonicalising DROPS a link's target, so a piece of any size can vanish.
+
+        Split ``AKIA[label](url)`` so the closing bracket lands in the third piece:
+        no neighbouring pair canonicalises to anything, while the full join
+        collapses the url away and puts the label straight against ``AKIA``.
+        """
+        pieces = ["AKIA", "[IOSFODNN7EXAMPLE](https://ex.test/", "padpadpad)"]
+        assert severs_a_credential(pieces, _default_redactor)
+
+    def test_the_pieces_are_graded_as_delivered_not_as_split(self) -> None:
+        """Whitespace the sender trims is whitespace the reader never sees.
+
+        The raw pair is kept apart by a trailing newline, which no credential
+        pattern tolerates; the delivered pair sits flush. Grading the raw form is
+        exactly the miss this function's contract warns callers about.
+        """
+        key = "AKIAIOSFODNN7EXAMPLE"
+        raw = [key[:8] + "\n\n", "   " + key[8:]]
+        delivered = [piece.strip() for piece in raw]
+
+        assert not severs_a_credential(raw, _default_redactor)
+        assert severs_a_credential(delivered, _default_redactor)
+
+    def test_a_key_completed_before_the_last_piece_is_caught(self) -> None:
+        """A RUN of messages, with a message after it that spoils the pattern.
+
+        The patterns anchor at their edges: this token's second segment is exactly
+        43 characters followed by ``(?![A-Za-z0-9_-])``, so ONE alphanumeric
+        character after it kills the match. The key is complete once the reader has
+        read messages 1 and 2; message 3 starts with a letter. Every reading that
+        runs to the END of the sequence therefore carries that letter and reports
+        clean -- the whole join, the per-piece join, and each suffix. Only the run
+        that STOPS at the second message sees the key, and on screen the reader has
+        a message break exactly there.
+        """
+        segment = "eyJ" + "".join("abcdefghi-"[index % 10] for index in range(96))
+        token = segment + "." + "".join("ABCDEFGHI-"[index % 10] for index in range(43))
+        assert _default_redactor(token) != token, "fixture is not a credential"
+
+        pieces = [token[:80], token[80:], "x"]
+        for piece in pieces:
+            assert _default_redactor(piece) == piece, "each piece alone must look clean"
+        whole = canonicalize_display("".join(pieces))
+        assert _default_redactor(whole) == whole, "fixture must escape the whole-join reading"
+
+        assert severs_a_credential(pieces, _default_redactor)
+
+
+class TestSafeSplitOffsetGradesTheDeliveredForm:
+    """``present`` is what makes the returned offset one the caller can take.
+
+    A renderer that trims on the way out delivers something shorter than the raw
+    slice, so an offset whose RAW halves are safe can still put the delivered halves
+    flush together. And because the search is deterministic, a caller that graded raw
+    and re-checked the answer in delivered form would reject the same offset every
+    rotation and never send the segment at all.
+    """
+
+    #: One trailing space is all it takes: the raw halves are separated by it and
+    #: the delivered halves are not.
+    _KEY = "AKIAIOSFODNN7EXAMPLE"
+
+    def _text(self) -> tuple[str, int]:
+        pad = "x" * 40
+        text = pad + self._KEY[:8] + " " + self._KEY[8:] + " tail prose"
+        return text, len(pad) + 8 + 1
+
+    def test_the_raw_grade_accepts_an_offset_the_reader_can_rejoin(self) -> None:
+        text, limit = self._text()
+        offset = safe_split_offset(text, limit, _default_redactor)
+        assert offset == limit, "raw halves are kept apart by the space at the cut"
+        assert severs_a_credential(
+            [text[:offset].strip(), text[offset:].strip()], _default_redactor
+        ), "yet the DELIVERED halves rejoin the key"
+
+    def test_the_delivered_grade_moves_the_offset_back(self) -> None:
+        text, limit = self._text()
+        offset = safe_split_offset(text, limit, _default_redactor, lambda piece: piece.strip())
+        assert offset != limit, "the offset the raw grade accepted must be rejected"
+        assert not severs_a_credential(
+            [text[:offset].strip(), text[offset:].strip()], _default_redactor
+        )
+
+    def test_the_default_is_identity(self) -> None:
+        text = "just some ordinary prose with nothing secret in it at all"
+        assert safe_split_offset(text, 20, _default_redactor) == safe_split_offset(
+            text, 20, _default_redactor, lambda piece: piece
+        )
+
+
+class TestTheDeliveredReadingCatchesWhatAPreSplitRedactionCannot:
+    """Why the rotation gate exists at all, now the splitter redacts before cutting.
+
+    ``_split_markdown_bounded`` reduces the text before choosing any boundary, so a
+    key lying plainly across the budget is replaced and no chunk boundary severs it.
+    That pre-split pass reads the text AS WRITTEN. A horizontal rule standing between
+    the two halves keeps them apart there -- and the Telegram seal strips horizontal
+    rules, so the halves sit flush on screen. Only a reading of the DELIVERED form
+    sees it, which is the boundary the gate owns.
+    """
+
+    def test_a_rule_between_the_halves_hides_the_key_from_a_pre_split_scan(self) -> None:
+        key = "AKIAIOSFODNN7EXAMPLE"
+        halves = [key[:8] + "\n\n---\n", "\n" + key[8:] + " tail prose"]
+        delivered = [_strip_hr(piece).strip() for piece in halves]
+
+        assert _default_redactor("".join(halves)) == "".join(halves), (
+            "a scan of the text as written must find nothing, or the pre-split "
+            "redaction would already have caught this"
+        )
+        assert not severs_a_credential(halves, _default_redactor)
+        assert severs_a_credential(halves, _default_redactor, _strip_hr_then_strip)
+        assert _default_redactor("".join(delivered)) != "".join(delivered)
+
+
+def _strip_hr_then_strip(piece: str) -> str:
+    """The Telegram seal's own transform, as the gate hands it to the grader."""
+    return _strip_hr(piece).strip()
+
+
+class TestAnInteriorRunIsRead:
+    """A credential can sit with a spoiling message on EACH side of it.
+
+    Every whole, prefix and suffix reading of the sequence carries at least one of
+    those two frames, and the patterns anchor at both ends, so each of those
+    readings is spoiled and reports clean. The key is only visible in a reading
+    bounded on both sides -- an INTERIOR run -- which is why those are read too.
+
+    A rotation of model text makes both frames ordinary rather than crafted: the
+    splitter rstrips each chunk, so a chunk ending on a letter is the common case.
+    """
+
+    #: A link-spanning JWT. Its last segment is a FIXED 43 characters, which is what
+    #: makes an alphanumeric frame on the right genuinely spoil the match: a pattern
+    #: whose tail is open-ended just absorbs the frame and matches anyway, so a
+    #: variable-length token would be caught by a suffix reading and prove nothing.
+    _FIRST = "eyJ" + "abcdefghij" * 10
+    _LAST = "Z" * 43
+    #: Two interior pieces whose canonical join is that token: canonicalising DROPS a
+    #: link's target, so each label lands against the next one.
+    _INTERIOR = [f"[{_FIRST}](https://q/", f"aaa)[.{_LAST}](https://q/bbb)"]
+    _FRAME = "zzz"
+
+    def test_an_interior_run_between_two_spoiling_frames_is_read(self) -> None:
+        pieces = [self._FRAME, *self._INTERIOR, self._FRAME]
+
+        joined = canonicalize_display("".join(pieces))
+        assert _default_redactor(joined) == joined, "the frames no longer spoil the whole reading"
+        inner = canonicalize_display("".join(self._INTERIOR))
+        assert _default_redactor(inner) != inner, "the interior pieces no longer form a key"
+
+        assert severs_a_credential(pieces, _default_redactor), "the interior run was not read"
+
+    def test_the_same_run_unframed_is_still_caught(self) -> None:
+        """Control: the reading is added, not swapped for the ones already there."""
+        assert severs_a_credential(self._INTERIOR, _default_redactor)
+
+    def test_a_clean_sequence_of_many_pieces_stays_clean(self) -> None:
+        """Control: the windows refuse runs, they do not reject ordinary text."""
+        assert not severs_a_credential(["word " * 4 for _ in range(40)], _default_redactor)

@@ -29,8 +29,10 @@ route may edit. The judge core is on main as well, from
 `POINT_SCOPE_KEYS`, the evidence collectors, the autonudge tick hook, `judge` on
 `monitor_start` / `monitor_update` and the transcript notice are all on the base
 tree. What is still outstanding is the reader placement §8's PR G entry records,
-and the skills
-that author a brief. No `kirocrew-judge` agent
+the skills
+that author a brief, and the calibration corrections §8's PR H entry records —
+the narrowed action override §3 states and the mutating-only `owner_acted` §3.1a
+states, both decided in this document and neither on base. No `kirocrew-judge` agent
 template is coming: the landed lane runs on the bundled `kirocrew-lite`
 (`JUDGE_AGENT_NAME`), because a judge template would differ from it only in the
 model, which the runner passes per call, and a standing prompt the call already
@@ -145,7 +147,27 @@ Mapping, in code, not in the model:
 - `finished` or `broken` with `confidence ≥ 0.6` → **WAKE** with the verdict
   attached, so the woken session can report and decide to stop; the judge itself
   never ends the loop.
-- `P(wake) ≥ 0.5` or `outcome ∈ {needs_action, needs_human}` → **WAKE**.
+- `P(wake) ≥ 0.5` → **WAKE**.
+- `outcome ∈ {needs_action, needs_human}` → **WAKE**.
+- **NOT ON BASE — decided here, implemented by §8's PR H entry
+  ([#14663](https://github.com/kirodotdev/KiroCrew/pull/14663)).** That action
+  backstop is narrowed: it stops overriding a `needs_owner` that answered `quiet`
+  when the outcome's own confidence sits in `0.4 ≤ P < ACTION_OVERRIDE_MIN_P` (a
+  proposed constant, 0.6), and the verdict is then **QUIET** naming both readings.
+  `needs_owner` is the only question carrying the owner's `wake_when` / `quiet_when`,
+  so a barely-confident answer to a question carrying no owner criterion must not veto
+  a confident one that does. The band starts at 0.4 because the low-confidence rule
+  below owns everything under it and wakes: an unsure judge never buys silence,
+  whatever `needs_owner` said. The veto also requires the `quiet` answer to be the
+  MORE confident of the two — `P(quiet) > P(outcome)` — as well as clearing
+  `NEEDS_OWNER_MIN_P`. The ranking is what carries the rule, because with two options
+  the chosen answer is the argmax and so already clears 0.5 on its own: without it a
+  `quiet` at 0.51 would silence a `needs_action` at 0.59, which is the very inversion
+  this exception exists to prevent. `NEEDS_OWNER_MIN_P` stays as the floor that
+  excludes a non-argmax provider's unsure answer.
+  Landing this replaces `QUIET_OUTCOMES`-as-an-allowlist as the sole route to silence
+  and retires `test_quiet_is_an_allowlist`'s universal form, both of which pin the
+  un-narrowed rule on base today.
 - otherwise → **QUIET**: re-arm, no turn.
 - Low confidence (`< 0.4` on `outcome`) → WAKE. A judge that is unsure hands
   the call to System Two; it never guesses quiet.
@@ -185,13 +207,32 @@ remains a permanent cycle boundary: it accepts no `owner_acted`, and its
 suppressions accept no label from a later turn. A re-owed delivery has its own new
 row.
 
-`owner_acted` is `true` when the woken turn called at least one tool, or answered
-longer than a quiet-cycle reply, or answered with a link; `false` when it called
-nothing and answered short. A turn that changed the loop needs no separate
-signal — `monitor_update` and `autonudge_stop` are tool calls, so the count
-already carries them. The whole rule lives in one function,
-`autonudge_judge.owner_acted`, and an unknown tool-call count reads as acted,
-which is the direction that does not teach the judge to suppress. A quiet verdict
+`owner_acted` on base is `true` when the woken turn called at least one tool, or
+answered longer than a quiet-cycle reply, or answered with a link; `false` when it
+called nothing and answered short. The whole rule lives in one function,
+`autonudge_judge.owner_acted`, and an unknown tool-call count reads as acted, which is
+the direction that does not teach the judge to suppress.
+
+**NOT ON BASE — decided here, implemented by §8's PR H entry
+([#14663](https://github.com/kirodotdev/KiroCrew/pull/14663)).** That count is not the
+rule it should be: counting a read the same as a write makes the label constant, and a
+label with no variance cannot tune the thresholds above. So the TOOL-CALL limb alone
+becomes "at least one dispatch that could have CHANGED something", where a dispatch is
+read-only only when its name is positively known to be — a host-known read-only
+built-in with trusted provenance, or a first-party MCP server's read tool — and anything
+else counts as having changed something. The reply-length and link limbs are unchanged
+and still answer `true` on their own, so a turn that dispatched only reads but answered
+at length or with a link stays `owner_acted: true` — which is what §3.1a's note about
+weighting a tool-call-only delivery already assumes. `monitor_update` is not read-only, so the
+mutating count still carries it without a second signal. `autonudge_stop` is not
+read-only either, but it needs no mention here: a turn that calls it deactivates or
+removes the loop, and the turn-completion hook returns before it reaches the labelling
+block, so that delivery is left unlabelled — the case the paragraph below on a loop
+that stops during a delivered turn already records. This needs the
+per-dispatch NAMES plumbed to `notify_turn_complete`, which today receives a bare
+count; where an adapter's dispatches arrive unnamed the count decides and the label row
+records a proposed `tool_names_known: false`, so a threshold read excludes those rows
+rather than pooling two rules as one. A quiet verdict
 that hits the streak floor spends a turn, so it is labelled as a delivery rather
 than counted as a suppression.
 
@@ -679,4 +720,13 @@ answer on the cheapest lane, where a main turn carries the loop's whole context.
    AUTO-PAUSED rather than deleted, per §7 Q6: it stays listed with `auto_paused`
    and a `last_error` naming the replacement, because removing it would destroy the
    only durable record that the watch existed.
-5. This RFC lands as `docs/request-for-change/rfc-wake-judge.md`.
+5. PR H — calibration corrections, from two defects measured on the landed judge
+   ([#14663](https://github.com/kirodotdev/KiroCrew/pull/14663), not on base): the
+   narrowed action override §3's mapping records, gated on a new
+   `ACTION_OVERRIDE_MIN_P`; and `owner_acted` counting only dispatches that could have
+   changed something, which needs the per-dispatch names carried to
+   `notify_turn_complete` and records a new `tool_names_known` on the label row for the
+   adapters that name none. Both are decisions this document records; neither is base
+   behaviour until that PR merges. Depends on D's point and on the label rows §3.1a
+   defines.
+6. This RFC lands as `docs/request-for-change/rfc-wake-judge.md`.

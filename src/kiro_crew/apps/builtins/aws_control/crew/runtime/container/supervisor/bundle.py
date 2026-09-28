@@ -404,7 +404,7 @@ def _unlink_within(dst: Path, rel: str) -> str:
     moment it is traversed, and the final ``unlink`` runs relative to the last
     descriptor. There is no window between deciding the path is inside *dst* and acting
     on it, because the path is never re-resolved by name: the directory verified is the
-    directory deleted from. ``crew/packaging/build.py`` uses the same shape for a
+    directory deleted from. ``crew/packaging/pipeline/staging.py`` uses the same shape for a
     different object.
 
     A resolved-containment check runs first as well. It is redundant against the walk
@@ -621,7 +621,7 @@ def install_bundle(settings: Settings, *, agents_dir: Path | None = None) -> dic
     # answer holds regardless of what set the value.
     #
     # The builder has the same guard for the same reason (``_validated_crew_name`` in
-    # ``packaging/build.py``). Duplicated rather than shared, like the no-follow opener:
+    # ``packaging/pipeline/crew.py``). Duplicated rather than shared, like the no-follow opener:
     # this tree is image source the gateway must not import.
     if (
         not manifest_crew

@@ -50,7 +50,11 @@ describe('TipCard (single-line strip)', () => {
     const { container } = renderWithQuery(
       <TipCard tip={mockTip} onDismiss={onDismiss} />,
     )
-    const root = container.firstElementChild as HTMLElement
+    // The motion wrapper is `container.firstElementChild`; the card itself is
+    // the Glass host inside it (components/Glass.tsx), which carries the layout
+    // classes and the Lightbulb.
+    expect(container.firstElementChild).not.toBeNull()
+    const root = screen.getByTestId('tip-card')
     expect(root.className).toContain('flex')
     expect(root.className).toContain('items-start')
 
@@ -68,8 +72,9 @@ describe('TipCard (single-line strip)', () => {
     expect(body.className).toContain('overflow-y-auto')
     expect(body.className).toContain('break-words')
 
-    // Lucide lightbulb SVG present
-    const icon = root.querySelector('svg[aria-hidden="true"]')
+    // Lucide lightbulb SVG present. The Glass host also renders a 0x0
+    // aria-hidden <svg> for its refraction filter, so match the lucide class.
+    const icon = root.querySelector('svg.lucide[aria-hidden="true"]')
     expect(icon).not.toBeNull()
   })
 

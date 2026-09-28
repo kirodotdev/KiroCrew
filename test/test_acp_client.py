@@ -16,6 +16,7 @@ import pytest
 from spawn_test_helpers import strip_spawn_shim
 
 import kiro_crew.acp.client as acp_client
+from conftest import requires_symlinks
 from kiro_crew.acp.client import (
     _CLAUDE_ACP_PKG_ENTRY,
     _DRAIN_DURATION,
@@ -10717,6 +10718,97 @@ class TestSubstitutionFollow:
         # Exactly two session/new issues: the original + one retry (bounded).
         assert sent.count("session/new") == 2
 
+    async def _run_substitution_retry_case(self, tmp_path, monkeypatch, *, lose_surface):
+        from kiro_crew import model_registry
+        from kiro_crew.acp import seed_provenance as sp
+
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(sp, "_RECORDS", {})
+        monkeypatch.setattr(sp, "_LIVE", {})
+        monkeypatch.setattr(sp, "_SHARERS", {})
+        monkeypatch.setattr(sp, "_sidecar_path", lambda: tmp_path / "seeds.json")
+
+        owner = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        owner._model = "global.anthropic.claude-opus-4-8[1m]"
+        owner._write_claude_local_settings()
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._model = owner._model
+        client._write_claude_local_settings()
+        assert client._claude_settings_shared is True
+        assert client._permission_surface_governed is True
+
+        server = {
+            "name": "governed",
+            "command": "/bin/governed",
+            "args": [],
+            "env": [],
+            "type": "stdio",
+        }
+        client._session_mcp_cache = [server]
+        client._session_mcp_snapshot = acp_client.DerivedSpecSnapshot("old", "old")
+        resolve_calls = []
+
+        def _resolve():
+            resolve_calls.append(client._permission_surface_governed)
+            client._session_mcp_snapshot = acp_client.DerivedSpecSnapshot("new", "new")
+            return [server] if client._permission_surface_governed else []
+
+        client._resolve_session_mcp_servers = _resolve  # type: ignore[assignment]
+        report_calls = []
+        guard_calls = []
+        client._begin_session_report = (  # type: ignore[assignment]
+            lambda servers: report_calls.append(list(servers or []))
+        )
+        client._guard_unresolved_mcp_refs = (  # type: ignore[assignment]
+            lambda wire_servers: guard_calls.append(list(wire_servers or []))
+        )
+        sent = []
+        settings = tmp_path / ".claude" / "settings.local.json"
+
+        async def _send(method, params):
+            sent.append(list(params.get("mcpServers") or []))
+            if len(sent) == 1 and lose_surface:
+                settings.write_text("{}", encoding="utf-8")
+            return len(sent)
+
+        waits = 0
+
+        async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
+            nonlocal waits
+            waits += 1
+            if waits == 1:
+                client._last_substitution_model = "global.anthropic.claude-sonnet-4-6[1m]"
+                return {}
+            return {"sessionId": "retry-session"}
+
+        client._send_request = _send  # type: ignore[assignment]
+        client._wait_for_response = _wait  # type: ignore[assignment]
+
+        response = await client._new_session_following_substitution()
+        assert response == {"sessionId": "retry-session"}
+        assert sent[0] == [server]
+        return sent[1], server, resolve_calls, report_calls, guard_calls
+
+    @pytest.mark.asyncio
+    async def test_substitution_retry_withholds_mcp_when_surface_lost(self, tmp_path, monkeypatch):
+        retried, _server, resolves, reports, guards = await self._run_substitution_retry_case(
+            tmp_path, monkeypatch, lose_surface=True
+        )
+        assert retried == []
+        assert resolves == [False]
+        assert reports == [[_server], []]
+        assert guards == [[_server], []]
+
+    @pytest.mark.asyncio
+    async def test_substitution_retry_keeps_mcp_when_surface_intact(self, tmp_path, monkeypatch):
+        retried, server, resolves, reports, guards = await self._run_substitution_retry_case(
+            tmp_path, monkeypatch, lose_surface=False
+        )
+        assert retried == [server]
+        assert resolves == [True]
+        assert reports == [[server], [server]]
+        assert guards == [[server], [server]]
+
     @pytest.mark.asyncio
     async def test_happy_path_no_retry(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
@@ -13097,3 +13189,552 @@ class TestCompactionFailureIsTransient:
         }
         assert compaction_failure_detail(frame) == "High traffic — try another model."
         assert compaction_failure_is_transient(frame) is True
+
+
+class TestMovedAsideRestore:
+    """Putting a moved-aside settings entry back is a no-clobber rename of ANY entry.
+
+    Teardown and re-seed capture whatever sits at ``settings.local.json`` with an
+    atomic move-aside, verify the moved bytes, and put a mismatch back. That
+    put-back is a same-directory no-clobber rename: a symlink or an oversized file
+    the user placed at the path is restored exactly as it is, with no copy and no
+    size cap, and whatever raced into the vacated pathname is never overwritten.
+    """
+
+    _SERVED = ["global.anthropic.claude-opus-5[1m]"]
+
+    @pytest.fixture(autouse=True)
+    def _isolated_provenance(self, monkeypatch):
+        """Per-test provenance registries and a warm advertised-model cache."""
+        from kiro_crew import model_registry
+        from kiro_crew.acp import seed_provenance
+
+        monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+        monkeypatch.setattr(seed_provenance, "_LIVE", {})
+        monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+        monkeypatch.setattr(
+            model_registry, "_ADVERTISED_MODELS", {"claude_code": list(self._SERVED)}
+        )
+
+    @staticmethod
+    def _authored(tmp_path: Path) -> tuple[AcpClient, Path]:
+        """A client that has written Crew's seed, and the path it wrote."""
+        client = AcpClient(
+            work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, permission_mode="default"
+        )
+        client._write_claude_local_settings()
+        return client, tmp_path / ".claude" / "settings.local.json"
+
+    @staticmethod
+    def _teardown(client: AcpClient) -> None:
+        """The discard-then-reset pair every production caller runs."""
+        asyncio.run(client._discard_claude_settings_seed())
+        client._reset_state()
+
+    @staticmethod
+    def _racer_lands_after_the_move(monkeypatch, path: Path, racer: str) -> None:
+        """Land *racer* at *path* inside the move-aside window.
+
+        ``_settings_path_holds`` runs on the moved entry between the move and the
+        restore, so a write from its wrapper is a file that arrives while the
+        pathname is vacant -- the race the no-clobber restore exists for.
+        """
+        real_holds = AcpClient._settings_path_holds
+
+        def verify_then_a_racer_lands(candidate: Path, expectation) -> bool:
+            held = real_holds(candidate, expectation)
+            if candidate.name.endswith(".crew-gc"):
+                path.write_text(racer, encoding="utf-8")
+            return held
+
+        monkeypatch.setattr(
+            AcpClient, "_settings_path_holds", staticmethod(verify_then_a_racer_lands)
+        )
+
+    @staticmethod
+    def _force_the_copy_fallback(monkeypatch) -> list[dict]:
+        """Take the no-clobber rename primitive away and record every copy fallback call."""
+        monkeypatch.setattr(acp_client.platform_compat, "RENAME_NOREPLACE_AVAILABLE", False)
+        calls: list[dict] = []
+        real_put_back = acp_client.pinned_fs.put_back_no_clobber
+
+        def counting_put_back(*args, **kwargs):
+            calls.append(dict(kwargs))
+            return real_put_back(*args, **kwargs)
+
+        monkeypatch.setattr(acp_client.pinned_fs, "put_back_no_clobber", counting_put_back)
+        return calls
+
+    @requires_symlinks
+    def test_a_symlink_user_replacement_is_restored_not_stranded(self, tmp_path):
+        """A dotfiles-style symlink at the settings path comes back as that symlink.
+
+        The move-aside captures the link itself; the verifying open refuses to
+        follow it, so the entry reads as not Crew's and must go back. A restore
+        that reads bytes would refuse the link and leave the user's settings
+        stranded under a ``.crew-gc`` name with the pathname vacant.
+        """
+        client, path = self._authored(tmp_path)
+        target = tmp_path / "dotfiles-settings.json"
+        target.write_text('{"permissions": {"defaultMode": "acceptEdits"}}', encoding="utf-8")
+        path.unlink()
+        path.symlink_to(target)
+
+        self._teardown(client)
+
+        assert path.is_symlink()
+        assert path.resolve() == target.resolve()
+        assert not list(path.parent.glob("*.crew-gc"))
+
+    def test_a_large_user_replacement_is_restored(self, tmp_path):
+        """A user file over a mebibyte is restored whole, not refused on size."""
+        client, path = self._authored(tmp_path)
+        large = b'{"permissions": {"allow": ["' + b"x" * (1 << 20) + b'"]}}'
+        path.write_bytes(large)
+
+        self._teardown(client)
+
+        assert path.read_bytes() == large
+        assert not list(path.parent.glob("*.crew-gc"))
+
+    def test_a_raced_in_occupant_is_not_clobbered_by_the_restore(self, tmp_path, monkeypatch):
+        """Positive control: a file recreated in the aside window survives the restore.
+
+        The occupant is newer than the moved entry, so the rename refuses it and
+        the moved entry stays recoverable beside it as ``.crew-gc`` litter.
+        """
+        client, path = self._authored(tmp_path)
+        users_file = '{"permissions": {"defaultMode": "acceptEdits"}}'
+        path.write_text(users_file, encoding="utf-8")
+        racer = '{"permissions": {"allow": ["Bash(ls)"]}}'
+        self._racer_lands_after_the_move(monkeypatch, path, racer)
+
+        self._teardown(client)
+
+        assert path.read_text(encoding="utf-8") == racer
+        litter = list(path.parent.glob("*.crew-gc"))
+        assert len(litter) == 1
+        assert litter[0].read_text(encoding="utf-8") == users_file
+
+    def test_crew_own_seed_restore_still_round_trips(self, tmp_path, monkeypatch):
+        """Positive control: a refused durable revoke puts Crew's own seed back cleanly."""
+        from kiro_crew.acp import seed_provenance
+
+        client, path = self._authored(tmp_path)
+        before = path.read_bytes()
+        monkeypatch.setattr(seed_provenance, "forget", lambda _path, _owner: False)
+
+        self._teardown(client)
+
+        assert path.read_bytes() == before
+        assert not list(path.parent.glob("*.crew-gc"))
+
+    def test_restore_falls_back_when_rename_noreplace_is_unavailable(self, tmp_path, monkeypatch):
+        """Crew's seed round-trips through copy fallback or Windows rename.
+
+        The POSIX fallback is the validated byte copy, called with no size cap.
+        """
+        from kiro_crew.acp import seed_provenance
+
+        calls = self._force_the_copy_fallback(monkeypatch)
+        client, path = self._authored(tmp_path)
+        before = path.read_bytes()
+        monkeypatch.setattr(seed_provenance, "forget", lambda _path, _owner: False)
+
+        self._teardown(client)
+
+        assert path.read_bytes() == before
+        assert not list(path.parent.glob("*.crew-gc"))
+        expected_calls = 0 if acp_client.platform_compat.IS_WINDOWS else 1
+        assert len(calls) == expected_calls
+        if not acp_client.platform_compat.IS_WINDOWS:
+            assert "max_bytes" not in calls[0]
+
+    def test_the_copy_fallback_is_still_no_clobber(self, tmp_path, monkeypatch):
+        """A raced-in occupant survives POSIX fallback and Windows rename."""
+        calls = self._force_the_copy_fallback(monkeypatch)
+        client, path = self._authored(tmp_path)
+        users_file = '{"permissions": {"defaultMode": "acceptEdits"}}'
+        path.write_text(users_file, encoding="utf-8")
+        racer = '{"permissions": {"allow": ["Bash(ls)"]}}'
+        self._racer_lands_after_the_move(monkeypatch, path, racer)
+
+        self._teardown(client)
+
+        assert path.read_text(encoding="utf-8") == racer
+        litter = list(path.parent.glob("*.crew-gc"))
+        assert len(litter) == 1
+        assert litter[0].read_text(encoding="utf-8") == users_file
+        assert len(calls) == (0 if acp_client.platform_compat.IS_WINDOWS else 1)
+
+    def test_an_unopenable_parent_keeps_the_aside_and_copies_nothing_by_name(
+        self, tmp_path, monkeypatch
+    ):
+        """An unopenable or unpinnable parent leaves the aside as litter.
+
+        POSIX requires a parent descriptor; Windows requires a parent pin. A
+        refusal fails closed without a by-name copy on either platform.
+        """
+        monkeypatch.setattr(acp_client.platform_compat, "RENAME_NOREPLACE_AVAILABLE", False)
+        parent = tmp_path / ".claude"
+        parent.mkdir()
+        path = parent / "settings.local.json"
+        aside = parent / "settings.local.json.0123456789abcdef.crew-gc"
+        aside.write_bytes(b'{"permissions": {"defaultMode": "default"}}')
+        moved = aside.stat()
+        expect = (moved.st_dev, moved.st_ino)
+        real_open = os.open
+        dir_flags = acp_client.pinned_fs.dir_flags()
+
+        def refuse_the_parent(p, flags, *args, **kwargs):
+            if os.fspath(p) == os.fspath(parent) and flags == dir_flags:
+                raise PermissionError(13, "parent cannot be opened", os.fspath(p))
+            return real_open(p, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", refuse_the_parent)
+
+        def refuse_pin(p):
+            raise PermissionError(13, "parent cannot be pinned", os.fspath(p))
+
+        monkeypatch.setattr(acp_client.platform_compat, "pin_directory", refuse_pin)
+        put_backs: list[tuple] = []
+        monkeypatch.setattr(
+            acp_client.pinned_fs,
+            "put_back_no_clobber",
+            lambda *args, **kwargs: put_backs.append(args) or None,
+        )
+
+        restored = AcpClient._restore_aside_without_clobber(aside, path, expect)
+
+        assert restored is False
+        assert not path.exists()
+        assert aside.read_bytes() == b'{"permissions": {"defaultMode": "default"}}'
+        assert put_backs == []
+
+
+class TestWindowsRestorePin:
+    """Windows keeps the moved-aside restore inside one held parent."""
+
+    @staticmethod
+    def _moved_identity(aside: Path) -> tuple[int, int]:
+        moved = aside.stat()
+        return moved.st_dev, moved.st_ino
+
+    def test_windows_restore_holds_a_parent_pin_across_the_rename(self, tmp_path, monkeypatch):
+        parent = tmp_path / ".claude"
+        parent.mkdir()
+        path = parent / "settings.local.json"
+        aside = parent / "settings.local.json.0123456789abcdef.crew-gc"
+        payload = b'{"permissions": {"defaultMode": "default"}}'
+        aside.write_bytes(payload)
+        pin_target = parent / "pin-target"
+        pin_target.touch()
+        real_open = os.open
+        real_rename = os.rename
+        pinned_paths: list[Path] = []
+        pin_fds: list[int] = []
+        renames: list[tuple[Path, Path]] = []
+
+        def pin_directory(candidate: Path) -> int:
+            pinned_paths.append(candidate)
+            pin = real_open(pin_target, os.O_RDONLY)
+            pin_fds.append(pin)
+            return pin
+
+        def rename_while_pinned(source, destination) -> None:
+            assert pin_fds, "rename ran before the parent was pinned"
+            os.fstat(pin_fds[-1])
+            renames.append((Path(source), Path(destination)))
+            real_rename(source, destination)
+
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(acp_client.platform_compat, "pin_directory", pin_directory)
+        monkeypatch.setattr(acp_client.os, "rename", rename_while_pinned)
+
+        restored = AcpClient._restore_aside_without_clobber(
+            aside, path, self._moved_identity(aside)
+        )
+
+        assert restored is True
+        assert pinned_paths == [parent]
+        assert renames == [(aside, path)]
+        with pytest.raises(OSError):
+            os.fstat(pin_fds[0])
+        assert path.read_bytes() == payload
+        assert not aside.exists()
+
+    def test_windows_restore_pin_failure_keeps_the_aside_and_does_not_rename(
+        self, tmp_path, monkeypatch
+    ):
+        parent = tmp_path / ".claude"
+        parent.mkdir()
+        path = parent / "settings.local.json"
+        aside = parent / "settings.local.json.0123456789abcdef.crew-gc"
+        payload = b'{"permissions": {"defaultMode": "default"}}'
+        aside.write_bytes(payload)
+        renames: list[tuple[object, object]] = []
+
+        def refuse_pin(_candidate: Path) -> int:
+            raise NotADirectoryError("the parent name is a junction")
+
+        def record_rename(source, destination) -> None:
+            renames.append((source, destination))
+
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(acp_client.platform_compat, "pin_directory", refuse_pin)
+        monkeypatch.setattr(acp_client.os, "rename", record_rename)
+
+        restored = AcpClient._restore_aside_without_clobber(
+            aside, path, self._moved_identity(aside)
+        )
+
+        assert restored is False
+        assert renames == []
+        assert aside.read_bytes() == payload
+        assert not path.exists()
+
+    def test_windows_restore_refuses_a_cross_directory_aside(self, tmp_path, monkeypatch):
+        source_parent = tmp_path / "source"
+        destination_parent = tmp_path / "destination"
+        source_parent.mkdir()
+        destination_parent.mkdir()
+        aside = source_parent / "settings.local.json.0123456789abcdef.crew-gc"
+        path = destination_parent / "settings.local.json"
+        aside.write_bytes(b"moved aside")
+        pinned_paths: list[Path] = []
+        renames: list[tuple[object, object]] = []
+
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            acp_client.platform_compat,
+            "pin_directory",
+            lambda candidate: pinned_paths.append(candidate),
+        )
+        monkeypatch.setattr(
+            acp_client.os,
+            "rename",
+            lambda source, destination: renames.append((source, destination)),
+        )
+
+        restored = AcpClient._rename_aside_noreplace(aside, path)
+
+        assert restored is False
+        assert pinned_paths == []
+        assert renames == []
+        assert aside.read_bytes() == b"moved aside"
+        assert not path.exists()
+
+    def test_windows_restore_under_the_pin_keeps_a_raced_in_occupant(self, tmp_path, monkeypatch):
+        parent = tmp_path / ".claude"
+        parent.mkdir()
+        path = parent / "settings.local.json"
+        aside = parent / "settings.local.json.0123456789abcdef.crew-gc"
+        occupant = b'{"permissions": {"allow": ["Bash(ls)"]}}'
+        moved_aside = b'{"permissions": {"defaultMode": "default"}}'
+        path.write_bytes(occupant)
+        aside.write_bytes(moved_aside)
+        pin_target = parent / "pin-target"
+        pin_target.touch()
+        real_open = os.open
+        pin_fds: list[int] = []
+        rename_under_pin: list[bool] = []
+
+        def pin_directory(_candidate: Path) -> int:
+            pin = real_open(pin_target, os.O_RDONLY)
+            pin_fds.append(pin)
+            return pin
+
+        def windows_rename(_source, destination) -> None:
+            os.fstat(pin_fds[-1])
+            rename_under_pin.append(True)
+            if Path(destination).exists():
+                raise FileExistsError(destination)
+            raise AssertionError("the occupied destination should refuse the rename")
+
+        monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(acp_client.platform_compat, "pin_directory", pin_directory)
+        monkeypatch.setattr(acp_client.os, "rename", windows_rename)
+
+        restored = AcpClient._restore_aside_without_clobber(
+            aside, path, self._moved_identity(aside)
+        )
+
+        assert restored is False
+        assert rename_under_pin == [True]
+        with pytest.raises(OSError):
+            os.fstat(pin_fds[0])
+        assert path.read_bytes() == occupant
+        assert aside.read_bytes() == moved_aside
+
+
+class TestCreateRaceLoserPoll:
+    """The ``O_EXCL`` loser polls for the WINNER's record, not for any record.
+
+    Two sessions pass the not-exists probe together; one wins the create and
+    records its seed a moment later. The loser's poll bridges that persist
+    window so a byte-identical sibling shares the surface instead of running
+    toolless. The sidecar can also carry a STALE entry -- a killed session's
+    record for a file since gone, with a different digest -- and that entry
+    proves nothing about the winner: only a record naming the loser's own
+    bytes may end the poll early.
+    """
+
+    _SERVED = ["global.anthropic.claude-opus-5[1m]"]
+
+    @pytest.fixture(autouse=True)
+    def _isolated_provenance(self, tmp_path, monkeypatch):
+        """Per-test provenance registries, sidecar and a warm advertised-model cache."""
+        from kiro_crew import model_registry
+        from kiro_crew.acp import seed_provenance
+
+        monkeypatch.setattr(seed_provenance, "_RECORDS", {})
+        monkeypatch.setattr(seed_provenance, "_LIVE", {})
+        monkeypatch.setattr(seed_provenance, "_SHARERS", {})
+        monkeypatch.setattr(seed_provenance, "_sidecar_path", lambda: tmp_path / "seeds.json")
+        monkeypatch.setattr(
+            model_registry, "_ADVERTISED_MODELS", {"claude_code": list(self._SERVED)}
+        )
+
+    @staticmethod
+    def _stale_record_for_a_vanished_file(path: Path) -> None:
+        """A durable entry for *path* with a foreign digest and no file behind it.
+
+        What a ``kill -9``'d session leaves: its record persisted, its file since
+        removed, its holder identity dead. Written straight into the sidecar as
+        the digest-only shape ``_read_disk_seeds`` accepts, so no live holder
+        pins it and nothing in this process's memory knows of it.
+        """
+        from kiro_crew.acp import seed_provenance
+
+        stale = '{"permissions": {"defaultMode": "bypassPermissions"}}'
+        sidecar = seed_provenance._sidecar_path()
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "seeds": {
+                        os.fspath(path): {
+                            "size": len(stale.encode("utf-8")),
+                            "sha256": seed_provenance.digest(stale),
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert seed_provenance.recorded_durable(path) is not None
+        assert not path.exists()
+
+    @staticmethod
+    def _winner_holds_the_name(monkeypatch, path: Path, payload: str) -> list[int]:
+        """The winner's FILE lands under the loser's ``O_EXCL`` open; its record does not.
+
+        The pre-write probe saw the name vacant, so the loser takes the create
+        branch; the file appearing right before the real ``os.open`` makes that
+        open raise ``FileExistsError`` for real. The winner's durable record is
+        the caller's to publish, when it chooses.
+        """
+        real_open = os.open
+        fired: list[int] = []
+
+        def winner_created_the_file(p, flags, *args, **kwargs):
+            if not fired and os.fspath(p) == os.fspath(path) and flags & os.O_EXCL:
+                fired.append(1)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(payload, encoding="utf-8")
+            return real_open(p, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", winner_created_the_file)
+        return fired
+
+    def test_create_race_loser_waits_out_the_winners_record_not_a_stale_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """A stale durable entry does not end the poll; the winner's matching one does.
+
+        The winner has created the file but its ``record()`` persist is still in
+        flight when the loser starts polling. The sidecar already holds a stale
+        record with a different digest for a file that is gone. A poll that
+        treated ANY durable record as "the winner's bytes are settled" would
+        decline on its first iteration and run this session toolless; the poll
+        must keep waiting until a record naming its own bytes appears, then share.
+        """
+        from kiro_crew.acp import seed_provenance
+
+        loser = AcpClient(
+            work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, permission_mode="default"
+        )
+        path = tmp_path / ".claude" / "settings.local.json"
+        payload = loser._render_claude_settings_payload()
+        self._stale_record_for_a_vanished_file(path)
+        fired = self._winner_holds_the_name(monkeypatch, path, payload)
+        sleeps: list[float] = []
+
+        def winner_records_on_the_third_poll(secs: float) -> None:
+            sleeps.append(secs)
+            if len(sleeps) == 3:
+                assert seed_provenance.record(path, payload, "winner-session") is True
+
+        monkeypatch.setattr(acp_client.time, "sleep", winner_records_on_the_third_poll)
+
+        loser._write_claude_local_settings()
+
+        assert fired, "the race window must have been exercised"
+        assert len(sleeps) == 3, "the poll must have outlasted the stale entry"
+        assert loser._claude_settings_shared is True
+        assert loser._permission_surface_governed is True
+        assert loser._claude_settings_authored is False
+        assert path.read_text(encoding="utf-8") == payload
+
+    def test_a_loser_whose_bytes_can_never_match_declines_once_at_the_deadline(
+        self, tmp_path, monkeypatch
+    ):
+        """Positive control: a mismatched loser burns the bounded deadline, then declines.
+
+        The winner recorded a DIFFERENT payload. No record naming the loser's
+        bytes can ever appear, so the poll runs to its 2 s deadline -- bounded,
+        never unbounded -- and the loser declines exactly once. The clock is
+        mocked so the deadline is a handful of iterations, not two real seconds.
+        """
+        from kiro_crew.acp import seed_provenance
+
+        loser = AcpClient(
+            work_dir=tmp_path,
+            acp_backend=ACP_BACKEND_CLAUDE,
+            permission_mode="bypassPermissions",
+        )
+        path = tmp_path / ".claude" / "settings.local.json"
+        winners_payload = AcpClient(
+            work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, permission_mode="default"
+        )._render_claude_settings_payload()
+        assert winners_payload != loser._render_claude_settings_payload()
+        fired = self._winner_holds_the_name(monkeypatch, path, winners_payload)
+        clock = {"now": 1000.0}
+        sleeps: list[float] = []
+        declines: list[Path] = []
+
+        def fake_monotonic() -> float:
+            return clock["now"]
+
+        def fake_sleep(secs: float) -> None:
+            sleeps.append(secs)
+            if len(sleeps) == 1:
+                # The winner's record lands on the first poll and is settled from
+                # then on -- a record that never names the loser's bytes.
+                assert seed_provenance.record(path, winners_payload, "winner-session") is True
+            clock["now"] += 0.5
+
+        monkeypatch.setattr(acp_client.time, "monotonic", fake_monotonic)
+        monkeypatch.setattr(acp_client.time, "sleep", fake_sleep)
+        monkeypatch.setattr(AcpClient, "_log_declined_share", lambda self, p: declines.append(p))
+
+        loser._write_claude_local_settings()
+
+        assert fired, "the race window must have been exercised"
+        # Four 50 ms polls at half a mocked second each reach the 2 s deadline;
+        # the fifth probe breaks on it, and nothing polls past that.
+        assert sleeps == [0.05] * 4
+        assert declines == [path]
+        assert loser._claude_settings_shared is False
+        assert loser._claude_settings_authored is False
+        assert loser._permission_surface_governed is False
+        assert path.read_text(encoding="utf-8") == winners_payload

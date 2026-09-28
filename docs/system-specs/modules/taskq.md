@@ -893,7 +893,7 @@ reversal) is passed by `taskq_open` → `open_default_store(journal_mode=)` →
 `TaskStore(network_fs=None|False|True)`: `auto` detects, the other two force
 the mode and skip detection (a forced `delete` still warns, naming the key).
 The store never refuses to open over the filesystem. `store.doctor_lines()` renders depth,
-oldest wait and the warnings for `kirocrew doctor` (`cli_doctor.py` prints
+oldest wait and the warnings for `kirocrew doctor` (`doctor_checks/workload.py` prints
 them under the task-store section).
 
 ## Legacy import (`migrate.import_legacy`)

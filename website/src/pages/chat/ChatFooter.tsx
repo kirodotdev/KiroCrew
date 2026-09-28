@@ -255,7 +255,7 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
   return active && idle
 }
 
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0 }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number }) {
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const slug = useThemeSlug()
   const themeState = useOptionalTheme()
@@ -279,6 +279,15 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // the real blinking caret (.streaming-caret) there, and a second indicator
   // alongside it reads as two cursors.
   if (!regenerating && streamingText && !streamQuiet && stopState !== 'soft_pending' && stopState !== 'killing') return null
+  // ...and not while the newest send is a bubble whose receipt never came
+  // (`selectTrailingSendUnconfirmed`): that row already says "Delivery
+  // pending…" and the WARN notice under it says the delivery is unconfirmed,
+  // so "Thinking…" beneath both would claim the agent is working on a message
+  // nothing proves it received. Exactly the PLAIN running branch below yields;
+  // a stop in flight, a kill, a compaction or a regenerate is a different
+  // statement about the slot and still shows. The receipt or echo that finally
+  // confirms the row clears the mark, and the indicator returns by itself.
+  if (sendUnconfirmed && !regenerating && !stopping && state !== 'compacting' && stopState !== 'soft_pending' && stopState !== 'killing') return null
   // width from CSS var --mc-content-width
   return (
     <div data-testid="chat-footer" className={`px-4 mx-auto w-full py-1${regenerating ? '' : ' animate-slide-up'}`} style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>

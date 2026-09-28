@@ -159,6 +159,6 @@ describe('ChatPage — Auto model selection', { timeout: 15_000 }, () => {
     // Legacy/never-chosen slot: an absent model shows what the backend resolver
     // reports for the agent rather than Auto.
     await renderChat(undefined)
-    expect(await waitFor(() => screen.getByTitle(`Model: ${AGENT_MODEL}`))).toBeTruthy()
+    expect(await waitFor(() => screen.getByTitle(new RegExp(`^Model: ${AGENT_MODEL}(?: ·|$)`)))).toBeTruthy()
   })
 })

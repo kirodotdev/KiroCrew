@@ -33,6 +33,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 from pdf_test_helpers import flate_bomb_pdf, text_pdf
 
 from kiro_crew.dashboard.handlers import api_file_grep
@@ -71,8 +72,9 @@ def _make_app() -> web.Application:
     app.router.add_post("/api/file-grep", api_file_grep)
     state = MagicMock()
     state.file_indexes.get.return_value = None
+    state.owner_id = ""
     app["state"] = state
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture(autouse=True)

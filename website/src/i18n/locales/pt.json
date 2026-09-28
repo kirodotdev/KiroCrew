@@ -5858,6 +5858,7 @@
       "trust_desc": "Neste chat, o {{productName}} trabalha sem perguntar primeiro",
       "trust_label": "Confiança",
       "chat_mode_hint": "modo de chat",
+      "trust_scope_tooltip": "Confiável por uma permissão de app para este chat; ela expira sozinha. Escolha Normal neste menu para encerrá-la agora; o app pode concedê-la de novo até você desativá-la nesse app.",
       "trust_tooltip": "Neste chat, o {{productName}} trabalha sem perguntar primeiro",
       "yolo_desc": "Em todos os chats, o {{productName}} trabalha sem perguntar primeiro",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
@@ -6181,6 +6182,12 @@
       "show_pending_tool_call_in_chat": "Mostrar chamada de ferramenta pendente no chat",
       "skill": "Habilidade",
       "slash_commands": "Comandos de barra",
+      "spawn_awaiting_one": "{{count}} subagente aguarda sua aprovação para executar",
+      "spawn_awaiting_many": "{{count}} subagentes aguardam sua aprovação para executar",
+      "spawn_awaiting_other": "{{count}} subagentes aguardam sua aprovação para executar",
+      "spawn_pending_one": "{{count}} subagente aguardando — responda primeiro à solicitação abaixo",
+      "spawn_pending_many": "{{count}} subagentes aguardando — responda primeiro à solicitação abaixo",
+      "spawn_pending_other": "{{count}} subagentes aguardando — responda primeiro à solicitação abaixo",
       "steer": "Direcionar",
       "alt_action_hint_queues": "{{chord}} enfileira esta mensagem em vez disso",
       "alt_action_hint_steers": "{{chord}} direciona com esta mensagem em vez disso",
@@ -6334,7 +6341,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Adicionar um comentário",
       "add_comment": "Adicionar comentário",
       "add_instruction": "Adicionar instrução",
       "additional_prompt": "Prompt adicional",
@@ -7832,11 +7838,12 @@
       "effort": "Esforço",
       "effort_help": "O esforço de raciocínio define por quanto tempo o modelo pensa antes de responder. Valores maiores significam mais tempo raciocinando sobre problemas difíceis (mais lento, respostas melhores); valores menores são mais rápidos. Ao desativar a substituição por sessão, o esforço volta ao padrão definido em Configurações → Chat, ou à escolha do próprio modelo quando nenhum padrão está definido (apenas Fable/Opus/Sonnet).",
       "faster": "Mais rápido",
-      "configured_default_marker": "Padrão configurado",
+      "configured_default_marker": "Esforço padrão",
+      "slider_locked_hint": "Travado no padrão. Desative a chave para escolher um nível.",
       "reasoning_effort": "Esforço de raciocínio",
       "smarter": "Mais inteligente",
-      "use_configured_default": "Usar o padrão configurado",
-      "use_model_default": "Usar o padrão do modelo"
+      "use_configured_default": "Usar o esforço padrão ({{level}})",
+      "use_default_effort": "Usar o esforço padrão"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Adicione um registro da organização para descobrir apps específicos da equipe",
@@ -7994,12 +8001,16 @@
     "selectionToolbar": {
       "ask": "Perguntar sobre isto",
       "ask_hint": "Abre o Chat lateral com a seleção citada: nada é enviado até você enviar, e o chat principal fica intacto",
+      "close_saving_continues": "Fechar – o salvamento continua",
       "comment_input": "Comentar o texto selecionado",
+      "comment_post_failed": "Não foi possível salvar o comentário. O texto continua aqui — tente de novo.",
+      "comment_post_failed_closed": "O comentário sobre “{{quote}}” não foi salvo. Selecione esse texto de novo para recuperá-lo e tentar novamente.",
       "copy": "Copiar",
       "copy_failed": "Falha ao copiar — o navegador bloqueou o acesso à área de transferência. Selecione o texto e copie manualmente.",
       "copy_selection_hint": "Copia o texto selecionado (não o seu comentário) para a área de transferência",
       "more_actions": "Mais ações para a seleção",
       "press_enter_to_comment": "Pressione Enter ou clique para comentar…",
+      "saving": "Salvando…",
       "tap_to_comment": "Toque para escrever um comentário…",
       "quote": "Citar",
       "quote_hint": "Cita a seleção no compositor desta conversa: sua resposta vai para o chat principal"
@@ -10730,6 +10741,7 @@
         "copied": "Copiado",
         "copy_failed": "Falha ao copiar",
         "steering": "Direcionando…",
+        "delivery_pending": "Entrega pendente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirecionando o turno em andamento — ainda não confirmado.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "O turno terminou antes de isto ser aplicado — é executado como uma mensagem separada."
       },
@@ -11212,6 +11224,7 @@
       "send_failed_with_error": "Falha ao enviar: {{error}}",
       "send_failed_with_error_restored": "Não foi possível enviar esta mensagem: {{error}}. Seu texto voltou para a caixa de composição.",
       "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
+      "delivery_unconfirmed_pending": "Entrega não confirmada — esta mensagem ainda pode estar pendente. Se nenhuma resposta chegar, envie-a novamente.",
       "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",
       "screenshot_failed_reason": "Falha na captura de tela: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -13367,7 +13380,8 @@
         "update": "Atualizar",
         "validation_findings": "Resultados da validação",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "workspace"
+        "workspace": "workspace",
+        "detail_unreadable": "Os arquivos deste candidato não podem ser lidos com segurança, então a revisão não está disponível. Dispense-o para removê-lo da fila."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenções Markdown que o agente lê. O modo de inclusão de cada arquivo decide quando: sempre, apenas para arquivos correspondentes ou sob demanda. Arquivos globais ficam em ~/.kiro/steering e valem em todo lugar; os do espaço de trabalho ficam em <project>/.kiro/steering e valem só para aquele projeto.",

@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
-from kiro_crew import name_grant
+from kiro_crew import name_grant, runtime_death
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
@@ -152,7 +152,7 @@ from kiro_crew.security import (
     redact_local_paths,
 )
 from kiro_crew.sel import sel
-from kiro_crew.session import SessionClosingError, SessionManager
+from kiro_crew.session import _CIRCUIT_BREAKER_THRESHOLD, SessionClosingError, SessionManager
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -172,6 +172,13 @@ from kiro_crew.slack.sessions_view import (
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
     sessions_include_ended,
+)
+from kiro_crew.slack.thread_parent import (
+    fetch_thread_parent,
+    has_prior_turns,
+    is_slack_born,
+    parent_prompt_text,
+    record_thread_parent,
 )
 from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
@@ -3950,18 +3957,30 @@ async def handle_message(
         # Fetch thread parent message when starting a new session in an
         # existing thread (e.g. replying to a cron thread).  Gives the LLM
         # context about what started the thread without requiring manual
-        # batch_get_thread_replies.
+        # batch_get_thread_replies. This path persists the user's row only
+        # after the turn, so ``compressed`` is non-empty only when earlier
+        # turns exist. A Slack-born session also records the parent as the
+        # transcript's first row (see ``slack/thread_parent.py``).
         thread_parent_text: str | None = None
         if is_new and not resumed and thread_ts and context_builder:
             if not compressed:
-                thread_parent_text = await slack.fetch_message(channel, thread_ts)
-            if thread_parent_text:
-                thread_parent_text = redact(thread_parent_text)
-                if len(thread_parent_text) > 3000:
-                    thread_parent_text = (
-                        thread_parent_text[:3000]
-                        + "\n[truncated — use batch_get_thread_replies for full text]"
-                    )
+                _record_parent = bool(
+                    conversation_log
+                    and thread_ts != msg_ts
+                    and is_slack_born(session_key)
+                    and not _is_slack_restricted(session_key)
+                    and not await has_prior_turns(conversation_log, session_key)
+                )
+                _thread_parent = await fetch_thread_parent(
+                    slack, channel, thread_ts, with_author=_record_parent
+                )
+                if _thread_parent is not None:
+                    thread_parent_text = parent_prompt_text(_thread_parent)
+                    if _record_parent:
+                        assert conversation_log is not None
+                        await record_thread_parent(
+                            conversation_log, session_key, _thread_parent, agent=_agent
+                        )
 
         if context_builder:
             # Thread-scoped temporary mode: blocks memory reads.
@@ -4768,7 +4787,62 @@ async def handle_message(
         _had_error = True
         accumulated = accumulated or "💀 Agent process died. Please try again."
         task.fail("process_died")
-        await sessions.record_failure(session_key)
+        # The circuit breaker counts a session's OWN consecutive failures, and
+        # trips into a reset. A process this session was sharing dying is not
+        # this session's failure, and counting it there is how N co-tenants each
+        # marched their own breaker toward tripping over one process event. The
+        # death was classified once where it was detected; this reads that record.
+        # A single-tenant runtime is charged exactly as before.
+        if runtime_death.caused_by_this_session(client):
+            await sessions.record_failure(session_key)
+        else:
+            # Bounded, like every other exemption: the breaker is what resets a
+            # session whose runtime keeps dying, so an unbounded skip would leave
+            # a session on a permanently dying shared process never recovering.
+            # The streak is counted against that runtime rather than the session.
+            #
+            # At the limit the substitute bound PERFORMS the actuator rather than
+            # adding one charge to the counter it stood in for. Charging instead
+            # would deliver twice the bound it claims: the exemption spends the
+            # first `_CIRCUIT_BREAKER_THRESHOLD` deaths, and a counter still at
+            # zero then needs that many charges again, so a session on a
+            # permanently dying shared runtime would lose about twice as many
+            # turns as one that was never exempted. `record_failure` trips into
+            # exactly this reset, so calling it here is the same recovery at the
+            # limit the breaker would have reached -- and it leaves the session's
+            # own failure count untouched, which is the whole point: the session
+            # never misbehaved.
+            _shared_streak = runtime_death.note_shared_death(session_key)
+            if _shared_streak >= _CIRCUIT_BREAKER_THRESHOLD:
+                logger.warning(
+                    "session %s: the runtime it shares has died %d times running — "
+                    "resetting it now, the same recovery the breaker performs",
+                    session_key,
+                    _shared_streak,
+                )
+                try:
+                    await sessions.reset(session_key)
+                    # The reset IS the hand-over, so the streak is spent: clear it
+                    # or the next shared death hands over again and every death
+                    # from here on performs the actuator, which is the unexempted
+                    # behaviour the bound exists to replace. Cleared only once the
+                    # reset has returned -- a reset that raised transferred
+                    # nothing, and keeping the streak is what makes the next death
+                    # retry it.
+                    runtime_death.clear_shared_deaths(session_key)
+                except Exception:
+                    logger.warning(
+                        "session %s: reset after a shared runtime's deaths failed",
+                        session_key,
+                        exc_info=True,
+                    )
+            else:
+                logger.warning(
+                    "session %s lost a turn to a SHARED runtime's death (%d running) — "
+                    "not counting it toward the circuit breaker",
+                    session_key,
+                    _shared_streak,
+                )
         Stats().inc_message_failed()
     except AcpPromptBusy as e:
         _had_error = True
@@ -4902,6 +4976,11 @@ async def handle_message(
                 return
             _verdict_booked = True
             sessions.record_success(session_key)
+            # Reset with the counter it substitutes for: record_success clears
+            # consecutive_failures, so a completed turn must clear the shared-death
+            # streak too. Otherwise the streak is a LIFETIME total and the bound
+            # stays permanently tripped, silently ending the exemption.
+            runtime_death.clear_shared_deaths(session_key)
             Stats().inc_message_success()
             if client is not None:
                 record_interaction_event(client, session_key, "slack")

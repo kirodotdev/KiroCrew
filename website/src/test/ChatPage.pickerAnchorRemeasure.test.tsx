@@ -198,7 +198,7 @@ describe('ChatPage composer pickers follow their chip while open (#10616)', { ti
 
   it('model dropdown remeasures when the visual viewport changes', async () => {
     await renderChat()
-    const chip = screen.getByTitle('Model: claude-opus-5')
+    const chip = screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)
     const anchor = anchorChip(chip, 600)
 
     await act(async () => { fireEvent.click(chip) })

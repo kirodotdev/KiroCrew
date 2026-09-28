@@ -1941,7 +1941,7 @@ without every agent inheriting it.
 Adding a managed server is a **parity tax** — the name must appear in
 `agent._MANAGED_MCP_SERVERS`, `mcp_discovery._MANAGED_SERVER_SUBCOMMANDS` and
 `_MANAGED_SERVER_TOOL_MODULES`, `mcp_cleanup.KIROCREW_BIN_MCP_SERVERS`,
-`onboarding_import._MANAGED_MCP_NAMES`, and the hidden `cli.py` subcommand.
+`onboarding_sources._CORE_MANAGED_MCP_NAMES`, and the hidden `cli.py` subcommand.
 `test_computer_use_registration.py` asserts those registries are the same set, so
 a half-registered server fails the suite rather than shipping.
 

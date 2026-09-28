@@ -177,9 +177,12 @@ export default function SettingsSearch() {
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
           <input
             {...inputProps}
-            // focus-cue-ok: the cue is the SidePanelLayout capsule's focus-within
-            // border-accent hairline plus its `.composer-halo` glow; the ancestor sits
-            // in another file, so the gate can't see it.
+            // focus-cue-ok: the cue is the SidePanelLayout capsule's
+            // `.glass-shadow:focus-within` — the glass tint and its side lines
+            // step up (`--glass-tint-focus` / `--glass-edge-focus`) and the rest
+            // shadow deepens; under the solidifying fallbacks the same rule paints
+            // the standard accent outline. The ancestor sits in another file, so
+            // the gate can't see it.
             className="w-full bg-transparent border-none rounded-full pl-8 pr-4 py-2.5 text-[14px] text-text placeholder:text-muted focus:outline-hidden"
           />
         </>

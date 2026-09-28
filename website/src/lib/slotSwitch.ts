@@ -112,6 +112,14 @@ interface Entry {
 
 const entries = new Map<string, Entry>()
 
+/** The newest request's eventual VERDICT per slot+field: resolves when the
+ *  wire call lands, rejects with its error when the backend refused it.
+ *  Read through `inFlightSlotSwitchOutcome` by a pick on ANOTHER field that
+ *  must wait for this one (a model pick behind an effort write) without
+ *  re-sending it -- a repeat write would take its own confirm budget behind
+ *  the original and time out the dependent pick for nothing. */
+const verdicts = new Map<string, Promise<void>>()
+
 const keyOf = (field: SlotSwitchField, slot: string): string => field + ':' + slot
 
 /** Targets STAGED but not yet on the wire (a debounced control's pending
@@ -128,6 +136,15 @@ const staged = new Map<string, string>()
  *  the registry's in-flight target takes over as the newest intent). */
 export function stageSlotSwitchTarget(field: SlotSwitchField, slot: string, target: string): void {
   staged.set(keyOf(field, slot), target)
+}
+
+/** A target STAGED and not yet on the wire, or null. Distinct from
+ *  `pendingSlotSwitchTarget`: the debounced control that staged it skips its
+ *  own write when a model pick on the same slot already carried the stage
+ *  onto the wire (ReasoningEffortDropdown), and only a stage can be skipped
+ *  that way -- an in-flight request is already on the chain. */
+export function stagedSlotSwitchTarget(field: SlotSwitchField, slot: string): string | null {
+  return staged.get(keyOf(field, slot)) ?? null
 }
 
 /** Register a new in-flight switch and return its ticket for the settle calls. */
@@ -155,6 +172,20 @@ export function pendingSlotSwitchTarget(field: SlotSwitchField, slot: string): s
   if (stagedTarget !== undefined) return stagedTarget
   const entry = entries.get(key)
   return entry && entry.newestOutcome === 'inflight' ? entry.pending : null
+}
+
+/** The newest IN-FLIGHT request's verdict for this slot+field, or null when
+ *  nothing is on the wire (a stage is not on the wire; see
+ *  `stagedSlotSwitchTarget`). The promise settles when that request does,
+ *  however long it takes -- it is the wire outcome, not the caller's
+ *  SWITCH_CONFIRM_TIMEOUT_MS budget -- and rejects with the request's error
+ *  on refusal, so a dependent pick can abort exactly as it would for a write
+ *  it carried itself. */
+export function inFlightSlotSwitchOutcome(field: SlotSwitchField, slot: string): Promise<void> | null {
+  const key = keyOf(field, slot)
+  const entry = entries.get(key)
+  if (!entry || entry.newestOutcome !== 'inflight') return null
+  return verdicts.get(key) ?? null
 }
 
 /** The newest in-flight target for this slot+field, `''` when none. */
@@ -307,6 +338,12 @@ export async function performSlotSwitch<F extends SlotSwitchField>(
       return { ok: false as const, error }
     },
   )
+  // Publish this request's verdict for dependent picks on other fields. The
+  // stored promise rejects on refusal; the trailing catch on a DERIVED
+  // promise marks it handled when no dependent ever reads it.
+  const verdict = adjudicated.then((outcome) => { if (!outcome.ok) throw outcome.error })
+  verdict.catch(() => undefined)
+  verdicts.set(keyOf(field, slot), verdict)
   let timer: ReturnType<typeof setTimeout> | undefined
   const budget = new Promise<typeof CONFIRM_TIMEOUT>((res) => {
     timer = setTimeout(() => res(CONFIRM_TIMEOUT), SWITCH_CONFIRM_TIMEOUT_MS)

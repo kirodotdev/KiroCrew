@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew import runtime_death
 from kiro_crew.acp.client import AcpError
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config import live
@@ -66,6 +67,7 @@ from kiro_crew.messaging.dispatch import (
     admit_inbound_callback,
     build_auto_approve,
     build_directive_consumer,
+    charge_turn_failure,
     consume_reinjection,
     delivery_is_muted,
     driver_turn_landed,
@@ -1149,6 +1151,13 @@ class TelegramDispatcher:
         # on _acquired so we never release a semaphore we didn't hold. Mirrors
         # slack/transport_dispatch.py.
         _acquired = False
+        # The provider THIS turn acquired, for the failure handler's attribution
+        # question. Bound before the try so every handler can read it -- an
+        # attribution flag read on a path its assignment cannot reach is an
+        # UnboundLocalError inside an except arm, not a guard. Stays None when
+        # get_or_create never returned, and an unattributable death charges as
+        # before.
+        _turn_provider: object | None = None
         failure_reason: str | None = None
         attachment_temp_paths: list[str] = []
         # Post-compaction re-injection bookkeeping for the finally: whether this
@@ -1180,6 +1189,12 @@ class TelegramDispatcher:
                 model=(None if resumed_key is not None else self._model_pref.get(route) or None),
             )
             _acquired = True
+            # Hold the provider this turn obtained, for the failure handler's
+            # attribution question. Captured HERE rather than looked up when a
+            # failure is handled: the recovery paths replace a dead session, so a
+            # lookup at failure time answers for the replacement and the question
+            # silently becomes "was the NEW runtime shared".
+            _turn_provider = provider
             if resumed_key is None or channel_namespace_of(session_key):
                 # The session's crew log, opened the moment the allocation lands
                 # and before ANY further await: the work ledger appends every write
@@ -1343,6 +1358,11 @@ class TelegramDispatcher:
             # ── Post-turn bookkeeping (each guarded so a failure here can't
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
+            # Beside the counter it stands in for: a landed turn clears the
+            # shared-death streak exactly as it clears the consecutive-failure
+            # count, so the streak stays a consecutive run rather than a lifetime
+            # total whose bound is permanently tripped.
+            runtime_death.clear_shared_deaths(session_key)
             # The prompt (with any re-injected context) reached the model and
             # the turn completed, so the finally must NOT restore the flag --
             # unless the user cancelled it, which discards that prompt.
@@ -1568,7 +1588,18 @@ class TelegramDispatcher:
             # generic retry text; everything else stays generic (None).
             failure_reason = _user_safe_failure_reason(exc)
             if _acquired:
-                await self.sessions.record_failure(session_key)
+                # A dying runtime reaches this generic handler as one more
+                # exception, so without the attribution question every tenant of
+                # one process charges its own breaker for a single process event.
+                # ``_turn_provider`` is the one THIS turn acquired, never a lookup
+                # made while handling the failure.
+                await charge_turn_failure(
+                    self.sessions,
+                    session_key,
+                    exc=exc,
+                    provider=_turn_provider,
+                    channel_type="telegram",
+                )
                 Stats().inc_message_failed()
         finally:
             # An approval window the driver never awaited -- the prompt went out
@@ -2130,10 +2161,10 @@ class TelegramDispatcher:
         can list several principals': a GROUP chat gives every member one chat address
         and one session key, so a drain answering one member must leave the others'
         lines -- and the entry that is their only handle -- alone. REQUIRED and
-        keyword-only, unlike the registry transition it forwards to, which keeps a
-        default for a caller that genuinely cannot name a principal: this wrapper has
-        exactly one caller and that caller always can, so an omission is a type error
-        rather than a silent return to retiring the whole bubble.
+        keyword-only, the same way the registry transition it forwards to spells it:
+        this wrapper has exactly one caller and that caller always can name the
+        principal, so an omission is a type error rather than a silent return to
+        retiring the whole bubble.
 
         ``chat_id`` is the chat the receipt BUBBLE lives in, which the drain takes
         from the queued entry's own origin rather than from the turn that opened the
@@ -2144,7 +2175,7 @@ class TelegramDispatcher:
         """
         assert self.client is not None
         await self._queue.flip_answering_locked(
-            session_key, self._receipt_surface(chat_id, None), answered, deferred, owner
+            session_key, self._receipt_surface(chat_id, None), answered, deferred, owner=owner
         )
 
     async def _handle_dashboard(

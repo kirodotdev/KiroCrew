@@ -140,6 +140,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 import time
@@ -250,29 +251,44 @@ DEFAULT_ERR_RES = (
     r"initialize timed out",
 )
 
-#: Banned-operation cmdline shapes: a pytest whose worker count nobody CHOSE,
-#: and a bare full-suite vitest with no file arguments.
+#: Banned-operation cmdline shapes: a pytest whose worker pool BYPASSES the
+#: budget, and a bare full-suite vitest with no file arguments.
 #:
-#: "Nobody chose" is the honest statement of what this rule catches, and it is
-#: not the same as "too many". On THIS repo the explicit spelling is the one
-#: that can outgrow the host: ``setup.cfg`` documents that ``auto`` is bounded
-#: by the rootdir conftest's ``pytest_xdist_auto_num_workers`` hook, which sizes
-#: the pool by available memory and by what concurrent runs on the host already
-#: hold, and that "an explicit ``-n <N>`` bypasses the budget". So ``auto`` is the
-#: spelling that cannot outgrow it.
+#: The axis is budgeted versus unbudgeted, not "did the caller write a number".
+#: On THIS repo the explicit number is the one spelling that can outgrow the
+#: host: ``setup.cfg`` documents that ``auto`` is bounded by the rootdir
+#: conftest's ``pytest_xdist_auto_num_workers`` hook, which sizes the pool by
+#: available memory and by what concurrent runs on the host already hold, and
+#: that "an explicit ``-n <N>`` bypasses the budget" -- the hook is
+#: ``firstresult`` and only ever answers ``auto``. The gate runner
+#: (``scripts/run_scoped_tests.py::pytest_parallel_args``) therefore emits
+#: ``-n auto`` and cannot pass a number, and the default ``addopts`` supply
+#: ``-n auto`` to a pytest carrying no ``-n`` at all.
 #:
-#: The rule's sense is deliberately left as it stands, because changing which
-#: shapes it flags changes what the conductor stops mid-turn across a whole
-#: fleet, and that is not a comment's decision to make. What it costs is stated
-#: plainly instead: ``-n 4``, ``-n=4``, ``-n4``, ``-n0`` and
-#: ``--numprocesses=4`` all read as bounded, while ``-n auto`` and any pytest
-#: carrying no numeric ``-n`` -- including a targeted single-file run -- do not.
-#: ``-n0`` is the repo's own documented override and is genuinely in-process, so
-#: the safest form a worker can run is also a passing one.
+#: So the rule flags a pytest whose EFFECTIVE worker count is an explicit number
+#: of two or more, in any spelling -- ``-n 4``, ``-n=4``, ``-n4``, ``-n 32``,
+#: ``--numprocesses=4``, ``--numprocesses 2`` -- and stays quiet on every
+#: budgeted or single-process form: ``-n auto``, ``-n logical``,
+#: ``--numprocesses auto``, a pytest with no ``-n`` (``addopts`` decide, and they
+#: say ``auto``), and ``-n0`` / ``-n 1`` / ``-n=0`` / ``--numprocesses 1``, which
+#: run one process with xdist inactive. ``-n0`` is the repo's own documented
+#: override, so the form a worker is REQUIRED to use is a passing one. Where the
+#: same flag is given twice the LAST one wins, as argparse resolves it, so
+#: ``-n 4 -n auto`` ends up budgeted and is quiet -- that half is read from the
+#: argv tokens (``_argv_worker_pool_is_budgeted``), since a joined command line
+#: cannot express "the last one". The tokens settle two more things the joined
+#: line cannot: pytest's ``--`` ends its options, so a ``-n0`` behind it is a
+#: path and never the run's count; and ``-o addopts=...`` / ``--override-ini
+#: addopts=...`` replace the ``addopts`` the run starts from, so their ``-n`` is
+#: folded in AHEAD of the run's own tokens, exactly where pytest puts it.
+#:
+#: What the rule cannot read is the checkout: ``auto`` is budgeted by THIS tree's
+#: conftest, and the probe already keys the stop on ``cwd=fleet`` for exactly
+#: that reason. The cap decision reads argv and nothing else.
 #:
 #: The pytest rule matches an INVOCATION rather than a mention, and two guards are
 #: what make that distinction; each one answers a false ``BANNED`` against a run
-#: that IS capped.
+#: that IS budgeted.
 #:
 #: * The token has to be the runner's own name, optionally path-qualified
 #:   (``pytest``, ``/x/.venv/bin/pytest``, ``-m pytest``). A filename that merely
@@ -285,29 +301,31 @@ DEFAULT_ERR_RES = (
 #:   ``/tmp/pytest/results.log``, and equally the packaging forms a character-by-
 #:   character exclusion list keeps missing -- ``pytest:latest``, ``pytest==7.4.0``,
 #:   ``pytest@1.2.3``.
-#: * The cap is read from the SAME command. One cmdline can carry a whole shell
-#:   script in a single argument, where the capped run and a bare one are different
-#:   lines, so the lookahead stops at a command separator (``;``, ``&``, ``|``, a
-#:   newline) instead of scanning the rest of the script. Letting it span the whole
-#:   script text is the opposite trade and a worse one: one line's ``-n0`` would
-#:   then excuse every uncapped run beside it.
+#: * The worker count is read from the SAME command. One cmdline can carry a whole
+#:   shell script in a single argument, where the unbudgeted run and a budgeted one
+#:   are different lines, so the lookahead stops at a command separator (``;``,
+#:   ``&``, ``|``, a newline) instead of scanning the rest of the script. Letting it
+#:   span the whole script text is the opposite trade and a worse one: one line's
+#:   ``-n 8`` would then condemn every budgeted run beside it.
 #:
 #:   A separator inside a BRACKETED or QUOTED span is not a command end, though, and
 #:   this is where the argv matters: ``/proc`` hands over NUL-separated arguments that
 #:   are joined for matching, so a metacharacter sitting inside ONE argument arrives in
 #:   the scanned text with no shell involved. A parametrized node id does exactly that
-#:   -- ``pytest f.py::t[a|b] -n0`` is a properly capped run whose ``|`` would hide its
-#:   own ``-n0`` behind a barrier -- and the answer is a false ``BANNED`` on a healthy
-#:   worker, which a conductor responds to by stopping it and discarding its in-flight
-#:   turn. So the scan crosses a bracketed or quoted span whole, and only a separator
-#:   outside both ends the command. An UNQUOTED ``|`` stays a separator, because there
-#:   it really is a pipe and the command before it really does carry no cap.
+#:   -- ``pytest f.py::t[a|b] -n 8`` is an unbudgeted run whose ``|`` would hide its
+#:   own ``-n 8`` behind a barrier -- and the answer is a missed row on the one shape
+#:   the counter exists to catch. So the scan crosses a bracketed or quoted span whole,
+#:   and only a separator outside both ends the command. An UNQUOTED ``|`` stays a
+#:   separator, because there it really is a pipe and the number after it belongs to
+#:   the next command.
 #:
-#: The cap's own flag must start a token too, so a target like ``test-n1.py`` cannot
-#: be read as ``-n 1`` and quietly pass an unbounded run. Its whitespace is spelled
-#: ``[\x20\t]`` rather than with a literal space because ``rule=`` prints the pattern
-#: verbatim onto a line read as whitespace-separated fields, and a pattern holding a
-#: space would split that one field into three.
+#: The flag must start a token, so a target like ``test-n1.py`` cannot be read as
+#: ``-n 1``. Zero and one are the single-process spellings and are not selected; any
+#: other digit run is, and the argv reader has the last word on it -- ``-n 01`` is one
+#: process there, and a value pytest would reject (``-n 4abc``) answers fail-closed.
+#: Whitespace is spelled ``[\x20\t]`` rather than with a literal space because
+#: ``rule=`` prints the pattern verbatim onto a line read as whitespace-separated
+#: fields, and a pattern holding a space would split that one field into three.
 #:
 #: What the pair does NOT separate: a runner name standing alone as some other
 #: program's argument (``grep -rn pytest src``) still matches. Telling that from a
@@ -327,19 +345,29 @@ DEFAULT_ERR_RES = (
 #: fields, so a literal space, quote or backtick in it would split or reopen that field.
 _SHELL_TOKEN_BOUNDARY = r"[\s;&|<>()\x22\x27\x60]"
 
-#: What the cap search may cross on its way from the runner to the run's own ``-n``:
+#: What the count search may cross on its way from the runner to the run's own ``-n``:
 #: any character that is neither a command separator nor the OPENER of a span, plus a
 #: bracketed or quoted span taken WHOLE, because a separator inside one of those is
 #: data the command carries rather than the end of it. The openers are excluded from
 #: the first branch to keep the alternation DISJOINT: leaving ``[``, ``\x27`` and
 #: ``\x22`` in it gives every span two parses -- whole, or character by character --
-#: so k spans admit 2**k of them, and this star sits inside a NEGATIVE lookahead, so
-#: the case that must walk every one is exactly the ``BANNED`` case with no cap to
-#: find. A rerun naming a few dozen parametrized node ids is an ordinary command line,
-#: and there is no timeout or length bound in this script to end the stall. The quotes
-#: are spelled ``\x22``/``\x27`` for the same reason the boundary class is -- ``rule=``
-#: prints the pattern verbatim onto a line read as whitespace-separated fields.
+#: so k spans admit 2**k of them. This star sits inside a lookahead that FAILS on
+#: every budgeted run -- the ordinary, healthy case -- so the case that must walk
+#: every parse is every worker's own ``-n auto`` rerun naming a few dozen
+#: parametrized node ids, and there is no timeout or length bound in this script to
+#: end the stall. The quotes are spelled ``\x22``/``\x27`` for the same reason the
+#: boundary class is -- ``rule=`` prints the pattern verbatim onto a line read as
+#: whitespace-separated fields.
 _CAP_SCAN = r"(?:[^;&|\n\[\x27\x22]|\[[^\]\n]*\]|\x27[^\x27\n]*\x27|\x22[^\x22\n]*\x22)*"
+
+#: A worker COUNT that bypasses the budget: a run of digits that is not the whole token
+#: ``0`` or ``1``, which run a single process with xdist inactive. ``auto`` and
+#: ``logical`` are not digits and never reach this. Everything else about the value is
+#: deliberately NOT judged here, because the joined line only has to SELECT a candidate
+#: and the argv reader decides: ``01`` is selected and read as one process there, and
+#: ``4abc`` -- a value pytest rejects at argument parsing -- is selected and answered
+#: fail-closed there. An anchor here would let the two authorities disagree.
+_UNBUDGETED_COUNT = r"(?![01](?:" + _SHELL_TOKEN_BOUNDARY + r"|$))\d+"
 
 #: The vitest rule's pattern, bound to a name so the scan can recognise the rule
 #: it belongs to without depending on where it sits in ``DEFAULT_BANNED_RES``.
@@ -351,7 +379,11 @@ DEFAULT_BANNED_RES = (
     r"(?:(?<=" + _SHELL_TOKEN_BOUNDARY + r")|^)"
     r"(?:[^\s;&|<>()]*/)?pytest"
     r"(?=" + _SHELL_TOKEN_BOUNDARY + r"|$)"
-    r"(?!" + _CAP_SCAN + r"(?<![\w./-])(?:-n|--numprocesses)[\x20\t]*=?[\x20\t]*\d)",
+    r"(?="
+    + _CAP_SCAN
+    + r"(?<![\w./-])(?:-n|--numprocesses)[\x20\t]*=?[\x20\t]*"
+    + _UNBUDGETED_COUNT
+    + r")",
     _VITEST_BANNED_RE,
 )
 
@@ -409,8 +441,8 @@ def _alias_program_label(canonical: str) -> str | None:
 #:
 #: ``vitest.cmd`` is in ``_RUNNER_BASES`` and is deliberately NOT admitted here. Its
 #: rule above spells an uncapped run as ``vitest run`` with nothing following it, not as
-#: a missing ``-n``, so routing it through ``_argv_declares_a_worker_cap`` -- which reads
-#: pytest's cap grammar -- would report a bounded vitest run as unbounded.
+#: a numeric ``-n``, so routing it through ``_argv_worker_pool_is_budgeted`` -- which
+#: reads pytest's ``-n`` grammar -- would answer a question vitest's argv never poses.
 _ARGV_ONLY_RUNNER_BASES = frozenset({"py.test", "py.test.exe", "pytest.exe"})
 
 
@@ -501,8 +533,8 @@ def _runner_token_index(argv: list[str]) -> int | None:
     its last path component, so an option's or an assignment's VALUE reduces to one too:
     ``TMPDIR=/tmp/pytest-of-ci/pytest-3`` becomes ``pytest-3``, which the runner
     vocabulary admits. Answering with that position hands both callers the wrong span --
-    the cap reader then sees a LAUNCHER's ``-n 10`` as the run's own cap and a genuinely
-    uncapped run goes unreported, and the scope reader sees the runner's path as a target
+    the count reader then sees a LAUNCHER's ``-n 10`` as the run's own worker count and
+    a budgeted run is reported, and the scope reader sees the runner's path as a target
     and calls a whole-suite run ``paths``. Every pytest temp directory is named after the
     runner, so the shape is ordinary rather than contrived.
 
@@ -521,11 +553,11 @@ def _runner_token_index(argv: list[str]) -> int | None:
 def _run_scope(argv: list[str]) -> str:
     """Classify a flagged run as ``suite`` or ``paths`` WITHOUT echoing any argument.
 
-    A rule match says a run's worker count was not chosen; it says nothing about
-    how much that run is doing, and those are wildly different severities. A
+    A rule match says a run's worker count bypasses the budget; it says nothing
+    about how much that run is doing, and those are wildly different severities. A
     whole-suite run is what reached the several-hundred-process fan-out and is the
-    line to reach for first; a single-file run matching the same rule merely
-    omitted a flag and can wait its turn. Ranking only -- whether to respond at
+    line to reach for first; a single-file run matching the same rule fans out over
+    a few files and can wait its turn. Ranking only -- whether to respond at
     all stays keyed to ``cwd=fleet``, which this word never gates. Reported as ONE
     derived word so the readout stays judgeable without anyone opening ``ps``.
 
@@ -1498,10 +1530,10 @@ def _is_shell_command_wrapper(argv: list[str], exe_base: str | None) -> bool:
 
     The banned-operation rules are matched against the whole joined cmdline, which
     is what makes an arg-shaped rule expressible at all -- ``\\bvitest\\b\\s+run\\s*$``
-    is a statement about the ARGUMENTS, and ``\\bpytest\\b(?!.*-n\\s*\\d)`` reads
-    boundedness out of them. The cost of matching that far is that a wrapper's
-    argument is read as the wrapper's own program: ``bash -c 'cd x && pytest -q'``
-    is reported as an unbounded pytest while the process that exists is a shell.
+    is a statement about the ARGUMENTS, and the pytest rule reads the worker count
+    out of them. The cost of matching that far is that a wrapper's argument is read
+    as the wrapper's own program: ``bash -c 'cd x && pytest -n 8'`` is reported as
+    an unbudgeted pytest while the process that exists is a shell.
 
     Skipping the wrapper removes a misattribution and loses no coverage, because
     the probe scans EVERY process: a genuinely running wrapped tool has its own
@@ -1600,51 +1632,159 @@ def _is_shell_command_wrapper(argv: list[str], exe_base: str | None) -> bool:
     return False
 
 
-#: The cap flags, as ARGV tokens rather than as text in a joined command line.
+#: The worker-count flags, as ARGV tokens rather than as text in a joined command line.
 _CAP_FLAGS = ("-n", "--numprocesses")
 
+#: The ``-n`` values that hand the worker count to the rootdir hook rather than fixing
+#: it: ``auto`` is what ``addopts`` and the gate runner pass, and ``logical`` is xdist's
+#: other hook-resolved spelling (``pytest_xdist_auto_num_workers`` answers both).
+_BUDGETED_COUNT_WORDS = frozenset({"auto", "logical"})
 
-def _argv_declares_a_worker_cap(argv: list[str]) -> bool:
-    """Does the RUNNER's own argv carry a numeric worker cap, read as TOKENS?
+#: The ini-override flags, as ARGV tokens. ``-o addopts=...`` / ``--override-ini
+#: addopts=...`` replace the tree's ``addopts`` with the value given, and pytest puts
+#: that value in front of the run's own arguments -- so an ``-n`` inside it is the
+#: run's count unless a later token of the run's own overrides it.
+_OVERRIDE_INI_FLAGS = ("-o", "--override-ini")
 
-    The rule's cap lookahead reads a joined command line, where it cannot tell a shell
-    separator from the same character inside one argument -- and once argv is joined, a
-    ``|`` in a log format or a parametrized node id looks exactly like the end of a
-    command, so the cap after it becomes unreachable and a capped run reads as
-    unbounded. A conductor answers a fleet-owned ``BANNED`` line by stopping that
-    worker and discarding the turn it was in, so that direction destroys work.
+#: The ini key whose override carries a worker count. Every other key is somebody
+#: else's setting and is not read.
+_ADDOPTS_KEY = "addopts"
 
-    Reading the tokens removes the ambiguity: ``/proc`` hands arguments over
-    NUL-separated, so an argument's own bytes can never be mistaken for syntax. What it
-    must not do is read SOMEBODY ELSE's option as the runner's. ``nice -n 10 pytest
-    test/`` is a genuinely uncapped run whose launcher happens to spell its priority the
-    way pytest spells its worker count, and ``xvfb-run -n`` is the same shape -- both
-    launchers this scan recognises. Suppressing those is the fail-OPEN direction on a
-    monitoring control, strictly worse than the false row this check exists to remove.
-    So the scan starts after the runner's own token, and when no runner token stands
-    alone it declines to answer at all.
+#: pytest's argparse terminator: every token after it is a file or a node id, however
+#: it is spelled, so a ``-n0`` behind it is a path and never the run's count.
+_END_OF_OPTIONS = "--"
+
+
+def _count_is_budgeted(value: str) -> bool:
+    """Does this ``-n`` VALUE leave the worker pool budgeted or single-process?
+
+    ``auto`` / ``logical`` go through the hook. ``0`` and ``1`` (with any leading zeros)
+    run one process with xdist inactive, which no budget needs to bound. Any other
+    digit run is a fixed count the host's state is never consulted about. Anything
+    else is a value pytest rejects at argument parsing, and the answer is the
+    fail-closed one for a monitoring control: not budgeted.
+
+    Judged LEXICALLY. The value is never converted to an integer: the interpreter
+    refuses to convert a run of more than a few thousand digits and refuses the
+    non-ASCII characters ``str.isdigit`` accepts (a superscript digit), and either refusal raised out
+    of ``_host_lines`` ends the patrol cycle for as long as that pid lives. A string
+    comparison has no such edge.
+    """
+    if value in _BUDGETED_COUNT_WORDS:
+        return True
+    if not (value.isascii() and value.isdigit()):
+        return False
+    return value.lstrip("0") in ("", "1")
+
+
+def _read_flag(tokens: list[str], index: int, flags: tuple[str, ...]) -> tuple[str | None, int]:
+    """Read ``tokens[index]`` as one of *flags*, the way argparse reads an option.
+
+    Returns the flag's value and the index of the first token not consumed, or
+    ``(None, index)`` when the token is none of the flags. A short flag carries its
+    value glued (``-n0``), after ``=`` (``-n=0``) or as the next token (``-n 0``); a
+    long flag after ``=`` or as the next token, and a longer token with no ``=``
+    (``--numprocesses-foo``) is a different option. A flag standing last with nothing
+    after it reads as the empty value, which nothing budgets.
+    """
+    token = tokens[index]
+    for flag in flags:
+        if not token.startswith(flag):
+            continue
+        rest = token[len(flag) :]
+        if rest.startswith("="):
+            return rest[1:], index + 1
+        if rest == "":
+            if index + 1 < len(tokens):
+                return tokens[index + 1], index + 2
+            return "", index + 1
+        if flag.startswith("--"):
+            continue
+        return rest, index + 1
+    return None, index
+
+
+def _addopts_override(tokens: list[str]) -> list[str] | None:
+    """The ``addopts`` an ``-o`` / ``--override-ini`` on the command line replaces the
+    tree's with, split into tokens as pytest splits them, or ``None`` when the run
+    starts from the tree's own ``addopts``.
+
+    Where the same key is overridden twice the last one wins, as pytest resolves it.
+    A value the shell-style splitter refuses (an unbalanced quote) is one pytest
+    refuses too, and it raises ``ValueError`` here rather than answering -- the
+    caller's fail-closed answer is the reporting one.
+    """
+    override: list[str] | None = None
+    index = 0
+    while index < len(tokens) and tokens[index] != _END_OF_OPTIONS:
+        value, index = _read_flag(tokens, index, _OVERRIDE_INI_FLAGS)
+        if value is None:
+            index += 1
+            continue
+        key, separator, ini_value = value.partition("=")
+        if separator and key.strip() == _ADDOPTS_KEY:
+            override = shlex.split(ini_value)
+    return override
+
+
+def _argv_worker_pool_is_budgeted(argv: list[str]) -> bool:
+    """Is the RUNNER's effective worker count budgeted or single-process, read as TOKENS?
+
+    The joined-line rule SELECTS a candidate: a pytest whose command line carries a
+    numeric ``-n`` of two or more somewhere after the runner. This decides. What the
+    joined text cannot read is read here:
+
+    * ``/proc`` hands arguments over NUL-separated, so an argument's own bytes can
+      never be mistaken for syntax -- a ``|`` in a log format or a parametrized node id
+      is data, and the ``-n`` behind it is still the run's own.
+    * argparse resolves a repeated option LAST-wins, so ``-n 4 -n auto`` is a budgeted
+      run and ``-n auto -n 4`` is not. The tokens are walked to the end and the final
+      specification is the one judged; a lookahead that stops at the first number
+      cannot say which came last.
+    * pytest's ``--`` ends its options. Every token behind it is a file or a node id,
+      so ``-n32 -- -n0`` is a 32-worker run pointed at a path called ``-n0``, and the
+      walk stops there.
+    * ``-o addopts=...`` / ``--override-ini addopts=...`` replace the ``addopts`` the
+      run starts from, and pytest puts that value IN FRONT of the run's own arguments.
+      The override's tokens are walked first, so ``-o addopts='-n 16'`` is a 16-worker
+      run, and ``-o addopts='-n 16' -n auto`` is budgeted by the run's own last word.
+
+    No ``-n`` at all is budgeted: the default ``addopts`` supply ``-n auto``, and
+    reporting a bare pytest would flag every targeted single-file run a worker makes.
+    An override that supplies none runs one process with xdist inactive, which is the
+    same answer.
+
+    What it must not do is read SOMEBODY ELSE's option as the runner's. ``nice -n 10
+    pytest test/`` has no worker count of its own -- the ``10`` is a priority -- and
+    ``xvfb-run -n`` is the same shape; both launchers this scan recognises. So the scan
+    starts after the runner's own token, and when no runner token stands alone it
+    declines to answer at all, which reports (fail-closed) rather than exonerates.
+
+    It reads argv and nothing else. ``-c other.ini`` names a file whose ``addopts``
+    this reader does not open, and ``--noconftest`` / ``--confcutdir`` decide which
+    ``conftest.py`` loads; the checkout, not the command line, is where those are
+    answered, and the probe already keys the stop on ``cwd=fleet`` for that reason.
     """
     runner = _runner_token_index(argv)
     if runner is None:
         return False
-    for index in range(runner + 1, len(argv)):
-        token = argv[index]
-        for flag in _CAP_FLAGS:
-            if not token.startswith(flag):
-                continue
-            rest = token[len(flag) :]
-            # ``-n0`` glued, ``-n=0``, or ``-n`` with the count as its own token.
-            if rest.startswith("="):
-                rest = rest[1:]
-            elif rest == "":
-                rest = argv[index + 1] if index + 1 < len(argv) else ""
-            elif flag == "--numprocesses":
-                # ``--numprocessesN`` is not a spelling this flag has; a longer token
-                # starting with it is a different option (``--numprocesses-foo``).
-                continue
-            if rest.isdigit():
-                return True
-    return False
+    own = argv[runner + 1 :]
+    try:
+        override = _addopts_override(own)
+    except ValueError:
+        return False
+    tokens = [*override, *own] if override is not None else own
+    effective: str | None = None
+    index = 0
+    while index < len(tokens) and tokens[index] != _END_OF_OPTIONS:
+        value, index = _read_flag(tokens, index, _CAP_FLAGS)
+        if value is None:
+            index += 1
+            continue
+        effective = value
+    if effective is None:
+        return True
+    return _count_is_budgeted(effective)
 
 
 #: The label printed as ``rule=`` when the ARGV path fired rather than a joined-line
@@ -1995,13 +2135,14 @@ def _kernel_program_confirms(proc_entry: Path | None, claimed: str) -> bool:
 
 
 def _argv_is_uncapped_argv_only_runner(argv: list[str], proc_entry: Path | None = None) -> bool:
-    """Is *argv* a run of an argv-only runner spelling that declared no worker cap?
+    """Is *argv* a run of an argv-only runner spelling whose worker pool bypasses the budget?
 
     Consulted ONLY for a pid no joined-line rule matched, so it can add a ``BANNED``
     line and can never change one. Both halves are read from the tokens ``/proc``
-    separates with NUL: the runner has to stand in a program position, and the cap is
-    re-asked of the runner's own arguments -- so ``pytest-3 -n0 test/x.py`` stays quiet
-    for the same reason and through the same function as ``pytest -n0 test/x.py``.
+    separates with NUL: the runner has to stand in a program position, and the worker
+    count is asked of the runner's own arguments -- so ``pytest-3 -n 4 test/x.py`` is
+    reported, and ``pytest-3 -n auto test/x.py`` stays quiet, for the same reason and
+    through the same function as the ``pytest`` spellings.
 
     *proc_entry* is the pid's own ``/proc`` directory, passed so the program position
     at ``argv[0]`` can be checked against the kernel's binary rather than the name the
@@ -2012,7 +2153,7 @@ def _argv_is_uncapped_argv_only_runner(argv: list[str], proc_entry: Path | None 
         for index in _argv_only_runner_indices(argv)
     ):
         return False
-    return not _argv_declares_a_worker_cap(argv)
+    return not _argv_worker_pool_is_budgeted(argv)
 
 
 def _venv_root(program: str) -> str | None:
@@ -2357,15 +2498,14 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                     continue
                 # A pid that reaches here under the built-in pytest rule and is NOT a
                 # shell holding a script IS the runner, so its whole argv is ONE
-                # command. The rule's lookahead had to decide the cap from a JOINED
-                # command line, where an argument's own ``|``, ``;`` or ``&`` -- a log
-                # format, a parametrized node id -- is indistinguishable from the end of
-                # a command and hides the cap behind it. Re-asking the question of the
-                # TOKENS cannot be fooled that way, because ``/proc`` separates
-                # arguments with NUL. The scan starts after the RUNNER's own token: a
-                # launcher in front of it has its own options, and ``nice -n 10 pytest``
-                # would otherwise read as capped, which is the fail-open direction.
-                if matched == DEFAULT_BANNED_RES[0] and _argv_declares_a_worker_cap(argv):
+                # command. The rule's lookahead SELECTED it off a JOINED command line,
+                # where a numeric ``-n`` anywhere after the runner is enough; the TOKENS
+                # decide, because only they can say which ``-n`` came LAST (argparse
+                # last-wins: ``-n 4 -n auto`` is budgeted) and only they cannot be
+                # fooled by an argument's own ``|``, ``;`` or ``&`` -- ``/proc``
+                # separates arguments with NUL. The scan starts after the RUNNER's own
+                # token: a launcher in front of it has its own options.
+                if matched == DEFAULT_BANNED_RES[0] and _argv_worker_pool_is_budgeted(argv):
                     continue
                 # A banned SHAPE is only a banned OPERATION when the fleet owns
                 # it. The same unbounded pytest run in an unrelated checkout is

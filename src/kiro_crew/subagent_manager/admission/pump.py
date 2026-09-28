@@ -416,6 +416,15 @@ class _PumpMixin(ManagerComponent):
             registered = claim_will_register and point.agent_id in self._manager._agents
             if not registered and not claim_retained:
                 self.release_reservation(point.agent_id)
+            if registered:
+                # Every registered start re-publishes the parent's queued
+                # depth. A direct spawn owes nothing to the count, so its emit
+                # reports the depth as it stands; a row the drain popped was
+                # counted as waiting until this claim moved it out of the
+                # claimable states, and this emit is what removes it. Without
+                # it the chip keeps "1 waiting" and the old wait reason forever.
+                started = self._manager._agents[point.agent_id]
+                self._manager._emit_queue_depth(started.parent_session_key, started.batch_id)
             if report_params is not None:
                 self._manager._report_queued_stop(report_params)
                 self._manager._emit_queue_depth(

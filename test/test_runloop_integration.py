@@ -1542,19 +1542,63 @@ def test_chat_runner_floors_transient_delay_by_the_shared_scope_schedule(monkeyp
 
 
 def test_pipe_death_and_stop_recovery_budgets_share_the_ladder_constant():
+    """The pipe-death budget is bounded by the ladder constant, never a literal.
+
+    The counter does not face the constant directly. A death is charged to the
+    slot only when the slot's own runtime died, so the limit is tested against
+    whichever of the two counts is further along, held in a local. The check
+    therefore traces the counter through every local that carries its value and
+    requires each comparison to name the shared constant, which is the claim --
+    one ladder limit for both budgets -- rather than one spelling of it.
+    """
+    import ast
     import inspect
 
     from kiro_crew.dashboard import chat_runner
 
     src = inspect.getsource(chat_runner)
-    for literal in (
-        "_acp_pipe_death_retries < 3",
-        "_acp_pipe_death_retries >= 3",
-        "_acp_pipe_death_retries <= 3",
-        "_acp_pipe_death_retries > 3",
-    ):
-        assert literal not in src, literal
-    assert "_acp_pipe_death_retries < SESSION_RECOVERY_MAX_ATTEMPTS" in src
+    tree = ast.parse(src)
+
+    # Locals carrying the counter's value: the attribute itself, plus the target
+    # of any assignment whose value reads it. An assignment whose value is a
+    # comparison yields a verdict, not a count, so it is not a carrier.
+    carriers = {"_acp_pipe_death_retries"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or isinstance(node.value, ast.Compare):
+            continue
+        if "_acp_pipe_death_retries" not in {
+            a.attr for a in ast.walk(node.value) if isinstance(a, ast.Attribute)
+        }:
+            continue
+        carriers |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+
+    for carrier in sorted(carriers):
+        for op in ("<", ">=", "<=", ">"):
+            assert f"{carrier} {op} 3" not in src, f"{carrier} {op} 3"
+
+    compared = 0
+    ladder = {"SESSION_RECOVERY_MAX_ATTEMPTS", "STOP_RECOVERY_MAX_RETRIES"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        reached = {n.id for n in ast.walk(node.left) if isinstance(n, ast.Name)} | {
+            a.attr for a in ast.walk(node.left) if isinstance(a, ast.Attribute)
+        }
+        if not reached & carriers:
+            continue
+        compared += 1
+        for right in node.comparators:
+            # Either name is the ladder constant -- they are asserted below to be
+            # the same object -- so both satisfy the claim and neither spelling is
+            # required. A number, an arithmetic adjustment or any other name is a
+            # second limit, which is what this forbids.
+            assert (
+                isinstance(right, ast.Name) and right.id in ladder
+            ), f"line {node.lineno}: death budget bounded by {ast.unparse(right)}"
+    # Control: a scan that reaches no comparison would pass vacuously, which is
+    # the failure mode a source-reading test hides best.
+    assert compared >= 4, f"only {compared} death-budget comparisons found -- scan is broken"
+
     assert STOP_RECOVERY_MAX_RETRIES is SESSION_RECOVERY_MAX_ATTEMPTS
     assert SESSION_RECOVERY_MAX_ATTEMPTS == 3
 

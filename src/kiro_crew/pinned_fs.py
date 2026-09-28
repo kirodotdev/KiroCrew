@@ -46,7 +46,7 @@ from pathlib import Path, PurePath
 from typing import Callable
 
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
-from kiro_crew.platform_compat import open_file_no_reparse
+from kiro_crew.platform_compat import open_file_no_reparse, pin_directory
 
 __all__ = [
     "PUT_BACK_FAILED",
@@ -88,6 +88,7 @@ __all__ = [
     "supports_pinned_tree_walk",
     "supports_pinned_walk",
     "unlink_verified",
+    "unlink_verified_by_name",
 ]
 
 
@@ -2017,6 +2018,44 @@ def unlink_verified(
             on_error(exc)
         return False
     return True
+
+
+def unlink_verified_by_name(
+    parent: Path,
+    name: str,
+    expect: tuple[int, int],
+    *,
+    on_error: Callable[[OSError], None] | None = None,
+) -> bool:
+    """Unlink *parent/name* only while it holds ``(st_dev, st_ino)`` *expect*.
+
+    This is the path-only sibling of :func:`unlink_verified` for the Windows
+    branch and client-side asides that have no directory descriptor. It pins
+    the parent, delegates to :func:`unlink_verified` on POSIX, and checks the
+    regular-file identity under the pin before unlinking on Windows. An absent
+    or mismatched name is a deliberate refusal and returns ``False`` without
+    deleting anything.
+    """
+    pin = pin_directory(parent)
+    try:
+        if os.name != "nt":
+            return unlink_verified(pin, name, expect, on_error=on_error)
+        target = parent / name
+        try:
+            info = os.stat(target, follow_symlinks=False)
+        except OSError:
+            return False
+        if not _stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != expect:
+            return False
+        try:
+            os.unlink(target)
+        except OSError as exc:
+            if on_error is not None:
+                on_error(exc)
+            return False
+        return True
+    finally:
+        os.close(pin)
 
 
 #: Outcomes of :func:`put_back_no_clobber`. ``None`` means the name is back.

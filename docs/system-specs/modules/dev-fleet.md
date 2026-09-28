@@ -1725,7 +1725,8 @@ the pre-#1254 silence (an absent `platform` block defaults to
 `["macos", "linux"]`, quietly advertising macOS parity).
 
 The declaration is **not** an install gate for this app: `installMode` is the
-default `"server"` and the App Store's platform check at `registry.py` only
+default `"server"` and the App Store's platform check in `install_from_registry`
+(`apps/registry_pipeline/install.py`) only
 refuses `installMode: "client"` apps, so dev-fleet installs and enables
 everywhere regardless. What the list drives is the App Store detail page, which
 renders it verbatim (`AppDetailPage.tsx` → "Platform: macos, linux, windows").

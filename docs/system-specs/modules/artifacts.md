@@ -87,13 +87,14 @@ for isolated test instances.
 `kiro_crew.artifacts` is the facade every caller imports. It owns the store and
 keeps its whole import surface, re-exporting each moved name with one identity:
 `kiro_crew.artifacts.ArtifactFolderStore` and
-`kiro_crew.artifact_store.folders.ArtifactFolderStore` are the same class. The
-`records` and `comments` helpers the store calls are internal to it and are
-imported from their owner.
+`kiro_crew.artifact_store.folders.ArtifactFolderStore` are the same class. Its
+`__all__` lists that complete public surface, the moved names included, so a
+star import exposes them. The `records` and `comments` helpers the store calls
+are internal to it and are imported from their owner.
 
 | Owner | Responsibility |
 |---|---|
-| `kiro_crew.artifacts` | `ArtifactStore`: the shared per-root lock, the directory layout, the fenced file IO (`_read_text` / `_write_text` / `_read_bytes` / `_write_bytes`), versions and pruning, the live `source_path` pointer and its allowed roots, publication-record reads and writes, comment and retention orchestration, the change listener and the `kirocrew.artifact.created` counter. Also the caps (`MAX_VERSIONS`, `MAX_CONTENT_BYTES`, `MAX_COMMENTS_PER_ARTIFACT`, `MAX_EVENTS_PER_ARTIFACT`, `MAX_AUTO_WIDGET_ARTIFACTS`), the clock (`_now_iso`) and the `get_default_store` / `get_default_folder_store` singletons |
+| `kiro_crew.artifacts` | `ArtifactStore`: the shared per-root lock, the directory layout, the fenced file IO (`_read_text` / `_write_text` / `_read_bytes` / `_write_bytes`), versions and pruning, the live `source_path` pointer and its allowed roots, publication-record reads and writes, comment and retention orchestration, the change listener and the `kirocrew.artifact.created` counter. Also the caps (`MAX_VERSIONS`, `MAX_CONTENT_BYTES`, `MAX_COMMENTS_PER_ARTIFACT`, `MAX_EVENTS_PER_ARTIFACT`, `MAX_AUTO_WIDGET_ARTIFACTS`), the clock (`_now_iso`), the `slug_is_well_formed` predicate and the `get_default_store` / `get_default_folder_store` singletons |
 | `kiro_crew.artifact_store.model` | The error hierarchy, the `EXPECT_ABSENT` generation sentinel and the record dataclasses (`Artifact`, `ArtifactPublication`, `ForkMetadata`, `ArtifactComment`, `ImageMetadata`) |
 | `kiro_crew.artifact_store.rules` | Field limits and grammar (slug, tag, name, description, `source_path`), `slugify`, the kind policy (`_infer_kind`, `detect_editor_kind`, `USER_SELECTABLE_KINDS`), the theme-colour lint, the document-path test and session-scope matching |
 | `kiro_crew.artifact_store.images` | The raster mime allowlist and the standard-library header sniffers |
@@ -111,15 +112,43 @@ inside `_strip_session_scope` because both import the facade back. The moved
 classes keep `kiro_crew.artifacts` as their `__module__`, so tracebacks and type
 names in logs are unchanged.
 
-What the store reads from the facade at call time stays patchable there:
-`_now_iso`, `MAX_VERSIONS`, `MAX_CONTENT_BYTES`, `MAX_COMMENTS_PER_ARTIFACT`,
+The store's seams belong to the facade, which hands them to the owners at call
+time, so they are patched on `kiro_crew.artifacts`: `config_dir`, `_now_iso`,
+`MAX_VERSIONS`, `MAX_CONTENT_BYTES`, `MAX_COMMENTS_PER_ARTIFACT`,
 `MAX_EVENTS_PER_ARTIFACT`, the fence helpers (`_open_pinned_for_read`,
 `canonical_path_refusal`, `sensitive_path_refusal`, `is_sensitive_path`) and the
-`_default_store` / `_default_folder_store` singletons; the store hands the clock
-and caps to the owners. The field limits, kind sets and helpers that
-`kiro_crew.artifact_store.rules` owns are read from that module, so a test that
-rebinds one patches it there. `MAX_AUTO_WIDGET_ARTIFACTS` is the default argument
-of `prune_auto_widgets`, bound when the class is defined.
+`_default_store` / `_default_folder_store` singletons. `get_default_folder_store`
+builds its store on the facade's `config_dir`, so the default
+`artifact_folders.json` follows the same patch as the default store's root.
+
+The store calls every owner helper through its facade name, so rebinding one on
+`kiro_crew.artifacts` steers the store: `slugify`, `_validate_slug`,
+`_validate_name`, `_validate_description`, `_validate_tags`, `_validate_kind`,
+`_validate_source`, `_validate_source_path`, `_infer_kind`, `detect_editor_kind`,
+`_markdown_misclassification_reason`, `_session_touched` and
+`_sniff_image_dimensions`. `slug_is_well_formed` lives in the facade on the same
+`_validate_slug` binding, so it cannot disagree with the store. A call a helper
+makes inside its owner module resolves there: `_session_touched` calls `rules`'
+`_strip_session_scope`, `slugify` calls `rules`' `slug_hash_fallback`, and
+`_sniff_image_dimensions` calls `images`' per-format sniffers
+(`_sniff_jpeg_dimensions`, `_sniff_webp_dimensions`). Owner modules bind their
+own imports too: a directly constructed `ArtifactFolderStore` takes its default
+path from `folders`' `config_dir` and logs through `folders`' `logger`, which is
+the same `kiro_crew.artifacts` logger object.
+
+Rule data an owner's own code reads has one live binding, in the owner, and the
+store reads it through the owner module too (`create_image` truncates to
+`MAX_NAME_LEN` / `MAX_DESCRIPTION_LEN`, and `update` pre-checks
+`ALLOWED_EVENT_TYPES`). That covers the field limits and grammar
+(`MAX_NAME_LEN`, `MAX_DESCRIPTION_LEN`, `MAX_TAGS`, `MAX_SOURCE_PATH_LEN`,
+`_SLUG_RE`, `_TAG_RE`), the kind sets and inference maps (`ALLOWED_KINDS`,
+`ALLOWED_SOURCES`, `_EXT_KIND_MAP`, `_HTML_SNIFF_MARKERS`) in `rules`, the
+event-type vocabulary (`ALLOWED_EVENT_TYPES`) in `records`, and the folder path
+limits (`FOLDER_PATH_SEP`, `MAX_FOLDER_DEPTH`) in `folders`. The facade copy of
+such a name is an import-compatible re-export that steers nothing, so patch the
+owner module. `_IMAGE_MIME_EXT` is read only by the store, so its facade binding
+is the live one. `MAX_AUTO_WIDGET_ARTIFACTS` is the default argument of
+`prune_auto_widgets`, bound when the class is defined.
 
 `list()` returns newest first on a TOTAL order, `(updated_at, slug)` descending.
 The tie-break is load-bearing, not cosmetic: `updated_at` is microsecond ISO, so

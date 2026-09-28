@@ -18,6 +18,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.memory import MemoryStore
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.handler import handle_message, set_allowed_users, set_owner_id
 
@@ -133,6 +134,51 @@ class TestFetchMessage:
         )
         result = await client.fetch_message("C123", "1234.5678")
         assert result == "standup summary here"
+
+    @pytest.mark.asyncio
+    async def test_fetch_message_detail_injects_cached_team(self):
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = MagicMock()
+        client._web.conversations_history = AsyncMock(
+            return_value={"messages": [{"text": "standup summary here"}]}
+        )
+        client.record_channel_team("C123", "TWORK")
+
+        result = await client.fetch_message_detail("C123", "1234.5678")
+
+        assert result == {
+            "text": "standup summary here",
+            "user": "",
+            "bot_id": "",
+            "bot_name": "",
+        }
+        client._web.conversations_history.assert_awaited_once_with(
+            channel="C123",
+            oldest="1234.5678",
+            latest="1234.5678",
+            inclusive=True,
+            limit=1,
+            team_id="TWORK",
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_message_detail_omits_team_without_cached_team(self):
+        client = RealSlackClient.__new__(RealSlackClient)
+        client._web = MagicMock()
+        client._web.conversations_history = AsyncMock(
+            return_value={"messages": [{"text": "standup summary here"}]}
+        )
+
+        result = await client.fetch_message_detail("C123", "1234.5678")
+
+        assert result is not None
+        client._web.conversations_history.assert_awaited_once_with(
+            channel="C123",
+            oldest="1234.5678",
+            latest="1234.5678",
+            inclusive=True,
+            limit=1,
+        )
 
     @pytest.mark.asyncio
     async def test_extracts_text_from_blocks_after_ack(self):
@@ -348,6 +394,156 @@ class TestHandlerFetchesThreadParent:
             context_builder=builder,
         )
         assert ("fetch_message", {"channel": "C123", "ts": "9999.0001"}) in slack.actions
+
+    @pytest.mark.asyncio
+    async def test_the_arriving_reply_does_not_suppress_the_fetch(self, tmp_path):
+        """This path persists the user's row AFTER the turn, so a still-empty
+        transcript leaves ``compressed`` empty: the parent is fetched, and it
+        is recorded once as a notice above the turn."""
+        set_owner_id("U001")
+        set_allowed_users([{"slack_id": "U001"}])
+        slack = MockSlackClient()
+        slack._fetch_message_result = "cron output here"
+        sm = FakeSessionManager()
+        builder = _make_builder(tmp_path)
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path / "conv")
+        builder.conversation_log = log
+
+        await handle_message(
+            slack,
+            cast("SessionManager", sm),
+            "C123",
+            "implement step 3",
+            thread_ts="9999.0001",
+            msg_ts="9999.0002",
+            user_id="U001",
+            context_builder=builder,
+            conversation_log=log,
+        )
+
+        assert ("fetch_message", {"channel": "C123", "ts": "9999.0001"}) in slack.actions
+        assert "cron output here" in (sm._provider.last_message or "")
+        rows = log.read_messages("slack:9999.0001")
+        assert [r["role"] for r in rows] == ["notice", "user", "assistant"]
+        assert rows[0]["content"] == "Thread started by someone on Slack:\ncron output here"
+
+    @pytest.mark.asyncio
+    async def test_message_shortcut_self_parent_stays_prompt_only(self, tmp_path):
+        set_owner_id("U001")
+        set_allowed_users([{"slack_id": "U001"}])
+        slack = MockSlackClient()
+        slack._fetch_message_result = "forwarded message"
+        sm = FakeSessionManager()
+        builder = _make_builder(tmp_path)
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path / "conv")
+        builder.conversation_log = log
+
+        await handle_message(
+            slack,
+            cast("SessionManager", sm),
+            "D123",
+            "run this",
+            thread_ts="9999.0001",
+            msg_ts="9999.0001",
+            user_id="U001",
+            context_builder=builder,
+            conversation_log=log,
+        )
+
+        assert ("fetch_message", {"channel": "D123", "ts": "9999.0001"}) in slack.actions
+        assert "forwarded message" in (sm._provider.last_message or "")
+        assert [r["role"] for r in log.read_messages("slack:9999.0001")] == [
+            "user",
+            "assistant",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_prompt_only_parent_skips_human_author_lookup(self, tmp_path, monkeypatch):
+        set_owner_id("U001")
+        set_allowed_users([{"slack_id": "U001"}])
+        slack = MockSlackClient()
+        slack.fetch_message_detail = AsyncMock(
+            return_value={
+                "text": "Who owns the flaky shard?",
+                "user": "U777",
+                "bot_id": "",
+                "bot_name": "",
+            }
+        )
+        slack.get_user_info = AsyncMock(return_value={"id": "U777", "real_name": "Alice Liddell"})
+        prior_turns = AsyncMock(return_value=True)
+        monkeypatch.setattr(slack_handler, "has_prior_turns", prior_turns)
+        sm = FakeSessionManager()
+        builder = _make_builder(tmp_path)
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path / "conv")
+        builder.conversation_log = log
+
+        await handle_message(
+            slack,
+            cast("SessionManager", sm),
+            "C123",
+            "implement step 3",
+            thread_ts="9999.0001",
+            msg_ts="9999.0002",
+            user_id="U001",
+            context_builder=builder,
+            conversation_log=log,
+        )
+
+        prior_turns.assert_awaited_once_with(log, "slack:9999.0001")
+        slack.get_user_info.assert_not_awaited()
+        assert "Who owns the flaky shard?" in (sm._provider.last_message or "")
+        assert [r["role"] for r in log.read_messages("slack:9999.0001")] == [
+            "user",
+            "assistant",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_notice_parent_still_resolves_human_author(self, tmp_path):
+        set_owner_id("U001")
+        set_allowed_users([{"slack_id": "U001"}])
+        slack = MockSlackClient()
+        slack.fetch_message_detail = AsyncMock(
+            return_value={
+                "text": "Who owns the flaky shard?",
+                "user": "U777",
+                "bot_id": "",
+                "bot_name": "",
+            }
+        )
+        slack.get_user_info = AsyncMock(return_value={"id": "U777", "real_name": "Alice Liddell"})
+        sm = FakeSessionManager()
+        builder = _make_builder(tmp_path)
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path / "conv")
+        builder.conversation_log = log
+
+        await handle_message(
+            slack,
+            cast("SessionManager", sm),
+            "C123",
+            "implement step 3",
+            thread_ts="9999.0001",
+            msg_ts="9999.0002",
+            user_id="U001",
+            context_builder=builder,
+            conversation_log=log,
+        )
+
+        slack.get_user_info.assert_awaited_once_with("U777")
+        rows = log.read_messages("slack:9999.0001")
+        assert [r["role"] for r in rows] == ["notice", "user", "assistant"]
+        assert rows[0]["content"] == (
+            "Thread started by Alice Liddell on Slack:\nWho owns the flaky shard?"
+        )
+        assert rows[0].get("source_user") == "U777"
 
     @pytest.mark.asyncio
     async def test_skips_fetch_when_parent_in_compressed_history(self, tmp_path):

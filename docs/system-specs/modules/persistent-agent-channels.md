@@ -118,7 +118,7 @@ No lock guards any of this. What makes the pair decidable against the index the 
 
 `ChannelPage.tsx` loads channel summaries and full active-channel detail, then applies `kirocrew-channel` WebSocket events. It deduplicates a create response and its matching `channel_created` event by ID, so one newly created channel is not listed twice.
 
-The page renders pending, working, listening, done, failed, and tool-running states; supports thread replies and @mention completion; exposes per-agent listen-mode updates, dismiss, context reset, and channel close; and displays approval cards for channel approval messages. URL path parameters pass through `encodeURIComponent` in `website/src/api/client.ts`.
+The page renders pending, working, listening, done, failed, and tool-running states; supports thread replies and @mention completion; exposes per-agent listen-mode updates, dismiss, context reset, and channel close; and displays approval cards for channel approval messages. URL path parameters pass through `encodeURIComponent` in the channel endpoints, `website/src/api/client/agentChannels.ts`, which `website/src/api/client.ts` exposes on the `api` object.
 
 ## API Endpoints
 
@@ -148,7 +148,7 @@ The page renders pending, working, listening, done, failed, and tool-running sta
 | `src/kiro_crew/dashboard/handlers_channel.py` | Validated channel REST handlers, agent lifecycle calls, approvals, presets, and context resets. |
 | `src/kiro_crew/dashboard/routes/connections.py` | Dashboard route registration. |
 | `website/src/pages/ChannelPage.tsx` | Channel workspace UI, WebSocket reconciliation, threads, presets, and agent controls. |
-| `website/src/api/client.ts` | Encoded channel API client methods. |
+| `website/src/api/client/agentChannels.ts` | Encoded channel API client methods, exposed on `api` by `website/src/api/client.ts`. |
 | `test/test_channel.py` | Model, routing, capacity, and persistence coverage. |
 | `test/test_channel_blocked_tools.py` | Containment ordering and blocked-tool-name coverage. |
 | `test/test_channel_trusted_patterns.py` | Exact/base shell-command trust derivation, binding, and auto-approval coverage. |

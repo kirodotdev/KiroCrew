@@ -5649,6 +5649,7 @@
       "trust_desc": "このチャットでは、{{productName}} は最初に確認せずに機能します",
       "trust_label": "信頼",
       "chat_mode_hint": "チャットモード",
+      "trust_scope_tooltip": "このチャットはアプリの許可で信頼されています。許可は自動で期限切れになります。今すぐ終了するにはこのメニューで標準を選んでください。アプリ側でオフにするまで、アプリが再び許可することがあります。",
       "trust_tooltip": "このチャットでは、{{productName}} は最初に確認せずに機能します",
       "yolo_desc": "すべてのチャットで、{{productName}} は最初に確認せずに機能します",
       "yolo_expiration_timed": "{{duration}} 後に自動的にオフになり、その後再び確認します。",
@@ -5987,6 +5988,8 @@
       "show_pending_tool_call_in_chat": "チャットで保留中のツール呼び出しを表示",
       "skill": "スキル",
       "slash_commands": "スラッシュコマンド",
+      "spawn_awaiting_other": "サブエージェント {{count}} 件が実行の承認を待っています",
+      "spawn_pending_other": "サブエージェント {{count}} 件が待機中 — まず下のリクエストに応答してください",
       "steer": "指示を追加",
       "alt_action_hint_queues": "{{chord}} でこのメッセージをキューに入れる",
       "alt_action_hint_steers": "{{chord}} でこのメッセージで今すぐステアする",
@@ -6140,7 +6143,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "コメントを追加",
       "add_comment": "コメント追加",
       "add_instruction": "指示を追加",
       "additional_prompt": "追加プロンプト",
@@ -7598,11 +7600,12 @@
       "effort": "エフォート",
       "effort_help": "推論エフォートは、モデルが回答前に考える時間を設定します。高いほど難しい問題を長く推論するため遅くなりますが、回答品質が向上します。低いほど高速です。セッションごとの上書きをオフにすると、設定 → チャットのデフォルトへフォールバックします。デフォルトがなければモデル自身の選択を使用します（Fable/Opus/Sonnet のみ）。",
       "faster": "高速",
-      "configured_default_marker": "設定済みのデフォルト",
+      "configured_default_marker": "デフォルトのエフォート",
+      "slider_locked_hint": "デフォルトに固定されています。レベルを選ぶにはスイッチをオフにしてください。",
       "reasoning_effort": "推論エフォート",
       "smarter": "スマート",
-      "use_configured_default": "設定されたデフォルトを使用",
-      "use_model_default": "モデルのデフォルトを使用"
+      "use_configured_default": "デフォルトのエフォートを使用（{{level}}）",
+      "use_default_effort": "デフォルトのエフォートを使用"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "チームに固有のアプリを検出するために組織レジストリを追加",
@@ -7760,12 +7763,16 @@
     "selectionToolbar": {
       "ask": "これについて質問",
       "ask_hint": "選択部分を引用してサイドチャットを開きます — 送信するまで何も送られず、メインのチャットには影響しません",
+      "close_saving_continues": "閉じる – 保存は続行されます",
       "comment_input": "選択したテキストにコメント",
+      "comment_post_failed": "コメントを保存できませんでした。テキストはそのまま残っています。もう一度お試しください。",
+      "comment_post_failed_closed": "「{{quote}}」へのコメントは保存されませんでした。同じテキストをもう一度選択すると、下書きが戻り、再試行できます。",
       "copy": "コピー",
       "copy_failed": "コピーに失敗しました — ブラウザーがクリップボードへのアクセスをブロックしました。テキストを選択して手動でコピーしてください。",
       "copy_selection_hint": "選択したテキスト（コメントではなく）をクリップボードにコピーします",
       "more_actions": "選択範囲に対するその他の操作",
       "press_enter_to_comment": "Enter またはクリックでコメント…",
+      "saving": "保存中…",
       "tap_to_comment": "タップしてコメントを入力…",
       "quote": "引用",
       "quote_hint": "選択部分をこの会話の入力欄に引用します — 返信はメインのチャットに送られます"
@@ -10426,6 +10433,7 @@
         "copied": "コピーしました",
         "copy_failed": "コピーできませんでした",
         "steering": "追加しています…",
+        "delivery_pending": "送信確認待ち…",
         "redirecting_the_running_turn_not_yet_confirmed": "実行中のターンをリダイレクトしています — まだ確認されていません。",
         "turn_ended_before_this_applied_runs_as_its_own_message": "適用される前にターンが終了したため、別のメッセージとして実行されます。"
       },
@@ -10904,6 +10912,7 @@
       "send_failed_with_error": "送信に失敗しました: {{error}}",
       "send_failed_with_error_restored": "このメッセージを送信できませんでした: {{error}}。入力欄にテキストを戻しました。",
       "delivery_unconfirmed": "送信が確認できません — 入力欄にテキストを戻しました。再送信する前に会話履歴を確認してください。",
+      "delivery_unconfirmed_pending": "送信が確認できません — このメッセージはまだ確認待ちの可能性があります。返信が届かない場合は、もう一度送信してください。",
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
@@ -12973,7 +12982,8 @@
         "update": "更新",
         "validation_findings": "検証結果",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "ワークスペース"
+        "workspace": "ワークスペース",
+        "detail_unreadable": "この候補のファイルは安全に読み取れないため、レビューできません。却下するとキューから削除されます。"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "エージェントが読む Markdown 規約。適用タイミングは各ファイルのインクルードモードで決まります: 常時、一致するファイルのときだけ、または必要時。グローバルファイルは ~/.kiro/steering にあり、どこでも適用されます。ワークスペースファイルは <project>/.kiro/steering にあり、そのプロジェクトだけに適用されます。",

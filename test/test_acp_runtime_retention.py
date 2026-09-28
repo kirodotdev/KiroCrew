@@ -45,7 +45,13 @@ async def test_runtime_shutdown_diagnostics_respect_retention(mode, expected, ca
     assert "returncode=<not reaped>" in runtime.death_summary()
     if mode == "persistent":
         assert CANARY in caplog.text
-        assert CANARY in exit_reason
+        # Retained and readable, but NOT promoted to the stated cause. "not
+        # logged in" is the child's last word, not a shape that explains a
+        # death, so it rides the debug log (asserted above) and the summary's
+        # own labelled stderr_tail while the reason stays the exit status.
+        assert CANARY in runtime.death_summary()
+        assert exit_reason == "process exited (rc=1)"
+        assert CANARY not in exit_reason
     else:
         assert not runtime._stderr_lines
         assert exit_reason == "process exited (rc=1)"

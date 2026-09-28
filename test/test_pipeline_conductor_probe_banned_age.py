@@ -45,19 +45,20 @@ SKILL_DIR = (
 def _fake_proc_with_banned_pytest(
     proc_root: Path, fleet_root: Path, pid: str, *, starttime_ticks: int, uptime_secs: float
 ) -> None:
-    """A ``/proc`` holding one pid whose cmdline is a bare (unbounded) pytest run
+    """A ``/proc`` holding one pid whose cmdline is an unbudgeted (``-n 4``) pytest run
     inside *fleet_root*, plus the ``stat``/``uptime`` the age helper reads.
 
     The cmdline is a real NUL-separated argv with ``argv[0]`` a pytest path, so it
-    is neither a shell wrapper (no ``exe`` link -> no exemption) nor bounded (no
-    ``-n``), and the ``cwd`` symlink into the fleet worktree makes it ``cwd=fleet``.
+    is neither a shell wrapper (no ``exe`` link -> no exemption) nor budgeted (an
+    explicit ``-n 4`` bypasses the ``auto`` budget hook), and the ``cwd`` symlink
+    into the fleet worktree makes it ``cwd=fleet``.
     """
     proc_root.mkdir(parents=True, exist_ok=True)
     fleet_root.mkdir(parents=True, exist_ok=True)
     (proc_root / "uptime").write_text(f"{uptime_secs} 0.0\n", encoding="ascii")
     pdir = proc_root / pid
     pdir.mkdir()
-    argv = [str(fleet_root / ".venv" / "bin" / "pytest"), "test/test_x.py", "-q"]
+    argv = [str(fleet_root / ".venv" / "bin" / "pytest"), "-n", "4", "test/test_x.py", "-q"]
     (pdir / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
     # field 1 pid, field 2 comm in parens (can hold spaces), field 3 state, then
     # starttime is field 22 -- index 19 in the split AFTER the ') ', where index 0
@@ -84,7 +85,7 @@ def _run(tmp_path, monkeypatch, fleet_root: Path) -> str:
 class TestBannedLineCarriesAge:
     @_POSIX_PROC_ONLY
     def test_banned_line_reports_the_process_age(self, tmp_path, capsys, monkeypatch):
-        """A fleet-owned unbounded pytest alive for ~600s prints ``age=600s`` on its
+        """A fleet-owned unbudgeted pytest alive for ~600s prints ``age=600s`` on its
         BANNED line, so a re-emitted line whose age keeps growing is readable as one
         unkilled process rather than a fresh offender on a recycled pid."""
         fleet_root = tmp_path / "wt-worker"

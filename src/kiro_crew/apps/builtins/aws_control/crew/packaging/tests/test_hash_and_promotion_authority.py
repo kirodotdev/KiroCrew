@@ -13,6 +13,7 @@ the link points; the descriptor-relative rename refuses a component swapped sinc
 
 from __future__ import annotations
 
+import ast
 import errno
 import os
 import pathlib
@@ -20,7 +21,7 @@ import shutil
 
 import pytest
 
-from .test_producer import load_build, make_crew
+from .test_producer import builder_trees, load_build, make_crew
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -358,7 +359,7 @@ def test_MUTATION_bypassing_the_disposal_pin_lands_the_delete_on_a_swapped_paren
 # test fails if a NEW bare shutil.rmtree of an --out-derived tree is added.
 # ---------------------------------------------------------------------------
 def test_every_out_derived_recursive_delete_goes_through_the_pin() -> None:
-    """No bare ``shutil.rmtree`` of staging / previous / the aside survives in ``build.py``.
+    """No bare ``shutil.rmtree`` of staging / previous / the aside survives in the builder.
 
     Every recursive delete of an --out-derived tree is reached through a held descriptor: the
     previous-bundle and aside disposals go through ``_dispose_via_private_aside`` /
@@ -370,10 +371,21 @@ def test_every_out_derived_recursive_delete_goes_through_the_pin() -> None:
     target by name, which a swap can steer outside --out, so it fails here and the closed set
     cannot silently grow.
     """
-    import ast
+    offenders: list[str] = []
+    for path, tree in builder_trees():
+        offenders.extend(f"{path.name}:{line}" for line in _bare_rmtrees(tree))
 
-    build_py = pathlib.Path(__file__).resolve().parents[1] / "build.py"
-    tree = ast.parse(build_py.read_text(encoding="utf-8"), str(build_py))
+    assert not offenders, (
+        "these bare shutil.rmtree calls delete an --out-derived tree by a re-resolved name, "
+        f"which a swap can steer outside --out ({offenders}); route each through the "
+        "pinned aside (_purge_via_private_aside / _dispose_via_private_aside / "
+        "_purge_staging_best_effort) so the target is reached relative to a held O_NOFOLLOW "
+        "descriptor"
+    )
+
+
+def _bare_rmtrees(tree: ast.Module) -> list[int]:
+    """The line of every ``rmtree`` call in *tree* outside ``_rmtree_pinned`` itself."""
 
     def _in_rmtree_pinned(node: ast.AST) -> bool:
         for fn in ast.walk(tree):
@@ -394,14 +406,7 @@ def test_every_out_derived_recursive_delete_goes_through_the_pin() -> None:
         if _in_rmtree_pinned(node):
             continue  # the descriptor-relative primitive itself
         offenders.append(node.lineno)
-
-    assert not offenders, (
-        "these bare shutil.rmtree calls delete an --out-derived tree by a re-resolved name, "
-        f"which a swap can steer outside --out (lines {offenders}); route each through the "
-        "pinned aside (_purge_via_private_aside / _dispose_via_private_aside / "
-        "_purge_staging_best_effort) so the target is reached relative to a held O_NOFOLLOW "
-        "descriptor"
-    )
+    return offenders
 
 
 def test_the_pin_rule_is_scanning_the_real_disposal_helpers() -> None:
@@ -411,11 +416,12 @@ def test_the_pin_rule_is_scanning_the_real_disposal_helpers() -> None:
     while the swap window it guards reopened. Assert the three names the rule relies on are
     real functions in the module.
     """
-    import ast
-
-    build_py = pathlib.Path(__file__).resolve().parents[1] / "build.py"
-    tree = ast.parse(build_py.read_text(encoding="utf-8"), str(build_py))
-    defined = {fn.name for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)}
+    defined = {
+        fn.name
+        for _path, tree in builder_trees()
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+    }
     for name in ("_rmtree_pinned", "_dispose_via_private_aside", "_purge_via_private_aside"):
         assert name in defined, f"{name} is the pin the closed-set rule relies on; it is gone"
 

@@ -1642,8 +1642,16 @@ async def _ensure_pip_available() -> tuple[bool, str]:
 
 
 async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
-    """POST /api/memory/enable-embeddings — trigger/retry model download and wire embeddings."""
+    """POST /api/memory/enable-embeddings — trigger/retry model download and wire embeddings.
+
+    Owner-gated first: setup downloads a model onto the owner's host, installs
+    ``faiss-cpu`` into the gateway interpreter and rewrites the owner's config.
+    """
     global _embedding_setup_status
+
+    owner_denied = await require_owner_dashboard_request(request, "memory.enable_embeddings")
+    if owner_denied is not None:
+        return owner_denied
 
     # Allow retry — reset any previous error state
     if _embedding_setup_status["step"] == "error":

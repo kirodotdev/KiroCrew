@@ -83,9 +83,17 @@ the page is not a hover at all in this theme; hover states use `bg-bg-hover`.
 
 **Polarity-fixed variables are not roles.** A few `index.css` variables are read
 from `data-mode` (the polarity `useTheme` paints), not from the theme, and a pack
-cannot override them: `--glass-tint` and `--glass-edge`, the fill and hairline the
-Liquid Glass surfaces (the composer, the mobile Settings search capsule) lay over
-their blurred backdrop, and
+cannot override them: `--glass-tint`, `--glass-tint-focus`, `--glass-band`,
+`--glass-edge`, `--glass-edge-focus` and `--glass-hairline` — the fill, the
+brighter fill a focused pane swaps in, the top/bottom light bands, the side-line /
+in-pane-divider hairline, the stronger side line a focused pane swaps in, and
+the half-pixel dark sliver outside each lit band that
+the Liquid Glass surfaces (the composer dock and everything in it, the mobile
+Settings search capsule) lay over their blurred backdrop (the pane draws no ring:
+lit top and bottom, a line down each side). `--glass-tint-accent`, `-warn` and
+`-hover` are derived from `--glass-tint` on `:root` (the picked chip, the
+incognito chip and a hovered pane swap them in via `glass-accent` / `glass-warn`
+/ `glass-hover`), so they follow the polarity too. And
 the `--tile-*` set behind the Settings section icons. They are fixed on purpose —
 the glass must read as a lit pane on any light palette and as smoked glass on any
 dark one, and a section's tile is an identity mark that must look the same in

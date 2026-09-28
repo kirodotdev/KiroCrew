@@ -4303,6 +4303,10 @@
       "show_pending_tool_call_in_chat": "Show pending tool call in chat",
       "skill": "Skill",
       "slash_commands": "Slash commands",
+      "spawn_awaiting_one": "{{count}} sub-agent is awaiting your approval to run",
+      "spawn_awaiting_other": "{{count}} sub-agents are awaiting your approval to run",
+      "spawn_pending_one": "{{count}} sub-agent pending — answer the request below first",
+      "spawn_pending_other": "{{count}} sub-agents pending — answer the request below first",
       "stop_generation": "Stop generation",
       "stopping": "Stopping…",
       "stopping_2": "Stopping",
@@ -4342,7 +4346,6 @@
       "tab": "tab"
     },
     "commentOverlay": {
-      "add_a_comment": "Add a comment",
       "add_comment": "Add comment",
       "add_instruction": "Add instruction",
       "additional_prompt": "Additional prompt",
@@ -5086,8 +5089,8 @@
       "faster": "Faster",
       "reasoning_effort": "Reasoning effort",
       "smarter": "Smarter",
-      "use_configured_default": "Use configured default",
-      "use_model_default": "Use model default"
+      "use_configured_default": "Use default effort ({{level}})",
+      "use_default_effort": "Use default effort"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Add an org registry to discover team-specific apps",

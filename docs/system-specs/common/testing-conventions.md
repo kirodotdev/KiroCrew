@@ -665,6 +665,17 @@ dispatchable until the next registration (the loader documents this as accepted
 staleness). Config a test needs the boot to read (`agent.spawn_min_memory_gb`,
 say) goes in `<home>/config.local.json`, the override file the operator owns.
 
+A chat turn is the real thing too:
+`gw.post("/api/chat", {"message": text, "slot": slot_key}, timeout=TURN_SECS)`
+returns the SSE response, and the test reads `resp.content` line by line
+(`data: {...}` events, `data: [DONE]` last). The fake model's `[[SLOW]]`
+prompt streams thirty chunks half a second apart, which is what a timing
+contract across two slots is built on; a cold session start costs several
+seconds before the first chunk, so bound a turn from the module's own
+`pytest.mark.timeout` (the largest single wait sits under it, so a wedged turn
+fails readably instead of killing the worker) and assert on the ORDER of what
+the two streams saw, never on absolute latency.
+
 The directory is a package (`test/integration/__init__.py`) so its conftest
 imports as `integration.conftest`. The unit files import `test/conftest.py` by
 the bare name `conftest`; a second top-level `conftest` shadows it and 160

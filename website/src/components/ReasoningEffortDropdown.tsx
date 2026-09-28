@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { effortLabel } from './ChatInput'
 import { EFFORT_LEVELS } from '../lib/effort'
 import { api } from '../api/client'
-import { pendingSlotSwitchTarget, performSlotSwitch, stageSlotSwitchTarget } from '../lib/slotSwitch'
+import { pendingSlotSwitchTarget, performSlotSwitch, stagedSlotSwitchTarget, stageSlotSwitchTarget } from '../lib/slotSwitch'
 import { useAppDispatch } from '../store'
 import { updateSlot } from '../store/dashboardSlice'
 import { setAgentSwitchNotice } from '../store/chatSlice'
@@ -135,10 +135,9 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
       clearTimeout(commitTimer.current)
       // Flush a pending write so closing the dropdown within the 150ms debounce
       // window doesn't silently drop the user's last effort change — but only
-      // while the pick is still the newest intent (same staleness gate as the
-      // timer below).
+      // while the pick is still staged (same gate as the timer below).
       const level = pendingLevel.current
-      if (level !== null && pendingSlotSwitchTarget('reasoning_effort', slot) === level) {
+      if (level !== null && stagedSlotSwitchTarget('reasoning_effort', slot) === level) {
         persistEffort(level).catch((err: unknown) => { announcePersistFailure(err, level) })
       }
     }
@@ -155,12 +154,13 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
     if (commitTimer.current) clearTimeout(commitTimer.current)
     commitTimer.current = setTimeout(async () => {
       pendingLevel.current = null
-      // A cycle shortcut may have superseded this pick inside the debounce
-      // window (its request begins immediately and clears the stage). Firing
-      // the stale pick now would make it the NEWEST request and win the
-      // adjudication — reverting the user's newer choice. Persist only while
-      // this pick is still the newest declared intent.
-      if (pendingSlotSwitchTarget('reasoning_effort', slot) !== level) return
+      // Persist only while this pick is still STAGED. Anything that began a
+      // request for this slot's effort meanwhile cleared the stage: a cycle
+      // shortcut superseded the pick (firing it now would make the stale pick
+      // the NEWEST request and win the adjudication, reverting the newer
+      // choice), or a model pick already carried this very level onto the
+      // wire (see effortToCarry) and a second write would only repeat it.
+      if (stagedSlotSwitchTarget('reasoning_effort', slot) !== level) return
       try { await persistEffort(level) }
       catch (err) {
         if (announcePersistFailure(err, level)) {
@@ -188,14 +188,28 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   const atMax = !isDefault && idx >= maxIdx
   // Turning the toggle on clears the per-slot override — which yields the
   // Settings default when one is configured, and only the model's own choice
-  // when it is not. Label each case for what it actually does.
+  // when it is not. The row sits right under the model list, so the label
+  // names EFFORT: a bare "model default" there reads as being about which
+  // model runs. Both states share ONE stem ("Use default effort") and differ
+  // only by the level suffix a configured default adds: the reader should not
+  // have to open Settings to learn what "default" will run at, and two stems
+  // for one switch read as two different controls.
   const defaultToggleLabel = defaultEffort
-    ? i18nT('components.reasoningEffortDropdown.use_configured_default')
-    : i18nT('components.reasoningEffortDropdown.use_model_default')
+    ? i18nT('components.reasoningEffortDropdown.use_configured_default', { level: effortLabel(defaultEffort) })
+    : i18nT('components.reasoningEffortDropdown.use_default_effort')
+
+  // The configured-default marker earns its place only while the thumb can
+  // sit somewhere else: with the switch on, the header ("Default · High") and
+  // the switch ("Use default effort (High)") already say both that the default
+  // runs and at which level, and a third "Default" label on the track made a
+  // reader take one idea for three. It returns the moment the switch goes off,
+  // when it is the only thing that still shows where the default sits.
+  const showDefaultMarker = defaultIdx >= 0 && !isDefault
+  const lockedHintId = useId()
 
   return (
     <div className={embedded ? 'px-3 py-2.5' : 'rounded-lg bg-bg-elevated border border-border px-4 py-3.5 w-[240px] max-w-[calc(100vw-16px)]'}>
-      <div className={`flex items-center gap-1.5 ${defaultIdx >= 0 ? 'mb-5' : 'mb-3'}`}>
+      <div className={`flex items-center gap-1.5 ${showDefaultMarker ? 'mb-5' : 'mb-3'}`}>
         <span className="text-[14px] font-medium text-muted uppercase tracking-[.04em] leading-none">{i18nT('components.reasoningEffortDropdown.effort')}</span>
         <span className="relative inline-flex items-center overflow-hidden leading-none" style={{ height: '1.5em' }}>
           <AnimatePresence mode="popLayout" initial={false}>
@@ -211,25 +225,45 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
             </motion.span>
           </AnimatePresence>
         </span>
-        <span className="ml-auto flex"><InfoTip text={i18nT('components.reasoningEffortDropdown.effort_help')} placement="top" /></span>
+        {/* A Tab stop for the embedding model picker's routing (see
+            routeModelPickerKeys; the router matches it by `closest()`, so the
+            wrapper carries it): without the mark, routed Tab from the filter
+            or the manage row skips straight to the slider. */}
+        <span className="ml-auto flex" data-model-picker-stop><InfoTip text={i18nT('components.reasoningEffortDropdown.effort_help')} placement="top" /></span>
       </div>
-      <Slider
-        aria-label={i18nT('components.reasoningEffortDropdown.reasoning_effort')}
-        min={0}
-        max={maxIdx}
-        step={1}
-        value={idx}
-        onChange={handleSlide}
-        disabled={isDefault}
-        emphasizeMax={!isDefault}
-        markerValue={defaultIdx >= 0 ? defaultIdx : undefined}
-        markerLabel={defaultIdx >= 0 ? i18nT('components.reasoningEffortDropdown.configured_default_marker') : undefined}
-        formatValue={v => effortLabel(concrete[v] ?? '')}
-      />
+      {/* While the switch is on the track is inert (Slider ignores input when
+          disabled), and a dimmed slider alone left readers unsure whether a
+          drag would silently flip the switch. The hint under the track names
+          the switch as the way back. It is VISIBLE text, not a title or an
+          sr-only span: a title reaches only a pointer that hovers, and touch
+          readers -- the ones most likely to poke a dead track -- never hover.
+          The same element is the slider's accessible description. It goes
+          away with the lock. */}
+      <div>
+        <Slider
+          aria-label={i18nT('components.reasoningEffortDropdown.reasoning_effort')}
+          aria-describedby={isDefault ? lockedHintId : undefined}
+          min={0}
+          max={maxIdx}
+          step={1}
+          value={idx}
+          onChange={handleSlide}
+          disabled={isDefault}
+          emphasizeMax={!isDefault}
+          markerValue={showDefaultMarker ? defaultIdx : undefined}
+          markerLabel={showDefaultMarker ? i18nT('components.reasoningEffortDropdown.configured_default_marker') : undefined}
+          formatValue={v => effortLabel(concrete[v] ?? '')}
+        />
+      </div>
       <div className={`relative mt-1 h-[14px] select-none text-[10px] text-muted transition-opacity ${isDefault ? 'opacity-40' : ''}`}>
         <span className="absolute left-0">{i18nT('components.reasoningEffortDropdown.faster')}</span>
         <span className="absolute right-0">{i18nT('components.reasoningEffortDropdown.smarter')}</span>
       </div>
+      {isDefault && (
+        <p id={lockedHintId} className="mt-2 text-[11px] leading-snug text-muted">
+          {i18nT('components.reasoningEffortDropdown.slider_locked_hint')}
+        </p>
+      )}
       <div className="mt-3.5 flex items-center justify-between gap-2">
         <span className="text-[12px] text-text">{defaultToggleLabel}</span>
         <Toggle checked={isDefault} onChange={handleToggleDefault} label={defaultToggleLabel} />

@@ -8,13 +8,15 @@ observable surface directly: the exact bytes of ``meta.json``,
 ``comments.json`` and ``artifact_folders.json``, the dataclass field order that
 fixes the key order of every HTTP response, the directory layout, the exact
 validation and generation-token error messages, the change-listener and
-metrics ordering, and the module-attribute seams tests and callers patch on the
-facade.
+metrics ordering, and the module-attribute seams tests and callers patch, on the
+facade and on the owner modules.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import importlib
+import importlib.util
 import json
 import threading
 import time
@@ -671,6 +673,16 @@ class TestFacadeSeams:
         monkeypatch.setattr(art_mod, "_default_store", None)
         assert art_mod.get_default_store().root == art_mod.config_dir() / "artifacts"
 
+    def test_facade_config_dir_moves_the_default_folder_store(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        home = tmp_path / "home"
+        monkeypatch.setattr(art_mod, "config_dir", lambda: home)
+        monkeypatch.setattr(art_mod, "_default_folder_store", None)
+        monkeypatch.setattr(art_mod, "_default_store", None)
+        assert art_mod.get_default_folder_store()._path == home / "artifact_folders.json"
+        assert art_mod.get_default_store().root == home / "artifacts"
+
     def test_event_cap_follows_the_facade_constant(self, store: ArtifactStore, monkeypatch) -> None:
         monkeypatch.setattr(art_mod, "MAX_EVENTS_PER_ARTIFACT", 2)
         art = store.create(name="ev-cap", content="1")
@@ -692,6 +704,221 @@ class TestFacadeSeams:
             type(EXPECT_ABSENT),
         ):
             assert cls.__module__ == "kiro_crew.artifacts", cls
+
+
+def _fake_infer_kind(content: str, source_path: str = "", explicit: str | None = None) -> str:
+    return "json"
+
+
+def _fake_validate_slug(slug: str) -> str:
+    if isinstance(slug, str) and slug.startswith("blocked-"):
+        raise ArtifactValidationError(f"blocked slug {slug!r}")
+    return slug
+
+
+def _stored_image_meta(store: ArtifactStore, **kwargs) -> dict:
+    img = store.create_image(name="img", image_bytes=_png(), mime="image/png", **kwargs)
+    return json.loads((store.root / img.slug / "meta.json").read_text(encoding="utf-8"))["image"]
+
+
+def _reads_infer_kind(store: ArtifactStore) -> None:
+    art = store.create(name="sniffed", content="# hi")
+    assert art.kind == "json"
+    assert store.get(art.slug).kind == "json"
+
+
+def _reads_validate_slug(store: ArtifactStore) -> None:
+    assert art_mod.slug_is_well_formed("blocked-a") is False
+    assert art_mod.slug_is_well_formed("fine-a") is True
+    with pytest.raises(ArtifactValidationError, match=r"^blocked slug 'blocked-a'$"):
+        store.get("blocked-a")
+    with pytest.raises(ArtifactValidationError, match=r"^blocked slug 'blocked-a'$"):
+        store.delete("blocked-a")
+    with pytest.raises(ArtifactValidationError, match=r"^blocked slug 'blocked-b'$"):
+        store.create(name="b", content="c", slug="blocked-b")
+
+
+def _reads_name_limit(store: ArtifactStore) -> None:
+    with pytest.raises(ArtifactValidationError, match=r"^name exceeds 5 chars$"):
+        store.create(name="x" * 6, content="c")
+    assert _stored_image_meta(store, original_filename="y" * 50)["original_filename"] == "y" * 5
+
+
+def _reads_description_limit(store: ArtifactStore) -> None:
+    with pytest.raises(ArtifactValidationError, match=r"^description exceeds 5 chars$"):
+        store.create(name="d", content="c", description="d" * 6)
+    assert _stored_image_meta(store, alt="a" * 50)["alt"] == "a" * 5
+
+
+def _reads_event_types(store: ArtifactStore) -> None:
+    art = store.create(name="ev", content="c")
+    store.update(art.slug, content="new", snapshot=True, event_type="probe")
+    assert [e["type"] for e in store.get(art.slug).events] == ["created", "probe"]
+
+
+#: ``(module, attribute, replacement(original), probe)``: the probe drives every
+#: reader of the attribute and fails unless each one sees the replacement.
+SEAM_CASES = [
+    pytest.param(
+        "kiro_crew.artifacts",
+        "_infer_kind",
+        lambda _original: _fake_infer_kind,
+        _reads_infer_kind,
+        id="facade-_infer_kind",
+    ),
+    pytest.param(
+        "kiro_crew.artifacts",
+        "_validate_slug",
+        lambda _original: _fake_validate_slug,
+        _reads_validate_slug,
+        id="facade-_validate_slug",
+    ),
+    pytest.param(
+        "kiro_crew.artifact_store.rules",
+        "MAX_NAME_LEN",
+        lambda _original: 5,
+        _reads_name_limit,
+        id="rules-MAX_NAME_LEN",
+    ),
+    pytest.param(
+        "kiro_crew.artifact_store.rules",
+        "MAX_DESCRIPTION_LEN",
+        lambda _original: 5,
+        _reads_description_limit,
+        id="rules-MAX_DESCRIPTION_LEN",
+    ),
+    pytest.param(
+        "kiro_crew.artifact_store.records",
+        "ALLOWED_EVENT_TYPES",
+        lambda original: frozenset(original | {"probe"}),
+        _reads_event_types,
+        id="records-ALLOWED_EVENT_TYPES",
+    ),
+]
+
+
+class TestSeamReach:
+    """One patch of a seam, on the module that holds its live binding, steers every reader."""
+
+    @pytest.mark.parametrize(("module_path", "attr", "replacement", "probe"), SEAM_CASES)
+    def test_a_patch_reaches_every_reader(
+        self, store: ArtifactStore, monkeypatch, module_path, attr, replacement, probe
+    ) -> None:
+        # Resolved per case rather than at import, so the facade cases in this file
+        # collect and run even on a tree that has no kiro_crew.artifact_store package.
+        module = importlib.import_module(module_path)
+        monkeypatch.setattr(module, attr, replacement(getattr(module, attr)))
+        probe(store)
+
+
+#: Every public name of the facade: a star import of :mod:`kiro_crew.artifacts` binds
+#: exactly these, the names its owner modules define included.
+FACADE_PUBLIC_NAMES = frozenset(
+    {
+        "ALLOWED_EVENT_TYPES",
+        "ALLOWED_KINDS",
+        "ALLOWED_SOURCES",
+        "ARTIFACTS_CREATED",
+        "ARTIFACT_MAX_CONTENT_BYTES",
+        "Any",
+        "Artifact",
+        "ArtifactAlreadyExistsError",
+        "ArtifactComment",
+        "ArtifactError",
+        "ArtifactFolderStore",
+        "ArtifactNotFoundError",
+        "ArtifactPublication",
+        "ArtifactReplacedError",
+        "ArtifactStillPublishedError",
+        "ArtifactStore",
+        "ArtifactValidationError",
+        "Callable",
+        "DEFAULT_PROVIDER",
+        "DOC_EXTENSIONS",
+        "EXPECT_ABSENT",
+        "FOLDER_PATH_SEP",
+        "ForkMetadata",
+        "ImageMetadata",
+        "Iterator",
+        "KiroCrewConfig",
+        "MAX_AUTO_WIDGET_ARTIFACTS",
+        "MAX_COMMENTS_PER_ARTIFACT",
+        "MAX_CONTENT_BYTES",
+        "MAX_DESCRIPTION_LEN",
+        "MAX_EVENTS_PER_ARTIFACT",
+        "MAX_FOLDER_DEPTH",
+        "MAX_NAME_LEN",
+        "MAX_SOURCE_PATH_LEN",
+        "MAX_TAGS",
+        "MAX_VERSIONS",
+        "Mapping",
+        "MappingProxyType",
+        "Path",
+        "USER_SELECTABLE_KINDS",
+        "WebAppArchitecture",
+        "WebAppCost",
+        "WebAppDeployTarget",
+        "WebAppLifecycle",
+        "WebAppMetadata",
+        "WebAppTeardown",
+        "annotations",
+        "asdict",
+        "canonical_path_refusal",
+        "config_dir",
+        "dataclass",
+        "datetime",
+        "detect_editor_kind",
+        "emit_counter",
+        "field",
+        "fields_of",
+        "filter_comments_for_forward",
+        "get_default_folder_store",
+        "get_default_store",
+        "has_unthemed_hardcoded_colors",
+        "hashlib",
+        "hooks",
+        "is_document_path",
+        "is_sensitive_canonical_path",
+        "is_sensitive_path",
+        "is_unverifiable_path_refusal",
+        "is_verifiable_root",
+        "json",
+        "logger",
+        "logging",
+        "os",
+        "pinned_fs",
+        "re",
+        "sensitive_path_refusal",
+        "slug_hash_fallback",
+        "slug_is_well_formed",
+        "slugify",
+        "tempfile",
+        "threading",
+        "timezone",
+        "unicodedata",
+        "uuid",
+        "webapp_metadata_from_dict",
+    }
+)
+
+
+class TestPublicSurface:
+    def test_star_import_exposes_the_same_public_names(self, tmp_path: Path) -> None:
+        # A real star import, performed by the import system in a throwaway module.
+        probe = tmp_path / "artifacts_star_import_probe.py"
+        probe.write_text("from kiro_crew.artifacts import *\n", encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("artifacts_star_import_probe", probe)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        ns = {
+            n: v for n, v in vars(module).items() if not (n.startswith("__") and n.endswith("__"))
+        }
+        assert set(ns) == FACADE_PUBLIC_NAMES
+        assert [n for n in sorted(FACADE_PUBLIC_NAMES) if ns[n] is not getattr(art_mod, n)] == []
+
+    def test_all_declares_the_same_public_names(self) -> None:
+        assert sorted(art_mod.__all__) == sorted(FACADE_PUBLIC_NAMES)
 
 
 def _jpeg(width: int, height: int) -> bytes:
