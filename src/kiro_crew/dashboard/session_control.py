@@ -56,7 +56,11 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
-from kiro_crew.dashboard.chat_folders import _unhide_folder
+from kiro_crew.dashboard.chat_folders import (
+    _folder_declared_project,
+    _resolve_folder_project_dir,
+    _unhide_folder,
+)
 from kiro_crew.dashboard.chat_fork import (
     _FORK_DIRECTION_HEAD,
     ForkResult,
@@ -1748,6 +1752,37 @@ async def create_session(
     # cross-workspace target, so a child left in "default" would be a boundary
     # crossing its own creator could not then read or stop.
     workspace = getattr(caller_slot, "workspace", "default") or "default"
+
+    # Match dashboard-native creation: filing a dispatched session in a
+    # project-linked folder gives the child that folder's nearest inherited
+    # project directory, while the workspace and memory boundary stay the
+    # caller's. Capture the raw inherited value so the late folder re-check can
+    # refuse a concurrent reparent or project edit instead of creating against
+    # stale folder intent.
+    folder_project_raw: str | None = None
+    folder_project = ""
+    if folder_id:
+        folder_snapshot = await state.read_folders(
+            lambda folders: [dict(folder) for folder in _safe_folder_tree(folders)]
+        )
+        if not any(str(folder.get("id") or "") == folder_id for folder in folder_snapshot):
+            raise SessionControlError("folder not found", code="folder_not_found")
+        folder_project_raw, folder_project_error = _folder_declared_project(
+            folder_snapshot, folder_id
+        )
+        if folder_project_error:
+            raise SessionControlError(
+                f"invalid folder project: {folder_project_error}",
+                code="folder_project_invalid",
+            )
+        folder_project, folder_project_error = await asyncio.to_thread(
+            _resolve_folder_project_dir, folder_snapshot, folder_id
+        )
+        if folder_project_error:
+            raise SessionControlError(
+                f"invalid folder project: {folder_project_error}",
+                code="folder_project_invalid",
+            )
     # An unnamed agent inherits the CALLER'S, not the global default: the caller is
     # already running in this workspace, so its agent is the one bound here, and
     # falling to the global default would put the child on another workspace's
@@ -1783,7 +1818,7 @@ async def create_session(
     # the sensitive-path list, so it is filesystem work the loop should not wait on.
     # The rule's own tiebreaker applies -- a leaked worker thread is survivable, a
     # frozen loop is not.
-    project_dir = await asyncio.to_thread(default_project_dir, workspace)
+    project_dir = folder_project or await asyncio.to_thread(default_project_dir, workspace)
 
     # ONE invariant covers every branch of agent resolution: the agent that will
     # actually ANSWER must be bound to the caller's workspace. Authorization reads
@@ -2084,21 +2119,29 @@ async def create_session(
     # before the coroutine suspended.
 
     if folder_id:
-        # Confirmed under the folder-store lock -- the only place existence
-        # cannot go stale against a concurrent delete (see `read_folders`) --
-        # and READ-ONLY on purpose: the Model-B un-hide is a durable mutation,
-        # and it runs only after the filing actually lands (below, after the
-        # persist), so a create the re-gate refuses leaves no folder-tree state
-        # behind. Placed BEFORE the re-gate so the last suspension this
-        # coroutine takes is here: after the re-gate nothing suspends until the
-        # slot is fully configured, so the folder confirmed here cannot be
-        # deleted before the assignment lands (folder mutations run on this
-        # loop).
-        def _exists(folders: list[dict[str, Any]]) -> bool:
-            return any(str(f.get("id") or "") == folder_id for f in _safe_folder_tree(folders))
+        # Confirmed under the folder-store lock -- the only place existence and
+        # inherited project intent cannot go stale against a concurrent delete,
+        # reparent, or project edit. READ-ONLY on purpose: the Model-B un-hide is
+        # a durable mutation and runs only after filing lands.
+        def _current_folder_project(
+            folders: list[dict[str, Any]],
+        ) -> tuple[bool, str | None, str | None]:
+            tree = _safe_folder_tree(folders)
+            exists = any(str(folder.get("id") or "") == folder_id for folder in tree)
+            raw_project, error = _folder_declared_project(tree, folder_id)
+            return exists, raw_project, error
 
-        if not await state.read_folders(_exists):
+        folder_exists, current_folder_project, current_folder_error = await state.read_folders(
+            _current_folder_project
+        )
+        if not folder_exists:
             raise SessionControlError("folder not found", code="folder_not_found")
+        if current_folder_error or current_folder_project != folder_project_raw:
+            raise SessionControlError(
+                "folder project changed while the session was being created",
+                code="folder_target_changed",
+                status=409,
+            )
 
     # Re-resolved and re-gated HERE, adjacent to the allocation, because every
     # decision above was made before this coroutine suspended -- for the

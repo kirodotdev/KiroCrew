@@ -3534,6 +3534,55 @@ def test_create_files_the_slot_at_birth(tmp_path):
     )
 
 
+def test_create_inherits_the_folders_project_dir(tmp_path):
+    """A dispatched session filed in a project folder runs in that project."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    folder_project = tmp_path / "folder-project"
+    folder_project.mkdir()
+    _folder(
+        state,
+        "fold00000002",
+        "Project",
+        project_dir=str(folder_project),
+    )
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000002")
+    )
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert child.workspace == caller.workspace
+    assert child.project == str(folder_project.resolve())
+    written = state.conversation_log.get_metadata(slot_history_key(child))
+    assert written.get("project") == str(folder_project.resolve())
+
+
+def test_create_inherits_an_ancestor_folders_project_dir(tmp_path):
+    """Project inheritance follows the same nearest-ancestor rule as dashboard creation."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    folder_project = tmp_path / "ancestor-project"
+    folder_project.mkdir()
+    _folder(
+        state,
+        "fold00000003",
+        "Project",
+        project_dir=str(folder_project),
+    )
+    child_folder = _folder(state, "fold00000004", "Worker")
+    child_folder["parent_id"] = "fold00000003"
+
+    created = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000004")
+    )
+
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert child.project == str(folder_project.resolve())
+
+
 def test_create_refuses_an_unknown_folder(tmp_path):
     """An unresolvable folder refuses the WHOLE create, allocating nothing.
 
