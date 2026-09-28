@@ -6368,6 +6368,12 @@ class TestAdaptiveHomeTargetsExpiry:
                             break
             if roots.kiro_home and gate._KIRO_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "agents"))
+            # The registry leaf shares that class: one root, one guard shape. Derived
+            # from the same constant the build reads, so it tracks a moved leaf.
+            if roots.kiro_home and gate._KIRO_SETTINGS_MCP_JSON in tier:
+                expected.add(
+                    os.path.join(roots.kiro_home, *gate._leaf_segments("settings/mcp.json"))
+                )
             for leaf, root_envs, under_root in gate._OVERRIDE_ANCHORED_LEAVES:
                 if leaf not in tier:
                     continue
@@ -7244,7 +7250,9 @@ class TestKiroAgentsDirWriteProtection:
 
         # ``agents-backup`` shares a prefix but is a different directory.
         assert is_sensitive_write_path("~/.kiro/agents-backup/x.json") is False
-        assert is_sensitive_write_path("~/.kiro/settings/mcp.json") is False
+        # A kiro-cli settings leaf this entry does not reason about stays writable;
+        # the registry leaf beside it has its own entry and its own test class.
+        assert is_sensitive_write_path("~/.kiro/settings/amazon-internal.json") is False
         assert is_sensitive_write_path("~/notes.txt") is False
 
     def test_tool_gate_canonicalizes_relative_writes_into_agents_dir(self) -> None:
@@ -7289,6 +7297,79 @@ class TestKiroAgentsDirWriteProtection:
         monkeypatch.delenv("KIRO_HOME", raising=False)
         security._home_targets_cache.clear()
         assert is_sensitive_write_path(str(custom / "agents" / "pwn.json")) is False
+
+
+class TestKiroSettingsMcpJsonWriteProtection:
+    """``~/.kiro/settings/mcp.json`` is WRITE-protected on the file-edit tool gate.
+
+    An ``autoApprove`` on an entry there is honoured by default
+    (``mcp.honour_auto_approve``), and kiro-cli approves an autoApproved MCP tool
+    locally without emitting a permission request — so those verbs skip Kiro Crew's
+    tool gate. ``governance._is_owner_written`` admits an entry on its NAME SHAPE,
+    not on who wrote the file, so a plainly-named entry an agent appended is
+    honoured exactly like one the owner typed. WRITES are refused; tool-path READS
+    stay allowed, because the registry is read by the app MCP-policy merge, the
+    doctor and the deregistration scrub.
+    """
+
+    def test_file_edit_write_to_the_registry_is_denied(self) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        home = str(Path.home())
+        assert is_sensitive_write_path("~/.kiro/settings/mcp.json") is True
+        assert is_sensitive_write_path(f"{home}/.kiro/settings/mcp.json") is True
+
+    def test_reads_of_the_registry_stay_allowed(self) -> None:
+        # WRITE-protection only: the read+write gate must NOT fence the registry, or
+        # the policy merge and the doctor's report break.
+        assert is_sensitive_path("~/.kiro/settings/mcp.json") is False
+
+    def test_neighbours_are_not_over_blocked(self) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        # A LEAF, not the directory: ``settings`` holds other kiro-cli files whose
+        # protection this entry has not reasoned about.
+        assert is_sensitive_write_path("~/.kiro/settings") is False
+        assert is_sensitive_write_path("~/.kiro/settings/amazon-internal.json") is False
+        # Suffix and prefix neighbours are different files.
+        assert is_sensitive_write_path("~/.kiro/settings/mcp.json.bak") is False
+        assert is_sensitive_write_path("~/.kiro/settings-backup/mcp.json") is False
+
+    def test_tool_gate_canonicalizes_relative_writes_to_the_registry(self) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        home = str(Path.home())
+        assert is_sensitive_write_path("mcp.json", base_dir=f"{home}/.kiro/settings") is True
+        assert is_sensitive_write_path("./settings/mcp.json", base_dir=f"{home}/.kiro") is True
+        # A relative write resolving somewhere else must stay allowed.
+        assert is_sensitive_write_path("settings/mcp.json", base_dir="/tmp/project") is False
+
+    def test_kiro_home_override_is_covered_on_the_tool_gate(self, tmp_path, monkeypatch) -> None:
+        # ``KIRO_HOME`` moves kiro-cli's whole user directory including ``settings``,
+        # so the registry the override makes live must be fenced too. The default
+        # ``$HOME``-rooted location stays covered regardless.
+        from kiro_crew.security import is_sensitive_write_path
+
+        custom = tmp_path / "customkiro"
+        monkeypatch.setenv("KIRO_HOME", str(custom))
+        security._home_targets_cache.clear()
+        target = str(custom / "settings" / "mcp.json")
+        assert is_sensitive_write_path(target) is True
+        # Reads under the override stay allowed (write-only tier).
+        assert is_sensitive_path(target) is False
+        assert is_sensitive_write_path(f"{Path.home()}/.kiro/settings/mcp.json") is True
+
+    def test_kiro_home_unset_does_not_protect_the_override_location(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The re-anchoring is keyed on the resolved override, so clearing it must
+        # invalidate the cached target set.
+        from kiro_crew.security import is_sensitive_write_path
+
+        custom = tmp_path / "customkiro"
+        monkeypatch.delenv("KIRO_HOME", raising=False)
+        security._home_targets_cache.clear()
+        assert is_sensitive_write_path(str(custom / "settings" / "mcp.json")) is False
 
 
 class TestDeniedCommandsKeystone:
