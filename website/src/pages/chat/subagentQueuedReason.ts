@@ -39,6 +39,9 @@ export type SubagentQueuedReason = {
 export type SubagentQueuedEvent = {
   slot: string
   queued: number
+  /** The gateway's emit order for this count (absent from an older gateway);
+   *  the reducer drops a frame older than the newest one it applied. */
+  seq?: number
   reason?: string
   available_gb?: number
   required_gb?: number
