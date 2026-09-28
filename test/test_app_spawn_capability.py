@@ -451,3 +451,55 @@ class TestChildGateInheritsTheApp:
         assert ast.dump(app_arg, include_attributes=False) == ast.dump(
             expected, include_attributes=False
         )
+
+
+class TestParentlessSpawnCarriesTheRequestApp:
+    """GPT 6.1 F1: a parentless app-token spawn must carry the request's own app
+    into the admitted execution context, or the completion note names no producer
+    app and the bridge vets only the host profile -- egressing the result to Slack
+    despite the app's own channel denial.
+    """
+
+    def test_derive_execution_preserves_a_parentless_contexts_app(self):
+        # The load-bearing link: whatever app the parentless ExecutionContext
+        # carries must survive derivation into the admitted record that becomes
+        # SubagentInfo.app (which _subagent_notif_meta reads for producer_app).
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            derive_execution,
+        )
+
+        ctx = ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew", app="rogue")
+        admitted = derive_execution(
+            ctx, target_member=None, config=None, requested_mode="persistent"
+        )
+        assert admitted.app == "rogue"
+        assert admitted.to_record().get("app") == "rogue"
+
+    def test_api_spawn_sets_the_parentless_context_app_from_the_request(self):
+        # Guards the fix structurally: the parentless-branch ExecutionContext(...)
+        # in api_spawn must pass an app= keyword, and it must read from `request`
+        # (the token-auth-verified app), never a body field.
+        import ast
+        import inspect
+
+        from kiro_crew.dashboard.messaging_api import spawn as spawn_mod
+
+        tree = ast.parse(inspect.getsource(spawn_mod.api_spawn))
+        ctx_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "ExecutionContext"
+        ]
+        assert ctx_calls, "api_spawn does not build an ExecutionContext"
+        app_kw = None
+        for call in ctx_calls:
+            for kw in call.keywords:
+                if kw.arg == "app":
+                    app_kw = kw.value
+        assert app_kw is not None, "the parentless ExecutionContext passes no app= -- F1 regressed"
+        src = ast.dump(app_kw)
+        assert "request" in src, "the parentless context's app must come from request, not a body"
