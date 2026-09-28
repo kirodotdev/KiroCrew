@@ -1168,7 +1168,14 @@ def emission_eligible_mcp_servers() -> frozenset[str]:
     """
     return frozenset(
         name
-        for name, spec in (*_MANAGED_MCP_SERVERS.items(), *_extra_mcp_servers().items())
+        for name, spec in (
+            *_MANAGED_MCP_SERVERS.items(),
+            # A contributed name that collides with a managed one is refused by
+            # both spec paths, so it must not vote here either: an eligible
+            # vote is what the dashboard's merge-on-write preserves by, and a
+            # refused entry that stays "eligible" would be unrevocable there.
+            *((n, s) for n, s in _extra_mcp_servers().items() if n not in _MANAGED_MCP_SERVERS),
+        )
         if _mcp_server_emission_eligible(name, spec)
     )
 
@@ -3564,11 +3571,36 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
         _enforce_managed_mcp_ownership(entry, spec, registry_mode, auto_approve="own")
         mcp[name] = entry
 
-    # Edition-contributed MCP servers (PlatformContext).  ADD-only: standalone
-    # contributes {} (unchanged), the Amazon companion adds the internal MCP server etc.
-    # Entries are already kiro-spec-shaped, so we only extend the map — no spec
-    # restructuring, deny_unknown_fields invariant preserved.
+    # Edition-contributed MCP servers (PlatformContext).  Standalone contributes
+    # {} (unchanged); an edition adds its own servers.  Entries are already
+    # kiro-spec-shaped, so we only extend the map — no spec restructuring,
+    # deny_unknown_fields invariant preserved.
+    #
+    # Seeding is add-only: a value already in the map came from the user's
+    # override file and is kept for THIS build.  The invocation is host-owned
+    # all the same — the dynamic refresh that runs on every later rebuild
+    # re-pins ``command``/``args`` from the contributed spec (see
+    # _refresh_dynamic_fields), so an override-file pin on those two fields
+    # lasts until the next refresh; every other field stays the user's.
+    #
+    # Managed names are reserved on this path too: an extra colliding with a
+    # managed server (present or not — an opt-in or gated-off one is absent
+    # from ``mcp`` here) must not seed under that alias, or the refresh guard
+    # would then skip the collision forever and the seeded entry would stand.
     for name, spec in _extra_mcp_servers().items():
+        if name in _MANAGED_MCP_SERVERS:
+            logger.warning(
+                "Ignoring edition-contributed MCP server %r: name is reserved by a managed server",
+                name,
+            )
+            continue
+        if not isinstance(spec, dict):
+            # Same host-bug shape the refresh loop refuses; ``dict(spec)`` on a
+            # str or None raises, which would fail the whole build.
+            logger.warning(
+                "Ignoring edition-contributed MCP server %r: spec is not a mapping", name
+            )
+            continue
         mcp.setdefault(name, dict(spec))
 
     # Default-model tracking ("managed" vs frozen) is recorded in the
@@ -3589,6 +3621,26 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     # the purity note above still holds for config/managed-state.
     _apply_allowed_tools_ceiling(config, source="build_agent_config")
     return config
+
+
+def _same_mcp_program(
+    before: tuple[object, object, object], after: tuple[object, object, object]
+) -> bool:
+    """Whether two ``(command, args, url)`` invocations name the SAME program.
+
+    Program identity is the executable's file name plus its argv: a launcher
+    that moved between install trees keeps both, while a different server put
+    behind the same name changes at least one (or switches transport). The
+    refresh uses this to tell "path moved" from "different program" when deciding
+    whether a user's local pre-approvals may follow the invocation.
+    """
+    b_cmd, b_args, b_url = before
+    a_cmd, a_args, a_url = after
+    if b_url is not None or a_url is not None:
+        return b_url == a_url and b_cmd == a_cmd and b_args == a_args
+    if not isinstance(b_cmd, str) or not isinstance(a_cmd, str):
+        return False
+    return os.path.basename(b_cmd) == os.path.basename(a_cmd) and (b_args or []) == (a_args or [])
 
 
 def _refresh_dynamic_fields(
@@ -3721,12 +3773,149 @@ def _refresh_dynamic_fields(
             entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
         )
 
-    # Edition-contributed MCP servers (PlatformContext).  ADD-only: only seed a
-    # server the user doesn't already have, so user customizations on a refresh
-    # are preserved.  Standalone contributes {} (unchanged); Amazon adds
-    # the internal MCP server etc.  Already kiro-spec-shaped — no restructuring.
+    # Edition-contributed MCP servers (PlatformContext).  Refreshed like the
+    # managed loop above, not seeded once: a NEW entry is written whole from the
+    # contributed spec, but an EXISTING entry has its TRANSPORT re-set from the
+    # spec on every rebuild -- ``command``/``args`` re-pinned, remote keys
+    # (``url``/``headers``) dropped -- while every user-owned field (env,
+    # disabledTools, timeout, anything outside the transport) is preserved.  The
+    # one exception is ``autoApprove`` when the invocation now names a different
+    # program — see the reset at the end of the loop body.
+    #
+    # Refreshing the invocation matters because a contributed spec may bake in an
+    # absolute path (an interpreter, or a launcher inside a versioned install
+    # tree) that moves between installs.  A pure setdefault froze the first value
+    # forever, so once the old tree was removed the server silently stopped
+    # spawning; re-pinning command/args from the current spec keeps it working.
+    # Already kiro-spec-shaped — no restructuring.
+    #
+    # Managed names are reserved: the managed loop above owns their invocation,
+    # and ``allowedTools`` pre-approves some of them wholesale, so an extra that
+    # collides with one must never repoint that alias (neither seed nor
+    # refresh).  Same ``name not in managed_names`` guard every other merge
+    # source in the rebuild applies.
     for name, extra_spec in _extra_mcp_servers().items():
-        mcp.setdefault(name, dict(extra_spec))
+        if name in _MANAGED_MCP_SERVERS:
+            logger.warning(
+                "Ignoring edition-contributed MCP server %r: name is reserved by a managed server",
+                name,
+            )
+            continue
+        if not isinstance(extra_spec, dict):
+            # A non-mapping contribution is a host bug, and this repo declares it
+            # reachable (see _mcp_server_emission_eligible).  It must not touch an
+            # entry the user already has: ``"args" in "<str>"`` is a substring
+            # test that would strip a working argv, and ``in`` on None raises.
+            logger.warning(
+                "Ignoring edition-contributed MCP server %r: spec is not a mapping", name
+            )
+            continue
+        existing = mcp.get(name)
+        if name not in mcp:
+            # No entry yet: seed it whole, there is no user preference to respect.
+            mcp[name] = dict(extra_spec)
+            continue
+        if not isinstance(existing, dict):
+            # A malformed hand-written entry (not an object at all). Refreshing it
+            # would raise on item assignment, and rewriting it would discard what
+            # the user meant to say. Leave it untouched and let doctor report it —
+            # this pass repairs OUR fields, it does not adjudicate malformed input.
+            # Same conservative call the managed opt-in loop makes above.
+            continue
+        if "command" not in extra_spec:
+            # Only a STDIO contribution re-pins.  A URL-only one carries no
+            # invocation to pin, and stripping the existing entry's argv without
+            # adopting the URL would leave a stdio command with the wrong argv.
+            # The store merge is the writer for such a name (see there).
+            continue
+        # Re-pin only the invocation fields; the user owns everything else.
+        # ``args`` is copied (like the managed loop's ``list(spec["args"])``) so
+        # the entry never aliases the contributed spec's own list.  An ``args``
+        # absent from the current spec is removed, not left behind: a stale
+        # argv against a new launcher is exactly the broken spawn this refresh
+        # exists to prevent.
+        #
+        # The transport is replaced as a UNIT.  A contributed stdio spec also
+        # drops any remote-transport keys the existing entry carries: at
+        # emission an entry with ``url`` takes the remote branch before the
+        # command is ever looked at, so a leftover ``url`` would shadow the
+        # freshly pinned command (the managed enforcer records that exact
+        # hazard) and the grants set below would then pre-approve the remote.
+        #
+        # "Changed" is judged against the command's SOURCE, not the stored
+        # value: the rebuild persists the resolved absolute path of a bare
+        # contributed command (``npx``, ``python``) and records the pair in the
+        # provenance record, so comparing the stored path with the bare spec
+        # would read as a change on every rebuild and reset grants forever.
+        before_cmd = existing.get("command")
+        record = recorded_source(existing)
+        if record is not None and before_cmd == record[1]:
+            before_cmd = record[0]
+        before = (before_cmd, existing.get("args"), existing.get("url"))
+        if "command" in extra_spec:
+            existing["command"] = extra_spec["command"]
+            existing.pop("url", None)
+            existing.pop("headers", None)
+        if "args" in extra_spec:
+            args = extra_spec["args"]
+            existing["args"] = list(args) if isinstance(args, list) else args
+        else:
+            existing.pop("args", None)
+        after = (existing.get("command"), existing.get("args"), existing.get("url"))
+        changed = [
+            field
+            for field, (old, new) in zip(("command", "args", "url"), zip(before, after))
+            if old != new
+        ]
+        if changed:
+            # Visible drift: the old bug was invisible precisely because nothing
+            # said the recorded invocation had diverged from the contributed one.
+            # Field NAMES only: an argv can carry a secret, and gateway.log is a
+            # persistent file, so the values themselves never go to the log.
+            logger.info(
+                "Re-pinned edition-contributed MCP server %r invocation (%s changed)",
+                name,
+                ", ".join(changed),
+            )
+        # ``autoApprove`` is a LOCAL pre-approval that skips the PreToolUse
+        # hook, and nothing else re-vets a user entry's list (allowedTools is
+        # re-vetted against the ceiling every rebuild; this field is not).  A
+        # changed invocation may be a DIFFERENT PROGRAM behind the same name (a
+        # user entry an edition later claims), whose grants must not transfer
+        # to the new binary -- or the SAME program whose launcher path moved
+        # between installs, which is this refresh's own reason to exist and
+        # must not cost the user their grants on every upgrade.  The two are
+        # told apart by program identity: same executable name and same argv
+        # is the same program at a new path; anything else is a different
+        # program, and its grants are reset to what the contributed spec
+        # declares.  An unchanged invocation is never touched.
+        if changed and not _same_mcp_program(before, after):
+            declared = extra_spec.get("autoApprove")
+            previous = existing.get("autoApprove")
+            if isinstance(declared, list):
+                existing["autoApprove"] = list(declared)
+            else:
+                existing.pop("autoApprove", None)
+            # Granting or revoking a gate bypass is a permission DECISION, so
+            # it gets the same SEL event the other autoApprove writers emit.
+            # The final governance pass cannot stand in: a list that matches
+            # the declared one exits silently, and a popped key is invisible
+            # to it.  Best-effort; audit must never break a rebuild.
+            try:
+                sel().log_api_access(
+                    caller="system",
+                    operation="mcp_auto_approve_reset",
+                    outcome="ok",
+                    source="_refresh_dynamic_fields",
+                    resources=(
+                        f"@{name} invocation changed ({', '.join(changed)}); "
+                        f"autoApprove {len(previous) if isinstance(previous, list) else 0} "
+                        f"-> {len(declared) if isinstance(declared, list) else 0} "
+                        "(reset to the contributed spec's list)"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — audit must not break the refresh
+                logger.debug("SEL audit unavailable for autoApprove reset", exc_info=True)
 
     # Security: hooks always from bundled config.
     # Hard-fail if bundled defaults are missing — deny-by-default.
@@ -5983,6 +6172,33 @@ def rebuild_agent_config(
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
+    #
+    # For an EDITION-CONTRIBUTED name the invocation is host-owned (see the
+    # extras loop in _refresh_dynamic_fields): the store's ``command``/``args``
+    # are excluded from the merge, every other field still lands. The store can
+    # hold a stale invocation without anyone typing it — disabling a row from
+    # the dashboard snapshots the rendered spec into this file — and letting it
+    # win here would freeze the launcher path the refresh just re-pinned.  The
+    # WHOLE transport is excluded, remote keys included: a URL-only snapshot
+    # would otherwise put ``url`` back on the re-pinned stdio entry, and at
+    # emission ``url`` wins before the command is looked at.
+    # The same snapshot carries the ``autoApprove`` of that time.  When the
+    # store records any transport and it differs from the one the refresh just
+    # re-pinned, those grants were made against a different server, so they are
+    # excluded too — otherwise this merge would hand back the pre-approval the
+    # refresh had just revoked.  A store entry with no transport field at all is
+    # the user's own field-level override, not a snapshot, and is merged whole.
+    # Only a STDIO contribution (a mapping carrying ``command``) claims the
+    # transport: that is the only shape the refresh re-pins, so it is the only
+    # one with a writer for the excluded keys.  A non-mapping contribution is
+    # refused by the refresh, and a URL-only one is never re-pinned by it; for
+    # either, withholding the store's transport would leave the entry with no
+    # writer at all -- a working server stranded, or a user's endpoint update
+    # silently dropped.
+    extra_names = {
+        n for n, s in _extra_mcp_servers().items() if isinstance(s, dict) and "command" in s
+    }
+    transport_keys = ("command", "args", "url", "headers")
     kirocrew_mcp = _load_json(_user_dir() / "mcp.json").get("mcpServers", {})
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
@@ -5990,7 +6206,20 @@ def rebuild_agent_config(
             if name in mcps and isinstance(mcps[name], dict):
                 # mcps[name] is a private copy (globals were copied in above),
                 # so update() does not mutate any source dict.
-                mcps[name].update(spec)
+                if name in extra_names:
+                    live = mcps[name]
+                    excluded = set(transport_keys)
+                    # Same identity rule as the refresh: a snapshot of the same
+                    # program at another path keeps its grants; a snapshot of a
+                    # different program (or transport) does not.
+                    if any(k in spec for k in transport_keys) and not _same_mcp_program(
+                        (spec.get("command"), spec.get("args"), spec.get("url")),
+                        (live.get("command"), live.get("args"), live.get("url")),
+                    ):
+                        excluded.add("autoApprove")
+                    mcps[name].update({k: v for k, v in spec.items() if k not in excluded})
+                else:
+                    mcps[name].update(spec)
             else:
                 mcps[name] = dict(spec)
 
@@ -6088,8 +6317,23 @@ def rebuild_agent_config(
     # the live-value probe that keeps a rebuild-authored field re-derivable, and the
     # resolution candidate list. The probe's correctness is "this is the value the
     # chain would have resolved", so two separate spellings could drift apart.
+    #
+    # The store's view of an EDITION-CONTRIBUTED name carries no transport here,
+    # for the same reason the merge above excluded it: the store row can be a
+    # snapshot of a previous install's launcher, and as a resolution fallback it
+    # would win exactly when the contributed launcher fails to resolve, running
+    # the old binary under the current entry's grants.  A contributed launcher
+    # that does not resolve is dropped with the usual warning instead.
+    _store_for_resolution = {
+        _n: (
+            {k: v for k, v in _s.items() if k not in transport_keys}
+            if isinstance(_s, dict) and _n in extra_names
+            else _s
+        )
+        for _n, _s in kirocrew_mcp.items()
+    }
     _scopes: tuple[tuple[str, dict], ...] = (
-        ("kirocrew", kirocrew_mcp),
+        ("kirocrew", _store_for_resolution),
         ("kiro-global", shared_mcp),
         ("provider-global", extra_shared_mcp),
     )
