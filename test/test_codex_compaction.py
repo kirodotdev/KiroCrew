@@ -63,6 +63,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
@@ -175,10 +176,11 @@ class TestMembership:
                 ACP_BACKEND_CLAUDE,
                 ACP_BACKEND_CODEX,
                 ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_AGY,
             }
         )
         assert ACP_BACKENDS_INLINE_COMPACTION == frozenset(
-            {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+            {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_AGY}
         )
 
 

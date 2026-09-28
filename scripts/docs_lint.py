@@ -202,6 +202,8 @@ SKIP_DIR_PATHS: frozenset[str] = frozenset(
         "dist",
         "website/build",
         "website/dist",
+        "website/electron/dist",
+        "website/electron/backend-dist",
         "src/kiro_crew/static/dist",
     }
 )

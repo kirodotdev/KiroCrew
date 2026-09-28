@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -39,6 +40,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
+from kiro_crew.providers.mirrors.agy import AgyMirror
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
@@ -200,6 +202,7 @@ MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_CODEX: CodexMirror,
     ACP_BACKEND_OPENCODE: OpenCodeMirror,
     ACP_BACKEND_GOOSE: GooseMirror,
+    ACP_BACKEND_AGY: AgyMirror,
 }
 
 #: Every backend this build can spell, and how its MCP surface is reached.
@@ -362,6 +365,16 @@ PROJECTIONS: dict[str, McpProjection] = {
             "the WHOLE session rather than being dropped"
         ),
         tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+    ),
+    ACP_BACKEND_AGY: McpProjection(
+        kind=ProjectionKind.MIRROR,
+        reason=(
+            "agy.py -- the session/new mcpServers array is translated by "
+            "acp.session_mcp.session_mcp_servers and mounted into agy CLI via "
+            "the in-tree agy-acp adapter, enabling Kiro Crew tools and member "
+            "dispatch tools inside the session"
+        ),
+        per_tool_deny=PerToolDeny.WHOLE_SERVER,
     ),
 }
 

@@ -885,9 +885,13 @@ def test_reading_markdown_specs_is_a_membership_answer() -> None:
     """The harness answers from ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``, never
     from its own identity, so a host added later joins the set. KAS reads the
     form (Crew parses the spec and hands it over the wire); kiro-cli does not."""
-    from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+    from kiro_crew.acp.types import (
+        ACP_BACKEND_AGY,
+        ACP_BACKEND_KAS,
+        ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    )
 
-    assert ACP_BACKENDS_MARKDOWN_AGENT_SPECS == frozenset({ACP_BACKEND_KAS})
+    assert ACP_BACKENDS_MARKDOWN_AGENT_SPECS == frozenset({ACP_BACKEND_KAS, ACP_BACKEND_AGY})
     assert harness_for(ACP_BACKEND_KAS).reads_markdown_agent_specs is True
     assert harness_for(ACP_BACKEND_KIRO).reads_markdown_agent_specs is False
 

@@ -5,13 +5,14 @@ first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
 (`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
-and DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), plus whatever a bring-your-own
+DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), and Antigravity CLI (`ACP_BACKEND_AGY`),
+plus whatever a bring-your-own
 (BYO) adapter registers next. Adding a harness requires reviewing
 reviewing `session_pid.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process
 must keep its browser daemon alive.
 
-Kiro, Claude Code, KAS, Codex, OpenCode, Pi, goose and DeepSeek are selectable on a
+Kiro, Claude Code, KAS, Codex, OpenCode, Pi, goose, DeepSeek and Antigravity CLI are selectable on a
 plain public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/client.py` owns the
 whole Claude spawn path and the adapter is a public npm package, so an earlier
 revision that left it out of the baseline removed only the switch, never a

@@ -29,6 +29,7 @@ a subprocess.
 from __future__ import annotations
 
 from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for existing importers
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -149,6 +150,7 @@ __all__ = [
     "ACP_BACKENDS_STEER",
     "ACP_BACKENDS_STRUCTURED_REFUSAL",
     "ACP_BACKENDS_TOOL_SEARCH_OVERLAY",
+    "ACP_BACKEND_AGY",
     "ACP_BACKEND_CLAUDE",
     "ACP_BACKEND_CODEX",
     "ACP_BACKEND_DEEPSEEK",

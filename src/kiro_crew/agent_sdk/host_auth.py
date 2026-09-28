@@ -62,6 +62,7 @@ from pathlib import PurePosixPath
 from typing import Dict, FrozenSet, Protocol, Tuple, runtime_checkable
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -721,6 +722,28 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # ``session/prompt`` with -32603 ``... no API key for provider route
         # "deepseek-official"; store DEEPSEEK_API_KEY ...``.
         signed_out_signature="no API key for provider route",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_AGY,
+        credential_leaves=(
+            ".gemini/antigravity-cli/settings.json",
+            ".gemini/antigravity-cli/cache/onboarding.json",
+        ),
+        home_override_env_vars=(),
+        adapter_own_leaves=(
+            ".gemini/antigravity-cli/settings.json",
+            ".gemini/antigravity-cli/cache/onboarding.json",
+        ),
+        sign_in_remedy=(
+            "Google Antigravity CLI signs in on its own — run agy in a terminal "
+            "to complete sign-in. Neither is checked here: the harness reads them."
+        ),
+        signed_out_message=(
+            "Google Antigravity CLI is not signed in. Run `agy` in your terminal "
+            "to complete sign-in, then start a new chat."
+        ),
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),
 )
 

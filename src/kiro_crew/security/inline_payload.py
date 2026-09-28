@@ -42,9 +42,9 @@ _INLINE_DYNAMIC_EXEC_RE = re.compile(
 # A package path is spelled with ``.`` as a module, ``/`` as a POSIX path, or
 # ``\`` as a Windows path; the three separators are one class, not three rules.
 _MINT_SURFACE_RE = re.compile(
-    r"kiro_crew[./\\](?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
+    r"kiro_crew[./\\](?:cli|cli_server|__main__|_bootstrap|acp[./\\]adapters[./\\]agy)(?![a-z0-9_])"
     r"|kiro_crew[\w./\\]*token(?!iz)"
-    r"|from\s+kiro_crew\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])(?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
+    r"|from\s+kiro_crew\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])(?:cli|cli_server|__main__|_bootstrap|acp[./\\]adapters[./\\]agy)(?![a-z0-9_])"
 )
 # A simple statement begins at the start of input, after ``;``, after a newline,
 # or after the ``:`` that closes a compound header (``if x:``, ``for``, ``try:``,
