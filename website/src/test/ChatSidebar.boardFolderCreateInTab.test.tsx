@@ -75,7 +75,7 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
-import ChatSidebar from '../pages/ChatSidebar'
+import ChatSidebar, { BOARD_FOLDER_BODY_CLS } from '../pages/ChatSidebar'
 
 const ORIGIN = 's1'
 const NEW_KEY = 'chat-new-1'
@@ -207,6 +207,22 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     await created()
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('renders the column folder body with the board body class, and the empty row takes its in-folder pad hook', () => {
+    // Rows in a board folder land on that folder's name through
+    // BOARD_FOLDER_BODY_CLS (its arithmetic is pinned in
+    // ChatSidebar.folderAlignment.test.tsx); this pins that the rendered body
+    // actually uses it, and that the empty row carries the hook it overrides.
+    const { container } = renderSidebar(undefined)
+    const row = colEmptyRow(container)
+    expect(row).toBeTruthy()
+    expect(row.hasAttribute('data-folder-new-chat')).toBe(true)
+    expect((row.parentElement as HTMLElement).className).toBe(BOARD_FOLDER_BODY_CLS)
+    // The header pad that arithmetic assumes (P = 6).
+    const header = colPlus(container).closest('[role="button"]') as HTMLElement
+    expect(header.style.paddingLeft).toBe('6px')
+    expect(header.className.split(/\s+/)).toContain('gap-2')
   })
 
   it('plain click on the column empty-folder row creates and ACTIVATES', async () => {

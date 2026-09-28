@@ -78,12 +78,23 @@ describe('list shell parity — sessions sidebar and members roster share one re
     expect(shell.LIST_HEADER_CLS).toBe('flex justify-between items-center px-2 mt-0.5 h-10')
     expect(shell.LIST_TITLE_CLS).toBe('sessions-panel-title text-sm font-semibold text-text-strong tracking-[.04em] truncate')
     expect(shell.LIST_BODY_CLS).toBe('flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 pt-[var(--list-dock-h,0.5rem)] scroll-pt-[var(--list-dock-h,0.5rem)]')
-    expect(shell.ROW_BOX_CLS).toBe('pl-3.5 pr-3 py-2 rounded-md')
+    expect(shell.ROW_BOX_CLS).toBe('pl-2.5 pr-3 py-2 rounded-md')
     expect(shell.ROW_IDLE_CLS).toBe('text-muted hover:text-text hover:bg-bg-hover')
     expect(shell.ROW_ACTIVE_CLS).toBe('text-text-strong bg-accent-subtle')
     expect(shell.ROW_TITLE_CLS).toBe('text-[13px] leading-[20px]')
     expect(shell.ROW_STATUS_CLS).toBe('text-[11px] leading-[16px]')
     expect(shell.ROW_META_CLS).toBe('text-[10px] leading-[12px]')
+  })
+
+  it('the roster grouped-row indent tracks the row box pad (+14px)', () => {
+    // MembersPage indents a team's rows with its own `pl-*`, which overrides
+    // ROW_BOX_CLS's left pad. Pin it to that pad + 14 so a row-pad change moves
+    // the indent with it (main: pl-3.5 14 + 14 = pl-7; now pl-2.5 10 + 14 = pl-6).
+    const tw = (cls: string) => Number(cls.match(/(?:^|\s)pl-(\d+(?:\.\d+)?)(?:\s|$)/)![1]) * 4
+    const rowPad = tw(shell.ROW_BOX_CLS)
+    const m = read('pages', 'members', 'MembersPage.tsx').match(/indented && '(pl-[\d.]+)'/)
+    expect(m, 'MembersPage must indent grouped rows with `indented && \'pl-N\'`').not.toBeNull()
+    expect(tw(m![1]) - rowPad).toBe(14)
   })
 
   it('the Notes rail mirrors the row type scale by value (it is styled inline)', () => {

@@ -487,7 +487,8 @@ function MemberRow({
           className={cn(
             'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
             ROW_BOX_CLS, 'pr-8',
-            indented && 'pl-7',
+            // Grouped-row indent = ROW_BOX_CLS left pad (10) + 14: `pl-6` 24.
+            indented && 'pl-6',
             view.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
           )}
           aria-current={view.name === activeName ? 'true' : undefined}

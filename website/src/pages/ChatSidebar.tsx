@@ -686,13 +686,19 @@ function RootDropHint() {
   )
 }
 
-/** Quiet boundary between manually ordered pins and automatically sorted rows. */
+/** Quiet boundary between manually ordered pins and automatically sorted rows.
+ *  Starts 2px left of the row content column: `ml-2` 8 against the root-lane
+ *  row pad 10, and inside a folder body `FOLDER_ROW_PAD_CLS` moves it to 7
+ *  against the in-folder pad 9 (the `data-pinned-divider` hook). Main had the
+ *  same 2px relation (`mx-3` 12 against a 14px pad). `mr-3` keeps the right
+ *  edge on the rows' `pr-3`. */
 function PinnedSessionDivider() {
   return (
     <div
       data-testid="pinned-session-divider"
+      data-pinned-divider=""
       aria-hidden="true"
-      className="mx-3 my-1 h-[4px] shrink-0 border-y border-border-strong opacity-70"
+      className="ml-2 mr-3 my-1 h-[4px] shrink-0 border-y border-border-strong opacity-70"
     />
   )
 }
@@ -1732,6 +1738,33 @@ const FOLDER_BODY_OPEN_PADDING = `2px 0 2px ${FOLDER_BODY_INSET_PX}px`
  *  child's block scrolls out beneath it. Kept small: it only has to beat the
  *  session rows in the lane, and every menu and popover renders in a portal. */
 const FOLDER_ROW_STICKY_Z = 20
+
+/** The list-view folder body: the connector line (`border-l`) plus the gap after
+ *  it, and a tighter left pad (9px, `R_in`) for every row filed inside a folder.
+ *  The folder's own line already marks the grouping, so rows under it do not need
+ *  the full 10px root-lane pad. 9 and not less: the recency tint paints an accent
+ *  stripe up to 7px wide at the row's left edge (`recencyTintShadow`), and 9 keeps
+ *  2px between that stripe and the text. The descendant selectors outrank the
+ *  rows' own `pl-2.5` / `ml-[10px]` (two classes vs one), and nested bodies apply
+ *  the same value, so depth does not compound it. That precedence is proven only
+ *  by the measured playwright/sidebar-folder-alignment.spec.ts; the jsdom tests
+ *  pin class strings and would stay green if the specificity flipped. The
+ *  divider, the dormant
+ *  toggle, the empty-folder "new chat" affordance, the pinned divider and the
+ *  "N hidden folders" reveal row move with the row so all stay on (the pinned
+ *  divider: 2px left of) its content column. Shared by the list-view and
+ *  board-view folder bodies. */
+export const FOLDER_ROW_PAD_CLS = '[&_.session-row]:pl-[9px] [&_[data-row-divider]]:ml-[9px] [&_[data-stale-toggle]]:pl-[9px] [&_[data-folder-new-chat]]:pl-[9px] [&_[data-pinned-divider]]:ml-[7px] [&_[data-folder-hidden-reveal]]:pl-[9px]'
+export const FOLDER_BODY_CLS = `border-l border-border mb-1 ml-1 pl-[3px] rounded-bl-md ${FOLDER_ROW_PAD_CLS}`
+
+/** The board-view folder body. Its header is not the list header: `paddingLeft`
+ *  6, an 11px glyph and `gap-2` 8 put the folder name at 6 + 11 + 8 = 25 from the
+ *  header box, against the list header's 3 + 12 + 4 = 19. So the board body keeps
+ *  the same row pads (`FOLDER_ROW_PAD_CLS`, R_in 9) and takes a wider body pad:
+ *  D 2 + `ml-2` 8 + border 1 + `pl-[5px]` 5 + R_in 9 = 25, rows on the name. The
+ *  connector lands at D + 8 = 10, inside the glyph's 6..17 span. Each board
+ *  nesting level costs 2 + 8 + 1 + 5 = 16px. */
+export const BOARD_FOLDER_BODY_CLS = `border-l border-border ml-2 pl-[5px] ${FOLDER_ROW_PAD_CLS}`
 
 /** Test seam: reports every SessionRow body execution. The memo boundary
  *  below is a behavioral contract — one slot's background event re-renders one
@@ -2918,7 +2951,7 @@ const SessionRow = memo(function SessionRow({
            *  branch cannot supply one without the other.
            *
            *  It used to sit in an absolutely-positioned gutter inside the row's
-           *  `pl-3.5`, occupying x 1..13 with the content column starting at 14.
+           *  then-`pl-3.5`, occupying x 1..13 with the content column starting at 14.
            *  That band is not free: the recency tint paints an opaque accent stripe
            *  up to 7px wide at this same left edge (`recencyTintShadow`), and the
            *  session-colour bar takes the first 2px (`.session-colored::before`).
@@ -2926,7 +2959,7 @@ const SessionRow = memo(function SessionRow({
            *  a recent session the glyph lost its left half and read as clipped and
            *  mis-placed rather than tinted.
            *
-           *  Inline, the glyph starts at the content column (14px) — clear of both
+           *  Inline, the glyph starts at the content column (10px) — clear of both
            *  markers by construction, at every tint rank, with no coordination
            *  between the two features. It also drops the gutter's `role="img"` +
            *  `aria-label` for every state except `unread`: a glyph sitting in front
@@ -2936,7 +2969,7 @@ const SessionRow = memo(function SessionRow({
            *  The alignment guides are untouched: the gutter was out of flow and
            *  contributed nothing to the content column, so removing it moves no x —
            *  see ChatSidebar.folderAlignment.test.tsx, which still asserts the
-           *  row's `pl-3.5` is the content column's whole left offset. */}
+           *  row's `pl-2.5` is the content column's whole left offset. */}
           {/* The conductor lane's indent and chevron, INSIDE the row. Two reasons they
            *  are here rather than in a wrapper around the card: the divider is a
            *  sibling of this row, so it keeps spanning the full width at every depth;
@@ -3259,7 +3292,7 @@ const SessionRow = memo(function SessionRow({
          *  the row instead. Matches the Figma, which carries this border on the
          *  `content` frame rather than on the row.
          *
-         *  14px is the row's content offset: the row's whole `pl-3.5`, since
+         *  10px is the row's content offset: the row's whole `pl-2.5`, since
          *  nothing else lives in that pad. The right inset is the row's own
          *  padding. */}
         {/* `-mt-px` so the rule does NOT add a row of layout height. In flow it made
@@ -3268,7 +3301,7 @@ const SessionRow = memo(function SessionRow({
          *  60 and 61 on one list), which no fixed row height can compensate for.
          *  Overlaying the row's last pixel keeps the pitch equal to the row height.
          *  The left inset is unchanged — it still starts at the content x. */}
-        {showDivider && <div className="ml-[14px] mr-3 -mt-px border-b border-border" />}
+        {showDivider && <div data-row-divider="" className="ml-[10px] mr-3 -mt-px border-b border-border" />}
       </motion.div>
         )}
       </DndDroppable>
@@ -4794,7 +4827,7 @@ function ChatSidebar({
             if (next.has(containerId)) next.delete(containerId); else next.add(containerId)
             return next
           })}
-          className="w-full flex items-center gap-1.5 px-3 py-0.5 rounded-md text-[11px] leading-4 text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
+          data-stale-toggle="" className="w-full flex items-center gap-1.5 pl-2.5 pr-3 py-0.5 rounded-md text-[11px] leading-4 text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <DisclosureChevron open={open} size={11} />
           <span id={lblId} className="tabular-nums">{label}</span>
           <span id={ctxId} className="sr-only">{containerName
@@ -7880,15 +7913,15 @@ function ChatSidebar({
         {renderFolderCreateError(folder.id, columnId)}
         {!emptyBody && (
         <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!collapsed && !forceCollapsed}>
-          {/* ml-4 + no pl: flush-connector treatment matching the list-view
-           *  folder body (renderFolderBlock) so nested rows sit identically
-           *  against the connector line in both views. */}
-          <div className="border-l border-border ml-4">
+          {/* `BOARD_FOLDER_BODY_CLS`: the same row pads as the list-view body
+           *  (`FOLDER_ROW_PAD_CLS`), with a body pad sized to this header, so in
+           *  both views a folder's rows land on that folder's name column. */}
+          <div className={BOARD_FOLDER_BODY_CLS}>
             {/* Default: the empty-folder affordance stays exactly as it was, in
              *  list-view parity (see renderFolderBlock). Reached only when the
              *  setting is OFF - with it on there is no body to put this in. */}
             {deepChildren.length === 0 && childSlots.length === 0 && (
-              <button key={`col-${columnId}-newchat-${folder.id}`} type="button" data-testid={`col-${columnId}-folder-${folder.id}-empty-new-chat`}
+              <button key={`col-${columnId}-newchat-${folder.id}`} type="button" data-testid={`col-${columnId}-folder-${folder.id}-empty-new-chat`} data-folder-new-chat=""
                 // Same three-gesture contract as the folder header's "+".
                 onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
                 onAuxClick={onOpenSlotInNewTab ? (e => {
@@ -8299,10 +8332,11 @@ function ChatSidebar({
         // no role override). 8px activation distance keeps the collapse toggle
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
-        // Symmetric `px-3.5` (14px), with no inline left-pad override. This is the
-        // SAME left pad the session rows use — that equality is the mechanism, not
-        // a coincidence, and it is what makes a nested folder read as a peer of the
-        // sessions filed beside it rather than sitting a couple of px to their
+        // `pl-[3px]` (3px), with no inline left-pad override. Deliberately LESS than
+        // the session rows' pad, so the glyph outdents into the row gutter while the
+        // folder name lands on its sessions' text. Historically this equalled the
+        // row pad so a nested folder read as a peer of the sessions filed beside it
+        // rather than sitting a couple of px to their
         // left. The pad is therefore NOT free: #3903 raised it to 18px to open a
         // gutter for an absolutely-positioned unread dot, which broke guide 3. That
         // dot is back inline on the right, where it does not compete for the pad.
@@ -8314,26 +8348,30 @@ function ChatSidebar({
         // and each landed 2px out. It is now a named, exported constant that the
         // alignment test imports and asserts against the rendered padding, so it
         // is no longer a free empirical term.
-        // P = this pad 14,
-        // G = glyph 14, g = `gap-[5px]`, M = body `ml-3` 12, B = 1px border,
-        // p = body `pl-1` 4, R = row `pl-3.5` 14:
+        // P = this `pl-[3px]` 3,
+        // G = glyph 12, g = `gap-[4px]`, M = body `ml-1` 4, B = 1px border,
+        // p = body `pl-[3px]` 3, R = root-lane row `pl-2.5` 10, R_in = in-folder
+        // row pad 9 (`FOLDER_BODY_CLS` overrides the row's pad inside a body):
         //
-        //   GUIDE 1  glyph == connector line                P = D + M
-        //   GUIDE 2  name == agent / title / tool-call sub   P + G + g = D+M+B+p+R
-        //   GUIDE 3  nested glyph == parent's content column P = R
+        //   GUIDE 1  connector line runs under the glyph     P <= D + M < P + G
+        //   GUIDE 2  name == agent / title / tool-call sub   P + G + g = D+M+B+p+R_in
+        //   GUIDE 3  glyph hangs left of sibling content     R_sib - P > 0
         //
-        //   14 = 2 + 12      14 + 14 + 5 = 2 + 12 + 1 + 4 + 14      14 = 14
+        //   3 <= 6 < 15      3 + 12 + 4 = 2 + 4 + 1 + 3 + 9   root 10-3 = 7, nested 9-3 = 6
+        //
+        // Each nesting level costs D + M + B + p = 10px (19 before). The glyph used
+        // to sit ON the sibling content column (P = R), which pinned the per-level
+        // cost at glyph + gap and wasted the width session titles need; it now
+        // outdents into the row gutter like a tree view, and the NAME carries the
+        // alignment instead.
         //
         // All three hold at EVERY depth and in the root lane: the algebra has no
-        // per-depth term, so depth 3 nests exactly as depth 2 does. Guide 3 is why
-        // the glyph→name gap is 5 and not 8 — at 8 the name overshoots the content
-        // column by 3px.
+        // per-depth term, so depth 3 nests exactly as depth 2 does.
         //
         // Measured on the built SPA (x in CSS px), NOT derived — a paper estimate
-        // of these same numbers was 3px out: depth 1 glyph/connector 263, name and
-        // all three text lines 282; depth 2 glyph/connector 282 (== depth 1's
-        // content column), name/content 301; root-lane session content 263 (== the
-        // root folder's glyph, so guide 3 holds outside a folder too).
+        // of these same numbers was 3px out: root glyph 248, root-lane session
+        // content 255; depth 1 glyph 258, name and all three text lines 264;
+        // depth 2 name/content 274; depth 3 content 284.
         //
         // Four revisions have broken these guides by computing from class names
         // without D: #1211 (changed 9/17/7 at once), #3766 (status gutter in flow,
@@ -8356,10 +8394,10 @@ function ChatSidebar({
         // (`.folder-row-sticky`); `sticky` also serves as the containing block
         // the old `relative` provided for the absolutely-positioned children.
         style={{ top: `calc(var(--folder-row-sticky-h) * ${depth} - var(--folder-row-sticky-inset))`, zIndex: FOLDER_ROW_STICKY_Z - depth }}
-        className={`folder-row folder-row-sticky group sticky flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
+        className={`folder-row folder-row-sticky group sticky flex items-center gap-2 pl-[3px] pr-2.5 py-1.5 rounded-md text-sm text-muted transition-all${emptyRow ? '' : ' hover:text-text hover:bg-bg-hover'} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}${folderFlash ? ` session-reveal-flash${folderFlash === 'fade' ? ' session-reveal-flash-fade' : ''}` : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
-            <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
+            <FolderGlyph color={folder.color} icon={folder.icon} size={12} open={!collapsed} />
             <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
@@ -8376,7 +8414,7 @@ function ChatSidebar({
              *  still double-click renames and the row's own cluster still creates
              *  and opens the menu, so the row keeps every action it can honour. */}
             <HeaderShell
-              className={`flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none text-left text-inherit p-0${emptyRow ? '' : ' cursor-pointer'}`}
+              className={`flex items-center gap-[4px] flex-1 min-w-0 bg-transparent border-none text-left text-inherit p-0${emptyRow ? '' : ' cursor-pointer'}`}
               {...(emptyRow
                 // Nothing to disclose, but the row is still a DRAG HANDLE while it
                 // is draggable, and this shell is the only focusable thing inside
@@ -8411,7 +8449,7 @@ function ChatSidebar({
                *  binding the glyph to that alone would draw the closed shape on an
                *  inert row - this product's "click to expand" affordance on a row
                *  that cannot expand. An inert row is always drawn open. */}
-              <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed || emptyRow}
+              <FolderGlyph color={folder.color} icon={folder.icon} size={12} open={!collapsed || emptyRow}
                 className={emptyRow ? 'shrink-0 text-muted/40 transition-colors' : undefined}
                 testId={`folder-collapse-${folder.id}`} />
               {/* Double-click rename is a mouse-only power shortcut; the accessible
@@ -8525,8 +8563,8 @@ function ChatSidebar({
           onClick={() => toggleReveal(containerKey)}
           aria-expanded={open}
           title={open ? i18nT('pages.chatSidebar.collapse_hidden_folders') : i18nT('pages.chatSidebar.show_hidden_folder', { count: n })}
-          className="w-full flex items-center gap-1.5 py-1 pr-2 text-left text-[11px] text-muted hover:text-text hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
-          style={{ paddingLeft: `${8 + depth * 12}px` }}
+          data-folder-hidden-reveal=""
+          className="w-full flex items-center gap-1.5 py-1 pl-2.5 pr-2 text-left text-[11px] text-muted hover:text-text hover:bg-accent-subtle rounded-md cursor-pointer bg-transparent border-none transition-colors"
         >
           <DisclosureChevron open={open} size={11} />
           <span>{i18nT('pages.chatSidebar.hidden_folder_count', { count: n })}</span>
@@ -8634,7 +8672,7 @@ function ChatSidebar({
     // nothing is hidden, so nothing needs re-reaching.
     const emptyBody = hideEmptyFolderBody && childNodes.length === 0
     const wrapped = childNodes.length > 0 ? (
-      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
+      <div key={`folder-children-${folder.id}`} className={FOLDER_BODY_CLS}>
         {childNodes}
       </div>
     ) : emptyBody || listNarrowed ? null : (
@@ -8642,8 +8680,8 @@ function ChatSidebar({
       // created (or emptied) expanded folder would otherwise render nothing,
       // leaving the hover-only create control on the header as the only
       // (invisible-at-rest) way to start a session in it.
-      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
-        <button key={`folder-newchat-${folder.id}`} type="button" data-testid={`folder-empty-new-chat-${folder.id}`}
+      <div key={`folder-children-${folder.id}`} className={FOLDER_BODY_CLS}>
+        <button key={`folder-newchat-${folder.id}`} type="button" data-testid={`folder-empty-new-chat-${folder.id}`} data-folder-new-chat=""
           // Same three-gesture contract as the folder header's "+" above.
           onMouseDownCapture={onOpenSlotInNewTab ? (e => { if (e.button === 1) e.preventDefault() }) : undefined}
           onAuxClick={onOpenSlotInNewTab ? (e => {
@@ -8653,7 +8691,7 @@ function ChatSidebar({
           }) : undefined}
           onClick={e => createChatInFolder(folder.id, { inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) })}
           title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
-          className="w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
+          className="w-full flex items-center gap-2.5 pl-2.5 pr-3 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
         </button>
       </div>
@@ -10272,7 +10310,7 @@ function ChatSidebar({
                     <Fragment key={sessionRowIdentity(s)}>
                       {startsAutomaticSection(flatSlots, i) && <PinnedSessionDivider />}
                       {showHeader && (
-                        <div data-date-header data-testid="date-segment-header" className="px-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
+                        <div data-date-header data-testid="date-segment-header" className="pl-2 pr-3 pt-3 pb-1 text-[11px] font-semibold text-muted uppercase tracking-[.06em] select-none first:pt-1">{seg}</div>
                       )}
                       {renderSessionRow(s, 0, showDivider, flatLaneScope, flatLaneScope, flatHoldContainer)}
                     </Fragment>

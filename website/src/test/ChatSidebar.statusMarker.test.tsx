@@ -13,7 +13,7 @@
  *   4. the unread "your turn" dot leads the secondary line too — NOT absolutely
  *      positioned at the row's right edge — and yields to any more specific state,
  *   5. there is NO absolute status gutter at the row's left edge. The marker used to
- *      live there, inside the row's `pl-3.5`, occupying x 1..13. That band is shared
+ *      live there, inside the row's then-`pl-3.5`, occupying x 1..13. That band is shared
  *      with two decorations that paint over it: the recency tint (an opaque accent
  *      stripe up to 7px wide, `recencyTintShadow`) and the session-colour bar (2px,
  *      `.session-colored::before`). An accent spinner on an accent stripe is a 1:1
@@ -249,7 +249,7 @@ describe('chat sidebar — status marker leads the secondary line', () => {
     // "fixed" by putting a spacer back at the row's left edge.
     const { container } = renderSidebar([slot({ running: true })])
     const row = container.querySelector('.session-row') as HTMLElement
-    expect(row.className).toMatch(/\bpl-3\.5\b/)
+    expect(row.className).toMatch(/\bpl-2\.5\b/)
     expect(row.children[0]).toBe(colOf(container))
   })
 

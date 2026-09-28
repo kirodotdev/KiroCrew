@@ -1,46 +1,38 @@
 /**
  * The sidebar folder header's geometry, locked as numbers.
  *
- * THREE alignment guides, all live, all MEASURED on real renders rather than
- * derived from class names (see the last paragraph — that distinction is the whole
- * reason this file keeps having to be rewritten):
- *   1. a folder GLYPH sits on the x of the `border-l` connector line that runs
- *      down under it, so the glyph reads as the head of its own subtree;
+ * THREE alignment guides, MEASURED on real renders rather than derived from
+ * class names:
+ *   1. the `border-l` connector line runs down UNDER its folder's glyph, so the
+ *      glyph reads as the head of its own subtree;
  *   2. a folder NAME, and the agent label / title / tool-call subtitle of every
  *      session inside it, share ONE left edge;
- *   3. a NESTED folder's glyph sits on the content column of the sessions filed
- *      beside it — a subfolder reads as their peer, not as something floating a
- *      couple of px to their left.
+ *   3. a folder GLYPH hangs left of the sessions filed beside it (tree-view
+ *      outdent): 6px inside a folder at every depth, 7px in the root lane.
  *
- * The algebra, with H = the folder header box's left edge and D =
- * `FOLDER_BODY_INSET_PX` — the nested body's own left inset, applied by
- * `FolderBody` so its collapse animation does not clip. D is invisible in the
- * class list, which is why every attempt to derive this geometry from Tailwind
- * classes alone has landed 2px out; it is imported from the component here rather
- * than restated, and the rendered padding is asserted against it:
+ * H = the folder header box's left edge, D = `FOLDER_BODY_INSET_PX` (the nested
+ * body's own left inset, applied by `FolderBody`; invisible in the class list, so
+ * it is imported rather than restated):
  *
- *   P = header `px-3.5` 14   G = glyph 14    g = `gap-[5px]` 5
- *   M = body `ml-3` 12       B = 1px border  p = body `pl-1` 4
- *   R = session row `pl-3.5` 14
+ *   P = header `pl-[3px]` 3  G = glyph 12    g = `gap-[4px]` 4
+ *   M = body `ml-1` 4        B = 1px border  p = body `pl-[3px]` 3
+ *   R = root-lane session row `pl-2.5` 10
+ *   R_in = in-folder session row 9 (`FOLDER_BODY_CLS` `[&_.session-row]:pl-[9px]`)
  *
- *   guide 1:  P = D + M                      14 = 2 + 12
- *   guide 2:  P + G + g = D + M + B + p + R  33 = 33
- *   guide 3:  P = R                          14 = 14
+ *   guide 1:  P <= D + M < P + G                3 <= 6 < 15
+ *   guide 2:  P + G + g = D + M + B + p + R_in  19 = 19
+ *   guide 3:  glyph hangs left of sibling content: root R - P = 7, nested R_in - P = 6
  *
- * Guide 3 collapses to "the folder header uses the same left pad as a session
- * row". That also makes the system scale-free: it holds in the root lane and at
- * every nesting depth, with no per-depth term anywhere.
+ * Per-depth indent is D + M + B + p = 10px (19 on main). The previous geometry
+ * also forced the folder glyph onto the sibling content column (P = R), which
+ * made the per-level cost equal glyph + gap + row pad and could not get below
+ * ~17px; outdenting the glyph is what frees the space.
  *
- * Captured from real renders, x in CSS px:
- *   pre-#3766 (d926ca569^), pod: connector 23, glyph 25, name 44, agent 44
- *   #3766, pod:                  connector 19, glyph 19, name 38, agent 54
- *   #3903, built SPA:            connector/glyph 263, name 285, agent/title 284
- *                                (guide 2 off by 1px); depth 2 glyph 282 vs
- *                                content 284 (guide 3 off by 2px)
- *   this branch, built SPA:      depth 1 connector/glyph 259, name/agent/title/
- *                                subtitle 278; depth 2 connector/glyph 278
- *                                (== depth 1's content column), name/content 297;
- *                                root lane content 259 (== the root folder glyph)
+ * Captured from the built SPA with capture-folder-glyph.mjs MEASURE=1, x in CSS px:
+ *   main:        root glyph 259, root content 259, depth 1 content 278,
+ *                depth 2 content 297, depth 3 content 316
+ *   this branch: root glyph 248, root content 255, depth 1 name/content 264,
+ *                depth 1 glyph 258, depth 2 name/content 274, depth 3 content 284
  *
  * jsdom has no layout engine, so this file asserts the INPUTS to the geometry,
  * never measured x's. That is a real limit: an input-level assertion stayed green
@@ -59,7 +51,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
-import { FOLDER_BODY_INSET_PX } from '../pages/ChatSidebar'
+import { FOLDER_BODY_INSET_PX, FOLDER_BODY_CLS, BOARD_FOLDER_BODY_CLS, FOLDER_ROW_PAD_CLS } from '../pages/ChatSidebar'
 import { ThemeProvider } from '../hooks/useTheme'
 
 // Render framer-motion elements as plain DOM (jsdom can't run projection).
@@ -175,28 +167,33 @@ const hasClass = (el: HTMLElement, cls: string) =>
   el.className.split(/\s+/).includes(cls)
 
 describe('chat sidebar — folder header alignment geometry', () => {
-  it('gives the folder header the SAME left pad as a session row', () => {
+  it('gives the folder header a 3px left pad so its glyph outdents', () => {
     const { getByTestId } = renderSidebar(SLOTS, FOLDERS)
     const glyph = getByTestId('folder-collapse-f1')
 
-    // Symmetric `px-3.5` (14px) from the class, and NO inline left-pad override:
-    // a reintroduced inline style would silently win over the class, which is how
-    // #1211 moved this unnoticed. 14 is not a taste choice — it equals the session
-    // row's own pad, which IS guide 3. #3903's `pl-[18px]` (opened for an absolute
-    // left-side unread dot) is asserted absent, because that pad broke guide 3.
+    // `pl-[3px]` (3px) from the class, and NO inline left-pad override: a
+    // reintroduced inline style would silently win over the class, which is how
+    // #1211 moved this unnoticed. 3 is deliberately LESS than the session rows'
+    // pad: the folder glyph hangs into the row gutter (a tree-view
+    // outdent), which is what lets each nesting level cost only 10px while the
+    // folder NAME still lands on its sessions' text (guide 2).
     const header = glyph.closest('[role="group"]') as HTMLElement
     expect(header).toBeTruthy()
-    expect(hasClass(header, 'px-3.5')).toBe(true)
-    expect(hasClass(header, 'pl-[18px]')).toBe(false)
+    expect(hasClass(header, 'pl-[3px]')).toBe(true)
+    expect(hasClass(header, 'pl-0.5')).toBe(false)
+    expect(hasClass(header, 'pl-1')).toBe(false)
+    expect(hasClass(header, 'pr-2.5')).toBe(true)
     expect(hasClass(header, 'px-2.5')).toBe(false)
+    expect(hasClass(header, 'pl-[18px]')).toBe(false)
+    expect(hasClass(header, 'px-3.5')).toBe(false)
     expect(header.style.paddingLeft).toBe('')
 
-    // 14px glyph and a 5px glyph→name gap. NOT `gap-2` (8px): 8 overshoots the
-    // content column by 3px and breaks guide 2.
-    expect(glyph.style.width).toBe('14px')
-    expect(glyph.style.height).toBe('14px')
+    // 12px glyph and a 4px glyph→name gap. NOT `gap-2` (8px): 8 overshoots the
+    // content column by 4px and breaks guide 2.
+    expect(glyph.style.width).toBe('12px')
+    expect(glyph.style.height).toBe('12px')
     const toggle = glyph.closest('button') as HTMLElement
-    expect(hasClass(toggle, 'gap-[5px]')).toBe(true)
+    expect(hasClass(toggle, 'gap-[4px]')).toBe(true)
     expect(hasClass(toggle, 'gap-2')).toBe(false)
   })
 
@@ -207,23 +204,23 @@ describe('chat sidebar — folder header alignment geometry', () => {
     // body rather than assuming it is the immediate parent.
     const body = row.closest('[class*="border-l"]') as HTMLElement
     expect(body).toBeTruthy()
-    // `ml-3` (12) + 1px border + `pl-1` (4). 2 + 12 == the header's 14px pad,
-    // which is GUIDE 1.
-    expect(hasClass(body, 'ml-3')).toBe(true)
-    expect(hasClass(body, 'ml-4')).toBe(false)
-    expect(hasClass(body, 'pl-1')).toBe(true)
+    // `ml-1` (4) + 1px border + `pl-[3px]`. The line lands at 2 + 4 = 6, inside
+    // the glyph's 3..15 span (GUIDE 1), and hugs the content: 3px + the row pad.
+    expect(hasClass(body, 'ml-1')).toBe(true)
+    expect(hasClass(body, 'ml-2')).toBe(false)
+    expect(hasClass(body, 'pl-[3px]')).toBe(true)
     // The connector line itself. Without the border the indent is just empty
     // space, the nesting stops being readable, AND guides 1 and 3 lose the thing
     // the folder glyphs are aligned to.
     expect(hasClass(body, 'border-l')).toBe(true)
 
-    // GUIDE 2 — the row's `pl-3.5` (14px) is its WHOLE content offset, which holds
+    // GUIDE 2 — the row's `pl-2.5` (10px) is its WHOLE content offset, which holds
     // only while NOTHING lives in that pad in flow. A status gutter as an in-flow
     // flex child is what added 12px + a gap and broke this in #3766; the gutter is
     // gone entirely now (the marker leads the secondary line — see
     // ChatSidebar.statusMarker.test.tsx, which pins that no absolutely-positioned
     // box returns to the row's left edge either).
-    expect(hasClass(row, 'pl-3.5')).toBe(true)
+    expect(hasClass(row, 'pl-2.5')).toBe(true)
     expect(hasClass(row, 'pr-3')).toBe(true)
     expect(hasClass(row, 'pl-1')).toBe(false)
     expect(hasClass(row, 'gap-1')).toBe(false)
@@ -237,13 +234,25 @@ describe('chat sidebar — folder header alignment geometry', () => {
     const wrapper = body.parentElement as HTMLElement
     expect(wrapper.style.paddingLeft).toBe(`${FOLDER_BODY_INSET_PX}px`)
 
-    const D = FOLDER_BODY_INSET_PX, P = 14, G = 14, g = 5, M = 12, B = 1, p = 4, R = 14
-    expect(P).toBe(D + M)                     // guide 1: glyph == connector
-    expect(P + G + g).toBe(D + M + B + p + R) // guide 2: name == content
-    expect(P).toBe(R)                         // guide 3: nested glyph == content
+    // Inside a folder body the row pad drops to 9 via a descendant selector on
+    // the body; the row's own class stays `pl-2.5` for the root lane. 9 keeps 2px
+    // between the recency tint's 7px stripe and the text; 8 left only 1px.
+    expect(hasClass(body, '[&_.session-row]:pl-[9px]')).toBe(true)
+    expect(hasClass(body, '[&_.session-row]:pl-2')).toBe(false)
+    expect(hasClass(body, '[&_[data-row-divider]]:ml-[9px]')).toBe(true)
+    expect(hasClass(body, '[&_[data-stale-toggle]]:pl-[9px]')).toBe(true)
+    expect(body.className).toBe(FOLDER_BODY_CLS)
+
+    const D = FOLDER_BODY_INSET_PX, P = 3, G = 12, g = 4, M = 4, B = 1, p = 3, R = 10, R_in = 9
+    expect(D + M).toBeGreaterThanOrEqual(P)   // guide 1: connector runs under
+    expect(D + M).toBeLessThan(P + G)         //          the folder glyph
+    expect(P + G + g).toBe(D + M + B + p + R_in) // guide 2: name == content
+    expect(R - P).toBe(7)                     // guide 3, root lane: glyph outdent
+    expect(R_in - P).toBe(6)                  // guide 3, nested: glyph outdent
+    expect(D + M + B + p).toBe(10)            // per-level indent (was 19)
   })
 
-  it('lands a NESTED folder glyph on the content column of its sibling sessions', () => {
+  it('hangs a NESTED folder glyph a fixed 6px left of its sibling sessions', () => {
     // GUIDE 3, at the depth where it is observable. jsdom cannot measure x, so
     // this asserts the two class chains that produce the equality: the nested
     // header reaches its glyph with the same pad a sibling session row reaches its
@@ -258,16 +267,61 @@ describe('chat sidebar — folder header alignment geometry', () => {
     expect(nestedBody).toBeTruthy()
     expect(siblingRow.closest('[class*="border-l"]')).toBe(nestedBody)
 
-    // Same pad on both => the glyph lands on the sibling's content x.
-    expect(hasClass(childHeader, 'px-3.5')).toBe(true)
-    expect(hasClass(siblingRow, 'pl-3.5')).toBe(true)
+    // Header pad 3 vs in-folder row pad 9 from the same box => the subfolder glyph hangs
+    // exactly 6px left of its sibling sessions' content, at every depth.
+    expect(hasClass(childHeader, 'pl-[3px]')).toBe(true)
+    expect(hasClass(siblingRow, 'pl-2.5')).toBe(true)
+    expect(hasClass(nestedBody, '[&_.session-row]:pl-[9px]')).toBe(true)
 
     // And the subfolder's OWN connector stays under its own glyph (guide 1
     // recursively), which is what makes the algebra scale-free across depths.
     const grandchildRow = getByText('inside the subfolder').closest('.session-row') as HTMLElement
     const deepBody = grandchildRow.closest('[class*="border-l"]') as HTMLElement
     expect(deepBody).not.toBe(nestedBody)
-    expect(hasClass(deepBody, 'ml-3')).toBe(true)
-    expect(hasClass(deepBody, 'pl-1')).toBe(true)
+    expect(hasClass(deepBody, 'ml-1')).toBe(true)
+    expect(hasClass(deepBody, 'pl-[3px]')).toBe(true)
+  })
+
+  it('puts board-view folder rows on the board folder name with the same row pads', () => {
+    // The board header is its own geometry: inline paddingLeft 6, an 11px glyph
+    // and `gap-2` 8, so its name sits at 25, not the list header's 19. Both
+    // bodies share FOLDER_ROW_PAD_CLS (R_in 9, divider and toggle hooks), and the
+    // board body's own pad closes the difference. The board render itself is
+    // pinned in ChatSidebar.boardFolderCreateInTab.test.tsx.
+    const boardCls = BOARD_FOLDER_BODY_CLS.split(/\s+/)
+    const listCls = FOLDER_BODY_CLS.split(/\s+/)
+    for (const c of FOLDER_ROW_PAD_CLS.split(/\s+/)) {
+      expect(boardCls).toContain(c)
+      expect(listCls).toContain(c)
+    }
+    expect(boardCls).toContain('border-l')
+    expect(boardCls).toContain('ml-2')
+    expect(boardCls).toContain('pl-[5px]')
+    expect(boardCls).not.toContain('ml-4')
+
+    const D = FOLDER_BODY_INSET_PX, P = 6, G = 11, g = 8, M = 8, B = 1, p = 5, R_in = 9
+    expect(D + M).toBeGreaterThanOrEqual(P)     // guide 1: connector under the glyph
+    expect(D + M).toBeLessThan(P + G)
+    expect(P + G + g).toBe(D + M + B + p + R_in) // guide 2: rows on the board folder name (25)
+    expect(D + M + B + p).toBe(16)               // per-level board indent (was 19)
+  })
+
+  it('pads the empty-folder row and the pinned divider off the in-folder row column', () => {
+    // The empty "new chat" row takes R_in like a session row (guide 2 for its
+    // label), and the pinned divider keeps main's relation: 2px left of the row
+    // content (main: 14 pad vs mx-3 12), i.e. 7 against R_in 9.
+    const pad = FOLDER_ROW_PAD_CLS.split(/\s+/)
+    expect(pad).toContain('[&_[data-folder-new-chat]]:pl-[9px]')
+    expect(pad).toContain('[&_[data-pinned-divider]]:ml-[7px]')
+    expect(pad).toContain('[&_.session-row]:pl-[9px]')
+  })
+
+  it('pads the hidden-folders reveal row like a session row, not by inline depth', () => {
+    // The "N hidden folders" button is pushed into a folder body's childNodes,
+    // so it takes the body's R_in through the shared hook instead of an inline
+    // `8 + depth * 12` pad that the descendant selector could not override and
+    // that compounded 12px per nesting level on top of the body's own indent.
+    const pad = FOLDER_ROW_PAD_CLS.split(/\s+/)
+    expect(pad).toContain('[&_[data-folder-hidden-reveal]]:pl-[9px]')
   })
 })
