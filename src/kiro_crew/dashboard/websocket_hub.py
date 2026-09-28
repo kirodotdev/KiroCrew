@@ -165,6 +165,15 @@ class WebSocketHub:
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
                 return False
+        acp_subscription = ws.get("_acp_title_subscription", False) is True
+        if msg_type in ("acp_message", "acp_plan"):
+            if not acp_subscription or not isinstance(data, dict):
+                return False
+            return data.get("slot") in ws.get("_acp_title_sessions", set())
+        if acp_subscription:
+            if msg_type not in ("slot_title",) or not isinstance(data, dict):
+                return False
+            return data.get("key") in ws.get("_acp_title_sessions", set())
         if ws.get("_is_dashboard_user", False):
             # Granted, and the grant is a permission decision like any other:
             # ``AUTOSDE.yaml`` wants an SEL record for it, not only for the
