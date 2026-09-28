@@ -3,10 +3,16 @@
 The campaign engine lives in ``campaign/``; its package docstring names the
 owner of each concern. This module keeps what is HTTP: auth, request parsing,
 the status and JSON each route answers with, route registration, and the
-watchdog task handle. Every other name it defined, and every non-stdlib
-collaborator it imported, still resolves as ``handlers.<name>``: reads and writes
-are forwarded to the one component that binds the name, so a patch applied
-through this module is the one every caller sees.
+watchdog task handle. Every other name it defined, and every Kiro Crew
+collaborator it imported, still resolves as ``handlers.<name>``: reads, writes
+and deletes are forwarded to the component that binds the name, so a patch
+applied through this module is the one every caller sees. Two exceptions:
+
+* ``LLMPool`` stays this module's own binding, because ``register_routes``
+  builds the grill's LLM pool from it; ``handlers.LLMPool`` is not forwarded.
+* ``CampaignStatus``, the status value type, is the one name components import
+  by name. ``handlers.CampaignStatus`` forwards to ``storage``, so a patch of it
+  misses the copies the other components bound at import.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ import logging
 import sqlite3
 import sys
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -33,6 +39,172 @@ from kiro_crew.apps.builtins.auto_research.campaign import (
     workflow_mode,
 )
 from kiro_crew.knowledge.llm_pool import LLMPool
+
+if TYPE_CHECKING:  # each forwarded name, typed from its owner; bound for mypy only
+    from kiro_crew.apps.builtins.auto_research.campaign.agent_mode import (  # noqa: F401
+        _RESEARCH_AGENT,
+        _RESEARCH_NUDGE,
+        _WORKER_DONE_FILENAME,
+        _WORKER_DONE_MAX_BYTES,
+        AUTO_RESEARCH_APP,
+        AUTONUDGE_STOP_REASON,
+        _autonudge_instance,
+        _clear_worker_done_marker,
+        _launch_loop,
+        _persist_new_cycle_bookkeeping,
+        _prepare_loop_launch,
+        _read_worker_done,
+        _record_new_cycle_from_watchdog,
+        _stop_loop,
+        is_link_or_junction,
+        research_slot_key,
+        slot_history_key,
+        unlink_link_or_junction,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.exploration import (  # noqa: F401
+        _EMERGENT_FILENAME,
+        _FINALIZE_FLAG,
+        _activate_emergent,
+        _advance_exploration,
+        _enter_finalize,
+        _in_reserve_zone,
+        _ingest_emergent_questions,
+        _reserve_cycles,
+        _should_finalize,
+        _sq,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.grill import (  # noqa: F401
+        _GRILL_CHILD_CAP,
+        _GRILL_EXPAND_PROMPT,
+        _MAX_GRILL_DEPTH,
+        _compact_tree,
+        _extract_json_of_type,
+        _grill_expand_children,
+        _grill_node_shaped,
+        _new_node_id,
+        _node_depth,
+        _parse_grill_nodes,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.lifecycle import (  # noqa: F401
+        _FORK_NAME_PREFIX,
+        _MAX_MODEL_LEN,
+        _MAX_PARALLEL_WORKERS,
+        _SSE_QUEUE_MAXSIZE,
+        _TERMINAL_STATUSES,
+        DEFAULT_IDLE_SECS,
+        MAX_CYCLES_HARD_CAP,
+        _audit,
+        _campaign_model,
+        _campaign_run_has_status,
+        _campaign_run_is_current,
+        _campaign_transition_lock,
+        _campaign_transition_locks,
+        _emit_sse,
+        _fork_name,
+        _guarded_transition,
+        _guarded_txn,
+        _settle_before_cancellation,
+        _sse_from_thread,
+        _sse_queues,
+        create_campaign,
+        delete_campaign,
+        sel,
+        update_campaign_status,
+        validate_campaign,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.publication import (  # noqa: F401
+        _HAS_ARTIFACTS,
+        _REPORT_TIMEOUT,
+        ArtifactNotFoundError,
+        ArtifactStore,
+        ImportChunkBudgetError,
+        _brief_publish_lock,
+        _brief_publish_locks,
+        _brief_publish_locks_guard,
+        _build_report_prompt,
+        _read_report,
+        _render_findings_html,
+        _write_brief,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.storage import (  # noqa: F401
+        _CYCLE_FILE_RE,
+        _DB_INIT_LOCK,
+        _INITIALIZED_DBS,
+        _ON_LOOP_DB_GUARD,
+        DB_PATH,
+        DEFAULT_DEPTH_DECAY,
+        DEFAULT_EXECUTION_MODE,
+        DEFAULT_MAX_SUBQUESTIONS_PER_ROUND,
+        DEFAULT_RESERVE_FRACTION,
+        RESEARCH_DIR,
+        VALID_EXECUTION_MODES,
+        CampaignStatus,
+        OnLoopDBGuard,
+        _campaign_dir,
+        _campaign_execution_mode,
+        _copy_parent_findings,
+        _cycle_finding_files,
+        _cycle_index,
+        _ensure_schema,
+        _get_db,
+        _list_cycle_files,
+        _pending_question,
+        _questions_path,
+        _read_finding_file,
+        _read_json_or_missing,
+        _read_text_or_missing,
+        _redact_campaign,
+        _safe_campaign_dir,
+        _unlink_if_present,
+        _validate_campaign_id,
+        _write_new_cycle_files,
+        _write_text,
+        data_home,
+        db_path,
+        get_campaign,
+        get_findings,
+        is_campaign_id,
+        list_campaigns,
+        research_dir,
+        write_guidance,
+        write_status,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.untrusted import (  # noqa: F401
+        _HAS_SECURITY,
+        _UNTRUSTED_DATA_NOTICE,
+        _fence_untrusted,
+        _redact_finding,
+        _redact_tree_node,
+        redact_credentials,
+        redact_exfiltration_urls,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.watchdog import (  # noqa: F401
+        _FIRST_CYCLE_GRACE_SECS,
+        _TERMINAL_LOOP_REMOVAL_ATTEMPTS,
+        _TRUST_TTL_SECS,
+        POLL_INTERVAL,
+        _expire_trust,
+        _settle_campaign_from_watchdog,
+        _should_pause_for_question,
+        _stalled_campaign_verdict,
+        _suspend_research_loops_while_disabled,
+        _unresponsive_deadline,
+        _watchdog_loop,
+        check_stagnation,
+        is_app_enabled,
+        is_research_slot_key,
+    )
+    from kiro_crew.apps.builtins.auto_research.campaign.workflow_mode import (  # noqa: F401
+        _WORKFLOW_RUN_FILE,
+        RESEARCH_WORKFLOW_SOURCE,
+        _launch_workflow,
+        _poll_workflow_campaign,
+        _read_workflow_cycle_offset,
+        _read_workflow_run_id,
+        _stop_workflow,
+        _write_workflow_run_id,
+        build_workflow_args,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -201,15 +373,27 @@ _EXPORTS: dict[str, str] = {
 
 
 def _owner(name: str) -> ModuleType:
-    """The component that binds historic name ``name``."""
-    return importlib.import_module(_EXPORTS[name])
+    """The component that binds historic name ``name``, resolved on each access.
+
+    Read from ``sys.modules``, the one place a module is stored, so a purged and
+    reimported component is seen at once; ``import_module`` answers only a miss.
+    """
+    module_name = _EXPORTS[name]
+    try:
+        return sys.modules[module_name]
+    except KeyError:
+        return importlib.import_module(module_name)
 
 
-def __getattr__(name: str) -> Any:
-    """Read a historic name from the component that binds it (:pep:`562`)."""
-    if name not in _EXPORTS:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(_owner(name), name)
+# Hidden from type checkers, which then type ``handlers.<name>`` from the imports
+# above instead of as ``Any``, and report a name that is not there.
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> Any:
+        """Read a historic name from the component that binds it (:pep:`562`)."""
+        if name not in _EXPORTS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(_owner(name), name)
 
 
 def __dir__() -> list[str]:
@@ -217,13 +401,20 @@ def __dir__() -> list[str]:
 
 
 class _ReExportModule(ModuleType):
-    """Send a write to a historic name to the component that binds it.
+    """Send a write or delete of a historic name to the component that binds it.
 
     A binding in this module's own namespace would shadow the owner: this
     module would read it, but the component's own callers would not, so a patch
     of ``handlers.<name>`` would silently stop reaching the code it targets.
-    Forwarding keeps one value per name, which also keeps ``monkeypatch``'s
-    read-then-reassign restore exact.
+
+    Forwarding leaves one value to remember and one to put back, so
+    ``monkeypatch`` and ``unittest.mock.patch`` restore the owner's binding.
+    ``mock.patch(..., create=True)`` is the exception: it ends by deleting the
+    name, which removes the owner's binding. A guard in
+    ``test_auto_research_facade.py`` therefore fails any ``patch``,
+    ``patch.object`` or ``patch.multiple`` of a forwarded name under ``test/`` or
+    ``src/**/tests`` whose ``create`` is not literally ``False``, and reports one
+    whose patched name it cannot read statically as ``<dynamic>``.
     """
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -836,3 +1027,9 @@ def register_routes(app: web.Application) -> None:
 # Installed last, so the forwarding is live for every caller but never runs
 # while this module is still binding its own names.
 sys.modules[__name__].__class__ = _ReExportModule
+
+#: What ``from handlers import *`` binds. A star import reads this list and never
+#: reaches ``__getattr__``, so without it no forwarded name would be bound. Derived
+#: from the two authorities, what this module binds and the table, minus the
+#: private names a star import never carried.
+__all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))

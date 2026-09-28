@@ -9,8 +9,9 @@ changed behaviour.
 
 Covered here, beyond the per-feature suites next door:
 
-* the historic ``handlers`` namespace still resolves every name it bound, and
-  the imported collaborators keep their identity;
+* the historic ``handlers`` namespace still resolves every name it bound, a
+  star import still binds the public ones, and the imported collaborators keep
+  their identity;
 * a patch applied to ``handlers`` still reaches the code that consumes it;
 * route table, schema, pragmas and the create/get/update/delete shapes;
 * single-flight user transitions, refusal of a stale run generation, delete
@@ -327,10 +328,21 @@ class TestHistoricNamespace:
         missing = [name for name in _HISTORIC_NAMES if not hasattr(h, name)]
         assert missing == []
 
-    def test_star_import_and_dir_still_list_the_route_entry_point(self):
+    def test_dir_and_the_package_still_expose_the_route_entry_point(self):
         assert "register_routes" in dir(h)
         package = importlib.import_module("kiro_crew.apps.builtins.auto_research")
         assert package.register_routes is h.register_routes
+
+    def test_a_star_import_binds_every_public_historic_name(self):
+        # ``from handlers import *`` binds ``__all__`` when the module declares it,
+        # else every public name in its namespace, each read with getattr.
+        names = getattr(h, "__all__", None)
+        if names is None:
+            names = [name for name in vars(h) if not name.startswith("_")]
+        namespace = {name: getattr(h, name) for name in names}
+        public = [name for name in _HISTORIC_NAMES if not name.startswith("_")]
+        assert [name for name in public if name not in namespace] == []
+        assert [name for name in public if namespace[name] is not getattr(h, name)] == []
 
     @pytest.mark.parametrize("name", sorted(_IMPORTED_IDENTITIES))
     def test_imported_collaborators_keep_their_identity(self, name: str):
@@ -1086,6 +1098,61 @@ class TestEffectOrdering:
         monkeypatch.setattr(h, "_emit_sse", _sink)
         await h._settle_campaign_from_watchdog(cid, [], {}, {}, observed_started_at=started)
         assert seen == [("failed", "failed")]
+
+
+@pytest.mark.usefixtures("_no_autonudge")
+class TestLoopStopReasons:
+    """Each loop teardown names why it happened in the autonudge stop record."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("action", "expected"),
+        [
+            ("stop", {"remove": True, "stop_reason": "campaign_stopped"}),
+            ("pause", {"remove": False}),
+        ],
+    )
+    async def test_the_action_route_names_its_teardown(
+        self, monkeypatch: pytest.MonkeyPatch, action: str, expected: dict[str, Any]
+    ):
+        stop = AsyncMock()
+        monkeypatch.setattr(h, "_stop_loop", stop)
+        cid = await asyncio.to_thread(_campaign)
+        await asyncio.to_thread(_running, cid)
+        req = _req("PATCH", f"campaigns/{cid}", match={"id": cid}, body={"action": action})
+        assert (await h._handle_action(req)).status == 200
+        stop.assert_awaited_once_with(cid, **expected)
+
+    @pytest.mark.asyncio
+    async def test_stop_loop_hands_the_reason_to_the_removal(self, monkeypatch: pytest.MonkeyPatch):
+        loop = SimpleNamespace(id="L1", active=True)
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop), remove=AsyncMock(), update=AsyncMock()
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        await h._stop_loop("0123abcd", remove=True, stop_reason="campaign_deleted")
+        svc.remove.assert_awaited_once_with("L1", stop_reason="campaign_deleted")
+        svc.update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict", ["COMPLETE", "FAILED", "STOPPED"])
+    async def test_terminal_settlement_names_the_verdict_on_deactivation(
+        self, monkeypatch: pytest.MonkeyPatch, verdict: str
+    ):
+        status = h.CampaignStatus[verdict]
+        loop = SimpleNamespace(id="L1", active=True)
+        svc = SimpleNamespace(
+            get_by_slot=MagicMock(return_value=loop), remove=AsyncMock(), update=AsyncMock()
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "_stalled_campaign_verdict", lambda *_a, **_kw: (status, None))
+        cid = await asyncio.to_thread(_campaign)
+        started = await asyncio.to_thread(_running, cid)
+        await h._settle_campaign_from_watchdog(cid, [], {}, {}, observed_started_at=started)
+        svc.update.assert_awaited_once_with(
+            "L1", active=False, stopped_reason=f"campaign_{status.value}"
+        )
+        svc.remove.assert_awaited_once_with("L1")
 
 
 # --- logging -------------------------------------------------------------------

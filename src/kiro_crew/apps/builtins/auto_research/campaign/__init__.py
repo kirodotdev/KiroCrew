@@ -21,8 +21,9 @@ One owner per concern; the import graph runs one way, top to bottom:
   stall verdict and the terminal settlement of a run.
 - ``grill`` -- the question-tree planner behind the grill endpoint.
 
-``handlers`` keeps the HTTP adapters, route registration and the watchdog task
-handle, and resolves every historic ``handlers.<name>`` to the owner above.
+``handlers`` keeps the HTTP adapters, route registration, the watchdog task
+handle and its own ``LLMPool`` binding, and resolves every other historic
+``handlers.<name>`` to the owner above.
 
 Two conventions keep that facade honest. A component reaches another
 component's functions and mutable state through the module
