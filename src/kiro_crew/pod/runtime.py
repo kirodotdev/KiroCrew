@@ -9,7 +9,8 @@ owner-only directory helper. Everything that talks to the host lives in the pod
 runtime so :mod:`kiro_crew.pod.cli` stays a thin verb layer, and no state is held:
 each function reads what it needs from a :class:`PodConfig`.
 
-The other owners import this core, never the reverse:
+The other owners import this core. The core imports them in turn only at the end
+of its own body, once every name of its own is bound:
 
 * :mod:`kiro_crew.pod.runtime_ports` -- port derivation and allocation
 * :mod:`kiro_crew.pod.runtime_attestation` -- who serves a pod's port
@@ -85,6 +86,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         install_backend,
         start_pod,
         stop_pod,
+        unit_mod,
     )
     from kiro_crew.pod.runtime_ports import (  # noqa: F401
         AUTO_PORT_KEY,
@@ -1396,72 +1398,117 @@ def _index_exports() -> dict[str, str]:
     return index
 
 
-#: Re-exported name -> the dotted NAME of its owner. A name rather than the module
-#: object, resolved per use through ``sys.modules``: a module purged and imported
-#: again would otherwise leave this table forwarding to the discarded copy.
-_EXPORT_OWNERS: dict[str, str] = _index_exports()
+#: Re-exported name -> the dotted NAME of its owner, never the module object: the
+#: owner is read from :data:`sys.modules` on each use, so a module purged and
+#: imported again is seen at once instead of this table forwarding to the old copy.
+_EXPORTS: dict[str, str] = _index_exports()
 
 
-def _owner(name: str) -> ModuleType | None:
-    """The owner module of re-exported *name*, or ``None`` for any other name."""
-    module_name = _EXPORT_OWNERS.get(name)
-    if module_name is None:
-        return None
-    return importlib.import_module(module_name)
+def _owner(name: str) -> ModuleType:
+    """Return the module that owns re-exported *name*, resolved on each access.
+
+    ``importlib.import_module`` is the resolution rather than a mapping kept here.
+    It answers from :data:`sys.modules`, the one place a module is stored, so a
+    purged or replaced owner is seen at once; and it waits on that module's import
+    lock while its body is still running, where a bare ``sys.modules`` read would
+    hand a thread a half-built owner another thread is still importing.
+    """
+    return importlib.import_module(_EXPORTS[name])
 
 
-def __getattr__(name: str) -> Any:
-    """Resolve a re-exported name on its owner (:pep:`562`)."""
-    owner = _owner(name)
-    if owner is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(owner, name)
+# Hidden from type checkers: mypy types every unknown attribute of a module that
+# defines ``__getattr__`` as ``Any``, so a mistyped or removed ``rt.<name>`` would
+# type-check. mypy sees the re-exports through the ``TYPE_CHECKING`` imports instead.
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> Any:
+        """Read a re-exported name from the module that owns it (:pep:`562`)."""
+        if name not in _EXPORTS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(_owner(name), name)
 
 
 def __dir__() -> list[str]:
-    return sorted({*globals(), *_EXPORT_OWNERS})
+    return sorted(set(globals()) | set(_EXPORTS))
 
 
 def _refuse_module_rebind(name: str, current: object) -> None:
-    """Refuse to rebind a MODULE through this namespace, loudly.
+    """Refuse to rebind or delete a MODULE through this namespace, loudly.
 
     Every pod runtime module imports its own binding of the modules it uses, so
     replacing ``rt.time`` or ``rt.launchd`` here would reach one reader and leave the
     others on the real module -- a patch that silently misses. Its attributes are
     shared by every reader, so that is what a test patches.
     """
-    if isinstance(current, ModuleType):
-        raise AttributeError(
-            f"{__name__}.{name} is the shared module {current.__name__!r}; rebinding it here "
-            f"would reach only one pod runtime module. Patch its attributes instead."
-        )
+    label = getattr(current, "__name__", name)
+    raise AttributeError(
+        f"{__name__}.{name} is the shared module {label!r}; rebinding it here "
+        f"would reach only one pod runtime module. Patch its attributes instead."
+    )
 
 
-class _CompatibilityModule(ModuleType):
-    """Forward a write or delete of a re-exported name to the owner that reads it.
+class _ReExportModule(ModuleType):
+    """Send a write or delete of a re-exported name to the module that owns it.
 
-    ``mock.patch`` finds no local binding for a re-exported name, so it restores by
-    deleting and then setting the owner's attribute. With ``create=True`` it skips
-    the set and the owner's binding is gone, so patch these names without it.
+    Binding it here instead would shadow the owner for every later read, because
+    ``__getattr__`` runs only for a name this module does not hold. Forwarded, a
+    ``monkeypatch`` or ``mock.patch`` round-trips: ``mock.patch`` restores a name
+    this module does not hold by deleting it and setting it back. With
+    ``create=True`` it skips the set, which would leave the owner without the name,
+    so ``test/test_pod_runtime_refactor_create_guard.py`` fails on any such patch.
+
+    A name in :data:`_MODULE_NAMES` is refused both ways, by name: writing anything
+    but the module it already holds, or deleting it. Any other name takes any value,
+    a module included, and gives it back.
     """
 
-    def __setattr__(self, name: str, value: object) -> None:
-        current = getattr(self, name, None)
-        if value is not current:
-            _refuse_module_rebind(name, current)
-        owner = _owner(name)
-        if owner is None:
-            super().__setattr__(name, value)
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _MODULE_NAMES and value is not getattr(self, name, None):
+            _refuse_module_rebind(name, getattr(self, name, None))
+        if name in _EXPORTS:
+            setattr(_owner(name), name, value)
         else:
-            setattr(owner, name, value)
+            super().__setattr__(name, value)
 
     def __delattr__(self, name: str) -> None:
-        _refuse_module_rebind(name, getattr(self, name, None))
-        owner = _owner(name)
-        if owner is None:
-            super().__delattr__(name)
+        if name in _MODULE_NAMES:
+            _refuse_module_rebind(name, getattr(self, name, None))
+        if name in _EXPORTS:
+            delattr(_owner(name), name)
         else:
-            delattr(owner, name)
+            super().__delattr__(name)
 
 
-sys.modules[__name__].__class__ = _CompatibilityModule
+# Every owner is imported here, once this module has bound all of its own names: an
+# owner reads the core as ``runtime.<name>``, so it cannot load before them. Loading
+# them now rather than on first use takes each owner's module-level bindings --
+# ``from kiro_crew.platform_compat import pin_directory`` among them -- when this
+# module is imported, as they were when the runtime was one module. On first use,
+# that moment could fall inside a test's patch of the source module, and the owner
+# would keep the patched value for the rest of the process.
+for _module_name in _EXPORTS_BY_OWNER:
+    importlib.import_module(_module_name)
+del _module_name
+
+#: The names, here or on an owner, that are bound to a MODULE once every owner has
+#: loaded. Fixed by name rather than judged by the value a name holds at the moment
+#: of a write, so a function patched with a module stub is still undone, and a
+#: module name stays refused whatever it was last set to.
+_MODULE_NAMES = frozenset(
+    name
+    for name, value in [
+        *globals().items(),
+        *((name, getattr(_owner(name), name)) for name in _EXPORTS),
+    ]
+    if isinstance(value, ModuleType) and not name.startswith("__")
+)
+
+# Installed once this module's own names are bound and its owners have loaded, so
+# the forwarding is live for every caller but never runs during either.
+sys.modules[__name__].__class__ = _ReExportModule
+
+# ``from kiro_crew.pod.runtime import *`` consults this list and never reaches
+# ``__getattr__``, so without it a star import would carry only the names this
+# module binds itself. It is DERIVED from the two authorities -- what this module
+# binds and the re-export table -- so it is not a third list to keep in step.
+__all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))

@@ -16,11 +16,16 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import os
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from types import ModuleType
-from typing import Callable
+from typing import Callable, Iterator
 from unittest import mock
 
 import pytest
@@ -30,6 +35,7 @@ from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _HOST_IS_WINDOWS = platform_compat.IS_WINDOWS
 _POD = "wt"
@@ -888,13 +894,13 @@ def test_every_surface_name_resolves_on_the_runtime() -> None:
 
 def test_a_reexported_name_is_the_owners_object_and_absent_from_the_core() -> None:
     owners = _owners()
-    assert set(rt._EXPORT_OWNERS.values()) == set(owners)
-    for name, owner_name in rt._EXPORT_OWNERS.items():
+    assert set(rt._EXPORTS.values()) == set(owners)
+    for name, owner_name in rt._EXPORTS.items():
         owner = owners[owner_name]
         assert name in vars(owner), f"{owner_name} does not define {name}"
         assert getattr(rt, name) is vars(owner)[name], name
         assert name not in vars(rt), f"{name} is bound in the core and would shadow its owner"
-    assert set(rt._EXPORT_OWNERS) <= set(dir(rt))
+    assert set(rt._EXPORTS) <= set(dir(rt))
 
 
 def test_a_write_through_the_runtime_lands_on_the_owner_and_is_restored() -> None:
@@ -922,6 +928,198 @@ def test_a_write_of_a_core_name_stays_on_the_core() -> None:
         assert vars(rt)["IS_WINDOWS"] is not platform_compat.IS_WINDOWS
 
 
+# --------------------------------------------------------------------------- #
+# Round trips. mock restores a name the runtime does not hold by deleting it and
+# then setting it back; monkeypatch restores by writing the saved value. Forwarded
+# to the owner, each leaves it holding what it held before, however they nest.
+# ``mock.patch(..., create=True)`` skips that set and is refused by
+# ``test_pod_runtime_refactor_create_guard.py`` instead.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def owner_guard() -> Iterator[Callable[[ModuleType, str], object]]:
+    """Save an owner's binding, and put it back directly on the owner afterwards, so
+    an undo that fails in one test cannot leave a later test without the name."""
+    saved: list[tuple[ModuleType, str, object]] = []
+
+    def guard(owner: ModuleType, name: str) -> object:
+        saved.append((owner, name, vars(owner)[name]))
+        return vars(owner)[name]
+
+    yield guard
+    for owner, name, value in reversed(saved):
+        setattr(owner, name, value)
+
+
+def test_nested_mock_patches_unwind_one_level_at_a_time(
+    owner_guard: Callable[[ModuleType, str], object],
+) -> None:
+    from kiro_crew.pod import runtime_client
+
+    original = owner_guard(runtime_client, "mint_token")
+    outer, inner = _value("outer"), _value("inner")
+    with mock.patch.object(rt, "mint_token", outer):
+        with mock.patch.object(rt, "mint_token", inner):
+            assert runtime_client.mint_token is inner
+        assert runtime_client.mint_token is outer
+    assert runtime_client.mint_token is original
+    assert "mint_token" not in vars(rt)
+
+
+def test_mock_patch_of_a_dotted_target_lands_on_the_owner_and_is_restored(
+    owner_guard: Callable[[ModuleType, str], object],
+) -> None:
+    from kiro_crew.pod import runtime_ports
+
+    original = owner_guard(runtime_ports, "derive_port")
+    with mock.patch("kiro_crew.pod.runtime.derive_port") as stub:
+        assert runtime_ports.derive_port is stub
+    assert runtime_ports.derive_port is original
+    assert "derive_port" not in vars(rt)
+
+
+def test_monkeypatch_and_mock_nest_either_way_through_the_runtime(
+    owner_guard: Callable[[ModuleType, str], object],
+) -> None:
+    from kiro_crew.pod import runtime_home
+
+    original = owner_guard(runtime_home, "cleanup_home")
+    by_monkeypatch, by_mock = _value("monkeypatch"), _value("mock")
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(rt, "cleanup_home", by_monkeypatch)
+        with mock.patch.object(rt, "cleanup_home", by_mock):
+            assert runtime_home.cleanup_home is by_mock
+        assert runtime_home.cleanup_home is by_monkeypatch
+    assert runtime_home.cleanup_home is original
+
+    with mock.patch.object(rt, "cleanup_home", by_mock):
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(rt, "cleanup_home", by_monkeypatch)
+            assert runtime_home.cleanup_home is by_monkeypatch
+        assert runtime_home.cleanup_home is by_mock
+    assert runtime_home.cleanup_home is original
+    assert "cleanup_home" not in vars(rt)
+
+
+def test_monkeypatch_delattr_through_the_runtime_removes_and_restores(
+    owner_guard: Callable[[ModuleType, str], object],
+) -> None:
+    from kiro_crew.pod import runtime_ports
+
+    original = owner_guard(runtime_ports, "allocate_port")
+    with pytest.MonkeyPatch.context() as patched:
+        patched.delattr(rt, "allocate_port")
+        assert not hasattr(rt, "allocate_port")
+        assert "allocate_port" not in vars(runtime_ports)
+    assert runtime_ports.allocate_port is original
+
+
+def test_deleting_a_name_through_the_runtime_deletes_it_on_the_owner(
+    owner_guard: Callable[[ModuleType, str], object],
+) -> None:
+    from kiro_crew.pod import runtime_ports
+
+    owner_guard(runtime_ports, "operator_pinned")
+    del rt.operator_pinned
+    assert "operator_pinned" not in vars(runtime_ports)
+    assert not hasattr(rt, "operator_pinned")
+
+
+def test_every_read_resolves_the_owner_through_the_import_system() -> None:
+    """Each read asks ``importlib`` for the owner, so nothing here can go stale: it
+    answers from ``sys.modules`` and waits on the import lock while an owner's body
+    is still running, which a mapping held here could do neither of."""
+    from kiro_crew.pod import runtime_client
+
+    calls: list[str] = []
+    real_import = importlib.import_module
+
+    def counting(target: str, package: str | None = None) -> ModuleType:
+        calls.append(target)
+        return real_import(target, package)
+
+    with mock.patch.object(importlib, "import_module", counting):
+        first = rt.health
+        second = rt.health
+    assert calls == [runtime_client.__name__] * 2
+    assert first is second is runtime_client.health
+
+
+def test_a_reader_waits_for_an_owner_another_thread_is_still_importing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first read of a moved name imports its owner. A second thread reading the
+    name meanwhile must wait for that import: the half-built module it would find in
+    ``sys.modules`` has no attribute yet, so reading it raises ``AttributeError``."""
+    module_name, name = "_pod_runtime_slow_owner_probe", "_slow_owner_probe"
+    outcome: dict[str, object] = {}
+
+    def second_reader() -> None:
+        try:
+            outcome["value"] = getattr(rt, name)
+        except AttributeError as exc:
+            outcome["error"] = repr(exc)
+
+    reader = threading.Thread(target=second_reader, daemon=True)
+
+    class _SlowOwner(importlib.abc.Loader):
+        def create_module(self, spec: importlib.machinery.ModuleSpec) -> None:
+            return None
+
+        def exec_module(self, module: ModuleType) -> None:
+            reader.start()
+            # A reader that waits on this import's lock cannot finish before it does.
+            reader.join(timeout=0.5)
+            outcome["waited"] = reader.is_alive()
+            setattr(module, name, "ready")
+
+    class _Finder(importlib.abc.MetaPathFinder):
+        def find_spec(
+            self, fullname: str, path: object, target: object = None
+        ) -> importlib.machinery.ModuleSpec | None:
+            if fullname != module_name:
+                return None
+            return importlib.util.spec_from_loader(fullname, _SlowOwner())
+
+    monkeypatch.setattr(sys, "meta_path", [_Finder(), *sys.meta_path])
+    monkeypatch.setitem(rt._EXPORTS, name, module_name)
+    try:
+        assert getattr(rt, name) == "ready"
+    finally:
+        if reader.is_alive():
+            reader.join(timeout=10)
+        sys.modules.pop(module_name, None)
+    assert not reader.is_alive()
+    assert outcome == {"waited": True, "value": "ready"}
+
+
+# --------------------------------------------------------------------------- #
+# Star import. ``import *`` consults ``__all__`` and never ``__getattr__``, so the
+# re-exported names reach a star importer only through the declared list.
+# --------------------------------------------------------------------------- #
+
+
+def test_every_public_reexport_is_declared_for_a_star_import() -> None:
+    public = {name for name in rt._EXPORTS if not name.startswith("_")}
+    assert sorted(public - set(rt.__all__)) == []
+
+
+def test_no_private_name_is_declared_for_a_star_import() -> None:
+    assert sorted(name for name in rt.__all__ if name.startswith("_")) == []
+
+
+def test_a_star_import_carries_every_public_surface_name() -> None:
+    """Asserted on the declared list, as the security facade's star-import pin is: a
+    star import binds ``getattr(module, name)`` for each name in ``__all__``, which is
+    the language's rule, while the list's contents are this module's."""
+    public = sorted(name for name in _RUNTIME_SURFACE if not name.startswith("_"))
+    assert [name for name in public if name not in rt.__all__] == []
+    unresolved = [name for name in rt.__all__ if not hasattr(rt, name)]
+    assert unresolved == []
+
+
 def test_an_owner_binds_no_name_another_module_owns() -> None:
     """A copy of a core seam, or of another owner's name, would miss every patch of
     ``rt.<name>``. Owners reach those names as ``runtime.<name>`` or
@@ -934,8 +1132,8 @@ def test_an_owner_binds_no_name_another_module_owns() -> None:
                 continue
             if name in core:
                 offenders.append(f"{owner_name}.{name} copies the core binding")
-            elif rt._EXPORT_OWNERS.get(name, owner_name) != owner_name:
-                offenders.append(f"{owner_name}.{name} copies {rt._EXPORT_OWNERS[name]}'s binding")
+            elif rt._EXPORTS.get(name, owner_name) != owner_name:
+                offenders.append(f"{owner_name}.{name} copies {rt._EXPORTS[name]}'s binding")
     assert offenders == []
 
 
@@ -986,19 +1184,63 @@ def test_owners_import_only_submodules_and_exception_types_from_the_pod_package(
     assert offenders == []
 
 
-def test_the_core_imports_no_owner_while_it_loads() -> None:
-    """Every owner imports the core, so the core may reach an owner only lazily."""
+def test_the_core_imports_no_owner_before_its_own_names_are_bound() -> None:
+    """Every owner imports the core, so the core may not from-import one in the
+    middle of its own body: it imports them by name only after binding its own."""
     tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
     loaded: list[str] = []
     for node in tree.body:
-        if isinstance(node, ast.If):
-            continue  # the TYPE_CHECKING block, which never executes
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "TYPE_CHECKING":
+            continue  # never executes; it only names the re-exports for type checkers
         for sub in ast.walk(node):
             if isinstance(sub, ast.ImportFrom) and "runtime_" in (sub.module or ""):
                 loaded.append(sub.module or "")
             if isinstance(sub, ast.ImportFrom) and sub.module == "kiro_crew.pod":
                 loaded.extend(a.name for a in sub.names if a.name.startswith("runtime_"))
     assert loaded == []
+
+
+def test_the_owners_load_after_the_cores_names_and_before_the_forwarding() -> None:
+    """The owners load once every name of the core's own is bound, and the forwarding
+    class goes in only after they have, so neither runs half-way through the other."""
+    tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
+    *_, load, cleanup, module_names, install, declared = tree.body
+    assert isinstance(load, ast.For) and ast.unparse(load.iter) == "_EXPORTS_BY_OWNER"
+    assert [ast.unparse(n) for n in load.body] == ["importlib.import_module(_module_name)"]
+    assert ast.unparse(cleanup) == "del _module_name"
+    assert isinstance(module_names, ast.Assign)
+    assert ast.unparse(module_names.targets[0]) == "_MODULE_NAMES"
+    assert ast.unparse(install) == "sys.modules[__name__].__class__ = _ReExportModule"
+    assert isinstance(declared, ast.Assign) and ast.unparse(declared.targets[0]) == "__all__"
+    assert "_module_name" not in vars(rt)
+
+
+def test_importing_the_runtime_binds_every_owner_before_a_test_can_patch() -> None:
+    """A by-name import in an owner (``runtime_home``'s ``pin_directory``) takes its
+    value when the owner loads. Loaded on first use, that could fall inside a test's
+    patch of ``platform_compat`` and keep the patched value for the rest of the
+    worker. So a fresh interpreter that imports the runtime, patches the source,
+    reads a moved name and undoes the patch must find every owner already loaded
+    and ``runtime_home`` holding the real function."""
+    code = (
+        "import sys\n"
+        "from kiro_crew import platform_compat\n"
+        "import kiro_crew.pod.runtime as rt\n"
+        "owners = sorted(rt._EXPORTS_BY_OWNER)\n"
+        "print(','.join(m for m in owners if m not in sys.modules))\n"
+        "real = platform_compat.pin_directory\n"
+        "platform_compat.pin_directory = lambda path: None\n"
+        "rt.seed_home_from_scenario\n"
+        "platform_compat.pin_directory = real\n"
+        "home = sys.modules['kiro_crew.pod.runtime_home']\n"
+        "print(home.pin_directory is real, rt.pin_directory is real)\n"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(_POD_DIR.parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, check=True, env=env, **UTF8_TEXT
+    )
+    assert out.stdout.splitlines() == ["", "True True"], out.stdout + out.stderr
 
 
 def test_the_type_checking_names_are_the_owners_reexports() -> None:
@@ -1010,7 +1252,103 @@ def test_the_type_checking_names_are_the_owners_reexports() -> None:
     for node in ast.walk(guarded[0]):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                assert rt._EXPORT_OWNERS.get(alias.name) == node.module, alias.name
+                assert rt._EXPORTS.get(alias.name) == node.module, alias.name
+
+
+def _bare_loads(tree: ast.Module) -> list[tuple[int, str]]:
+    """Each Load of a re-exported name as a bare global, outside import lines."""
+    import_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            import_lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return [
+        (node.lineno, node.id)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id in rt._EXPORTS
+        and node.lineno not in import_lines
+    ]
+
+
+def test_the_core_reads_no_reexported_name_as_a_bare_global() -> None:
+    """A function defined in the core resolves a bare global through the core's own
+    namespace, which ``__getattr__`` never sees, so such a read would need the core to
+    bind the name -- a second copy no patch of the owner reaches. Every line counts,
+    the ``TYPE_CHECKING`` block's included."""
+    tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
+    assert _bare_loads(tree) == []
+
+
+def test_the_bare_global_scan_can_fail() -> None:
+    """The scan finds a re-exported name loaded as a bare global where there is one,
+    so an empty result on the core means absence, not a scan that matches nothing."""
+    sample = "derive_port"
+    assert sample in rt._EXPORTS
+    tree = ast.parse(f"from x import y\n\ndef f():\n    return {sample}\n")
+    assert _bare_loads(tree) == [(4, sample)]
+    assert _bare_loads(ast.parse(f"from x import (\n    {sample},\n)\n")) == []
+
+
+def test_the_module_getattr_is_hidden_from_type_checkers() -> None:
+    """mypy types every unknown attribute of a module whose ``__getattr__`` it can see
+    as ``Any``, so a mistyped or removed ``rt.<name>`` in src would type-check."""
+    tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
+    defined = [
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "__getattr__"
+    ]
+    hidden = [
+        n for n in tree.body if isinstance(n, ast.If) and ast.unparse(n.test) == "not TYPE_CHECKING"
+    ]
+    assert len(defined) == 1 and len(hidden) == 1
+    assert defined[0] in hidden[0].body
+    assert callable(vars(rt).get("__getattr__"))  # still the resolver at run time
+
+
+_DEV_FLEET_DIR = _POD_DIR.parent / "apps" / "builtins" / "dev_fleet"
+
+
+def _names_read_through_rt(tree: ast.Module) -> set[str]:
+    """``rt.<name>``, plus Dev Fleet's ``runtime.rt.<name>``, read anywhere in *tree*."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        base = node.value
+        if isinstance(base, ast.Name) and base.id == "rt":
+            names.add(node.attr)
+        elif (
+            isinstance(base, ast.Attribute)
+            and base.attr == "rt"
+            and isinstance(base.value, ast.Name)
+            and base.value.id == "runtime"
+        ):
+            names.add(node.attr)
+    return names
+
+
+def test_every_reexport_src_reads_on_the_runtime_is_named_for_type_checkers() -> None:
+    """mypy cannot see ``__getattr__``, so a re-exported name src reads as
+    ``rt.<name>`` type-checks only when the ``TYPE_CHECKING`` block imports it."""
+    tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
+    (guarded,) = [
+        n for n in tree.body if isinstance(n, ast.If) and ast.unparse(n.test) == "TYPE_CHECKING"
+    ]
+    declared = {
+        alias.name
+        for node in ast.walk(guarded)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    readers = [_POD_DIR / "cli.py", *sorted(_DEV_FLEET_DIR.glob("*.py"))]
+    read: dict[str, set[str]] = {}
+    for path in readers:
+        for name in _names_read_through_rt(ast.parse(path.read_text(encoding="utf-8"))):
+            read.setdefault(name, set()).add(path.name)
+    reading_files = set().union(*read.values())
+    assert "cli.py" in reading_files and "worktree_ops.py" in reading_files, reading_files
+    missing = sorted(name for name in read if name in rt._EXPORTS and name not in declared)
+    assert missing == [], {name: sorted(read[name]) for name in missing}
 
 
 @pytest.mark.parametrize("name", ["time", "socket", "launchd", "pinned_fs", "unit_mod"])
@@ -1025,3 +1363,33 @@ def test_rebinding_a_shared_module_through_the_runtime_is_refused(name: str) -> 
     assert getattr(rt, name) is before
     setattr(rt, name, before)  # re-binding the same object is a no-op, as undo does
     assert getattr(rt, name) is before
+
+
+def test_the_refused_names_are_the_ones_bound_to_modules() -> None:
+    bound_to_modules = {
+        name
+        for name in set(vars(rt)) | set(rt._EXPORTS)
+        if not name.startswith("__") and isinstance(getattr(rt, name), ModuleType)
+    }
+    assert rt._MODULE_NAMES == bound_to_modules
+    assert {"time", "socket", "launchd", "pinned_fs", "unit_mod", "seed_mod"} <= rt._MODULE_NAMES
+
+
+def test_the_refusal_goes_by_name_so_a_module_stub_is_still_undone(
+    owner_guard: Callable[[ModuleType, str], object],
+) -> None:
+    """A forwarded function patched with a module object is an ordinary patch: it is
+    written and undone. A module-valued name stays refused meanwhile, both ways."""
+    from kiro_crew.pod import runtime_lifecycle
+
+    original = owner_guard(runtime_lifecycle, "stop_pod")
+    stub = ModuleType("stop_pod_stub")
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(rt, "stop_pod", stub)
+        assert runtime_lifecycle.stop_pod is stub
+        with pytest.raises(AttributeError, match="shared module"):
+            patched.setattr(rt, "time", ModuleType("time_stub"))
+        with pytest.raises(AttributeError, match="shared module"):
+            patched.delattr(rt, "time")
+    assert runtime_lifecycle.stop_pod is original
+    assert rt.time is runtime_lifecycle.time
