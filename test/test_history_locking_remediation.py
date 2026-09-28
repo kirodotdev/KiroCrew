@@ -2109,6 +2109,46 @@ class TestForeignFoldMidIdentity:
         )
         assert len(foreign) == 1
 
+    def test_a_save_that_keeps_foreign_lines_logs_one_warning(self, tmp_path, monkeypatch, caplog):
+        """A save that keeps another writer's lines warns once per chat: a
+        re-scan after a trim is quiet, a swapped line warns again, and a save
+        with nothing foreign is quiet.
+        """
+        import json
+        import logging
+
+        from kiro_crew.dashboard.chat_persistence import _frozen_prefix_and_foreign_appends
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        caplog.set_level(logging.WARNING, logger="kiro_crew.dashboard.chat_persistence")
+        slot = self._make_state(tmp_path).get_or_create_slot("kc_warn_foreign")
+        path = tmp_path / "kc_warn_foreign.jsonl"
+        mine = {"role": "user", "content": "mine", "ts": "T1", "meta": {"mid": "m-1"}}
+
+        def scan(*disk):
+            lines = [json.dumps({"_type": "metadata", "created": "2026-01-01T00:00:00Z"})]
+            path.write_text("\n".join(lines + [json.dumps(e) for e in disk]) + "\n")
+            slot._frozen_prefix_cache = None  # what a _MAX_SLOT_MESSAGES trim does
+            caplog.clear()
+            _p, foreign, _d = _frozen_prefix_and_foreign_appends(slot, path, 0, [mine])
+            got = [r.getMessage() for r in caplog.records]
+            return foreign, [m for m in got if "another writer appended" in m]
+
+        other = {"role": "assistant", "content": "theirs", "ts": "T2", "meta": {"mid": "m-2"}}
+        foreign, warned = scan(mine, other)
+        assert len(foreign) == 1 and len(warned) == 1
+        assert " found 1 new line(s) " in warned[0] and "kc_warn_foreign" in warned[0]
+        assert "theirs" not in warned[0], "no message content in the log"
+
+        foreign, warned = scan(mine, other)  # same kept line, cache dropped
+        assert len(foreign) == 1 and warned == []
+
+        swapped = {**other, "ts": "T3", "meta": {"mid": "m-3"}}
+        foreign, warned = scan(mine, swapped)  # same count, different line
+        assert len(foreign) == 1 and len(warned) == 1
+
+        foreign, warned = scan(mine)
+        assert foreign == [] and warned == []
+
 
 class TestBestEffortSaveMarksDirty:
     """GPT 5.6 HIGH (chat_persistence.py:1087): metadata mutation endpoints

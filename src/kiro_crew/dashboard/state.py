@@ -2763,6 +2763,7 @@ class _ChatSlot:
         "_disk_meta_observed",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
+        "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
         "linked_session_key",
@@ -3701,6 +3702,8 @@ class _ChatSlot:
         # file since we last saved?" signal that gates the cross-process
         # foreign-append merge. See chat_persistence._save_*.
         self._frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None = None
+        # Hashes of kept foreign lines already logged, so a re-scan stays quiet.
+        self._foreign_reported: frozenset[int] = frozenset()
         # Set by rewind/regenerate after they TRUNCATE the window. While set,
         # _save_slot_to_history takes the archive-safe rewrite path so the
         # dropped tail is archived — even if the inline rewrite save failed:

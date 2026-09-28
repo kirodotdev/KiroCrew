@@ -3828,6 +3828,19 @@ def _frozen_prefix_and_foreign_appends(
     # (mtime, size) must re-emit these same preserved foreign lines rather than
     # drop them — hence they are cached here, not just at the post-write site.
     slot._frozen_prefix_cache = (mtime, size, disk_older, prefix, foreign)
+    # Kept lines never fold back into the window, so every re-scan finds them
+    # again; warn only about lines not reported before for this slot. Keyed by
+    # line hash, not count, so a rotation that swaps lines still reports.
+    seen = frozenset(hash(line) for line in foreign)
+    fresh = len(seen - slot._foreign_reported)
+    if fresh:
+        logger.warning(
+            "Slot %s save found %d new line(s) another writer appended; keeping %d",
+            slot.key,
+            fresh,
+            len(foreign),
+        )
+    slot._foreign_reported = seen
     return (prefix, foreign, dedup_dropped)
 
 
