@@ -355,19 +355,61 @@ REMOVE_REMOVED = "removed"
 #: A writer owns the unit -- another process, or another handle in this one. The
 #: unit is LIVE, so it is skipped; a later pass gets it once its writer is gone.
 REMOVE_OWNED = "owned"
-#: There was nothing to remove: no directory, or one that no id addresses.
+#: There was nothing to remove: no directory, or one that no id addresses. PROVEN
+#: absence -- a caller may act on the unit's name being free, because nothing here
+#: stands in for a directory this function declined to look inside.
 REMOVE_ABSENT = "absent"
+#: The unit's own name is a LINK, so nothing was removed and nothing was inspected.
+#: Separate from ``absent`` because the two invite opposite actions: absence says the
+#: name is free, while this says a directory exists and reaching it means following a
+#: link into a unit that is very likely another member's live one. A caller acting on
+#: this as absence does its own cleanup at the RESOLVED path and corrupts that unit;
+#: what the condition actually needs is a person to remove the link.
+REMOVE_LINKED = "linked"
 #: Something in the unit survived. Reported, never counted as removed, and the
 #: unit is left identifiable so the next pass can aim at it again.
 REMOVE_FAILED = "failed"
 
 
-def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> str:
+def _run_in_hold(action: "Callable[[], bool]", kind: str, unit_id: str) -> bool:
+    """Run a caller's companion cleanup and report whether it finished.
+
+    The answer decides whether the removal proceeds, so a failure is NOT swallowed.
+    A caller passes a companion because something outside the unit belongs to the
+    same deletion, and the gate that stops it being read again can live INSIDE the
+    unit -- so a companion left behind while the unit goes is worse than nothing
+    removed at all: the surviving data becomes readable again with its gate gone.
+    Reporting the failure is what lets the caller keep both.
+
+    An exception is the same answer as a refusal, and its traceback is rendered to
+    text rather than attached as ``exc_info``: the action is the CALLER's callable,
+    so the retained frames would be ones this package cannot vet.
+    """
+    try:
+        return bool(action())
+    except Exception:
+        log_exception_text(
+            logger,
+            logging.WARNING,
+            "crew log retention: companion cleanup for %s log %r failed",
+            kind,
+            unit_id,
+        )
+        return False
+
+
+def remove_unit(
+    kind: str,
+    unit_id: str,
+    *,
+    guard: "Callable[[Path], bool]",
+    in_hold: "Callable[[], bool] | None" = None,
+) -> str:
     """Remove one unit's crew log entirely. Returns one of the ``REMOVE_*`` statuses.
 
     The ONE spelling of deletion in this package, called by the retention sweep
-    and by each permanent-delete funnel alike -- a session's and a crew member's
-    -- for the reason the work crew log's
+    and by each permanent-delete funnel that reaches it -- a session's, and the
+    dashboard's crew-member route -- for the reason the work crew log's
     ``purge_matching`` docstring gives: two callers deleting the same tree two
     ways is two chances to get the order wrong, and the order is the whole
     correctness argument.
@@ -393,6 +435,25 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
     than a filter the caller applies first, and why there is no default that
     skips the re-decision. A caller whose precondition is not a property of the
     file passes ``lambda _dir: True`` and says at the call site what does decide.
+
+    **A caller with a companion file OUTSIDE the unit passes ``in_hold``, and it
+    runs while this lease is still held, BEFORE anything here is destroyed.** Some of
+    a unit's meaning lives outside its directory -- a member's pre-log activity source
+    is the case -- and a caller that removed such a file after this function RETURNED
+    would do it in the window between the release here and its own next line, where
+    another PROCESS can create the unit afresh and fold that source back in. The lease
+    is taken ``sole`` and so cannot be shared, which is why the caller cannot simply
+    hold it itself; a hook inside the hold closes that window without a second
+    spelling of deletion. Optional, so a caller with nothing outside the unit passes
+    nothing and is unaffected.
+
+    It runs FIRST, and a false answer stops the removal with ``failed`` and nothing
+    here touched. The gate that stops such a companion being read again can live
+    inside THIS unit -- a fold marker does -- so a unit destroyed while its companion
+    survives is not a partial success but an armed one: the survivor becomes readable
+    again with its gate gone, and nothing revisits the unit to notice. In this order a
+    refusal leaves both in place and both still gated, and the unit stays
+    identifiable for a later pass to aim at again.
 
     **Then order, with IDENTITY LAST.** Segments carry the header, so they are the
     history and they go first; the per-append lock file next; then any other
@@ -431,6 +492,12 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
     # so this and the ``crew_log_dir`` below read the same directory: a linked kind
     # root would otherwise be refused only on the second read, after this one had
     # already followed it.
+    #
+    # Answered as its OWN status rather than as absence. Absence says the name is
+    # free, and a caller acting on that does its own cleanup at the resolved path --
+    # which is where this link points, so it would reach into a unit that is very
+    # likely another member's live one. The two conditions invite opposite actions,
+    # so they cannot share a value.
     named = _checked_crew_log_root(kind) / _store_name(unit_id)
     if is_link(named):
         logger.warning(
@@ -438,7 +505,7 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
             kind,
             unit_id,
         )
-        return REMOVE_ABSENT
+        return REMOVE_LINKED
     directory = crew_log_dir(kind, unit_id)
     if not directory.is_dir():
         return REMOVE_ABSENT
@@ -461,6 +528,19 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
             # between the decision and this hold. Not a failure: nothing was
             # removed and nothing was written.
             return REMOVE_OWNED
+        if in_hold is not None and not _run_in_hold(in_hold, kind, unit_id):
+            # FIRST, and the removal stops here when it refuses. The caller's
+            # companion sits outside the unit while the gate that stops it being
+            # read again can sit inside -- so destroying this unit before the
+            # companion is gone is what arms that gate against a survivor. Taken in
+            # this order a refusal costs nothing: both are still here, both are
+            # still gated, and the unit stays identifiable for the next pass.
+            logger.warning(
+                "crew log retention: %s log %r not removed; its companion would not go",
+                kind,
+                unit_id,
+            )
+            return REMOVE_FAILED
         failures, history_gone = _remove_unit_contents(directory)
         if failures:
             # Say WHICH of the two failures this is. Segments go first, so a
@@ -528,7 +608,23 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
                     kind,
                     unit_id,
                 )
+            if history_gone and in_hold is not None:
+                # The companion is already gone -- it ran before any of this -- so a
+                # partial removal strands nothing. Recorded because the two facts
+                # read together: this unit's history is gone AND so is the companion
+                # whose gate lived here, which is why nothing revisiting it can
+                # re-import anything.
+                logger.debug(
+                    "crew log retention: %s log %r partly removed with its companion "
+                    "already gone",
+                    kind,
+                    unit_id,
+                )
             return REMOVE_FAILED
+        # Before the identity unlink below, not after: while the lease FILE exists it
+        # names the inode whose lock proves ownership, and once it is gone a second
+        # remover can lock a fresh one -- which would put another process inside the
+        # hold this removal, and the companion step it already ran, were given alone.
         lease_gone = unlink_lock_in_hold(lease_path)
     finally:
         release_lease(lease_key)
