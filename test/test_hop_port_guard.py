@@ -298,21 +298,34 @@ class TestAnotherProcessCannotTakeAHeldPort:
     def test_binding_alone_would_not_have_held_it(self):
         """Why the hold must LISTEN, pinned rather than asserted in a comment.
 
-        A socket that is bound but not listening does NOT refuse a second
+        On Linux a socket that is bound but not listening does NOT refuse a second
         ``SO_REUSEADDR`` bind, so the obvious cheap shape -- occupy the port without
         listening, and let a stale client's connect be refused before it ever
         transmits -- does not actually hold the port. This is why the credential can
         reach a completed handshake at all, and therefore why the reaper below matters.
+
+        That premise is Linux's. A BSD-derived stack (macOS) refuses an exact
+        duplicate bind unless both sides set ``SO_REUSEPORT``, so there bind alone
+        already refuses -- deterministically, not as a race. Each platform's own
+        pre-listen outcome is pinned, so a kernel that started behaving like the
+        other one fails here rather than passing on the listen half alone.
         """
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
         try:
-            assert _bind_from_another_process(port) == "BOUND", (
-                "bind-without-listen refused a second binder, so the listen in "
-                "HopPortGuard.hold could be dropped -- re-derive the shape if so"
-            )
+            before_listen = _bind_from_another_process(port)
+            if sys.platform.startswith("linux"):
+                assert before_listen == "BOUND", (
+                    "bind-without-listen refused a second binder, so the listen in "
+                    "HopPortGuard.hold could be dropped -- re-derive the shape if so"
+                )
+            else:
+                assert before_listen.startswith("REFUSED"), (
+                    "bind-without-listen let a second binder in on a BSD stack, so the "
+                    "hold's port is contestable before listen here too -- re-derive"
+                )
             s.listen(8)
             assert _bind_from_another_process(port).startswith(
                 "REFUSED"
@@ -415,8 +428,8 @@ class TestNothingReadsTheCredential:
             # itself under batch load, `sendall` when the reset lands mid-write, `recv`
             # otherwise. Which one sees it is a timing detail; that one of them does is
             # the property, so naming fewer than three makes the test flaky rather than
-            # stricter. It is still not tolerant: the errno assertion below demands
-            # ECONNRESET, and a port that was never LISTENED on refuses the connect with
+            # stricter. It is still not tolerant: the errno assertion below demands the
+            # reset, and a port that was never LISTENED on refuses the connect with
             # ECONNREFUSED instead, which fails here exactly as it should.
             with pytest.raises(OSError) as caught:
                 c.connect(("127.0.0.1", port))
@@ -428,8 +441,15 @@ class TestNothingReadsTheCredential:
                             "clean end of stream: a client could read that as a valid "
                             "empty reply rather than a failure"
                         )
-            assert (
-                caught.value.errno == errno.ECONNRESET
+            # Two spellings of the same reset. When the RST has already landed by the
+            # time `sendall` runs, Linux hands the pending ECONNRESET to that write, but
+            # a BSD stack (macOS) checks its can't-send-more flag first and reports
+            # EPIPE -- the same fact, that the connection was torn down before the
+            # bytes went out, so the credential never even reached the wire. Both are
+            # failures no client can read as a reply. ECONNREFUSED is still rejected.
+            assert caught.value.errno in (
+                errno.ECONNRESET,
+                errno.EPIPE,
             ), f"expected an unambiguous reset, got {caught.value!r}"
         finally:
             c.close()
