@@ -1458,7 +1458,7 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BAC
 # a member because Crew reads the spec itself and hands it over the wire, so the
 # on-disk form is Crew's to parse; codex-acp, opencode and pi are not members
 # because none of them reads ``~/.kiro/agents`` at all.
-ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_AGY})
+ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose agent spec comes from the USER-LEVEL directory alone, so a
 # checkout's same-named spec is not the agent their session is running.

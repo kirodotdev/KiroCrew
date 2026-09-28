@@ -17,6 +17,9 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("kiro_crew.acp.adapters.agy")
 
 
+STREAM_BUFFER_LIMIT = 64 * 1024 * 1024  # 64MB buffer for large JSON-RPC lines and tool outputs
+
+
 def find_agy_bin() -> str:
     """Find the agy executable on the system."""
     override = os.environ.get("AGY_BIN")
@@ -37,7 +40,9 @@ def find_agy_bin() -> str:
 
 
 def _setup_mcp_servers(
-    cwd: str, mcp_servers: list[dict[str, Any]]
+    cwd: str,
+    mcp_servers: list[dict[str, Any]],
+    gemini_config_path: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str], list[str]]:
     """Format and provision MCP servers in cwd/.mcp.json and ~/.gemini/config/mcp_config.json for agy.
 
@@ -94,18 +99,22 @@ def _setup_mcp_servers(
         mcp_file = None
 
     added_gemini_keys: list[str] = []
+    target_gemini_cfg = (
+        gemini_config_path
+        or os.environ.get("GEMINI_MCP_CONFIG")
+        or os.path.expanduser("~/.gemini/config/mcp_config.json")
+    )
     try:
-        gemini_config_path = os.path.expanduser("~/.gemini/config/mcp_config.json")
-        if os.path.isfile(gemini_config_path):
-            with open(gemini_config_path, "r", encoding="utf-8") as f:
+        if os.path.isfile(target_gemini_cfg):
+            with open(target_gemini_cfg, "r", encoding="utf-8") as f:
                 gemini_data = json.load(f)
             if isinstance(gemini_data, dict):
                 gemini_servers = gemini_data.setdefault("mcpServers", {})
                 for name, entry in servers_dict.items():
                     if name not in gemini_servers:
-                        gemini_servers[name] = entry
                         added_gemini_keys.append(name)
-                with open(gemini_config_path, "w", encoding="utf-8") as f:
+                    gemini_servers[name] = entry
+                with open(target_gemini_cfg, "w", encoding="utf-8") as f:
                     json.dump(gemini_data, f, indent=2)
     except Exception as exc:
         logger.debug("Failed updating gemini mcp_config: %s", exc)
@@ -126,6 +135,7 @@ class AgySession:
         mcp_file: Optional[str] = None,
         orig_mcp_content: Optional[str] = None,
         added_gemini_keys: Optional[list[str]] = None,
+        gemini_config_path: Optional[str] = None,
     ) -> None:
         self.session_id = session_id
         self.proc = proc
@@ -135,6 +145,12 @@ class AgySession:
         self.mcp_file = mcp_file
         self.orig_mcp_content = orig_mcp_content
         self.added_gemini_keys = added_gemini_keys or []
+        self.gemini_config_path = (
+            gemini_config_path
+            or os.environ.get("GEMINI_MCP_CONFIG")
+            or os.path.expanduser("~/.gemini/config/mcp_config.json")
+        )
+        self.cancelled = False
 
     async def close(self) -> None:
         """Terminate the agy subprocess and clean up session files."""
@@ -157,16 +173,15 @@ class AgySession:
                     os.remove(self.mcp_file)
             except OSError:
                 pass
-        if self.added_gemini_keys:
+        if self.added_gemini_keys and self.gemini_config_path:
             try:
-                gemini_config_path = os.path.expanduser("~/.gemini/config/mcp_config.json")
-                if os.path.isfile(gemini_config_path):
-                    with open(gemini_config_path, "r", encoding="utf-8") as f:
+                if os.path.isfile(self.gemini_config_path):
+                    with open(self.gemini_config_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     if isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):
                         for k in self.added_gemini_keys:
                             data["mcpServers"].pop(k, None)
-                        with open(gemini_config_path, "w", encoding="utf-8") as f:
+                        with open(self.gemini_config_path, "w", encoding="utf-8") as f:
                             json.dump(data, f, indent=2)
             except Exception:
                 pass
@@ -183,21 +198,26 @@ class AgyAcpServer:
 
     def _write_json(self, payload: Dict[str, Any]) -> None:
         """Write a JSON-RPC message to stdout and flush."""
-        line = json.dumps(payload) + "\n"
-        sys.stdout.write(line)
-        sys.stdout.flush()
+        try:
+            line = json.dumps(payload) + "\n"
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError) as exc:
+            logger.debug("Failed writing to stdout: %s", exc)
 
     def _write_response(self, req_id: Any, result: Any) -> None:
-        self._write_json({"jsonrpc": "2.0", "id": req_id, "result": result})
+        if req_id is not None:
+            self._write_json({"jsonrpc": "2.0", "id": req_id, "result": result})
 
     def _write_error(self, req_id: Any, code: int, message: str) -> None:
-        self._write_json(
-            {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": code, "message": message},
-            }
-        )
+        if req_id is not None:
+            self._write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": code, "message": message},
+                }
+            )
 
     def _write_notification(self, method: str, params: Any) -> None:
         self._write_json({"jsonrpc": "2.0", "method": method, "params": params})
@@ -252,6 +272,7 @@ class AgyAcpServer:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            limit=STREAM_BUFFER_LIMIT,
         )
 
         assert proc.stdout is not None
@@ -328,7 +349,16 @@ class AgyAcpServer:
                 added_gemini_keys=added_keys,
             )
             self.sessions[loaded_id] = session
-            self._write_response(req_id, {"sessionId": loaded_id})
+            self._write_response(
+                req_id,
+                {
+                    "sessionId": loaded_id,
+                    "modes": {
+                        "currentModeId": "default",
+                        "availableModes": [{"id": "default", "name": "Default"}],
+                    },
+                },
+            )
         except Exception as exc:
             self._write_error(req_id, -32000, str(exc))
 
@@ -336,9 +366,53 @@ class AgyAcpServer:
         """Handle ACP 'session/prompt' request."""
         session_id = params.get("sessionId")
         session = self.sessions.get(session_id or "")
+
+        # Auto-reconnect if session process is dead or not found in memory
         if not session or not session.proc or session.proc.returncode is not None:
-            self._write_error(req_id, -32001, f"session {session_id} not active")
-            return
+            if session_id:
+                try:
+                    logger.info(
+                        "Session %s inactive; auto-reconnecting via --conversation", session_id
+                    )
+                    cwd = session.cwd if session else (params.get("cwd") or os.getcwd())
+                    model = session.model if session else params.get("model")
+                    effort = session.effort if session else params.get("effort")
+                    mcp_file = session.mcp_file if session else None
+                    orig_content = session.orig_mcp_content if session else None
+                    added_keys = session.added_gemini_keys if session else []
+                    gemini_cfg = session.gemini_config_path if session else None
+
+                    proc, recovered_id = await self._spawn_agy_process(
+                        cwd=cwd,
+                        conversation_id=session_id,
+                        model=model,
+                        effort=effort,
+                    )
+                    if session:
+                        session.proc = proc
+                        session.cancelled = False
+                    else:
+                        session = AgySession(
+                            session_id=recovered_id,
+                            proc=proc,
+                            cwd=cwd,
+                            model=model,
+                            effort=effort,
+                            mcp_file=mcp_file,
+                            orig_mcp_content=orig_content,
+                            added_gemini_keys=added_keys,
+                            gemini_config_path=gemini_cfg,
+                        )
+                        self.sessions[recovered_id] = session
+                except Exception as exc:
+                    logger.exception("Failed to reconnect session %s: %s", session_id, exc)
+                    self._write_error(req_id, -32001, f"session {session_id} not active: {exc}")
+                    return
+            else:
+                self._write_error(req_id, -32001, f"session {session_id} not active")
+                return
+
+        session.cancelled = False
 
         prompt_blocks = params.get("prompt", [])
         prompt_text = "".join(
@@ -360,7 +434,16 @@ class AgyAcpServer:
             has_emitted_text = False
             session_tool_calls: dict[str, str] = {}
             while True:
-                line = await session.proc.stdout.readline()
+                if session.cancelled:
+                    self._write_response(req_id, {"stopReason": "cancelled"})
+                    return
+
+                try:
+                    line = await session.proc.stdout.readline()
+                except (ValueError, asyncio.LimitOverrunError) as exc:
+                    logger.warning("Dropped oversize line from agy stdout: %s", exc)
+                    continue
+
                 if not line:
                     break
                 try:
@@ -493,6 +576,31 @@ class AgyAcpServer:
                         )
                     self._write_response(req_id, {"stopReason": "end_turn"})
                     return
+
+            # Subprocess ended without emitting result event
+            if session.cancelled:
+                self._write_response(req_id, {"stopReason": "cancelled"})
+                return
+
+            ret_code = session.proc.returncode
+            err_msg = ""
+            if session.proc.stderr:
+                try:
+                    err_bytes = await session.proc.stderr.read()
+                    err_msg = err_bytes.decode("utf-8", errors="replace").strip()
+                except Exception:
+                    pass
+            logger.error(
+                "agy subprocess ended before result for session %s (returncode=%s): %s",
+                session_id,
+                ret_code,
+                err_msg,
+            )
+            self._write_error(
+                req_id,
+                -32000,
+                f"agy process ended unexpectedly (code={ret_code}): {err_msg or 'stdout closed'}",
+            )
         except Exception as exc:
             self._write_error(req_id, -32000, f"prompt turn failed: {exc}")
 
@@ -539,7 +647,17 @@ class AgyAcpServer:
 
     async def handle_session_cancel(self, req_id: Any, params: Dict[str, Any]) -> None:
         """Handle ACP 'session/cancel'."""
-        self._write_response(req_id, {})
+        session_id = params.get("sessionId")
+        session = self.sessions.get(session_id or "")
+        if session:
+            session.cancelled = True
+            if session.proc and session.proc.returncode is None:
+                try:
+                    session.proc.terminate()
+                except Exception:
+                    pass
+        if req_id is not None:
+            self._write_response(req_id, {})
 
     async def handle_session_close(self, req_id: Any, params: Dict[str, Any]) -> None:
         """Handle ACP 'session/close'."""
@@ -600,12 +718,20 @@ class AgyAcpServer:
     async def run(self) -> None:
         """Main event loop reading JSON-RPC messages from stdin."""
         loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
+        reader = asyncio.StreamReader(limit=STREAM_BUFFER_LIMIT)
         protocol = asyncio.StreamReaderProtocol(reader)
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
 
         while True:
-            line = await reader.readline()
+            try:
+                line = await reader.readline()
+            except (ValueError, asyncio.LimitOverrunError) as exc:
+                logger.warning("Dropped oversize line from stdin: %s", exc)
+                continue
+            except Exception as exc:
+                logger.error("Error reading stdin: %s", exc)
+                break
+
             if not line:
                 break
             try:
@@ -614,7 +740,16 @@ class AgyAcpServer:
                 continue
 
             if isinstance(message, dict):
-                await self.dispatch_request(message)
+                try:
+                    await self.dispatch_request(message)
+                except Exception as exc:
+                    logger.exception("Error dispatching ACP request: %s", exc)
+                    req_id = message.get("id")
+                    if req_id is not None:
+                        try:
+                            self._write_error(req_id, -32603, f"Internal error: {exc}")
+                        except Exception:
+                            pass
 
         # Cleanup all sessions on exit
         for session in list(self.sessions.values()):

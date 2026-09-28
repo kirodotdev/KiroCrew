@@ -62,10 +62,6 @@ def test_agy_capability_sets() -> None:
     assert AGY in sdk_backends.ACP_BACKENDS_SESSION_MCP_ARRAY
     assert AGY in sdk_backends.ACP_BACKENDS_MEMBER_DISPATCH
 
-    assert AGY in sdk_backends.ACP_BACKENDS_STEER
-    assert AGY in sdk_backends.ACP_BACKENDS_COMPACT
-    assert AGY in sdk_backends.ACP_BACKENDS_INLINE_COMPACTION
-    assert AGY in sdk_backends.ACP_BACKENDS_MARKDOWN_AGENT_SPECS
     assert AGY in sdk_backends.ACP_BACKENDS_SIDE_READONLY
 
     # Not in unverified runtime sharing or internal sandbox
@@ -73,6 +69,10 @@ def test_agy_capability_sets() -> None:
     assert AGY not in sdk_backends.ACP_BACKENDS_INTERNAL_SANDBOX
     assert AGY not in sdk_backends.ACP_BACKENDS_SESSION_SHARING
     assert AGY not in sdk_backends.ACP_BACKENDS_SESSION_EVICTION
+    assert AGY not in sdk_backends.ACP_BACKENDS_STEER
+    assert AGY not in sdk_backends.ACP_BACKENDS_COMPACT
+    assert AGY not in sdk_backends.ACP_BACKENDS_INLINE_COMPACTION
+    assert AGY not in sdk_backends.ACP_BACKENDS_MARKDOWN_AGENT_SPECS
 
 
 @pytest.mark.asyncio
@@ -159,10 +159,16 @@ def test_agy_setup_mcp_servers(tmp_path: any) -> None:
             "env": [{"name": "PORT", "value": "3000"}],
         }
     ]
-    mcp_file, orig, added_keys = _setup_mcp_servers(str(tmp_path), mcp_servers)
+    gemini_cfg = str(tmp_path / "gemini_mcp.json")
+    with open(gemini_cfg, "w", encoding="utf-8") as f:
+        json.dump({"mcpServers": {}}, f)
+
+    mcp_file, orig, added_keys = _setup_mcp_servers(
+        str(tmp_path), mcp_servers, gemini_config_path=gemini_cfg
+    )
     assert mcp_file == str(tmp_path / ".mcp.json")
     assert orig is None
-    assert isinstance(added_keys, list)
+    assert "srv1" in added_keys
 
     with open(mcp_file, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -170,6 +176,10 @@ def test_agy_setup_mcp_servers(tmp_path: any) -> None:
     assert "srv1" in data["mcpServers"]
     assert data["mcpServers"]["srv1"]["command"] == "node"
     assert data["mcpServers"]["srv1"]["env"] == {"PORT": "3000"}
+
+    with open(gemini_cfg, "r", encoding="utf-8") as f:
+        gdata = json.load(f)
+    assert "srv1" in gdata["mcpServers"]
 
 
 @pytest.mark.asyncio
@@ -319,3 +329,252 @@ async def test_agy_prompt_tool_unwrapping() -> None:
     ]
     assert len(tool_done) == 1
     assert tool_done[0]["name"] == "mcp__kirocrew-core__send_message"
+
+
+@pytest.mark.asyncio
+async def test_agy_large_prompt_buffer_support() -> None:
+    """Verify lines larger than asyncio default 64KB (e.g. 200KB) are supported without LimitOverrunError."""
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.acp.adapters.agy import AgyAcpServer, AgySession
+
+    server = AgyAcpServer()
+    responses: list[tuple[any, dict]] = []
+    server._write_response = lambda req_id, res: responses.append((req_id, res))
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = None
+    mock_stdin = MagicMock()
+    mock_stdin.drain = AsyncMock()
+    mock_proc.stdin = mock_stdin
+
+    # Simulate a 100KB stdout line from agy (e.g. large file or response)
+    large_text = "x" * (100 * 1024)
+    lines = [
+        json.dumps(
+            {
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "agent_response",
+                    "text_delta": large_text,
+                },
+            }
+        ).encode("utf-8")
+        + b"\n",
+        json.dumps(
+            {
+                "event": "result",
+                "result": {"response": "done"},
+            }
+        ).encode("utf-8")
+        + b"\n",
+    ]
+
+    mock_stdout = MagicMock()
+    mock_stdout.readline = AsyncMock(side_effect=lines + [b""])
+    mock_proc.stdout = mock_stdout
+
+    session = AgySession(session_id="test_large_1", proc=mock_proc, cwd="/tmp")
+    server.sessions["test_large_1"] = session
+
+    # A prompt with > 64KB content
+    large_prompt = "p" * (80 * 1024)
+    await server.dispatch_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "session/prompt",
+            "params": {
+                "sessionId": "test_large_1",
+                "prompt": [{"type": "text", "text": large_prompt}],
+            },
+        }
+    )
+
+    assert len(responses) == 1
+    assert responses[0] == (101, {"stopReason": "end_turn"})
+
+
+@pytest.mark.asyncio
+async def test_agy_session_cancel() -> None:
+    """Verify session/cancel halts execution and marks in-flight prompt cancelled."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.acp.adapters.agy import AgyAcpServer, AgySession
+
+    server = AgyAcpServer()
+    responses: list[tuple[any, dict]] = []
+    server._write_response = lambda req_id, res: responses.append((req_id, res))
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = None
+    mock_proc.terminate = MagicMock()
+    mock_stdin = MagicMock()
+    mock_stdin.drain = AsyncMock()
+    mock_proc.stdin = mock_stdin
+
+    session = AgySession(session_id="test_cancel_1", proc=mock_proc, cwd="/tmp")
+    server.sessions["test_cancel_1"] = session
+
+    # Dispatch cancel
+    await server.dispatch_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 201,
+            "method": "session/cancel",
+            "params": {"sessionId": "test_cancel_1"},
+        }
+    )
+
+    assert session.cancelled is True
+    mock_proc.terminate.assert_called_once()
+    assert len(responses) == 1
+    assert responses[0] == (201, {})
+
+
+@pytest.mark.asyncio
+async def test_agy_premature_eof_returns_error() -> None:
+    """Verify that if agy process terminates before result, an error response is sent to req_id."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.acp.adapters.agy import AgyAcpServer, AgySession
+
+    server = AgyAcpServer()
+    errors: list[tuple[any, int, str]] = []
+    server._write_error = lambda req_id, code, msg: errors.append((req_id, code, msg))
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = None
+    mock_stdin = MagicMock()
+    mock_stdin.drain = AsyncMock()
+    mock_proc.stdin = mock_stdin
+
+    # Subprocess stdout reaches EOF mid-turn when process crashes with exit code 1
+    async def fake_readline() -> bytes:
+        mock_proc.returncode = 1
+        return b""
+
+    mock_stdout = MagicMock()
+    mock_stdout.readline = AsyncMock(side_effect=fake_readline)
+    mock_proc.stdout = mock_stdout
+    mock_proc.stderr = MagicMock()
+    mock_proc.stderr.read = AsyncMock(return_value=b"Process crashed")
+
+    session = AgySession(session_id="test_eof_1", proc=mock_proc, cwd="/tmp")
+    server.sessions["test_eof_1"] = session
+
+    await server.dispatch_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 301,
+            "method": "session/prompt",
+            "params": {"sessionId": "test_eof_1", "prompt": "test eof"},
+        }
+    )
+
+    assert len(errors) == 1
+    assert errors[0][0] == 301
+    assert errors[0][1] == -32000
+    assert "Process crashed" in errors[0][2]
+
+
+@pytest.mark.asyncio
+async def test_agy_auto_reconnect_inactive_session() -> None:
+    """Verify that an inactive/dead session is reconnected via --conversation on prompt."""
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kiro_crew.acp.adapters.agy import AgyAcpServer, AgySession
+
+    server = AgyAcpServer()
+    responses: list[tuple[any, dict]] = []
+    server._write_response = lambda req_id, res: responses.append((req_id, res))
+
+    # Old dead process
+    dead_proc = MagicMock()
+    dead_proc.returncode = 137  # terminated
+    session = AgySession(session_id="conv-12345", proc=dead_proc, cwd="/tmp")
+    server.sessions["conv-12345"] = session
+
+    # Fresh revived process
+    new_proc = MagicMock()
+    new_proc.returncode = None
+    mock_stdin = MagicMock()
+    mock_stdin.drain = AsyncMock()
+    new_proc.stdin = mock_stdin
+
+    result_line = (
+        json.dumps(
+            {
+                "event": "result",
+                "result": {"response": "recovered!"},
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+    mock_stdout = MagicMock()
+    mock_stdout.readline = AsyncMock(side_effect=[result_line, b""])
+    new_proc.stdout = mock_stdout
+
+    spawn_mock = AsyncMock(return_value=(new_proc, "conv-12345"))
+    server._spawn_agy_process = spawn_mock
+
+    await server.dispatch_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 401,
+            "method": "session/prompt",
+            "params": {"sessionId": "conv-12345", "prompt": "hello after restart"},
+        }
+    )
+
+    spawn_mock.assert_called_once_with(
+        cwd="/tmp",
+        conversation_id="conv-12345",
+        model=None,
+        effort=None,
+    )
+    assert server.sessions["conv-12345"].proc is new_proc
+    assert len(responses) == 1
+    assert responses[0] == (401, {"stopReason": "end_turn"})
+
+
+def test_agy_setup_mcp_servers_overwrites_existing(tmp_path: any) -> None:
+    """Verify _setup_mcp_servers refreshes existing entries with updated tokens/ports."""
+    import json
+
+    from kiro_crew.acp.adapters.agy import _setup_mcp_servers
+
+    gemini_cfg = str(tmp_path / "gemini_mcp.json")
+    with open(gemini_cfg, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "mcpServers": {
+                    "kirocrew-core": {
+                        "command": "old_cmd",
+                        "env": {"KIROCREW_STUB_SESSION_TOKEN": "old_stale_token"},
+                    }
+                }
+            },
+            f,
+        )
+
+    mcp_servers = [
+        {
+            "name": "kirocrew-core",
+            "command": "new_cmd",
+            "env": {"KIROCREW_STUB_SESSION_TOKEN": "fresh_valid_token"},
+        }
+    ]
+
+    _setup_mcp_servers(str(tmp_path), mcp_servers, gemini_config_path=gemini_cfg)
+
+    with open(gemini_cfg, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    assert data["mcpServers"]["kirocrew-core"]["command"] == "new_cmd"
+    assert (
+        data["mcpServers"]["kirocrew-core"]["env"]["KIROCREW_STUB_SESSION_TOKEN"]
+        == "fresh_valid_token"
+    )
