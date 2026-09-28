@@ -339,6 +339,10 @@ class TestSearchSessionsRemote:
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         mgr = SshTunnelManager.__new__(SshTunnelManager)
+        # The generation map: this carrier re-reads the forward it resolved
+        # before it spends the credential, and the generation is half of that
+        # reading, so a manager assembled without `__init__` must name it.
+        mgr._tunnel_epoch = {}
         mgr._tokens = {"peer": "tok-1"}
         mgr._peer_sessions = {}
 

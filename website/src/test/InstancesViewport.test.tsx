@@ -53,6 +53,8 @@ vi.mock('../api/client', () => ({
     }),
     connectInstance: vi.fn().mockResolvedValue({ state: 'connected', local_port: 7777, token: 'tok' }),
     disconnectInstance: vi.fn().mockResolvedValue({}),
+    updateInstance: vi.fn().mockResolvedValue({}),
+    addInstance: vi.fn().mockResolvedValue({ id: 'added-1' }),
     refreshInstanceToken: vi.fn().mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' }),
   },
 }))
@@ -1690,6 +1692,92 @@ describe('InstancesViewport', () => {
       scriptError()
       await waitFor(() => expect(clear).toHaveBeenCalledTimes(2))
       await waitFor(() => expect(document.querySelector('iframe')).not.toBe(before))
+    })
+  })
+
+  describe('a chained crew re-announcing on a NEW hop port', () => {
+    it('rewrites the warm entry from the connect response instead of keeping the old port', async () => {
+      // The defect this pins: the repoint PATCHed `via_remote_port`, which tears the
+      // tunnel down, and then called the api directly and DISCARDED the status. So
+      // `warm[id]` kept the old local port paired with the token minted for it, and
+      // auto-warm skips any id already warm -- nothing healed it until Retry.
+      //
+      // Asserted on the entry's PORT, not on which function was called, so it fails
+      // in both directions: with the response discarded the old port survives, and
+      // with the response applied it cannot.
+      vi.mocked(api.listInstances).mockResolvedValue({
+        instances: [
+          {
+            id: 'cd-1',
+            name: 'Parent',
+            ssh_host: 'cd-1-alias',
+            remote_port: 7777,
+            local_port: 7778,
+            ttl: '20h',
+            remote_bin: '',
+            status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 },
+          },
+          {
+            id: 'cd-2',
+            name: 'Chained',
+            ssh_host: 'cd-2-alias',
+            remote_port: 5476,
+            local_port: 50001,
+            ttl: '20h',
+            remote_bin: '',
+            via_instance_id: 'cd-1',
+            via_remote_id: 'c-2',
+            via_remote_port: 40001,
+            status: { instance_id: 'cd-2', state: 'connected', local_port: 50001, remote_port: 5476 },
+          },
+        ],
+        warm_set_cap: 5,
+      } as unknown as Awaited<ReturnType<typeof api.listInstances>>)
+      // The reconnect after the PATCH lands on a FRESH local port with its own token.
+      vi.mocked(api.connectInstance).mockResolvedValue({
+        state: 'connected',
+        local_port: 50002,
+        token: 'new-tok',
+      } as unknown as Awaited<ReturnType<typeof api.connectInstance>>)
+
+      const store = createTestStore({
+        instances: {
+          // cd-1 is the announcing pane, warm at 7778 -- that is what makes its
+          // origin resolve. cd-2 carries the STALE pair the defect leaves behind.
+          warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 50001, token: 'old-tok' } },
+          activeId: 'cd-1',
+          mru: ['cd-1'],
+          unread: {},
+          ready: {},
+        },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+      // Both panes mounted means the list reached the component, so the row the
+      // announce has to find is in `instancesRef` before the message arrives.
+      await waitFor(() => expect(document.querySelectorAll('iframe').length).toBe(2))
+
+      // Announced from the parent pane's own loopback origin, on a new hop port.
+      await act(async () => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            origin: 'http://127.0.0.1:7778',
+            data: {
+              type: 'mc-instance-ready',
+              v: 1,
+              id: 'c-2',
+              name: 'Chained',
+              sshHost: 'cd-2-alias',
+              remotePort: 5476,
+              port: 40002,
+            },
+          }),
+        )
+      })
+
+      await waitFor(() => expect(api.updateInstance).toHaveBeenCalledWith('cd-2', { via_remote_port: 40002 }))
+      await waitFor(() => expect(store.getState().instances.warm['cd-2']?.port).toBe(50002))
+      expect(store.getState().instances.warm['cd-2']?.token).toBe('new-tok')
     })
   })
 })

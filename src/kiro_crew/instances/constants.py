@@ -170,6 +170,48 @@ MINT_TIMEOUT_CEILING_SECS: float = 120.0
 # TTL, before the 20h cap. 0.8 = refresh at 80% elapsed.
 DEFAULT_TOKEN_REFRESH_FRACTION: float = 0.8
 
+# Ceiling on the lifetime of a credential minted for ANOTHER gateway's pane (the
+# hub-lending mint). A crew's own row TTL governs this gateway's own pane and is
+# left alone; only the lent credential is capped, and the cap is taken as a
+# MINIMUM against the row so a row already shorter stays shorter.
+#
+# It is a ceiling on an EXPOSURE WINDOW rather than a tuning knob. A lent port is
+# held by this gateway for the life of the lease, and a socket cannot outlive the
+# process holding it: a gateway exit releases every hold while the credential
+# naming that port stays valid, because the credential was issued by the remote
+# crew and nothing here can invalidate it. So the window between this gateway
+# exiting and the credential dying IS one of these TTLs, and its length is the
+# only part of that window this gateway gets to choose.
+#
+# 30m rather than something smaller because the refresh loop re-mints at
+# DEFAULT_TOKEN_REFRESH_FRACTION of the lifetime, which leaves 20% of it as the
+# margin a re-mint has to complete in. At 30m that margin is 360s, against a
+# worst case of MINT_TIMEOUT_CEILING_SECS + 15 for a chained mint and
+# DEFAULT_SSM_MINT_TIMEOUT_SECS for an SSM one -- so the slowest mint in the tree
+# finishes inside it with room over. A cap low enough to eat that margin would
+# expire the token mid-mint and the hub's pane would reload on every cycle.
+LENT_HOP_TTL_CAP: str = "30m"
+
+# The retained-field bounds for the hop-lease map, which `a-bound-bounds-every-field-it-
+# retains` requires of every field the registry keeps. Both are enforced twice: at
+# ADMISSION in `lend_hop`, which refuses rather than trims because a refused mint is a
+# credential never issued, and at LOAD, which cannot refuse (a foreign or corrupted write
+# is already on disk) and so clamps instead.
+#
+# 64 live leases through one gateway. A lease exists only while a chained credential
+# against that port is valid, so this bounds concurrently-chained crews, not crews: the
+# warm-set cap is a single digit and nobody chains 64 crews behind one parent. Startup
+# binds one listening socket per non-in-use lease, so this is also the ceiling on that
+# descriptor burst.
+HOP_LEASE_MAX: int = 64
+
+# Must equal ``ttl_to_seconds(LENT_HOP_TTL_CAP)``; pinned by a test rather than computed
+# here, because `ttl_to_seconds` lives in ``token_mint`` and the registry must not import
+# it (the registry is below the mint in the dependency order). A stored deadline further
+# out than this cannot have come from this gateway's writer, which already clamps to the
+# cap, so clamping at load bounds what a foreign write can reserve.
+HOP_LEASE_DEADLINE_CAP_SECS: int = 30 * 60
+
 # Timeout (secs) for the loopback liveness probe that validates a *stored* token
 # before the API hands it to the browser on (re)connect. A stored token can go
 # stale while the tunnel stays CONNECTED (a failed self-heal re-mint, or a remote
@@ -281,6 +323,27 @@ DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS: float = 20.0
 # tens of KiB each even on a heavily-configured gateway, so 2 MiB only ever
 # bites on a hostile or broken peer.
 CAPABILITY_REPLY_MAX_BYTES: int = 2 * 1024 * 1024
+
+# Timeout (secs) for asking a parent crew to mint a token for a crew chained
+# behind it. The parent answers by running `kirocrew token` over ITS OWN hop to
+# that crew, so the budget has to cover the parent's whole remote mint plus the
+# round trip through the hub's forward to the parent -- which is why it is not
+# the 8s capability budget, whose reads answer from state the peer already holds.
+# It sits ABOVE the widest mint the parent can arm. Not above SSM's DEFAULT alone:
+# `mint_timeout_secs` is operator-settable up to MINT_TIMEOUT_CEILING_SECS, so the
+# ceiling plus relay margin is the only bound that holds for every configuration.
+# That ordering is the point: the parent's own timeout fires first, so a slow crew
+# is reported as a mint failure carrying the parent's reason rather than as an
+# unreachable parent. The budget spans the WHOLE call including its single retry,
+# not each attempt, so the worst case here is what a caller holding a lock waits for.
+DEFAULT_CHAINED_MINT_TIMEOUT_SECS: float = MINT_TIMEOUT_CEILING_SECS + 15.0
+
+# Byte ceiling for one chained-mint reply, enforced BEFORE JSON decoding. The
+# honest payload is one token and one port -- a few hundred bytes -- so 64 KiB is
+# already orders of magnitude of slack and only ever bites on a hostile or broken
+# parent. Far tighter than the capability cap above because, unlike a roster, this
+# reply has no list in it whose length depends on how the parent is configured.
+CHAINED_MINT_REPLY_MAX_BYTES: int = 64 * 1024
 
 # Byte ceiling for one peer's live-slots reply, enforced BEFORE JSON decoding for
 # the same reason as the two caps above. The peer answers with a full slot

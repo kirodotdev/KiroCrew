@@ -30,6 +30,7 @@ import { api, ApiError, type InstanceView } from '../api/client'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
+import { tokenTtlTotalSeconds } from '../lib/tokenTtl'
 import { hasDashboardPane } from '../utils/remoteCrew'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import ErrorNotice from './ErrorNotice'
@@ -64,6 +65,113 @@ export function visibleInstanceTabs(
   return instances.filter(
     i => hasDashboardPane(i) && (i.was_connected || i.status?.state === 'connected' || !!warm[i.id]),
   )
+}
+
+/** One switcher row's place in the chain: how deep, under whom, and whether the
+ *  hop it rides is up. */
+export interface ChainRow {
+  inst: InstanceView
+  /** 0 for a crew this dashboard reaches directly, 1 for one reached through a
+   *  crew, 2 for one reached through that crew in turn. */
+  depth: number
+  /** Display name of the crew this one is reached through, or '' at depth 0. */
+  parentName: string
+  /** False when an ancestor's hop is down, so this row cannot be reached even if
+   *  its own last known state was 'connected' — they share the ancestor's tunnel. */
+  reachable: boolean
+  /** The nearest ANCESTOR that is actually down, empty when none is. Not the
+   *  immediate parent: at depth 2 that parent is usually connected and merely
+   *  unreachable itself, so naming it states something false and sends the reader
+   *  to a row that is not the one to fix. */
+  brokenAt: string
+}
+
+/** Whether a crew's own tunnel is up right now. */
+function instConnected(inst: InstanceView | undefined): boolean {
+  return inst?.status?.state === 'connected'
+}
+
+/**
+ * Order the visible tabs as a tree: each crew followed by the crews reached
+ * through it, depth-first, with the existing order preserved among siblings.
+ *
+ * A child whose parent is NOT in *rows* (never connected, so it has no tab) is
+ * treated as a root. Dropping it instead would hide a crew that is genuinely
+ * connected, and re-rooting it costs only the indent — the row still names the
+ * crew it goes through in its subtitle.
+ *
+ * Visit-guarded, so a registry holding a loop terminates and every row is
+ * emitted exactly once. The tab bar itself is flat; only this ordering and the
+ * switcher's indent express the tree.
+ */
+/** What a switcher row says about its own state.
+ *
+ * An unreachable row says SO, instead of reporting a state the caller has already
+ * contradicted. Its own tunnel may well still be up, but nothing here can reach it
+ * while an ancestor's hop is down, so "connected" would be false for the whole
+ * outage -- and with dimming as the only other cue the two read as opposite
+ * claims. The hop is named, because the row the reader has to go fix is a
+ * different one.
+ */
+export function rowStateLabel(entry: {
+  state?: string
+  reachable?: boolean
+  brokenAt?: string
+}): string {
+  if (entry.reachable !== false) return stateLabel(entry.state)
+  // `brokenAt`, never the immediate parent: at depth 2 that parent is itself only
+  // unreachable, so naming it would say it is down when it is not -- the same false
+  // claim this label exists to remove -- and would send the reader one row short of
+  // the one to fix.
+  return entry.brokenAt
+    ? i18nT('components.instanceTabBar.unreachable_via', { via: entry.brokenAt })
+    : i18nT('components.instanceTabBar.unreachable')
+}
+
+export function chainRows(rows: InstanceView[]): ChainRow[] {
+  const present = new Set(rows.map(i => i.id))
+  const parentOf = (i: InstanceView): string =>
+    i.via_instance_id && present.has(i.via_instance_id) ? i.via_instance_id : ''
+  const children = new Map<string, InstanceView[]>()
+  for (const inst of rows) {
+    const key = parentOf(inst)
+    const list = children.get(key)
+    if (list) list.push(inst)
+    else children.set(key, [inst])
+  }
+  const out: ChainRow[] = []
+  const seen = new Set<string>()
+  const walk = (
+    parentId: string,
+    depth: number,
+    parentName: string,
+    reachable: boolean,
+    brokenAt: string,
+  ) => {
+    for (const inst of children.get(parentId) ?? []) {
+      if (seen.has(inst.id)) continue
+      seen.add(inst.id)
+      out.push({ inst, depth, parentName, reachable, brokenAt })
+      // The FIRST break on the path wins and is carried the rest of the way down:
+      // everything below it is unreachable for that one reason.
+      walk(
+        inst.id,
+        depth + 1,
+        inst.name,
+        reachable && instConnected(inst),
+        brokenAt || (instConnected(inst) ? '' : inst.name),
+      )
+    }
+  }
+  walk('', 0, '', true, '')
+  // A loop leaves its members unreachable from any root, so they never got
+  // emitted above. Append them as roots rather than losing them: a row the user
+  // can see and disconnect is what lets them fix the registry.
+  for (const inst of rows) {
+    if (!seen.has(inst.id))
+      out.push({ inst, depth: 0, parentName: '', reachable: true, brokenAt: '' })
+  }
+  return out
 }
 
 // Proactive token refresh fires once elapsed reaches this fraction of the TTL
@@ -242,14 +350,6 @@ export function useCrewSwitcherStableOrder(): [boolean, () => void] {
   return [on, () => setStableOrder(!stableOrderState)]
 }
 
-/** Parse a `<int>[hm]` TTL (e.g. "20h", "30m") to seconds; 0 if unparseable. */
-function ttlToSeconds(ttl: string): number {
-  const m = /^(\d+)([hm])$/.exec(ttl || '')
-  if (!m) return 0
-  const n = Number(m[1])
-  return m[2] === 'h' ? n * 3600 : n * 60
-}
-
 /** Compact human duration: "4h 12m", "12m", or "<1m". */
 function fmtDuration(secs: number): string {
   // `<1m` keeps its literal shape: it is a threshold statement, not a duration,
@@ -349,6 +449,26 @@ export interface SwitcherEntry {
   state?: string
   connecting?: boolean
   unread: number
+  /** How many crews this one is reached THROUGH: 0 for a direct crew, 1 or 2 for
+   *  a chained one. Drives the switcher's indent; the tab chip stays flat. */
+  depth?: number
+  /** False when an ancestor's hop is down. The row greys out as a group with its
+   *  parent, because it rides that parent's tunnel and cannot outlive it. */
+  reachable?: boolean
+  /** The nearest ancestor actually down, so an unreachable row names the true
+   *  cause rather than its own immediate hop. */
+  brokenAt?: string
+  /** A chained crew's label for the flat surfaces — `parent \u203a child`. The tab
+   *  chip is not indented, so without the path a child chip reads as just another
+   *  top-level crew; the switcher's rows carry the indent instead and keep the
+   *  plain `name`. Empty at depth 0. */
+  pathName?: string
+  /** The path's PARENT segment on its own, so the chip can render the two halves
+   *  as separate boxes and squeeze only this one. A single joined string in a
+   *  fixed-width box ellipsises from the right, which eats the crew's OWN name
+   *  first and makes a child chip read as a duplicate of its parent. Empty at
+   *  depth 0, and `pathName` stays the one-string form the title reads. */
+  pathParent?: string
 }
 
 function SwitcherRow({
@@ -390,6 +510,28 @@ function SwitcherRow({
         onSelect={onSelect}
         title={entry.title}
       >
+        {/* The dimming rides a plain wrapper, not the menu item: the item owns its
+            own effects, and a second className branch on it restyles a ui/
+            primitive twice over. The wrapper repeats the row's layout so the
+            children space themselves exactly as they did when they were the
+            item's own. */}
+        <span
+          className={
+            'flex items-center gap-2 min-w-0 flex-1' +
+            (entry.reachable === false ? ' opacity-50' : '')
+          }
+        >
+        {/* One connector glyph per level of chain, drawn before the state dot so
+            the dots of a parent and its children do not line up and read as
+            siblings. Purely decorative: the row's own title and its subtitle
+            ("via <crew>") are what a screen reader gets, since a box-drawing
+            character announces as noise. */}
+        {(entry.depth ?? 0) > 0 ? (
+          <span className="shrink-0 text-muted font-mono select-none" aria-hidden>
+            {'\u00a0'.repeat(((entry.depth ?? 1) - 1) * 2)}
+            {'\u2514'}
+          </span>
+        ) : null}
         {isLocal ? (
           <Home className="lucide-inline shrink-0" />
         ) : entry.connecting ? (
@@ -420,10 +562,16 @@ function SwitcherRow({
             find the one that errored. One label serves both audiences, so the
             word a screen reader announces is the word on screen. */}
         {entry.state ? (
-          <span className={`shrink-0 text-[11px] ${stateTextCls(entry.state)}`}>
-            {stateLabel(entry.state)}
+          <span
+            className={
+              'shrink-0 text-[11px] ' +
+              (entry.reachable === false ? 'text-muted' : stateTextCls(entry.state))
+            }
+          >
+            {rowStateLabel(entry)}
           </span>
         ) : null}
+        </span>
       </DropdownMenuRadioItem>
       <DropdownMenuItem
         className="shrink-0 px-1.5 justify-center"
@@ -682,8 +830,31 @@ function SwitcherChip({
           and this span absorbs the difference: `truncate`'s `overflow:hidden` gives
           a flex item an automatic minimum size of zero, so the name is the part
           that gives way, ellipsised rather than clipped. The 5ch floor lives on the
-          chip, not here, so there is one source of truth for it. */}
-      <span className="tb-drop-crew-name truncate max-w-[140px]">{entry.name}</span>
+          chip, not here, so there is one source of truth for it.
+
+          A CHAINED crew's chip carries two boxes rather than one string. One box
+          ellipsises from the right, which would eat this crew's own name and leave
+          a chip reading as its parent's duplicate; giving the parent segment the
+          `min-w-0` and the crew's name `shrink-0` spends the squeeze on the half
+          that is context and keeps the half that identifies the tab. */}
+      {entry.pathParent ? (
+        <span className="tb-drop-crew-name flex items-center gap-1 max-w-[140px] min-w-0">
+          <span className="truncate min-w-0">{entry.pathParent}</span>
+          {/* Inline, not a catalog key: a letterless value is not prose, and the
+              catalog's own integrity test rejects one (see `englishIdentity.test.ts`
+              -- "such glyphs belong inline in the JSX"). Decorative, like the
+              switcher's tree connector: the accessible name is `entry.title`, which
+              carries the path in words. */}
+          <span aria-hidden className="shrink-0 text-muted">
+            {'\u203a'}
+          </span>
+          <span className="shrink-0">{entry.name}</span>
+        </span>
+      ) : (
+        <span className="tb-drop-crew-name truncate max-w-[140px]">
+          {entry.pathName || entry.name}
+        </span>
+      )}
       {entry.unread > 0 ? (
         <UnreadBadge
           count={entry.unread}
@@ -1021,10 +1192,25 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         id: t.id,
         name: t.name,
         detail: t.sshHost,
-        title: `${t.name} (${t.sshHost}) — ${stateLabel(t.state)}`,
+        // Same reading as the row's visible word, for the same reason as the host-side
+        // title below: the relayed tab already carries `reachable` and `brokenAt`, so a
+        // title from the raw state would tell a screen reader "connected" about a row
+        // that reads "unreachable" on screen.
+        title: `${t.name} (${t.sshHost}) — ${rowStateLabel({ state: t.state, reachable: t.reachable, brokenAt: t.brokenAt })}`,
         state: t.state,
         connecting: t.state === 'connecting',
         unread: t.unread,
+        // The host already ordered its tabs as a tree and worked out each one's
+        // depth and reachability, so the pane renders the same shape rather than
+        // re-deriving it from a registry it cannot see. Absent on an older host,
+        // which then renders exactly the flat list it always did.
+        depth: t.depth,
+        reachable: t.reachable,
+        brokenAt: t.brokenAt,
+        pathName: t.pathName,
+        // An older host relays only the joined string, so fall back to it: the
+        // chip then squeezes as one box, which is what it did before.
+        pathParent: t.pathParent,
       })),
     ]
   }, [host])
@@ -1093,21 +1279,41 @@ export default function InstanceTabBar({
         title: i18nT('components.instanceTabBar.local_dashboard'),
         unread: 0,
       },
-      ...tabInstances.map(inst => {
+      ...chainRows(tabInstances).map(({ inst, depth, parentName, reachable, brokenAt }) => {
         const st = inst.status?.state
         // An SSM crew has no ssh_host: it is reached through its managed-instance
         // target, so that is what names the machine on its row.
         const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+        // A chained crew's subtitle names the crew it goes through as well as the
+        // machine, because the host alone does not say how this dashboard gets
+        // there — and that is the one thing a chained row has to explain. Built
+        // from the same catalog string as the chip label, so the relationship
+        // reads the same on both surfaces and a locale changes it in one place.
+        const detail = parentName
+          ? i18nT('components.instanceTabBar.chain_via', { via: parentName, name: target })
+          : target
         return {
           id: inst.id,
           name: inst.name,
-          detail: target,
-          title: `${inst.name} (${target}) — ${stateLabel(st)}`,
+          detail,
+          // The SAME reading the row's visible word uses, not the raw state. A chained
+          // crew can be `connected` in its own right while an ancestor hop is down, and
+          // the row then reads "unreachable" on screen; a title built from the raw state
+          // would say "connected" for that same row -- and since `title` is what a
+          // screen reader falls back to, the two audiences would be told opposite things.
+          title: `${inst.name} (${detail}) — ${rowStateLabel({ state: st, reachable, brokenAt })}`,
           state: st,
           connecting:
             (connectMutation.isPending && connectMutation.variables === inst.id) ||
             st === 'connecting',
           unread: unread[inst.id] || 0,
+          depth,
+          reachable,
+          brokenAt,
+          pathName: parentName
+            ? i18nT('components.instanceTabBar.chain_via', { via: parentName, name: inst.name })
+            : '',
+          pathParent: parentName,
         }
       }),
     ],
@@ -1142,7 +1348,7 @@ export default function InstanceTabBar({
     if (st === 'connected') {
       tunnelDotCls = 'bg-[var(--ok)]'
       const rem = activeInst.status?.token_ttl_remaining
-      const total = ttlToSeconds(activeInst.ttl)
+      const total = tokenTtlTotalSeconds(activeInst.status, activeInst.ttl)
       if (typeof rem === 'number' && total > 0) {
         const untilRefresh = rem - total * (1 - REFRESH_AT_ELAPSED_FRAC)
         tunnelLabel = untilRefresh > 0 ? i18nT('components.instanceTabBar.connected_refresh', { time: fmtDuration(untilRefresh) }) : i18nT('components.instanceTabBar.connected_refreshing')

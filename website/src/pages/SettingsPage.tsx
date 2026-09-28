@@ -179,8 +179,12 @@ export default function SettingsPage() {
     navigate({ pathname: target, search: rest ? `?${rest}` : '' }, { replace: true })
   }, [search, pathname, navigate])
 
-  // An embedded instance pane can't manage remote crews (single-level by
-  // design) — hide the Remote Crew tab so a pane can't connect onward.
+  // Remote Crew is reachable inside an embedded pane: a pane may connect a
+  // further crew, and the gateway showing this dashboard adds it as a top-level
+  // tab of its own (the chain is flat in the tab bar, a tree in the switcher).
+  // A connect that would go too deep, or close a loop, is refused SERVER-SIDE
+  // with a reason the panel shows — which is why the tab stays visible rather
+  // than disappearing and reading as a missing feature or a stale build.
   const embedded = isEmbeddedPane()
   // Update nudge: dot on the About entry while an update is available. Two
   // independent sources, because they cover different installs: the Electron
@@ -202,8 +206,7 @@ export default function SettingsPage() {
   // rail without a reload.
   const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
   const allTabs = buildTabs().filter(t => t.key !== 'webhooks' || webhooksPreview)
-  const baseTabs = embedded ? allTabs.filter(t => t.key !== 'instances') : allTabs
-  const tabs = updateAvailable ? baseTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : baseTabs
+  const tabs = updateAvailable ? allTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : allTabs
 
   const memorySelection = new URLSearchParams(search)
   const memberMemoryView = pathname.replace(/\/$/, '') === '/settings/overview'
@@ -217,8 +220,9 @@ export default function SettingsPage() {
       paneOwnsHeader={memberMemoryView}
       basePath={SETTINGS_BASE_PATH}
       headerRightDock="bottom-float"
-      // Keyed apart from the main window: an embedded pane has a different tab
-      // roster (no Instances), so the two must not restore each other's tab.
+      // Keyed apart from the main window: a pane and the window that holds it
+      // are two places the user navigates independently, so opening Remote Crew
+      // inside a pane must not move the window's own Settings tab under them.
       rememberKey={embedded ? 'settings-embedded' : 'settings'}
       // Desktop: search lives at the top of the sidebar rail (navTop), pinned
       // while the tab list scrolls. Mobile: the same field is the floating
@@ -241,7 +245,7 @@ export default function SettingsPage() {
         {tab === 'browser' && <BrowserPanel />}
         {tab === 'computer-use' && <ComputerUsePanel />}
         {tab === 'webhooks' && <WebhooksPanel />}
-        {tab === 'instances' && !embedded && <RemoteCrewPanel />}
+        {tab === 'instances' && <RemoteCrewPanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <SecurityPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'connections' && <ConnectionsPanel />}

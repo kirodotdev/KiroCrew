@@ -42,7 +42,7 @@ const WIN_INSET_CLASS = 'embedded-win-inset'
 const HANDSHAKE_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000]
 
 /** Narrow an untrusted payload to a HostModel, dropping anything malformed. */
-function parseHostModel(data: unknown): HostModel | null {
+export function parseHostModel(data: unknown): HostModel | null {
   if (!data || typeof data !== 'object') return null
   const d = data as Record<string, unknown>
   if (d.type !== 'mc-host-model') return null
@@ -55,6 +55,26 @@ function parseHostModel(data: unknown): HostModel | null {
       sshHost: String(t.sshHost ?? ''),
       state: typeof t.state === 'string' ? t.state : undefined,
       unread: Number(t.unread) || 0,
+      // Element-wise, like every other field here: a malformed depth must degrade
+      // to "no indent" rather than putting a non-number into the row's padding.
+      // `undefined` is also what an older host sends (no field at all), and the
+      // bar reads that as the flat list it always rendered.
+      depth: typeof t.depth === 'number' && Number.isFinite(t.depth) && t.depth >= 0
+        ? Math.floor(t.depth)
+        : undefined,
+      // Only an explicit `false` greys a row out. Absence must not: an older host
+      // sends no field, and reading that as unreachable would grey out every crew.
+      reachable: typeof t.reachable === 'boolean' ? t.reachable : undefined,
+      pathName: typeof t.pathName === 'string' ? t.pathName : undefined,
+      // The parent segment travels too. Without it a pane's chip falls back to
+      // ellipsising the joined label from the right, which eats the crew's own
+      // name -- the very thing the two-box chip exists to stop -- and it would do
+      // so in every pane while looking correct in the window.
+      pathParent: typeof t.pathParent === 'string' ? t.pathParent : undefined,
+      // The row's reason travels with its `reachable`, or a pane would dim a row
+      // and have nothing to say about it. Absent is legitimate -- an older host,
+      // and a healthy chain -- so the label falls back to the bare word.
+      brokenAt: typeof t.brokenAt === 'string' ? t.brokenAt : undefined,
     }))
     .filter(t => t.id)
   const rawSelf = d.self && typeof d.self === 'object' ? (d.self as Record<string, unknown>) : null

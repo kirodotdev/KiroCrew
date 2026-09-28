@@ -390,7 +390,11 @@ def unregister_instance(instance_id_or_name: str) -> bool:
         # ProxyCommand registration), or the registry id.
         for inst in reg.list():
             if instance_id_or_name in (inst.ssm_target, inst.ssh_host, inst.id):
-                return reg.remove(inst.id)
+                # Cascading, not single-row: a crew chained THROUGH this box rides its
+                # forward, so destroying the box without its subtree leaves rows that can
+                # never connect. Same helper the dashboard DELETE path uses, so the two
+                # cannot drift.
+                return bool(reg.remove_cascade(inst.id))
     except Exception as exc:  # pragma: no cover
         logger.info("could not unregister instance: %s", exc)
     return False

@@ -74,6 +74,58 @@ async def test_direct_local_health_with_served_host_keeps_identity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_direct_local_health_carries_the_gateway_id() -> None:
+    """Remote Crew chaining reads this field through the loopback end of a tunnel
+    it just opened, which IS a direct-local request, to tell whether the far end is
+    this gateway (a loop) or a different one."""
+    from kiro_crew.gateway_identity import gateway_id
+
+    req = _probe_req(headers={"Host": "127.0.0.1:5476"})
+    req.app = {"allowed_origins": {"http://localhost:5476"}}
+    resp = await core_mod.api_health(req)
+    body = json.loads(resp.body)
+    assert body["gateway_id"] == gateway_id()
+    assert len(body["gateway_id"]) == 32
+
+
+@pytest.mark.asyncio
+async def test_the_identity_read_does_not_run_on_the_event_loop() -> None:
+    """The first read on a fresh data home mints the identity file, and this is the
+    most-polled route there is, so a stalled filesystem here would stall the loop
+    that answers every other request."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def recording_gateway_id() -> str:
+        seen.append(threading.get_ident())
+        return "f" * 32
+
+    req = _probe_req(headers={"Host": "127.0.0.1:5476"})
+    req.app = {"allowed_origins": {"http://localhost:5476"}}
+    with patch.object(core_mod, "gateway_id", recording_gateway_id):
+        resp = await core_mod.api_health(req)
+
+    assert json.loads(resp.body)["gateway_id"] == "f" * 32
+    assert seen, "the identity was never read, so this test proves nothing"
+    assert loop_thread not in seen, "filesystem work ran on the event loop thread"
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_id_rides_the_same_gate_as_the_version() -> None:
+    """It is an identity fingerprint, so it belongs behind the direct-local check
+    rather than on the public probe boundary — the same reasoning that keeps the
+    exact version off it."""
+    anonymous = await core_mod.api_health(_probe_req("203.0.113.9"))
+    assert "gateway_id" not in json.loads(anonymous.body)
+
+    rebound = _probe_req(headers={"Host": "attacker.example"})
+    rebound.app = {"allowed_origins": {"http://localhost:5476"}}
+    assert "gateway_id" not in json.loads((await core_mod.api_health(rebound)).body)
+
+
+@pytest.mark.asyncio
 async def test_forwarded_loopback_health_omits_build_identity() -> None:
     """A reverse-proxied remote request is not treated as desktop-local."""
     resp = await core_mod.api_health(_probe_req(headers={"X-Forwarded-For": "203.0.113.9"}))

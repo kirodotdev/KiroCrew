@@ -72,6 +72,14 @@ class _RecordingRegistry:
         self.write_threads.append(threading.current_thread())
         return SimpleNamespace(id=instance_id)
 
+    def live_hop_lease_deadlines(self) -> dict[int, float]:
+        """Teardown reads this to know which lent ports it must take OS ownership of.
+
+        No lease here: this double exists to record which THREAD each registry write
+        happens on, and an empty table keeps that the only thing under test.
+        """
+        return {}
+
 
 def _tunnel_double(instance_id: str, *, pid: int = 4321, local_port: int = 18022) -> Any:
     """Stand-in for ``_SshTunnel`` carrying every attribute ``_mark_recovered`` reads.
@@ -122,9 +130,9 @@ async def test_handle_list_apps_walks_off_the_loop_thread(
 
     assert resp.status == 200
     assert walk_threads, "list_apps was never invoked"
-    assert all(t is not loop_thread for t in walk_threads), (
-        "the apps-dir walk ran synchronously on the event loop thread"
-    )
+    assert all(
+        t is not loop_thread for t in walk_threads
+    ), "the apps-dir walk ran synchronously on the event loop thread"
 
 
 @pytest.mark.asyncio
@@ -144,9 +152,9 @@ async def test_handle_publish_providers_collects_off_the_loop_thread(
 
     assert resp.status == 200
     assert walk_threads, "list_apps was never invoked"
-    assert all(t is not loop_thread for t in walk_threads), (
-        "the publish-provider collection ran synchronously on the event loop thread"
-    )
+    assert all(
+        t is not loop_thread for t in walk_threads
+    ), "the publish-provider collection ran synchronously on the event loop thread"
 
 
 @pytest.mark.asyncio
@@ -193,9 +201,9 @@ async def test_disconnect_registry_write_off_the_loop_thread() -> None:
 
     assert existed is False
     assert registry.write_threads, "the registry cleanup write never happened"
-    assert all(t is not loop_thread for t in registry.write_threads), (
-        "instances.json was rewritten synchronously on the event loop thread"
-    )
+    assert all(
+        t is not loop_thread for t in registry.write_threads
+    ), "instances.json was rewritten synchronously on the event loop thread"
 
 
 @pytest.mark.asyncio
@@ -231,9 +239,9 @@ async def test_mark_recovered_skips_the_write_for_an_untracked_instance() -> Non
 
     await mgr._mark_recovered("disconnected-instance", _tunnel_double("disconnected-instance"), 0)
 
-    assert registry.write_threads == [], (
-        "recovery persisted was_connected=True for an instance no longer tracked"
-    )
+    assert (
+        registry.write_threads == []
+    ), "recovery persisted was_connected=True for an instance no longer tracked"
 
 
 class _BlockingRegistry(_RecordingRegistry):
@@ -315,9 +323,9 @@ def test_list_apps_is_read_only_under_version_drift(
 
     entry = next(a for a in rows if a["name"] == "drift-app")
     assert entry["version"] == "2.0.0", "manifest version not reflected in the listing"
-    assert installed_path.read_text(encoding="utf-8") == before, (
-        "list_apps() wrote installed.json — the listing must be read-only"
-    )
+    assert (
+        installed_path.read_text(encoding="utf-8") == before
+    ), "list_apps() wrote installed.json — the listing must be read-only"
 
 
 # ---------------------------------------------------------------------------

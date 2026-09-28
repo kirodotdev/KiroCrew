@@ -1528,6 +1528,7 @@ export interface CoreInstance {
     state?: 'disconnected' | 'connecting' | 'connected' | 'error'
     error?: string
     token_ttl_remaining?: number
+    token_ttl_total?: number
   }
 }
 

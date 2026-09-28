@@ -9,6 +9,15 @@ import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
+// PARTIAL: the panel also reads the chain-refusal store from this module through
+// useSyncExternalStore, so replacing the whole module would break rendering. Only the
+// announce is spied, which is the one decision under test.
+vi.mock('../lib/chainAnnounce', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/chainAnnounce')>()),
+  announceChainedCrew: vi.fn(),
+}))
+import { announceChainedCrew } from '../lib/chainAnnounce'
+
 vi.mock('../api/client', () => {
   class ApiError extends Error {
     status: number
@@ -239,6 +248,38 @@ describe('RemoteCrewPanel', () => {
     await u.click(screen.getByRole('menuitem', { name: /Remove Kiro Crew Cloud/i }))
     expect(await screen.findByText(/keeps running and billing/i)).toBeInTheDocument()
     expect(api.removeInstance).not.toHaveBeenCalled()
+  })
+
+  it('labels a chained crew\u2019s host as reported rather than as a target', async () => {
+    // The host on a chained row arrives in the announcing pane's payload, which is
+    // untrusted, and this gateway never dials it -- the forward rides the parent. Shown
+    // bare, where every other row shows a verified target, an attacker-chosen string
+    // borrows that authority: a compromised pane could make a row read like a
+    // production database while reaching nothing at all.
+    const chained = {
+      ...MANUAL_INSTANCE,
+      id: 'c1',
+      name: 'Prod DB',
+      ssh_host: 'prod-db.internal.example',
+      via_instance_id: 'm1',
+      via_remote_port: 53999,
+      via_remote_id: 'c-2',
+    }
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true,
+      warm_set_cap: 5,
+      instances: [MANUAL_INSTANCE, chained],
+    })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    renderWithProviders(<RemoteCrewPanel />)
+
+    // The value is kept -- only the parent knows which machine the crew is on, and
+    // replacing it with the parent's host would state something false -- but it is
+    // marked as the crew's own claim.
+    expect(await screen.findByText(/prod-db\.internal\.example \(reported\)/i)).toBeInTheDocument()
+    // The unchained row beside it still shows its host plainly, so the label is a
+    // distinction and not a blanket hedge.
+    expect(screen.getByText(/dev-box-1 .*port 5476/i)).toBeInTheDocument()
   })
 
   it('treats an EC2-stamped SSH crew with no launch job as possibly cloud', async () => {
@@ -1183,6 +1224,125 @@ describe('RemoteCrewPanel', () => {
     await u.click(screen.getByRole('radio', { name: /Company SSO/i }))
     expect(screen.getByRole('radio', { name: /Company SSO/i })).toBeChecked()
     expect(screen.getByRole('textbox', { name: /start URL/i })).toBeInTheDocument()
+  })
+
+  describe('the chained-crew announce and a crew with no dashboard', () => {
+    // A fargate crew serves a turn API on its forwarded port and nothing else -- no
+    // dashboard, no token -- so announcing it to a host makes that host persist a row
+    // promising a tab nothing can serve, and the host writes the row BEFORE it tries to
+    // connect it, so the phantom survives until a human presses Remove. The announce gate
+    // used to check only `local_port`, which a fargate connect does supply.
+    const FARGATE = {
+      id: 'f9',
+      name: 'fargate-crew',
+      connection_method: 'fargate' as const,
+      ssh_host: '',
+      ssm_target: 'ecs:crew_0123456789abcdef0123456789abcdef_0123456789abcdef0123456789abcdef-0123456789',
+      aws_region: 'us-west-2',
+      remote_port: 8080,
+      local_port: 0,
+      status: { instance_id: 'f9', state: 'disconnected' as const },
+    }
+    const SSH = {
+      id: 's9',
+      name: 'ssh-crew',
+      connection_method: 'ssh' as const,
+      ssh_host: 's9-alias',
+      remote_port: 5476,
+      local_port: 0,
+      status: { instance_id: 's9', state: 'disconnected' as const },
+    }
+    // The control that matters most. `usesSsmTransport` is true for BOTH ssm and
+    // fargate, so an ssh-only control cannot tell "gated on having a dashboard" from
+    // "gated on not being SSM-family" -- an ssm crew DOES have a dashboard, so it must
+    // still be announced, and only that distinguishes the two rules.
+    const SSM = {
+      id: 'm9',
+      name: 'ssm-crew',
+      connection_method: 'ssm' as const,
+      ssh_host: '',
+      ssm_target: 'i-0123456789abcdef0',
+      aws_region: 'us-west-2',
+      remote_port: 5476,
+      local_port: 0,
+      status: { instance_id: 'm9', state: 'disconnected' as const },
+    }
+    // A crew THIS dashboard already reaches through another crew. Announcing it asks the
+    // host for a third hop, and the host cannot refuse: it counts hops in its own
+    // registry, where our hop to this crew is invisible, so it accepts the add and
+    // commits the row. Our own gateway is the only one that can see the extra hop, and
+    // it does -- the mint answers `chain_too_deep` -- but the row is already persisted
+    // by then and the refusal relay leaves it behind.
+    const CHAINED = {
+      id: 'x9',
+      name: 'chained-crew',
+      connection_method: 'ssh' as const,
+      ssh_host: 'x9-alias',
+      remote_port: 5476,
+      local_port: 0,
+      via_instance_id: 's9',
+      via_remote_id: 'x9-there',
+      via_remote_port: 53710,
+      status: { instance_id: 'x9', state: 'disconnected' as const },
+    }
+
+    async function connect(rowName: string, localPort: number) {
+      vi.mocked(api.connectInstance).mockResolvedValue({
+        state: 'connected',
+        local_port: localPort,
+        token: 'tok',
+      } as unknown as Awaited<ReturnType<typeof api.connectInstance>>)
+      const row = screen.getByText(rowName).closest('[data-crew-id]') as HTMLElement
+      expect(row).not.toBeNull()
+      await userEvent.setup().click(within(row).getByRole('button', { name: /Connect/i }))
+      await waitFor(() => expect(api.connectInstance).toHaveBeenCalled())
+    }
+
+    it('announces an ssh crew but never one that has no dashboard to embed', async () => {
+      vi.mocked(api.listInstances).mockResolvedValue({
+        active: true,
+        warm_set_cap: 5,
+        instances: [FARGATE, SSH, SSM, CHAINED],
+      } as unknown as Awaited<ReturnType<typeof api.listInstances>>)
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      renderWithProviders(<RemoteCrewPanel />)
+      await screen.findByText('fargate-crew')
+
+      // The fargate connect SUCCEEDS and carries a port -- the exact shape that passed
+      // the old gate -- and must still produce no announcement.
+      await connect('fargate-crew', 7790)
+      expect(announceChainedCrew).not.toHaveBeenCalled()
+
+      // The control: an ssh crew on the same page, same flow, IS announced. Without this
+      // the case above would pass just as well if the announce were broken outright.
+      vi.mocked(api.connectInstance).mockClear()
+      await connect('ssh-crew', 53701)
+      await waitFor(() => expect(announceChainedCrew).toHaveBeenCalledTimes(1))
+      expect(vi.mocked(announceChainedCrew).mock.calls[0][0]).toMatchObject({
+        id: 's9',
+        port: 53701,
+      })
+
+      // The discriminating control: an SSM crew shares `usesSsmTransport` with fargate
+      // but DOES have a dashboard, so it must still be announced. A gate keyed on SSM
+      // transport instead of on the dashboard predicate passes both cases above and
+      // fails only here.
+      vi.mocked(api.connectInstance).mockClear()
+      await connect('ssm-crew', 53702)
+      await waitFor(() => expect(announceChainedCrew).toHaveBeenCalledTimes(2))
+      expect(vi.mocked(announceChainedCrew).mock.calls[1][0]).toMatchObject({
+        id: 'm9',
+        port: 53702,
+      })
+
+      // The depth cap, from the only end that can see it. This crew has a dashboard and
+      // a port, so it passes both gates above; only `via_instance_id` separates it, and
+      // announcing it leaves the host holding a row its own connect can never satisfy.
+      vi.mocked(api.connectInstance).mockClear()
+      await connect('chained-crew', 53703)
+      await waitFor(() => expect(api.connectInstance).toHaveBeenCalled())
+      expect(announceChainedCrew).toHaveBeenCalledTimes(2)
+    })
   })
 
   describe('agent hand-off from the diagnosis note', () => {
