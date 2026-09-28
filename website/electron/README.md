@@ -36,9 +36,12 @@ the user's dashboard routes while removing the transient page, so Back cannot
 return to a completed loading screen.
 
 Every local shell page is restricted by a deny-by-default Content Security
-Policy. Its preload exposes only splash status and boot-completion signals, and
-loading pages cannot open windows or navigate. The token prompt alone may
-navigate to the exact gateway origin selected by the main process.
+Policy. Its preload exposes only splash status and boot-completion signals to
+edition pages and the token prompt. The stock loading page additionally gets
+platform identity and a close-only window control so a stalled or reconnecting
+window can be dismissed. Loading pages cannot open windows or navigate. The
+token prompt alone may navigate to the exact gateway origin selected by the
+main process.
 
 The Electron shell uses the same gateway-hosted setup screen as every browser;
 it has no separate installer or login runner, and it performs neither step. The

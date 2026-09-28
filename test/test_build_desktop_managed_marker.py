@@ -58,7 +58,7 @@ def _extract_step() -> str:
     )
     assert cleanup, "desktop input cleanup not found"
     m = re.search(
-        r"(# A leftover staged marker from an earlier interrupted build.*?)" r"\n# --- (?!3b\. )",
+        r"(^# --- 3b\. .*?)\n# --- (?!3b\. )",
         text,
         re.DOTALL | re.MULTILINE,
     )
@@ -228,7 +228,7 @@ def test_edition_staging_runs_after_desktop_dependencies_are_installed() -> None
 
     root = SCRIPT.parent.parent
     desktop_pkg = json.loads((root / "website" / "electron" / "package.json").read_text())
-    assert desktop_pkg["dependencies"]["parse5"] == "7.3.0"
+    assert desktop_pkg["devDependencies"]["parse5"] == "7.3.0"
     helper = (root / "website" / "scripts" / "lib" / "editionDesktop.mjs").read_text()
     assert "createRequire(new URL('../../electron/package.json', import.meta.url))" in helper
 

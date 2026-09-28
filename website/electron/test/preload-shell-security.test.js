@@ -8,8 +8,9 @@ const { describe, it } = require("node:test");
 
 const SOURCE = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
 
-function exposedFor(protocol) {
+function exposedFor(protocol, pathname = "/edition-loading.html") {
   const exposed = new Map();
+  const sent = [];
   const electron = {
     contextBridge: {
       exposeInMainWorld(name, api) {
@@ -20,19 +21,21 @@ function exposedFor(protocol) {
       invoke() {},
       on() {},
       removeListener() {},
-      send() {},
+      send(...args) {
+        sent.push(args);
+      },
     },
     webUtils: { getPathForFile: () => "" },
   };
   vm.runInNewContext(SOURCE, {
-    location: { protocol },
+    location: { protocol, pathname },
     process: { argv: [], platform: "linux", getHeapStatistics: () => ({}) },
     require(name) {
       assert.equal(name, "electron");
       return electron;
     },
   });
-  return exposed;
+  return { exposed, sent };
 }
 
 describe("preload local-shell boundary", () => {
@@ -47,17 +50,34 @@ describe("preload local-shell boundary", () => {
     }
   });
 
-  it("exposes only the splash bridge to file pages", () => {
-    const exposed = exposedFor("file:");
-    assert.deepEqual([...exposed.keys()], ["electronAPI"]);
-    assert.deepEqual(
-      Object.keys(exposed.get("electronAPI")).sort(),
-      ["bootComplete", "onBootReady", "onStatus"],
-    );
+  it("keeps edition and token pages on the three boot signals", () => {
+    for (const page of ["edition-loading.html", "token-prompt.html"]) {
+      const { exposed } = exposedFor("file:", `/app/${page}`);
+      assert.deepEqual([...exposed.keys()], ["electronAPI"]);
+      assert.deepEqual(
+        Object.keys(exposed.get("electronAPI")).sort(),
+        ["bootComplete", "onBootReady", "onStatus"],
+      );
+    }
+  });
+
+  it("preserves only the stock splash close control", () => {
+    const { exposed, sent } = exposedFor("file:", "/app/loading.html");
+    assert.deepEqual([...exposed.keys()], ["kirocrew", "electronAPI"]);
+    const bridge = exposed.get("kirocrew");
+    assert.deepEqual(Object.keys(bridge).sort(), [
+      "linuxFrameless",
+      "platform",
+      "windowControl",
+    ]);
+    bridge.windowControl("minimize");
+    assert.deepEqual(sent, []);
+    bridge.windowControl("close");
+    assert.deepEqual(sent, [["window-control", "close"]]);
   });
 
   it("retains the full bridge on the dashboard origin", () => {
-    const exposed = exposedFor("http:");
+    const { exposed } = exposedFor("http:");
     for (const name of ["kirocrew", "electronAPI", "localGatewayAPI", "updateAPI"]) {
       assert.equal(exposed.has(name), true, `${name} must remain available to the dashboard`);
     }

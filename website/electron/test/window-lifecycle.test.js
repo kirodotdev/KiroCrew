@@ -711,6 +711,8 @@ describe("dashboard window wiring order", () => {
       "win.on:focus",
       "win.on:focus",
       "view.setWindowOpenHandler",
+      "view.on:will-navigate",
+      "view.on:will-redirect",
       "view.session.onBeforeSendHeaders",
     ]);
     assert.deepEqual(onLoad, [
