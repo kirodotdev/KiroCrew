@@ -144,17 +144,16 @@ describe('phone chat page: one top bar', () => {
     // The brand mark is a control (home = chat root), not an inert picture in
     // the position every other app puts a tappable logo.
     expect(within(rail).getByTestId('mobile-nav-rail-home')).toHaveAccessibleName()
-    // Every tile carries a visible caption (a finger cannot summon the desktop
-    // rail's hover tip); the long label gets its short form, the name stays full.
-    const caps = within(rail).getByRole('button', { name: 'Agent Capabilities' })
-    expect(caps).toHaveTextContent('Capabilities')
-    expect(caps).not.toHaveTextContent('Agent Capabilities')
+    // Every tile carries a visible caption: a finger cannot summon the desktop
+    // rail's hover tip, so the full Customize name stays visible.
+    const customize = within(rail).getByRole('button', { name: 'Customize' })
+    expect(customize).toHaveTextContent('Customize')
     expect(within(rail).getByRole('button', { name: 'Settings' })).toHaveTextContent('Settings')
     // The rail is the last row-set before Search; nothing in it is a text label
     // (icon-only, 56px wide), so every row must be named.
     for (const row of within(rail).getAllByRole('button')) expect(row).toHaveAccessibleName()
     // Only the Apps list scrolls (its own frame, like the desktop rail); the
-    // brand mark above and Capabilities / Settings / Search below stay pinned,
+    // brand mark above and Customize / Settings / Search below stay pinned,
     // so 14 installed apps cannot push Settings off the bottom of the screen.
     expect(rail).toHaveClass('overflow-hidden')
     expect(rail).not.toHaveClass('overflow-y-auto')
@@ -163,7 +162,7 @@ describe('phone chat page: one top bar', () => {
     expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-home'))
     expect(apps).not.toContainElement(within(rail).getByTestId('mobile-nav-rail-search'))
     expect(apps).not.toContainElement(within(rail).getByRole('button', { name: 'Settings' }))
-    expect(apps).not.toContainElement(caps)
+    expect(apps).not.toContainElement(customize)
   })
 
   it('keeps the logo -> nav drawer on other phone pages and still has three in-flow header cells', async () => {

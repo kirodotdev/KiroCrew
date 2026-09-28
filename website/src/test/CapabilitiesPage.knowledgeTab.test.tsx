@@ -29,7 +29,6 @@ vi.mock('../pages/KnowledgePage', () => ({
     <div data-testid="knowledge-pane">{embedded ? 'embedded' : 'standalone'}</div>
   ),
 }))
-vi.mock('../components/RestartButton', () => ({ default: () => <div /> }))
 
 import CapabilitiesPage from '../pages/CapabilitiesPage'
 

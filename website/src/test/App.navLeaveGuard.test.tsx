@@ -51,7 +51,7 @@ vi.mock('../pages/CapabilitiesPage', () => {
   function CapabilitiesPageStub() {
     return (
       <SidePanelLayout
-        title="Agent Capabilities"
+        title="Customize"
         tabs={[
           { key: 'drafts', label: 'Drafts', icon: null },
           { key: 'other', label: 'Other', icon: null },
@@ -147,13 +147,13 @@ describe('sidebar navigation leave guard', () => {
     renderDashboard('/capabilities?tab=drafts')
     await paneReady()
     typeDraft('half-written prompt')
-    // The Capabilities row is `active` here: `active` is a PATHNAME match, and
+    // The Customize row is `active` here: `active` is a PATHNAME match, and
     // the pathname is already /capabilities. But the row navigates to a bare
     // `/capabilities`, dropping `?tab=drafts` — and the pane is mounted on that
     // query, so the click unmounts it. Skipping the ask for any active row lost
     // the draft in silence; the ask has to be skipped only when the WHOLE
     // current URL already equals the row's target.
-    fireEvent.click(navRow(/^Agent Capabilities$/))
+    fireEvent.click(navRow(/^Customize$/))
     expect(confirmSpy).toHaveBeenCalled()
     expect(draftValue()).toBe('half-written prompt')
   })
@@ -166,7 +166,7 @@ describe('sidebar navigation leave guard', () => {
     // No query to drop, so this click navigates to exactly where we already
     // are and unmounts nothing. A confirm the user did not earn is what teaches
     // them to click through the one that matters.
-    fireEvent.click(navRow(/^Agent Capabilities$/))
+    fireEvent.click(navRow(/^Customize$/))
     expect(confirmSpy).not.toHaveBeenCalled()
     expect(draftValue()).toBe('half-written prompt')
   })

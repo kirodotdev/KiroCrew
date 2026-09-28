@@ -94,9 +94,9 @@ for (const theme of ['light', 'dark']) {
   if (JSON.stringify(names) !== JSON.stringify(expected)) {
     throw new Error(`picker rows ${JSON.stringify(names)} != templates ${JSON.stringify(expected)}`)
   }
-  if (await picker.getByText('Agent templates', { exact: true }).count()) throw new Error('group header still rendered')
+  if (await picker.getByText('Custom agents', { exact: true }).count()) throw new Error('group header still rendered')
   if (await picker.getByText('Crewmates', { exact: true }).count()) throw new Error('crewmates header still rendered')
-  if (await picker.getByText(/runs the shared template on shared memory/i).count()) throw new Error('templates hint still rendered')
+  if (await picker.getByText(/runs the shared custom agent on shared memory/i).count()) throw new Error('templates hint still rendered')
   if (await picker.locator('img').count()) throw new Error('a crewmate avatar is rendered, so a member row leaked')
 
   const out = join(OUT, `picker-templates-only-${theme}.png`)

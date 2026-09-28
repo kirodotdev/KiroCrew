@@ -118,7 +118,7 @@ its own chat and memory.
 Beyond that, the only crewmate *configuration* the page writes is the star on a
 row, a roster preference stored on the crewmate. (Opening a member writes too,
 but only its own thread binding.) Both **Edit** affordances still navigate to
-the crew manager — **Agent Capabilities → Crews** (`/capabilities?tab=crews`) —
+the crew manager — **Customize → Crewmates** (`/capabilities?tab=crews`) —
 which remains the editor for an existing crewmate's name, template, model,
 reasoning effort, workspace, triggers, avatar and session color.
 

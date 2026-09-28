@@ -26,7 +26,6 @@ vi.mock('../pages/overview', () => ({
   PromptsTab: () => <div />,
   SteeringTab: () => <div />,
 }))
-vi.mock('../components/RestartButton', () => ({ default: () => <div /> }))
 
 import CapabilitiesPage from '../pages/CapabilitiesPage'
 // `/all` for the Japanese catalog: `../i18n` registers English only.
@@ -50,16 +49,16 @@ describe('CapabilitiesPage — the tab rail follows the active language', () => 
     await i18next.changeLanguage('en')
     wrap(<CapabilitiesPage />)
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'Crewmates' })).toBeTruthy(),
     )
 
     await i18next.changeLanguage('ja')
 
     // The Japanese label for the same tab. Without the language in the memo's
-    // dependencies the rail keeps rendering "Agents" here.
+    // dependencies the rail keeps rendering "Crewmates" here.
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'エージェント' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'クルーメイト' })).toBeTruthy(),
     )
-    expect(screen.queryByRole('button', { name: 'Agents' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Crewmates' })).toBeNull()
   })
 })

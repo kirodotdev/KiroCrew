@@ -129,7 +129,7 @@ async function main() {
         await npage.goto(base + '/capabilities', { waitUntil: 'domcontentloaded' })
         // At 320px the capabilities page renders as a navigation menu; the
         // crews grid lives behind its "Agents" entry.
-        const agentsNav = npage.locator('#main-content').getByText('Agents', { exact: true }).first()
+        const agentsNav = npage.locator('#main-content').getByText('Crewmates', { exact: true }).first()
         await agentsNav.waitFor({ state: 'visible', timeout: 15000 })
         await agentsNav.click()
         await npage.locator('#main-content [data-testid="crew-card"], #main-content [data-testid="crew-row"]').first()

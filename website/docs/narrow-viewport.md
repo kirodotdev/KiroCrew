@@ -28,11 +28,11 @@ must be the only one.** `SidePanelLayout` drops the desktop header block below `
 the block whose `pb-3` put 12px between a tab's title and its content — and replaces it
 with a pill strip that ends in a drawn `border-b`. The pane kept no inset of its own, so
 a tab whose first element is a `Card` or a `StatCard` rendered that element's own border
-ON the divider: two lines touching, measured at a 0px gap on four of Agent Capabilities'
+ON the divider: two lines touching, measured at a 0px gap on four of Customize's
 seven tabs and on seven of Developer's eight renderable ones at 390px. The pane carries
 `pt-3` on the narrow branch only — desktop must stay at 0 or the two insets stack.
 
-That inset is shared by all three pages built on the shell (Agent Capabilities,
+That inset is shared by all three pages built on the shell (Customize,
 Developer, Settings), which makes the second half of the rule as load-bearing as the
 first: **a tab must not add a top margin to its own first element.** Doing so stacks on
 the pane and lands that tab 28px down while its siblings sit at 12px — the inconsistency

@@ -889,7 +889,7 @@ their exact YAML to TaskRunner without LLM decomposition and retain the saved
 definition id, slug, and revision on both the project and shared run.
 
 The chat run card offers explicit promotion after an ad-hoc Python run reaches
-`finished`. Agent Capabilities > Workflows has **Workflow library** and **Runs**
+`finished`. Customize > Workflows has **Workflow library** and **Runs**
 views; the Runs view lists both dynamic Python and TaskRunner-backed runs. It
 also offers promotion for a paused or finished TaskRunner plan whose run
 declares the `save` capability. It loads the response-redacted run snapshot for
@@ -909,7 +909,7 @@ editor uses the same line-numbered, horizontally scrolling source surface in
 editable mode. Python is highlighted as Python and TaskRunner plans as YAML. Both
 source views are presentation-only:
 neither normalizes nor reformats source bytes. On success, the card shows
-`/workflow <slug>` and links to Agent Capabilities > Workflows.
+`/workflow <slug>` and links to Customize > Workflows.
 
 Session promotion derives lineage from the validated original source's
 `META["adapted_from"]` and accepts it only when the exact id and revision exist in
@@ -1324,7 +1324,7 @@ The dashboard handles `/workflow <slug> [input]` locally before harness session
 acquisition; `/workflow` alone lists saved definitions. This keeps the command
 identical across Kiro and adapted harnesses, and prevents an explicit reference
 from being reinterpreted by a harness. The definition format selects its owning
-driver; there is no user-facing engine choice. The Agent Capabilities →
+driver; there is no user-facing engine choice. The Customize →
 Workflows tab is the human management surface. Its Workflow library view owns
 listing, authoring unsaved drafts, lineage, source edits as new revisions, and
 exact saved runs; its Runs view owns common history and explicit promotion.

@@ -231,19 +231,19 @@ function pressEscape() {
 
 /** A roster card, addressed by the accessible name the card exposes. */
 function crewCard(name: string) {
-  return screen.getByRole('button', { name: `Edit agent ${name}` })
+  return screen.getByRole('button', { name: `Edit crewmate ${name}` })
 }
 
 /** Open the editor dialog on `name` and return the dialog element. */
 async function openEditor(name: string): Promise<HTMLElement> {
   fireEvent.click(crewCard(name))
-  return await screen.findByRole('dialog', { name: `Edit agent ${name}` })
+  return await screen.findByRole('dialog', { name: `Edit crewmate ${name}` })
 }
 
 /** Open the editor dialog in create mode and return the dialog element. */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Add crew member' })
+  return await screen.findByRole('dialog', { name: 'Add crewmate' })
 }
 
 describe('crew editor — collision warning', () => {
@@ -256,9 +256,11 @@ describe('crew editor — collision warning', () => {
     expect(within(sheet).getByText('Workspace', { exact: true }).parentElement).not.toContainElement(guidance)
   })
 
-  it('distinguishes new private members from existing V1 bindings in the roster banner', async () => {
+  it('shows no page-level memory banner above the roster', async () => {
+    // The roster opens on the crewmates themselves; the memory explanation
+    // lives in the create sheet (previous test) and the per-binding tips.
     await renderRoster()
-    expect(screen.getByText('New crew members get Member memory (V2). Existing members keep their current memory.')).toBeVisible()
+    expect(screen.queryByText(/New crew members get Member memory/)).toBeNull()
     expect(screen.queryByText(/Every named member has its own private Memory V2/)).toBeNull()
   })
 
@@ -408,7 +410,7 @@ describe('crew editor — a registry write re-reads the config snapshot', () => 
     // nothing else in this sheet — the workspace and model pickers offer
     // different values — so the option is unambiguous without scoping to the
     // stub's listbox.
-    fireEvent.click(within(create).getByRole('combobox', { name: 'Agent Template' }))
+    fireEvent.click(within(create).getByRole('combobox', { name: 'Built from' }))
     fireEvent.click(within(create).getByRole('option', { name: 'kirocrew' }))
     fireEvent.click(within(create).getByRole('button', { name: 'Create' }))
 
@@ -446,7 +448,7 @@ describe('crew editor — keyboard (via a binding select)', () => {
     // the right thing, and it is why this is asserted through the DOM rather than
     // by role: the editor must still be MOUNTED (the form is not destroyed) even
     // though it is hidden from AT.
-    const editorEl = document.querySelector('[aria-label="Add crew member"]')
+    const editorEl = document.querySelector('[aria-label="Add crewmate"]')
     expect(editorEl).toBeTruthy()
     expect(editorEl!.closest('[aria-hidden="true"]')).toBeTruthy()
 
@@ -459,12 +461,12 @@ describe('crew editor — keyboard (via a binding select)', () => {
       expect(screen.queryByRole('dialog', { name: 'Create Workspace' })).not.toBeInTheDocument(),
     )
     // ...and with the nested layer gone the editor is exposed to AT again.
-    expect(screen.getByRole('dialog', { name: 'Add crew member' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Add crewmate' })).toBeInTheDocument()
 
     // Once the nested dialog is gone the editor owns Escape again.
     pressEscape()
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Add crew member' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'Add crewmate' })).not.toBeInTheDocument(),
     )
   })
 })

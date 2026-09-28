@@ -26,6 +26,7 @@ import type { ChatMessage, McpApplyChange, McpServer } from '../../types'
 import { fmtDate } from '../../i18n/format'
 import { Badge, Btn, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import RestartButton from '../../components/RestartButton'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import McpTab from '../overview/McpTab'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
@@ -1835,33 +1836,49 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
 
   return (
     <section className="min-w-0" aria-label={t('pages.connectionsPage.connections')}>
-      <div className="mb-4 flex border-b border-border" role="tablist" aria-label={t('pages.connectionsPage.connection_views')}>
-        <button
-          id="connections-services-tab"
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'services'}
-          aria-controls="connections-services-panel"
-          tabIndex={activeTab === 'services' ? 0 : -1}
-          onClick={() => selectTab('services')}
-          onKeyDown={onTabKeyDown}
-          className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${activeTab === 'services' ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-text'}`}
-        >
-          <Link2 className="h-4 w-4" aria-hidden="true" /> {t('pages.connectionsPage.services')}
-        </button>
-        <button
-          id="connections-mcp-tab"
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'mcp-servers'}
-          aria-controls="connections-mcp-panel"
-          tabIndex={activeTab === 'mcp-servers' ? 0 : -1}
-          onClick={() => selectTab('mcp-servers')}
-          onKeyDown={onTabKeyDown}
-          className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${activeTab === 'mcp-servers' ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-text'}`}
-        >
-          <Server className="h-4 w-4" aria-hidden="true" /> {t('pages.connectionsPage.mcp_servers')}
-        </button>
+      {/* Apply & Restart lives here because this is where MCP server changes
+          are made: a newly enabled server reaches a chat that is already
+          running only after its session is relaunched. Outside the tablist so
+          the tab roles stay a clean pair. The muted line beside it says what
+          restarts and what is kept BEFORE the click — "Restart" alone reads as
+          "interrupts whatever is running", and the confirm is too late for the
+          reader deciding whether to press at all. */}
+      {/* Narrow-first: at 320px the tablist, the hint and the button cannot
+          share one row, so they stack (tabs, then the restart controls beneath
+          them) and only join into one header band from `sm` up. */}
+      <div className="mb-4 flex flex-col gap-2 border-b border-border sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="flex" role="tablist" aria-label={t('pages.connectionsPage.connection_views')}>
+          <button
+            id="connections-services-tab"
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'services'}
+            aria-controls="connections-services-panel"
+            tabIndex={activeTab === 'services' ? 0 : -1}
+            onClick={() => selectTab('services')}
+            onKeyDown={onTabKeyDown}
+            className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${activeTab === 'services' ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-text'}`}
+          >
+            <Link2 className="h-4 w-4" aria-hidden="true" /> {t('pages.connectionsPage.services')}
+          </button>
+          <button
+            id="connections-mcp-tab"
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'mcp-servers'}
+            aria-controls="connections-mcp-panel"
+            tabIndex={activeTab === 'mcp-servers' ? 0 : -1}
+            onClick={() => selectTab('mcp-servers')}
+            onKeyDown={onTabKeyDown}
+            className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${activeTab === 'mcp-servers' ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-text'}`}
+          >
+            <Server className="h-4 w-4" aria-hidden="true" /> {t('pages.connectionsPage.mcp_servers')}
+          </button>
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 pb-2 sm:justify-end sm:pb-1.5">
+          <span className="min-w-0 max-w-[34rem] text-[11.5px] leading-snug text-muted">{t('components.restartButton.beside_hint')}</span>
+          <RestartButton />
+        </div>
       </div>
 
       {activeTab === 'services' ? (

@@ -433,7 +433,7 @@ describe('App routing', () => {
   })
 
   // CapabilitiesPage is a lazy route chunk, so it lands after a Suspense tick.
-  it('redirects /agents to the Agent Capabilities panel', async () => {
+  it('redirects /agents to the Customize panel', async () => {
     renderWithProviders(<App />, { route: '/agents' })
     expect(await screen.findByTestId('capabilities-page')).toBeInTheDocument()
   })
@@ -511,7 +511,7 @@ describe('App routing', () => {
   it('renders nav items', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Sessions')).toBeInTheDocument()
-    expect(screen.getByText('Agent Capabilities')).toBeInTheDocument()
+    expect(screen.getByText('Customize')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
     // PR1 App Store split: the single 'Explore' entry is gone — the sidebar
     // now carries TWO App Store rows, Discover (/apps) and Library

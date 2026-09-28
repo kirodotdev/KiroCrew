@@ -88,7 +88,7 @@ async function main() {
   // 2. The dropdown open — the real options are reachable.
   {
     const { page, sheet } = await openSheet()
-    await sheet.getByRole('combobox', { name: 'Agent Template' }).click()
+    await sheet.getByRole('combobox', { name: 'Built from' }).click()
     await page.getByRole('option', { name: 'reviewer', exact: true })
       .waitFor({ state: 'visible', timeout: 10000 })
     await save(page, '02-template-options-open')
@@ -100,7 +100,7 @@ async function main() {
     const { page, sheet } = await openSheet()
     await sheet.getByPlaceholder('e.g. oncall').fill('researcher')
     await sheet.getByRole('button', { name: 'Create', exact: true }).click()
-    await sheet.getByText('Agent Template is required')
+    await sheet.getByText('Choose a custom agent to build from')
       .waitFor({ state: 'visible', timeout: 10000 })
     await save(page, '03-refusal-template-required')
     await page.close()

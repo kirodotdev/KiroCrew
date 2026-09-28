@@ -86,7 +86,7 @@ import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
 async function openEditor(): Promise<HTMLElement> {
   renderWithProviders(<KiroCrewAgentsPage />)
   fireEvent.click(await screen.findByTestId('crew-card'))
-  return screen.findByRole('dialog', { name: 'Edit agent oncall' })
+  return screen.findByRole('dialog', { name: 'Edit crewmate oncall' })
 }
 
 /** Edit Triggers so `dirtyPanes` is non-empty. Triggers is one of the seven
@@ -162,7 +162,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // Back out: the sheet stays and the edited value survives.
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-keep'))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument())
-    expect(screen.getByRole('dialog', { name: 'Edit agent oncall' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBeInTheDocument()
     expect(within(sheet).getByRole('textbox', { name: 'Triggers' })).toHaveValue('incidents, prod outages')
   })
 
@@ -177,7 +177,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit agent oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
     // A dismissal, never a save.
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -204,7 +204,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit agent oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
@@ -226,11 +226,11 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     })
     renderWithProviders(<KiroCrewAgentsPage />)
     fireEvent.click(await screen.findByTestId('crew-card'))
-    const sheet = await screen.findByRole('dialog', { name: 'Edit agent Ops' })
+    const sheet = await screen.findByRole('dialog', { name: 'Edit crewmate Ops' })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit agent Ops' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: 'Edit crewmate Ops' })).not.toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
@@ -268,7 +268,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     fireEvent.keyDown(sheet, { key: 'Escape', code: 'Escape' })
 
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit agent oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
@@ -298,7 +298,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // abandoned save never reaches the crew record.
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit agent oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
 
@@ -325,7 +325,7 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
 
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit agent oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
     await act(async () => {})
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -399,6 +399,6 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     // The save path routes through settleFor/closeSheet, never the guard.
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Edit agent oncall' })).not.toBeInTheDocument())
+      expect(screen.queryByRole('dialog', { name: 'Edit crewmate oncall' })).not.toBeInTheDocument())
   })
 })

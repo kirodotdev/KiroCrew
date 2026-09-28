@@ -7671,7 +7671,7 @@ async def _handle_workflow_command(
     elif not workflow_ref:
         definitions = await asyncio.to_thread(workflow_service.list_definitions)
         if not definitions:
-            text = "No saved workflows yet. Create one under Agent Capabilities > Workflows."
+            text = "No saved workflows yet. Create one under Customize > Workflows."
             outcome = "empty"
         else:
             lines = ["**Saved workflows** — run one with `/workflow <name> [input]`\n"]

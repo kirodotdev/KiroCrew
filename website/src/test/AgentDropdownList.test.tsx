@@ -76,7 +76,7 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
   it('groups by kind and keeps a same-name member and template as two rows', () => {
     render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={() => {}} />)
     const groups = screen.getAllByRole('group')
-    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Crewmates', 'Agent templates'])
+    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Crewmates', 'Custom agents'])
     expect(screen.getAllByRole('option')).toHaveLength(3)
     expect(screen.getAllByText('reviewer')).toHaveLength(2)
   })
@@ -100,8 +100,8 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
     // badge) so the flag flips nothing but the chrome.
     const templatesOnly = both.filter(a => a.selection_kind === 'template')
     render(<AgentDropdownList agents={templatesOnly} activeAgent="" defaultAgent="" onSelect={() => {}} />)
-    expect(screen.getByRole('group', { name: 'Agent templates' })).toBeInTheDocument()
-    expect(screen.queryByText('Agent templates')).toBeNull()
+    expect(screen.getByRole('group', { name: 'Custom agents' })).toBeInTheDocument()
+    expect(screen.queryByText('Custom agents')).toBeNull()
     expect(screen.queryByText(/default crewmate's workspace and memory/i)).toBeNull()
     expect(screen.queryByText('package')).toBeNull()
     expect(screen.getAllByRole('option')).toHaveLength(2)

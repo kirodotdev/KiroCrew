@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next'
 import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2 } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
-import RestartButton from '../components/RestartButton'
 import { PinSurfaceButton } from '../components/PinSurfaceButton'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
@@ -15,7 +14,7 @@ import { SkillsTab, PromptsTab, SteeringTab } from './overview'
 import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
 import { ContentSkeleton } from '../components/ui'
 
-// The template editor is a drill-in most sessions never open; its chunk is
+// The custom-agent editor is a drill-in most sessions never open; its chunk is
 // fetched on the first visit rather than riding in the dashboard shell.
 const AgentTemplatesTab = lazy(() => import('./overview/AgentTemplatesTab'))
 
@@ -51,8 +50,9 @@ export default function CapabilitiesPage() {
     const groupAutomation = t('pages.capabilitiesPage.group_automation')
     return [
       { key: 'crews', label: t('pages.capabilitiesPage.crews_label'), icon: <Users size={16} />, description: t('pages.capabilitiesPage.crews_description'), group: groupAgent },
-      // The definitions crewmates and chats run. Beside Crews because a crewmate
-      // IS a bound template; the tab manages the shared files themselves.
+      // The custom agents crewmates and chats run. Beside Crewmates because a
+      // crewmate is built from a custom agent; the tab manages the shared files
+      // themselves.
       { key: 'templates', label: t('pages.capabilitiesPage.templates_label'), icon: <FileCode2 size={16} />, description: t('pages.capabilitiesPage.templates_description'), group: groupAgent },
       { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent },
       // The label and description are deliberately unchanged. Substituting the
@@ -81,7 +81,7 @@ export default function CapabilitiesPage() {
   }, [provider, t])
 
   return (
-    <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<div className="flex items-center gap-2"><PinSurfaceButton defaultTab={tabs[0]?.key} /><RestartButton /></div>}>
+    <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<PinSurfaceButton defaultTab={tabs[0]?.key} />}>
       {tab => <>
         {tab === 'crews' && <KiroCrewAgentsPage embedded />}
         {/* ErrorBoundary around the lazy chunk: a stale chunk request after a

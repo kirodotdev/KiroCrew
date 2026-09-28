@@ -3,7 +3,7 @@ import { renderHook, act } from '@testing-library/react'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { createElement } from 'react'
-import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, useSettingHighlight } from './useSettingHighlight'
+import { DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR, KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, useSettingHighlight } from './useSettingHighlight'
 
 // Mock scrollIntoView (not available in jsdom)
 beforeEach(() => {
@@ -160,6 +160,9 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
     // deep link at the top of the pane with no ring. (An UNDECLARED unknown
     // key still strips at once: useSettingHighlightKeyPrefix.test.ts.)
     { name: 'the late-mounting sign-in anchor with no registry entry', highlight: `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`, target: { configKey: KIRO_SIGN_IN_HIGHLIGHT_ANCHOR }, sibling: { configKey: 'stt.provider' } },
+    // The Default crewmate row (Developer → Config) mounts after its config
+    // query the same way; the roster's `default` badge deep-links to it.
+    { name: 'the late-mounting default-crewmate row with no registry entry', highlight: `key:${DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR}`, target: { configKey: DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR }, sibling: { configKey: 'stt.provider' } },
   ])('waits for the exact cold provider during $name', async ({ highlight, target, sibling }) => {
     vi.useFakeTimers()
     const otherProvider = settingControl('Provider', sibling)
