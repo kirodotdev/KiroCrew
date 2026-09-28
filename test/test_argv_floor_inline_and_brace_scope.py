@@ -730,8 +730,14 @@ class TestInlinePayloadNamesTheMintSurface:
         scripts = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
             "project"
         ]["scripts"]
-        for entry in scripts.values():
+        non_minting_scripts = {
+            "agy-acp": "ACP stdio JSON-RPC adapter; does not import or expose token minting",
+        }
+        for name, entry in scripts.items():
             entry_module = entry.split(":")[0]
+            if name in non_minting_scripts:
+                assert entry_module not in {mod for mod, _ in reaches} and entry_module not in seeds
+                continue
             assert inline_payload._inline_payload_reaches_cli(
                 f"import {entry_module}"
             ), entry_module

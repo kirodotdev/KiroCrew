@@ -857,6 +857,7 @@ class TestEndpointPayloadShape:
 
         rows = json.loads(response.text or "{}")["backends"]
         assert [r["policy_id"] for r in rows] == [
+            "agy",
             "claude",
             "codex",
             "deepseek",

@@ -1777,7 +1777,7 @@ def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
     agent-sdk-boundary gate refuses. Both surfaces of this card, and what each owes a
     reader, are written down once in ``providers/mirrors/README.md`` ("Fill the card").
     """
-    from kiro_crew.acp_backends import selectable_backend_values
+    from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN
 
     # circular import -- see agent_sdk.backend_mcp_ability._declaration. Every other
     # backend question in this module is asked the same way and for the same reason.
@@ -1788,7 +1788,7 @@ def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
     except Exception:
         return
     try:
-        rows = [(backend, ability_for(backend)) for backend in selectable_backend_values()]
+        rows = [(backend, ability_for(backend)) for backend in sorted(ACP_BACKENDS_KNOWN)]
         keys = spec_keys()
     except Exception:
         # Triage must survive an unreadable registry; this section is advisory.

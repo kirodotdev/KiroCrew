@@ -290,7 +290,7 @@ def _rewrite_pid_file(path: Path, content: str) -> bool:
 #: ``kiro-cli-chat`` is deliberately NOT here: this tuple is matched as a SUBSTRING,
 #: so every cmdline it would match already matches the projected ``kiro-cli``. It
 #: appears in the exact-match set below, where it does carry coverage.
-_LEGACY_AGENT_MARKERS: tuple[str, ...] = ("claude",)
+_LEGACY_AGENT_MARKERS: tuple[str, ...] = ("claude", "agy-acp")
 
 #: Matched as a SUBSTRING of a whole command line, which is what
 #: ``platform_compat.process_matches`` does. Substring is the right subject there: an
@@ -3180,6 +3180,8 @@ def _env_value(pid: int, key: str, proc_root: Path | None = None) -> bytes | Non
 
 _BROWSER_PLAUSIBLE_OWNER_NAMES = frozenset(
     {
+        "agy",
+        "agy-acp",
         "bash",
         "claude",
         "codex",

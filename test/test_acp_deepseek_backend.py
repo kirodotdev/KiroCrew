@@ -30,6 +30,7 @@ from conftest import make_dir_link
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.session_handle import models_from_config_options
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_AGY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KIRO,
@@ -1662,21 +1663,17 @@ def test_a_routed_harness_still_registers() -> None:
 def test_no_known_backend_is_unverified() -> None:
     """The audit the refusal rests on, kept as a test so it cannot go quietly stale.
 
-    deepseek was the one member of this set, and this change empties it. If a
-    harness ever resolves to ``UNVERIFIED`` again -- including by being absent from
-    the routing table, which ``routing_for`` answers ``UNVERIFIED`` for -- the
-    refusal above starts applying to it. That may be right, but it must be noticed
-    rather than discovered when an edition's registration begins failing.
+    agy is currently held outside the selectable baseline as UNVERIFIED until its
+    stream-json protocol is bridged to ACP permission requests.
     """
     unverified = {b for b in ACP_BACKENDS_KNOWN if routing_for(b) is Routing.UNVERIFIED}
-    assert unverified == set()
-    # Every known id is named EXPLICITLY, so none of them is unverified merely by
+    assert unverified == {ACP_BACKEND_AGY}
+    # Every other known id is named EXPLICITLY, so none of them is unverified merely by
     # omission.
     from kiro_crew.acp_backends import ACP_BACKEND_ROUTING
 
     assert set(ACP_BACKEND_ROUTING) >= ACP_BACKENDS_KNOWN
-    # And the shipped baseline now carries this harness, which is the point of the
-    # change: every KNOWN harness is selectable because every one of them is routed.
+    # And the shipped baseline carries deepseek:
     assert ACP_BACKEND_DEEPSEEK in set(BASELINE_SELECTABLE_BACKENDS)
 
 

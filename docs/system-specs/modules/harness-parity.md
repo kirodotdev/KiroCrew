@@ -5,7 +5,8 @@ first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
 (`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
-and DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), plus whatever a bring-your-own
+DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), and Antigravity CLI (`ACP_BACKEND_AGY`),
+plus whatever a bring-your-own
 (BYO) adapter registers next. Adding a harness requires reviewing
 reviewing `session_pid.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process
@@ -24,8 +25,10 @@ core can spell is an id an operator can choose unless something states the
 exception — pinned by
 `test_agent_backend_editable.py::test_baseline_ships_every_known_backend`, which
 guards against an undocumented NARROWING rather than a widening.
-There is no exception today: `NOT_SHIPPED_SELECTABLE` is empty, which is the state
-to return to. `ACP_BACKEND_DEEPSEEK` was the most recent member. It passed the
+`NOT_SHIPPED_SELECTABLE` holds `ACP_BACKEND_AGY` while unverified: its stream-json
+mode runs without a verified permission-request bridge to Crew's PreToolUse gate, so
+its routing remains `Routing.UNVERIFIED` and it is withheld from `BASELINE_SELECTABLE_BACKENDS`
+until that bridge is established. `ACP_BACKEND_DEEPSEEK` was the previous member. It passed the
 install-probe half of the bar and failed the routing half — its own sandbox decided
 its tool calls, so Crew's PreToolUse gate would not run for what a session actually
 did — and it left the set the way the bar demands, through the routing half rather
@@ -179,6 +182,6 @@ source of truth for what blocks.
    the id is named in that test's `NOT_SHIPPED_SELECTABLE` allowlist together
    with the reason it cannot be offered yet: the id becomes spellable but
    unreachable, and that state needs a stated reason rather than a default.
-   The allowlist is empty today. The full sequence a new
+   The allowlist holds `ACP_BACKEND_AGY` today. The full sequence a new
    harness walks, and which stage decides whether it lands dormant or
    selectable, is [harness-onboarding.md](harness-onboarding.md).
