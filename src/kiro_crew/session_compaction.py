@@ -725,10 +725,11 @@ class CompactionCoordinator:
         ]
 
     async def _await_cotenants(self, key: str, pct: float) -> None:
-        """Hold a failed compaction's restart while sub-agents share the process.
+        """Hold a context restart while sub-agents share the process.
 
-        A failed compaction is a pause, not an end. The parent's process also hosts
-        its session-sharing sub-agents, so shutting it down ends them with no report.
+        A failed or unavailable compaction is a pause, not an end. The parent's
+        process also hosts its session-sharing sub-agents, so shutting it down ends
+        them with no report.
         The restart polls (the manager's per-key completion event is shared, so another
         waiter may release it) for at most ``cotenant_wait_secs``. Past that it stops
         those runs with the ordinary cancel, bounded, so each reports "stopped" into
@@ -739,9 +740,7 @@ class CompactionCoordinator:
         runs = lifecycle._child_teardown
         if runs is None or not self._live_cotenants(runs, key):
             return
-        self._deps.logger.warning(
-            "Session %s restart held: compaction failed and sub-agents share its process", key
-        )
+        self._deps.logger.warning("Session %s restart held: sub-agents share its process", key)
         callback = self.state.on_compacted
         if callback is not None:
             try:
@@ -793,6 +792,8 @@ class CompactionCoordinator:
         except asyncio.TimeoutError:
             return "busy"
         try:
+            # The restart ends this process and every sub-agent that shares it.
+            await self._await_cotenants(key, pct)
             await self._owner._recycle_held(key, session, pct, uncompactable=True)
         finally:
             session.semaphore.release()

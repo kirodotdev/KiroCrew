@@ -133,6 +133,26 @@ async def test_restart_waits_for_a_shared_sub_agent_then_runs_when_it_finishes()
 
 
 @pytest.mark.asyncio
+async def test_an_uncompactable_restart_also_waits_for_a_shared_sub_agent():
+    """A backend with no compaction restarts at the threshold; that must hold too."""
+    mgr, key, runs, order, notices = await _setup()
+    session = mgr._sessions[key]
+
+    task = asyncio.ensure_future(mgr._compaction._recycle_unmanaged(key, session, 95.0))
+    await _settle()
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    assert order == [], "the restart must not fire while the sub-agent runs"
+    assert notices == [(False, COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS)]
+
+    runs.finish()
+    assert await asyncio.wait_for(task, timeout=5) == "recycled"
+    assert order == ["shutdown"]
+    assert runs.cancelled == []
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
 async def test_a_report_waiting_on_the_parent_lands_on_the_fresh_session():
     """A finished child's report queues for the parent turn the hold is keeping.
 
