@@ -35,7 +35,6 @@ const {
   stopGatewayGracefully: stopGatewayProcessGracefully,
   classifyPortOwner,
   probePortBinding,
-  isKirocrewCommand,
 } = require("./gateway-stop");
 const {
   windowsGatewayExecutablePaths,
@@ -54,7 +53,6 @@ const {
   classifyAdoptedGateway,
   revealWindowForConnect,
   waitForServiceRebind,
-  waitForBundledGatewayRestart,
   unrecoverableGatewayDialog,
   shouldReresolveBackend,
   isStaleBundleSignal,
@@ -72,9 +70,6 @@ const {
   remoteCrewDraft,
   saveRemoteCrewConfig,
 } = require("./remote-crew-setup");
-// The stale-bundle restart POSTs to the incumbent itself, so it needs the
-// literal-loopback guard directly; the token plumbing lives in token-sources.
-const { literalLoopbackUrl } = require("./local-token");
 const { resolveHome, canonicalHome, secretCandidates } = require("./home-dir");
 const {
   isLocalGatewayEnabled,
@@ -245,10 +240,6 @@ function createGatewaySupervisor({
   // whenever one reaches handoff, and whenever a monitored backend answers
   // again, so each incident gets its own budget.
   let reresolveAttempts = 0;
-  // A failed restart must not make the boot decision repeatedly restart the
-  // same serving gateway (including one rebound by a service manager).
-  let staleBundleRestartAttempted = false;
-  let staleBundleRestartVersion = "";
   // Executables the CURRENT child was actually spawned from. findKirocrewBin
   // re-probes on every call, so after a Toolbox `current` junction is repointed
   // at a newer version it names a backend this shell never started; the child
@@ -284,7 +275,6 @@ function createGatewaySupervisor({
     lsofListenPids,
     psCommand,
     psPpid,
-    pidAlive,
     snapshotGatewayPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
@@ -726,52 +716,13 @@ function createGatewaySupervisor({
     }
   }
 
-  async function currentBundleGatewayPids() {
-    if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return [];
+  async function isCurrentBundleGateway() {
+    if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return false;
     const pids = await snapshotGatewayPortPids(PORT);
-    if (pids?.length !== 1) return [];
+    if (pids?.length !== 1) return false;
     const command = (await psCommand(pids[0])).trim();
     const bundleRoot = path.join(processObj.resourcesPath, "backend-dist") + path.sep;
-    return command.startsWith(bundleRoot) && isKirocrewCommand(command) ? pids : [];
-  }
-
-  async function requestBundledGatewayRestart() {
-    const loopback = literalLoopbackUrl(BACKEND_URL);
-    if (!loopback) return "not-requested";
-    const token = await fetchLocalToken();
-    if (!token) return "not-requested";
-    const url = new URL(`${loopback}/api/restart`);
-    return new Promise((resolve) => {
-      const req = http.request({
-        hostname: url.hostname,
-        port: url.port,
-        path: url.pathname,
-        method: "POST",
-        headers: { Cookie: `mc_token_${PORT}=${token}` },
-        timeout: 5000,
-      }, (res) => {
-        res.resume();
-        resolve(res.statusCode === 200 ? "accepted" : "refused");
-      });
-      req.on("error", () => resolve("unknown"));
-      req.on("timeout", () => { req.destroy(); resolve("unknown"); });
-      req.end();
-    });
-  }
-
-  function waitForCurrentBundleRestart(pids) {
-    return waitForBundledGatewayRestart({
-      installedVersion: app.getVersion(),
-      fetchHealth: fetchHealthInfo,
-      // An unavailable snapshot is not evidence that gateway.lock was released.
-      incumbentAlive: () => !pids?.length || pids.some(pidAlive),
-      // "Is the port still held" is mere occupancy, so it reads the binding
-      // probe: no holder's self-asserted command line enters this verdict.
-      portFree: async () => (await probeGatewayPortBinding(PORT)) === "free",
-      sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
-      waitMs: ADOPTED_RECOVERY_WAIT_MS,
-      pollMs: POLL_INTERVAL_MS,
-    });
+    return command.startsWith(bundleRoot);
   }
 
   async function resolveGatewayConflict(rebindDepth = 0) {
@@ -783,12 +734,12 @@ function createGatewaySupervisor({
       glog(`:${PORT} is a configured remote host (${remoteHost}) — holder treated as non-local`);
     }
     const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);
-    const bundledGatewayPids = runLocalGateway && !staleBundleRestartAttempted
+    const bundledGateway = runLocalGateway
       && health?.version !== app.getVersion()
       && (localOwner === "kirocrew" || localOwner === "service")
-      ? await currentBundleGatewayPids() : [];
+      && await isCurrentBundleGateway();
     const decision = decideGatewayAction(app.getVersion(), health, {
-      localOwner, bundledGateway: bundledGatewayPids.length === 1,
+      localOwner, bundledGateway,
     });
     // The rule this enforces, as one sentence: adopt a responder on this port
     // only when the port can be attributed either to us (a Kiro Crew LISTEN
@@ -809,54 +760,30 @@ function createGatewaySupervisor({
     // the fail-open this narrows is preserved wherever the probe did not
     // positively find someone else holding the port.
     //
-    // `restart-stale` cannot reach here with a `foreign` owner: the bundled-PID
+    // `warn-stale` cannot reach here with a `foreign` owner: the bundled-path
     // probe above only runs for a `kirocrew` or `service` owner, so that action
     // is unreachable without positive local attribution.
     if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {
       glog(`:${PORT} is served by a process this app did not start and no remote crew is configured there — refusing to adopt it`);
       return "foreign-holder";
     }
-    if (decision.action === "restart-stale") {
-      staleBundleRestartAttempted = true;
-      glog(`bundled gateway ${decision.oldVersion} predates app ${app.getVersion()} — requesting its own graceful restart`);
-      // A refused restart can leave the same stale bundle serving. Keep the
-      // warning armed until the final health check confirms the installed version.
-      staleBundleRestartVersion = decision.oldVersion;
-      const restartRequest = await requestBundledGatewayRestart();
-      // A lost response may follow an accepted restart and an in-place exec.
-      // Wait through its socket gap before warning or considering a spawn.
-      if (restartRequest === "accepted" || restartRequest === "unknown") {
-        // Cold startup awaits start() before connect() paints its splash. Load
-        // it here so this bounded wait has a renderer listening for the status.
-        const window = mainWindow();
-        if (window && !window.isDestroyed()) {
-          try {
-            await window.webContents.loadFile(path.join(dirname, "loading.html"), {
-              query: splashQuery(window, { accent: currentThemeAccent() }),
-            });
-          } catch (error) {
-            glog(`could not show the gateway restart splash: ${error && error.message}`);
-          }
-        }
-        sendStatus("Restarting the gateway to finish the update…");
-        const restarted = await waitForCurrentBundleRestart(bundledGatewayPids);
-        if (restarted === "updated") return resolveGatewayConflict(rebindDepth + 1);
-        if (restarted === "exited") {
-          if (localOwner === "service") {
-            const verdict = await waitForServiceRebind({
-              isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",
-              sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
-            });
-            if (verdict === "rebound") return resolveGatewayConflict(rebindDepth + 1);
-          }
-          return "spawn";
-        }
-        glog("bundled gateway restart did not reach the installed version within the recovery window — continuing with bounded local recovery");
-      } else {
-        glog("bundled gateway restart was not accepted — retaining the serving gateway");
-      }
+    if (decision.action === "warn-stale") {
+      glog(`bundled gateway ${decision.oldVersion} predates app ${app.getVersion()} — warning before reuse`);
+      const stopGateway = `Run this command in Terminal:\nkirocrew stop --port ${PORT}`;
+      const recovery = localOwner === "service"
+        ? `${stopGateway}\nIf the gateway starts again automatically, stop or update the service that restarts it.`
+        : stopGateway;
+      const { response } = await dialog.showMessageBox({
+        type: "warning",
+        message: "The gateway is still running an older version.",
+        detail: `This app is version ${app.getVersion()}. The gateway is still running version ${decision.oldVersion}.\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.\n\nTo finish the update, quit Kiro Crew.\n${recovery}\nThen reopen Kiro Crew.`,
+        buttons: ["Continue with existing gateway", "Quit"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (response === 1) return "abort";
     }
-    if (decision.action === "reuse" || decision.action === "restart-stale") {
+    if (decision.action === "reuse" || decision.action === "warn-stale") {
       // Adopt-or-wait. Only a positive shutting-down verdict refuses adoption;
       // every ambiguity preserves historical fail-open reuse. Remote tunnels are
       // exempt because their local socket is not expected to clear on restart.
@@ -892,17 +819,9 @@ function createGatewaySupervisor({
             }
           }
           if (localOwner !== "service" || (await probeGatewayPortBinding(PORT)) === "free") {
-            if (decision.action === "restart-stale") {
-              // A restart can exec without changing PID. Socket release alone
-              // does not authorize a second gateway beside that booting image.
-              const restarted = await waitForCurrentBundleRestart(drainingPids || bundledGatewayPids);
-              if (restarted === "updated") return resolveGatewayConflict(rebindDepth + 1);
-              if (restarted === "exited") return "spawn";
-            } else {
-              await waitForIncumbentExit(drainingPids, "drain");
-              glog(`drain complete: :${PORT} released — spawning a fresh gateway`);
-              return "spawn";
-            }
+            await waitForIncumbentExit(drainingPids, "drain");
+            glog(`drain complete: :${PORT} released — spawning a fresh gateway`);
+            return "spawn";
           }
         }
         // The holder is not ours to kill. Adopt loudly and let bounded recovery
@@ -910,32 +829,9 @@ function createGatewaySupervisor({
         glog(`drain wait timed out — :${PORT} still held; adopting anyway (recovery will respawn if it dies)`);
         adoptedDraining = true;
       }
-      if (staleBundleRestartVersion) {
-        const current = await fetchHealthInfo();
-        if (current?.app !== "kirocrew" || current.version !== app.getVersion()) {
-          const versionStatus = current?.app === "kirocrew" && current.version
-            ? `The gateway is still running version ${current.version}.`
-            : `The gateway version could not be confirmed (last seen at ${staleBundleRestartVersion}).`;
-          // PPID 1 also covers detached CLI orphans, so do not assume a
-          // service exists. Give the same first step, then handle a respawn.
-          const stopGateway = `Run “kirocrew stop --port ${PORT}” in Terminal.`;
-          const recovery = localOwner === "service"
-            ? `${stopGateway} If the gateway starts again automatically, stop or update the service that restarts it.`
-            : stopGateway;
-          const { response } = await dialog.showMessageBox({
-            type: "warning",
-            message: "The gateway update could not be confirmed.",
-            detail: `This app is version ${app.getVersion()}. ${versionStatus}\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.\n\nTo finish the update, quit Kiro Crew. ${recovery} Then reopen Kiro Crew.`,
-            buttons: ["Continue with existing gateway", "Quit"],
-            defaultId: 0,
-            cancelId: 0,
-          });
-          if (response === 1) return "abort";
-        }
-      }
       glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
       gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner });
-      sendStatus(adoptedDraining || decision.action === "restart-stale"
+      sendStatus(adoptedDraining
         ? "Connecting to the existing gateway…"
         : "Gateway already running ✓");
       return "reuse";

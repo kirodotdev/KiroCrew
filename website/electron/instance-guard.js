@@ -18,7 +18,7 @@
  * LISTEN socket. Legacy gateways (health without identity fields) and
  * source-run dev gateways keep today's reuse behavior. The guard interposes
  * when two positively identified local installs belong to different families,
- * or when an older same-family gateway is positively tied to this app's
+ * or warns when an older same-family gateway is positively tied to this app's
  * bundled backend. The local-owner input separates these from a REMOTE gateway
  * forwarded in over `ssh -L`, which the health payload cannot distinguish.
  *
@@ -112,7 +112,7 @@ function identityFamily(version) {
  * @param {boolean} [opts.bundledGateway=false] the listener's executable was
  *        positively identified beneath this desktop install's backend-dist.
  * @returns {{action:"reuse", reason:string} |
- *           {action:"restart-stale", oldVersion:string, reason:string} |
+ *           {action:"warn-stale", oldVersion:string, reason:string} |
  *           {action:"takeover-prompt", otherFamily:"prod"|"nightly", otherVersion:string}}
  */
 function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown", bundledGateway = false } = {}) {
@@ -128,11 +128,11 @@ function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown",
   const remote = identityFamily(remoteHealth.version);
   if (remote === own) {
     // An app replacement can leave a detached gateway running the old bundle.
-    // Ask that exact local bundled gateway to restart itself; never restart a
-    // tunnel, a separate CLI/service install, or a newer gateway on downgrade.
+    // Warn only for that exact local bundled gateway; never warn for a tunnel,
+    // a separate CLI/service install, or a newer gateway on downgrade.
     if (bundledGateway && (localOwner === "kirocrew" || localOwner === "service")
         && isNewerVersion(ownVersion, remoteHealth.version) === true) {
-      return { action: "restart-stale", oldVersion: remoteHealth.version, reason: "same-family" };
+      return { action: "warn-stale", oldVersion: remoteHealth.version, reason: "same-family" };
     }
     return { action: "reuse", reason: "same-family" };
   }

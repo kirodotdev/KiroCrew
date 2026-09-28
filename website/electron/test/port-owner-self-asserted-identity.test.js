@@ -64,12 +64,7 @@ const OCCUPANCY_SITES = [
   {
     what: "the boot and liveness service-rebind waits, textually identical",
     code: 'isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",',
-    times: 3,
-  },
-  {
-    what: "the stale-bundle restart wait asks only whether the port has cleared",
-    code: 'portFree: async () => (await probeGatewayPortBinding(PORT)) === "free",',
-    times: 1,
+    times: 2,
   },
   {
     what: "drain completion; carries an identity comparison on the same line",
@@ -118,6 +113,16 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
+    what: "boot: stale-bundle detection requires a positively local holder",
+    code: '&& (localOwner === "kirocrew" || localOwner === "service")',
+    times: 1,
+  },
+  {
+    what: "stale-bundle warning: a service manager needs the extra recovery step",
+    code: 'const recovery = localOwner === "service"',
+    times: 1,
+  },
+  {
     what: "boot: refuse to adopt a holder this app did not start with no remote crew configured",
     code: 'if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {',
     times: 1,
@@ -125,16 +130,6 @@ const IDENTITY_SITES = [
   {
     what: "boot: a service-managed holder may be rebound by its manager",
     code: 'if (localOwner === "service") {',
-    times: 2,
-  },
-  {
-    what: "boot: only a positively local holder is asked for its bundled PIDs",
-    code: '&& (localOwner === "kirocrew" || localOwner === "service")',
-    times: 1,
-  },
-  {
-    what: "stale-bundle warning: a service manager needs the extra recovery step",
-    code: 'const recovery = localOwner === "service"',
     times: 1,
   },
   {
@@ -158,33 +153,18 @@ const NON_PORT_SITES = [
     times: 1,
   },
   {
-    what: "the HTTP readiness and restart-request probes' own error results",
+    what: "the HTTP readiness probe's own error result",
     code: 'req.on("error", () => resolve("unknown"));',
-    times: 2,
+    times: 1,
   },
   {
-    what: "the HTTP readiness and restart-request probes' own timeout results",
+    what: "the HTTP readiness probe's own timeout result",
     code: 'req.on("timeout", () => { req.destroy(); resolve("unknown"); });',
-    times: 2,
+    times: 1,
   },
   {
     what: "readiness, short-circuited for a remote host; not an owner verdict",
     code: 'const readiness = remoteHost ? "unknown" : await fetchGatewayReadiness();',
-    times: 1,
-  },
-  {
-    what: "the restart request's own verdict vocabulary, not a port reading",
-    code: 'if (restartRequest === "accepted" || restartRequest === "unknown") {',
-    times: 1,
-  },
-  {
-    what: "the /api/health payload's app name, which names a product not a port",
-    code: 'if (current?.app !== "kirocrew" || current.version !== app.getVersion()) {',
-    times: 1,
-  },
-  {
-    what: "the same health payload, read again to word the warning",
-    code: 'const versionStatus = current?.app === "kirocrew" && current.version',
     times: 1,
   },
   {
