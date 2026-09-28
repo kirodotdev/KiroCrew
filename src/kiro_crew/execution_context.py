@@ -596,6 +596,90 @@ def read_vouched_session_execution(session_key: str) -> ExecutionContext | None:
         return _VOUCHED_EXECUTIONS.get(_live_key(session_key))
 
 
+def revouch_at_verified_admission(
+    verified_session_key: str, execution: ExecutionContext, config: Any
+) -> bool:
+    """Re-establish own-store authority for a rehydrated member session.
+
+    The recovery this process cannot do from the durable record alone. A restart
+    (or a cap eviction) empties `_VOUCHED_EXECUTIONS` while the durable record
+    survives, so a rehydrated member session's own-store dispatch is refused --
+    `read_vouched_session_execution` answers None -- until its owner re-selects the
+    agent and re-binds through the durable path. This restores the vouch WITHOUT
+    that owner action, at the session's next gate-verified admission.
+
+    The trust source is the VERIFIED session key AND config, never the durable
+    record. The caller passes ``verified_session_key`` only after the admission
+    gate has authenticated it (the HTTP gate's ``X-Session-Key``), and this
+    function re-vouches ONLY when that key is a member DM key -- ``member-<slug>``,
+    whose ``<slug>`` IS the member id, derived from the key itself and NOT from the
+    record -- AND the store the vouch would grant is the one CONFIG says that
+    member owns. Two shape checks the record alone cannot be trusted on: its
+    ``member_id`` must equal the key's slug, and its ``store.store_id`` must equal
+    the store ``resolve_member_execution`` derives for that slug from config. The
+    second is load-bearing: ``MemoryStoreRef`` shape-checks the store NAME only and
+    ``ExecutionContext`` requires just ``store.member_id == member_id``, so a member
+    may leave both member-id fields as its own slug while pointing
+    ``store.store_id`` at a PEER's store -- and only the config comparison catches
+    that. A session whose key is NOT a member DM key (a forger's ordinary
+    ``chat-`` slot) never enters the branch at all.
+
+    ``config`` is a ``KiroCrewConfig`` the caller has already loaded OFF the event
+    loop and threads in, so this helper performs no blocking config read of its
+    own; the caller runs it off the loop too, since the store resolution it does
+    is filesystem-backed.
+
+    Returns True when a vouch was (re-)established, False otherwise. Idempotent:
+    an entry the record already agrees with is refreshed rather than duplicated.
+    Callable only where the key is genuinely gate-verified; every other reader of
+    the vouched map stays read-only.
+    """
+    from kiro_crew.members import is_member_session_key, slug_from_dm_slot_key
+
+    if not verified_session_key or not is_member_session_key(verified_session_key):
+        return False
+    if execution.member_id is None or execution.store.member_id != execution.member_id:
+        return False
+    # The member id the VERIFIED key names, taken from the key's own slug rather
+    # than from any field the session writes. `is_member_session_key` accepts the
+    # `dashboard_`/`dashboard:` layer prefixes, so strip the same set before the
+    # canonical `slug_from_dm_slot_key`, which drops the `.memory-<store>` slot
+    # suffix so a key that carries it still reads the bare slug.
+    key = verified_session_key
+    for prefix in ("dashboard_", "dashboard:"):
+        if key.startswith(prefix):
+            key = key[len(prefix) :]
+            break
+    verified_member_id = slug_from_dm_slot_key(key)
+    if not verified_member_id or verified_member_id != execution.member_id:
+        # The record claims a member the verified key does not name -- the forgery
+        # shape. Vouch for nothing.
+        return False
+    # The record's store is verified against CONFIG, not accepted from the record.
+    # `ExecutionContext.__post_init__` requires only `store.member_id == member_id`
+    # and `MemoryStoreRef` shape-checks the store NAME alone, so a member may leave
+    # both member-id fields as its own slug while pointing `store.store_id` at a
+    # PEER's store. Resolving the member's own execution from config -- the same
+    # independent source the legacy-record backfill trusts -- and requiring the
+    # record's `store_id` to equal it closes that: the store the vouch is for is
+    # the one config says the verified member owns, never the one the record
+    # asserts. A config that cannot resolve the member, or resolves it to a
+    # different store, vouches for nothing. ``config`` is passed in already loaded
+    # off the event loop by the caller, so no blocking read happens here.
+    try:
+        alias, _ = member_config_for_id(config, verified_member_id)
+        canonical = resolve_member_execution(config, alias)
+    except Exception:
+        # Fail closed: any resolution or ambiguity failure withholds the vouch.
+        # The session recovers on its owner's next agent re-select.
+        return False
+    if canonical.store.store_id != execution.store.store_id:
+        return False
+    with _EXECUTION_LOCK:
+        _vouch(_live_key(verified_session_key), execution)
+        return _VOUCHED_EXECUTIONS.get(_live_key(verified_session_key)) is not None
+
+
 def read_live_session_execution(session_key: str) -> ExecutionContext | None:
     """Snapshot the live carrier for generation-safe restricted-session cleanup."""
     with _EXECUTION_LOCK:

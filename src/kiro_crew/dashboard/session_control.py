@@ -87,6 +87,7 @@ from kiro_crew.execution_context import (
     read_vouched_session_execution,
     refresh_vouched_session_execution,
     resolve_member_execution,
+    revouch_at_verified_admission,
 )
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.members import select_provider_backend
@@ -1993,13 +1994,38 @@ async def create_session(
     # refused outright, it simply falls through to the fence below, which an owner
     # passes.
     if child_execution.member_id is not None:
-        own_store_agreed = (
-            caller_execution is not None
-            and caller_execution.member_id is not None
-            and caller_execution.store == child_execution.store
-            and caller_vouched is not None
-            and caller_vouched.store == caller_execution.store
-        )
+
+        def _own_store_agreed() -> bool:
+            return (
+                caller_execution is not None
+                and caller_execution.member_id is not None
+                and caller_execution.store == child_execution.store
+                and caller_vouched is not None
+                and caller_vouched.store == caller_execution.store
+            )
+
+        own_store_agreed = _own_store_agreed()
+        if not own_store_agreed and caller_vouched is None and caller_execution is not None:
+            # The rehydrate self-heal. Agreement fails on the ONE shape
+            # a restart or a cap eviction produces -- the durable record survives
+            # but this process holds no vouched word -- so re-establish that word
+            # at THIS gate-verified admission rather than stranding own-store
+            # dispatch until the owner re-selects the agent. The trust source is
+            # the VERIFIED session key: `revouch_at_verified_admission` re-vouches
+            # only when that key is a member DM key whose slug the durable record
+            # AGREES with, so a caller that forged its record to name a peer's
+            # store (its key is not a member DM key, or its slug is not the member
+            # the record claims) gets nothing. `caller_key` is the key the HTTP
+            # gate authenticated; `caller_memory_identity[0]` is the same session's
+            # history key, which carries the `member-<slug>` form for a member DM.
+            # Off the loop: it resolves the member's store from config (filesystem
+            # work), and `cfg` was already loaded off-loop above, so no blocking
+            # read runs on the gateway loop.
+            if await asyncio.to_thread(
+                revouch_at_verified_admission, caller_memory_identity[0], caller_execution, cfg
+            ):
+                caller_vouched = read_vouched_session_execution(caller_memory_identity[0])
+                own_store_agreed = _own_store_agreed()
         if own_store_agreed:
             # Recency follows USE, not birth, so a later overflow at the cap drops
             # an idle key rather than the member session still dispatching through

@@ -1269,40 +1269,133 @@ class TestPrivateStoreCallerIsolation:
         )
         assert state.get_slot(result["target"]) is not None
 
-    def test_a_restart_drops_the_own_store_admission_until_a_fresh_bind(
+    def test_a_restart_self_heals_own_store_dispatch_at_the_next_gate_admission(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # The stated cost of holding this authority in process memory. A restart
-        # empties it while the durable record survives, and nothing on the rehydrate
-        # path can safely re-establish it: every value reachable there resolves
-        # through something the session itself can influence -- the record it writes,
-        # the slot store rehydrated from that record, and config looked up by that
-        # record's own member id. A re-read of any of them agrees with a forged
-        # record by construction rather than checking it.
-        #
-        # So the admission is refused until the owner re-selects the agent, which
-        # binds afresh. Pinned here so the property is stated rather than
-        # rediscovered, and because the refusal is the fail-closed direction.
+        # A restart empties the vouched map in process memory while the durable
+        # record survives, so a rehydrated member session's own-store dispatch
+        # would otherwise stay refused until its OWNER re-selected the agent. The
+        # trust source that closes that gap: a vouch registered at the session's
+        # next GATE-VERIFIED admission, keyed on the verified session key, not on
+        # anything the record asserts. The member DM caller's key IS
+        # `member-<slug>`, the key the HTTP gate authenticated, and its slug is the
+        # member id -- a value the session cannot rewrite about itself. So this
+        # create re-establishes the vouch and is admitted, with NO owner
+        # re-selection.
         from kiro_crew import execution_context
+        from kiro_crew.execution_context import read_vouched_session_execution
 
         state, cfg = self._prepare(tmp_path, monkeypatch)
-        caller, _execution = self._member_caller(state, cfg)
+        caller, execution = self._member_caller(state, cfg)
+        # Simulate the restart: the durable record (and the caller's slot store)
+        # survive; only this process's vouched word is gone.
         execution_context._VOUCHED_EXECUTIONS.clear()
+        assert read_vouched_session_execution(slot_history_key(caller)) is None
 
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+        )
+        assert state.get_slot(result["target"]) is not None
+        # The self-heal re-committed this process's word, keyed on the verified key.
+        revouched = read_vouched_session_execution(slot_history_key(caller))
+        assert revouched is not None
+        assert revouched.store == execution.store
+
+    def test_a_rehydrated_forger_cannot_revouch_a_peers_store(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The self-heal's trust source, SHOWN not asserted.
+        # A session that rewrites its own durable record to name a PEER's store
+        # must not be re-vouched by the gate-verified path, even after a restart
+        # emptied the map. Three forgery shapes, all refused:
+        #
+        #  (a) an ordinary `chat-` caller whose writable record names the peer
+        #      store. Its verified key is not a member DM key, so the re-vouch
+        #      never fires -- the record alone is no authority.
+        #  (b) a member DM caller (`member-radar`) whose record is forged to a
+        #      PEER member's store. The verified key's slug is `radar`; the record
+        #      claims `peer`; they disagree, so the re-vouch refuses. The vouch is
+        #      keyed on the key the gate verified, never on the member the record
+        #      asserts.
+        #  (c) a member DM caller (`member-radar`) whose record keeps BOTH
+        #      member-id fields as its own slug `radar` but points `store.store_id`
+        #      at the PEER's store -- the shape `ExecutionContext.__post_init__`
+        #      (which checks only `store.member_id == member_id`) and
+        #      `MemoryStoreRef` (which shape-checks the store NAME) both admit. The
+        #      re-vouch resolves `radar`'s own store from CONFIG and refuses,
+        #      because the record's `store_id` is not the one config says `radar`
+        #      owns.
+        from kiro_crew import execution_context
+        from kiro_crew.execution_context import (
+            read_vouched_session_execution,
+            resolve_member_execution,
+            revouch_at_verified_admission,
+        )
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        peer_execution = resolve_member_execution(cfg, "peer")
+
+        # (a) ordinary caller, forged record -> the create is refused AND nothing
+        # is vouched for it.
+        forger = state.get_or_create_slot("chat-51-1789000000")
+        forger._created_by = _MEMBER
+        forger.agent = "peer"
+        forger.memory_store = peer_execution.store.legacy_name
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        monkeypatch.setattr(sc, "read_session_execution", lambda *_a, **_k: peer_execution)
         with pytest.raises(sc.SessionControlError) as error:
             asyncio.run(
-                sc.create_session(state, caller_session_key=slot_history_key(caller), agent="radar")
+                sc.create_session(state, caller_session_key=slot_history_key(forger), agent="peer")
             )
         assert error.value.code == "memory_delegation_denied"
-        assert state.creator_slot_count(caller.key) == 0
+        assert state.creator_slot_count(forger.key) == 0
+        assert read_vouched_session_execution(slot_history_key(forger)) is None
+
+        # (b) member DM key, record forged to the PEER's store. The direct call
+        # shows the trust source itself: the verified key names `radar`, the
+        # forged record names `peer`, so the re-vouch refuses and commits nothing.
+        member_key = _MEMBER  # member-radar
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        assert revouch_at_verified_admission(member_key, peer_execution, cfg) is False
+        assert read_vouched_session_execution(member_key) is None
+
+        # (c) member DM key `member-radar`, record with BOTH member-id fields left
+        # as its own slug `radar` but `store.store_id` pointed at the PEER's store.
+        # This is the shape the member-id agreement check alone would pass; the
+        # config store-identity comparison is what refuses it.
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        radar_execution = resolve_member_execution(cfg, "radar")
+        forged_store_id = ExecutionContext(
+            member_id="radar",
+            store=MemoryStoreRef(store_id=peer_execution.store.store_id, member_id="radar"),
+            selection_kind="member",
+            template_id=radar_execution.template_id,
+            memory_mode="persistent",
+        )
+        # The forged record is a valid ExecutionContext: post-init checks only that
+        # store.member_id == member_id, which both hold as "radar".
+        assert forged_store_id.member_id == "radar"
+        assert forged_store_id.store.member_id == "radar"
+        assert forged_store_id.store.store_id == peer_execution.store.store_id
+        assert forged_store_id.store.store_id != radar_execution.store.store_id
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        assert revouch_at_verified_admission(member_key, forged_store_id, cfg) is False
+        assert read_vouched_session_execution(member_key) is None
+        # The honest record for the same key IS re-vouched, so the refusal above
+        # is the store-identity check firing, not a blanket break.
+        execution_context._VOUCHED_EXECUTIONS.clear()
+        assert revouch_at_verified_admission(member_key, radar_execution, cfg) is True
+        assert read_vouched_session_execution(member_key) is not None
 
     def test_a_fresh_bind_restores_the_own_store_admission_after_a_restart(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # The other half of the pair above, and the reason it is a deferral rather
-        # than a lost capability: re-selecting the agent binds through the durable
-        # path, which vouches again, and the same dispatch is admitted. Without this
-        # twin the refusal above could be read as removing the capability outright.
+        # A member re-selecting the agent binds through the durable path, which
+        # vouches again, and the same dispatch is admitted. Kept alongside the
+        # gate-verified self-heal above: both restore the capability after a
+        # restart, one automatically at the next admission and one on an explicit
+        # owner re-select, and neither removes it outright.
         from kiro_crew import execution_context
         from kiro_crew.execution_context import bind_session_execution
 
