@@ -204,3 +204,54 @@ def test_the_sweep_takes_the_whole_process_group_not_just_the_leader() -> None:
             except ProcessLookupError:
                 pass
         proc.wait(timeout=5)
+
+
+# Stays in the CALLER's process group: no setsid. That is what a helper child of this
+# process looks like, and the sensitive-path resolver keeps several of them alive for the
+# life of the process that first resolved a path.
+_SAME_GROUP_HELPER = "import time; time.sleep(120)"
+
+
+def _process_group_of(pid: int) -> int:
+    """The pid's process group, read from ``/proc`` the way the sweep reads it.
+
+    From ``/proc`` rather than through the POSIX call, for the same reason the module under
+    test does it: this tree is scanned for platform-specific primitives, and ``/proc`` is
+    already the one source every liveness check in this file uses.
+    """
+    with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+        return int(fh.read().rsplit(")", 1)[1].split()[2])
+
+
+def test_the_sweep_leaves_a_child_in_its_own_process_group_alone() -> None:
+    """A child sharing OUR group is withheld from the sweep, and the sweeper survives.
+
+    The sweep's remedy is a group signal, and on our own group that kills the sweeper -- so
+    the loop's remaining rounds never run and every real orphan is left alive. One helper
+    child is enough to turn the teardown into a self-kill, and it is a reachable shape: a
+    library this process uses can hold a pool of helper children, and those sit in our group.
+
+    Nothing the sweep exists to reach is lost. An escaped kiro-cli worker ``setsid``s into a
+    group of its own -- which is why the sweep signals groups at all -- and the front and
+    backend are spawned into theirs, so a process in our group is never one of those. It also
+    dies with us when this process exits, which in the container is the next thing to happen.
+
+    Asserted on BOTH survivors, because a group signal would have taken both: the helper is
+    still there, and so is the process that ran the sweep.
+    """
+    proc = subprocess.Popen([sys.executable, "-c", _SAME_GROUP_HELPER])
+    try:
+        assert _process_group_of(proc.pid) == _process_group_of(
+            os.getpid()
+        ), "the helper left our process group, so this test is not about the case it names"
+        assert proc.pid not in _our_live_children(
+            set()
+        ), "a same-group child reached the kill loop, where a group signal takes this process"
+
+        _sweep_orphans_the_backend_cannot_reap(set())
+
+        assert _alive(proc.pid), "the same-group helper was killed after all"
+        assert _alive(os.getpid()), "the sweep killed the process running it"
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)

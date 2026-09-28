@@ -1901,14 +1901,45 @@ existed.
 
 The startup order is a correctness requirement rather than a preference:
 
-1. Gate the environment (path layout, model credential, sandbox) and install the
-   crew bundle. Nothing has started.
+1. Gate the environment (path layout, model credential, sandbox), point the task's
+   kiro home at `<data home>/kiro`, and install the crew bundle. Nothing has started.
 2. Write the container's own configuration. It must land after the bundle, because
    a bundle may ship config and the container's posture has to win on the keys it
    sets, and before the backend, which reads the file at boot.
 3. Start the backend. `wait_until_ready` returns only when the port answers **and**
    the boot secret file exists; process-alive is not ready.
 4. Start the front process.
+
+**The task owns its agent-spec directory, and that is what lets the backend write
+it.** `KIRO_HOME` is set to `<data home>/kiro`, so the crew's spec and Kiro Crew's own
+`kirocrew.json` share one directory under the volume. The default is wrong here and
+fails in a way nothing reports: with `KIRO_HOME` unset the specs resolve to the process
+HOME's `~/.kiro/agents`, which every instance under that `$HOME` shares, and a backend
+on a non-default data home (`KIROCREW_HOME=<data home>`) REFUSES to rewrite a shared
+agents directory -- the specs it writes pin the writer's data home into every managed
+MCP server entry, which breaks strict session identity for a default-home gateway
+(#9690). The refusal is correct and stays. Its consequence in the container was that the
+supervisor's crew spec landed in the shared directory carrying no ownership provenance,
+the backend read it as another home's, declined, and never wrote the default spec at
+all; the boot looked healthy and every turn died at `DerivedSpecStale: the default agent
+spec .../kirocrew.json is missing`.
+
+`<data home>/kiro` is that guard's own private-target case: `<data home>/kiro/agents` is
+exactly `config.paths.isolated_agents_dir(data home)`, a directory this task's teardown
+owns and shares with nobody, so the guard stands aside without being relaxed. The match
+is EXACT rather than by ancestry -- "anywhere beneath the data home" would read the
+machine-wide directory as private whenever the data home is an ancestor of it -- so the
+`kiro` segment is load-bearing and no other nesting works.
+
+Two processes have to agree on that one directory and they reach it by different routes:
+the supervisor's installer mirrors kiro-cli's own `$KIRO_HOME`-or-`~/.kiro` rule from the
+environment (it imports no `kiro_crew`), while the backend goes through Kiro Crew's
+resolver. So the value is exported into the supervisor's environment *and* set on the
+backend's from the settings, and the export then asserts that the installer's resolver
+answers the same path -- a rename on either side fails at boot instead of installing the
+crew where nothing serves it. A directory that cannot be created is a refusal too, since
+the alternative is the backend declining for a second reason minutes later with the
+failure attributed to the guard.
 
 There is no backup sidecar and no restore phase. Durability across task
 replacement is a capability the container does not have; the front still fetches a
@@ -2306,6 +2337,17 @@ backend -- stop new turns arriving, then let the backend drain and flush -- and
 anything still alive afterwards is an escaped worker, which the teardown sweeps by
 process group over bounded rounds, because a killed process's children reparent to
 PID 1 and surface in the next round.
+
+A child in the supervisor's OWN process group is withheld from that discovery. The sweep's
+remedy is a group signal, and on its own group that SIGKILLs the supervisor -- so the
+remaining rounds never run and every real orphan is left alive. One such child is enough,
+and it is a reachable shape: a library the supervisor itself uses can hold a pool of helper
+children (the sensitive-path resolver keeps several), and those are its children in its own
+group. Nothing the sweep exists to reach is lost, because every one of those is in a group of
+its own -- an escaped worker by `setsid`, the front and backend by being spawned into theirs
+-- and a same-group child dies with the supervisor when it exits, which is the next thing to
+happen. The group is read from the same `/proc` line the parent is, so a candidate has one
+source of truth and no second syscall on a pid that may already be gone.
 
 The exit code distinguishes the reasons, because it is the only thing the
 platform reads: a stop signal and a spent task lifetime are the success cases, and
