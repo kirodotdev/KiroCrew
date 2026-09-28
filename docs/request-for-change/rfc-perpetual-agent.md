@@ -1,20 +1,26 @@
 ---
 title: Perpetual agents — self-scheduled, goal-driven, supervised
-status: draft
-revision: 3
+status: accepted
+revision: 4
 author: zezhexu
 created: 2026-08-09
-last-audited: 2026-08-12
-audited-at: a72c985f8
+last-audited: 2026-09-28
+audited-at: 631f8e6dc
 doc-pr: 2328
-implementation-prs: []
+implementation-prs: [11582]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: Perpetual agents — self-scheduled, goal-driven, supervised
 
-- Status: draft — no implementation.
+- Status: accepted — the product decision is the owner-controlled Perpetual
+  mode in §Accepted decision. Its implementation is tracked in
+  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582).
+- **Revision 4 (2026-09-28): accepted one narrow product shape.** An owner may
+  keep one crewmate's auto-nudge loop active without cycle or elapsed-time caps
+  until the owner turns it off. The larger self-scheduled cron design below is
+  retained as research and is not part of this acceptance.
 - **Revision 3 (2026-08-12): Phase 0 ran and concluded.** Two agents
   (`flake-warden`, 42 cycles; `copywriting-warden`, 21 cycles), 2.5 days, 13
   merged PRs, 18 issues, zero fabrications detected, zero auto-pauses, two wakes
@@ -43,6 +49,65 @@ superseded-by: []
 - Related: `src/kiro_crew/docs/cron-and-scheduling.md` (the surface this extends),
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md` (same
   "sessions are the unit of continuity" organizing rule)
+
+## Accepted decision — owner-controlled Perpetual mode
+
+This section is the accepted decision. It records the smallest product shape
+needed by [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582). The later
+cron, agent-selected cadence, life-directory, supervision and wake-economy
+design remains historical research. Where that research conflicts with this
+section — including its rejection of AutoNudge and its required daily wake
+ceiling — this section governs the accepted product.
+
+### The switch belongs to the owner
+
+Each crewmate has one Perpetual mode switch. It is off unless the owner turns it
+on. The crewmate cannot grant itself this mode, remove its limits or restore
+itself after the owner turns it off.
+
+Turning the switch on makes that crewmate's existing auto-nudge loop active and
+sets both its cycle cap and elapsed-time cap to zero. If an active loop still
+has either cap, turning the switch on removes both caps. Structured monitors and
+scheduled jobs never convert into Perpetual mode.
+
+Turning the switch off immediately blocks new wakes and lets work already in
+flight finish. It does not delete the crewmate, its chat or its work record. The
+same state appears in the crew editor's **Schedules** pane, the Crewmates
+**Work log** and the Overview node.
+
+### Uncapped is explicit, not hidden
+
+While the switch is on, no cycle count or elapsed-time limit stops future
+wakes. Each delivered wake uses one model turn, about the same work as answering
+one message. A wake with nothing due ends immediately. The owner can stop all
+new wakes at once with the same switch.
+
+The UI states these facts beside the control. A finite loop is never described
+as Perpetual. An unknown or unreadable authorization state fails closed and does
+not appear on. Install-wide disablement names the gateway operator as the actor,
+and a separate repeating task created in chat links back to that chat instead
+of pretending to be Perpetual mode.
+
+### Authorization commits after the uncapped state
+
+The owner grant becomes authoritative only after the active loop with both caps
+at zero is durable. A pending transition authorizes nobody. If that commit
+fails, the loop is paused; if pausing also fails, the pending fence still blocks
+new wakes. Startup resolves pending transitions from accepted durable loop
+state. Revocation happens only after ownership is read as confirmed true; an
+unreadable ownership record returns an error instead of weakening the fence.
+
+Pre-upgrade self-arm records in the old agent-writable trust path are discarded,
+not migrated. Affected loops read off and show an owner re-arm action. The
+owner-controlled state stays slot-bound, sealed and audited.
+
+### Acceptance
+
+The decision is satisfied when one owner action produces the same truthful
+state on all three surfaces, on means active with both caps at zero, off blocks
+new wakes while current work finishes, and every missing, corrupt or interrupted
+authorization path fails closed. Tests must cover active capped conversion,
+off, restart recovery, failed commit, failed read and pre-upgrade retirement.
 
 ## Summary
 
