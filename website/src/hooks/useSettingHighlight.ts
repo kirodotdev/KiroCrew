@@ -4,10 +4,10 @@ import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry
 import { i18nT } from '../i18n/t'
 
 /**
- * Deep-link target for the "Crew Members" card in Settings → Developer →
+ * Deep-link target for the "Crewmates" card in Settings → Developer →
  * Feature Previews — the switch that reveals the `/members` page.
  *
- * The sidebar's create-menu "Crew Members" entry navigates here while the
+ * The sidebar's create-menu "Crewmates" entry navigates here while the
  * page is still preview-gated, so the user lands on the switch that holds the
  * page rather than on a toast about it. Same shape and same reason as
  * {@link SETTINGS_DEFAULT_MODEL_ID} below: registry ids derive from the
@@ -16,7 +16,7 @@ import { i18nT } from '../i18n/t'
  * SETTINGS_REGISTRY. Declared above `LEGACY_ID_EXACT` because that table
  * maps the card's previous id onto it.
  */
-export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.crew-members'
+export const SETTINGS_CREW_MEMBERS_PREVIEW_ID = 'developer.crewmates'
 
 /**
  * Legacy highlight-id migrations. Registry ids are `<tab>.<kebab-label>`, so
@@ -48,9 +48,12 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
   // The Feature Previews crew card was relabeled from "Crew Members and Crew
-  // Mode" to "Crew Members" when Crew Mode retired; the flag and the card are
-  // the same ones, only the label (and so the id) narrowed.
+  // Mode" to "Crew Members" when Crew Mode retired, then to "Crewmates" to match
+  // the page title (`pages.membersPage.title`); the flag and the card are the
+  // same ones throughout, only the label (and so the derived id) narrowed. Both
+  // prior ids land on the current one.
   'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
+  'developer.crew-members': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
   // The peer-session card was relabeled from "Remote instance sessions" back to
   // "Remote crew sessions" when the remote-crew vocabulary was restored. Same
   // flag, same card — only the label, and so the derived id, moved.

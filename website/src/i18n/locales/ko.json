@@ -9206,7 +9206,7 @@
     "settings": "설정",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "크루 멤버"
+    "crew_members": "크루메이트"
   },
   "pages": {
     "agentsPage": {
@@ -11212,7 +11212,7 @@
       "columns_load_failed": "보드 열을 불러올 수 없습니다",
       "folder_update_failed": "폴더 업데이트 실패",
       "board_update_failed": "보드 업데이트 실패",
-      "open_crew_members": "크루 멤버",
+      "open_crew_members": "크루메이트",
       "open_crew_members_desc": "크루 멤버 페이지를 엽니다. 각 멤버는 자기 스레드를 가진 상주 에이전트입니다.",
       "open_crew_members_gated_desc": "먼저 설정을 열어 이 미리보기를 켭니다. 켜기 전까지 페이지를 사용할 수 없습니다.",
       "remote_sessions_not_shown_in_board_view_other": "보드 열은 로컬 세션만 관리하므로 원격 세션 {{count}}개는 보드 보기에 표시되지 않습니다.",
@@ -11731,7 +11731,7 @@
           "crew_where": "켜면 “Crew Members”가 사이드바의 Sessions 아래에 나타납니다. 새로 만들기 메뉴 항목은 켜져 있으면 페이지, 꺼져 있으면 이 카드를 엽니다.",
           "crew_media_members": "멤버 하나를 선택해 활동 패널을 연 Crew Members 페이지입니다."
         },
-        "crew_members": "크루 멤버",
+        "crew_members": "크루메이트",
         "crew_members_desc": "Crew Members 페이지: 보유한 모든 에이전트가 각자 스레드를 가지고 나열됩니다. 아직 만드는 중이라 켜기 전까지는 제공되지 않습니다.",
         "decisions": "판단 (Jev)",
         "decisions_desc": "Jev는 작고 빠른 판단 모델입니다. 이 스위치를 켜면 {{productName}}이(가) 방금 보낸 메시지에 어떤 스킬이 맞는지, 또는 맞는 것이 없는지 Jev에게 묻고, 스위치 아래에 표시된 비율의 세션에서는 Jev의 선택을 그대로 씁니다. 나머지 세션은 이 빌드에 포함된 단어 일치 규칙을 그대로 씁니다. Jev가 느리거나 연결되지 않거나 쓸 수 있는 답을 주지 않으면 그 메시지는 같은 규칙으로 돌아가므로, 판단이 답변을 지연시키지 않습니다. 모든 호출은 진단용으로 {{productName}}을(를) 실행하는 컴퓨터의 로그에도 기록됩니다. 이 스위치는 브라우저가 아니라 {{productName}}을(를) 실행하는 컴퓨터에 저장되므로, 어느 기기에서 열어도 적용됩니다.",

@@ -9460,7 +9460,7 @@
     "settings": "Paramètres",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Membres de l'équipe"
+    "crew_members": "Coéquipiers"
   },
   "pages": {
     "agentsPage": {
@@ -11550,7 +11550,7 @@
       "columns_load_failed": "Impossible de charger les colonnes du tableau",
       "folder_update_failed": "Échec de la mise à jour du dossier",
       "board_update_failed": "Échec de la mise à jour du tableau",
-      "open_crew_members": "Membres de l’équipe",
+      "open_crew_members": "Coéquipiers",
       "open_crew_members_desc": "Ouvre la page Membres de l’équipe : chaque membre est un agent permanent avec son propre fil.",
       "open_crew_members_gated_desc": "Ouvre d’abord les Réglages pour activer cet aperçu : la page n’est pas disponible avant cela.",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} session distante n'est pas affichée dans la vue tableau — les colonnes du tableau gèrent uniquement les sessions locales.",
@@ -12087,7 +12087,7 @@
           "crew_where": "« Crew Members » apparaît dans la barre latérale sous Sessions quand ceci est activé ; l’entrée du menu Nouveau l’ouvre, ou cette carte sinon.",
           "crew_media_members": "La page Crew Members, avec un membre sélectionné et son panneau d’activité ouvert."
         },
-        "crew_members": "Membres de l’équipe",
+        "crew_members": "Coéquipiers",
         "crew_members_desc": "La page Crew Members : tous vos agents, chacun avec son propre fil. Encore en construction, donc non proposée tant que ceci n’est pas activé.",
         "decisions": "Décisions (Jev)",
         "decisions_desc": "Jev est un petit modèle de décision rapide. Lorsque c'est activé, {{productName}} lui demande laquelle de vos compétences correspond au message que vous venez d'envoyer — ou si aucune ne convient — et utilise le choix de Jev pour la part de vos sessions indiquée sous le commutateur ; les autres conservent la règle de correspondance de mots livrée avec cette version. Si Jev est lent, injoignable ou ne renvoie rien d'exploitable, ce message revient à la même règle : une décision ne retarde donc jamais votre réponse. Chaque appel est également consigné dans un journal sur la machine qui exécute {{productName}}, à des fins de diagnostic. Ce commutateur n'est pas enregistré dans le navigateur mais sur la machine qui exécute {{productName}} : il vaut donc sur chaque appareil depuis lequel vous l'ouvrez.",

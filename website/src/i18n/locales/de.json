@@ -9333,7 +9333,7 @@
     "settings": "Einstellungen",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Crew-Mitglieder"
+    "crew_members": "Crewmates"
   },
   "pages": {
     "agentsPage": {
@@ -11381,7 +11381,7 @@
       "columns_load_failed": "Board-Spalten konnten nicht geladen werden",
       "folder_update_failed": "Ordner-Aktualisierung fehlgeschlagen",
       "board_update_failed": "Board-Aktualisierung fehlgeschlagen",
-      "open_crew_members": "Crew-Mitglieder",
+      "open_crew_members": "Crewmates",
       "open_crew_members_desc": "Öffnet die Seite Crew-Mitglieder – jedes Mitglied ist ein dauerhafter Agent mit eigenem Thread.",
       "open_crew_members_gated_desc": "Öffnet zuerst die Einstellungen, um diese Vorschau einzuschalten – vorher ist die Seite nicht verfügbar.",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} Remote-Sitzung wird in der Board-Ansicht nicht angezeigt — Board-Spalten verwalten nur lokale Sitzungen.",
@@ -11909,7 +11909,7 @@
           "crew_where": "„Crew Members“ erscheint in der Seitenleiste unter Sessions, sobald das an ist; der Eintrag im Menü „Neu“ öffnet sie, oder diese Karte, wenn aus.",
           "crew_media_members": "Die Seite Crew Members mit einem ausgewählten Mitglied und geöffnetem Aktivitätsbereich."
         },
-        "crew_members": "Crew-Mitglieder",
+        "crew_members": "Crewmates",
         "crew_members_desc": "Die Seite Crew Members: alle deine Agenten, jeder mit eigenem Thread. Noch im Aufbau, daher erst verfügbar, wenn du das hier einschaltest.",
         "decisions": "Entscheidungen (Jev)",
         "decisions_desc": "Jev ist ein kleines, schnelles Entscheidungsmodell. Wenn dies an ist, fragt {{productName}} Jev, welcher deiner Skills zu der Nachricht passt, die du gerade gesendet hast — oder ob keiner passt — und verwendet Jevs Wahl für den unter dem Schalter gezeigten Anteil deiner Sitzungen; die übrigen behalten die Wortabgleich-Regel, die dieser Build mitbringt. Ist Jev langsam, nicht erreichbar oder liefert keine brauchbare Antwort, fällt diese Nachricht auf dieselbe Regel zurück, sodass keine Entscheidung deine Antwort aufhält. Jeder Aufruf wird außerdem in einem Protokoll auf dem Rechner, auf dem {{productName}} läuft, vermerkt, zur Diagnose. Dieser Schalter wird nicht im Browser gespeichert, sondern auf dem Rechner, der {{productName}} ausführt, gilt also auf jedem Gerät, von dem du ihn öffnest.",

@@ -290,11 +290,11 @@ class TestShippedScenarios:
         preview_step = next(
             s for s in sc.steps if "preview" in s.lower() and "turn on" in s.lower()
         )
-        assert 'starts with "Crew Members"' in preview_step
+        assert 'starts with "Crewmates"' in preview_step
         assert (
             "Crew Members and Crew Mode" in preview_step
-        )  # the longer title is still a valid reading
-        assert any('"Crew Members" item appears in the left rail' in s for s in sc.steps)
+        )  # the older titles are still valid readings on older builds
+        assert any('"Crewmates" item appears in the left rail' in s for s in sc.steps)
 
     def test_members_scenarios_hedge_the_card_label(self) -> None:
         """A seeded member has no display name, so its card shows the id; every members scenario says so."""

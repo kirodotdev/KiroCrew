@@ -9206,7 +9206,7 @@
     "settings": "設定",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "クルーメンバー"
+    "crew_members": "クルーメイト"
   },
   "pages": {
     "agentsPage": {
@@ -11212,7 +11212,7 @@
       "columns_load_failed": "ボードの列を読み込めませんでした",
       "folder_update_failed": "フォルダーの更新に失敗しました",
       "board_update_failed": "ボードの更新に失敗しました",
-      "open_crew_members": "クルーメンバー",
+      "open_crew_members": "クルーメイト",
       "open_crew_members_desc": "クルーメンバーのページを開きます。各メンバーは常駐エージェントで、自分のスレッドを持ちます。",
       "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。",
       "remote_sessions_not_shown_in_board_view_other": "ボード列はローカルセッションのみを管理するため、リモートセッション {{count}} 件はボードビューに表示されません。",
@@ -11731,7 +11731,7 @@
           "crew_where": "オンにすると「Crew Members」がサイドバーの Sessions の下に現れます。「新規」メニューの項目はオンならページ、オフならこのカードを開きます。",
           "crew_media_members": "Crew Members ページ。メンバーを 1 人選び、アクティビティパネルを開いた状態。"
         },
-        "crew_members": "クルーメンバー",
+        "crew_members": "クルーメイト",
         "crew_members_desc": "Crew Members ページ。あなたのすべてのエージェントが、それぞれ自分のスレッドを持って並びます。まだ開発中のため、オンにするまで表示されません。",
         "decisions": "判断（Jev）",
         "decisions_desc": "Jev は小さくて高速な判断モデルです。オンにすると、{{productName}} は送信したメッセージにどのスキルが合うか、あるいはどれも合わないかを Jev に尋ね、スイッチの下に示した割合のセッションでは Jev の選択をそのまま使います。残りのセッションはこのビルドに同梱の単語一致ルールのままです。Jev が遅い、つながらない、使える答えを返さない場合、そのメッセージは同じルールに戻るので、判断が返信を待たせることはありません。呼び出しごとに、{{productName}} を動かしているマシンのログにも記録が残ります（診断用）。このスイッチはブラウザーではなく {{productName}} を動かしているマシンに保存されるため、どの端末から開いても有効です。",

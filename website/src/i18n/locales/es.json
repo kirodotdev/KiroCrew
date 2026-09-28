@@ -9460,7 +9460,7 @@
     "settings": "Configuración",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Miembros del equipo"
+    "crew_members": "Compañeros"
   },
   "pages": {
     "agentsPage": {
@@ -11550,7 +11550,7 @@
       "columns_load_failed": "No se pudieron cargar las columnas del tablero",
       "folder_update_failed": "Fallo al actualizar la carpeta",
       "board_update_failed": "Fallo al actualizar el tablero",
-      "open_crew_members": "Miembros del equipo",
+      "open_crew_members": "Compañeros",
       "open_crew_members_desc": "Abre la página Miembros del equipo: cada miembro es un agente permanente con su propio hilo.",
       "open_crew_members_gated_desc": "Abre primero Ajustes para activar esta vista previa: la página no está disponible hasta que lo hagas.",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} sesión remota no se muestra en la vista de tablero: las columnas del tablero solo administran sesiones locales.",
@@ -12087,7 +12087,7 @@
           "crew_where": "«Crew Members» aparece en la barra lateral bajo Sesiones cuando esto está activo; la entrada del menú Nuevo la abre, o esta tarjeta si está inactivo.",
           "crew_media_members": "La página Crew Members con un miembro seleccionado y su panel de actividad abierto."
         },
-        "crew_members": "Miembros del equipo",
+        "crew_members": "Compañeros",
         "crew_members_desc": "La página Crew Members: todos tus agentes, cada uno con su propio hilo. Aún en construcción, así que no se ofrece hasta que actives esto.",
         "decisions": "Decisiones (Jev)",
         "decisions_desc": "Jev es un modelo de decisión pequeño y rápido. Con esto activado, {{productName}} le pregunta cuál de tus habilidades encaja con el mensaje que acabas de enviar — o si no encaja ninguna — y usa la elección de Jev en la parte de tus sesiones que se muestra bajo el interruptor; el resto conserva la regla de coincidencia de palabras que trae esta versión. Si Jev va lento, no responde o no da una respuesta utilizable, ese mensaje vuelve a la misma regla, así que ninguna decisión retrasa tu respuesta. Cada llamada también se anota en un registro de la máquina que ejecuta {{productName}}, para diagnóstico. Este interruptor no se guarda en el navegador, sino en la máquina que ejecuta {{productName}}, así que se aplica en todos los dispositivos desde los que lo abras.",

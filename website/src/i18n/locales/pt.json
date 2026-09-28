@@ -9460,7 +9460,7 @@
     "settings": "Configurações",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Membros da equipe"
+    "crew_members": "Colegas"
   },
   "pages": {
     "agentsPage": {
@@ -11550,7 +11550,7 @@
       "columns_load_failed": "Não foi possível carregar as colunas do quadro",
       "folder_update_failed": "Falha ao atualizar a pasta",
       "board_update_failed": "Falha ao atualizar o quadro",
-      "open_crew_members": "Membros da equipe",
+      "open_crew_members": "Colegas",
       "open_crew_members_desc": "Abre a página Membros da equipe — cada membro é um agente permanente com o próprio tópico.",
       "open_crew_members_gated_desc": "Abre primeiro as Configurações para ligar esta prévia — a página não está disponível até você fazer isso.",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} sessão remota não é exibida na visualização de quadro — as colunas do quadro gerenciam apenas sessões locais.",
@@ -12087,7 +12087,7 @@
           "crew_where": "“Crew Members” aparece na barra lateral abaixo de Sessões quando isto está ligado; a entrada do menu Novo a abre, ou este cartão se desligado.",
           "crew_media_members": "A página Crew Members com um membro selecionado e o painel de atividade aberto."
         },
-        "crew_members": "Membros da equipe",
+        "crew_members": "Colegas",
         "crew_members_desc": "A página Crew Members: todos os seus agentes, cada um com o próprio tópico. Ainda em construção, por isso não é oferecida até você ligar isto.",
         "decisions": "Decisões (Jev)",
         "decisions_desc": "Jev é um modelo de decisão pequeno e rápido. Com isto ligado, o {{productName}} pergunta a ele qual das suas habilidades combina com a mensagem que você acabou de enviar — ou se nenhuma combina — e usa a escolha do Jev na parte das suas sessões mostrada sob o botão; as demais continuam com a regra de correspondência de palavras que vem nesta versão. Se o Jev estiver lento, fora do ar ou não devolver nada aproveitável, essa mensagem volta para a mesma regra, então nenhuma decisão atrasa a sua resposta. Cada chamada também é registrada em um log na máquina que executa o {{productName}}, para diagnóstico. Este botão não é salvo no navegador, mas na máquina que executa o {{productName}}, então vale em todos os aparelhos de onde você o abrir.",

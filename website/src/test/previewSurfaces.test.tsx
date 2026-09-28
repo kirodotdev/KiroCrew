@@ -404,13 +404,13 @@ describe('Settings > Developer > Feature Previews', () => {
     // label names the page the flag holds so it stops sharing a bare "Crew"
     // with that neighbour, which a newcomer could not tell apart.
     renderTab()
-    expect(screen.getByRole('switch', { name: /^crew members$/i }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: /^crewmates$/i }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
     renderTab()
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members$/i }).click()
+      screen.getByRole('switch', { name: /^crewmates$/i }).click()
     })
     expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
     // Two flags, two keys: a shared write would release both features at once.
@@ -485,7 +485,7 @@ describe('Settings > Developer > Feature Previews', () => {
         .sort()
     expect(ingressButtons()).toEqual([])
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members$/i }).click()
+      screen.getByRole('switch', { name: /^crewmates$/i }).click()
     })
     expect(ingressButtons()).toEqual([])
     // The Decisions subtree, exactly. A new button here -- or a duplicate of one of

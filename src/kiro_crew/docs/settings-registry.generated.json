@@ -920,11 +920,11 @@
       "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane."
     },
     {
-      "id": "developer.crew-members",
-      "label": "Crew Members",
+      "id": "developer.crewmates",
+      "label": "Crewmates",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.crew-members",
-      "description": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
+      "route": "/settings/developer?highlight=developer.crewmates",
+      "description": "The Crewmates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
     },
     {
       "id": "developer.decisions-jev",

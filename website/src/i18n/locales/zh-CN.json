@@ -9206,7 +9206,7 @@
     "settings": "设置",
     "task_runner": "Task Runner",
     "webhooks": "Webhook",
-    "crew_members": "团队成员"
+    "crew_members": "队友"
   },
   "pages": {
     "agentsPage": {
@@ -11212,7 +11212,7 @@
       "columns_load_failed": "无法加载看板列",
       "folder_update_failed": "文件夹更新失败",
       "board_update_failed": "看板更新失败",
-      "open_crew_members": "团队成员",
+      "open_crew_members": "队友",
       "open_crew_members_desc": "打开团队成员页面——每个成员都是一个常驻代理，各有自己的话题。",
       "open_crew_members_gated_desc": "会先打开设置以开启此预览——开启之前该页面不可用。",
       "remote_sessions_not_shown_in_board_view_other": "看板列仅管理本地会话，因此 {{count}} 个远程会话不会显示在看板视图中。",
@@ -11731,7 +11731,7 @@
           "crew_where": "开启后，“Crew Members”出现在侧边栏 Sessions 下方；“新建”菜单里的一项开启时打开它，关闭时打开这张卡片。",
           "crew_media_members": "Crew Members 页面，选中了一个成员并打开了它的活动面板。"
         },
-        "crew_members": "团队成员",
+        "crew_members": "队友",
         "crew_members_desc": "团队成员（Crew Members）页面：列出你拥有的每个代理，各有自己的话题。仍在建设中，开启后才会提供。",
         "decisions": "决策（Jev）",
         "decisions_desc": "Jev 是一个小而快的决策模型。开启后，{{productName}} 会就你刚发出的消息问 Jev：哪一个技能最合适，或者都不合适；并在开关下方所示比例的会话里直接采用 Jev 所选，其余会话仍按本版本自带词语匹配规则处理。如果 Jev 太慢、连不上或没有给出可用答案，这条消息就回退到同一条规则，所以决策不会拖住你的回复。每次调用还会在运行 {{productName}} 的机器上记入一份日志，供排查使用。这个开关保存在运行 {{productName}} 的机器上，而不是这个浏览器里，所以你在任何设备上打开都生效。",

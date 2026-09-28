@@ -9460,7 +9460,7 @@
     "settings": "Impostazioni",
     "task_runner": "Task Runner",
     "webhooks": "Webhooks",
-    "crew_members": "Membri della crew"
+    "crew_members": "Compagni"
   },
   "pages": {
     "agentsPage": {
@@ -11550,7 +11550,7 @@
       "columns_load_failed": "Impossibile caricare le colonne della board",
       "folder_update_failed": "Aggiornamento della cartella non riuscito",
       "board_update_failed": "Aggiornamento della board non riuscito",
-      "open_crew_members": "Membri della crew",
+      "open_crew_members": "Compagni",
       "open_crew_members_desc": "Apre la pagina Membri della crew: ogni membro è un agente permanente con il proprio thread.",
       "open_crew_members_gated_desc": "Apre prima le Impostazioni per attivare questa anteprima: la pagina non è disponibile finché non lo fai.",
       "remote_sessions_not_shown_in_board_view_one": "{{count}} sessione remota non è mostrata nella vista bacheca — le colonne della bacheca gestiscono solo le sessioni locali.",
@@ -12087,7 +12087,7 @@
           "crew_where": "«Crew Members» compare nella barra laterale sotto Sessioni quando questo è attivo; la voce del menu Nuovo la apre, o questa scheda se disattivo.",
           "crew_media_members": "La pagina Crew Members con un membro selezionato e il suo pannello attività aperto."
         },
-        "crew_members": "Membri della crew",
+        "crew_members": "Compagni",
         "crew_members_desc": "La pagina Crew Members: tutti i tuoi agenti, ognuno con il proprio thread. Ancora in costruzione, quindi non viene offerta finché non attivi questo.",
         "decisions": "Decisioni (Jev)",
         "decisions_desc": "Jev è un modello di decisione piccolo e veloce. Con questo attivo, {{productName}} gli chiede quale delle tue skill corrisponde al messaggio che hai appena inviato — o se non ne corrisponde nessuna — e usa la scelta di Jev per la quota delle tue sessioni mostrata sotto l'interruttore; le altre mantengono la regola di corrispondenza delle parole inclusa in questa versione. Se Jev è lento, non raggiungibile o non restituisce nulla di utilizzabile, quel messaggio torna alla stessa regola, quindi nessuna decisione rallenta la tua risposta. Ogni chiamata viene anche annotata in un log sulla macchina che esegue {{productName}}, per diagnostica. Questo interruttore non viene salvato nel browser ma sulla macchina che esegue {{productName}}, quindi vale su ogni dispositivo da cui lo apri.",
