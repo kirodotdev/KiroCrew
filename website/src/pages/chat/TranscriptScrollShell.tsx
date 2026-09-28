@@ -14,8 +14,8 @@
  *
  * The characterization net (ChatPage.scrollShell.recipe.test.tsx, the golden
  * frames, and the mutation harness) pins this file's tokens byte-for-byte;
- * fadeClearance geometry stays with the page, which supplies its clearance
- * padding via `scrollerStyle`.
+ * dockClearance geometry stays with the page, which supplies the floating
+ * dock's clearance padding via `scrollerStyle`.
  */
 import React from 'react'
 import { Loader } from 'lucide-react'

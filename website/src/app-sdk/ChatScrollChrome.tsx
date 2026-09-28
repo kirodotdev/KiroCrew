@@ -18,6 +18,7 @@
  */
 import { ArrowDown } from 'lucide-react'
 import { i18nT } from '../i18n/t'
+import { Glass } from '../components/Glass'
 
 export function EdgeFade({ side, anchor = 'overlay' }: {
   side: 'top' | 'bottom'
@@ -44,11 +45,16 @@ export function JumpToBottomButton({ visible, onClick }: {
   if (!visible) return null
   return (
     <div className="absolute -top-10 inset-x-0 z-10 pointer-events-none flex justify-center">
-      <button
-        className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent active:scale-95 active:duration-75 shadow-md"
+      {/* A glass pill (components/Glass.tsx, chip variant) rendered as the
+          button: the same material as the composer it floats above. */}
+      <Glass
+        as="button"
+        variant="chip"
+        radius={16}
+        className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 glass-hover text-text active:scale-95 active:duration-75 shadow-md"
         onClick={onClick}
         aria-label={i18nT('pages.chatPage.scroll_to_bottom')}
-      ><ArrowDown size={14} strokeWidth={2.5} /></button>
+      ><ArrowDown size={14} strokeWidth={2.5} /></Glass>
     </div>
   )
 }

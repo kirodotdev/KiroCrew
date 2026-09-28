@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers import api_file_watch
 
@@ -16,7 +17,7 @@ from kiro_crew.dashboard.handlers import api_file_watch
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-watch", api_file_watch)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture()

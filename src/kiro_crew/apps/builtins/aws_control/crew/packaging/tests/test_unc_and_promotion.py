@@ -20,7 +20,7 @@ import pathlib
 
 import pytest
 
-from .test_producer import load_build, make_crew
+from .test_producer import load_build, make_crew, patch_builder_global, transaction_source
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -43,7 +43,7 @@ def _build(mod, crew, out):
 
 
 class _OsThatSaysWindows:
-    """`os` as build.py sees it, reporting nt.
+    """`os` as the builder sees it, reporting nt.
 
     Patching the real ``os.name`` is too blunt: ``pathlib`` reads it to choose its flavour
     and then refuses with "cannot instantiate 'WindowsPath' on your system", and
@@ -58,7 +58,7 @@ class _OsThatSaysWindows:
 
 
 def _as_windows(monkeypatch, mod):
-    monkeypatch.setattr(mod, "os", _OsThatSaysWindows())
+    patch_builder_global(monkeypatch, mod, "os", _OsThatSaysWindows())
 
 
 @pytest.mark.parametrize(
@@ -336,7 +336,7 @@ def test_the_out_unc_screen_precedes_the_first_out_touch_in_source():
     ``_refuse_unc_out(out_dir)`` must appear before the first thing that touches a path derived
     from --out in ``build_bundle`` -- the ``_refuse_unusable_parent(out_dir, ...)`` call.
     """
-    src = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    src = transaction_source()
     build_at = src.index("def build_bundle(")
     body = src[build_at:]
     screen_at = body.index("_refuse_unc_out(out_dir)")

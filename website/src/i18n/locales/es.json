@@ -5858,6 +5858,7 @@
       "trust_desc": "En este chat, {{productName}} trabaja sin preguntarte primero",
       "trust_label": "Confianza",
       "chat_mode_hint": "modo de chat",
+      "trust_scope_tooltip": "De confianza por un permiso de app para este chat; caduca por sí solo. Elige Normal en este menú para terminarlo ahora; la app puede volver a darlo hasta que lo desactives en esa app.",
       "trust_tooltip": "En este chat, {{productName}} trabaja sin preguntarte primero",
       "yolo_desc": "En cada chat, {{productName}} trabaja sin preguntarte primero",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
@@ -6181,6 +6182,12 @@
       "show_pending_tool_call_in_chat": "Mostrar la llamada de herramienta pendiente en el chat",
       "skill": "Skill",
       "slash_commands": "Comandos de barra",
+      "spawn_awaiting_one": "{{count}} subagente espera tu aprobación para ejecutarse",
+      "spawn_awaiting_many": "{{count}} subagentes esperan tu aprobación para ejecutarse",
+      "spawn_awaiting_other": "{{count}} subagentes esperan tu aprobación para ejecutarse",
+      "spawn_pending_one": "{{count}} subagente en espera — responde primero a la solicitud de abajo",
+      "spawn_pending_many": "{{count}} subagentes en espera — responde primero a la solicitud de abajo",
+      "spawn_pending_other": "{{count}} subagentes en espera — responde primero a la solicitud de abajo",
       "steer": "Redirigir",
       "alt_action_hint_queues": "{{chord}} encola este mensaje en su lugar",
       "alt_action_hint_steers": "{{chord}} dirige con este mensaje en su lugar",
@@ -6334,7 +6341,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Añadir un comentario",
       "add_comment": "Añadir comentario",
       "add_instruction": "Añadir instrucción",
       "additional_prompt": "Prompt adicional",
@@ -7832,11 +7838,12 @@
       "effort": "Esfuerzo",
       "effort_help": "El esfuerzo de razonamiento define cuánto tiempo piensa el modelo antes de responder. Más esfuerzo significa más tiempo razonando problemas difíciles (respuestas más lentas y mejores); menos esfuerzo es más rápido. Al desactivar la anulación por sesión, se vuelve al valor predeterminado de Ajustes → Chat o, si no hay ninguno definido, a la elección del propio modelo (solo Fable/Opus/Sonnet).",
       "faster": "Más rápido",
-      "configured_default_marker": "Valor predeterminado configurado",
+      "configured_default_marker": "Esfuerzo predeterminado",
+      "slider_locked_hint": "Fijado en el valor predeterminado. Desactiva el interruptor para elegir un nivel.",
       "reasoning_effort": "Esfuerzo de razonamiento",
       "smarter": "Más inteligente",
-      "use_configured_default": "Usar el valor predeterminado configurado",
-      "use_model_default": "Usar el predeterminado del modelo"
+      "use_configured_default": "Usar el esfuerzo predeterminado ({{level}})",
+      "use_default_effort": "Usar el esfuerzo predeterminado"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Añade un registro de la organización para descubrir apps específicas del equipo",
@@ -7994,12 +8001,16 @@
     "selectionToolbar": {
       "ask": "Preguntar sobre esto",
       "ask_hint": "Abre el Chat lateral con la selección citada: no se envía nada hasta que lo envíes, y el chat principal no se toca",
+      "close_saving_continues": "Cerrar: el guardado continúa",
       "comment_input": "Comentar el texto seleccionado",
+      "comment_post_failed": "No se pudo guardar el comentario. El texto sigue aquí: vuelve a intentarlo.",
+      "comment_post_failed_closed": "El comentario sobre «{{quote}}» no se guardó. Selecciona ese texto otra vez para recuperarlo y volver a intentarlo.",
       "copy": "Copiar",
       "copy_failed": "Error al copiar: el navegador bloqueó el acceso al portapapeles. Selecciona el texto y cópialo manualmente.",
       "copy_selection_hint": "Copia el texto seleccionado (no tu comentario) al portapapeles",
       "more_actions": "Más acciones para la selección",
       "press_enter_to_comment": "Pulsa Intro o haz clic para comentar…",
+      "saving": "Guardando…",
       "tap_to_comment": "Toca para escribir un comentario…",
       "quote": "Citar",
       "quote_hint": "Cita la selección en el redactor de esta conversación: tu respuesta va al chat principal"
@@ -10730,6 +10741,7 @@
         "copied": "Copiado",
         "copy_failed": "No se pudo copiar",
         "steering": "Redirigiendo…",
+        "delivery_pending": "Entrega pendiente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Redirigiendo el turno en curso — aún sin confirmar.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "El turno terminó antes de que esto se aplicara — se ejecuta como un mensaje independiente."
       },
@@ -11212,6 +11224,7 @@
       "send_failed_with_error": "Error al enviar: {{error}}",
       "send_failed_with_error_restored": "No se pudo enviar este mensaje: {{error}}. Tu texto ha vuelto al cuadro de redacción.",
       "delivery_unconfirmed": "Entrega sin confirmar: tu texto ha vuelto al cuadro de redacción; revisa la conversación antes de enviarlo de nuevo.",
+      "delivery_unconfirmed_pending": "Entrega sin confirmar: es posible que este mensaje siga pendiente. Si no llega ninguna respuesta, envíalo de nuevo.",
       "could_not_read_file_reason": "No se pudo leer {{path}} ({{reason}})",
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -12991,7 +13004,12 @@
         "warm_pool": "Pool en caliente",
         "warm_pool_description": "Inicia previamente procesos de ACP CLI para que las sesiones arranquen al instante.",
         "workspace": "Espacio de trabajo",
-        "workspaces": "Espacios de trabajo"
+        "workspaces": "Espacios de trabajo",
+        "new_workspace": "Nuevo espacio de trabajo",
+        "change_directory": "Cambiar directorio",
+        "delete_workspace_warning": "Su memoria, lecciones, historial y base de conocimiento dejan de usarse. La carpeta se conserva en el disco.",
+        "type_workspace_name_to_confirm": "Escribe “{{name}}” para confirmar",
+        "change_directory_hint": "El espacio de trabajo leerá su memoria, lecciones, historial y base de conocimiento de la nueva carpeta. No se mueve nada."
       },
       "mcpTab": {
         "actions": "Acciones",
@@ -13367,7 +13385,8 @@
         "update": "Actualizar",
         "validation_findings": "Resultados de validación",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "espacio de trabajo"
+        "workspace": "espacio de trabajo",
+        "detail_unreadable": "Los archivos de este candidato no se pueden leer de forma segura, así que la revisión no está disponible. Descártalo para quitarlo de la cola."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenciones Markdown que el agente lee. El modo de inclusión de cada archivo decide cuándo: siempre, solo para archivos coincidentes o bajo demanda. Los archivos globales están en ~/.kiro/steering y se aplican en todas partes; los del espacio de trabajo están en <project>/.kiro/steering y solo se aplican a ese proyecto.",
@@ -15189,6 +15208,8 @@
         "desktop_alerts": "Alertas de escritorio",
         "notify_when_a_background_chat_finishes": "Avisar cuando un chat en segundo plano termine",
         "notify_when_a_background_chat_finishes_description": "Muestra una notificación del sistema con el nombre del chat que terminó, pero solo mientras esta ventana esté minimizada o detrás de otra aplicación.",
+        "unread_only_when_done_or_waiting": "Marcar sesiones como no leídas solo cuando te necesiten",
+        "unread_only_when_done_or_waiting_description": "Una sesión en segundo plano se marca como no leída cuando su agente termina o espera tu respuesta, no con cada mensaje nuevo.",
         "always_interrupts_cannot_be_muted_or_lowered": "Siempre interrumpe — no se puede silenciar ni reducir",
         "app": "app",
         "category_agent": "Mensajes proactivos del agente",
@@ -16760,6 +16781,9 @@
       "webview_refresh_error_aged": "No se pudo actualizar el panel. Se muestra la versión de {{ago}}.",
       "webview_frame_title": "Panel rellenado por {{crew}}",
       "webview_rendering": "Renderizando el panel…",
+      "webview_docked_rendering": "Renderizando la tarjeta de estado…",
+      "webview_docked_error": "No se pudo renderizar la tarjeta de estado de este compañero. Es posible que el panel completo aún se abra abajo.",
+      "webview_docked_refresh_error": "No se pudo actualizar la tarjeta de estado. Se muestra la última versión cargada.",
       "webview_retry": "Reintentar",
       "deploy_trigger": "Nube",
       "deploy_title": "Tu equipo en la nube",

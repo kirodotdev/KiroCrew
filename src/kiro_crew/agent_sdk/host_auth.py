@@ -574,10 +574,20 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
             "needs no key: name it as the provider instead. Neither is checked here: "
             "the harness reads them."
         ),
+        # Names the keyring case because it is the one ``goose configure`` alone
+        # cannot fix. goose keeps keys in the OS keyring by default, and the
+        # sandboxed child cannot reach the session bus it lives behind (measured:
+        # ``busctl --user`` inside Crew's sandbox answers "Permission denied"). goose
+        # 1.52.0, driven live with no reachable bus, logs "Keyring unavailable. Using file
+        # storage for secrets.", reads only ``secrets.yaml``, and answers
+        # ``session/prompt`` with -32000 ``Authentication required``. With the key
+        # in ``secrets.yaml`` instead, the same run reaches its provider.
         signed_out_message=(
-            "goose has no provider configured. Run `goose configure` in your terminal "
-            "to set one up, or configure a locally served model, then start a new "
-            "chat."
+            "goose has no provider it can use here: none is configured, or its key "
+            "is in the system keyring, which Kiro Crew's sandbox cannot open. Run "
+            "`GOOSE_DISABLE_KEYRING=true goose configure` in your terminal so the key "
+            "is saved to goose's secrets.yaml, or configure a locally served model, "
+            "then start a new chat."
         ),
         # Excluded deliberately: it resolves its own provider secret, so a
         # ``kiro-cli logout`` says nothing about whether a running goose session can
@@ -625,6 +635,13 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # still authenticated.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        # pi-acp 0.0.34, driven live with an empty pi home, answers ``session/new``
+        # with -32000 ``Authentication required: Configure an API key or log in
+        # with an OAuth provider.`` It raises that same text when pi lists no
+        # model or reports a 401/403, so no respawn helps until the operator signs
+        # in. The phrase is pi-acp's own, not the SDK's generic prefix, so no other
+        # harness's auth answer matches it.
+        signed_out_signature="Configure an API key or log in with an OAuth provider",
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_DEEPSEEK,

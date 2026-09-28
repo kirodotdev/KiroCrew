@@ -42,7 +42,7 @@ const FILES = ['src/pages/ChatPage.tsx', 'src/pages/chat/TranscriptScrollShell.t
 const SUITES = [
   'src/test/ChatPage.scrollShell.recipe.test.tsx',
   'src/test/ChatPage.scrollShell.render.test.tsx',
-  'src/test/ChatPage.fadeClearance.test.tsx',
+  'src/test/ChatPage.dockClearance.test.tsx',
 ]
 
 const START = '{/* Header fade'
@@ -78,7 +78,10 @@ const REGIONS = [
   // boundary: the message-row body was NOT moved by the extraction and stays
   // pinned by the row-wrapper recipe tests and the page's own suites.
   { name: 'call-site-slots', start: 'aboveRows={', end: '{/* Message items' },
-  { name: 'bottom-mask', start: '{/* Transcript bottom mask', end: '<div className="relative">' },
+  // The floating dock root: the box `dockRef` measures for the scroller's
+  // bottom padding and the `right: dockGutter` inset that keeps the scrollbar
+  // column clear. Replaces the bottom-mask region the dock layout removed.
+  { name: 'dock-root', start: '{/* Composer dock', end: '<JumpToBottomButton' },
   { name: 'jump-pill', start: '<JumpToBottomButton', end: '{/* Status chrome' },
 ]
 

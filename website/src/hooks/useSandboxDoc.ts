@@ -7,8 +7,9 @@ import { api } from '../api/client'
  * fetch with no timeout — for a RE-MINT attempted from an already-mounted
  * notice, a wedged gateway (request accepted, response never written) would
  * otherwise leave that notice's only affordance disabled for the life of the
- * mount. (A wedged FIRST mint shows no notice at all — `failed` never turns on
- * — so the ceiling has nothing to restore there; that gap predates `pending`.)
+ * mount. A wedged FIRST mint never turns `failed` on, so the ceiling also sets
+ * `stalled`: a caller whose fallback hangs off the mint's outcome reads
+ * `stalled && !url` as "no document is coming" instead of waiting forever.
  * When the ceiling releases the flag the attempt may still settle later; both
  * settle paths are idempotent, so a late arrival is harmless. */
 const MINT_PENDING_CEILING_MS = 15_000
@@ -48,6 +49,9 @@ export function useSandboxDoc(srcdoc: string | null | undefined): {
    *  with no affordance at all if nothing observable changes. Disabling on
    *  `pending` acknowledges the click without removing the notice. */
   pending: boolean
+  /** A mint outlived `MINT_PENDING_CEILING_MS` without settling. Clears on a
+   *  successful settle or when `srcdoc` goes away, like `failed`. */
+  stalled: boolean
   /** Mint again. Required for recovery: the URL is single-use server-side, so
    *  re-rendering a spent one recovers nothing. */
   retry: () => void
@@ -55,6 +59,7 @@ export function useSandboxDoc(srcdoc: string | null | undefined): {
   const [url, setUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [pending, setPending] = useState(false)
+  const [stalled, setStalled] = useState(false)
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
@@ -62,6 +67,7 @@ export function useSandboxDoc(srcdoc: string | null | undefined): {
       setUrl(null)
       setFailed(false)
       setPending(false)
+      setStalled(false)
       return
     }
     let alive = true
@@ -72,7 +78,9 @@ export function useSandboxDoc(srcdoc: string | null | undefined): {
     // recovery button) for the life of the mount. Releasing the flag does not
     // abort the attempt; the settle paths below remain valid if it lands late.
     const ceiling = setTimeout(() => {
-      if (alive) setPending(false)
+      if (!alive) return
+      setPending(false)
+      setStalled(true)
     }, MINT_PENDING_CEILING_MS)
     api
       .sandboxDocUrl(srcdoc)
@@ -82,6 +90,7 @@ export function useSandboxDoc(srcdoc: string | null | undefined): {
         setUrl(r.url)
         setFailed(false)
         setPending(false)
+        setStalled(false)
       })
       .catch(() => {
         if (!alive) return
@@ -97,5 +106,5 @@ export function useSandboxDoc(srcdoc: string | null | undefined): {
   }, [srcdoc, attempt])
 
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
-  return { url, failed, pending, retry }
+  return { url, failed, pending, stalled, retry }
 }

@@ -1968,3 +1968,30 @@ async def test_the_history_append_has_exactly_one_call_site():
         f"on_panel_published is called from {sites}; the publish order is the caller's "
         "to keep, so every call site needs the ordering pins in this file extended to it"
     )
+
+
+async def test_the_drawer_read_reports_the_templates_docked_opt_in(vetted):
+    """A template that carries the docked marker is reported with its height, and
+    one that does not reports ``None`` -- which keeps the drawer's zero-mint
+    native summary."""
+    over = agent_panel.override_templates_dir()
+    over.mkdir(parents=True, exist_ok=True)
+    (over / "compact.html").write_text(
+        "<!--kirocrew:docked height=180-->" + agent_panel.DATA_MARKER, encoding="utf-8"
+    )
+    async with _client() as c:
+        await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 47}},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        plain = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
+        assert plain["panel"]["docked_height"] is None
+
+        await c.post(
+            "/api/agent-panel/publish",
+            json={"template": "compact", "data": {"cycle": 48}},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        opted = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
+        assert opted["panel"]["docked_height"] == 180

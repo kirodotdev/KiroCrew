@@ -152,6 +152,7 @@ class TestRosterExposesFilterKeys:
             },
             default_agent="conductor",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):
@@ -177,6 +178,7 @@ class TestRosterExposesFilterKeys:
             agents={"weird": KiroCrewAgentConfig(kiro_agent="weird", source=raw)},
             default_agent="weird",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         state = _make_state(tmp_path)
         with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):

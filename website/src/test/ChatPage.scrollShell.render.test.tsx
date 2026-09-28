@@ -148,7 +148,7 @@ describe('ChatPage invocation: slot membership and prop threading', () => {
       // restore-gate visibility flip, so pinning the closing braces would pin the
       // gate's presence into a test about prop THREADING. This still fails on a
       // duplicated prop and still requires the padding the shell contract needs.
-      'scrollerStyle={{ paddingBottom: 16',
+      'scrollerStyle={{ paddingBottom: dockH + DOCK_CLEARANCE_PX',
     ]) {
       expect(inv.split(pin).length - 1, pin).toBe(1)
     }

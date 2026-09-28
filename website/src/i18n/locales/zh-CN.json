@@ -5676,6 +5676,7 @@
       "trust_desc": "在此对话中，{{productName}} 无需先询问即可工作",
       "trust_label": "信任",
       "chat_mode_hint": "对话模式",
+      "trust_scope_tooltip": "此对话由应用授权信任；授权会自行过期。在此菜单中选择“常规”可立即结束；在该应用中关闭之前，应用可能会再次授权。",
       "trust_tooltip": "在此对话中，{{productName}} 无需先询问即可工作",
       "yolo_desc": "在每个对话中，{{productName}} 无需先询问即可工作",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
@@ -5987,6 +5988,8 @@
       "show_pending_tool_call_in_chat": "在聊天中显示待处理的工具调用",
       "skill": "技能",
       "slash_commands": "斜杠命令",
+      "spawn_awaiting_other": "{{count}} 个子代理等待你批准运行",
+      "spawn_pending_other": "{{count}} 个子代理待处理 — 请先回应下方的请求",
       "steer": "引导",
       "alt_action_hint_queues": "{{chord}} 改为将这条消息排队",
       "alt_action_hint_steers": "{{chord}} 改为用这条消息立即引导",
@@ -6140,7 +6143,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "添加评论",
       "add_comment": "添加评论",
       "add_instruction": "添加指令",
       "additional_prompt": "附加提示词",
@@ -7598,11 +7600,12 @@
       "effort": "强度",
       "effort_help": "推理强度决定模型在回答前思考多久。强度越高，用于思考难题的时间越长（更慢，但答案更好）；越低则越快。关闭会话级覆盖后，会回退到“设置 → 聊天”中的默认值，或在未设置默认值时交由模型自行决定（仅 Fable/Opus/Sonnet）。",
       "faster": "更快",
-      "configured_default_marker": "已配置默认值",
+      "configured_default_marker": "默认推理强度",
+      "slider_locked_hint": "已锁定为默认值。关闭开关即可选择档位。",
       "reasoning_effort": "推理强度",
       "smarter": "更聪明",
-      "use_configured_default": "使用已配置的默认值",
-      "use_model_default": "使用模型默认值"
+      "use_configured_default": "使用默认推理强度（{{level}}）",
+      "use_default_effort": "使用默认推理强度"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "添加组织注册表以发现团队专属应用",
@@ -7760,12 +7763,16 @@
     "selectionToolbar": {
       "ask": "随手问",
       "ask_hint": "打开随手问并引用选中内容——在你点击发送前不会发出任何内容，主聊天不受影响",
+      "close_saving_continues": "关闭——保存仍在继续",
       "comment_input": "对选中文字添加评论",
+      "comment_post_failed": "评论保存失败。你输入的文字还在——请重试。",
+      "comment_post_failed_closed": "关于“{{quote}}”的评论未保存。再次选中这段文字即可找回草稿并重试。",
       "copy": "复制",
       "copy_failed": "复制失败——浏览器阻止了访问剪贴板。请选中文字后手动复制。",
       "copy_selection_hint": "复制选中的文字（而不是你的评论）到剪贴板",
       "more_actions": "针对选中内容的更多操作",
       "press_enter_to_comment": "按 Enter 或点击以评论…",
+      "saving": "保存中…",
       "tap_to_comment": "点按开始写评论…",
       "quote": "引用",
       "quote_hint": "把选中内容引用到本对话的输入框——你的回复会发到主聊天"
@@ -10426,6 +10433,7 @@
         "copied": "已复制",
         "copy_failed": "复制失败",
         "steering": "正在引导…",
+        "delivery_pending": "正在等待送达…",
         "redirecting_the_running_turn_not_yet_confirmed": "正在重定向正在运行的这一轮——尚未确认。",
         "turn_ended_before_this_applied_runs_as_its_own_message": "这一轮在此生效前已结束，此消息作为独立消息运行。"
       },
@@ -10904,6 +10912,7 @@
       "send_failed_with_error": "发送失败：{{error}}",
       "send_failed_with_error_restored": "无法发送这条消息：{{error}}。你的文字已放回输入框。",
       "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。",
+      "delivery_unconfirmed_pending": "尚未确认送达——这条消息可能仍在等待中。如果没有收到回复，请再次发送。",
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
       "screenshot_failed_reason": "截图失败：{{reason}}",
       "http_status": "HTTP {{status}}",
@@ -12621,7 +12630,12 @@
         "warm_pool": "预热池",
         "warm_pool_description": "预先启动 ACP CLI 进程，让会话即时开始。",
         "workspace": "工作区",
-        "workspaces": "工作区"
+        "workspaces": "工作区",
+        "new_workspace": "新建工作区",
+        "change_directory": "更改目录",
+        "delete_workspace_warning": "其记忆、经验、历史记录和知识库将不再使用。文件夹仍保留在磁盘上。",
+        "type_workspace_name_to_confirm": "输入“{{name}}”以确认",
+        "change_directory_hint": "工作区将从新文件夹读取其记忆、经验、历史记录和知识库。不会移动任何内容。"
       },
       "mcpTab": {
         "actions": "操作",
@@ -12973,7 +12987,8 @@
         "update": "更新",
         "validation_findings": "验证结果",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "工作区"
+        "workspace": "工作区",
+        "detail_unreadable": "该候选项的文件无法安全读取，因此无法审核。驳回它即可将其从队列中移除。"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "智能体读取的 Markdown 约定。每个文件的包含模式决定何时生效：始终、仅匹配文件时，或按需。全局文件位于 ~/.kiro/steering 并处处生效；工作区文件位于 <project>/.kiro/steering，仅对该项目生效。",
@@ -14743,6 +14758,8 @@
         "desktop_alerts": "桌面通知",
         "notify_when_a_background_chat_finishes": "后台聊天完成时通知",
         "notify_when_a_background_chat_finishes_description": "显示一条系统通知，其中包含已完成聊天的名称；仅在此窗口最小化或被其他应用遮挡时显示。",
+        "unread_only_when_done_or_waiting": "仅在需要你处理时将会话标记为未读",
+        "unread_only_when_done_or_waiting_description": "后台会话只在代理完成或等待你回复时标记为未读，而不是每条新消息都标记。",
         "always_interrupts_cannot_be_muted_or_lowered": "始终打断 — 无法静音或降低优先级",
         "app": "应用",
         "category_agent": "代理主动发送的消息",
@@ -16286,6 +16303,9 @@
       "webview_refresh_error_aged": "无法刷新仪表板。正在显示 {{ago}} 的版本。",
       "webview_frame_title": "由 {{crew}} 填写的仪表板",
       "webview_rendering": "正在渲染仪表板…",
+      "webview_docked_rendering": "正在渲染状态卡片…",
+      "webview_docked_error": "无法渲染此队友的状态卡片。完整的仪表板可能仍可在下方打开。",
+      "webview_docked_refresh_error": "无法刷新状态卡片。正在显示上次加载的版本。",
       "webview_retry": "重试",
       "deploy_trigger": "云端",
       "deploy_title": "你的团队在云端",

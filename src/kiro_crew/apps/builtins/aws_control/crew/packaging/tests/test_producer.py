@@ -21,6 +21,13 @@ Run only this file:
 
 from __future__ import annotations
 
+import ast
+import functools
+import gc
+import importlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
@@ -41,6 +48,58 @@ _posix_only = pytest.mark.skipif(
 # The crew root: the directory `python -m packaging.build` must run in.
 CREW_ROOT = Path(__file__).resolve().parents[2]
 BUILD_PY = CREW_ROOT / "packaging" / "build.py"
+PIPELINE_DIR = CREW_ROOT / "packaging" / "pipeline"
+
+
+def builder_sources() -> tuple[Path, ...]:
+    """Every file the builder is made of: the ``build.py`` facade and each pipeline owner.
+
+    A source rule about "the builder" reads all of them. ``build.py`` alone was the whole
+    builder once, and a rule still reading only it would pass while the code it is about
+    lived next door.
+    """
+    return (BUILD_PY, *sorted(PIPELINE_DIR.glob("*.py")))
+
+
+def builder_source_text() -> str:
+    """The builder's source, every file of it, for a presence or count rule."""
+    return "\n".join(path.read_text(encoding="utf-8") for path in builder_sources())
+
+
+def transaction_source() -> str:
+    """The source of the owner that defines the bundle transaction, for an ordering rule."""
+    return source_defining("build_bundle").read_text(encoding="utf-8")
+
+
+def called_name(call: ast.Call) -> str:
+    """The name a call invokes, bare (``f(...)``) or through its owner (``_owner.f(...)``).
+
+    An owner calls a function another owner defines through that owner's module, so a
+    source rule looking for a call has to accept both spellings of it.
+    """
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def builder_trees() -> list[tuple[Path, ast.Module]]:
+    """Each builder file with its parsed tree."""
+    return [
+        (path, ast.parse(path.read_text(encoding="utf-8"), str(path))) for path in builder_sources()
+    ]
+
+
+def source_defining(name: str) -> Path:
+    """The builder file whose top level defines the function or class *name*."""
+    for path in builder_sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name == name:
+                return path
+    raise AssertionError(f"no builder file defines {name}")
 
 
 def _child_env() -> dict:
@@ -73,52 +132,198 @@ FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"[4:] + "ABCD"
 _variant_counter = 0
 
 
+@functools.lru_cache(maxsize=128)
+def _compiled(path: str, text: bytes) -> types.CodeType:
+    """One compile per distinct source text: an unmutated owner is shared across variants.
+
+    A code object is immutable, so running the same one as two modules gives each its own
+    functions and globals; only the compile is shared.
+    """
+    return compile(text, path, "exec", dont_inherit=True)
+
+
+class _VariantLoader(importlib.abc.SourceLoader):
+    """Serve one builder file's (possibly mutated) text as that file's source.
+
+    The import system compiles and runs it, as it runs any source file; this loader only
+    decides what the source IS. That is the mechanism a mutation test needs, and its input
+    is not attacker-reachable: the text is this repository's own builder source, read from
+    paths derived from ``__file__``, optionally with one substring swapped by a literal pair
+    written in this suite. Importing the builder normally cannot replace its constant
+    strings, and patching the functions afterwards would test the patch rather than the
+    guard, so a mutation test of a module-level guard has to load a variant of the source.
+
+    ``get_filename`` answers the REAL path, so tracebacks and coverage name the builder's own
+    files, and no bytecode is read or written: ``path_stats`` is not implemented, which is
+    how :class:`importlib.abc.SourceLoader` is told there is no cache to use.
+    """
+
+    def __init__(self, path: Path, text: str, is_package: bool) -> None:
+        self._path = path
+        self._source = text.encode("utf-8")
+        self._is_package = is_package
+
+    def get_filename(self, fullname: str) -> str:
+        return str(self._path)
+
+    def get_data(self, path: str) -> bytes:
+        if path != str(self._path):
+            raise OSError(f"{path} is not this variant's source")
+        return self._source
+
+    def is_package(self, fullname: str) -> bool:
+        return self._is_package
+
+    def source_to_code(self, data, path, *, _optimize=-1):  # type: ignore[override]
+        return _compiled(str(path), bytes(data))
+
+
+class _VariantFinder(importlib.abc.MetaPathFinder):
+    """Serve one variant of the builder package under its own throwaway root name."""
+
+    def __init__(self, root: str, files: dict[str, tuple[Path, str, bool]]) -> None:
+        self._root = root
+        self._files = files
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Any = None,
+        target: Any = None,
+    ) -> importlib.machinery.ModuleSpec | None:
+        if fullname == self._root:
+            key = ""
+        elif fullname.startswith(self._root + "."):
+            key = fullname[len(self._root) + 1 :]
+        else:
+            return None
+        entry = self._files.get(key)
+        if entry is None:
+            return None
+        file, text, is_package = entry
+        spec = importlib.util.spec_from_loader(
+            fullname,
+            _VariantLoader(file, text, is_package),
+            origin=str(file),
+            is_package=is_package,
+        )
+        assert spec is not None
+        spec.has_location = True
+        return spec
+
+
+#: ``(root, test)`` for every builder copy still registered: its ``smc_build_vN`` root and the
+#: test that loaded it, as ``PYTEST_CURRENT_TEST`` names it (empty outside pytest).
+_REGISTERED_COPIES: list[tuple[str, str]] = []
+
+
+def _current_test() -> str:
+    return os.environ.get("PYTEST_CURRENT_TEST", "").rpartition(" ")[0]
+
+
+def _drop_variant(root: str) -> None:
+    for name in [n for n in list(sys.modules) if n == root or n.startswith(root + ".")]:
+        sys.modules.pop(name, None)
+
+
+def release_builder_copies(*, finished_only: bool = False) -> None:
+    """Drop builder copies' modules from ``sys.modules``: every copy, or only finished tests'.
+
+    Called by ``load_build`` itself with ``finished_only``, so a copy lives exactly as long as
+    the test that loaded it plus the gap until the next copy is loaded, and its entries are
+    removed at that deterministic point -- never from a garbage-collection callback, which
+    would change ``sys.modules`` under whatever test happened to be running then.
+    """
+    current = _current_test()
+    keep = []
+    for root, test in _REGISTERED_COPIES:
+        if finished_only and test == current:
+            keep.append((root, test))
+        else:
+            _drop_variant(root)
+    _REGISTERED_COPIES[:] = keep
+
+
 def load_build(
     mutate: "tuple[str, str] | list[tuple[str, str]] | None" = None,
 ) -> types.ModuleType:
-    """Exec ``packaging/build.py`` into a throwaway module.
+    """Load a throwaway copy of the builder package and return its ``build`` facade.
 
     ``mutate`` is an ``(old, new)`` substring pair -- or a list of them applied in order --
-    swapped into the source before exec, so a test can disable one guard (or a set of guards
-    that must fall together) and observe the leak they prevent.
+    swapped into the source before it runs, so a test can disable one guard (or a set of
+    guards that must fall together) and observe the leak they prevent. An anchor has to
+    appear in exactly ONE builder file, and its first occurrence there is replaced: an
+    anchor two owners share would mutate whichever one this loader happened to search first.
+
+    The copy is a whole package under a unique ``smc_build_vN`` root -- the facade, the
+    ``pipeline`` owners and the package ``__init__`` files -- because the facade resolves
+    each name from its owner through ``sys.modules`` and an owner reaches another through
+    its package. So the copy stays registered while the test that loaded it runs, and the
+    next ``load_build`` call from another test removes it: a mutated copy never reaches a
+    later test through ``sys.modules``.
     """
+    release_builder_copies(finished_only=True)
     global _variant_counter
     _variant_counter += 1
-    text = BUILD_PY.read_text(encoding="utf-8")
+    root = f"smc_build_v{_variant_counter}"
+    files: dict[str, tuple[Path, str, bool]] = {
+        "": (CREW_ROOT / "packaging" / "__init__.py", "", True),
+        "build": (BUILD_PY, "", False),
+        "pipeline": (PIPELINE_DIR / "__init__.py", "", True),
+    }
+    owners = sorted(p.stem for p in PIPELINE_DIR.glob("*.py") if p.stem != "__init__")
+    for leaf in owners:
+        files[f"pipeline.{leaf}"] = (PIPELINE_DIR / f"{leaf}.py", "", False)
+    files = {
+        key: (path, path.read_text(encoding="utf-8"), is_package)
+        for key, (path, _text, is_package) in files.items()
+    }
     if mutate is not None:
         pairs = [mutate] if isinstance(mutate, tuple) else list(mutate)
         for old, new in pairs:
-            assert old in text, f"mutation anchor not found: {old!r}"
-            text = text.replace(old, new, 1)
-    mod = types.ModuleType(f"smc_build_v{_variant_counter}")
-    mod.__file__ = str(BUILD_PY)
-    # Register before exec: @dataclass resolves annotations via
-    # sys.modules.get(cls.__module__), which is None for an unregistered module.
-    sys.modules[mod.__name__] = mod
-    # The exec IS the mechanism under test, and the input is not attacker-reachable:
-    # `text` is this repository's own `packaging/build.py`, read from a path derived
-    # from __file__, optionally with one substring swapped by a literal pair written
-    # in this file. Nothing here reads a request, an environment variable or a
-    # filesystem location a caller chooses. Importing the module normally cannot
-    # replace its constant strings, and patching the functions afterwards would test
-    # the patch rather than the guard, so a mutation test of a module-level guard has
-    # to compile a variant of the source. The alternative is not a safer test, it is
-    # no test: the guards this exercises are the ones that keep a private key out of
-    # a published bundle.
+            holders = [key for key, (_p, text, _pkg) in files.items() if old in text]
+            assert holders, f"mutation anchor not found: {old!r}"
+            assert len(holders) == 1, (
+                f"mutation anchor {old!r} appears in {holders}; extend it until it names one "
+                f"builder file"
+            )
+            path, text, is_package = files[holders[0]]
+            files[holders[0]] = (path, text.replace(old, new, 1), is_package)
+    finder = _VariantFinder(root, files)
+    sys.meta_path.insert(0, finder)
     try:
-        exec(  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-            compile(text, str(BUILD_PY), "exec"), mod.__dict__
-        )
+        mod = importlib.import_module(f"{root}.build")
+        # Every owner, while this finder can still serve it: the facade imports an owner on
+        # its first read, which would otherwise come after the finder is gone.
+        for leaf in owners:
+            importlib.import_module(f"{root}.pipeline.{leaf}")
+    except BaseException:
+        _drop_variant(root)
+        raise
     finally:
-        # The registration above is needed only DURING exec: @dataclass reads
-        # sys.modules[cls.__module__] to resolve annotations while the class body runs.
-        # Once exec completes, the returned module object -- and the generated methods
-        # that already captured its __dict__ -- keep it alive for the caller, so the
-        # sys.modules ENTRY has no reader left. Dropping it stops each variant (and its
-        # mutated guard) from outliving the test that built it, where a later import by
-        # name could otherwise resolve a stale, mutated copy.
-        sys.modules.pop(mod.__name__, None)
+        sys.meta_path.remove(finder)
+    _REGISTERED_COPIES.append((root, _current_test()))
     return mod
+
+
+def patch_builder_global(
+    monkeypatch: pytest.MonkeyPatch, mod: types.ModuleType, name: str, value: object
+) -> None:
+    """Replace a global the builder's modules each import for themselves, in every one.
+
+    The facade forwards a write only for a name an owner DEFINES. A standard-library
+    module such as ``os`` is bound separately in each owner that imports it, so replacing
+    "the builder's ``os``" is a write into each of those modules, undone by *monkeypatch*.
+    """
+    for module in (mod, *builder_owners(mod)):
+        if name in vars(module):
+            monkeypatch.setattr(module, name, value)
+
+
+def builder_owners(mod: types.ModuleType) -> list[types.ModuleType]:
+    """The pipeline owners of the builder copy *mod* is the facade of."""
+    prefix = f"{mod.__package__}.pipeline."
+    return [module for name, module in sorted(sys.modules.items()) if name.startswith(prefix)]
 
 
 # ---------------------------------------------------------------------------
@@ -567,8 +772,8 @@ def test_MUTATION_credential_location_enumeration(tmp_path):
 
     bad = load_build(
         mutate=(
-            "and (refused_by_name(p) or refused_by_location(p))",
-            "and (refused_by_name(p))",
+            "and (_sensitive.refused_by_name(p) or _sensitive.refused_by_location(p))",
+            "and (_sensitive.refused_by_name(p))",
         )
     )
     leaky = next(c for c in bad.enumerate_all(crew, spec)["skills"] if c.id == "leaky")
@@ -583,7 +788,7 @@ def test_MUTATION_credential_location_copy(tmp_path):
     dest = tmp_path / "dest"
     dest.mkdir()
 
-    bad = load_build(mutate=("        if refused_by_location(p):", "        if False:"))
+    bad = load_build(mutate=("        if _sensitive.refused_by_location(p):", "        if False:"))
     # With the guard disabled the innocent-content file is copied through
     # _write_guarded (its bytes match no _HARD_PATTERNS entry), proving the
     # location gate is the only thing standing between it and the bundle.
@@ -922,40 +1127,52 @@ def test_a_skills_root_that_is_a_file_is_refused_not_shipped_empty(tmp_path):
 # ---------------------------------------------------------------------------
 # The loader itself: an exec-loaded variant must not outlive the test.
 #
-# ``load_build`` registers the throwaway module in ``sys.modules`` before exec so
-# ``@dataclass`` can resolve annotations, but that entry has no reader once exec
-# completes -- the returned object keeps itself alive. Left behind, the name stays
-# importable and a later ``import`` by that name resolves an earlier test's copy;
-# because most of this suite loads MUTATED variants, a leaked entry lets a mutation
-# outlive the test that installed it and reach the next one. The loader drops the
-# entry in a finally, so nothing named ``smc_build_*`` survives the call.
+# ``load_build`` registers the throwaway package under a unique ``smc_build_vN`` root,
+# because the facade resolves every name from its owner through ``sys.modules`` and the
+# owners reach each other through their package. Those entries have a reader only while
+# the test that loaded them runs. Left behind, a copy -- and most of this suite loads
+# MUTATED copies -- would stay importable by its name and hold its mutated guards for the
+# rest of the worker, so the next test's first ``load_build`` removes it.
 # ---------------------------------------------------------------------------
-def test_load_build_leaves_no_synthetic_module_in_sys_modules() -> None:
-    """A ``load_build`` call adds no ``smc_build_*`` entry to ``sys.modules``.
+def test_load_build_leaves_no_synthetic_module_in_sys_modules(monkeypatch) -> None:
+    """A copy leaves ``sys.modules`` when the next test loads one, and never before.
 
-    A first warm-up call caches the real imports ``build.py`` pulls in, so the snapshot
-    below measures only the synthetic variant rather than those first-time imports. The
-    returned module is exercised after the call to show it still works with its
-    ``sys.modules`` entry gone -- the object outlives the registration, only the name does
-    not.
+    A first warm-up call caches the real imports the builder pulls in, so the snapshot
+    below measures only the synthetic copies rather than those first-time imports.
     """
+    # Stands in for a pin the shared fixture holds for the whole test.
+    monkeypatch.setenv("SMC_LOADER_TEST_SHARED_PIN", "held")
     load_build()  # warm the import caches so the snapshot measures only the variant
+    release_builder_copies()
     before = set(sys.modules)
 
-    mod = load_build()
-    # Usable without a sys.modules entry: exec built the module object and the caller
-    # holds it, so attribute access and a build still work with the name unregistered.
-    assert callable(mod.resolve_crew)
+    # A copy another test loaded: registered under that test's id.
+    with pytest.MonkeyPatch.context() as scoped:
+        scoped.setenv("PYTEST_CURRENT_TEST", "test_elsewhere.py::test_earlier (call)")
+        earlier = load_build(mutate=("def resolve_crew", "def resolve_crew"))
+        earlier_root = earlier.__package__
+    assert (
+        os.environ.get("SMC_LOADER_TEST_SHARED_PIN") == "held"
+    ), "the scoped override must not clear the shared fixture's pins"
 
+    mod = load_build()
+    root = mod.__package__
+    assert callable(mod.resolve_crew)
+    assert f"{root}.pipeline.crew" in sys.modules, "a live copy's owners must be resolvable"
+    assert not [
+        k for k in sys.modules if k.split(".")[0] == earlier_root
+    ], "a finished test's copy -- a mutated one -- is still importable by its name"
+
+    # Released by this test, the copy stays registered until the next load: nothing
+    # removes it from a garbage-collection callback in the middle of another test.
+    del mod, earlier
+    gc.collect()
+    assert f"{root}.pipeline.crew" in sys.modules
+
+    release_builder_copies()
     after = set(sys.modules)
     assert not [k for k in after if k.startswith("smc_build_")], (
         "load_build leaked a synthetic module into sys.modules; a later import by that "
         "name would resolve this variant"
     )
     assert after == before, "load_build changed the sys.modules key set"
-
-    # The mutated path must not leak either -- that is the copy whose stale guard would
-    # do the damage if it survived into the next test.
-    before_mut = set(sys.modules)
-    load_build(mutate=("def resolve_crew", "def resolve_crew"))
-    assert set(sys.modules) == before_mut, "a mutated load_build leaked into sys.modules"

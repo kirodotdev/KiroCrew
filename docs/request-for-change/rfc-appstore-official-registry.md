@@ -34,7 +34,7 @@ release. Two concrete gaps:
 
 1. **No first-party remote registry.** The curated catalog is the bundled
    `kiro_crew/apps/app-registry.json`, compiled into the wheel next to
-   `registry.py` (`_REGISTRY_FILE`). Changing the catalog — adding an app,
+   `registry.py` (read through `_REGISTRY_FILE`, `apps/registry_pipeline/sources.py`). Changing the catalog — adding an app,
    fixing a repo URL, pulling a broken one — requires shipping a new app
    release. User-configured *external* registries exist
    (`ExternalRegistryConfig`: `name`/`repo`/`branch`, git-clone based) but are

@@ -2551,3 +2551,76 @@ def test_a_cancel_answers_the_open_gate_dialog_as_cancelled(tmp_path):
         "id": frame["id"],
         "result": {"outcome": {"outcome": "cancelled"}},
     }
+
+
+# ── A signed-out pi: the declared message, and no retry ──
+
+#: The ``session/new`` error pi-acp 0.0.34 returns with an empty pi home and no
+#: key, copied off the live wire (``authMethods`` trimmed to its id).
+_PI_SIGNED_OUT_ERROR = {
+    "code": -32000,
+    "message": "Authentication required: Configure an API key or log in with an OAuth provider.",
+    "data": {"authMethods": [{"id": "pi_terminal_login", "type": "terminal"}]},
+}
+
+
+def _signed_out_startup_client(backend: str, spawns: list[int]) -> AcpClient:
+    """A client whose every ``session/new`` answers pi's live signed-out error.
+
+    Shaped the way ``_send_request`` raises it, so the startup ladder sees the
+    same ``AcpError`` text a real pi-acp child produces.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = AcpClient(acp_backend=backend)
+    client._process = None
+    client._session_id = None
+    client._kill_process = AsyncMock()
+    client._cleanup_failed_live_spawn = AsyncMock()
+    client._snapshot_process_tree = AsyncMock()
+
+    def _reset():
+        # The real reset drops the process handle, which is what makes the next
+        # pass spawn again; without it a retry would silently be a no-op.
+        client._process = None
+        client._session_id = None
+
+    client._reset_state = _reset
+
+    async def _spawn():
+        spawns.append(1)
+        client._process = MagicMock()
+        client._process.returncode = None
+
+    async def _session_new():
+        raise acp_client.AcpError(f"JSON-RPC error: {_PI_SIGNED_OUT_ERROR}")
+
+    client._spawn = _spawn
+    client._initialize_session = _session_new
+    return client
+
+
+def test_a_signed_out_pi_names_the_fix_and_is_not_retried() -> None:
+    from kiro_crew.agent_sdk import host_auth
+
+    spawns: list[int] = []
+    client = _signed_out_startup_client(ACP_BACKEND_PI, spawns)
+    with pytest.raises(acp_client.AcpError) as info:
+        asyncio.run(client.ensure_ready())
+    assert str(info.value) == host_auth.signed_out_message(ACP_BACKEND_PI)
+    # One spawn: a fresh pi reads the same empty credential file.
+    assert spawns == [1]
+    assert info.value.transient is False
+    # Not the Kiro sign-in type: the dashboard would offer the Kiro sign-in card,
+    # which signs in the wrong thing for pi.
+    assert not isinstance(info.value, acp_client.AcpAuthRequired)
+    assert info.value.auth_required is False
+
+
+def test_the_pi_phrase_does_not_classify_another_harness() -> None:
+    """Scoped per harness: kiro-cli meeting the same words keeps its retry."""
+    spawns: list[int] = []
+    client = _signed_out_startup_client(ACP_BACKEND_KIRO, spawns)
+    with pytest.raises(acp_client.AcpError):
+        asyncio.run(client.ensure_ready())
+    assert spawns == [1, 1]

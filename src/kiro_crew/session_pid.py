@@ -181,8 +181,8 @@ def _session_pid_file_lock():  # type: ignore[no-untyped-def]
             yield
 
 
-def _track_session_pid(pid: int) -> None:
-    """Append a kiro-cli PID to the session tracking file (dedup).
+def _track_session_pid(pid: int, start_token: str | None = None) -> None:
+    """Record a kiro-cli root in the session tracking file.
 
     Entries are written as ``<gateway_pid>:<child_pid>:<start_token>`` so each
     gateway instance can identify and sweep only its own children, and so the
@@ -195,19 +195,78 @@ def _track_session_pid(pid: int) -> None:
     the backend registry) wherever a command line is readable, and on Windows only an
     image name is -- so an interpreter-hosted adapter reads as ``node.exe`` there and a
     token-less entry for one is not recognised. See :func:`_is_managed_agent_process`.
+
+    *start_token* is the identity the caller read at spawn. Pass it: a caller
+    that also retires by identity (:func:`_untrack_root_by_identity`) must record
+    the SAME token it will later compare, and two probes of one number are two
+    reads that can disagree once the number changes hands. Omitted, the token is
+    probed here, which is what every caller did before spawn learned to keep it.
+    The recorded identity is always the token in hand; the one place this
+    function probes the number again (before replacing another line, below) is an
+    OCCUPANCY check -- does the number still name this process -- never the
+    source of what gets written.
+
+    One line per ``gw:pid`` number. The exact entry already present is a re-track
+    and is left alone. A line under the same number with a DIFFERENT token is a
+    predecessor's: this caller is recording the process that holds the number
+    NOW, so whatever that line named has exited, and it is REPLACED rather than
+    kept. A kept stale line is the hole the identity-bound retirement falls
+    through -- the successor never gets a line of its own, so nothing about it is
+    ever in this file. A token-less write never replaces a tokened line: with no
+    identity to offer it proves nothing about who holds the number, and the sweep
+    prunes a stale tokened line by liveness on its own.
+
+    A refused replacement RAISES, like a refused append: failing to record a live
+    root is the one unrecoverable direction here (see ``_rewrite_pid_file``) -- a
+    root in neither file is unreachable by every reaper until reboot.
     """
-    token = _pid_start_token(pid)
+    token = start_token if start_token else _pid_start_token(pid)
     prefix = f"{os.getpid()}:{pid}"
     entry = f"{prefix}:{token}" if token else prefix
     with _session_pid_file_lock():
         path = _session_pid_file_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            # Dedup on the gw:pid prefix (not the full entry) so a re-track
-            # never duplicates a legacy 2-field line with a 3-field one.
-            for line in path.read_text(encoding="utf-8").split():
-                if line == prefix or line.startswith(prefix + ":"):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            kept: list[str] = []
+            already_present = False
+            stale_predecessor = False
+            for ln in lines:
+                stripped = ln.strip()
+                if stripped == entry:
+                    # Ours. Not kept here: the single write below is what puts
+                    # exactly one line for the number back, whichever order
+                    # the file listed ours and a stale one in.
+                    already_present = True
+                    continue
+                if stripped == prefix or stripped.startswith(prefix + ":"):
+                    if not token:
+                        # Dedup on the gw:pid prefix, as before: a token-less
+                        # re-track never duplicates -- or downgrades -- a line
+                        # that carries an identity.
+                        return
+                    stale_predecessor = True
+                    continue
+                kept.append(ln)
+            if already_present and not stale_predecessor:
+                return
+            if stale_predecessor:
+                # The token in hand was read at SPAWN. This write may be late --
+                # a tracker that ran after its own root died and the number was
+                # handed on -- in which case the "stale predecessor" line above
+                # is the live successor's only record, and replacing it would
+                # leave that root reachable by nothing. Re-read the number's
+                # identity NOW, under the lock: only while it still names the
+                # process this token belongs to is the replacement ours to make.
+                # A number that has moved on (or cannot be read) is not recorded
+                # by this caller at all -- deny-by-default, the direction every
+                # writer in this module fails toward.
+                if _pid_start_token(pid) != token:
                     return
+                kept.append(entry)
+                if not _rewrite_pid_file(path, "\n".join(kept) + "\n"):
+                    raise OSError(f"could not record root PID {pid} in {path}")
+                return
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{entry}\n")
 
@@ -3003,7 +3062,11 @@ def _untrack_pid_if_dead(pid: int) -> bool:
     answers the probe and the line is RETAINED, and a dead number does not and
     the line is REMOVED. A retained bare line naming a LIVE successor is exactly
     the line that successor's own ``_track_pid`` writes, so retaining is never
-    wrong, and the sweep prunes any bare line whose pid is dead within its tick.
+    wrong. A bare line retained for a live holder that is NOT one of ours (an
+    unrelated process that inherited the number) simply stays until the number
+    goes dead: the bare-line prune (``_cleanup_orphaned_mcp_servers``) removes a
+    bare line on ``pid_exists`` alone and never signals by it, so the cost of the
+    stale line is one entry, not a kill.
     ``pid_exists`` treats EPERM as alive: deny-by-default, the direction every
     reaper in this module fails toward.
 
@@ -3038,18 +3101,19 @@ def _untrack_root_by_identity(pid: int, start_token: str | None) -> bool:
     (``None``) nothing is touched at all, which is the same deny-by-default every
     reaper in this module fails toward.
 
-    The bare ``<pid>`` root line in ``kiro_pids.txt`` carries no identity, and a
-    successor handed the dead root's number may have no session line of its own
-    (:func:`_track_session_pid` dedups on the ``gw:pid`` prefix, so it returns
-    without writing while OUR line still stands). The session file therefore
-    cannot say whether the number has a new holder; the kernel can. The bare line
-    goes through :func:`_untrack_pid_if_dead`, which probes ``pid_exists`` inside
-    ``_pid_file_lock`` -- the lock ``_track_pid`` appends under -- and removes
-    the line only when the number is dead at that moment; a live holder keeps
-    it. The two per-file locks are taken in turn, never nested, and no lock
-    spans the pair: a successor's tracking may land between the two steps, and
-    then it finds its own bare line retained and its session line written by
-    itself, so neither ordering loses a live root.
+    The bare ``<pid>`` root line in ``kiro_pids.txt`` carries no identity, so the
+    session file is not consulted about the number's new holder even though a
+    successor now REPLACES a stale predecessor line with its own
+    (:func:`_track_session_pid`): a successor whose spawn has not reached that
+    write yet has no line, and one whose identity could not be read writes a
+    token-less line that names nobody. The kernel can say what the file cannot.
+    The bare line goes through :func:`_untrack_pid_if_dead`, which probes
+    ``pid_exists`` inside ``_pid_file_lock`` -- the lock ``_track_pid`` appends
+    under -- and removes the line only when the number is dead at that moment; a
+    live holder keeps it. The two per-file locks are taken in turn, never nested,
+    and no lock spans the pair: a successor's tracking may land between the two
+    steps, and then it finds its own bare line retained and its session line
+    written by itself, so neither ordering loses a live root.
 
     Returns whether the retirement COMMITTED -- every write this call owed, not
     merely the session one: the session rewrite landed AND the bare-line step

@@ -68,13 +68,38 @@ def _copy_tree_no_overwrite(src: Path, dst: Path, *, allow_unpinned: bool = Fals
     if not facade._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {dst.name!r}"
     ):
-        for item in src.rglob("*"):
-            if item.is_symlink():
-                continue
-            target = dst / item.relative_to(src)
-            if item.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-            elif item.is_file():
+        # Top-down with PRUNING, not `rglob("*")`. The distinction is the whole fence:
+        # `rglob` yields a link's descendants whatever the loop body then does with the
+        # link itself, so skipping the entry alone still copied the target's contents in
+        # -- and the per-file `mkdir(parents=True)` below rebuilt the very directory the
+        # skip meant to prune. `os.walk(topdown=True)` lets the walk be told not to
+        # descend, by editing `dirnames` in place, so a pruned directory yields nothing.
+        #
+        # Both link predicates, as the sibling fallbacks in `snapshot_restore` and
+        # `snapshot_archive` spell it: `is_symlink()` answers False for a Windows
+        # directory junction, and Windows is exactly where this branch runs -- `dir_fd`
+        # is missing there, so the pinned path is unavailable and an operator who passed
+        # `--allow-unpinned-staging` lands here. The opt-in accepts a BY-NAME traversal,
+        # which no screen here can make safe; it does not accept a link fence that sees
+        # only half the links the platform has, nor one that prunes a name while the
+        # walk keeps handing out what is behind it.
+        def _is_link(path: Path) -> bool:
+            return path.is_symlink() or pinned_fs.is_reparse_point(path)
+
+        for parent, dirnames, filenames in os.walk(src, topdown=True):
+            here = Path(parent)
+            kept = [d for d in dirnames if not _is_link(here / d)]
+            for pruned in [d for d in dirnames if d not in kept]:
+                facade._report_skip(pinned_fs.SKIP_SYMLINK, str(here / pruned))
+            dirnames[:] = kept
+            for name in kept:
+                (dst / (here / name).relative_to(src)).mkdir(parents=True, exist_ok=True)
+            for name in filenames:
+                item = here / name
+                if _is_link(item):
+                    facade._report_skip(pinned_fs.SKIP_SYMLINK, str(item))
+                    continue
+                target = dst / item.relative_to(src)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 # `copy2` opens the destination BY NAME for writing, so a symlink planted
                 # at that name after a `not target.exists()` check is followed and an

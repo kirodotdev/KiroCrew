@@ -12,7 +12,7 @@ import time as _time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from kiro_crew import git_coord, name_grant, platform_compat, shutdown_event
+from kiro_crew import git_coord, name_grant, platform_compat, runtime_death, shutdown_event
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_CANCELLED,
@@ -462,6 +462,13 @@ async def execute_task(
         # turn consumed the one-shot flag, and whether it landed (recorded success).
         _needs_reinjection = False
         _turn_landed = False
+        # The provider THIS attempt ran on, for the death handler's attribution
+        # question. Reset per attempt and set only once the session is open, so a
+        # death before the open asks about nothing (and is charged, as before)
+        # rather than about the previous attempt's provider -- ``client`` itself
+        # survives the loop, so reading it directly would attribute this
+        # attempt's death to a runtime it never used.
+        _turn_provider: object | None = None
         try:
             from kiro_crew.context import inherit_session_memory
 
@@ -476,6 +483,7 @@ async def execute_task(
                 cwd=str(work_dir) if work_dir else None,
             )
             _acquired = True
+            _turn_provider = client
 
             task_prompt = await build_task_prompt(run, task, attempt, work_dir)
             if ctx:
@@ -744,6 +752,10 @@ async def execute_task(
             # completion, never gets here: the raises above hand those to the
             # retry ladder, and the finally re-arms.
             _turn_landed = True
+            # A landed turn proves recovery worked, so the next shared death
+            # starts its own count instead of inheriting one -- the same reason
+            # the chat runner clears it on a landed turn.
+            runtime_death.clear_shared_deaths(session_key)
             sessions.check_context_usage(session_key, client)
 
             # ── Per-turn usage row: attribute task-runner spend. ──
@@ -780,21 +792,51 @@ async def execute_task(
                 logger.debug("usage row (taskrunner) persist failed", exc_info=True)
 
         except AcpProcessDied:
-            recoveries += 1
+            # Whose failure was this? A task runs its sub-agents on its own
+            # runtime, so a death here can be a process event several accounts
+            # witnessed rather than this task's fault -- and MAX_RECOVERIES then
+            # fails a task that did nothing wrong. The death was classified once
+            # where it was detected; this reads that record. A single-tenant
+            # runtime, and a death before the session opened, are charged exactly
+            # as before.
+            _own_fault = runtime_death.caused_by_this_session(_turn_provider)
+            if _own_fault:
+                recoveries += 1
+            else:
+                runtime_death.note_shared_death(session_key)
+            # ``recoveries`` stays MONOTONIC. Assigning the shared streak into it
+            # would refund budget already spent: two own-fault deaths followed by
+            # one shared death would read as 1, and the third own-fault death
+            # would still be under the limit -- replaying task work that is not
+            # idempotent. So the two counts run side by side and the LIMIT is
+            # tested against whichever is further along, exactly as the chat
+            # runner does with its own `_death_attempts`.
+            _death_attempts = max(recoveries, runtime_death.shared_deaths(session_key))
+            if not _own_fault:
+                logger.warning(
+                    "Task %d lost a turn to a SHARED runtime's death (%d running) — "
+                    "not charging this task's recovery budget",
+                    task.index,
+                    runtime_death.shared_deaths(session_key),
+                )
             partial = task.result or ""
-            task.error = f"Process died (recovery {recoveries}/{MAX_RECOVERIES})"
+            task.error = f"Process died (recovery {_death_attempts}/{MAX_RECOVERIES})"
             logger.warning(
                 "Task %d: process died (recovery %d/%d), partial: %.200s",
                 task.index,
-                recoveries,
+                _death_attempts,
                 MAX_RECOVERIES,
                 partial,
             )
             await sessions.reset(session_key)
 
-            if recoveries > MAX_RECOVERIES:
+            if _death_attempts > MAX_RECOVERIES:
                 task.status = TaskStatus.FAILED
-                task.error = f"Process died {recoveries} times — giving up"
+                task.error = (
+                    f"Process died {_death_attempts} times — giving up"
+                    if _own_fault
+                    else f"The runtime this task shares died {_death_attempts} times — giving up"
+                )
                 return False
 
             if partial:
@@ -804,7 +846,7 @@ async def execute_task(
                 )
             await on_notify(
                 f"💀 Task {task.index}: process died",
-                f"Recovering ({recoveries}/{MAX_RECOVERIES})…",
+                f"Recovering ({_death_attempts}/{MAX_RECOVERIES})…",
                 run=run,
             )
             run.last_task_time = _time.time()

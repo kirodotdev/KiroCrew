@@ -909,11 +909,13 @@ class RunEventCoordinator(ManagerComponent):
         ``QUEUED_REASON_*`` kinds, plus ``available_gb`` / ``required_gb`` for the
         memory kinds). The gate passes it on the emit that follows its verdict;
         it is remembered per parent and rides on every later emit for that
-        parent -- the drain's and the cancel path's re-emits carry no verdict of
-        their own -- until the parent's depth reaches 0, when it is forgotten
-        and the event is once again the bare ``{"queued": 0}``. Absent on an
-        event exactly when nothing was labelled, so a client reading only the
-        count is unaffected and one reading the reason never sees a stale one.
+        parent -- the drain's, the claim path's (once a claimed row registers, so
+        a started row leaves the count) and the cancel path's re-emits carry no
+        verdict of their own -- until the parent's depth reaches 0, when it is
+        forgotten and the event is once again the bare ``{"queued": 0}``. Absent
+        on an event exactly when nothing was labelled, so a client reading only
+        the count is unaffected and one reading the reason never sees a stale
+        one.
 
         Fire-and-forget: scheduled on the running loop; a no-op in sync/test
         contexts without a loop (the count is advisory UI signal, not state).

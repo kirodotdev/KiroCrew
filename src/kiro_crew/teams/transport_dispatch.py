@@ -1168,7 +1168,7 @@ class TeamsDispatcher:
                     # producer tagged them with: a group conversation shares one bubble
                     # between members, so a drain answering one of them must leave the
                     # other's lines -- and their entry -- alone.
-                    _entry_owner(replay),
+                    owner=_entry_owner(replay),
                 )
             # Drained payloads are turn content, so command interpretation is off:
             # a queued "/new" must reach the model as text, not execute on drain.

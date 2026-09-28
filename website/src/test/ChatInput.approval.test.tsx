@@ -665,6 +665,30 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     expect(screen.queryByRole('button', { name: /^Approve$/ })).not.toBeInTheDocument()
   })
 
+  /** One set of decision buttons on screen at a time: while a tool approval is
+   *  also pending, the spawn card keeps its count and the panel link but
+   *  withholds its own Approve/Reject and glow, and its line stops pointing at
+   *  itself as the thing to approve, so the two panes cannot be taken for one
+   *  request (UX review of 21b8e79b and 5932abb3). */
+  it('withholds the spawn Approve/Reject and glow while a tool approval is also pending', () => {
+    const spawn = stateWithPendingSpawn(2) as { chat: Record<string, unknown> }
+    const tool = stateWithApproval() as { chat: { messages: unknown[] }; dashboard: unknown }
+    const store = createTestStore({
+      chat: { ...spawn.chat, messages: tool.chat.messages },
+      dashboard: tool.dashboard,
+    } as unknown as Partial<RootState>)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    expect(screen.getByText('2 sub-agents pending — answer the request below first')).toBeInTheDocument()
+    expect(screen.queryByText(/awaiting your approval/)).not.toBeInTheDocument()
+    expect(screen.getByText('Review in panel')).toBeInTheDocument()
+    // The tool bar's own buttons are the only decision on screen.
+    expect(screen.getByText('Allow once')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Approve all$/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Approve sub-agent:/ })).not.toBeInTheDocument()
+    expect(screen.getByTestId('spawn-approval-card').className).not.toContain('approval-glow')
+    expect(screen.getByTestId('composer-dock').className).toContain('approval-glow')
+  })
+
   it('does not render the banner when there are no pending spawns', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })

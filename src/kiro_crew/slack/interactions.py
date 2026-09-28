@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import aiohttp
@@ -103,9 +104,14 @@ logger = logging.getLogger(__name__)
 # the fence is interpolated around untrusted content (XPIA hardening). Matching
 # runs on the normalized view, so each word join is one run of whitespace,
 # underscore or hyphen, possibly empty; no two optional classes are adjacent.
+#
+# The pattern starts at the first keyword, not at the leading dashes and
+# whitespace: a leading ``-*\s*`` lets a search restart at every offset of a
+# long whitespace run, which is quadratic in the run length.
+# :func:`_extend_fence_span_left` adds that prefix back in one linear pass.
 _FENCE_WORD_JOIN = r"[\s_-]*"
 _FENCE_MARKER_RE = re.compile(
-    r"-{0,}\s*(?:"
+    r"(?:"
     + _FENCE_WORD_JOIN.join(("UNTRUSTED", "FORWARDED", "CONTENT"))
     + "|"
     + _FENCE_WORD_JOIN.join(("CONTEXT", "ENTRY"))
@@ -117,14 +123,65 @@ _FENCE_MARKER_RE = re.compile(
 _FENCE_MARKER_NEUTRALIZED = "[removed embedded fence marker]"
 
 
+def _fence_fold(ch: str) -> str:
+    """*ch* as the marker matcher's normalized view spells it (see ``_marker_spans``)."""
+    from kiro_crew.context import _MULTIBYTE_TABLE, _is_marker_ignorable
+
+    if ch.isascii():
+        return ch
+    folded = ""
+    for compatible in unicodedata.normalize("NFKC", ch):
+        if not _is_marker_ignorable(compatible):
+            for candidate in compatible.translate(_MULTIBYTE_TABLE):
+                folded += "-" if unicodedata.category(candidate) == "Pd" else candidate
+    return folded
+
+
+def _extend_fence_span_left(text: str, start: int, floor: int) -> int:
+    """Move *start* left over the ``-*\\s*`` prefix a fence marker may carry.
+
+    Reads the normalized view right to left like the regex prefix did:
+    whitespace next to the keyword, then dashes, never below *floor* (the end of
+    the previous span).  One original character can fold to several view
+    characters (``←`` folds to ``<-``); it joins the prefix when its trailing
+    view characters do, and the walk stops at it when the rest do not.  A
+    character the normalized view drops counts in either phase.
+    """
+    in_dashes = False
+    while start > floor:
+        folded = _fence_fold(text[start - 1])
+        consumed = 0
+        for view_char in reversed(folded):
+            if view_char == "-":
+                in_dashes = True
+            elif in_dashes or not view_char.isspace():
+                break
+            consumed += 1
+        if folded and not consumed:
+            break
+        start -= 1
+        if consumed < len(folded):
+            break
+    # A dropped character is part of the prefix only between matched ones.
+    while _fence_fold(text[start]) == "":
+        start += 1
+    return start
+
+
 def _neutralize_fence_markers(text: str) -> str:
     """Neutralize Unicode-normalized forwarded/context fence variants."""
     # Local import avoids the context -> Slack handler import cycle during
     # module initialization; interaction handlers run only after startup.
-    from kiro_crew.context import _apply_marker_spans, _marker_spans
+    from kiro_crew.context import _apply_marker_spans, _marker_spans, _merge_overlapping_spans
 
     spans = _marker_spans(text, (_FENCE_MARKER_RE,))
-    return _apply_marker_spans(text, spans, _FENCE_MARKER_NEUTRALIZED)
+    floor = 0
+    extended: list[tuple[int, int]] = []
+    for start, end in spans:
+        extended.append((_extend_fence_span_left(text, start, floor), end))
+        floor = end
+    merged = _merge_overlapping_spans(extended)
+    return _apply_marker_spans(text, merged, _FENCE_MARKER_NEUTRALIZED)
 
 
 # Module-level orchestrator reference — set by ``init()``.

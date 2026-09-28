@@ -3556,16 +3556,18 @@ class SubagentManager:
         # must not permanently disable the run's replay budget.
         if approval_sent is not False and info is not None and event.sub_session_id:
             info.tool_count += 1
+        if approval_sent is False:
+            outcome = OUTCOME_REJECTED_TRANSPORT_FLOOR
+        elif metadata and metadata.get("reason"):
+            outcome = "auto_approved"
+        else:
+            outcome = "approved"
         sel().log_tool_invocation(
             session_key=session_key,
             source="subagent",
             tool_name=event.title,
             tool_kind=event.tool_kind,
-            outcome=(
-                "auto_approved"
-                if approval_sent is not False and metadata and metadata.get("reason")
-                else "approved" if approval_sent is not False else OUTCOME_REJECTED_TRANSPORT_FLOOR
-            ),
+            outcome=outcome,
             request_id=request_id,
             metadata=metadata,
         )

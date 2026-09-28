@@ -5858,6 +5858,7 @@
       "trust_desc": "In questa chat, {{productName}} lavora senza chiederti prima",
       "trust_label": "Fiducia",
       "chat_mode_hint": "modalità chat",
+      "trust_scope_tooltip": "Attendibile grazie a un'autorizzazione dell'app per questa chat; scade da sola. Scegli Normale in questo menu per terminarla ora; l'app può concederla di nuovo finché non la disattivi nell'app.",
       "trust_tooltip": "In questa chat, {{productName}} lavora senza chiederti prima",
       "yolo_desc": "In ogni chat, {{productName}} lavora senza chiederti prima",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
@@ -6181,6 +6182,12 @@
       "show_pending_tool_call_in_chat": "Mostra nella chat la chiamata allo strumento in attesa",
       "skill": "Skill",
       "slash_commands": "Comandi slash",
+      "spawn_awaiting_one": "{{count}} subagente attende la tua approvazione per l'esecuzione",
+      "spawn_awaiting_many": "{{count}} subagenti attendono la tua approvazione per l'esecuzione",
+      "spawn_awaiting_other": "{{count}} subagenti attendono la tua approvazione per l'esecuzione",
+      "spawn_pending_one": "{{count}} subagente in attesa — rispondi prima alla richiesta qui sotto",
+      "spawn_pending_many": "{{count}} subagenti in attesa — rispondi prima alla richiesta qui sotto",
+      "spawn_pending_other": "{{count}} subagenti in attesa — rispondi prima alla richiesta qui sotto",
       "steer": "Indirizza",
       "alt_action_hint_queues": "{{chord}} mette in coda questo messaggio invece",
       "alt_action_hint_steers": "{{chord}} guida con questo messaggio invece",
@@ -6334,7 +6341,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Aggiungi un commento",
       "add_comment": "Aggiungi commento",
       "add_instruction": "Aggiungi istruzione",
       "additional_prompt": "Prompt aggiuntivo",
@@ -7832,11 +7838,12 @@
       "effort": "Impegno",
       "effort_help": "Il livello di ragionamento determina quanto tempo il modello riflette prima di rispondere. Un valore più alto significa più tempo per ragionare sui problemi difficili (risposte più lente ma migliori); uno più basso è più veloce. Se disattivi la sostituzione per sessione, si torna al valore predefinito in Impostazioni → Chat, oppure alla scelta del modello stesso quando non è impostato alcun valore predefinito (solo Fable/Opus/Sonnet).",
       "faster": "Più veloce",
-      "configured_default_marker": "Predefinito configurato",
+      "configured_default_marker": "Livello predefinito",
+      "slider_locked_hint": "Bloccato sul valore predefinito. Disattiva l’interruttore per scegliere un livello.",
       "reasoning_effort": "Livello di ragionamento",
       "smarter": "Più intelligente",
-      "use_configured_default": "Usa il valore predefinito configurato",
-      "use_model_default": "Usa il valore predefinito del modello"
+      "use_configured_default": "Usa il livello predefinito ({{level}})",
+      "use_default_effort": "Usa il livello predefinito"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Aggiungi un registry dell'organizzazione per scoprire app specifiche del team",
@@ -7994,12 +8001,16 @@
     "selectionToolbar": {
       "ask": "Chiedi di questo",
       "ask_hint": "Apre la Chat laterale con la selezione citata: non viene inviato nulla finché non invii tu, e la chat principale resta intatta",
+      "close_saving_continues": "Chiudi – il salvataggio continua",
       "comment_input": "Commenta il testo selezionato",
+      "comment_post_failed": "Impossibile salvare il commento. Il testo è ancora qui: riprova.",
+      "comment_post_failed_closed": "Il commento su “{{quote}}” non è stato salvato. Seleziona di nuovo quel testo per recuperarlo e riprovare.",
       "copy": "Copia",
       "copy_failed": "Copia non riuscita: il browser ha bloccato l’accesso agli appunti. Seleziona il testo e copialo manualmente.",
       "copy_selection_hint": "Copia il testo selezionato (non il tuo commento) negli appunti",
       "more_actions": "Altre azioni per la selezione",
       "press_enter_to_comment": "Premi Invio o clicca per commentare…",
+      "saving": "Salvataggio in corso…",
       "tap_to_comment": "Tocca per scrivere un commento…",
       "quote": "Cita",
       "quote_hint": "Cita la selezione nel compositore di questa conversazione: la tua risposta va nella chat principale"
@@ -10730,6 +10741,7 @@
         "copied": "Copiato",
         "copy_failed": "Copia non riuscita",
         "steering": "Indirizzamento in corso…",
+        "delivery_pending": "Consegna in attesa…",
         "redirecting_the_running_turn_not_yet_confirmed": "Reindirizzamento del turno in corso — non ancora confermato.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Il turno è terminato prima che questo venisse applicato — viene eseguito come messaggio separato."
       },
@@ -11212,6 +11224,7 @@
       "send_failed_with_error": "Invio non riuscito: {{error}}",
       "send_failed_with_error_restored": "Impossibile inviare questo messaggio: {{error}}. Il testo è tornato nel campo di scrittura.",
       "delivery_unconfirmed": "Consegna non confermata: il testo è tornato nel campo di scrittura; controlla la conversazione prima di inviarlo di nuovo.",
+      "delivery_unconfirmed_pending": "Consegna non confermata: questo messaggio potrebbe essere ancora in attesa. Se non arriva alcuna risposta, invialo di nuovo.",
       "could_not_read_file_reason": "Impossibile leggere {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot non riuscito: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -12991,7 +13004,12 @@
         "warm_pool": "Pool caldo",
         "warm_pool_description": "Pre-avvia i processi ACP CLI per un avvio istantaneo della sessione.",
         "workspace": "Workspace",
-        "workspaces": "Workspace"
+        "workspaces": "Workspace",
+        "new_workspace": "Nuovo workspace",
+        "change_directory": "Cambia directory",
+        "delete_workspace_warning": "Memoria, lezioni, cronologia e knowledge base non vengono più usate. La cartella resta sul disco.",
+        "type_workspace_name_to_confirm": "Digita «{{name}}» per confermare",
+        "change_directory_hint": "Il workspace leggerà memoria, lezioni, cronologia e knowledge base dalla nuova cartella. Non viene spostato nulla."
       },
       "mcpTab": {
         "actions": "Azioni",
@@ -13367,7 +13385,8 @@
         "update": "Aggiorna",
         "validation_findings": "Risultati della convalida",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "workspace"
+        "workspace": "workspace",
+        "detail_unreadable": "I file di questo candidato non possono essere letti in modo sicuro, quindi la revisione non è disponibile. Scartalo per rimuoverlo dalla coda."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "Convenzioni Markdown che l’agente legge. La modalità di inclusione di ogni file decide quando: sempre, solo per i file corrispondenti o su richiesta. I file globali stanno in ~/.kiro/steering e valgono ovunque; quelli del workspace stanno in <project>/.kiro/steering e valgono solo per quel progetto.",
@@ -15189,6 +15208,8 @@
         "desktop_alerts": "Avvisi desktop",
         "notify_when_a_background_chat_finishes": "Avvisa quando una chat in background termina",
         "notify_when_a_background_chat_finishes_description": "Mostra una notifica di sistema con il nome della chat terminata, ma solo mentre questa finestra è ridotta a icona o dietro un’altra app.",
+        "unread_only_when_done_or_waiting": "Segna le sessioni come non lette solo quando hanno bisogno di te",
+        "unread_only_when_done_or_waiting_description": "Una sessione in background viene segnata come non letta quando il suo agente finisce o aspetta la tua risposta, non a ogni nuovo messaggio.",
         "always_interrupts_cannot_be_muted_or_lowered": "Interrompe sempre — non può essere silenziato né abbassato",
         "app": "app",
         "category_agent": "Messaggi proattivi dell’agente",
@@ -16760,6 +16781,9 @@
       "webview_refresh_error_aged": "Non è stato possibile aggiornare la dashboard. Viene mostrata la versione di {{ago}}.",
       "webview_frame_title": "Dashboard compilata da {{crew}}",
       "webview_rendering": "Rendering della dashboard…",
+      "webview_docked_rendering": "Rendering della scheda di stato…",
+      "webview_docked_error": "Non è stato possibile rendere la scheda di stato di questo compagno. La dashboard completa potrebbe comunque aprirsi qui sotto.",
+      "webview_docked_refresh_error": "Impossibile aggiornare la scheda di stato. Viene mostrata l'ultima versione caricata.",
       "webview_retry": "Riprova",
       "deploy_trigger": "Cloud",
       "deploy_title": "La tua crew nel cloud",

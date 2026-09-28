@@ -99,7 +99,6 @@ src/kiro_crew/apps/builtins/issue_radar/tests/test_write_and_ai.py
 src/kiro_crew/apps/builtins/md_notebook/git_ops.py
 src/kiro_crew/apps/builtins/md_notebook/notes.py
 src/kiro_crew/apps/builtins/meetings/backend/domain/dictionary.py
-src/kiro_crew/apps/builtins/meetings/backend/domain/session.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/calendar.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/tasks.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/calendar.py
@@ -134,7 +133,6 @@ src/kiro_crew/apps/manager.py
 src/kiro_crew/apps/manifest.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/permissions.py
-src/kiro_crew/apps/registry.py
 src/kiro_crew/apps/route_registry.py
 src/kiro_crew/apps/scaffold.py
 src/kiro_crew/apps/teardown.py
@@ -700,7 +698,6 @@ test/test_mcp_sync_agent.py
 test/test_meetings_agent_names.py
 test/test_meetings_dictionary.py
 test/test_meetings_providers.py
-test/test_meetings_session.py
 test/test_memory_benchmark_workflow.py
 test/test_memory_selfheal.py
 test/test_merge_queued_messages.py

@@ -13,10 +13,12 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
+  inFlightSlotSwitchOutcome,
   pendingSlotSwitch,
   pendingSlotSwitchTarget,
   performSlotSwitch,
   stageSlotSwitchTarget,
+  stagedSlotSwitchTarget,
   SWITCH_CONFIRM_TIMEOUT_MS,
 } from './slotSwitch'
 import type { AgentSwitchValue } from './slotSwitch'
@@ -272,6 +274,20 @@ describe('performSlotSwitch — agent/effort field growth (#5120)', () => {
     expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-stage')).toBeNull()
   })
 
+  it('stagedSlotSwitchTarget sees only a stage, never an in-flight request', async () => {
+    // The slider's own debounced write skips itself only when its stage is
+    // still the newest intent (ReasoningEffortDropdown), so it needs the
+    // stage alone; pendingSlotSwitchTarget merges stage and in-flight.
+    expect(stagedSlotSwitchTarget('reasoning_effort', 'slot-eff-staged-only')).toBeNull()
+    stageSlotSwitchTarget('reasoning_effort', 'slot-eff-staged-only', '')
+    expect(stagedSlotSwitchTarget('reasoning_effort', 'slot-eff-staged-only')).toBe('')
+    const p = performSlotSwitch('reasoning_effort', 'slot-eff-staged-only', 'high',
+      async () => 'high', () => {})
+    expect(stagedSlotSwitchTarget('reasoning_effort', 'slot-eff-staged-only')).toBeNull()
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-staged-only')).toBe('high')
+    await p
+  })
+
   it("newest failure adopts a held '' success — the falsy value the boxed recovery exists for", async () => {
     // Serialized: a "clear the override" pick ('') succeeds, then a newer
     // pick fails — the backend is left running the provider default, so the
@@ -289,6 +305,53 @@ describe('performSlotSwitch — agent/effort field growth (#5120)', () => {
     await first
     await expect(second).rejects.toThrow('boom')
     expect(writes).toEqual([''])
+  })
+
+  it('inFlightSlotSwitchOutcome is the newest wire verdict: null when idle, resolves on landing, rejects on refusal', async () => {
+    expect(inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict')).toBeNull()
+    let release: (v: string) => void = () => {}
+    const write = performSlotSwitch('reasoning_effort', 'slot-verdict', 'high',
+      () => new Promise<string>(res => { release = res }), () => {})
+    const verdict = inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict')
+    expect(verdict).not.toBeNull()
+    // A stage is not on the wire: it does not replace the in-flight verdict.
+    stageSlotSwitchTarget('reasoning_effort', 'slot-verdict', 'low')
+    expect(inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict')).toBe(verdict)
+    // The request callback runs on the next tick — wait for it so `release`
+    // is the real resolver, not the initial no-op.
+    await new Promise(res => setTimeout(res, 0))
+    release('high')
+    await write
+    await expect(verdict).resolves.toBeUndefined()
+    expect(inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict')).toBeNull()
+
+    const refused = performSlotSwitch('reasoning_effort', 'slot-verdict-refused', 'max',
+      () => Promise.reject(new Error('refused')), () => {})
+    const refusedVerdict = inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict-refused')
+    await expect(refused).rejects.toThrow('refused')
+    await expect(refusedVerdict).rejects.toThrow('refused')
+    expect(inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict-refused')).toBeNull()
+  })
+
+  it('inFlightSlotSwitchOutcome outlives the caller confirm budget: it is the wire verdict, not the timeout', async () => {
+    vi.useFakeTimers()
+    let release!: (v: string) => void
+    const write = performSlotSwitch('reasoning_effort', 'slot-verdict-slow', 'high',
+      () => new Promise<string>(res => { release = res }), () => {})
+    const verdict = inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict-slow')!
+    let settled = false
+    verdict.then(() => { settled = true }, () => {})
+    // Attach the expectation BEFORE the budget elapses: the caller's rejection
+    // lands inside advanceTimersByTimeAsync, and a rejection that reaches the
+    // end of that tick with no handler is an unhandled error for the run.
+    const writeRejects = expect(write).rejects.toThrow()
+    await vi.advanceTimersByTimeAsync(SWITCH_CONFIRM_TIMEOUT_MS + 1)
+    await writeRejects
+    expect(settled).toBe(false)
+    expect(inFlightSlotSwitchOutcome('reasoning_effort', 'slot-verdict-slow')).toBe(verdict)
+    release('high')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(true)
   })
 
   it("pendingSlotSwitchTarget distinguishes an in-flight '' target from none", async () => {

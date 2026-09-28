@@ -220,18 +220,28 @@ so an agent gets a paragraph of context rather than one interruption per
 utterance. Three consecutive dispatch failures trip a circuit breaker (backoff
 60s → 120s → stop); `POST …/reset` resumes.
 
-Each agent's first message carries the meeting context (title, description,
-attendees, attachments) from `build_meeting_context` inside a
+Each agent's first message carries the meeting context from
+`build_meeting_context`. The calendar and meeting metadata (title, description,
+attendees) and the "Attached documents:" list all sit inside a
 `<<<UNTRUSTED_CALENDAR_EVENT … >>>END_UNTRUSTED_CALENDAR_EVENT` fence with a
-line telling the model the block is data, never instructions. Each field is
-redacted, then screened with `contains_injection`: a match is replaced by
-`[withheld: failed content screening]` and recorded with
-`audit_injection_dropped`, and a withheld attachment path loses its "read the
-file at" instruction. Other fields pass through `neutralize_untrusted_text`,
-which scrubs every untrusted fence marker and the primary prompt boundary
-markers, so no field can close the fence around it. Transcript batches sent
-later by `dispatch_to_agent` are the meeting's working input and are not
-wrapped in this fence.
+line telling the model the block is data, never instructions. When documents
+are attached, one fixed line after the fence close tells the agent to read
+them, so no attachment text is placed where the model acts on it. Every field
+is collapsed to one line, redacted, then screened with `contains_injection`. A title may name the
+system prompt as a meeting topic: a title that as a whole matches the topic
+grammar (an optional short qualifier such as "Q3" or "Retro on", the phrase, a
+recognised topic noun and an optional second noun, so it carries no free text, as in
+"System prompt design review") has only its "system prompt" phrase exempted;
+the rest of the title is still screened. Any other field is screened as
+written, so a topic phrase with anything else attached is withheld, and every
+other pattern (including `<system>` tags and "ignore prior instructions")
+applies. A match is replaced by `[withheld: failed content screening]` and
+recorded with `audit_injection_dropped` under `meetings_calendar_<field>`.
+Calendar pre-creation writes an empty attachment list, and a test pins that.
+Other fields pass through `neutralize_untrusted_text`, which scrubs every
+untrusted fence marker and the primary prompt boundary markers, so no field can
+close or forge the fence. Transcript batches sent later by `dispatch_to_agent`
+are the meeting's working input and are not wrapped in this fence.
 
 `POST …/dispatch` first redacts and appends the finalized line to
 `transcript.jsonl`, then fans it out to the queues. The response carries the same
@@ -269,6 +279,40 @@ transcript a `source=system` marker naming the loss; the user's transcript remai
 complete because every held line was appended before it entered the buffer.
 Meetings created by an older version have no file and read as an empty transcript.
 
+Each kickoff message tells the agent to acknowledge readiness and end that turn;
+transcription arrives only in later messages. The independent agent slots are
+acquired concurrently. Once acquired, every kickoff has a bounded turn budget, so
+a harness that calls a wait tool or otherwise keeps that turn open is cancelled
+when the budget expires while the remaining agents continue. The stream consumer
+stays alive during native cancellation so it can observe the acknowledgement or
+terminal response; only then is any remaining consumer retired and its turn lease
+released. A cancellation that is not acknowledged resets the provider before its
+lease is released, so later transcript turns cannot collide with a remote kickoff
+that is still running. Because a cancelled native turn may be absent from the
+provider's conversation log, the affected queue retains the complete kickoff and
+delivers it as its own turn before the next transcript batch. That re-delivery
+starts at twice the base turn budget, doubles again after each timeout, and caps
+at four times the base. A failed retry stays pending, and a user Retry preserves
+the escalation. The queue publishes an initializing marker before dispatching the
+kickoff, so timer and direct-message flushes retain their lines until the kickoff
+resolves. Success, timeout, or another dispatch error then schedules those lines
+for the next event-loop turn; after a timeout the retained kickoff is delivered
+first. Session acquisition
+is outside this budget: cancelling a cold start before the kickoff arrives would
+leave later transcript batches in a
+session that never received its output-file contract. If speech accumulated during
+initialization, each queue schedules that opening for the next event-loop turn
+instead of waiting through the ordinary
+30-second batch interval. If another turn is already live, the queue remembers
+that request and skips the next delay after the live turn rather than treating
+`flush_soon()` as a no-op. The request flag is consumed even when that live turn
+emptied the queue, so it cannot make a later unrelated multi-batch flush skip an
+interval. The start handler does not await those ordinary agent turns while it
+owns the lifecycle lock.
+Forced drains for stop, pause, teardown, or a direct message never re-deliver a
+pending kickoff. The queue keeps its lines for the timer path; teardown drops
+them with a warning, while the human transcript is already durable on disk.
+
 A flush takes **whole lines up to `MAX_BATCH_CHARS` (60k)** and deletes exactly
 the lines it dispatched, so a queue that grew past the cap — a long pause, or a
 backed-off agent resuming — carries its tail into the next flush. Truncating the
@@ -279,11 +323,13 @@ Pinned by `test_meetings_session.py::TestAgentQueue`.
 
 Ending or pausing a meeting drains rather than interrupts. `flush_now` treats a
 pending flush task by state: still SLEEPING on its interval, it is cancelled (that
-is the point of flushing now); already inside `flush()` awaiting the agent, it is
-AWAITED. Cancelling an in-flight dispatch killed the live turn, and because `busy`
-was still set the follow-up flush then no-opped — so stopping a meeting mid-dispatch
-lost that batch and the finalization notice, at the one moment a meeting's notes
-matter most. `busy` is the discriminator. Pinned by
+is the point of flushing now); already inside an ordinary `flush()` dispatch, it
+is AWAITED. A kickoff re-delivery is cancelled instead, because lifecycle drains
+never spend its escalating budget. Cancelling an ordinary in-flight dispatch
+killed the live turn, and because `busy` was still set the follow-up flush then
+no-opped — so stopping a meeting mid-dispatch lost that batch and the finalization
+notice, at the one moment a meeting's notes matter most. `busy` plus the explicit
+kickoff re-delivery marker are the discriminators. Pinned by
 `::test_flush_now_waits_for_an_in_flight_dispatch` and
 `::test_flush_now_still_cancels_a_sleeping_timer`.
 

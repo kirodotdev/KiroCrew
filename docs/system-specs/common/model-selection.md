@@ -257,10 +257,14 @@ its own once the cache refreshes with a list that carries it.
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`; the composer then uses its existing
   model-name heuristic until ACP reports the session's actual options. The same
-  endpoint proxies a remote slot to its execution peer. A supported session gets
-  a separate effort button, using its advertised levels, whether the backend is
+  endpoint proxies a remote slot to its execution peer. Model and effort are ONE
+  composer control (`docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md`):
+  the model chip names the level in force, and the model picker embeds the effort
+  slider below its model list whenever the capability read reports support, offering
+  exactly the advertised levels in their advertised order, whether the backend is
   Claude, Codex, Pi, or another capable ACP harness. A session that reports no
-  effort support gets no effort control. The model picker never owns that slider.
+  effort support gets no effort row inside the picker. The composer never grows a
+  second, standalone effort control.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
   base ID and its `reasoning_effort` option accepts the level. The live capability
   marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;

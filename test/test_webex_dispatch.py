@@ -3173,7 +3173,7 @@ class TestWebexSharesTheQueueWithOtherTransports:
         sessions.queued = [_entry("1", "mine"), self._foreign()]
         deferred: list[int] = []
 
-        async def _flip(session_key, surface, answered, n=0, owner=""):
+        async def _flip(session_key, surface, answered, n=0, *, owner):
             deferred.append(n)
 
         async def _replay(self, inbound, *, interpret_commands=True, drain=True):
@@ -3201,7 +3201,7 @@ class TestWebexSharesTheQueueWithOtherTransports:
         ]
         deferred: list[int] = []
 
-        async def _flip(session_key, surface, answered, n=0, owner=""):
+        async def _flip(session_key, surface, answered, n=0, *, owner):
             deferred.append(n)
 
         async def _replay(self, inbound, *, interpret_commands=True, drain=True):

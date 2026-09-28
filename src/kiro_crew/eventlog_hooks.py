@@ -268,7 +268,36 @@ def _config_snapshot_for_agent(agent_cfg) -> dict:
     return out
 
 
-def reconcile_member_config(slug, name, agent_cfg, roster_view) -> "list[str] | None":
+def _config_is_still_at(values: dict, observed: dict) -> bool:
+    """Does the roster still show the config fields the caller decided to correct?
+
+    Module level so the reconcile and its tests share ONE definition.
+
+    The correcting event carries the WHOLE config snapshot, not just the fields that
+    differed, and the roster fold is last-wins per field. So every config field is
+    rewritten by it, and any one of them that another writer moved between the
+    caller's observation and this write would be regressed -- which is why all of
+    them are compared here rather than only the ``changed`` list. Nothing else in
+    the block is: an unrelated event (a message, a slot opening) must not starve a
+    correction that is still right.
+
+    A field absent from one side and present in the other counts as moved, so the
+    first snapshot for a never-configured member is refused once another writer has
+    placed one.
+    """
+    from kiro_crew.eventlog import types
+
+    current = values.get(types.PROJ_ROSTER, {}) if isinstance(values, dict) else {}
+    was = observed.get(types.PROJ_ROSTER, {}) if isinstance(observed, dict) else {}
+    if not isinstance(current, dict) or not isinstance(was, dict):
+        return False
+    missing = object()
+    return all(current.get(f, missing) == was.get(f, missing) for f in _CONFIG_FIELDS)
+
+
+def reconcile_member_config(
+    slug, name, agent_cfg, roster_view, *, config_stamp: str
+) -> "list[str] | None":
     """Append a correcting member/config when the log's roster drifts from config.
 
     Compares the log-derived *roster_view*'s config fields against the live
@@ -281,8 +310,33 @@ def reconcile_member_config(slug, name, agent_cfg, roster_view) -> "list[str] | 
     Returns the ``changed`` field list when an event was appended, ``None`` when
     the roster already matched (no write). Best-effort: any failure is swallowed
     and reported as ``None``.
+
+    Two different staleness windows sit between the caller's decision and this
+    write, and each has its own guard.
+
+    *config_stamp* closes the first, and is REQUIRED: it is the digest
+    ``load_config_with_content_stamp`` bound to the bytes ``agent_cfg`` was parsed
+    from. The caller's ``agent_cfg`` comes from a config it loaded earlier, and a save
+    landing after that load writes config.json AND appends its own member/config -- so
+    the roster view can already carry the NEW values while ``agent_cfg`` still carries
+    the old ones, and the comparison above then reads the save as drift and appends the
+    pre-save snapshot over it. The projection is what the roster row and the
+    member_projection frame render, and the log has no compaction, so that regression
+    stands until something re-reads. Passing the stamp makes this refuse unless the
+    live config is still those bytes. A caller whose load could not name them holds no
+    stamp to pass and must not reconcile at all, which is why the parameter admits no
+    stand-in for "unknown" and why this is the only entry: an exemption reachable by
+    passing a falsy value is one a caller that merely FAILED to name its bytes reaches
+    by accident, which is exactly the regression above.
+
+    The conditional append closes the second: another writer can commit between
+    the comparison and this write. ``append_closer_if_still_applies`` re-asks
+    ``_config_is_still_at`` against the current projection under the lock that
+    writes, and the store admits the entry only while the log's tail is still where
+    the fold that answered it reached. A refusal is a normal outcome -- the other
+    writer's values are the newer word -- and the next roster read compares afresh.
     """
-    if not slug:
+    if not slug or not config_stamp:
         return None
     try:
         snapshot = _config_snapshot_for_agent(agent_cfg)
@@ -297,13 +351,27 @@ def reconcile_member_config(slug, name, agent_cfg, roster_view) -> "list[str] | 
             changed = [f for f in _CONFIG_FIELDS if view.get(f) != snapshot[f]]
         if not changed:
             return None
+        from kiro_crew.config.loader import config_content_stamp
+
+        # Read here rather than inside the append: the store's hold must carry a
+        # comparison and never file I/O, and a stamp taken now is what the
+        # comparison below is about.
+        if config_stamp != config_content_stamp():
+            return None
+        from kiro_crew.eventlog import types
         from kiro_crew.eventlog.service import get_service
         from kiro_crew.eventlog.types import MEMBER_CONFIG
 
         svc = get_service()
         svc.ensure(slug, name or slug)
-        svc.append(slug, MEMBER_CONFIG, {**snapshot, "changed": changed})
-        return changed
+        appended = svc.append_closer_if_still_applies(
+            slug,
+            MEMBER_CONFIG,
+            {**snapshot, "changed": changed},
+            still_applies=_config_is_still_at,
+            observed={types.PROJ_ROSTER: view},
+        )
+        return changed if appended is not None else None
     except Exception:
         logger.debug("reconcile_member_config failed for slug=%r", slug, exc_info=True)
         return None
@@ -504,6 +572,49 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
         agents = getattr(cfg, "agents", {}) or {}
         live_slots = getattr(state, "_slots", {}) if state is not None else {}
 
+        # The config reconcile below corrects the log FROM the config, so it may run
+        # only from a load whose bytes are named and whole -- the same rule the roster
+        # read applies, decided in one place for both callers. The object this sweep
+        # was HANDED cannot meet it: the gateway loaded it when it was constructed and
+        # this task runs later, with the HTTP port already listening, so a dashboard
+        # save can have landed in between and the values in hand need not be the
+        # operator's current word. Writing them anyway is how a boot sweep overwrites a
+        # newer save -- the projection regression this whole change exists to prevent,
+        # on the one path that would otherwise be exempt from it.
+        #
+        # So load again HERE, in this worker thread, and carry the digest that load
+        # binds. The stamp is then re-compared inside the reconcile, under the write
+        # lock, which is what also catches a save landing mid-sweep.
+        #
+        # ``None`` withholds the correcting write and nothing else. The closers below
+        # are decided from live process state against the log, never from config
+        # content, so a config that cannot be named says nothing about them and they
+        # still run. Enumeration also stays with *cfg*: which members get swept is not
+        # a question about config content, and moving it would change which logs this
+        # sweep touches.
+        fresh_cfg = None
+        config_stamp: str | None = None
+        try:
+            from kiro_crew.config.loader import load_config_with_content_stamp
+
+            fresh_cfg, config_stamp = load_config_with_content_stamp()
+        except Exception:
+            logger.debug("startup reconcile could not re-load config", exc_info=True)
+            fresh_cfg, config_stamp = None, None
+        # Absent ``degraded_sections`` counts as degraded: an object that cannot answer
+        # the faithfulness question has not answered it yes, and this gate fails closed.
+        if config_stamp is not None and getattr(fresh_cfg, "degraded_sections", True):
+            config_stamp = None
+        fresh_agents = (getattr(fresh_cfg, "agents", {}) or {}) if config_stamp else {}
+        if config_stamp is None:
+            unfaithful = fresh_cfg is not None and getattr(fresh_cfg, "degraded_sections", True)
+            logger.warning(
+                "the agents config is %s, so this startup sweep reconciles no "
+                "member/config; closers are unaffected and the next roster read of a "
+                "whole, parseable config corrects the log",
+                "degraded to defaults" if unfaithful else "unnamed by any content",
+            )
+
         def _patrol_is_still_armed(values: dict, observed: dict) -> bool:
             return _patrol_is_still_armed_at(values, observed)
 
@@ -516,7 +627,7 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
 
             return _still_open
 
-        def _sweep_member(name: str, agent_cfg, slug: str) -> None:
+        def _sweep_member(name: str, slug: str) -> None:
             """Reconcile one member, counting each closer into *closers* as it lands.
 
             Every step is decided from a fresh snapshot and guarded by its own
@@ -545,7 +656,21 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
             svc.ensure(slug, name)
             snap = svc.snapshot(slug)
             values = snap.get("values", {}) if isinstance(snap, dict) else {}
-            reconcile_member_config(slug, name, agent_cfg, values.get(types.PROJ_ROSTER, {}))
+            # Reconciled from the config loaded by THIS sweep, not from the object it
+            # was handed, and only while that load's bytes are still the live ones --
+            # see where the stamp is decided. ``fresh_agents`` is empty when no stamp
+            # could be bound, which is what withholds the write; a member absent from
+            # the fresh load is also skipped, because there is then no current
+            # config to correct it from.
+            fresh_agent_cfg = fresh_agents.get(name)
+            if fresh_agent_cfg is not None and config_stamp is not None:
+                reconcile_member_config(
+                    slug,
+                    name,
+                    fresh_agent_cfg,
+                    values.get(types.PROJ_ROSTER, {}),
+                    config_stamp=config_stamp,
+                )
             # Patrol closer.
             wake = values.get(types.PROJ_WAKE, {}) or {}
             if wake.get("patrol") == "armed":
@@ -595,7 +720,7 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
                 # that actually went unplaced.
                 raise first_unplaced
 
-        contended: list[tuple[str, object, str]] = []
+        contended: list[tuple[str, str]] = []
         members_by_slug: dict[str, list[tuple[str, object]]] = {}
         claimant_count_by_slug: dict[str, int] = {}
         non_dispatchable_name_count = 0
@@ -648,9 +773,9 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
                         kind,
                     )
                     continue
-                _sweep_member(name, agent_cfg, slug)
+                _sweep_member(name, slug)
             except closer_unplaced:
-                contended.append((name, agent_cfg, slug))
+                contended.append((name, slug))
             except Exception:
                 # Slug only, no exception text: a header value or a store error
                 # can carry a stored display name, which this log must not.
@@ -662,9 +787,9 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
         # another process's burst of appends to that one member, which a pass moments
         # later is past, so one more attempt is what turns a permanent loss into a
         # delay. Normally this list is empty and the pass costs nothing.
-        for name, agent_cfg, slug in contended:
+        for name, slug in contended:
             try:
-                _sweep_member(name, agent_cfg, slug)
+                _sweep_member(name, slug)
             except closer_unplaced:
                 logger.warning(
                     "startup reconcile could not place closers for slug=%r: the member's "

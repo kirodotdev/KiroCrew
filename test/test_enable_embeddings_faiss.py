@@ -27,11 +27,19 @@ _MOD = "kiro_crew.dashboard.handlers.memory"
 _EMB = "kiro_crew.embeddings"
 
 
+@web.middleware
+async def _as_owner(request: web.Request, handler):
+    """Carry the dashboard owner's claims: setup is owner-gated."""
+    request["app"] = ""
+    request["user"] = "local-app"
+    return await handler(request)
+
+
 def _make_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_as_owner])
     app.router.add_post("/api/memory/enable-embeddings", mem_mod.api_memory_enable_embeddings)
     app.router.add_get("/api/memory/embedding-status", mem_mod.api_memory_embedding_status)
-    app["state"] = MagicMock(consolidator=None)
+    app["state"] = MagicMock(consolidator=None, owner_id="")
     return app
 
 
@@ -718,3 +726,40 @@ class TestPipStderrRedaction:
             # No prefix of the token may appear (the old slice leaked one).
             for n in range(3, len(self._SECRET) + 1):
                 assert self._SECRET[:n] not in msg
+
+
+class TestAppTokenRefused:
+    """An App Kit app token is not the owner: setup is refused before any side effect."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model_present", [False, True])
+    async def test_app_token_gets_403_and_setup_not_reached(
+        self, tmp_path: Path, model_present: bool
+    ) -> None:
+        cfg_path = tmp_path / "kirocrew.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        patches, _store, _proc, mgr = _common_patches(cfg_path, model_present=model_present)
+
+        @web.middleware
+        async def _as_app_token(request: web.Request, handler):
+            request["app"] = "some-app"
+            request["user"] = "local-app"
+            return await handler(request)
+
+        app = web.Application(middlewares=[_as_app_token])
+        app.router.add_post("/api/memory/enable-embeddings", mem_mod.api_memory_enable_embeddings)
+        app["state"] = MagicMock(consolidator=None, owner_id="")
+
+        with patches["mgr"], patches["model_present"], patches["cfg_load"], \
+             patches["cfg_path"], patches["subprocess"] as mock_exec, \
+             patches["embed_fn"], patches["faiss"], patches["store"], \
+             patches["wrap_argv"]:
+            async with TestClient(TestServer(app)) as c:
+                resp = await c.post("/api/memory/enable-embeddings")
+                assert resp.status == 403
+                assert (await resp.json()).get("code") == "owner_only"
+
+            mgr.ensure_model.assert_not_called()
+            mock_exec.assert_not_called()
+        assert cfg_path.read_text(encoding="utf-8") == "{}"
+        assert mem_mod._embedding_setup_status == {"step": "idle", "error": ""}

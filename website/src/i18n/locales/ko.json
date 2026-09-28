@@ -5649,6 +5649,7 @@
       "trust_desc": "이 채팅에서 {{productName}}은(는) 먼저 묻지 않고 작업합니다",
       "trust_label": "신뢰",
       "chat_mode_hint": "채팅 모드",
+      "trust_scope_tooltip": "이 채팅은 앱 권한으로 신뢰됩니다. 권한은 스스로 만료됩니다. 지금 끝내려면 이 메뉴에서 표준을 선택하세요. 앱에서 끄기 전까지 앱이 다시 권한을 줄 수 있습니다.",
       "trust_tooltip": "이 채팅에서 {{productName}}은(는) 먼저 묻지 않고 작업합니다",
       "yolo_desc": "모든 채팅에서 {{productName}}은(는) 먼저 묻지 않고 작업합니다",
       "yolo_expiration_timed": "{{duration}} 후 자동으로 꺼지고 다시 물어봅니다.",
@@ -5987,6 +5988,8 @@
       "show_pending_tool_call_in_chat": "대기 중인 도구 호출을 채팅에 표시",
       "skill": "스킬",
       "slash_commands": "슬래시 명령",
+      "spawn_awaiting_other": "하위 에이전트 {{count}}개가 실행 승인을 기다리고 있어요",
+      "spawn_pending_other": "하위 에이전트 {{count}}개 대기 중 — 먼저 아래 요청에 응답하세요",
       "steer": "방향 지시",
       "alt_action_hint_queues": "{{chord}}(으)로 이 메시지를 대기열에 넣기",
       "alt_action_hint_steers": "{{chord}}(으)로 이 메시지를 바로 조정에 쓰기",
@@ -6140,7 +6143,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "댓글 추가",
       "add_comment": "댓글 추가",
       "add_instruction": "지시 추가",
       "additional_prompt": "추가 프롬프트",
@@ -7598,11 +7600,12 @@
       "effort": "강도",
       "effort_help": "추론 강도는 모델이 답변하기 전에 생각하는 시간을 정합니다. 높을수록 어려운 문제를 더 오래 추론하므로 느리지만 답변 품질이 좋아지고, 낮을수록 빠릅니다. 세션별 재정의를 끄면 설정 → 채팅의 기본값으로 돌아가며, 기본값이 없으면 모델 자체의 선택을 사용합니다(Fable/Opus/Sonnet만 해당).",
       "faster": "빠르게",
-      "configured_default_marker": "설정된 기본값",
+      "configured_default_marker": "기본 추론 강도",
+      "slider_locked_hint": "기본값으로 고정되어 있습니다. 강도를 고르려면 스위치를 끄세요.",
       "reasoning_effort": "추론 강도",
       "smarter": "똑똑하게",
-      "use_configured_default": "설정된 기본값 사용",
-      "use_model_default": "모델 기본값 사용"
+      "use_configured_default": "기본 추론 강도 사용 ({{level}})",
+      "use_default_effort": "기본 추론 강도 사용"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "조직 레지스트리를 추가하여 팀 전용 앱을 찾아보세요",
@@ -7760,12 +7763,16 @@
     "selectionToolbar": {
       "ask": "이에 대해 질문",
       "ask_hint": "선택한 부분을 인용해 사이드 채팅을 엽니다 — 보내기 전까지는 아무것도 전송되지 않으며 메인 채팅은 그대로 유지됩니다",
+      "close_saving_continues": "닫기 – 저장은 계속됩니다",
       "comment_input": "선택한 텍스트에 댓글 달기",
+      "comment_post_failed": "댓글을 저장할 수 없습니다. 입력한 텍스트는 그대로 남아 있습니다. 다시 시도하세요.",
+      "comment_post_failed_closed": "‘{{quote}}’에 대한 댓글이 저장되지 않았습니다. 같은 텍스트를 다시 선택하면 초안이 돌아오니 다시 시도하세요.",
       "copy": "복사",
       "copy_failed": "복사 실패 — 브라우저가 클립보드 접근을 차단했습니다. 텍스트를 선택해 직접 복사하세요.",
       "copy_selection_hint": "댓글이 아닌 선택한 텍스트를 클립보드에 복사합니다",
       "more_actions": "선택 영역에 대한 추가 작업",
       "press_enter_to_comment": "Enter 또는 클릭하여 댓글 작성…",
+      "saving": "저장하는 중…",
       "tap_to_comment": "탭하여 댓글 작성…",
       "quote": "인용",
       "quote_hint": "선택한 부분을 이 대화의 입력창에 인용합니다 — 답장은 메인 채팅으로 전송됩니다"
@@ -10426,6 +10433,7 @@
         "copied": "복사되었습니다",
         "copy_failed": "복사하지 못했습니다",
         "steering": "추가하는 중…",
+        "delivery_pending": "전송 대기 중…",
         "redirecting_the_running_turn_not_yet_confirmed": "실행 중인 턴을 리디렉션하는 중 — 아직 확인되지 않았습니다.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "적용되기 전에 턴이 종료되어 별도의 메시지로 실행됩니다."
       },
@@ -10904,6 +10912,7 @@
       "send_failed_with_error": "전송 실패: {{error}}",
       "send_failed_with_error_restored": "이 메시지를 보낼 수 없습니다: {{error}}. 입력한 텍스트를 입력창에 되돌려 두었습니다.",
       "delivery_unconfirmed": "전송이 확인되지 않았습니다 — 입력한 텍스트를 입력창에 되돌려 두었습니다. 다시 보내기 전에 대화 기록을 확인하세요.",
+      "delivery_unconfirmed_pending": "전송이 확인되지 않았습니다 — 이 메시지는 아직 대기 중일 수 있습니다. 답변이 오지 않으면 다시 보내세요.",
       "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -12621,7 +12630,12 @@
         "warm_pool": "웜 풀",
         "warm_pool_description": "세션을 즉시 시작할 수 있도록 ACP CLI 프로세스를 미리 실행합니다.",
         "workspace": "워크스페이스",
-        "workspaces": "워크스페이스"
+        "workspaces": "워크스페이스",
+        "new_workspace": "새 워크스페이스",
+        "change_directory": "디렉터리 변경",
+        "delete_workspace_warning": "메모리, 레슨, 기록, 지식 베이스를 더 이상 사용하지 않습니다. 폴더는 디스크에 남습니다.",
+        "type_workspace_name_to_confirm": "확인하려면 ‘{{name}}’을(를) 입력하세요",
+        "change_directory_hint": "워크스페이스는 새 폴더에서 메모리, 레슨, 기록, 지식 베이스를 읽습니다. 아무것도 옮기지 않습니다."
       },
       "mcpTab": {
         "actions": "동작",
@@ -12973,7 +12987,8 @@
         "update": "업데이트",
         "validation_findings": "검증 결과",
         "version_range": "(v{{from}} → v{{to}})",
-        "workspace": "워크스페이스"
+        "workspace": "워크스페이스",
+        "detail_unreadable": "이 후보의 파일을 안전하게 읽을 수 없어 검토할 수 없습니다. 기각하면 대기열에서 제거됩니다."
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "에이전트가 읽는 Markdown 규칙. 언제 적용되는지는 각 파일의 포함 모드가 정합니다: 항상, 일치하는 파일에만, 또는 필요할 때. 전역 파일은 ~/.kiro/steering에 있으며 어디서나 적용되고, 작업 공간 파일은 <project>/.kiro/steering에 있으며 해당 프로젝트에만 적용됩니다.",
@@ -14755,6 +14770,8 @@
         "desktop_alerts": "데스크톱 알림",
         "notify_when_a_background_chat_finishes": "백그라운드 채팅이 완료되면 알림",
         "notify_when_a_background_chat_finishes_description": "완료된 채팅의 이름이 담긴 시스템 알림을 표시합니다. 단, 이 창이 최소화되어 있거나 다른 앱 뒤에 있을 때만 표시됩니다.",
+        "unread_only_when_done_or_waiting": "확인이 필요할 때만 세션을 읽지 않음으로 표시",
+        "unread_only_when_done_or_waiting_description": "백그라운드 세션은 새 메시지마다가 아니라 에이전트가 완료되거나 답변을 기다릴 때만 읽지 않음으로 표시됩니다.",
         "always_interrupts_cannot_be_muted_or_lowered": "항상 알림을 표시합니다 — 음소거하거나 낮출 수 없습니다",
         "app": "앱",
         "category_agent": "에이전트의 능동적 메시지",
@@ -16286,6 +16303,9 @@
       "webview_refresh_error_aged": "대시보드를 새로 고칠 수 없습니다. {{ago}} 버전을 표시합니다.",
       "webview_frame_title": "{{crew}}이(가) 채운 대시보드",
       "webview_rendering": "대시보드를 렌더링하는 중…",
+      "webview_docked_rendering": "상태 카드를 렌더링하는 중…",
+      "webview_docked_error": "이 크루메이트의 상태 카드를 렌더링할 수 없습니다. 전체 대시보드는 아래에서 여전히 열 수 있습니다.",
+      "webview_docked_refresh_error": "상태 카드를 새로 고칠 수 없습니다. 마지막으로 불러온 버전을 표시합니다.",
       "webview_retry": "다시 시도",
       "deploy_trigger": "클라우드",
       "deploy_title": "클라우드의 내 크루",

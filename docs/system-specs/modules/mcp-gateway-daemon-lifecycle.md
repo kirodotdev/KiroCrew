@@ -36,7 +36,7 @@ The fail-open branch is unchanged in kind and louder in degree: a stale daemon t
 
 ## Diagnosis
 
-`dashboard/handlers/sessions.py::api_session_directive` recognises the pre-call-input body (`kind` present, `tool` absent) and refuses it as `stale_mcp_backend`, with a warning that names the cause (an MCP server running older code than the gateway) and the fix, instead of the generic `not_derivable` that pointed operators at the directive tools. `kirocrew doctor` (`cli_doctor._doctor_mcp_gateway_daemon`) prints the daemon's pid, owner and fingerprint beside this install's, and records an issue when they differ; the same read is `daemon_control.describe_daemon`.
+`dashboard/handlers/sessions.py::api_session_directive` recognises the pre-call-input body (`kind` present, `tool` absent) and refuses it as `stale_mcp_backend`, with a warning that names the cause (an MCP server running older code than the gateway) and the fix, instead of the generic `not_derivable` that pointed operators at the directive tools. `kirocrew doctor` (`doctor_checks.mcp._doctor_mcp_gateway_daemon`) prints the daemon's pid, owner and fingerprint beside this install's, and records an issue when they differ; the same read is `daemon_control.describe_daemon`.
 
 ## Overload is not death
 

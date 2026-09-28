@@ -87,13 +87,13 @@ def mock_sel():
 def _app(method: str, route: str, handler) -> web.Application:
     app = web.Application()
     app.router.add_route(method, route, handler)
-    return app
+    return as_owner(app)
 
 
 def _get_app(route: str, handler) -> web.Application:
     app = web.Application()
     app.router.add_get(route, handler)  # allow_head=True → HEAD hits the same handler
-    return app
+    return as_owner(app)
 
 
 # ── /api/file-read ──

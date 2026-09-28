@@ -1785,7 +1785,7 @@ stamp would suppress the new host's sends.
 
 This is guaranteed by **non-selection, NOT by a basename filter**, and the
 distinction matters: `portability.EXPORT_EXCLUDE` and
-`snapshot.NEVER_SNAPSHOT_FILES` are matched by BASENAME over the staged
+`snapshot_components.NEVER_SNAPSHOT_FILES` are matched by BASENAME over the staged
 `workspace/`, `plan_memory/` and `skills/` trees, so registering a beacon
 filename there would silently drop any **user** file that happens to share the
 name — real data loss on restore, in exchange for nothing. Root-level export

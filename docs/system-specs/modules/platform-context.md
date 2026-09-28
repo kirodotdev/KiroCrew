@@ -57,7 +57,7 @@ interface, the public edition is complete standalone.
 | `external_access` | adapter | `DefaultExternalAccessPolicy` (`admits_registry()` / `admits_cloud_deployment()` → `True`) | allowlist installable content to an internal registry; withhold cloud deployment |
 | `registry` | adapter | `DefaultAppRegistryPolicy` (public-forge baseline) | internal git hosts |
 | `apps_loader` | adapter | `DefaultAppsLoader` (OSS builtins) | internal app sources (code-reviewer; team_manager/mimir follow-on) |
-| `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; installs are inline in `cli_doctor.py` (use `CapabilityManager`) | — (slot inert) |
+| `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; install hints are inline in `doctor_checks/features.py` (use `CapabilityManager`) | — (slot inert) |
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op) | internal tunnel supervisor |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destination from `telemetry.otlp_endpoint`) | RUM/Cognito config + its own OTLP collector |
@@ -729,7 +729,7 @@ Wired sites:
   pre-method companion adapter degrades to no-watcher instead of raising.
 - `apps/manager.py` — builtin discovery + orphan detection merge
   `current_context().apps_loader` sources.
-- `apps/registry.py` / `apps/routes.py` — clone-sandbox-mode decision routes
+- `apps/registry_pipeline/sources.py` / `apps/routes.py` — clone-sandbox-mode decision routes
   through `current_context().registry` (`_context_clone_sandbox_mode`).
 - Telemetry `record_event` sites — `dashboard/server.py` records `gateway_start`
   at boot; `dashboard/chat_runner.py` and `slack/handler.py` record one
@@ -936,11 +936,11 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `slack/gateway.py::_is_heartbeat_safe_tool` after the core `HEARTBEAT_SAFE_TOOLS`
   exact-match. Default `frozenset()`. ADD-only; never sourced from config.
 - `AppsLoader.registry_rows() -> List[Dict]` — ADD-only merged by
-  `apps/registry.py::_load_registry_file` after bundled `app-registry.json`
+  `apps/registry_pipeline/sources.py::_load_registry_file` after bundled `app-registry.json`
   (same-`name` core row wins). Default `[]`.
 - `AppsLoader.default_registries() -> List[Dict]` — external app registries the
   edition pins, merged with the operator's `config.registries` by
-  `apps/registry.py::_effective_registries`, which is the single list every
+  `apps/registry_pipeline/sources.py::_effective_registries`, which is the single list every
   registry consumer reads (index fetch/refresh, the trusted-host allowlist, row
   lookup, install, the blob-proxy allowlist). Rows are the field shape of
   `ExternalRegistryConfig` (`{name, repo, branch, label, review, trust}`).
@@ -1360,7 +1360,7 @@ representative rather than exhaustive.
 
 - `apps/routes.py` — `_fetch_git_blob`'s per-URL clone-sandbox-mode decision IS
   wired: it routes through `_context_clone_sandbox_mode` (same as the
-  `apps/registry.py` clone sites), so a companion's extended trusted-host set
+  registry's clone sites in `apps/registry_pipeline/`), so a companion's extended trusted-host set
   applies to registry-blob fetches too. The other `wrap_argv` sites run local
   lifecycle scripts (no per-URL git host), so they have no clone decision to
   route.
@@ -1412,7 +1412,7 @@ Current reserved surface:
 | Slot / method | Why inert | Use instead |
 |---|---|---|
 | `embeddings` (whole slot) | the public embedding runtime is the bundled in-process llama.cpp model — there is no HTTP embed path to source a model/endpoint/signature from | `embeddings.register_embedding_backend()` |
-| `package_manager` (whole slot) | external-tool installs (ollama, ffmpeg, whisper) are inline step-by-step brew/curl/pip logic in `cli_doctor.py`, not a single plan-resolution point | `CapabilityManager` for registry-backed MCP/skill/agent installs |
+| `package_manager` (whole slot) | external-tool install hints (ffmpeg, faiss, the `voice-aws` extra) are inline brew/winget/pip text in `doctor_checks/features.py`, not a single plan-resolution point | `CapabilityManager` for registry-backed MCP/skill/agent installs |
 | `feature_apps` (whole slot) | bundled apps are discovered via `AppsLoader` and registered by `apps/manager.py`; the tuple is a provenance record only | `AppsLoader.manifest_sources()` / `bundled_app_names()` |
 | `AgentRuntime.managed_mcp_servers` | the agent config is built from the `agent._MANAGED_MCP_SERVERS` global directly | `McpToolingProvider.extra_mcp_servers()` (wired, ADD-only) |
 | `IdentityProvider.whoami` / `.issuer` | nothing in the core displays the principal or branches on the issuer | return them in the wired `status()` payload |

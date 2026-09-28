@@ -330,7 +330,7 @@ These components consume CSS custom properties (`--bg`, `--text`, `--accent`, et
 
 ### 3.7 Registry
 
-The registry is a JSON index file hosted on a CDN (or internal S3 bucket). The existing `registry.py` already supports fetching and caching a remote index. We extend `RegistryEntry` with bundle-related fields:
+The registry is a JSON index file hosted on a CDN (or internal S3 bucket). The existing registry (`apps/registry_pipeline/indexes.py` and `caches.py`) already supports fetching and caching a remote index. We extend `RegistryEntry` with bundle-related fields:
 
 ```json
 {
@@ -561,7 +561,7 @@ The following modules are **kept** and enhanced:
 | Module | Current Purpose | Enhancement |
 |--------|----------------|-------------|
 | `apps/manager.py` | Install/uninstall/enable/disable | Add bundle download + hash verification |
-| `apps/registry.py` | Registry fetch + cache | Add `bundleUrl`, `bundleHash` fields |
+| `apps/registry_pipeline/indexes.py`, `caches.py` | Registry fetch + cache | Add `bundleUrl`, `bundleHash` fields |
 | `apps/bridges.py` | Register agents/skills/crons | No change needed |
 | `apps/scaffold.py` | `kirocrew app init` | Add `--with-ui` flag, Vite config generation |
 | `apps/routes.py` | REST API for app management | Add bundle serving endpoint |

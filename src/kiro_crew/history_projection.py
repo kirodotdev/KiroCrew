@@ -66,6 +66,14 @@ METADATA_LINE_READABLE = "readable"
 METADATA_LINE_TRANSIENT = "transient"
 METADATA_LINE_CORRUPT = "corrupt"
 
+#: Rows drawn for the person reading a transcript that are not conversation. No
+#: model-bound reader carries one: :meth:`TranscriptReadProjection.recent_with_provenance`
+#: skips them, as does memory consolidation and auto-skill detection
+#: (``history_consolidation``), and every other model-bound reader already filters
+#: to conversation roles. The Slack thread-parent row, in particular, is untrusted
+#: text whose only route to the model is a fenced, injection-screened block.
+DISPLAY_ONLY_ROLES = frozenset({"notice"})
+
 
 def _history_facade() -> Any:
     """Return the facade lazily, after its component imports have completed."""
@@ -226,7 +234,12 @@ class TranscriptReadProjection:
         if exclude_last_n > 0:
             messages = messages[:-exclude_last_n]
         result: list[dict] = []
-        for message in [item for item in messages if item.get("source_thread")][-max_messages:]:
+        cited = [
+            item
+            for item in messages
+            if item.get("source_thread") and item.get("role") not in DISPLAY_ONLY_ROLES
+        ]
+        for message in cited[-max_messages:]:
             content = message["content"]
             snippet = content[:150] + "…" if len(content) > 150 else content
             result.append(

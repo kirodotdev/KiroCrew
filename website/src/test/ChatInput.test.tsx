@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { safeSetItem } from '../utils/safeStorage'
@@ -848,90 +848,14 @@ describe('ChatInput', () => {
     })
   })
 
-  // ── Independent model and reasoning effort controls ──
+  // ── Reasoning effort merged into model button ──
   describe('reasoning effort button', () => {
-    it('names the effort setting and value even on a compact shelf', () => {
-      const original = globalThis.ResizeObserver
-      let resizeShelf: ((width: number) => void) | undefined
-      globalThis.ResizeObserver = class {
-        constructor(private callback: ResizeObserverCallback) {}
-        observe(target: Element) {
-          if (target.getAttribute('data-testid') === 'composer-context-shelf') {
-            resizeShelf = width => this.callback([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver)
-          }
-        }
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-      try {
-        renderWithProviders(
-          <ChatInput {...defaultProps} modelName="gpt-6-sol" reasoningEffort="high"
-            separateEffort onModelClick={vi.fn()} onReasoningEffortClick={vi.fn()} />
-        )
-        act(() => resizeShelf?.(320))
-        const chip = screen.getByTestId('composer-effort-chip')
-        expect(chip).toHaveAttribute('title', 'Reasoning effort: High')
-        expect(chip).toHaveTextContent('Effort: High')
-        act(() => resizeShelf?.(157))
-        expect(chip).not.toHaveTextContent('Effort: High')
-        expect(chip).toHaveAttribute('title', 'Reasoning effort: High')
-        act(() => resizeShelf?.(600))
-        expect(chip).toHaveTextContent('Effort: High')
-      } finally {
-        globalThis.ResizeObserver = original
-      }
-    })
-
-    it('names the inherited setting in the resting state', () => {
-      renderWithProviders(
-        <ChatInput {...defaultProps} modelName="gpt-6-sol" reasoningEffort=""
-          separateEffort onModelClick={vi.fn()} onReasoningEffortClick={vi.fn()} />
-      )
-      expect(screen.getByTestId('composer-effort-chip')).toHaveTextContent('Effort: Default')
-    })
-
-    it('opens effort without opening the model picker', () => {
-      const onModelClick = vi.fn()
-      const onReasoningEffortClick = vi.fn()
-      renderWithProviders(
-        <ChatInput {...defaultProps}
-          modelName="gpt-6-sol[medium]"
-          reasoningEffort="high"
-          separateEffort
-          onModelClick={onModelClick}
-          onReasoningEffortClick={onReasoningEffortClick}
-        />
-      )
-
-      fireEvent.click(screen.getByRole('button', { name: 'Reasoning effort' }))
-      expect(onReasoningEffortClick).toHaveBeenCalledOnce()
-      expect(onReasoningEffortClick.mock.calls[0][0]).toHaveProperty('x')
-      expect(onModelClick).not.toHaveBeenCalled()
-      expect(screen.getByTestId('composer-model-chip')).not.toHaveTextContent('High')
-    })
-    it.each(['global.anthropic.claude-opus-4-8[1m]', 'ollama/llama3.2:3b'])(
-      'keeps model and effort separate for ACP model %s', modelName => {
-        renderWithProviders(
-          <ChatInput {...defaultProps}
-            modelName={modelName}
-            reasoningEffort="high"
-            separateEffort
-            onModelClick={vi.fn()}
-            onReasoningEffortClick={vi.fn()}
-          />
-        )
-        expect(screen.getByRole('button', { name: 'Reasoning effort' })).toBeInTheDocument()
-        expect(screen.getByTestId('composer-model-chip')).toHaveTextContent(modelName)
-        expect(screen.getByTestId('composer-model-chip')).not.toHaveTextContent('High')
-      },
-    )
     it('renders for acp provider', () => {
-      const onClick = vi.fn()
       renderWithProviders(
         <ChatInput {...defaultProps}
           providerId="acp"
           reasoningEffort="high"
-          onReasoningEffortClick={onClick}
+          hasEffort
           modelName="claude-opus-4.7"
           onModelClick={vi.fn()}
         />
@@ -944,7 +868,7 @@ describe('ChatInput', () => {
         <ChatInput {...defaultProps}
           providerId="acp"
           reasoningEffort=""
-          onReasoningEffortClick={vi.fn()}
+          hasEffort
           modelName="claude-opus-4.7"
           onModelClick={vi.fn()}
         />
@@ -952,12 +876,12 @@ describe('ChatInput', () => {
       expect(screen.getByText('Default')).toBeInTheDocument()
     })
 
-    it('shown when onReasoningEffortClick provided regardless of providerId', () => {
+    it('shown when hasEffort is set regardless of providerId', () => {
       renderWithProviders(
         <ChatInput {...defaultProps}
           providerId="acp"
           reasoningEffort="high"
-          onReasoningEffortClick={vi.fn()}
+          hasEffort
           modelName="claude-opus-4.7"
           onModelClick={vi.fn()}
         />
@@ -965,33 +889,73 @@ describe('ChatInput', () => {
       expect(screen.getByText('High')).toBeInTheDocument()
     })
 
-    it('hidden when handler missing even on supported provider', () => {
+    it('hidden when hasEffort is unset even on supported provider', () => {
       renderWithProviders(
         <ChatInput {...defaultProps} providerId="acp" reasoningEffort="high" modelName="claude-opus-4.7" onModelClick={vi.fn()} />
       )
       expect(screen.queryByText('High')).not.toBeInTheDocument()
     })
 
-    it('shown when providerId is undefined but callback provided', () => {
+    it('shown when providerId is undefined but hasEffort is set', () => {
       renderWithProviders(
-        <ChatInput {...defaultProps} reasoningEffort="high" onReasoningEffortClick={vi.fn()} modelName="claude-opus-4.7" onModelClick={vi.fn()} />
+        <ChatInput {...defaultProps} reasoningEffort="high" hasEffort modelName="claude-opus-4.7" onModelClick={vi.fn()} />
       )
       expect(screen.getByText('High')).toBeInTheDocument()
     })
+
+    // Model + effort are ONE control (docs/decisions/2026-06-14): the effort
+    // level rides inside the model chip and is edited inside the model
+    // picker. The composer never grows a second, standalone effort button.
+    it.each(['claude-opus-4.7', 'gpt-6-sol', 'global.anthropic.claude-opus-4-8[1m]'])(
+      'never renders a standalone effort button for %s', modelName => {
+        renderWithProviders(
+          <ChatInput {...defaultProps}
+            providerId="acp"
+            reasoningEffort="high"
+            hasEffort
+            modelName={modelName}
+            onModelClick={vi.fn()}
+          />
+        )
+        expect(screen.queryByTestId('composer-effort-chip')).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Reasoning effort' })).toBeNull()
+        expect(screen.getByTestId('composer-model-chip')).toHaveTextContent('High')
+      },
+    )
 
     it('disabled while running', () => {
       renderWithProviders(
         <ChatInput {...defaultProps}
           providerId="acp"
           reasoningEffort="medium"
-          onReasoningEffortClick={vi.fn()}
+          hasEffort
           modelName="claude-opus-4.7"
           onModelClick={vi.fn()}
           isRunning
         />
       )
-      const btn = screen.getByTitle('Stop the current response to switch model')
+      // The chip still shows the level while running, so the title (the only
+      // readout on a narrow shelf) and the accessible name keep carrying it.
+      const btn = screen.getByTitle('Stop the current response to switch model · Reasoning effort: Medium')
       expect(btn).toBeDisabled()
+      expect(btn).toHaveAccessibleName('Stop the current response to switch model · Reasoning effort: Medium')
+    })
+
+    it('carries the effort level on the routed chip too', () => {
+      renderWithProviders(
+        <ChatInput {...defaultProps}
+          providerId="acp"
+          reasoningEffort="high"
+          hasEffort
+          modelName="auto"
+          modelIsJevRouted
+          onModelClick={vi.fn()}
+        />
+      )
+      const chip = screen.getByTestId('composer-model-chip')
+      expect(chip).toHaveTextContent('High')
+      expect(chip).toHaveAccessibleName(/ · Reasoning effort: High$/)
+      expect(chip).toHaveAttribute('title', chip.getAttribute('aria-label'))
     })
 
     it('invokes onModelClick with click rect', () => {
@@ -1000,12 +964,12 @@ describe('ChatInput', () => {
         <ChatInput {...defaultProps}
           providerId="acp"
           reasoningEffort="low"
-          onReasoningEffortClick={vi.fn()}
+          hasEffort
           modelName="claude-opus-4.7"
           onModelClick={onModelClick}
         />
       )
-      fireEvent.click(screen.getByTitle('Model: claude-opus-4.7'))
+      fireEvent.click(screen.getByTitle('Model: claude-opus-4.7 · Reasoning effort: Low'))
       expect(onModelClick).toHaveBeenCalledOnce()
       // First arg should be a DOMRect-like object
       expect(onModelClick.mock.calls[0][0]).toBeTruthy()

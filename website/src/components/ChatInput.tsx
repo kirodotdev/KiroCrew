@@ -1,6 +1,6 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, BrainCircuit, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
@@ -148,7 +148,7 @@ import { fmtDateFields, fmtPercent } from '../i18n/format'
 import SessionRefStrip from './SessionRefStrip'
 import type { SessionRef } from '../utils/sessionRefs'
 import { activeElementIsEditable, isEditableTarget } from '../utils/editableTarget'
-import { LiquidGlass } from './ui/liquid-glass'
+import { Glass } from './Glass'
 const INPUT_MIN_H = 44
 const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
@@ -630,8 +630,15 @@ interface ChatInputProps {
   stopState?: 'idle' | 'soft_pending' | 'killing'
   approvalMode?: string
   reasoningEffort?: string
-  onReasoningEffortClick?: (rect: DOMRect, trigger: HTMLElement) => void
-  separateEffort?: boolean
+  /** True when `reasoningEffort` is the configured default rather than a
+   *  per-slot pick. Only the chip's hover / accessible name says so: outside
+   *  the picker the two states otherwise read identically. */
+  effortIsDefault?: boolean
+  /** True when the session's model takes a reasoning-effort level. The chip
+   *  then names the level in force beside the model; the slider that CHANGES
+   *  it lives inside the model picker the chip opens -- model + effort are one
+   *  control, never a second composer button (docs/decisions/2026-06-14). */
+  hasEffort?: boolean
   providerId?: string
   /** Invoked when an @-mention picks a file or directory. `kind` defaults to
    *  'file'. `token` is the exact composer text the pick inserted (e.g.
@@ -1002,8 +1009,8 @@ function ChatInput({
   stopState,
   approvalMode,
   reasoningEffort,
-  onReasoningEffortClick,
-  separateEffort,
+  effortIsDefault = false,
+  hasEffort,
   providerId: _providerId,
   onFileSelect,
   onFileOpen,
@@ -1513,9 +1520,10 @@ function ChatInput({
   // Below ~340px the labels no longer fit comfortably alongside the context bar
   // + model chip, so collapse the chips (agent/project) to icon-only.
   const shelfCompact = shelfWidth < 340
-  // A two-column split can leave under 200px per composer. Keep the value
-  // visible at ordinary compact widths, but let the title/aria label carry it
-  // when even the other shelf chips have no room for text.
+  // A two-column split can leave under 200px per composer. The effort level on
+  // the model chip is the only at-a-glance readout of what a turn runs at, so
+  // it survives the compact collapse and drops only when even a short word has
+  // no room (the picker the chip opens always shows the level in force).
   const shelfTiny = shelfWidth < 220
   // Tooltip for the project chip. The chip itself shows the basename (plus the
   // branch when known); the tooltip carries the full path so nothing that was
@@ -3772,7 +3780,16 @@ function ChatInput({
        *  Approve all / Reject all plus a per-agent row (task + Approve/Reject)
        *  so one can run while another is rejected. "Review in panel" opens the
        *  Subagents tab. Not a single <button> wrapper — every control is its
-       *  own button. */}
+       *  own button. Plain glass, not the warn tint the tool-approval pane
+       *  below wears: when both are up, two warn panes in one band read as ONE
+       *  request (UX review of 76851c90 -- "I'd fear double-approving"), and
+       *  this card's Bot framing and pulse already say what it is.
+       *  While the tool-approval bar below is ALSO pending, this card keeps its
+       *  count and "Review in panel" but withholds Approve/Reject and its glow:
+       *  one set of decision buttons on screen at a time, so a reader cannot
+       *  take the two panes for one request and wonder whether a click answers
+       *  half of it (UX review of 21b8e79b). The buttons return the moment the
+       *  tool decision lands; the Subagents tab can resolve the spawn meanwhile. */}
       <AnimatePresence>
         {pendingSpawnApprovals.length > 0 && (
           <motion.div
@@ -3781,20 +3798,40 @@ function ChatInput({
             exit={{ opacity: 0, y: 8 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
           >
-            <div className="w-full bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border rounded-2xl mb-2 approval-glow">
+            <Glass variant="chip" radius={16} className={`w-full mb-2${hasApproval ? '' : ' approval-glow'}`} data-testid="spawn-approval-card">
               <div className="flex items-center gap-1.5 px-3.5 py-2.5 select-none flex-wrap">
                 <Bot size={13} className="text-warn shrink-0" />
                 <span className="text-[13px] font-body text-muted flex-1 min-w-0">
-                  {pendingSpawnApprovals.length === 1
-                    ? '1 sub-agent is awaiting your approval to run'
-                    : `${pendingSpawnApprovals.length} sub-agents are awaiting your approval to run`}
+                  {/* While the tool approval bar is up, the decision lives THERE
+                   *  (the spawn's own permission row is what holds the bar), so
+                   *  this line must not point at itself as the thing to approve:
+                   *  it names the count and defers to the panel link. */}
+                  {hasApproval
+                    ? i18nT('components.chatInput.spawn_pending', { count: pendingSpawnApprovals.length })
+                    : i18nT('components.chatInput.spawn_awaiting', { count: pendingSpawnApprovals.length })}
                 </span>
+                {/* The action area swaps between three forms (resolving / panel
+                 *  link only / Approve + Reject) as the tool bar comes and goes;
+                 *  `mode="wait"` fades one out before the next fades in, so the
+                 *  swap reads as the same slot changing state, not a new control
+                 *  appearing from nowhere. */}
+                <AnimatePresence mode="wait" initial={false}>
                 {spawnApprovalsResolving ? (
-                  <span className="inline-flex items-center gap-1 text-[12px] text-muted/60 shrink-0">
+                  <motion.span key="resolving" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="inline-flex items-center gap-1 text-[12px] text-muted/60 shrink-0">
                     <Loader2 size={12} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
-                  </span>
+                  </motion.span>
+                ) : hasApproval ? (
+                  <motion.button
+                    key="panel-only"
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
+                    type="button"
+                    onClick={reviewSpawnApprovals}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-text shrink-0 cursor-pointer bg-transparent border-none px-1"
+                  >
+                    <Target size={11} className="shrink-0" />{i18nT('components.chatInput.review_in_panel')}
+                  </motion.button>
                 ) : (
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <motion.div key="decide" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
                       onClick={() => resolveSpawnApprovals('approve')}
@@ -3818,13 +3855,19 @@ function ChatInput({
                     >
                       <Target size={11} className="shrink-0" />{i18nT('components.chatInput.review_in_panel')}
                     </button>
-                  </div>
+                  </motion.div>
                 )}
+                </AnimatePresence>
               </div>
               {/* Per-agent rows — only when more than one is pending, so a single
                *  spawn stays a compact one-liner. Each row resolves just its own
-               *  sub-agent via resolveOneSpawn. */}
-              {pendingSpawnApprovals.length > 1 && (
+               *  sub-agent via resolveOneSpawn. They collapse out when a tool
+               *  approval lands, the same way the action area fades: the card
+               *  shrinks to its one-line form instead of the rows vanishing on
+               *  one frame while the header cross-fades (UX review of fddfcb86). */}
+              <AnimatePresence initial={false}>
+              {pendingSpawnApprovals.length > 1 && !hasApproval && (
+                <motion.div key="rows" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.15 }} className="overflow-hidden">
                 <div className="px-3.5 pb-2.5 flex flex-col gap-1.5">
                   {pendingSpawnApprovals.map(a => (
                     <div key={a.id} className="flex items-center gap-2 rounded-lg border border-border/60 bg-bg/40 px-2.5 py-1.5">
@@ -3858,8 +3901,10 @@ function ChatInput({
                     </div>
                   ))}
                 </div>
+                </motion.div>
               )}
-            </div>
+              </AnimatePresence>
+            </Glass>
           </motion.div>
         )}
       </AnimatePresence>
@@ -3873,6 +3918,17 @@ function ChatInput({
        *    outer  → mounts/unmounts the whole bar with the approval lifecycle
        *    inner  → toggles the ghost pill based on inline-pill viewport state
        */}
+      {/* The dock pane. ONE Liquid Glass surface (components/Glass.tsx) holds the
+          approval bar, the notices, the composer and the collapsed bar, so a bar
+          fused to the composer's top shares its pane instead of meeting it at a
+          seam; it is always mounted so an approval landing never remounts the
+          editor. It carries the composer halo at rest and the approval glow
+          while a decision is pending (both are box-shadows, so one at a time). */}
+      <Glass
+        radius={16}
+        data-testid="composer-dock"
+        className={hasApproval ? 'approval-glow' : `composer-halo${memoryMode === 'temporary' ? ' composer-halo-aim' : memoryMode === 'incognito' ? ' composer-halo-warn' : ''}`}
+      >
       <AnimatePresence>
         {pendingApproval && approvalId && (
           <motion.div
@@ -3881,7 +3937,7 @@ function ChatInput({
             exit={{ opacity: 0, y: 8 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300, mass: 0.8 }}
           >
-          <div className={`bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border border-border ${showGhost ? 'rounded-2xl' : 'border-b-0 rounded-t-2xl'} approval-glow transition-[border-radius,border-color,border-width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]`}>
+          <div className={`bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] ${showGhost ? 'rounded-2xl' : 'rounded-t-2xl border-b border-[color:var(--glass-edge)]'} transition-[border-radius,border-color,border-width] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]`}>
               <AnimatePresence initial={false}>
                   {showGhost && (
                       <motion.div
@@ -4183,27 +4239,15 @@ function ChatInput({
         // at all times; the focus halo takes the same color there so the one
         // control lights up in one color instead of an accent ring around a
         // warn or aim edge.
-        className={hasApproval ? undefined : `composer-halo rounded-2xl${memoryMode === 'temporary' ? ' composer-halo-aim' : memoryMode === 'incognito' ? ' composer-halo-warn' : ''}`}
         style={{ overflow: 'hidden' }}
       >{/* File drag-and-drop target. Drag-drop is inherently pointer-only; the
            keyboard-accessible path is the "Attach files" button that opens the
            hidden file input above. Hence the scoped disable for the drop zone. */}
-      {/* Liquid Glass pane under the composer: --glass-tint over the blurred
-           transcript; the wrapper's own hairline border takes --glass-edge so the
-           pane keeps an outline on a white page, where a lit white rim vanishes. Always
-           mounted so an approval box arriving above never remounts the editor;
-           while one is attached the wrapper goes back to a solid surface and
-           square top, and the glass simply sits hidden behind it. */}
-      <LiquidGlass
-        cornerRadius={16}
-        frost={24}
-        lightIntensity={24}
-      >
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} ${hasApproval ? 'bg-bg-elevated' : 'bg-transparent'} ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : hasApproval ? 'border-border focus-within:border-accent/50' : 'border-[color:var(--glass-edge)] focus-within:border-accent/50'}`}
+        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent focus-within:border-accent/50'}`}
 
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
@@ -4959,7 +5003,7 @@ function ChatInput({
 
         {/* Mobile bottom sheet */}
 
-      </div></LiquidGlass></motion.div>)}
+      </div></motion.div>)}
       </AnimatePresence>
 
       {/* The way back. It stands exactly where the composer was and is the only
@@ -4989,7 +5033,7 @@ function ChatInput({
           aria-expanded={false}
           aria-label={i18nT('components.chatInput.expand_composer')}
           title={i18nT('components.chatInput.expand_composer')}
-          className="w-full flex items-center gap-2 px-3.5 py-2 rounded-2xl border border-border bg-bg-elevated text-muted hover:text-text transition-colors cursor-pointer text-left"
+          className="w-full flex items-center gap-2 px-3.5 py-2 rounded-2xl border-none bg-transparent text-muted hover:text-text transition-colors cursor-pointer text-left"
         >
           <ChevronsUpDown size={16} className="shrink-0" />
           {/* The verb is ALWAYS visible, and the draft joins it when there is one.
@@ -5016,6 +5060,7 @@ function ChatInput({
           )}
         </button>
       )}
+      </Glass>
 
       {/* Context shelf — plain full-width row below input.
           Stands down with the composer for the same reason it stands down for the
@@ -5268,7 +5313,26 @@ function ChatInput({
             </div>
             )
           })()}
-          {onModelClick && modelName && (
+          {onModelClick && modelName && (() => {
+            // The chip shows the level in every state (running, routed, pinned
+            // or inherited), so its title / accessible name carries it in every
+            // state too -- one suffix, appended to each branch.
+            // A default and an override show the same level on the chip; the
+            // name says which one it is (the picker's own "Default · High").
+            const effortShown = effortIsDefault
+              ? i18nT('components.reasoningEffortDropdown.default_with_level', { level: effortLabel(reasoningEffort || '') })
+              : effortLabel(reasoningEffort || '')
+            const effortSuffix = hasEffort
+              ? ` · ${i18nT('components.reasoningEffortDropdown.reasoning_effort')}: ${effortShown}`
+              : ''
+            const modelChipLabel = `${isRunning
+              ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
+              : modelIsJevRouted
+                ? i18nT('pages.chatPage.model_auto_jev_description')
+                : modelIsInheritedDefault
+                  ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
+                  : i18nT('components.chatInput.model_2', { name: modelName })}${effortSuffix}`
+            return (
             <button
               className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
               onMouseDown={() => {
@@ -5286,20 +5350,12 @@ function ChatInput({
               // the label, and the explanation on hover (title) AND keyboard
               // focus / screen readers (aria-label), because a bare served id
               // reads exactly like a pin. A pinned chip keeps the plain hint.
-              title={isRunning
-                ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
-                : modelIsJevRouted
-                  ? i18nT('pages.chatPage.model_auto_jev_description')
-                  : modelIsInheritedDefault
-                    ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-                    : i18nT('components.chatInput.model_2', { name: modelName })}
-              aria-label={isRunning
-                ? i18nT('components.chatInput.stop_the_current_response_to_switch_model')
-                : modelIsJevRouted
-                  ? i18nT('pages.chatPage.model_auto_jev_description')
-                  : modelIsInheritedDefault
-                    ? i18nT('components.chatInput.model_inherited_default', { name: modelName })
-                    : i18nT('components.chatInput.model_2', { name: modelName })}
+              // The effort level rides along on both: `aria-label` REPLACES the
+              // chip's content in the accessible name, so without it a screen
+              // reader never hears the level the chip shows, and the tooltip is
+              // the only readout left when the shelf is too narrow to show it.
+              title={modelChipLabel}
+              aria-label={modelChipLabel}
             >
               <span className="truncate max-w-[180px]">
                 {modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}
@@ -5316,30 +5372,25 @@ function ChatInput({
                   <span className="opacity-60 shrink-0">{i18nT('components.agentSelector.default')}</span>
                 </>
               )}
-              {onReasoningEffortClick && !separateEffort && !shelfCompact && (
+              {/* A default and an override show the same level, and a glance
+                  at "High" alone could not tell which one set it. So the chip
+                  says so where there is room -- the picker's own "Default ·
+                  High" -- and keeps the bare level only in a compact shelf,
+                  where the hover / accessible name above still carries it.
+                  An inherited-default MODEL already put one "Default" on the
+                  chip; a second, meaning the effort, right after it would be
+                  the same word twice for two unrelated facts, so that chip
+                  keeps the bare level as well (the name above still says
+                  "Reasoning effort: Default · High"). */}
+              {hasEffort && !shelfTiny && (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
-                  <span className="opacity-60 shrink-0">{effortLabel(reasoningEffort || '')}</span>
+                  <span className="opacity-60 shrink-0">{shelfCompact || modelIsInheritedDefault ? effortLabel(reasoningEffort || '') : effortShown}</span>
                 </>
               )}
             </button>
-          )}
-          {separateEffort && onReasoningEffortClick && (
-            <div className="ml-1 pl-1 border-l border-border flex items-center shrink-0">
-              <Btn
-                type="button"
-                className={`inline-flex items-center h-7 gap-1.5 text-[12px] text-muted hover:text-text rounded-md border-none bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors ${shelfCompact ? 'px-1' : 'px-2'}`}
-                aria-label={i18nT('components.reasoningEffortDropdown.reasoning_effort')}
-                title={`${i18nT('components.reasoningEffortDropdown.reasoning_effort')}: ${effortLabel(reasoningEffort || '')}`}
-                disabled={isRunning}
-                onClick={e => onReasoningEffortClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
-                data-testid="composer-effort-chip"
-              >
-                <BrainCircuit size={13} className="shrink-0 opacity-70" aria-hidden="true" />
-                {!shelfTiny && <span className="whitespace-nowrap">{i18nT('components.reasoningEffortDropdown.effort')}: {effortLabel(reasoningEffort || '')}</span>}
-              </Btn>
-            </div>
-          )}
+            )
+          })()}
           </div>
         </div>
       )}

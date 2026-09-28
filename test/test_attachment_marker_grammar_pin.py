@@ -56,6 +56,25 @@ def test_chat_title_prefix_matches_the_queue_repository_marker():
     )
 
 
+def test_both_readers_accept_the_inline_shapes_the_serializer_emits():
+    """A mention inside a sentence serializes INLINE, and the serializer puts a
+    hair space (U+200A) between the marker and an opening wrapper or a
+    punctuation trailer (``replaceTokens`` in fileTokens.ts; the same literals
+    are pinned on that side in ``fileTokens.test.ts``). Both backend readers
+    must accept those shapes: the title reader needs whitespace before the
+    marker, the queue reader needs whitespace after the path.
+    """
+    sep = "\u200a"
+    path = "/repo/src/main.ts"
+    wrapped = f"see ({sep}[attached_file 1] {path}{sep}) here"
+    punctuated = f"check [attached_file 1] {path}{sep}, please"
+    for content in (wrapped, punctuated):
+        title = chat_title._strip_attached_file_tokens(content, (path,), labels={path: "main.ts"})
+        assert "[attached_file" not in title and path not in title, title
+        assert "main.ts" in title
+        assert _marker_spans(content, _ATTACHMENT_MARKERS["files"], 1, path), content
+
+
 def test_frontend_source_is_where_the_pin_expects_it():
     """Guard the guard: a moved serializer would make the first test vacuous."""
     assert _FILE_TOKENS_TS.is_file(), f"serializer not found at {_FILE_TOKENS_TS}"

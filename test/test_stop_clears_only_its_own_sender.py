@@ -445,7 +445,7 @@ class TestWhatTheBubbleSaysAfterAPartialStop:
                 await queue.create_or_grow_locked("s", bobs_chat, "bob asked", BOB)
                 await queue.finish_cancelled_locked("s", alices_chat, ALICE)
                 # Bob's drain, arriving with Bob's own chat.
-                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"])
+                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"], owner=BOB)
             return queue, alices_chat, bobs_chat
 
         queue, alices_chat, bobs_chat = asyncio.run(go())
@@ -710,7 +710,7 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
             async with queue.lock:
                 await queue.create_or_grow_locked("s", alices_chat, "alice asked", ALICE)
                 # Alice's drain flips; the edit is refused, so the entry is terminal.
-                await queue.flip_answering_locked("s", alices_chat, ["alice asked"])
+                await queue.flip_answering_locked("s", alices_chat, ["alice asked"], owner=ALICE)
                 alices_chat.edit_refuses = False
                 alices_chat._send_fails_after = None
                 # Bob's mid-turn message, arriving with BOB's own surface.
@@ -736,7 +736,7 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
             bobs_chat = _Surface("bob")
             async with queue.lock:
                 await queue.create_or_grow_locked("s", alices_chat, "alice secret", ALICE)
-                await queue.flip_answering_locked("s", alices_chat, ["alice secret"])
+                await queue.flip_answering_locked("s", alices_chat, ["alice secret"], owner=ALICE)
                 # The post is allowed now, so the retry Bob's stop triggers reaches it.
                 alices_chat._send_fails_after = None
                 await queue.finish_cancelled_locked("s", bobs_chat, BOB)
@@ -760,11 +760,11 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
             bobs_chat = _Surface("bob")
             async with queue.lock:
                 await queue.create_or_grow_locked("s", alices_chat, "alice asked", ALICE)
-                await queue.flip_answering_locked("s", alices_chat, ["alice asked"])
+                await queue.flip_answering_locked("s", alices_chat, ["alice asked"], owner=ALICE)
                 alices_chat.edit_refuses = False
                 alices_chat._send_fails_after = None
                 # A later drain answering BOB, so built with Bob's chat.
-                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"])
+                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"], owner=BOB)
             return alices_chat, bobs_chat
 
         alices_chat, bobs_chat = asyncio.run(go())
@@ -787,7 +787,7 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
             parent_chat = _Surface("parent-chat")
             async with queue.lock:
                 await queue.create_or_grow_locked("s", topic, "asked in the topic", ALICE)
-                await queue.flip_answering_locked("s", topic, ["asked in the topic"])
+                await queue.flip_answering_locked("s", topic, ["asked in the topic"], owner=ALICE)
                 # Same person, but the surface the /stop handler built has no thread.
                 await queue.finish_cancelled_locked("s", parent_chat, ALICE)
             return topic, parent_chat
@@ -972,7 +972,7 @@ class TestATransitionForAnotherChatIsSilentHere:
                 # ALICE's opened the bubble -- while the drain still takes its origin
                 # from the first queued entry, which is Bob's.
                 await queue.create_or_grow_locked("s", alices_chat, "alice asked", ALICE)
-                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"])
+                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"], owner=BOB)
             return queue, alices_chat, bobs_chat
 
         queue, alices_chat, bobs_chat = asyncio.run(go())
@@ -989,7 +989,7 @@ class TestATransitionForAnotherChatIsSilentHere:
             queue, chat = ReceiptQueue(), _Surface("alice")
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "alice asked", ALICE)
-                await queue.flip_answering_locked("s", chat, ["alice asked"])
+                await queue.flip_answering_locked("s", chat, ["alice asked"], owner=ALICE)
             return queue, chat
 
         queue, chat = asyncio.run(go())
@@ -1054,7 +1054,7 @@ class TestATerminalEntryKeepsOnlyWhatItOwes:
             queue, chat = ReceiptQueue(), _Surface("alice", edit_refuses=True, send_fails_after=1)
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "alice asked", ALICE)
-                await queue.flip_answering_locked("s", chat, ["alice asked"])
+                await queue.flip_answering_locked("s", chat, ["alice asked"], owner=ALICE)
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
@@ -1105,12 +1105,12 @@ class TestARetiredRecordDoesNotSwallowTheCurrentOne:
             chat = _Surface("alice", edit_refuses=True, send_fails_after=1)
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", ALICE)
-                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.flip_answering_locked("s", chat, ["first"], owner=ALICE)
                 assert queue._receipts["s"].owes_record
                 chat._send_fails_after = None
                 # The next drain: the owed record is retried, and this turn's own record
                 # must still reach the reader.
-                await queue.flip_answering_locked("s", chat, ["second"])
+                await queue.flip_answering_locked("s", chat, ["second"], owner=ALICE)
             return queue, chat
 
         queue, chat = asyncio.run(go())
@@ -1136,10 +1136,10 @@ class TestARetiredRecordDoesNotSwallowTheCurrentOne:
             bobs_chat = _Surface("bob")
             async with queue.lock:
                 await queue.create_or_grow_locked("s", alices_chat, "alice asked", ALICE)
-                await queue.flip_answering_locked("s", alices_chat, ["alice asked"])
+                await queue.flip_answering_locked("s", alices_chat, ["alice asked"], owner=ALICE)
                 assert queue._receipts["s"].owes_record
                 alices_chat._send_fails_after = None
-                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"])
+                await queue.flip_answering_locked("s", bobs_chat, ["bob asked"], owner=BOB)
             return queue, alices_chat, bobs_chat
 
         queue, alices_chat, bobs_chat = asyncio.run(go())
@@ -1169,7 +1169,7 @@ class TestARefusedTransitionPublishesWithoutWaiting:
             queue, chat = ReceiptQueue(), _Surface("alice", edit_refuses=True)
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "alice asked", ALICE)
-                await queue.flip_answering_locked("s", chat, ["alice asked"])
+                await queue.flip_answering_locked("s", chat, ["alice asked"], owner=ALICE)
             return queue, chat
 
         queue, chat = asyncio.run(go())

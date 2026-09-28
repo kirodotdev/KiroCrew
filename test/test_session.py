@@ -1572,7 +1572,8 @@ class TestCompactCallback:
         # attempt falls through to the recycle. The callback reports the arm that
         # ran; the key/pct/success threading this case exists for is unchanged.
         cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True, outcome="recycled")
-        assert "dashboard:chat-1" not in mgr._sessions
+        # A fresh successor holds the key.
+        assert mgr._sessions["dashboard:chat-1"].first_turn.is_new
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -1607,7 +1608,8 @@ class TestCompactCallback:
         # Turn finishes -> semaphore released -> recycle proceeds.
         mgr.release("dashboard:chat-1")
         await asyncio.wait_for(task, timeout=2)
-        assert "dashboard:chat-1" not in mgr._sessions
+        # A fresh successor holds the key.
+        assert mgr._sessions["dashboard:chat-1"].first_turn.is_new
         # This fixture's provider serves no native compaction, so the in-place
         # attempt falls through to the recycle. The callback reports the arm that
         # ran; the key/pct/success threading this case exists for is unchanged.
@@ -1657,7 +1659,8 @@ class TestCompactCallback:
         cb.assert_awaited_once()
         assert any("Compact callback failed" in r.message for r in caplog.records)
         # Session still recycled, compacting flag cleared
-        assert "dashboard:chat-1" not in mgr._sessions
+        # A fresh successor holds the key.
+        assert mgr._sessions["dashboard:chat-1"].first_turn.is_new
         assert "dashboard:chat-1" not in mgr._compacting
         await mgr.close_all()
 
@@ -4440,7 +4443,7 @@ class TestCompaction:
         await mgr._compact_session("k1", 92.0)
         provider.shutdown.assert_awaited_once()
         assert callback_args == [("k1", 92.0, True)]
-        assert not mgr.has_session("k1")
+        assert mgr._sessions["k1"].first_turn.is_new
 
     @pytest.mark.asyncio
     async def test_compact_session_missing_key_is_safe(self, cfg):
@@ -4696,9 +4699,10 @@ class TestKiroInPlaceCompaction:
 
         await mgr._compact_session("dashboard:chat-1", 92.0)
 
-        # Fallback recycle: entry dropped, process killed, context guaranteed
-        # to clear on the next (re-seeded) message.
-        assert "dashboard:chat-1" not in mgr._sessions
+        # Fallback recycle: the process is killed and a fresh successor takes the
+        # key, so the context is guaranteed to clear.
+        # A fresh successor holds the key.
+        assert mgr._sessions["dashboard:chat-1"].first_turn.is_new
         provider.shutdown.assert_awaited_once()
         # The provider was REPLACED, not summarized, so the callback
         # reports that arm -- what the notice needs to tell the user.
@@ -4720,7 +4724,8 @@ class TestKiroInPlaceCompaction:
 
         await mgr._compact_session("dashboard:chat-1", 92.0)
 
-        assert "dashboard:chat-1" not in mgr._sessions
+        # A fresh successor holds the key.
+        assert mgr._sessions["dashboard:chat-1"].first_turn.is_new
         provider.shutdown.assert_awaited_once()
         # The provider was REPLACED, not summarized, so the callback
         # reports that arm -- what the notice needs to tell the user.
@@ -4901,7 +4906,8 @@ class TestKiroInPlaceCompaction:
         # Kill first, queued turn second: the semaphore was never handed back
         # while the backend could still have been compacting.
         assert order == ["shutdown", "turn"]
-        assert "dashboard:chat-1" not in mgr._sessions
+        # A fresh successor holds the key.
+        assert mgr._sessions["dashboard:chat-1"].first_turn.is_new
         await mgr.close_all()
 
     @pytest.mark.asyncio

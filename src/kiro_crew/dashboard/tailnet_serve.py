@@ -52,6 +52,7 @@ from typing import Any, Literal
 
 from kiro_crew.dashboard.tailnet import _cli_path, is_governance_pinned_off
 from kiro_crew.sandbox import scrub_env
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +227,7 @@ def _run(args: list[str], timeout: float) -> tuple[int, str, str]:
         proc = subprocess.run(  # noqa: S603 - vetted absolute binary, fixed argv, no shell
             [cli, *args],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=timeout,
             check=False,
             env=scrub_env(),

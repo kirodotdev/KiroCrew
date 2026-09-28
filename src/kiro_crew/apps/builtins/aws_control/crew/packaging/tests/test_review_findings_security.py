@@ -37,7 +37,7 @@ import pytest
 
 from kiro_crew import credential_patterns
 
-from .test_producer import BUILD_PY, load_build, make_crew, sign_plan
+from .test_producer import builder_source_text, load_build, make_crew, sign_plan
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -99,9 +99,9 @@ def test_MUTATION_a_write_text_marker_truncates_the_link_target(tmp_path: pathli
     This is the defect reproduced. It pins that the fd-based write is what protects the
     target, not something else in the surrounding checks.
     """
-    anchor = "    _write_nofollow(path, _STAGING_MARKER_BODY, exclusive=not ours)"
+    anchor = "    _destination._write_nofollow(path, _STAGING_MARKER_BODY, exclusive=not ours)"
     assert (
-        BUILD_PY.read_text(encoding="utf-8").count(anchor) == 1
+        builder_source_text().count(anchor) == 1
     ), "the mutation anchor moved or is not unique; re-point it at the marker write"
     mod = load_build(
         mutate=(anchor, '    path.write_text(_STAGING_MARKER_BODY, encoding="utf-8", newline="")')
@@ -423,7 +423,7 @@ def test_MUTATION_a_symlinked_skills_root_would_leak_without_the_guard(
     ``rglob`` finds ``secret_skill/SKILL.md`` in the redirected tree, and it appears as a
     selectable candidate whose bytes live outside ``--source``.
     """
-    mod = load_build(mutate=("if _is_redirecting_entry(skills_root):", "if False:"))
+    mod = load_build(mutate=("if _pinned._is_redirecting_entry(skills_root):", "if False:"))
     outside = tmp_path / "outside"
     (outside / "secret_skill").mkdir(parents=True)
     (outside / "secret_skill" / "SKILL.md").write_text("# not from this crew\n", encoding="utf-8")
@@ -819,7 +819,7 @@ def test_MUTATION_a_by_name_read_ships_a_hard_linked_skill_file(
     mod = load_build(
         mutate=(
             "safe_read_file_bytes_nolink(str(p), str(skill_dir), max_bytes=_MAX_PROMPT_BYTES)",
-            "_read_bytes_openat(skill_dir, p.relative_to(skill_dir))",
+            "_pinned._read_bytes_openat(skill_dir, p.relative_to(skill_dir))",
         )
     )
     src = make_crew(tmp_path / "home", skills={"leaky": {"SKILL.md": "# ok\n"}})
@@ -926,7 +926,7 @@ def test_MUTATION_a_bare_probe_read_would_decode_a_hard_linked_SKILL_md(
             "            )\n        except FileTooLargeError:\n            _probe = None",
             "        _probe = (\n"
             "            None\n"
-            "            if _read_text_openat(skills_root, skill_md.relative_to(skills_root))\n"
+            "            if _pinned._read_text_openat(skills_root, skill_md.relative_to(skills_root))\n"
             "            is None\n"
             "            else b'ok'\n"
             "        )",
@@ -991,7 +991,7 @@ def test_MUTATION_a_by_name_enumeration_scan_marks_a_hard_linked_skill_selectabl
                 "scanned = safe_read_file_bytes_nolink(\n"
                 "                    str(p), str(skill_dir), max_bytes=_MAX_PROMPT_BYTES\n"
                 "                )",
-                "scanned = _read_bytes_openat(skill_dir, p.relative_to(skill_dir))",
+                "scanned = _pinned._read_bytes_openat(skill_dir, p.relative_to(skill_dir))",
             ),
             (
                 "safe_read_file_bytes_nolink(str(p), str(root), max_bytes=_MAX_PROMPT_BYTES)",

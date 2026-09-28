@@ -236,7 +236,7 @@ Frontend badges and affordances read the same three fields
 separate question: `/api/apps/registry` rows carry server-computed
 `provenance` (`"official" | "external" | "builtin"`, with `"core"` accepted by
 clients as the pre-migration spelling of `"official"`) and `verified` fields,
-stamped by `_apply_trust_fields` in `registry.py` where the server-attached
+stamped by `_apply_trust_fields` in `registry_pipeline/catalog.py` where the server-attached
 `_registry` tag is authoritative. The helper OVERWRITES anything an index
 publishes, and derives `verified` from the INDEX-declared author snapshotted
 before the app.json merge — never from the repo-fetched manifest — because
@@ -1350,7 +1350,7 @@ with it), so it is a trust-scale indicator, not a live metric. Absence means
 Writers: `apps/manager.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
 `_DEFAULT_ON_BACKFILL`, `register_builtin_apps`, `backfill_default_on_builtins`),
 `agent.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
-`apps/registry.py::_apply_trust_fields`;
+`apps/registry_pipeline/catalog.py::_apply_trust_fields`;
 consumers: `website/src/pages/apps/useAppsData.ts` (`pickFeatured`),
 `website/src/components/appstore/types.ts` (`isVerified`, `sourceLabel`).
 
@@ -1558,7 +1558,7 @@ authors: [../../architecture/app-platform-trust-model.md](../../architecture/app
 ## 14. The published catalog is the store's inventory
 
 `GET /api/apps/registry` answers from the published catalog when it is reachable:
-`handle_registry` prefers `list_catalog_apps` (`registry.py`), which maps the
+`handle_registry` prefers `list_catalog_apps` (`registry_pipeline/catalog.py`), which maps the
 published `official-registry.json` entries through
 `official_catalog.list_catalog_rows` and then applies the same install-status and
 trust stamping as the seed path. The bundled `app-registry.json` seed is the
@@ -1694,9 +1694,9 @@ A name is a filesystem path on install, so `inventory()` and
 (`asyncio.to_thread`) so a cache-expired request never blocks the gateway loop.
 
 Writers: `apps/official_catalog.py` (`list_catalog_rows`, `inventory`,
-`fetch_inventory_entries`, `inventory_for_install`), `apps/registry.py`
-(`list_catalog_apps`, `_resolve_registry_row`, `_git_fetch_commit`,
-`_append_external_registry_apps`, `_detect_installed_probe`),
+`fetch_inventory_entries`, `inventory_for_install`), `apps/registry_pipeline/catalog.py`
+(`list_catalog_apps`, `_resolve_registry_row`, `_append_external_registry_apps`,
+`_detect_installed_probe`), `apps/registry_pipeline/checkout.py` (`_git_fetch_commit`),
 `dashboard/handlers/security.py` (`api_trusted_app_grant`),
 `apps/routes.py` (`handle_registry`, `handle_list_apps`, `handle_get_app`), and
 `website/src/components/appstore/TrustAppModal.tsx`.
@@ -1856,10 +1856,11 @@ default into the operator's `config.json`, where a later edition change could no
 longer move it. `PUT` carries `trust` through for the same class of reason —
 dropping it would silently downgrade a registry the operator had marked trusted.
 
-Writers: `apps/registry.py` (`_effective_registries`, `_pinned_registries`,
-`_registry_trust_tier`, `_is_owner_designated_repo`, `_owner_tier_confirmed`,
-`_sel_credential_decision`,
-`anonymous_git_env`), `platform/interfaces.py`
+Writers: `apps/registry_pipeline/sources.py` (`_effective_registries`,
+`_pinned_registries`, `_registry_trust_tier`, `_is_owner_designated_repo`,
+`_sel_credential_decision`), `apps/registry_pipeline/indexes.py`
+(`_owner_tier_confirmed`), `apps/registry_pipeline/subprocess_env.py`
+(`anonymous_git_env`), `platform/interfaces.py`
 (`AppsLoader.default_registries`), `config/loader.py`
 (`ExternalRegistryConfig.trust`), `apps/routes.py` (`handle_registries`).
 
@@ -2115,7 +2116,8 @@ treats any pattern route as a real handler without consulting the regex), so
 The blob proxy keeps serving a **not-installed** external-registry row, which
 genuinely has no local copy; that half of `known_registry_repos` is untouched.
 
-Writers: builtin `app.json` manifests, `apps/registry.py` (`_merge_manifest`),
+Writers: builtin `app.json` manifests, `apps/registry_pipeline/manifests.py`
+(`_merge_manifest`, `_store_asset_path`),
 `apps/routes.py` (`handle_app_art_file`),
 `website/src/components/appstore/appManifest.ts`,
 `website/src/components/appstore/useHeroArt.ts`,
@@ -2535,6 +2537,65 @@ that, the import order, the one-hop facade, and the lock order end to end.
 Writers: `apps/builtins/spec_builder/backend/handlers.py`, `runtime.py`,
 `decisions.py`, `orchestration/`; `apps/builtins/spec_builder/tests/routes_facade.py`
 (`BACKEND_MODULES`).
+
+## 20. The App Registry is composed by pipeline owner
+
+The App Registry runs the whole App Store pipeline: the environment every registry
+child starts with, what a clone URL may be, which registries are in force and what
+each is trusted with, the on-disk caches, the git processes that fill a checkout,
+the store listing, and the install transaction. That behaviour is specified in §0,
+§12 and §14 to §16 above and in [security](security.md) under "Federated registry
+validation & refresh". This section records which module owns which part, so a
+change lands in its owner.
+
+| Module under `src/kiro_crew/apps/` | Owns |
+|---|---|
+| `registry.py` | The facade: the only import path and patch surface, plus the build step (`_run_app_build`) and the two index-entry name gates (`_admit_cached_index_entries`, `_admit_fetched_index_entries`) |
+| `registry_pipeline/subprocess_env.py` | The environments registry children start with: `minimal_env`, the credential-free `anonymous_git_env`, and the `detectInstalled` probe env |
+| `registry_pipeline/git_targets.py` | Clone-target text: the target an entry names, host and SSH parsing, the unsupported query, fragment and ambiguous SSH/SCP forms, userinfo stripping, normalization and comparison, the one-shot credential environment, and the fixed classes credentialed git output is reduced to |
+| `registry_pipeline/caches.py` | Everything under `cache/app-manifests`: manifest-cache and index-cache identity, paths, TTLs, reads and writes, expiry, garbage collection, and the legacy-filename migration |
+| `registry_pipeline/sources.py` | Which registries are in force: the bundled seed and edition rows, pinned and effective registries, identity keys, trust tiers, clone-host trust and sandbox mode, and the owner-designated same-repo carve-out with its SEL records |
+| `registry_pipeline/recovery.py` | The checkout slot (`app_source_dir`), move-aside with a refreshed retention clock, restore, the restorable subset, and the sweep of `.stale-*` / `.partial-*` siblings |
+| `registry_pipeline/checkout.py` | The git processes that fill a checkout: fetch by branch or pinned commit, clone-or-pull with origin and branch re-convergence, the origin read, bounded git-metadata reads, the timeouts, and the process-group kill |
+| `registry_pipeline/indexes.py` | External index fetch, the configured-branch rule, fetch-then-swap caching, load with stale fallback, and the install-time owner-tier confirmation (`_owner_tier_confirmed`) |
+| `registry_pipeline/manifests.py` | An app's `app.json` for the store: subdirectory containment, fetch from the verified checkout or a throwaway clone, resolution through the cache, and the merge with its blob-proxy asset paths |
+| `registry_pipeline/catalog.py` | The store listing and lookups: seed, catalog and external precedence, install status, trust fields, refresh, and the row and candidate resolution install and consent go through |
+| `registry_pipeline/install.py` | The install transaction: every gate before repository bytes run, clone, identity and admission before the build, the rejected-checkout rollback (`_unpoison_rejected_checkout`), `onInstall`, registration, provenance, and the single restore-and-report `finally` |
+
+Imports only point down this order: `subprocess_env`, `git_targets`, `caches`,
+`sources`, `recovery`, `checkout`, `indexes`, `manifests`, `catalog`, `install`, then
+`registry.py`. There is no cycle, and no owner imports the facade. The facade imports
+every owner at its own import, so an owner's `from ... import` bindings are taken
+once, as the one-module registry took them. `registry.py` re-exports every name an
+owner holds, one hop, so `routes.py`, `manager.py`, `execution.py`, the dashboard
+security handler and the platform defaults keep one import path.
+
+Every patch seam stays on the facade. A write to `registry.<name>` reaches every
+module that binds that name, and each owner reads its own bindings, so a
+`monkeypatch.setattr(registry, ...)` or `mock.patch("kiro_crew.apps.registry.<name>")`
+reaches the call site in whichever owner makes the call. That holds because every
+module holding a name holds the same object, every owner logs through the
+`kiro_crew.apps.registry` logger, and `importlib.reload(registry)` reloads each owner
+in layer order. `mock.patch(..., create=True)` on a forwarded name is the one
+spelling the facade cannot undo, and a guard refuses it.
+
+Three placements are constraints rather than style. `_run_app_build` stays in
+`registry.py` because `test_internal_python_isolation.py` reads it there by path, and
+the two `KEBAB_RE.fullmatch` name gates stay there because
+`test_kebab_gates_reject_trailing_newline.py` counts them in the facade's source. The
+three owners that call them (`caches._read_external_registry_cache`,
+`indexes._fetch_and_cache_external_registry`, `install._clone_build_app_locked`)
+resolve the facade at call time through `registry_pipeline._facade()`, and nothing
+else in the pipeline refers to it. `_redact_url_userinfo` and
+`_redacted_git_failure_class` are the two names `test_security_posture.py` classifies
+as redactors, and only the four owners listed in `NON_EGRESS_REDACTION_MODULES`
+(`sources.py`, `git_targets.py`, `indexes.py`, `checkout.py`) call them, so a new
+call to either belongs in one of those or needs its own row there.
+`test_apps_registry_composition_contract.py` pins the surface, the
+one-namespace writes, the import order, the three facade call sites, the reload and
+the `create=True` guard end to end.
+
+Writers: `apps/registry.py`, `apps/registry_pipeline/`.
 
 
 ## Windows stale-backend cleanup capacity

@@ -1165,6 +1165,13 @@
       "description": "Heartbeat task results"
     },
     {
+      "id": "notifications.mark-sessions-unread-only-when-they-need-you",
+      "label": "Mark sessions unread only when they need you",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.mark-sessions-unread-only-when-they-need-you",
+      "description": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message."
+    },
+    {
       "id": "notifications.notify-when-a-background-chat-finishes",
       "label": "Notify when a background chat finishes",
       "tab": "notifications",

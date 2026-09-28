@@ -81,6 +81,31 @@ const MAX_DOCKED_STATS = 3;
 const MAX_STAT_LABEL_CHARS = 22;
 const MAX_STAT_VALUE_CHARS = 18;
 
+/**
+ * How the document learns it is the DOCKED copy. Prepended to the template
+ * fragment of the docked mint only; a template reads it with
+ * `document.querySelector('meta[name="kirocrew-view"]')` (or `body:has(...)`
+ * in CSS) and renders its compact layout. A constant this file authors: no crew
+ * byte is in it, and the fragment still goes through `buildSrcdoc`'s typed
+ * parse like every other document.
+ *
+ * Spelled as a regex's `source` for the reason NOTE_SUFFIX_RE is a regex: it is a
+ * protocol token shared with templates, not copy, and a regex carries no string
+ * literal for the strict i18n gate to count. None of its characters is special in
+ * a pattern, so `source` is exactly the markup.
+ */
+export const DOCKED_VIEW_MARK = /<meta name="kirocrew-view" content="docked">/.source;
+
+/** The template's docked opt-in, or null. A non-number, NaN or non-positive
+ *  value is no opt-in at all, so a malformed response keeps the native path. */
+function dockedFrameHeight(meta: CrewPanelMeta | null): number | null {
+  const h = meta?.docked_height;
+  if (typeof h !== "number" || !Number.isFinite(h) || h <= 0) return null;
+  // The read route always clamps through agent_panel.docked_height; the client
+  // only rejects a value that is not a usable height at all.
+  return Math.round(h);
+}
+
 /** What the template renders for a value the crew does not have. */
 const NIL_TEXT = "\u2014";
 
@@ -241,11 +266,22 @@ function absoluteStamp(publishedAt: string): string {
  * EXPANDED is the sandboxed document, which is where the dashboard is actually
  * read because a dashboard needs a full page to be legible.
  */
-export default function CrewWebview({
-  slug,
-  member,
-  onSetUp,
-}: {
+export default function CrewWebview(props: CrewWebviewProps) {
+  /* One instance per crew IDENTITY, not per slug. Slugs are lossy -- two crews
+     can share one -- and both frames hold a minted URL that `useSandboxDoc`
+     keeps across a later failed mint by design. Reusing the instance across a
+     switch between two same-slug crews would therefore leave the previous
+     crew's document on screen under the new crew's name whenever the new
+     crew's mint failed. A key on the exact pair drops every such state. */
+  return (
+    <CrewWebviewView
+      key={JSON.stringify([props.slug, props.member])}
+      {...props}
+    />
+  );
+}
+
+interface CrewWebviewProps {
   slug: string;
   member: string;
   /**
@@ -259,7 +295,9 @@ export default function CrewWebview({
    * sentence without a dead control under it.
    */
   onSetUp?: () => void;
-}) {
+}
+
+function CrewWebviewView({ slug, member, onSetUp }: CrewWebviewProps) {
   const [expanded, setExpanded] = useState(false);
   /**
    * Whether the document has EVER been opened, which is what gates minting.
@@ -391,12 +429,55 @@ export default function CrewWebview({
   // bare links keep navigating the frame as they always have.
   const srcdoc = useMemo(
     () =>
-      html && everExpanded
+      // The read-error state below replaces every frame, and a minted URL is
+      // single-use: an iframe re-created after it would request a spent
+      // document. Dropping the srcdoc while the read is in error resets the
+      // mint, so recovery mints a fresh one even for byte-identical html.
+      html && everExpanded && !isError
         ? buildSrcdoc({ html, themeVars, mode: theme, rewriteBareLinks: false })
         : null,
-    [html, everExpanded, themeVars, theme],
+    [html, everExpanded, isError, themeVars, theme],
   );
-  const { url, failed, pending, retry } = useSandboxDoc(srcdoc);
+  const mint = useSandboxDoc(srcdoc);
+  const { url, pending, retry } = mint;
+  // A mint that outlived the pending ceiling counts as failed, so a wedged
+  // gateway reaches the same notice and retry as a refused mint.
+  const failed = mint.failed || mint.stalled;
+
+  /**
+   * The DOCKED frame, for a template that opted in (`docked_height`).
+   *
+   * A second, separate mint: the docked copy carries DOCKED_VIEW_MARK so the
+   * template can render compactly, and the two URLs are each single-use, so one
+   * frame can never serve both views. The same single-use rule as the expanded
+   * frame applies, which is why the docked card below stays MOUNTED (hidden)
+   * while expanded instead of unmounting and re-requesting a spent URL.
+   *
+   * Null for a template that did not opt in, so such a drawer still costs zero
+   * mints until Expand.
+   */
+  const dockedHeight = dockedFrameHeight(meta);
+  const dockedSrcdoc = useMemo(
+    () =>
+      // Reset across a read error for the same reason as the expanded mint.
+      html && dockedHeight !== null && !isError
+        ? buildSrcdoc({
+            html: DOCKED_VIEW_MARK + html,
+            themeVars,
+            mode: theme,
+            rewriteBareLinks: false,
+          })
+        : null,
+    [html, dockedHeight, isError, themeVars, theme],
+  );
+  const docked = useSandboxDoc(dockedSrcdoc);
+  // A docked mint that outlived the pending ceiling counts as failed: with no
+  // document the card falls back to the native lead and stats, and with one on
+  // screen that document stays; either way the failure notice and its retry
+  // show, and Expand still works.
+  const dockedFailed = docked.failed || docked.stalled;
+  const showDockedFrame =
+    dockedHeight !== null && !(dockedFailed && !docked.url);
 
   /**
    * The publish instant of the document CURRENTLY on screen, which is not always
@@ -546,123 +627,196 @@ export default function CrewWebview({
       aria-modal={expanded ? true : undefined}
       aria-label={expanded ? dialogLabel : undefined}
     >
-      {!expanded && (
-        /*
-         * Sized to content, never clipped. Everything that could overflow is
-         * clamped EXPLICITLY with an ellipsis (the subtitle to one line, the
-         * lead to three) and every stat is pre-filtered to a length that reads
-         * whole — because the failure this view replaced was a fixed 420px box
-         * with `overflow-hidden` that cut the crew's most important line off
-         * with no scrollbar and no fade to say it had.
-         */
+      {/*
+       * Mounted for as long as the drawer is, and merely HIDDEN while expanded:
+       * for a template that opted in, this card holds the docked frame, whose
+       * URL is single-use exactly like the expanded one. The shared ids ride
+       * only while it is the visible surface, for the same reason as below.
+       *
+       * Sized to content, never clipped. Everything that could overflow is
+       * clamped EXPLICITLY with an ellipsis (the subtitle to one line, the
+       * lead to three) and every stat is pre-filtered to a length that reads
+       * whole — because the failure this view replaced was a fixed 420px box
+       * with `overflow-hidden` that cut the crew's most important line off
+       * with no scrollbar and no fade to say it had.
+       */}
+      <motion.div
+        layoutId={expanded ? undefined : SURFACE_LAYOUT_ID}
+        transition={surfaceTransition}
+        className={expanded ? "hidden" : "rounded-lg border border-border bg-card"}
+        data-testid="crew-webview-summary"
+      >
         <motion.div
-          layoutId={SURFACE_LAYOUT_ID}
+          layoutId={expanded ? undefined : CONTAINED_BAR_LAYOUT_ID}
           transition={surfaceTransition}
-          className="rounded-lg border border-border bg-card"
-          data-testid="crew-webview-summary"
+          className={
+            "flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-muted " +
+            "bg-bg-elevated border-b border-border rounded-t-lg"
+          }
         >
-          <motion.div
-            layoutId={CONTAINED_BAR_LAYOUT_ID}
-            transition={surfaceTransition}
-            className={
-              "flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-muted " +
-              "bg-bg-elevated border-b border-border rounded-t-lg"
-            }
+          <ShieldCheck className="lucide-inline text-ok" aria-hidden />
+          {/* The docked bar has no room for the full claim, so the word alone
+              leaves a cold reader guessing what the green shield asserts. The
+              title carries the SAME string the expanded bar prints, so the two
+              surfaces cannot drift into claiming different things. */}
+          {/* `title` alone reaches a mouse and nothing else, so the claim is
+              also the chip's accessible NAME: a touch or keyboard user gets the
+              same sentence a hover would give, rather than the bare word. */}
+          <span
+            className="text-text-strong font-medium"
+            title={i18nT("pages.membersPage.webview_contained_detail")}
+            aria-label={i18nT("pages.membersPage.webview_contained_detail")}
           >
-            <ShieldCheck className="lucide-inline text-ok" aria-hidden />
-            {/* The docked bar has no room for the full claim, so the word alone
-                leaves a cold reader guessing what the green shield asserts. The
-                title carries the SAME string the expanded bar prints, so the two
-                surfaces cannot drift into claiming different things. */}
-            {/* `title` alone reaches a mouse and nothing else, so the claim is
-                also the chip's accessible NAME: a touch or keyboard user gets the
-                same sentence a hover would give, rather than the bare word. */}
+            {i18nT("pages.membersPage.webview_contained")}
+          </span>
+          {ago && (
+            /* Same label as the expanded bar. Kept bare at first on the
+               reasoning that the ambiguity had only been measured there, which
+               was wrong: sitting beside "Contained", a naked "23m ago" reads as
+               the age of that STATUS rather than of the dashboard, which a
+               reader told UX review outright. One form on both surfaces is also
+               one fewer way for them to drift. The one deliberate difference:
+               the expanded bar switches to "New version published" while a
+               failed refresh shows an older document, because only that view
+               has a second age (the band's) to disagree with; docked, there is
+               one age and the plain label is the true one. */
             <span
-              className="text-text-strong font-medium"
-              title={i18nT("pages.membersPage.webview_contained_detail")}
-              aria-label={i18nT("pages.membersPage.webview_contained_detail")}
+              className="ml-auto shrink-0"
+              data-testid="crew-webview-age"
+              title={agoTitle}
             >
-              {i18nT("pages.membersPage.webview_contained")}
+              {i18nT("pages.membersPage.webview_published_ago", { ago })}
             </span>
-            {ago && (
-              /* Same label as the expanded bar. Kept bare at first on the
-                 reasoning that the ambiguity had only been measured there, which
-                 was wrong: sitting beside "Contained", a naked "23m ago" reads as
-                 the age of that STATUS rather than of the dashboard, which a
-                 reader told UX review outright. One form on both surfaces is also
-                 one fewer way for them to drift. The one deliberate difference:
-                 the expanded bar switches to "New version published" while a
-                 failed refresh shows an older document, because only that view
-                 has a second age (the band's) to disagree with; docked, there is
-                 one age and the plain label is the true one. */
-              <span
-                className="ml-auto shrink-0"
-                data-testid="crew-webview-age"
-                title={agoTitle}
-              >
-                {i18nT("pages.membersPage.webview_published_ago", { ago })}
-              </span>
-            )}
-          </motion.div>
-
-          <div className="px-3 py-2.5">
-            {/* Crew-supplied strings from here down. Every one is a React text
-                child, which is the containment for this path. */}
-            <div className="text-[13px] font-semibold text-text-strong leading-snug line-clamp-2">
-              {summary.title}
-            </div>
-            {summary.subtitle && (
-              <div
-                className="text-[11px] text-muted truncate mt-0.5"
-                title={summary.subtitle}
-              >
-                {summary.subtitle}
-              </div>
-            )}
-
-            {summary.lead && (
-              <div className="mt-2.5" data-testid="crew-webview-lead">
-                <div className="text-[10px] font-mono uppercase tracking-[0.09em] text-muted mb-1">
-                  {summary.lead.label}
-                </div>
-                <div className="text-[12px] leading-snug text-text line-clamp-3">
-                  {summary.lead.text}
-                </div>
-              </div>
-            )}
-
-            {summary.stats.length > 0 && (
-              <dl className="mt-2.5 pt-2 border-t border-border space-y-1">
-                {summary.stats.map((s) => (
-                  <div key={s.key} className="flex items-baseline gap-2">
-                    <dt className="text-[10px] font-mono uppercase tracking-[0.09em] text-muted">
-                      {s.label}
-                    </dt>
-                    <dd className="ml-auto m-0 text-[12px] font-mono tabular-nums text-text-strong">
-                      {s.value}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-
-            {/* A real button with words on it. The affordance it replaces was a
-                14px icon at the far right of a bar whose own text truncated
-                mid-word, which is how a reviewer failed to find the dashboard
-                at all. */}
-            <Btn
-              className="mt-3 w-full justify-center"
-              onClick={open}
-              aria-haspopup="dialog"
-              data-testid="crew-webview-expand"
-              ref={openRef}
-            >
-              <Maximize2 className="lucide-inline" aria-hidden />
-              {i18nT("pages.membersPage.webview_open")}
-            </Btn>
-          </div>
+          )}
         </motion.div>
-      )}
+
+        <div className="px-3 py-2.5">
+          {/* Crew-supplied strings from here down. Every one is a React text
+              child, which is the containment for this path. */}
+          <div className="text-[13px] font-semibold text-text-strong leading-snug line-clamp-2">
+            {summary.title}
+          </div>
+          {summary.subtitle && (
+            <div
+              className="text-[11px] text-muted truncate mt-0.5"
+              title={summary.subtitle}
+            >
+              {summary.subtitle}
+            </div>
+          )}
+
+          {showDockedFrame && (
+            /* The template's own compact view, in the SAME sandbox as the
+               expanded frame. A fixed height the template declared, so the
+               frame never needs a height channel from the document. The slot
+               is reserved while the mint is in flight so the card does not
+               jump when the frame lands. */
+            <div
+              className="mt-2.5 rounded-md border border-border overflow-hidden bg-card"
+              style={{ height: dockedHeight ?? undefined }}
+              data-testid="crew-webview-docked"
+            >
+              {docked.url ? (
+                <iframe
+                  src={docked.url}
+                  sandbox={CREW_WEBVIEW_SANDBOX}
+                  className="w-full h-full border-none bg-card"
+                  style={{ colorScheme: theme }}
+                  data-testid="crew-webview-docked-frame"
+                  title={i18nT("pages.membersPage.webview_frame_title", {
+                    crew: meta?.crew || slug,
+                  })}
+                />
+              ) : (
+                /* The compact card's own loading line, so a pending slot reads
+                   as loading rather than as a blank or broken widget, and never
+                   borrows the expanded dashboard's name. */
+                <div
+                  className="h-full flex items-center justify-center bg-bg-hover animate-pulse text-[11px] text-muted"
+                  data-testid="crew-webview-docked-pending"
+                >
+                  {i18nT("pages.membersPage.webview_docked_rendering")}
+                </div>
+              )}
+            </div>
+          )}
+
+          {dockedHeight !== null && dockedFailed && (
+            /* The docked mint failed. Through the shared error surface, like
+               the expanded view's failures, with the same retry beside it: the
+               URL is single-use, so re-rendering a spent one recovers nothing.
+               With a document already on screen the refresh failed and the
+               last version stays; with none, the native summary below answers. */
+            /* Stacked, not side by side: at drawer width a notice squeezed
+               beside its own hand-off and a button breaks mid-word. */
+            <div
+              className="mt-2.5 flex flex-col items-start gap-1.5"
+              data-testid="crew-webview-docked-failed"
+            >
+              <ErrorNotice
+                message={i18nT(
+                  docked.url
+                    ? "pages.membersPage.webview_docked_refresh_error"
+                    : "pages.membersPage.webview_docked_error",
+                )}
+                askAgent
+                actionPlacement="below"
+                className="w-full"
+                testId="crew-webview-docked-error"
+              />
+              <Btn
+                disabled={docked.pending}
+                onClick={docked.retry}
+                data-testid="crew-webview-docked-retry"
+              >
+                <RotateCw className="lucide-inline" aria-hidden />
+                {i18nT("pages.membersPage.webview_retry")}
+              </Btn>
+            </div>
+          )}
+
+          {!showDockedFrame && summary.lead && (
+            <div className="mt-2.5" data-testid="crew-webview-lead">
+              <div className="text-[10px] font-mono uppercase tracking-[0.09em] text-muted mb-1">
+                {summary.lead.label}
+              </div>
+              <div className="text-[12px] leading-snug text-text line-clamp-3">
+                {summary.lead.text}
+              </div>
+            </div>
+          )}
+
+          {!showDockedFrame && summary.stats.length > 0 && (
+            <dl className="mt-2.5 pt-2 border-t border-border space-y-1">
+              {summary.stats.map((s) => (
+                <div key={s.key} className="flex items-baseline gap-2">
+                  <dt className="text-[10px] font-mono uppercase tracking-[0.09em] text-muted">
+                    {s.label}
+                  </dt>
+                  <dd className="ml-auto m-0 text-[12px] font-mono tabular-nums text-text-strong">
+                    {s.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+
+          {/* A real button with words on it. The affordance it replaces was a
+              14px icon at the far right of a bar whose own text truncated
+              mid-word, which is how a reviewer failed to find the dashboard
+              at all. */}
+          <Btn
+            className="mt-3 w-full justify-center"
+            onClick={open}
+            aria-haspopup="dialog"
+            data-testid="crew-webview-expand"
+            ref={openRef}
+          >
+            <Maximize2 className="lucide-inline" aria-hidden />
+            {i18nT("pages.membersPage.webview_open")}
+          </Btn>
+        </div>
+      </motion.div>
 
       {/*
        * Mounted from the first expand onward and merely HIDDEN when collapsed.

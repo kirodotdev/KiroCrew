@@ -1110,7 +1110,7 @@ class AppsLoader(Protocol):
     def registry_rows(self) -> List[Dict[str, Any]]:
         """Extra App-Store registry rows the edition bundles (ADD-only merge).
 
-        WIRED: ``apps/registry.py::_load_registry_file`` appends these to the
+        WIRED: ``apps/registry_pipeline/sources.py::_load_registry_file`` appends these to the
         rows parsed from the bundled ``app-registry.json``, de-duplicated by the
         row ``name`` (a bundled core row wins over a same-named edition row, so a
         companion can only ADD catalog entries, never silently repoint a core
@@ -1125,7 +1125,7 @@ class AppsLoader(Protocol):
     def default_registries(self) -> List[Dict[str, Any]]:
         """External app registries the edition ships as defaults (ADD-only merge).
 
-        WIRED: ``apps/registry.py::_effective_registries`` merges these with the
+        WIRED: ``apps/registry_pipeline/sources.py::_effective_registries`` merges these with the
         operator's ``config.registries`` for EVERY consumer of the registry list —
         index fetch/refresh, the trusted-host allowlist, row lookup, install, and
         the blob-proxy allowlist. Merging at the consumption sites rather than

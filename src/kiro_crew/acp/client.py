@@ -56,6 +56,7 @@ from kiro_crew import (
     model_registry,
     model_scope,
     permission_floor,
+    pinned_fs,
     platform_compat,
 )
 from kiro_crew import sel as sel_module
@@ -5805,6 +5806,25 @@ class AcpClient:
         # theirs. So the flag says "Crew created it" and this says "and it is still
         # Crew's content" -- the re-seed and the reset unlink both require BOTH.
         self._claude_settings_written: str | None = None
+        # True while a durable OWNER holder of this client's is still on disk for a
+        # file whose bytes are not Crew's: a user replaced the seed and the hand-back
+        # (``forget``, then ``release``) could not reach the sidecar. Authorship
+        # drops the moment the bytes are observed foreign -- governance is about the
+        # file, not the record -- so this carries the one thing teardown still owes:
+        # another attempt at the hand-back. It feeds NO governance decision.
+        self._claude_settings_claim_unrevoked = False
+        # True while this session holds a durable reader lease on a sibling
+        # Crew client's seed. The lease pins that file's lifecycle even after a
+        # later byte re-validation fails, so it is deliberately distinct from
+        # whether the current bytes still govern this session's permission
+        # surface. A sharer never removes the owner's file or live claim.
+        self._claude_settings_shared = False
+        # True only while the sibling seed's CURRENT on-disk bytes have passed
+        # byte-for-byte validation against this session's rendered permission
+        # surface. Unlike the retained reader lease above, every re-validation
+        # clears this flag on entry and only full success re-earns it; the MCP
+        # array is withheld after every non-success exit.
+        self._permission_surface_share_validated = False
         # Identity this client claims its seed under, in the durable record. Two
         # keyless clients share the default work_dir, so a token is what keeps
         # "Crew wrote it" from collapsing into "any Crew client may take it": the
@@ -5904,6 +5924,11 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
+        # The root's process-start identity, read once at spawn and handed to
+        # both the session-file tracker and the identity-bound retirement in
+        # _reset_state, so the line written and the line later compared are one
+        # read of the identity rather than two (see session_pid._pid_start_token).
+        self._spawn_start_token: str | None = None
         # False until shutdown confirms both the root's exit and every tracked
         # descendant's exit. A work-directory reclaim reads this fail-closed
         # verdict after shutdown.
@@ -6278,11 +6303,13 @@ class AcpClient:
         projection takes: it re-declares a stubbed server, where the injection
         still outranks it, rather than withholding a server nothing else supplies.
 
-        ``permission_surface_owned`` carries whether Crew authored this session's
-        native permission file, because a mirror cannot know that on its own. It
+        ``permission_surface_owned`` carries whether Crew GOVERNS this session's
+        native permission file, because a mirror cannot know that on its own:
+        either this client authored it, or it verified the file is a sibling
+        session's byte-identical live seed (``_permission_surface_governed``). It
         is a precondition on delivering tools at all: Crew's gate fires on
         ``session/request_permission``, and a tool pre-approved in a file Crew does
-        not own never sends one. The claude mirror fails closed on it; a backend
+        not govern never sends one. The claude mirror fails closed on it; a backend
         that gates natively ignores it. Read here, AFTER the writer has run on the
         spawn path, so the value describes this session's real state.
         """
@@ -6317,7 +6344,7 @@ class AcpClient:
             # so one withhold rule covers both halves of the array (codex). A mirror
             # that leaves them to the shared append ignores them.
             stub_elements=self._pooled_broker_stubs(),
-            permission_surface_owned=getattr(self, "_claude_settings_authored", False),
+            permission_surface_owned=self._permission_surface_governed,
             work_dir=self._work_dir,
             # A codex stdio child starts from env_clear() plus an allowlist, so
             # Crew's own servers reach it with an identity only if the ELEMENT
@@ -6496,11 +6523,10 @@ class AcpClient:
                 capability,
             )
             return True
-        # An unenforced routing is the ONLY case the owned-file fallback answers for;
-        # see the precondition paragraph above for why an enforced one must not read it.
-        if not acp_tool_gate.is_enforced(self.backend) and not getattr(
-            self, "_claude_settings_authored", False
-        ):
+        # An unenforced routing is the ONLY case the governed-surface fallback answers
+        # for; see the precondition paragraph above for why an enforced one must not
+        # read it.
+        if not acp_tool_gate.is_enforced(self.backend) and not self._permission_surface_governed:
             logger.warning(
                 "member session %s: permission surface not Crew-owned -- %s is not mounted",
                 self._session_key,
@@ -6925,7 +6951,9 @@ class AcpClient:
             os.close(fd)
 
     @staticmethod
-    def _claim_pathname_if_ours(path: Path, expectation: tuple[int, str] | None) -> Path | None:
+    def _claim_pathname_if_ours(
+        path: Path, expectation: tuple[int, str] | None
+    ) -> tuple[Path, tuple[int, int]] | None:
         """Atomically move *path* aside into a fresh name; return it IFF it is Crew's.
 
         Closes the window between an ownership check and the delete or overwrite that
@@ -6945,10 +6973,12 @@ class AcpClient:
         pathname over. ``os.replace`` onto our own fresh temp destroys only the empty
         temp we just made.
 
-        ``None`` (nothing for the caller to mutate) when the path is gone, cannot be
-        moved, or holds a file that is not Crew's. A crash between the move and the
-        caller's follow-up leaves at most one such ``.crew-gc`` temp beside the target,
-        which the next session's fresh seed ignores.
+        ``(aside, identity)`` -- the moved file and ``(st_dev, st_ino)`` captured at
+        the move, which every later restore and cleanup pins against. ``None``
+        (nothing for the caller to mutate) when the path is gone, cannot be moved, or
+        holds a file that is not Crew's. A crash between the move and the caller's
+        follow-up leaves at most one such ``.crew-gc`` temp beside the target, which
+        the next session's fresh seed ignores.
         """
         try:
             fd, tmp_name = tempfile.mkstemp(
@@ -6956,6 +6986,7 @@ class AcpClient:
             )
         except OSError:
             return None
+        tmp_st = os.fstat(fd)
         os.close(fd)
         aside = Path(tmp_name)
         try:
@@ -6964,20 +6995,27 @@ class AcpClient:
             # Nothing to capture (path gone, or it cannot be moved): drop the empty
             # temp so a refusal never litters a stray file beside the target.
             with suppress(OSError):
-                aside.unlink()
+                pinned_fs.unlink_verified_by_name(
+                    path.parent, aside.name, (tmp_st.st_dev, tmp_st.st_ino)
+                )
+            return None
+        try:
+            moved = os.lstat(aside)
+            moved_ident = (moved.st_dev, moved.st_ino)
+        except OSError:
+            # The moved entry vanished under us (a racing unlink): nothing left
+            # to validate or restore. The empty temp name is gone with it.
             return None
         if AcpClient._settings_path_holds(aside, expectation):
-            return aside
-        # Not Crew's after all (a replacement raced in, or a symlink O_NOFOLLOW
-        # rejected): restore it exactly as found and touch nothing.
-        try:
-            os.replace(aside, path)
-        except OSError:  # pragma: no cover - defensive; a racing writer took the name
-            logger.warning(
-                "could not restore %s after it proved not to be Crew's; it is at %s",
-                path,
-                aside.name,
-            )
+            return aside, moved_ident
+        # Not Crew's after all: a replacement raced in, or the user's own file --
+        # a different regular file, a symlink the verifying open refuses to
+        # follow, a file of any size. Put the moved entry back AS IT IS, without
+        # clobbering whatever else may have taken the vacated name in the
+        # meantime. No-clobber preserves the NEWER occupant and keeps the moved
+        # entry recoverable beside it, where a replace-semantics restore would
+        # silently destroy the newer one.
+        AcpClient._restore_aside_without_clobber(aside, path, moved_ident)
         return None
 
     def _expected_settings_fingerprint(self) -> tuple[int, str] | None:
@@ -7399,6 +7437,345 @@ class AcpClient:
             return issue, acp_tool_gate.remediation_for(self.backend)
         return "", ""
 
+    @property
+    def _permission_surface_governed(self) -> bool:
+        """Whether Crew controls this session's native permission surface.
+
+        The precondition for delivering the ``mcpServers`` array, in either of
+        its two shapes: this client authored ``settings.local.json`` itself
+        (``_claude_settings_authored``), or the file's CURRENT on-disk bytes
+        passed the sibling-seed validation
+        (``_permission_surface_share_validated``). The durable reader lease is
+        tracked separately in ``_claude_settings_shared`` because it survives a
+        failed re-validation to keep the file pinned for a later re-earn, and the
+        owner's un-revoked durable claim (``_claude_settings_claim_unrevoked``) is
+        deliberately not read here either: it says a hand-back is still owed for
+        a file already observed to be someone else's, never that Crew governs it.
+        ``getattr`` on both governed flags because tests build clients without
+        ``__init__``.
+        """
+        return getattr(self, "_claude_settings_authored", False) or getattr(
+            self, "_permission_surface_share_validated", False
+        )
+
+    def _invalidate_session_mcp_projection(self) -> None:
+        """Drop the MCP array and the spec snapshot that authorized it."""
+        self._session_mcp_cache = None
+        self._session_mcp_snapshot = None
+
+    def _withdraw_shared_reader_lease(self, path: Path, owner: str) -> bool:
+        """Withdraw the durable reader lease before clearing its lease flag."""
+        if not seed_provenance.unshare(path, owner):
+            return False
+        self._claude_settings_shared = False
+        return True
+
+    def _share_settings_seed_if_identical(self, local_settings: Path, payload: str) -> bool:
+        """Take the shared-reader state when the existing seed IS this client's payload.
+
+        The relaxation of the one-live-holder rule for the case where refusing
+        buys nothing: two sessions of the same agent in the same ``work_dir``
+        render byte-identical settings, and before this state existed the
+        second one fell to the leave-it-alone branch and ran with the whole
+        ``mcpServers`` array withheld -- one session per project directory got
+        Crew's tools, every sibling ran toolless. The hazard the live-holder
+        rule guards against (re-seeding with a DIFFERENT
+        ``permissions.defaultMode``, or unlinking the file out from under the
+        owner) only exists when the payloads differ, so byte-equality is the
+        exact boundary of the relaxation. Both halves are required:
+
+        * :func:`seed_provenance.share` -- Crew's durable record names
+          exactly *payload*'s bytes, checked ignoring the live holder. This is
+          the provenance half: the file is Crew's own seed, not a user file
+          that merely looks right.
+        * :meth:`_settings_path_holds` -- the file on disk still holds those
+          bytes. The record alone can describe a file a user has since
+          replaced, and a replacement is theirs whatever it contains.
+
+        A differing payload -- another agent spec, another permission mode,
+        another allowlist -- fails the digest half and is refused exactly as
+        before.
+
+        The state taken is deliberately NOT ownership: no live claim is made,
+        ``_claude_settings_written`` stays ``None`` and
+        ``_claude_settings_authored`` stays ``False``, so this client's
+        teardown neither unlinks a file the owning session is still running
+        against nor pops that owner's live slot. What the sharer DOES take is a
+        live registration in :func:`seed_provenance.share` -- taken BEFORE the
+        byte checks, so the owner's teardown can never validate-race it -- and
+        that registration is what pins the file's future: while any sharer is
+        registered, the owner's teardown leaves the file in place and
+        :func:`seed_provenance.claim` refuses new adoptions, so no Crew session
+        can put different permission bytes at a path this session already
+        delivered its MCP array against. The durable registration is withdrawn
+        off-loop by ``_discard_claude_settings_seed``; ``_reset_state`` then drops
+        only its in-memory half. ``_permission_surface_share_validated`` alone
+        feeds the sharer half of :attr:`_permission_surface_governed`; every
+        validation clears it on entry, and only full success re-earns it for the
+        current bytes rather than the lease lifetime.
+        """
+        self._permission_surface_share_validated = False
+        encoded = payload.encode("utf-8")
+        owner = getattr(self, "_seed_owner", "")
+        # The lease-take and its validation run under the settle lock, so they
+        # are atomic against an owner teardown's move/restore transaction:
+        # either this validation happens before the move (and the registration
+        # it takes pins the teardown's post-move barrier), or after the whole
+        # transaction settled (and the disk check sees its outcome -- the
+        # restored seed, a preserved user replacement, or an empty name --
+        # never the manufactured vacancy in the middle, where a racing
+        # replacement could slip under an already-granted lease).
+        with seed_provenance.SETTLE_LOCK:
+            # Register FIRST, validate second (see seed_provenance.share): either the
+            # owner's teardown sees this registration and keeps the file, or it beat
+            # the registration and the disk check below fails on the unlinked path.
+            if not seed_provenance.share(local_settings, payload, owner):
+                return False
+            if not self._settings_path_holds(
+                local_settings, (len(encoded), hashlib.sha256(encoded).hexdigest())
+            ):
+                # Withdraw only a registration THIS validation created, mirroring
+                # share()'s own rule: a sharer re-validating on a later pass keeps
+                # the lease its original validation earned -- that lease is what
+                # pins the file its already-delivered MCP array runs against.
+                if not getattr(self, "_claude_settings_shared", False):
+                    if not self._withdraw_shared_reader_lease(local_settings, owner):
+                        # The durable withdrawal failed, but this client never
+                        # became a sharer -- its validation failed right here, so
+                        # no delivered MCP array depends on the file. unshare()'s
+                        # retain-on-refusal rule exists for REAL sharers; kept
+                        # here it would pin the owner's seed behind a phantom
+                        # lease for the process lifetime (teardown skips
+                        # withdrawal when the shared flag is off). Drop the
+                        # in-memory half unconditionally; the durable holder
+                        # entry self-heals through process-liveness reclaim.
+                        seed_provenance.unshare_local(local_settings, owner)
+                return False
+            self._claude_settings_shared = True
+            self._permission_surface_share_validated = True
+        logger.info(
+            "%s already holds exactly the settings seed this session would have written "
+            "(a sibling Crew session in this work dir owns it); treating the permission "
+            "surface as governed for this session too, without rewriting the file.",
+            local_settings,
+        )
+        return True
+
+    @staticmethod
+    def _rename_aside_noreplace(aside: Path, path: Path) -> bool:
+        """Move *aside* back to an ABSENT *path* as the entry it is; ``False`` with no primitive.
+
+        A rename moves the directory entry itself, whatever its type -- a regular
+        file, a symlink, a directory -- and reads none of its bytes, so it needs no
+        size cap and no follow check. Windows holds
+        :func:`platform_compat.pin_directory` across ``os.rename``, which refuses a
+        reparse point already at the shared parent and prevents that parent or its
+        ancestors from being swapped while held. POSIX uses
+        :func:`platform_compat.rename_noreplace` with both names relative to their
+        shared parent's descriptor. Raises :class:`FileExistsError` when *path* is
+        occupied, so the caller never replaces a file that arrived while the entry
+        was out. ``False`` means the host or filesystem has no no-clobber rename,
+        the POSIX parent cannot be pinned, or the names do not share a parent. A
+        cross-parent Windows aside therefore fails closed and stays aside.
+        """
+        if platform_compat.IS_WINDOWS:
+            if aside.parent != path.parent:
+                return False
+            pin = platform_compat.pin_directory(path.parent)
+            try:
+                os.rename(aside, path)
+            finally:
+                os.close(pin)
+            return True
+        if not platform_compat.RENAME_NOREPLACE_AVAILABLE or aside.parent != path.parent:
+            return False
+        try:
+            parent_fd = os.open(os.fspath(path.parent), pinned_fs.dir_flags())
+        except OSError:
+            return False
+        try:
+            platform_compat.rename_noreplace(
+                aside.name, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd
+            )
+        except NotImplementedError:
+            return False
+        finally:
+            os.close(parent_fd)
+        return True
+
+    @staticmethod
+    def _restore_aside_without_clobber(aside: Path, path: Path, expect: tuple[int, int]) -> bool:
+        """Put a moved-aside entry back under *path* without replacing a new occupant.
+
+        A same-directory no-clobber rename (:meth:`_rename_aside_noreplace`), so a
+        symlink, a directory or a file of any size the user placed at the settings
+        path is restored exactly as it was captured -- no copy, no size cap, no read
+        of its bytes -- and the aside name is consumed by the move. An occupant that
+        arrived at the pathname while the entry was out is newer, so the rename
+        refuses it and the moved entry stays recoverable beside it as ``.crew-gc``
+        litter. Where no no-clobber rename primitive exists the restore falls back
+        to the validated byte copy :func:`pinned_fs.put_back_no_clobber`, pinned to
+        the moved inode *expect*; that path restores only a regular file.
+        """
+        try:
+            if AcpClient._rename_aside_noreplace(aside, path):
+                return True
+        except FileExistsError:
+            back: str | None = pinned_fs.PUT_BACK_NAME_TAKEN
+        except OSError:
+            logger.warning("could not restore %s; it is at %s", path, aside.name)
+            return False
+        else:
+            back = AcpClient._copy_aside_back_without_clobber(aside, path, expect)
+            if back is None:
+                return True
+        if back == pinned_fs.PUT_BACK_NAME_TAKEN:
+            logger.info(
+                "%s was recreated while Crew's seed was moved aside; leaving the new "
+                "file in place (the moved seed remains at %s).",
+                path,
+                aside.name,
+            )
+            return False
+        logger.warning("could not restore %s; it is at %s", path, aside.name)
+        return False
+
+    @staticmethod
+    def _copy_aside_back_without_clobber(
+        aside: Path, path: Path, expect: tuple[int, int]
+    ) -> str | None:
+        """The validated-copy restore, for a POSIX host without a no-clobber rename.
+
+        Publishes the moved inode's bytes under *path* through
+        :func:`pinned_fs.put_back_no_clobber`, both names pinned to the shared
+        parent's descriptor, and, once the name is back, removes the aside only
+        while it still holds the inode *expect*. Returns the put-back outcome:
+        ``None`` when the name is back. A parent that cannot be opened is
+        :data:`pinned_fs.PUT_BACK_FAILED` outright: the pinned copy is the only
+        restore that verifies what it publishes, so with no descriptor the caller
+        keeps the aside as ``.crew-gc`` litter rather than copying by name.
+        """
+        try:
+            parent_fd = os.open(os.fspath(path.parent), pinned_fs.dir_flags())
+        except OSError:
+            return pinned_fs.PUT_BACK_FAILED
+        try:
+            try:
+                back = pinned_fs.put_back_no_clobber(
+                    parent_fd, parent_fd, aside.name, path.name, expect_ino=expect[1]
+                )
+            except NotImplementedError:
+                back = pinned_fs.PUT_BACK_FAILED
+            if back is None:
+                pinned_fs.unlink_verified(parent_fd, aside.name, expect)
+        finally:
+            os.close(parent_fd)
+        return back
+
+    def _retract_reseed(
+        self,
+        local_settings: Path,
+        payload: str,
+        reseed_aside: "tuple[Path, tuple[int, int]]",
+    ) -> None:
+        """Undo a re-seed whose grant did not become durable.
+
+        Takes back the just-written *payload* file -- and ONLY that file, via the
+        same inode-pinned capture the write path uses, so a replacement that
+        raced into the pathname is detected and preserved -- then puts the
+        moved-aside prior bytes back without clobbering whatever else may hold
+        the name. The prior bytes are the ones the durable record still names
+        (the record for *payload* publishes only once its persist lands), so the
+        path returns to exactly the recognized, repairable state it was in
+        before the write: for a riding sharer, the very bytes it validated.
+        """
+        encoded = payload.encode("utf-8")
+        taken = self._claim_pathname_if_ours(
+            local_settings, (len(encoded), hashlib.sha256(encoded).hexdigest())
+        )
+        if taken is not None:
+            with suppress(OSError):
+                pinned_fs.unlink_verified_by_name(local_settings.parent, taken[0].name, taken[1])
+        self._restore_aside_without_clobber(reseed_aside[0], local_settings, reseed_aside[1])
+
+    def _log_declined_share(self, local_settings: Path) -> None:
+        """Log that an existing settings file was left authoritative."""
+        logger.info(
+            "%s already exists; leaving it as the authoritative project settings. This "
+            "session therefore runs without Crew's availableModels allowlist and without "
+            "the permissions.deny rules from the agent spec.",
+            local_settings,
+        )
+
+    def _render_claude_settings_payload(self) -> str:
+        """The exact ``settings.local.json`` payload this session would write.
+
+        Pure reads, no side effects on the path -- split out of
+        :meth:`_write_claude_local_settings` so the seed path can render the
+        payload BEFORE deciding whether to write it: the shared-reader check
+        compares these bytes against a sibling's live seed, and the write
+        branches then publish the same string. Blocking (reads the agent
+        spec); it runs on the same off-loop path as the writer.
+        """
+        data: dict[str, Any] = {}
+        perms: dict[str, Any] = {}
+        if self._permission_mode:
+            perms["defaultMode"] = self._permission_mode
+        # Same resolution as the wire array: a project-only agent's disabledTools
+        # are a restriction, and resolving only the user level would drop them.
+        deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
+        if deny_rules:
+            perms["deny"] = list(deny_rules)
+        if perms:
+            data["permissions"] = perms
+        # Namespace-keyed (claude_code here), the registry index this backend's ids
+        # live in — see _model_registry_namespace. Provider-ONLY: the ids the
+        # backend actually advertised (cached from a prior session/new), so the seed
+        # reflects what the account is served and a served-but-unregistered model
+        # gets its real window. A cold cache returns nothing rather than falling
+        # back to the static registry, and the else branch below omits both model
+        # keys — the adapter's own provider list is already right, and a stale
+        # allowlist merged over it is not.
+        allowlist = model_registry.seed_available_models(self._model_registry_namespace)
+        if allowlist:
+            data["availableModels"] = allowlist
+            # DEFAULT_MODEL ("auto") is not a provider id, and omitting the key is
+            # what lets the adapter pick the allowlist head. Written only ALONGSIDE
+            # the allowlist: a model key that names no entry in the list it ships
+            # with is the exact shape that resolves to the base window.
+            if self._model and self._model != DEFAULT_MODEL:
+                # Folded onto the advertised spelling HERE rather than trusting a
+                # caller to have folded self._model first. The re-seed runs beside
+                # the model-cache persist, which is BEFORE _apply_startup_model, so
+                # depending on that fold would be an ordering coupling between two
+                # distant steps -- and the failure it buys is silent (a bare id
+                # writes a model key that is not in the allowlist beside it, i.e.
+                # exactly the base-window bug this file exists to close). The
+                # allowlist above is non-empty here, so the cache is warm and the
+                # fold is the same one _apply_startup_model and set_model perform.
+                data["model"] = model_registry.resolve_wire_model_id(
+                    self._model, self._model_registry_namespace
+                )
+        else:
+            # Cold advertised-model cache -- the first session on this install,
+            # before any session/new has been captured. Both model keys are
+            # OMITTED rather than filled from the static registry, and that is the
+            # fix, not a degradation: the adapter merges availableModels
+            # union+dedup across settings sources, so a partial list here replaces
+            # a correct provider-derived one with a stale one, and a model id that
+            # matches nothing in it resolves to the base window. Writing neither
+            # key leaves the adapter on its own provider list, which already
+            # carries the versioned [1m] ids. This session's capture then warms the
+            # cache and the post-capture re-seed fills both keys in.
+            logger.info(
+                "advertised-model cache is cold; the settings payload for %s omits "
+                "availableModels/model so claude-agent-acp resolves the model from its own "
+                "provider list. The re-seed after this session's model capture fills both "
+                "keys in.",
+                self._claude_local_settings_path(),
+            )
+        return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
     def _write_claude_local_settings(self) -> None:
         """Seed ``<work_dir>/.claude/settings.local.json`` for this session.
 
@@ -7480,6 +7857,8 @@ class AcpClient:
                 "session-scoped settings.",
                 local_settings,
             )
+            self._permission_surface_share_validated = False
+            self._invalidate_session_mcp_projection()
             return
         authored = getattr(self, "_claude_settings_authored", False)
         if authored and not local_settings.exists():
@@ -7489,6 +7868,7 @@ class AcpClient:
             authored = False
             self._claude_settings_authored = False
             self._claude_settings_written = None
+            self._invalidate_session_mcp_projection()
         if authored and not self._claude_settings_is_still_ours():
             # Created by Crew, but the bytes are no longer Crew's: a user replaced
             # the file atomically after the create. That file is theirs -- drop the
@@ -7500,10 +7880,44 @@ class AcpClient:
                 "agent spec.",
                 local_settings,
             )
+            # The file is now foreign; drop the projection unconditionally.
+            self._invalidate_session_mcp_projection()
+            # Try the whole-record revoke first (correct when nothing else holds it).
+            if seed_provenance.forget(local_settings, self._seed_owner):
+                self._claude_settings_authored = False
+                self._claude_settings_written = None
+                return
+            # forget fails closed while a live sibling sharer holds the record
+            # (require_unheld). Hand back only THIS owner's claim: release drops the
+            # owner holder and its in-memory _LIVE slot even while the sharer lease
+            # remains, so the owner claim is not leaked for the process lifetime --
+            # which would wedge every later session on this work_dir
+            # (held_by_another / claim refuse it) and, once the pathname is vacant,
+            # run each with mcpServers withheld.
+            if seed_provenance.release(local_settings, self._seed_owner):
+                self._claude_settings_authored = False
+                self._claude_settings_written = None
+                return
+            # Neither hand-back reached the sidecar. The file is the user's by
+            # OBSERVATION, so authorship -- the half _permission_surface_governed
+            # reads -- drops here regardless: retaining it delivered the mcpServers
+            # array under a permission file whose permissions.allow never reaches
+            # session/request_permission. What is still owed is the durable owner
+            # holder, and that rides its own flag for teardown to retry.
+            logger.warning(
+                "could not durably hand back Crew's claim on %s; dropping Crew's authorship "
+                "of the replaced file now and retrying the hand-back at teardown",
+                local_settings,
+            )
             self._claude_settings_authored = False
             self._claude_settings_written = None
-            seed_provenance.forget(local_settings, self._seed_owner)
+            self._claude_settings_claim_unrevoked = True
             return
+        # Rendered BEFORE the ownership decision below, because the decision now
+        # depends on it: a sibling's live seed that holds exactly these bytes is
+        # shareable, and only the payload says whether the bytes match. Pure
+        # reads, so rendering ahead of a branch that may not write costs nothing.
+        payload = self._render_claude_settings_payload()
         # Set only when the live slot was taken from an ORPHAN below, so the write
         # failure handler knows whether it owes a release().
         adopted = False
@@ -7513,9 +7927,15 @@ class AcpClient:
             # same orphan as adoptable. Only the one that wins the live slot rewrites
             # it; the loser falls to the leave-it-alone branch below rather than
             # writing its own permission mode over a session that is already using
-            # the file.
-            if self._claude_settings_is_still_ours() and seed_provenance.claim(
-                local_settings, self._seed_owner
+            # the file. The SAME fingerprint feeds the byte check and the claim, so
+            # the digest the claim revalidates against the durable entry is the one
+            # this client actually verified on disk -- not a second read that could
+            # disagree with the first.
+            adoption_fingerprint = self._expected_settings_fingerprint()
+            if self._settings_path_holds(
+                local_settings, adoption_fingerprint
+            ) and seed_provenance.claim(
+                local_settings, self._seed_owner, expect_digest=adoption_fingerprint
             ):
                 # Crew's OWN seed, orphaned: a previous session (or an older Crew)
                 # wrote exactly these bytes and never got to clean up -- a kill -9,
@@ -7550,74 +7970,19 @@ class AcpClient:
                 # Someone else's file: either the user's own project settings, or a
                 # live sibling session's seed (``work_dir`` is caller-supplied and
                 # every keyless client shares one default) -- including a sibling that
-                # won the same orphan a moment ago. Crew authors none of those, so it
-                # touches none of them.
-                logger.info(
-                    "%s already exists; leaving it as the authoritative project settings. This "
-                    "session therefore runs without Crew's availableModels allowlist and without "
-                    "the permissions.deny rules from the agent spec.",
-                    local_settings,
-                )
+                # won the same orphan a moment ago. When that sibling's seed is
+                # byte-identical to what this session would have written, the surface
+                # already governs this session and is shared rather than refused --
+                # without a write, a claim, or any right to remove it later.
+                shared = self._share_settings_seed_if_identical(local_settings, payload)
+                self._invalidate_session_mcp_projection()
+                if shared:
+                    return
+                # Crew authors none of the rest, so it touches none of them and
+                # reports that this session runs without Crew's seeded settings.
+                self._log_declined_share(local_settings)
                 return
 
-        data: dict[str, Any] = {}
-        perms: dict[str, Any] = {}
-        if self._permission_mode:
-            perms["defaultMode"] = self._permission_mode
-        # Same resolution as the wire array: a project-only agent's disabledTools
-        # are a restriction, and resolving only the user level would drop them.
-        deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
-        if deny_rules:
-            perms["deny"] = list(deny_rules)
-        if perms:
-            data["permissions"] = perms
-        # Namespace-keyed (claude_code here), the registry index this backend's ids
-        # live in — see _model_registry_namespace. Provider-ONLY: the ids the
-        # backend actually advertised (cached from a prior session/new), so the seed
-        # reflects what the account is served and a served-but-unregistered model
-        # gets its real window. A cold cache returns nothing rather than falling
-        # back to the static registry, and the else branch below omits both model
-        # keys — the adapter's own provider list is already right, and a stale
-        # allowlist merged over it is not.
-        allowlist = model_registry.seed_available_models(self._model_registry_namespace)
-        if allowlist:
-            data["availableModels"] = allowlist
-            # DEFAULT_MODEL ("auto") is not a provider id, and omitting the key is
-            # what lets the adapter pick the allowlist head. Written only ALONGSIDE
-            # the allowlist: a model key that names no entry in the list it ships
-            # with is the exact shape that resolves to the base window.
-            if self._model and self._model != DEFAULT_MODEL:
-                # Folded onto the advertised spelling HERE rather than trusting a
-                # caller to have folded self._model first. The re-seed runs beside
-                # the model-cache persist, which is BEFORE _apply_startup_model, so
-                # depending on that fold would be an ordering coupling between two
-                # distant steps -- and the failure it buys is silent (a bare id
-                # writes a model key that is not in the allowlist beside it, i.e.
-                # exactly the base-window bug this file exists to close). The
-                # allowlist above is non-empty here, so the cache is warm and the
-                # fold is the same one _apply_startup_model and set_model perform.
-                data["model"] = model_registry.resolve_wire_model_id(
-                    self._model, self._model_registry_namespace
-                )
-        else:
-            # Cold advertised-model cache -- the first session on this install,
-            # before any session/new has been captured. Both model keys are
-            # OMITTED rather than filled from the static registry, and that is the
-            # fix, not a degradation: the adapter merges availableModels
-            # union+dedup across settings sources, so a partial list here replaces
-            # a correct provider-derived one with a stale one, and a model id that
-            # matches nothing in it resolves to the base window. Writing neither
-            # key leaves the adapter on its own provider list, which already
-            # carries the versioned [1m] ids. This session's capture then warms the
-            # cache and the post-capture re-seed fills both keys in.
-            logger.info(
-                "advertised-model cache is cold; seeding %s without availableModels/model so "
-                "claude-agent-acp resolves the model from its own provider list. The re-seed "
-                "after this session's model capture fills both keys in.",
-                local_settings,
-            )
-
-        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
         # An adoption already holds the path's live slot, because ``claim`` above
         # has to be the race arbiter -- it cannot be deferred until after a
         # successful write without letting two clients both decide the same orphan
@@ -7631,7 +7996,7 @@ class AcpClient:
         # alone (``release``, not ``forget``): it is what keeps the path adoptable.
         # The re-seed moves Crew's current file aside before overwriting, so this
         # holds it for the ``except`` to restore if the write does not land.
-        reseed_aside: Path | None = None
+        reseed_aside: tuple[Path, tuple[int, int]] | None = None
         try:
             local_settings.parent.mkdir(parents=True, exist_ok=True)
             # BYTES on both branches, never text mode: Python's text layer rewrites
@@ -7641,6 +8006,26 @@ class AcpClient:
             # session read as "not ours" -- the re-seed declined, reset never removed
             # its own file, and the MCP array was withheld. 0o600 either way.
             if authored:
+                # The prior payload this session wrote (None on the adoption
+                # path). Both sharer barriers below compare the whole payload
+                # against it, so it is read once, up front.
+                written = getattr(self, "_claude_settings_written", None)
+                # A live sharer was delivered its MCP array under this file's
+                # exact bytes. Any digest-changing re-seed is declined while a
+                # sharer holds the file: ``seed_provenance._persist`` refuses it
+                # anyway (it holds only the digest, so it cannot tell a model-key
+                # refresh from a permissions change), so decline before the write
+                # rather than write-then-retract. Model keys and spec edits are
+                # picked up once no sibling is reading the file.
+                if seed_provenance.has_sharers(local_settings):
+                    if written is not None and written != payload:
+                        logger.info(
+                            "%s is shared by a live sibling session; keeping the file the "
+                            "sharer validated rather than re-seeding it. Model keys and any "
+                            "spec change are picked up once no sibling is reading this file.",
+                            local_settings,
+                        )
+                        return
                 # The re-seed of a file Crew owns, STAGED AND RENAMED rather than
                 # truncated in place. O_TRUNC destroyed the recorded bytes before the
                 # new ones landed, so a write that failed part-way (ENOSPC, EIO, a
@@ -7677,20 +8062,105 @@ class AcpClient:
                     # a file Crew already owned but that is now the user's -> forget the
                     # durable record too, exactly as the replaced-after-create branch does.
                     if adopted:
-                        seed_provenance.release(local_settings, self._seed_owner)
+                        if not seed_provenance.release(local_settings, self._seed_owner):
+                            logger.warning(
+                                "could not durably release Crew's adopted claim on %s; "
+                                "retaining it until a later retry or process exit",
+                                local_settings,
+                            )
                     else:
-                        seed_provenance.forget(local_settings, self._seed_owner)
+                        if not seed_provenance.forget(local_settings, self._seed_owner):
+                            # Same exit as the replaced-after-create branch: the file is
+                            # observably the user's, so authorship drops now and only
+                            # the un-revoked durable holder is carried for teardown.
+                            logger.warning(
+                                "could not durably forget Crew's settings seed at %s; dropping "
+                                "Crew's authorship of the replaced file now and retrying the "
+                                "hand-back at teardown",
+                                local_settings,
+                            )
+                            self._claude_settings_claim_unrevoked = True
                     self._claude_settings_authored = False
                     self._claude_settings_written = None
+                    self._invalidate_session_mcp_projection()
                     return
                 atomic_write(local_settings, payload.encode("utf-8"), mode=0o600)
-                # New payload is published; drop the moved old seed. Best-effort: a
-                # leftover ``.crew-gc`` is litter the next fresh seed ignores, not a
-                # reason to fail a write that already landed.
-                with suppress(OSError):
-                    reseed_aside.unlink(missing_ok=True)
-                reseed_aside = None
+                # Re-checked AFTER the write, because registration races it: a
+                # sharer arriving between the pre-write probes and the
+                # atomic_write validated the OLD bytes. An ADOPTION stands down
+                # for any sharer (claim() refused adoption while sharers
+                # existed, so whoever is here arrived inside the window). An
+                # owner's re-seed stands down for ANY digest change (model keys
+                # or permissions): ``_persist`` refuses it under a live sharer,
+                # so a rider re-seed cannot land -- restore the bytes the sharer
+                # validated. Sound against a sharer arriving AFTER the write too:
+                # the new bytes do not match the still-prior record, so share()
+                # declines until record() publishes -- there is no third
+                # interleaving.
+                if seed_provenance.has_sharers(local_settings) and (
+                    adopted or written is None or written != payload
+                ):
+                    self._retract_reseed(local_settings, payload, reseed_aside)
+                    reseed_aside = None
+                    if adopted:
+                        logger.info(
+                            "%s gained a live sharer while this session was adopting it; "
+                            "restoring the seed it validated and standing down. This session "
+                            "runs without Crew's availableModels allowlist and without the "
+                            "permissions.deny rules from the agent spec.",
+                            local_settings,
+                        )
+                        if not seed_provenance.release(local_settings, self._seed_owner):
+                            logger.warning(
+                                "could not durably release Crew's adopted claim on %s; "
+                                "retaining it until a later retry or process exit",
+                                local_settings,
+                            )
+                    else:
+                        # The owner keeps its live slot and its prior written
+                        # payload: the restored file is still its own seed.
+                        logger.info(
+                            "%s gained a live sharer while a re-seed was in flight; "
+                            "restoring the bytes that sharer validated. Model keys and any "
+                            "spec change are picked up once no sibling is reading this file.",
+                            local_settings,
+                        )
+                    return
+                # The moved old seed is deliberately KEPT until the durable record
+                # for the new bytes lands below: a failing sidecar persist then has
+                # the still-recorded prior bytes to put back, instead of leaving an
+                # unrecorded file nothing on the host can repair.
             else:
+                # Authorship of a vacant pathname is serialized against BOTH
+                # live registries. A LIVE OWNER first: a sibling recreating a
+                # vanished seed would have record() displace that owner's
+                # slot, and the sibling's teardown would then remove a file
+                # the owner still governs.
+                if seed_provenance.held_by_another(local_settings, self._seed_owner):
+                    logger.info(
+                        "%s is held by a live sibling session; declining to recreate "
+                        "the seed under its claim.",
+                        local_settings,
+                    )
+                    self._permission_surface_share_validated = False
+                    self._invalidate_session_mcp_projection()
+                    return
+                # Then the sharer registry: a registered reader validated the
+                # RECORDED bytes,
+                # so a session whose payload differs may not take the vacant
+                # pathname -- it would put its own permission mode under a
+                # sibling's governed surface. Byte-identical re-creation stays
+                # allowed: that is a sharer repairing its own vanished seed.
+                if seed_provenance.has_sharers(local_settings):
+                    rec = seed_provenance.recorded_durable(local_settings)
+                    if rec is None or rec != (
+                        len(payload.encode("utf-8")),
+                        hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+                    ):
+                        self._log_declined_share(local_settings)
+                        self._permission_surface_share_validated = False
+                        self._invalidate_session_mcp_projection()
+                        return
                 # O_EXCL on the create is the whole ownership claim: if a sibling
                 # session (or the user) created the file between the check above and
                 # here, this raises rather than clobbering it. That is why the create
@@ -7701,27 +8171,57 @@ class AcpClient:
                 try:
                     fd = os.open(local_settings, flags, 0o600)
                 except FileExistsError:
-                    logger.info("%s was created concurrently; leaving it alone", local_settings)
+                    # A sibling won the create race. When its just-written seed is
+                    # already recorded and byte-identical to this payload, share it
+                    # exactly as the pre-existing-file branch above does. The poll
+                    # exists ONLY for the winner's persist still being in flight
+                    # (one local sidecar write, ordinarily milliseconds). It ends
+                    # early only once a durable record naming THIS payload's bytes
+                    # exists: that is the winner's record for a byte-identical
+                    # seed, so a share attempted AFTER seeing it either lands or
+                    # can never converge (the disk differs from the record). A
+                    # record with any OTHER digest ends nothing -- it may be a
+                    # stale entry a killed session left for a file since gone,
+                    # published before the winner's matching one -- so the poll
+                    # waits for the deadline, which bounds everything else. The
+                    # record is read BEFORE each share, never after a failed one:
+                    # a matching record landing between the two would otherwise
+                    # end the poll on a share that never saw it.
+                    want = (len(payload.encode("utf-8")), seed_provenance.digest(payload))
+                    deadline = time.monotonic() + 2.0
+                    while True:
+                        settled = seed_provenance.recorded_durable(local_settings) == want
+                        if self._share_settings_seed_if_identical(local_settings, payload):
+                            self._invalidate_session_mcp_projection()
+                            return
+                        if settled or time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.05)
+                    self._invalidate_session_mcp_projection()
+                    self._log_declined_share(local_settings)
                     return
                 with os.fdopen(fd, "wb") as handle:
                     handle.write(payload.encode("utf-8"))
         except BaseException:
             if reseed_aside is not None:
-                # The overwrite did not land after Crew's file was moved aside, so the
-                # pathname is empty and the recorded bytes are at ``reseed_aside``.
-                # Put them back so the path stays the adoptable orphan it was before.
+                # The re-seed did not complete: whatever the pathname holds, take
+                # back only a file whose bytes are this write's own, and put the
+                # still-recorded prior bytes back without clobbering anything
+                # else. The path stays the adoptable seed it was before.
                 with suppress(OSError):
-                    if local_settings.exists():
-                        reseed_aside.unlink(missing_ok=True)
-                    else:
-                        os.replace(reseed_aside, local_settings)
+                    self._retract_reseed(local_settings, payload, reseed_aside)
             if adopted:
                 logger.info(
                     "re-seed of the orphaned settings seed at %s did not land; releasing the "
                     "claim so a later session can still adopt and repair it",
                     local_settings,
                 )
-                seed_provenance.release(local_settings, self._seed_owner)
+                if not seed_provenance.release(local_settings, self._seed_owner):
+                    logger.warning(
+                        "could not durably release Crew's adopted claim on %s; retaining it "
+                        "until a later retry or process exit",
+                        local_settings,
+                    )
             raise
         # Durable half of the same claim, so the NEXT process can still recognize
         # this file as Crew's after a kill that skips the reset path.
@@ -7736,33 +8236,116 @@ class AcpClient:
         # is the same thing a cold advertised-model cache already does.
         if not seed_provenance.record(local_settings, payload, self._seed_owner):
             logger.warning(
-                "could not durably record Crew's claim on %s; removing the seed just written "
-                "rather than leaving a permission mode no later session is allowed to clean "
-                "up. This session runs without Crew's availableModels allowlist and without "
-                "the permissions.deny rules from the agent spec.",
+                "could not durably record Crew's claim on %s; withdrawing the seed just "
+                "written rather than leaving a permission mode no later session is allowed "
+                "to clean up. This session runs without Crew's availableModels allowlist "
+                "and without the permissions.deny rules from the agent spec.",
                 local_settings,
             )
-            # Safe to remove precisely because we are inside the branch that proved
-            # ownership a moment ago: either O_EXCL created the file, or its bytes
-            # matched Crew's record and this client holds the live claim.
+            if reseed_aside is not None:
+                # A re-seed: the prior bytes are still the ones the durable record
+                # names (the record for the NEW bytes publishes only once its
+                # persist lands), so putting them back returns the path to exactly
+                # the recognized, repairable state it was in before this write --
+                # and, for a sharer riding the owner's re-seeds, the very bytes it
+                # validated. No sharer can exist for the NEW bytes: a record that
+                # never became durable is invisible to share().
+                self._retract_reseed(local_settings, payload, reseed_aside)
+                reseed_aside = None
+                if adopted:
+                    # Back to the adoptable orphan it was; hand the slot back.
+                    if not seed_provenance.release(local_settings, self._seed_owner):
+                        logger.warning(
+                            "could not durably release Crew's adopted claim on %s; "
+                            "retaining it until a later retry or process exit",
+                            local_settings,
+                        )
+                # An owner (adopted=False) keeps its live slot and its prior
+                # written payload: the restored file is still its own seed.
+                return
+            # O_EXCL create: settle atomically against a sibling's share validation.
+            # A sharer that validated this exact payload keeps the pathname and
+            # durable record; otherwise take back only the inode that still holds
+            # this session's payload. A foreign replacement stays in place.
+            with seed_provenance.SETTLE_LOCK:
+                if seed_provenance.has_sharers(local_settings):
+                    logger.warning(
+                        "could not durably record Crew's claim on %s; a live sibling "
+                        "validated these bytes, so leaving the seed in place for it "
+                        "rather than unlinking a permission file its tools were "
+                        "delivered against",
+                        local_settings,
+                    )
+                    if not seed_provenance.release(local_settings, self._seed_owner):
+                        logger.warning(
+                            "could not durably release Crew's failed seed claim on %s; "
+                            "retaining it until a later retry or process exit",
+                            local_settings,
+                        )
+                    self._permission_surface_share_validated = False
+                    self._invalidate_session_mcp_projection()
+                    return
+                encoded = payload.encode("utf-8")
+                taken = self._claim_pathname_if_ours(
+                    local_settings, (len(encoded), hashlib.sha256(encoded).hexdigest())
+                )
+                if taken is not None:
+                    with suppress(OSError):
+                        pinned_fs.unlink_verified_by_name(
+                            local_settings.parent, taken[0].name, taken[1]
+                        )
+                if not seed_provenance.forget(local_settings, self._seed_owner):
+                    # The sidecar is unwritable, which is why we are here at all. It
+                    # still names the PREVIOUS digest, and the file it described is now
+                    # gone, so ``_persist``'s prune drops the entry on the next
+                    # successful write and nothing matches it in the meantime. Hand the
+                    # live slot back so a replacement client in this process is not
+                    # wedged behind a claim nobody is using.
+                    if not seed_provenance.release(local_settings, self._seed_owner):
+                        logger.warning(
+                            "could not durably release Crew's failed seed claim on %s; "
+                            "retaining it until a later retry or process exit",
+                            local_settings,
+                        )
+                # Nothing Crew governs is at the pathname now (the seed was taken back,
+                # or a foreign file this session never validated stands there), so the
+                # sharer half of the governance flag must not carry in from entry: a
+                # validated sharer re-creating its vanished seed arrives here with it
+                # still set. Same pair as the two vacant-pathname declines above -- the
+                # flag, and the projection cached under it, because the cache serves
+                # without re-reading the flag. The reader lease itself is retained, as
+                # at those declines: it does not feed governance, and teardown
+                # withdraws it only while the lease flag is set.
+                self._permission_surface_share_validated = False
+                self._invalidate_session_mcp_projection()
+                return
+        if reseed_aside is not None:
+            # The grant for the new bytes is durable; the moved old seed is done.
+            # Best-effort: a leftover ``.crew-gc`` is litter the next fresh seed
+            # ignores, not a reason to fail a write that already landed.
             with suppress(OSError):
-                local_settings.unlink(missing_ok=True)
-            if not seed_provenance.forget(local_settings, self._seed_owner):
-                # The sidecar is unwritable, which is why we are here at all. It
-                # still names the PREVIOUS digest, and the file it described is now
-                # gone, so ``_persist``'s prune drops the entry on the next
-                # successful write and nothing matches it in the meantime. Hand the
-                # live slot back so a replacement client in this process is not
-                # wedged behind a claim nobody is using.
-                seed_provenance.release(local_settings, self._seed_owner)
-            return
+                pinned_fs.unlink_verified_by_name(
+                    local_settings.parent, reseed_aside[0].name, reseed_aside[1]
+                )
+            reseed_aside = None
         # Only a file Crew created AND still owns is ever overwritten or removed.
         # Set AFTER the write and after the durable record, so a failure in either
         # propagates with the claim exactly as it was: an adoption leaves no instance
         # flag for reset to act on, and a re-seed of Crew's own file leaves the
         # record describing the bytes that are still on disk.
+        # A client that arrived as a SHARED READER becomes the AUTHOR here.
+        # ``record`` atomically removed its reader lease in the same durable
+        # transaction, so the mirrored flag moves only after that call succeeds.
+        if getattr(self, "_claude_settings_shared", False):
+            self._claude_settings_shared = False
+        self._permission_surface_share_validated = False
         self._claude_settings_authored = True
         self._claude_settings_written = payload
+        # The durable owner holder ``record`` just published IS this client's claim
+        # again, so nothing is left un-revoked from an earlier foreign replace:
+        # teardown's ordinary settle transaction hands it back from here.
+        self._claude_settings_claim_unrevoked = False
+        self._invalidate_session_mcp_projection()
 
     @property
     def is_ready(self) -> bool:
@@ -9820,6 +10403,12 @@ class AcpClient:
                 _track_pid,
                 _track_session_pid,
             )
+            from kiro_crew.session_pid import _pid_start_token
+
+            # Read BEFORE the appends: the identity of the process that holds the
+            # number NOW, kept for the identity-bound retirement in _reset_state
+            # and handed to the tracker so it records this same token.
+            self._spawn_start_token = _pid_start_token(self._pid)
 
             # The PID-file trackers each take an exclusive file lock and do a
             # read-modify-append under it — blocking syscalls that must not run
@@ -9830,7 +10419,9 @@ class AcpClient:
             _loop = asyncio.get_running_loop()
             await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
             # Separate file for startup cleanup.
-            await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
+            await _loop.run_in_executor(
+                subprocess_executor(), _track_session_pid, self._pid, self._spawn_start_token
+            )
             await asyncio.sleep(0.3)
             early_descendants = await _loop.run_in_executor(
                 subprocess_executor(), _get_child_pids, self._pid
@@ -10066,7 +10657,7 @@ class AcpClient:
         Async, because the disk half is blocking and this is teardown on the event
         loop: the ownership hash, the durable revoke and the unlink all block, and a
         heartbeat must not queue behind them. ``_reset_state`` keeps only the
-        in-memory ``release``.
+        in-memory ``release_local`` half.
 
         **The whole disk half is ONE shielded thread, not a sequence of awaited
         steps, and that is the cancellation contract.** Teardown runs on paths that
@@ -10082,14 +10673,40 @@ class AcpClient:
         ``finally`` for the mirror-image reason: the in-memory reset must happen
         even when the await is cancelled.
         """
-        if not getattr(self, "_claude_settings_authored", False):
+        authored = getattr(self, "_claude_settings_authored", False)
+        shared = getattr(self, "_claude_settings_shared", False)
+        claim_unrevoked = getattr(self, "_claude_settings_claim_unrevoked", False)
+        if not authored and not shared and not claim_unrevoked:
+            return
+        path = self._claude_local_settings_path()
+        owner = getattr(self, "_seed_owner", "")
+        if claim_unrevoked and not authored:
+            # A user replaced Crew's seed and the in-session hand-back could not
+            # reach the sidecar. The file at the path is THEIRS, so none of the
+            # move/unlink transaction below applies -- only the durable owner
+            # holder is still Crew's to withdraw. Same refused-withdrawal
+            # contract as the reader lease: a refusal here leaves the flag set,
+            # and the caller's ``_reset_state`` drops the in-memory live slot.
+            hand_back = asyncio.ensure_future(
+                asyncio.to_thread(self._hand_back_unrevoked_claim, path, owner)
+            )
+            await asyncio.shield(hand_back)
+            if not shared:
+                return
+        if shared and not authored:
+            # A refused durable withdrawal deliberately leaves the instance flag
+            # set. The caller's ``_reset_state`` then drops only the in-memory
+            # half; the persisted pid+start-id lease is stale and reclaimable
+            # once this process exits, matching the recorded-orphan residual.
+            release = asyncio.ensure_future(
+                asyncio.to_thread(self._withdraw_shared_reader_lease, path, owner)
+            )
+            await asyncio.shield(release)
             return
         # Captured HERE, on the loop, so the transaction is a pure function of its
         # arguments: the ``finally`` below may clear these flags while the thread is
         # still running, and a transaction that re-read them could decide ownership
         # against state that changed underneath it.
-        path = self._claude_local_settings_path()
-        owner = getattr(self, "_seed_owner", "")
         payload = getattr(self, "_claude_settings_written", None)
         expectation = self._expected_settings_fingerprint()
         # A task rather than a bare coroutine: ``shield`` protects a future that
@@ -10106,6 +10723,30 @@ class AcpClient:
         finally:
             self._claude_settings_authored = False
             self._claude_settings_written = None
+
+    def _hand_back_unrevoked_claim(self, path: Path, owner: str) -> None:
+        """Retry the durable hand-back of an owner holder on a file that is not Crew's.
+
+        The disk half of ``_claude_settings_claim_unrevoked``: the same two steps
+        the foreign-replace branch took in-session, in the same order. ``forget``
+        drops the whole record and fails closed while a live sibling sharer still
+        validates against it; ``release`` then drops only this owner's holder and
+        leaves the record and the sharer's lease standing. Never touches the
+        pathname -- the file there is the user's. Never raises, for the reason the
+        settle transaction never raises: the caller shields it. Blocking; runs off
+        the loop.
+        """
+        try:
+            if seed_provenance.forget(path, owner) or seed_provenance.release(path, owner):
+                self._claude_settings_claim_unrevoked = False
+                return
+            logger.warning(
+                "could not durably hand back Crew's claim on %s; retaining it until process "
+                "exit, after which the persisted holder is stale and reclaimable",
+                path,
+            )
+        except Exception:  # pragma: no cover - defensive; teardown must not raise
+            logger.debug("could not hand back Crew's claim on %s", path, exc_info=True)
 
     def _settle_claude_settings_seed(
         self,
@@ -10133,15 +10774,98 @@ class AcpClient:
         Never raises, because the caller shields it: an exception here would reach
         nobody but the "never retrieved" logger, and a half-settled transaction that
         also lost its error is worse than one that logged and left the file owned.
+
+        The whole transaction runs under ``seed_provenance.SETTLE_LOCK``, the
+        same lock a sharer's validate-then-take-lease sequence holds: without
+        it, this transaction's own move-aside manufactures a vacancy at the
+        pathname, and a user replacement racing into that vacancy is
+        (correctly) preserved by the no-clobber restore -- leaving a sharer
+        that validated the ORIGINAL bytes governed against a file it never
+        verified. Under the lock a sharer validates either before the move
+        (its registration then pins the post-move barrier below) or after the
+        transaction settles, never inside the window.
         """
+        with seed_provenance.SETTLE_LOCK:
+            self._settle_claude_settings_seed_locked(path, owner, payload, expectation)
+
+    def _settle_claude_settings_seed_locked(
+        self,
+        path: Path,
+        owner: str,
+        payload: str | None,
+        expectation: tuple[int, str] | None,
+    ) -> None:
         try:
-            aside = self._claim_pathname_if_ours(path, expectation)
-            if aside is None:
+            if seed_provenance.has_sharers(path):
+                # A live SHARER session in this process delivered its MCP array
+                # against exactly the bytes at this path, and it can neither see
+                # nor stop whatever would occupy the pathname next. Unlinking here
+                # would free the name for a different permission file -- another
+                # session's mode, up to bypassPermissions -- under tools already
+                # delivered. So the file and its durable record both stay: that is
+                # precisely the recorded-orphan shape a kill -9 leaves, which the
+                # next session adopts and repairs once the sharers are gone (claim
+                # refuses adoption while any remain). Only this owner's live slot
+                # is handed back.
+                logger.info(
+                    "%s is still shared by a live sibling session; leaving the seed in "
+                    "place for it rather than deleting a permission file its tools were "
+                    "delivered against. The next session adopts and cleans it up once "
+                    "the sharers are gone.",
+                    path,
+                )
+                if not seed_provenance.release(path, owner):
+                    logger.warning(
+                        "could not durably release Crew's claim on %s; retaining the claim "
+                        "with the seed until a later retry or process exit",
+                        path,
+                    )
+                return
+            claimed = self._claim_pathname_if_ours(path, expectation)
+            if claimed is None:
                 logger.info(
                     "%s no longer holds the bytes Crew wrote; leaving the replacement in "
                     "place instead of deleting a file Crew does not own.",
                     path,
                 )
+                # Nothing at the pathname is Crew's to move, revoke or delete, but
+                # the durable owner holder ``record`` published still carries this
+                # live process's identity. Handed back here, as the sibling arms do:
+                # left standing, no prune reclaims it while this process lives, and
+                # every later session on this work_dir reads the pathname as held
+                # by a live sibling. ``release`` drops only this owner's holder --
+                # never the record, the file, or a sharer's lease.
+                if not seed_provenance.release(path, owner):
+                    logger.warning(
+                        "could not durably release Crew's claim on %s; retaining the claim "
+                        "until a later retry or process exit",
+                        path,
+                    )
+                return
+            aside, aside_ident = claimed
+            # Re-checked AFTER the move-aside, not only at the top: the probe above
+            # and the move are not one atomic step, and a sharer registers BEFORE it
+            # validates -- so a sharer whose disk check passed read the file before
+            # the move, and its registration is necessarily visible here. Without
+            # this barrier the interleaving "probe sees none -> sharer registers and
+            # validates -> move/forget/unlink proceed" frees the pathname under a
+            # governed reader. Restore the moved inode and stand down instead.
+            if seed_provenance.has_sharers(path):
+                logger.info(
+                    "%s gained a live sharer while its teardown was starting; restoring "
+                    "the seed and leaving it in place for that session.",
+                    path,
+                )
+                # No-clobber, because the pathname has been free since the
+                # move-aside: a settings file the user recreated in that window is
+                # theirs, and a replace-semantics restore would silently destroy it.
+                self._restore_aside_without_clobber(aside, path, aside_ident)
+                if not seed_provenance.release(path, owner):
+                    logger.warning(
+                        "could not durably release Crew's claim on %s; retaining the claim "
+                        "with the restored seed until a later retry or process exit",
+                        path,
+                    )
                 return
             # The file is now the moved inode ``aside`` and the pathname is free, so a
             # user replacement racing in lands at a fresh ``path`` this never touches.
@@ -10155,14 +10879,24 @@ class AcpClient:
                     "behind a revocation that never reached the disk",
                     path,
                 )
-                try:
-                    os.replace(aside, path)
-                except OSError:  # pragma: no cover - defensive; a racing writer took the name
-                    logger.warning("could not restore %s; it is at %s", path, aside.name)
-                seed_provenance.release(path, owner)
+                self._restore_aside_without_clobber(aside, path, aside_ident)
+                if not seed_provenance.release(path, owner):
+                    logger.warning(
+                        "could not durably release Crew's claim on %s; retaining the claim "
+                        "with the restored seed until a later retry or process exit",
+                        path,
+                    )
                 return
             try:
-                aside.unlink(missing_ok=True)
+                unlink_errors: list[OSError] = []
+                pinned_fs.unlink_verified_by_name(
+                    path.parent,
+                    aside.name,
+                    aside_ident,
+                    on_error=unlink_errors.append,
+                )
+                if unlink_errors:
+                    raise unlink_errors[0]
             except OSError:
                 # Revoke landed but the moved inode will not delete. Put it back under
                 # the pathname and re-record, so the path is a repairable orphan rather
@@ -10174,15 +10908,20 @@ class AcpClient:
                     exc_info=True,
                 )
                 if payload is not None:
-                    restored = True
-                    try:
-                        os.replace(aside, path)
-                    except OSError:  # pragma: no cover - defensive
-                        restored = False
-                        logger.warning("could not restore %s; it is at %s", path, aside.name)
-                    if restored:
-                        seed_provenance.record(path, payload, owner)
-                        seed_provenance.release(path, owner)
+                    if self._restore_aside_without_clobber(aside, path, aside_ident):
+                        if seed_provenance.record(path, payload, owner):
+                            if not seed_provenance.release(path, owner):
+                                logger.warning(
+                                    "could not durably release Crew's re-recorded claim on "
+                                    "%s; retaining it until a later retry or process exit",
+                                    path,
+                                )
+                        else:
+                            logger.warning(
+                                "could not durably re-record Crew's restored seed at %s; "
+                                "leaving the recoverable bytes in place",
+                                path,
+                            )
         except Exception:  # pragma: no cover - defensive; teardown must not raise
             logger.debug("could not settle Crew's settings seed at %s", path, exc_info=True)
 
@@ -10214,23 +10953,46 @@ class AcpClient:
         # the durable revoke and the unlink are all blocking, and this method is
         # synchronous and runs on the event loop. That pairing also means this may
         # run because the discard's await was CANCELLED: the flags below are already
-        # cleared by then, so this branch is skipped and the shielded transaction
-        # still finishes the disk half. getattr: _reset_state runs on clients built
-        # without __init__ in tests.
+        # cleared by then, and the shielded transaction still finishes the disk
+        # half. getattr: _reset_state runs on clients built without __init__ in
+        # tests, and such a client has no work_dir to derive the seed's path from.
+        owner = getattr(self, "_seed_owner", "")
         if getattr(self, "_claude_settings_authored", False):
-            # The seed itself is removed by ``_discard_claude_settings_seed``, which
-            # is awaited off the loop by every caller that reaches here. All this
-            # sync path does is hand back the LIVE claim, which is in-memory only
-            # and takes no lock -- so a client that is discarded without the async
-            # step (a test, or a future caller that forgets it) still cannot wedge
-            # the path behind a claim nobody is using: a replacement client in this
-            # process reads the seed as an adoptable orphan and repairs it. The
-            # durable record deliberately survives, because the file does.
-            seed_provenance.release(
-                self._claude_local_settings_path(), getattr(self, "_seed_owner", "")
-            )
             self._claude_settings_authored = False
             self._claude_settings_written = None
+        self._claude_settings_claim_unrevoked = False
+        if getattr(self, "_work_dir", None) is not None:
+            path = self._claude_local_settings_path()
+            # The seed itself and its durable holder are removed by
+            # ``_discard_claude_settings_seed``, which every production caller
+            # awaits off the loop before reaching here. This synchronous fallback
+            # hands back only the in-memory slot, taking no lock and doing no I/O,
+            # so an interrupted discard cannot leave the event loop blocked.
+            #
+            # Unconditional, not gated on the instance flags: ``release_local`` is
+            # a no-op unless ``_LIVE[key] == owner``, so it never touches a sibling
+            # client object's lease held under a different token. It covers both
+            # refused durable withdrawals -- the authored discard whose ``forget``
+            # and ``release`` were refused with the seed restored, and the
+            # un-revoked hand-back whose retry was refused -- and the authored one
+            # is the case a flag-gated drop leaks: the refused ``release`` puts the
+            # in-memory slot back while the discard's ``finally`` has already
+            # cleared authorship, so nothing flag-gated runs and every later
+            # session on this work_dir in this process is wedged
+            # (``held_by_another`` and ``claim`` consult that slot first). The
+            # persisted holder is the half this cannot reach: it carries this
+            # process's live identity, so it stands until this process exits.
+            seed_provenance.release_local(path, owner)
+            # A sharer never wrote the file and never held the live claim; its
+            # whole teardown is withdrawing the shared-reader registration, so
+            # the owner's teardown (or a later adoption) stops holding the file
+            # for a reader that is gone.
+            if getattr(self, "_claude_settings_shared", False):
+                seed_provenance.unshare_local(path, owner)
+        # The trailing plain assignments are unconditional so a client built
+        # without __init__ in tests resets clean too.
+        self._claude_settings_shared = False
+        self._permission_surface_share_validated = False
         # Drop the translated MCP array: the spec is read PER SPAWN, which is what
         # lets installing or toggling a server take effect on the next session, so
         # a replacement process must not inherit this one's snapshot.
@@ -10245,9 +11007,11 @@ class AcpClient:
         # unreadable PID is not enough to reclaim its working directory.
         root_confirmed_dead = bool(self._process and self._process.returncode is not None)
         saved_pid = None if platform_compat.IS_WINDOWS else self._pid
+        saved_start_token = self._spawn_start_token
         saved_child_pids = self._child_pids
         self._process = None
         self._pid = None
+        self._spawn_start_token = None
         # The instance id names the process that just ended; a replacement spawn
         # mints its own, so nothing may keep answering with this one in between.
         self._process_instance = ""
@@ -10306,7 +11070,11 @@ class AcpClient:
         # These untrack helpers live in kiro_crew.session, which imports this
         # module transitively, so they must be imported inline.
         from kiro_crew.session import _untrack_child_pids, _untrack_pid, _untrack_session_pid
-        from kiro_crew.session_pid import _pid_gone_or_unmanaged
+        from kiro_crew.session_pid import (
+            _pid_gone_or_unmanaged,
+            _untrack_pid_if_dead,
+            _untrack_root_by_identity,
+        )
 
         survivors: list[int] = []
         if saved_child_pids:
@@ -10328,17 +11096,25 @@ class AcpClient:
                     len(survivors),
                     survivors,
                 )
-        # Untrack parent kiro-cli PID (only if confirmed dead)
+        # Untrack parent kiro-cli PID (only if confirmed dead) -- by IDENTITY,
+        # the way AcpRuntime retires on both its paths. "Confirmed dead" is a
+        # fact about the process, not about its number: the kernel can hand the
+        # number to a root spawned since, and a prefix-matched untrack would take
+        # the successor's lines with it. The token read at spawn names the line
+        # that is ours; the bare line goes only while the number is dead at that
+        # moment. A root whose identity could not be read at spawn keeps the
+        # prefix-matched untrack it always had.
         if saved_pid is not None:
             if _pid_gone_or_unmanaged(saved_pid):
                 try:
-                    _untrack_pid(saved_pid)
+                    if saved_start_token:
+                        if not _untrack_root_by_identity(saved_pid, saved_start_token):
+                            _untrack_pid_if_dead(saved_pid)
+                    else:
+                        _untrack_pid(saved_pid)
+                        _untrack_session_pid(saved_pid)
                 except Exception:
                     logger.debug("untracking PID %s failed", saved_pid, exc_info=True)
-                try:
-                    _untrack_session_pid(saved_pid)
-                except Exception:
-                    logger.debug("untracking session PID %s failed", saved_pid, exc_info=True)
             else:
                 logger.warning(
                     "Retained tracking for live root PID %s that survived "
@@ -10447,6 +11223,21 @@ class AcpClient:
                 # adapter resolves to whatever it had cached and we still
                 # retry session/new on the substitute path.
                 logger.warning("re-seed of settings.local.json failed", exc_info=True)
+            # The writer owns every transition in the native permission surface
+            # and invalidates the frozen MCP projection when that state changes.
+            # Re-resolve off the event loop, then rebuild the exact array the retry
+            # will send so a failed byte re-validation withholds rather than
+            # re-delivering the first attempt's stale roster.
+            resolved_mcp = await asyncio.to_thread(self._resolve_session_mcp_servers)
+            self._session_mcp_cache = resolved_mcp
+            new_params["mcpServers"] = [
+                *(self._claude_session_mcp_servers() if self._is_claude else []),
+                *(self._opencode_session_mcp_servers() if self._is_opencode else []),
+                *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(await asyncio.to_thread(self._pooled_mcp_servers)),
+            ]
+            self._begin_session_report(new_params.get("mcpServers"))
+            self._guard_unresolved_mcp_refs(new_params.get("mcpServers"))
             self._last_substitution_model = None
             retry_id = await self._send_request(METHOD_SESSION_NEW, new_params)
             session_resp = await self._wait_for_response(
@@ -10527,6 +11318,7 @@ class AcpClient:
         self._resumed = False
         resume_sid = self._resume_session_id
         self._resume_session_id = None  # consume — no retry loop
+        sent_snapshot: DerivedSpecSnapshot | None = None
 
         if resume_sid and self._can_load_session:
             # Only attempt session/load when the prior session transcript
@@ -10617,6 +11409,7 @@ class AcpClient:
                         self._session_id = resume_sid
                         self._resumed = True
                         self._capture_available_models(load_resp)
+                        sent_snapshot = self._session_mcp_snapshot
                         if self._uses_advertised_model_selection:
                             await self._persist_advertised_models_if_changed()
                             await self._reseed_after_capture()
@@ -10657,6 +11450,7 @@ class AcpClient:
             # before vs after is the reliable signal.
             model_before = self._model
             session_resp = await self._new_session_following_substitution()
+            sent_snapshot = self._session_mcp_snapshot
             self._session_id = session_resp.get("sessionId")
             self._capture_available_models(session_resp)
             if self._uses_advertised_model_selection:
@@ -10724,7 +11518,7 @@ class AcpClient:
         # ``ensure_ready`` handles, and its handler is what ends the child and drops
         # the half-registered session state.
         try:
-            await asyncio.to_thread(require_unchanged_derived_spec, self._session_mcp_snapshot)
+            await asyncio.to_thread(require_unchanged_derived_spec, sent_snapshot)
         except DerivedSpecStale as exc:
             raise AcpError(str(exc)) from exc
 
@@ -10793,7 +11587,10 @@ class AcpClient:
             )
         ):
             await self._kill_process(force=True)
-            self._reset_state()
+            try:
+                await self._discard_claude_settings_seed()
+            finally:
+                self._reset_state()
         if not self._work_dir_ready:
             await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
             self._work_dir_ready = True

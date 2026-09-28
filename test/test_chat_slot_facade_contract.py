@@ -66,6 +66,7 @@ _TO_DICT_KEYS = (
     "options",
     "prompt_preview",
     "trust",
+    "trust_scope",
     "trust_reads",
     "trusted_patterns_count",
     "slack_linked",

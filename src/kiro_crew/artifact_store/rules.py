@@ -102,23 +102,6 @@ def _validate_slug(slug: str) -> str:
     return slug
 
 
-def slug_is_well_formed(slug: str) -> bool:
-    """Whether this string could name an artifact, said without asking whether one exists.
-
-    Defined on top of the same validator every store method applies, so a caller deciding
-    what to do with a slug the store has not resolved cannot disagree with the store about
-    which strings are slugs at all. The publication guard needs exactly this question: an
-    artifact created inside a delete's own window has no record to resolve, so the guard has
-    to be taken on the NAME, while a malformed name is still passed through unguarded so the
-    store can answer for it.
-    """
-    try:
-        _validate_slug(slug)
-    except ArtifactValidationError:
-        return False
-    return True
-
-
 #: Kinds a HUMAN may select for an artifact from the dashboard's type control.
 #: A strict subset of :data:`ALLOWED_KINDS`, and deliberately the same set the
 #: frontend's ``isEditableKind`` treats as inline-editable: ``widget`` / ``html``

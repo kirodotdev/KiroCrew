@@ -138,7 +138,7 @@ describe('ChatPane composer pickers follow their chip while open (#10616)', () =
 
   it('model picker remeasures when the visual viewport changes', async () => {
     renderPane('pane-2')
-    const chip = await waitFor(() => screen.getByTitle('Model: claude-opus-5'))
+    const chip = await waitFor(() => screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/))
     const anchor = anchorChip(chip, 600)
 
     await act(async () => { fireEvent.click(chip) })

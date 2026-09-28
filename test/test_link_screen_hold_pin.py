@@ -743,9 +743,13 @@ def test_an_ordinary_link_layout_is_not_broken_by_the_hold(
                 # under ``tmp_path`` there, and the write refuses for the host's link
                 # rather than for anything this gate is about.
                 with pytest.raises(OSError):
-                    crew_store._write_unit_order(target, ("alpha", "beta"))
+                    crew_store._write_unit_order(
+                        target, ("alpha", "beta"), max_depth=len(target.parts) + 32
+                    )
                 return
-            crew_store._write_unit_order(target, ("alpha", "beta"))
+            crew_store._write_unit_order(
+                target, ("alpha", "beta"), max_depth=len(target.parts) + 32
+            )
         assert target.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
     write_under(tmp_path / "platform", force_hold=False)
@@ -782,14 +786,18 @@ def test_write_through_a_link_reaches_the_object_the_screen_inspected(
     through_link = link / "crew" / "unit-order.txt"
 
     if atomic_write_module.pinned_parent_replace_supported():
-        crew_store._write_unit_order(through_link, ("gamma",))
+        crew_store._write_unit_order(
+            through_link, ("gamma",), max_depth=len(through_link.parts) + 32
+        )
         assert settled.read_text(encoding="utf-8") == "gamma\n"
         settled.write_text("alpha\nbeta\n", encoding="utf-8")
 
     with monkeypatch.context() as patched:
         patched.setattr(atomic_write_module, "pinned_parent_replace_supported", lambda: False)
         with pytest.raises(OSError):
-            crew_store._write_unit_order(through_link, ("gamma",))
+            crew_store._write_unit_order(
+                through_link, ("gamma",), max_depth=len(through_link.parts) + 32
+            )
     assert settled.read_text(encoding="utf-8") == "alpha\nbeta\n"
 
     # Either way nothing was created outside the object the screen inspected.

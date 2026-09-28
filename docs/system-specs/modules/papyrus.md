@@ -675,7 +675,7 @@ no bare `fcntl`/`os.killpg`/`signal.SIGKILL`, `start_new_session=IS_POSIX`
   rejected: `strict` mode is what stops `\input{../../.aws/credentials}` from
   typesetting the operator's keys into the PDF, and `gitops` runs `standard`
   precisely so an SSH push can see the key.
-- **`minimal_env`'s allowlist** (`apps/registry.py`) needed two fixes, and this one
+- **`minimal_env`'s allowlist** (`apps/registry_pipeline/subprocess_env.py`) needed two fixes, and this one
   fails early and opaquely rather than loudly: a Windows child without `SystemRoot`
   usually dies before `main()` (DLL/crypto init resolves through it), and one
   without `USERPROFILE` cannot resolve `TEXMFHOME`.

@@ -1583,6 +1583,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # goes out to a human.
         "context.py",
         "agent.py",
+        # Capture-side, not egress: redacts a Slack thread's first message as it
+        # is READ from Slack, before the text is kept for the model's fenced
+        # thread-context block and for the transcript's display-only notice row.
+        # It owns no output of its own. The model prompt is built by context.py
+        # and the transcript is shown through the dashboard routes, which are the
+        # surfaces that carry the text onward.
+        "slack/thread_parent.py",
         # Gate-side audit hygiene: the tool gate clips and redacts the tool labels
         # and refusal reason of each permission decision before writing them to
         # the SEL audit log. That is a local audit record, not an output bound for
@@ -1916,7 +1923,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # not an output bound for a human or a third party, and the value that DOES
         # reach a dashboard client (``GET /api/apps/registries``) is protected by
         # refusing a credential-bearing repo outright rather than by redacting it.
-        "apps/registry.py",
+        # The same owners reduce git output from a credentialed transport to fixed
+        # failure classes, which carry no text from that output.
+        "apps/registry_pipeline/checkout.py",
+        "apps/registry_pipeline/git_targets.py",
+        "apps/registry_pipeline/indexes.py",
+        "apps/registry_pipeline/sources.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",

@@ -326,9 +326,9 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
     import inspect
     import textwrap
 
-    # The two arrays sit in DIFFERENT methods -- session/new is composed by
-    # ``_new_session_following_substitution`` and session/load by
-    # ``_initialize_session`` -- so both are read rather than assuming one owner.
+    # Three arrays are composed across two methods: the initial session/new and
+    # its substitution retry live in ``_new_session_following_substitution``;
+    # session/load lives in ``_initialize_session``.
     splices = 0
     for method in (
         AcpClient._new_session_following_substitution,
@@ -342,9 +342,10 @@ def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "_goose_session_mcp_servers"
         )
-    assert splices == 2, (
-        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so its array must be spliced at "
-        f"BOTH the session/new and session/load call sites; found {splices}"
+    assert splices == 3, (
+        "goose is in ACP_BACKENDS_SESSION_MCP_ARRAY, so its array must be spliced into "
+        "the initial session/new, the substitution retry, and session/load; "
+        f"found {splices}"
     )
 
 
@@ -1688,3 +1689,22 @@ def test_a_cancel_answers_the_open_permission_request_as_cancelled(
     # Answered once: a second cancel has nothing left to answer.
     asyncio.run(client.cancel_session())
     assert len(proc.stdin.write.call_args_list) == len(written) + 1
+
+
+def test_a_keyring_only_goose_is_told_how_to_store_its_key_where_it_can_read_it() -> None:
+    """The one goose sign-in that ``goose configure`` alone cannot fix.
+
+    goose keeps keys in the OS keyring by default, which the sandboxed child
+    cannot reach. goose 1.52.0, run live with a provider configured and its key
+    only in the keyring, opens the session and answers the first
+    ``session/prompt`` with this frame. The message must name the file-storage
+    switch: telling that operator to run ``goose configure`` again only puts the
+    key back in the keyring.
+    """
+    from kiro_crew.acp.client import _format_acp_error
+
+    text = _format_acp_error({"code": -32000, "message": "Authentication required"}, backend=GOOSE)
+
+    assert "GOOSE_DISABLE_KEYRING=true goose configure" in text
+    assert "keyring" in text
+    assert "secrets.yaml" in text

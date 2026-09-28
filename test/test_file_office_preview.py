@@ -26,6 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from dashboard_owner_helpers import as_owner
 from ooxml_fixtures import docx_para, docx_table, write_docx
 
 from kiro_crew.dashboard.handlers import api_file_office_preview
@@ -36,7 +37,7 @@ from kiro_crew.dashboard.handlers.files import _MAX_UPLOAD_BYTES, _OFFICE_PREVIE
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-office-preview", api_file_office_preview)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture
@@ -285,7 +286,11 @@ async def test_cancellation_is_sel_audited_and_reraised(tmp_path, mock_sel):
     """CancelledError during extraction records the access, then propagates."""
     f = tmp_path / "doc.docx"
     _write_docx(str(f), ["content"])
-    request = make_mocked_request("GET", f"/api/file-office-preview?path={f}")
+    request = make_mocked_request(
+        "GET", f"/api/file-office-preview?path={f}", app=as_owner(web.Application())
+    )
+    request["user"] = "local-app"
+    request["app"] = ""
     with (
         patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)),
         patch(

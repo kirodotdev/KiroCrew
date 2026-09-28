@@ -96,13 +96,13 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
 
   return (
     <div className="w-full max-w-[620px] mx-auto">
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {cards.map(({ text, kind }, i) => {
           const { Icon, tile } = SUGGESTION_KIND_STYLE[kind]
           return (
-            // Fixed-height cell; the card is absolute inside it, so on hover/focus it
-            // grows DOWN over the next row instead of reflowing the grid.
-            <div key={`${i}-${text}`} className="relative h-[108px] hover:z-10 focus-within:z-10">
+            // Phones: a compact one-line row. sm+: fixed-height cell with the card absolute
+            // inside it, so on hover/focus it grows DOWN over the next row instead of reflowing.
+            <div key={`${i}-${text}`} className="relative sm:h-[108px] hover:z-10 focus-within:z-10">
               {/* type=button + onMouseDown preventDefault stop the card from taking
                   keyboard focus on click. Without this the focused card is re-activated
                   by a follow-up Enter (re-firing setInput) instead of submitting via the
@@ -112,12 +112,12 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
                 data-kind={kind}
                 onMouseDown={e => e.preventDefault()}
                 onClick={() => setInput(text)}
-                className="group absolute top-0 inset-x-0 min-h-full flex flex-col items-start gap-2.5 p-3.5 rounded-xl border border-border bg-card text-card-fg text-[13px] font-medium text-left overflow-hidden cursor-pointer transition-[border-color,box-shadow] duration-200 hover:border-accent hover:shadow-lg focus-visible:border-accent focus-visible:shadow-lg"
+                className="group relative w-full sm:absolute sm:top-0 sm:inset-x-0 sm:min-h-full flex flex-row sm:flex-col items-center sm:items-start gap-3 px-4 py-3 sm:gap-2.5 sm:p-3.5 rounded-xl border border-border bg-card text-card-fg text-[13px] font-medium text-left overflow-hidden cursor-pointer transition-[border-color,box-shadow] duration-200 hover:border-accent hover:shadow-lg focus-visible:border-accent focus-visible:shadow-lg"
               >
                 <span aria-hidden="true" className={`w-8 h-8 shrink-0 rounded-lg flex items-center justify-center ${tile}`}>
                   <Icon size={16} />
                 </span>
-                <span className="min-w-0 leading-[1.35] line-clamp-2 group-hover:line-clamp-none group-focus-visible:line-clamp-none">{text}</span>
+                <span className="min-w-0 leading-[1.35] truncate sm:whitespace-normal sm:line-clamp-2 sm:group-hover:line-clamp-none sm:group-focus-visible:line-clamp-none">{text}</span>
               </button>
             </div>
           )
@@ -166,10 +166,10 @@ export default function WelcomeView({
   // Outside orchestrator mode the memory chip sits above the composer (ChatPage renders it).
   if (!isOrchestrator) {
     return (
-      // Unprefixed = the narrow/short fallback: a plain top-stacked column, so the
-      // greeting and every card stay reachable from the scroll origin. Wide and tall
+      // Unprefixed = phones: a safe-centred column (falls back to top-aligned when it
+      // overflows, so nothing clips). Short wide windows stack from the top. Wide and tall
       // viewports switch to the spread grid: greeting ~20% down, cards ~60%.
-      <div data-testid="welcome-layout" className="w-full flex-1 min-h-0 pt-12 pb-4 flex flex-col justify-start gap-6 [@media(min-width:640px)_and_(min-height:600px)]:pt-0 [@media(min-width:640px)_and_(min-height:600px)]:pb-0 [@media(min-width:640px)_and_(min-height:600px)]:grid [@media(min-width:640px)_and_(min-height:600px)]:grid-cols-1 [@media(min-width:640px)_and_(min-height:600px)]:grid-rows-[1.3fr_auto_0.7fr] [@media(min-width:640px)_and_(min-height:600px)]:gap-0">
+      <div data-testid="welcome-layout" className="w-full flex-1 min-h-0 pt-12 pb-4 flex flex-col [justify-content:safe_center] sm:justify-start gap-6 [@media(min-width:640px)_and_(min-height:600px)]:pt-0 [@media(min-width:640px)_and_(min-height:600px)]:pb-0 [@media(min-width:640px)_and_(min-height:600px)]:grid [@media(min-width:640px)_and_(min-height:600px)]:grid-cols-1 [@media(min-width:640px)_and_(min-height:600px)]:grid-rows-[1.3fr_auto_0.7fr] [@media(min-width:640px)_and_(min-height:600px)]:gap-0">
         <div className="flex flex-col items-center w-full shrink-0 min-h-0">
           <div aria-hidden="true" className="hidden basis-[45%] shrink min-h-4 [@media(min-width:640px)_and_(min-height:600px)]:block" />
           <div className="flex flex-col items-center gap-3 text-center shrink-0">

@@ -82,6 +82,12 @@ _CODE_SLOT_NOT_FOUND = "slot_not_found"
 # the Skills tab can tell the user WHY the click did nothing instead of
 # swallowing one shapeless conflict answer.
 _CODE_PENDING_SKILL_NOT_FOUND = "pending_skill_not_found"
+# The detail read refused a candidate that is STILL STAGED. A distinct code because
+# the list applies none of the read's refusals, so that row remains: answering the
+# same `not_found` as a deleted candidate tells the user it was approved or dismissed
+# elsewhere while it sits in front of them, and leaves the one action that does apply
+# (dismiss it) looking like the wrong one.
+_CODE_PENDING_SKILL_UNREADABLE = "pending_skill_unreadable"
 _CODE_LIVE_SKILL_EXISTS = "live_skill_exists"
 _CODE_SCRIPT_VALIDATION_FAILED = "script_validation_failed"
 _CODE_PENDING_APPROVAL_REFUSED = "pending_approval_refused"
@@ -2720,7 +2726,30 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
         metadata={"slug": slug},
     )
     if detail is None:
-        return web.json_response({"error": "not found"}, status=404)
+        # Two situations, two codes. The pinned read refuses a candidate whose tree is
+        # not plain files and directories, and `list_pending_skills` applies none of
+        # those refusals -- so that candidate's ROW REMAINS while this answers 404. One
+        # shared code would have the panel tell the user it was approved or dismissed
+        # elsewhere, which is false and points them away from the one action that does
+        # apply. The probe is by name and runs only after the read already refused, so
+        # losing its race changes the MESSAGE and never grants a read.
+        staged = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.pending_candidate_is_staged, slug
+        )
+        if staged:
+            return web.json_response(
+                {
+                    "error": (
+                        "this candidate is still pending, but its files are not a plain "
+                        "directory, so it cannot be read safely"
+                    ),
+                    "code": _CODE_PENDING_SKILL_UNREADABLE,
+                },
+                status=404,
+            )
+        return web.json_response(
+            {"error": "not found", "code": _CODE_PENDING_SKILL_NOT_FOUND}, status=404
+        )
     # Update candidates carry an approval PREVIEW so the UI can show exactly what
     # approving would change: the target's current live body, the proposed
     # post-approval content, and a unified diff between them (computed

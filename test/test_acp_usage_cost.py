@@ -254,6 +254,8 @@ class TestToTurnUsage:
 def _bare_client() -> AcpClient:
     client = AcpClient.__new__(AcpClient)  # avoid spawning a real process
     client.last_prompt_stats = AcpPromptStats()
+    # No identity read at spawn; _reset_state then keeps its prefix-matched untrack.
+    client._spawn_start_token = None
     return client
 
 

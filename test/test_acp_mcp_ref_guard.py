@@ -843,7 +843,7 @@ class TestTheCallSitesAreWired:
         """
         lines = inspect.getsource(client_mod).splitlines()
         handoffs = [i for i, ln in enumerate(lines) if "self._begin_session_report(" in ln]
-        assert len(handoffs) == 2, "a session-establishment path was added or removed"
+        assert len(handoffs) == 3, "a session-establishment handoff was added or removed"
         for i in handoffs:
             roster = lines[i].split("_begin_session_report(", 1)[1]
             # The next statement, skipping the comments that explain the pairing.

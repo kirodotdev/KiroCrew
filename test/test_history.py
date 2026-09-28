@@ -74,6 +74,14 @@ class TestConversationLog:
         log.append("t1", "user", "hello")  # no provenance
         assert log.recent_with_provenance("t1") == []
 
+    def test_provenance_never_cites_a_notice(self, tmp_path):
+        # A notice is display-only; citing it would hand the model text that
+        # only reaches it screened and fenced (the Slack thread-parent row).
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("t1", "notice", "Thread started by A on Slack:\nparent", source_thread="t1")
+        log.append("t1", "user", "reply", source_thread="t1")
+        assert [p["snippet"] for p in log.recent_with_provenance("t1")] == ["reply"]
+
     def test_unconsolidated_count(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
         for i in range(10):

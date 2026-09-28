@@ -27,10 +27,13 @@ describe('artifact side panels at phone widths', () => {
   it('steps the artifact body aside so an open panel is not splitting 390px', async () => {
     const s = await read('pages/ArtifactDetailPage.tsx')
     expect(s, 'expected the viewport hook').toContain('useIsMobile')
-    expect(s).toMatch(/\$\{isMobile && panel !== 'none' \? 'hidden' : ''\}/)
+    // The condition is named once and shared with the selection toolbars, which
+    // stand down while the panel covers the body.
+    expect(s).toMatch(/const narrowPanelOpen = isMobile && panel !== 'none'/)
+    expect(s).toMatch(/\$\{narrowPanelOpen \? 'hidden' : ''\}/)
     // Hidden, not unmounted: the body holds scroll position and, for markdown, an
     // in-progress anchored comment selection.
     expect(s, 'the body must not be unmounted by a responsive branch')
-      .not.toMatch(/\{!\(isMobile && panel !== 'none'\) && \(/)
+      .not.toMatch(/\{!narrowPanelOpen && \(/)
   })
 })

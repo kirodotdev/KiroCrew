@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { addPendingFile, hasExactRelMention, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
+import { addPendingFile, extendsConsumably, findUnreferencedAttachments, foldWinSep, isWindowsShapedPath, mentionBoundary, mentionBoundaryFor, mentionTokenRegex, normalizeWindowsPath, parseFiles, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
 
 describe('buildFileLabels uniqueness', () => {
   it('disambiguates paths that share a basename', () => {
@@ -34,6 +34,99 @@ describe('buildFileLabels uniqueness', () => {
 })
 
 describe('prepareSendPayload', () => {
+  it('replaces a punctuated mention inline instead of appending a duplicate standalone marker (fork GPT review)', () => {
+    // The reconciliation boundary keeps `@src/main.ts.` staged (ordinary
+    // sentence-ending punctuation), so the send path must FIND that same
+    // mention: with the old whitespace-only tokenRegex it classified the
+    // file unreferenced and appended `[attached_file 1]` standalone while
+    // the mention text sat unreplaced beside it.
+    const result = prepareSendPayload('check @src/main.ts.', ['/repo/src/main.ts'])
+    expect(result.txt).toBe('check [attached_file 1] /repo/src/main.ts\u200a.')
+  })
+
+  it('keeps every inline marker whitespace-terminated, so readers never glue the trailer to the path (fork Opus review)', () => {
+    // The queue-edit pruner's span match, the text-only parseFiles fallback
+    // (steer rows) and the renderer's no-index fallback all end a marker path
+    // at whitespace. A glued `, please` made them read `/repo/a.txt,`.
+    const { txt } = prepareSendPayload('check @a.txt, please', ['/repo/a.txt'])
+    expect(txt).toBe('check [attached_file 1] /repo/a.txt\u200a, please')
+    expect(parseFiles(txt)).toEqual(['/repo/a.txt'])
+    // Rendered, the bubble reads exactly as typed.
+    expect(resolveFileSegment(txt, ['/repo/a.txt']).display).toBe('check @a.txt, please')
+    expect(resolveFileSegment(txt, []).display).toBe('check @a.txt, please')
+    // A mention already followed by whitespace gets no separator.
+    expect(prepareSendPayload('check @a.txt now', ['/repo/a.txt']).txt).toBe('check [attached_file 1] /repo/a.txt now')
+  })
+
+  it('keeps a hair space the user pasted beside a mention: the renderer removes only the generated separator (fork GPT review)', () => {
+    const HS = '\u200a'
+    for (const typed of [`check${HS}@a.txt now`, `check @a.txt${HS}, please`, `(${HS}@a.txt${HS})`]) {
+      const { txt } = prepareSendPayload(typed, ['/repo/a.txt'])
+      expect(parseFiles(txt)).toEqual(['/repo/a.txt'])
+      expect(resolveFileSegment(txt, ['/repo/a.txt']).display).toBe(typed)
+    }
+  })
+
+  it('never removes a space the user typed before punctuation (fork GPT review)', () => {
+    // `@a.txt , please` (French typography, or just a typed space): the
+    // serializer adds nothing, and the renderer must not eat the user's space.
+    const { txt } = prepareSendPayload('check @a.txt , please', ['/repo/a.txt'])
+    expect(txt).toBe('check [attached_file 1] /repo/a.txt , please')
+    expect(resolveFileSegment(txt, ['/repo/a.txt']).display).toBe('check @a.txt , please')
+    expect(resolveFileSegment(txt, []).display).toBe('check @a.txt , please')
+    // Same with a quoted word after the mention (fork Opus review): eating
+    // the space also broke the inline chip's boundary.
+    const quoted = prepareSendPayload('check @a.ts "x"', ['/repo/a.ts']).txt
+    expect(quoted).toBe('check [attached_file 1] /repo/a.ts "x"')
+    expect(resolveFileSegment(quoted, ['/repo/a.ts']).display).toBe('check @a.ts "x"')
+  })
+
+  it('replaces a bracket-wrapped mention under the same shared boundary contract', () => {
+    const result = prepareSendPayload('see (@src/main.ts) here', ['/repo/src/main.ts'])
+    expect(result.txt).toBe('see (\u200a[attached_file 1] /repo/src/main.ts\u200a) here')
+    // The separators exist for the wire readers; the bubble reads as typed.
+    expect(resolveFileSegment(result.txt, ['/repo/src/main.ts']).display).toBe('see (@main.ts) here')
+  })
+
+  it('binds each mention to the file whose OWN alias it is when a sibling literally extends it (fork GPT review)', () => {
+    // `report` and `report,` are both legal filenames. Without the shared
+    // prefix-sibling rule, the g-flag replace of `report` also rewrote the
+    // HEAD of `@report,`'s own mention, binding that text -- and its
+    // attachment -- to the wrong file.
+    const result = prepareSendPayload('see @report and @report, thanks', ['/r/report', '/r/report,'])
+    expect(result.txt).toBe('see [attached_file 1] /r/report and [attached_file 2] /r/report, thanks')
+  })
+
+  it('a lone punctuated mention that is a sibling\'s OWN alias binds to that sibling only', () => {
+    // `@report,` present, both files staged: the text belongs to `report,`;
+    // `report` is unreferenced and gets its own standalone marker line.
+    const result = prepareSendPayload('@report, ', ['/r/report', '/r/report,'])
+    expect(result.txt.startsWith('[attached_file 1] /r/report, ')).toBe(true)
+    expect(result.filePaths).toEqual(['/r/report,', '/r/report'])
+    expect(result.txt.split('\n').some(l => l === '[attached_file 2] /r/report')).toBe(true)
+  })
+
+  it('a wrapped file-line mention keeps its boundary: `(@src/main.ts:42)` is referenced and replaced inline (fork GPT review)', () => {
+    // The `:line` alternative used to require whitespace/end directly after
+    // the digits, so a closing wrapper broke the boundary: the chip
+    // unstaged and the send omitted the intended file.
+    const result = prepareSendPayload('see (@src/main.ts:42) here', ['/repo/src/main.ts'])
+    expect(result.txt).toBe('see (\u200a[attached_file 1] /repo/src/main.ts\u200a:42) here')
+  })
+
+  it('rendering applies the prefix-sibling rule too: an unmentioned prefix sibling keeps its attachment card (fork GPT review)', () => {
+    // findUnreferencedAttachments used to probe each path ALONE, so `report`
+    // had no sibling to force the strict boundary, matched `@report,` via
+    // the punctuation boundary, was counted referenced, and its attachment
+    // card was hidden. One rel map over ALL files gives the rule its
+    // candidate set: only `report,` is referenced here.
+    expect(findUnreferencedAttachments('see @report, thanks', ['/r/report', '/r/report,']))
+      .toEqual(['/r/report'])
+    // The genuinely-referenced sibling stays referenced.
+    expect(findUnreferencedAttachments('see @report and @report, thanks', ['/r/report', '/r/report,']))
+      .toEqual([])
+  })
+
   it('does not corrupt an incidental mid-word substring that happens to look like a mention', () => {
     // Regression: the GPT-review-reported corruption path. If `foo@README.md`
     // is unrelated typed text and README.md is ALSO a staged attachment (e.g.
@@ -266,45 +359,116 @@ describe('addPendingFile canonical dedupe', () => {
   })
 })
 
-describe('hasExactRelMention exact-token mention detection', () => {
-  it('sees the slash-form token (the tree-menu rendition)', () => {
-    expect(hasExactRelMention('look at @src/a/b.ts here', 'src/a/b.ts')).toBe(true)
+describe('isWindowsShapedPath: drive-letter or UNC prefix, either spelling', () => {
+  it('recognizes a forward-slash UNC project (fork GPT review)', () => {
+    expect(isWindowsShapedPath('//server/share/repo')).toBe(true)
+    expect(isWindowsShapedPath('//server/share')).toBe(true)
+    expect(isWindowsShapedPath('\\\\server\\share\\repo')).toBe(true)
+    expect(isWindowsShapedPath('C:/repo')).toBe(true)
   })
 
-  it('sees the backslash-form token (the native-Windows picker rendition)', () => {
-    expect(hasExactRelMention('look at @src\\a\\b.ts here', 'src/a/b.ts')).toBe(true)
+  it('needs a host plus a separator, the same shape as the backslash UNC form', () => {
+    expect(isWindowsShapedPath('//server')).toBe(false)
+    expect(isWindowsShapedPath('///x/y')).toBe(false)
+    expect(isWindowsShapedPath('/home/u/p')).toBe(false)
   })
 
-  it('does NOT suffix-match: a shorter basename mention of a DIFFERENT file is not a hit', () => {
-    // Regression: a suffix walk would let `@util.ts` (staged for src/a/util.ts)
-    // report src/b/util.ts as "already mentioned", and the fallback chip-remove
-    // derivation (buildRelMap, also a suffix walk) would then strip that same
-    // `@util.ts` token when removing src/b/util.ts's chip -- deleting
-    // src/a/util.ts's mention instead.
-    expect(hasExactRelMention('look at @util.ts here', 'src/b/util.ts')).toBe(false)
+  it('does not change the producer normalizer: a //-spelled path keeps its backslashes', () => {
+    // Fails if the producer regex is ever widened instead: that would rewrite
+    // a legal POSIX filename character inside the path.
+    expect(normalizeWindowsPath('//server/share/a\\b.txt')).toBe('//server/share/a\\b.txt')
   })
 
-  it('does not match a different file or a mid-word fragment', () => {
-    expect(hasExactRelMention('look at @src/a/c.ts here', 'src/a/b.ts')).toBe(false)
-    // boundary check: @src/a/b.tsx is not @src/a/b.ts
-    expect(hasExactRelMention('look at @src/a/b.tsx here', 'src/a/b.ts')).toBe(false)
-    expect(hasExactRelMention('', 'src/a/b.ts')).toBe(false)
+  it('foldWinSep reads every separator spelling the same on Windows, and nothing on POSIX', () => {
+    const win = foldWinSep(true)
+    expect(win('@other\\src/main.ts')).toBe('@other/src/main.ts')
+    expect(win('@other\\src\\main.ts')).toBe(win('@other/src/main.ts'))
+    expect(win('a\\b').length).toBe(3) // 1:1, so indices carry over
+    expect(foldWinSep(false)('weird\\name.txt')).toBe('weird\\name.txt')
+  })
+})
+
+describe('replaceTokens: an EMPTY replacement drops the mention like the remove-chip strip (fork Opus review)', () => {
+  it('a wrapped image mention leaves no stray pair behind', () => {
+    const result = prepareSendPayload('see (@shot.png) here', ['/r/shot.png'])
+    expect(result.txt).toBe('![image](/r/shot.png)\n\nsee  here')
+    expect(result.txt).not.toContain('()')
+    expect(result.displayTxt).not.toContain('()')
   })
 
-  it('a POSIX rel containing a backslash matches only itself, not a slash rewrite', () => {
-    // `\` is a legal POSIX filename character; the backslash-rendition check
-    // must not be invented for a rel that already contains one.
-    expect(hasExactRelMention('see @weird\\name.txt', 'weird\\name.txt')).toBe(true)
-    expect(hasExactRelMention('see @weird/name.txt', 'weird\\name.txt')).toBe(false)
+  it('an image mention with a :line suffix takes the suffix with it', () => {
+    const result = prepareSendPayload('see @shot.png:3 here', ['/r/shot.png'])
+    expect(result.txt).toBe('![image](/r/shot.png)\n\nsee  here')
   })
 
-  it('does not match a mention embedded mid-word', () => {
-    // `foo@README.md` is incidental text (an email-like string, a filename
-    // typo), not a mention -- without a left boundary this would false-
-    // positive, causing the caller to skip inserting its own clean token
-    // while the file still gets staged with no valid distinguishing @token.
-    expect(hasExactRelMention('foo@README.md', 'README.md')).toBe(false)
-    expect(hasExactRelMention('see @README.md now', 'README.md')).toBe(true)
+  it('an UNPAIRED wrapper is left in place like ordinary punctuation', () => {
+    const result = prepareSendPayload('(@shot.png here', ['/r/shot.png'])
+    expect(result.txt).toBe('![image](/r/shot.png)\n\n( here')
+  })
+})
+
+describe('mentionBoundaryFor: the one prefix-sibling rule', () => {
+  it('extendsConsumably is the rule behind mentionBoundaryFor, both directions (fork GPT review)', () => {
+    // Truth table: consumable extensions are hazards; inert ones are not.
+    expect(extendsConsumably('@report', '@report,')).toBe(true)
+    expect(extendsConsumably('@report', '@report:42')).toBe(true)
+    expect(extendsConsumably('@report', '@report:42,')).toBe(true)
+    expect(extendsConsumably('@report', '@report:42.md')).toBe(false)
+    expect(extendsConsumably('@report', '@report.bak')).toBe(false)
+    expect(extendsConsumably('@report', '@repo')).toBe(false)  // not an extension
+    expect(extendsConsumably('@report', '@report')).toBe(false) // equal length
+    // Parity: mentionBoundaryFor forces strict exactly when the predicate fires.
+    for (const ext of [',', ':42', ':42,', ':42.md', '.bak', 'x']) {
+      const strict = mentionBoundaryFor('@report', new Set([`@report${ext}`])) !== mentionBoundary
+      expect(strict, `ext=${ext}`).toBe(extendsConsumably('@report', `@report${ext}`))
+    }
+  })
+
+  it('a candidate strictly extended by a sibling gets the strict boundary; the sibling itself stays permissive', () => {
+    // Behavioral pins (the strict source itself is module-private): the
+    // extended candidate's boundary refuses trailing punctuation; the
+    // sibling and the sibling-free case keep the permissive boundary.
+    expect(mentionBoundaryFor('@report', new Set(['@report,']))).not.toBe(mentionBoundary)
+    expect(new RegExp(`^${mentionBoundaryFor('@report', new Set(['@report,']))}`).test(', ')).toBe(false)
+    expect(mentionBoundaryFor('@report,', new Set(['@report']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report')).toBe(mentionBoundary)
+    // A `:line`-shaped extension is also hazardous.
+    expect(mentionBoundaryFor('@report', new Set(['@report:1']))).not.toBe(mentionBoundary)
+  })
+
+  it('a sibling extending with boundary-inert characters does NOT force strict: `.env` vs `.env.local` (fork Opus review)', () => {
+    // `.local`, `x` of `.tsx`, `.dev` -- extensions the permissive boundary
+    // could never consume protect nothing; forcing strict there made an
+    // ordinary `@.env,` read as unmentioned, silently unstaging the file.
+    expect(mentionBoundaryFor('.env', new Set(['.env.local']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('main.ts', new Set(['main.tsx']))).toBe(mentionBoundary)
+  })
+
+  it('a `:digits` extension the boundary cannot finish consuming does NOT force strict: `report` vs `report:42.md` (fork GPT review)', () => {
+    // The permissive boundary consumes `:digits` only when whitespace, end,
+    // or a punctuation run ends it -- `@report:42.md` can never be read as a
+    // `report` mention, so forcing strict protected nothing and a plain
+    // `@report,` silently unstaged the file. A consumable `:digits` tail
+    // (`report:42`, `report:42,`) keeps the protection.
+    expect(mentionBoundaryFor('@report', new Set(['@report:42.md']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report', new Set(['@report:4x']))).toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report', new Set(['@report:42']))).not.toBe(mentionBoundary)
+    expect(mentionBoundaryFor('@report', new Set(['@report:42,']))).not.toBe(mentionBoundary)
+  })
+
+  it('both colon-sibling files keep inline markers through a punctuated sentence at send time (fork GPT review)', () => {
+    const result = prepareSendPayload('see @report, and @report:42.md thanks', ['/r/report', '/r/report:42.md'])
+    expect(result.txt).toBe('see [attached_file 1] /r/report\u200a, and [attached_file 2] /r/report:42.md thanks')
+  })
+
+  it('both dotfile siblings stay staged through a punctuated sentence at send time (fork Opus review)', () => {
+    const result = prepareSendPayload('Compare @.env, @.env.local and tell me', ['/r/.env', '/r/.env.local'])
+    expect(result.txt).toBe('Compare [attached_file 1] /r/.env\u200a, [attached_file 2] /r/.env.local and tell me')
+  })
+
+  it('mentionTokenRegex applies the rule: the shorter alias never claims the sibling\'s own mention', () => {
+    expect(mentionTokenRegex('report', '', new Set(['report,'])).test('see @report, here')).toBe(false)
+    expect(mentionTokenRegex('report').test('see @report, here')).toBe(true)
   })
 })
 

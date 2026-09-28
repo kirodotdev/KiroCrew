@@ -487,8 +487,10 @@ made; no gate reads it back. Two consumers:
 
 - The advisory `subagent_queued` lifecycle event (`_emit_queue_depth`) carries
   `reason` and, for the memory kinds, `available_gb` / `required_gb` beside
-  `queued`. The label is remembered per parent (`_queue_wait`) so the drain's and
-  the cancel path's re-emits — which carry no verdict of their own — keep it, and
+  `queued`. The label is remembered per parent (`_queue_wait`) so the drain's,
+  the claim path's (once a claimed row registers, so a started row leaves the
+  count) and the cancel path's re-emits — which carry no verdict of their own —
+  keep it, and
   forgotten at depth 0, where the event is once again the bare `{"queued": 0}`.
   One label per parent, last writer wins: it is the verdict on the most recent
   row the gate judged for that parent, not a per-row ledger. A parent holding a

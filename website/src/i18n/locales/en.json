@@ -4303,6 +4303,10 @@
       "show_pending_tool_call_in_chat": "Show pending tool call in chat",
       "skill": "Skill",
       "slash_commands": "Slash commands",
+      "spawn_awaiting_one": "{{count}} sub-agent is awaiting your approval to run",
+      "spawn_awaiting_other": "{{count}} sub-agents are awaiting your approval to run",
+      "spawn_pending_one": "{{count}} sub-agent pending — answer the request below first",
+      "spawn_pending_other": "{{count}} sub-agents pending — answer the request below first",
       "stop_generation": "Stop generation",
       "stopping": "Stopping…",
       "stopping_2": "Stopping",
@@ -4342,7 +4346,6 @@
       "tab": "tab"
     },
     "commentOverlay": {
-      "add_a_comment": "Add a comment",
       "add_comment": "Add comment",
       "add_instruction": "Add instruction",
       "additional_prompt": "Additional prompt",
@@ -5086,8 +5089,8 @@
       "faster": "Faster",
       "reasoning_effort": "Reasoning effort",
       "smarter": "Smarter",
-      "use_configured_default": "Use configured default",
-      "use_model_default": "Use model default"
+      "use_configured_default": "Use default effort ({{level}})",
+      "use_default_effort": "Use default effort"
     },
     "registryManager": {
       "add_an_org_registry_to_discover_team_specific_ap": "Add an org registry to discover team-specific apps",
@@ -7432,6 +7435,9 @@
       "webview_refresh_error_aged": "Couldn't refresh the dashboard. Showing the version from {{ago}}.",
       "webview_frame_title": "Dashboard filled in by {{crew}}",
       "webview_rendering": "Rendering the dashboard…",
+      "webview_docked_rendering": "Rendering the status card…",
+      "webview_docked_error": "This crewmate's status card could not be rendered. The full dashboard may still open below.",
+      "webview_docked_refresh_error": "Couldn't refresh the status card. Showing the last version that loaded.",
       "webview_retry": "Try again",
       "recent_activity": "Recent activity",
       "activity_chat": "One run: a time this crewmate woke to work — a patrol, a schedule, or a chat you opened",
@@ -7759,7 +7765,12 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Using legacy mode — agent.default_agent as agent template",
         "warm_pool": "Warm Pool",
         "workspace": "Workspace",
-        "workspaces": "Workspaces"
+        "workspaces": "Workspaces",
+        "new_workspace": "New workspace",
+        "change_directory": "Change directory",
+        "delete_workspace_warning": "Its memory, lessons, history and knowledge base stop being used. The folder stays on disk.",
+        "type_workspace_name_to_confirm": "Type “{{name}}” to confirm",
+        "change_directory_hint": "The workspace will read its memory, lessons, history and knowledge base from the new folder. Nothing is moved."
       },
       "mcpTab": {
         "actions": "Actions",

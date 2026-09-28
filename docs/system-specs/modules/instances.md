@@ -1267,13 +1267,13 @@ when empty so a predecessor's token can never be left in place, and both
 `prune_markers()` and `clear_marker()` remove it with the pid it attests.
 
 An absent, oversized, non-ASCII or whitespace-bearing `.start` file all read as
-`""` = **unproven**, never as a wildcard match: `pod.runtime._pod_recorded_pid()`
+`""` = **unproven**, never as a wildcard match: `pod.runtime_attestation._pod_recorded_pid()`
 re-probes the live identity and refuses unless it agrees verbatim, which is what
 lets a PID-record/`MainPID` agreement attest with no listener evidence at all. A
 record with no identity is refused for a *different reason* than a stale one, and
 the two need opposite remedies — a crash leftover is fixed by a restart, while a
 missing identity means the pod's checkout predates this sidecar, so its worktree
-must be rebuilt and re-provisioned. `pod.runtime._unproven_remedy()` splits them,
+must be rebuilt and re-provisioned. `pod.runtime_attestation._unproven_remedy()` splits them,
 because a refusal that prescribes a restart which cannot work sends an agent
 round a loop that never terminates.
 

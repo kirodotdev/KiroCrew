@@ -248,7 +248,12 @@ def test_faiss_install_spawn_env_is_scrubbed(monkeypatch):
     monkeypatch.setattr(memory, "create_subprocess_limited", _capture)
 
     request = MagicMock()
-    request.app = {"state": MagicMock(consolidator=None)}
+    request.app = {"state": MagicMock(consolidator=None, owner_id="")}
+    # Setup is owner-gated: carry the local dashboard owner's claims.
+    claims = {"app": "", "user": "local-app"}
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
+    request.get.side_effect = lambda key, *default: claims.get(key, *default)
 
     memory._embedding_setup_status = {"step": "idle", "error": ""}
     try:

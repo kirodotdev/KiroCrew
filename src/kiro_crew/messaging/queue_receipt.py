@@ -661,7 +661,8 @@ class ReceiptQueue:
         surface: ReceiptSurface,
         answered: list[str],
         deferred: int = 0,
-        owner: str = "",
+        *,
+        owner: str,
     ) -> None:
         """Flip the receipt to a durable "▶️ Now answering" record.
 
@@ -693,10 +694,12 @@ class ReceiptQueue:
         on one session key AND one address, so a PARTIAL drain is the ordinary case
         there rather than an edge. When another principal's line is still listed here
         afterwards the entry is KEPT and the bubble re-rendered as queued, because that
-        entry is the only handle their message has. Empty means the caller cannot name
-        the principal it answered, and then the bubble is finalized whole as it always
-        was -- nothing can tell the answered lines from the ones still queued. Every
-        shipped drain names it.
+        entry is the only handle their message has. REQUIRED and keyword-only, the way
+        the Discord and Telegram wrappers that forward to it already spell it: every
+        drain answers entries the producer tagged with :func:`owner_token`, which never
+        builds an empty token, so a caller that cannot name its principal does not
+        exist and an omission is a type error at the call site rather than a silent
+        return to retiring the whole bubble. There is no unnamed-caller fallback here.
         """
         receipt = self._receipts.pop(session_key, None)
         if receipt is None:
@@ -775,38 +778,37 @@ class ReceiptQueue:
             # bubble beside it for the same burst.
             self._receipts[session_key] = receipt
             return
-        if owner:
-            # ``deferred`` and NOT ``len(answered)``: it is the count this drain itself
-            # put back on the queue for this principal, so it names what is still queued
-            # without assuming every queued message opened a line here -- a refused
-            # ``send_receipt`` and an arrival against a terminal entry both open none.
-            receipt.drop_answered(owner, deferred)
-            if receipt.others_at_address(owner):
-                # A PARTIAL drain: this bubble still lists ANOTHER principal's queued
-                # message, and one drain answers one principal. A group space gives
-                # every member the one session key AND the one address, so both of
-                # their messages are listed on this single bubble and
-                # :meth:`addressed_by` is true for each of them -- which is what makes
-                # this the ordinary case there rather than an edge.
-                #
-                # "Now answering" would say that other member's message went, and
-                # retiring the key strands it exactly the way it strands a partial stop:
-                # this entry is their only handle, so their own later drain finds
-                # nothing to flip and records them nowhere at all, while the next burst
-                # opens a second bubble beside the stale one. So the bubble is
-                # re-rendered to what is STILL queued and the entry stays LIVE. This
-                # turn's own messages lose nothing by that: they are being answered, and
-                # the answer is what says so -- the same reason a partial stop leaves its
-                # caller to learn from the stop reply.
-                #
-                # Rendered from ``texts_at_address`` like every other body here, so it
-                # lists this address's remaining lines and not another conversation's.
-                # A refused re-render owes no record, for the reason a refused GROW owes
-                # none: these messages have not left the queue, so the registry and the
-                # queue still agree and the next transition renders the list again.
-                self._receipts[session_key] = receipt
-                await self._edit(surface, receipt.msg_id, receipt_text(receipt.texts_at_address()))
-                return
+        # ``deferred`` and NOT ``len(answered)``: it is the count this drain itself put
+        # back on the queue for this principal, so it names what is still queued without
+        # assuming every queued message opened a line here -- a refused ``send_receipt``
+        # and an arrival against a terminal entry both open none.
+        receipt.drop_answered(owner, deferred)
+        if receipt.others_at_address(owner):
+            # A PARTIAL drain: this bubble still lists ANOTHER principal's queued
+            # message, and one drain answers one principal. A group space gives every
+            # member the one session key AND the one address, so both of their messages
+            # are listed on this single bubble and :meth:`addressed_by` is true for each
+            # of them -- which is what makes this the ordinary case there rather than an
+            # edge. Unconditional: every caller names its principal, so there is no
+            # "unnamed" flip for which this question could be skipped.
+            #
+            # "Now answering" would say that other member's message went, and retiring
+            # the key strands it exactly the way it strands a partial stop: this entry is
+            # their only handle, so their own later drain finds nothing to flip and
+            # records them nowhere at all, while the next burst opens a second bubble
+            # beside the stale one. So the bubble is re-rendered to what is STILL queued
+            # and the entry stays LIVE. This turn's own messages lose nothing by that:
+            # they are being answered, and the answer is what says so -- the same reason
+            # a partial stop leaves its caller to learn from the stop reply.
+            #
+            # Rendered from ``texts_at_address`` like every other body here, so it lists
+            # this address's remaining lines and not another conversation's. A refused
+            # re-render owes no record, for the reason a refused GROW owes none: these
+            # messages have not left the queue, so the registry and the queue still agree
+            # and the next transition renders the list again.
+            self._receipts[session_key] = receipt
+            await self._edit(surface, receipt.msg_id, receipt_text(receipt.texts_at_address()))
+            return
         if not await self._edit(surface, receipt.msg_id, body):
             # These messages have LEFT the queue, so nothing else will ever revisit this
             # bubble on its own: dropped now it reads "⏳ Queued" for good. The record is

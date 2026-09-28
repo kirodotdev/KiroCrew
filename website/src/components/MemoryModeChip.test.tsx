@@ -62,7 +62,11 @@ describe('MemoryModeChip', () => {
     const onSwitchMode = vi.fn()
     renderWithProviders(<MemoryModeChip memoryMode="temporary" onSwitchMode={onSwitchMode} />)
     const btn = screen.getByText('Temporary — switch to persistent mode').closest('button')!
-    expect(btn.className).toContain('border-warn')
+    // The chip IS a Liquid Glass pane (components/Glass.tsx as the button); warn
+    // is mixed INTO the glass tint (glass-warn) and the border stays transparent.
+    expect(btn.className).toContain('liquid-glass')
+    expect(btn.className).toContain('glass-warn')
+    expect(btn.className).toContain('text-warn')
     expect(btn.className).toContain('rounded-lg')
     fireEvent.click(btn)
     expect(onSwitchMode).toHaveBeenCalledWith('persistent')

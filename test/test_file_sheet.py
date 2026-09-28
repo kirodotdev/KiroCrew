@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import NoConfiguredOwner, as_owner, owner_claims
 
 from kiro_crew.dashboard.handlers import api_file_sheet
 from kiro_crew.dashboard.handlers.files import (
@@ -25,7 +26,7 @@ from kiro_crew.dashboard.handlers.files import (
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-sheet", api_file_sheet)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture
@@ -424,7 +425,8 @@ async def test_cancellation_during_parse_still_audits(tmp_path, mock_sel):
              "kiro_crew.dashboard.handlers.files._run_path_probe",
              side_effect=asyncio.CancelledError,
          ):
-        request = MagicMock()
+        request = owner_claims(MagicMock())
+        request.app = {"state": NoConfiguredOwner()}
         request.query = {"path": str(f)}
         with pytest.raises(asyncio.CancelledError):
             await api_file_sheet(request)

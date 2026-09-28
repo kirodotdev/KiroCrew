@@ -31,7 +31,7 @@ import pathlib
 
 import pytest
 
-from .test_producer import load_build, make_crew, sign_plan
+from .test_producer import called_name, load_build, make_crew, sign_plan, source_defining
 
 _posix_only = pytest.mark.skipif(
     os.name != "posix",
@@ -44,10 +44,6 @@ _NO_REDACTOR = (
     "    _CANONICAL_REDACTOR: Callable[[str], tuple[str, list[str]]] | None = redact_credentials",
     "    _CANONICAL_REDACTOR = None",
 )
-
-
-def _build_py() -> pathlib.Path:
-    return pathlib.Path(__file__).resolve().parents[1] / "build.py"
 
 
 def _build(mod, home: pathlib.Path, work: pathlib.Path, select):
@@ -271,21 +267,15 @@ def test_the_shape_predicate_asks_the_reparse_question() -> None:
     there, so a symlink-only test would let the recursive delete loose on the junction's
     target. Only the source can say which question the code asks.
     """
+    defining = source_defining("_is_shape_this_build_never_writes")
     fn = next(
         n
-        for n in ast.walk(ast.parse(_build_py().read_text(encoding="utf-8")))
+        for n in ast.walk(ast.parse(defining.read_text(encoding="utf-8")))
         if isinstance(n, ast.FunctionDef) and n.name == "_is_shape_this_build_never_writes"
     )
-    attr_calls = {
-        n.func.attr
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-    }
-    name_calls = {
-        n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    }
-    assert "_is_redirecting_entry" in name_calls, f"calls: {name_calls | attr_calls}"
-    assert "is_symlink" not in attr_calls, "the narrow test is back; a junction would pass"
+    calls = {called_name(n) for n in ast.walk(fn) if isinstance(n, ast.Call)}
+    assert "_is_redirecting_entry" in calls, f"calls: {calls}"
+    assert "is_symlink" not in calls, "the narrow test is back; a junction would pass"
 
 
 # ---------------------------------------------------------------------------

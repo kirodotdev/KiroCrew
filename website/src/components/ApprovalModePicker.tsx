@@ -12,6 +12,7 @@ import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { activeElementIsEditable } from '../utils/editableTarget'
+import { slotTrustIsScoped } from '../utils/slotApprovalMode'
 /** Single source of truth for approval-mode presentation.
  *
  *  Only the language-INDEPENDENT metadata (key, icon, colour) lives at module
@@ -173,6 +174,10 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
 
   const display = APPROVAL_SEGMENTS.find(s => s.key === mode) || APPROVAL_SEGMENTS[0]
   const displayText = segmentText(display.key)
+  // Trust that comes from an app's expiring grant, not the person's own flag.
+  const slot = useAppSelector(s => s.dashboard.slots?.find(x => x.key === slotKey))
+  const scopedTrust = mode === 'trust' && slotTrustIsScoped(slot)
+  const scopedTooltip = scopedTrust ? i18nT('components.approvalModePicker.trust_scope_tooltip') : ''
 
   const onOpenChange = (o: boolean) => {
     setOpen(o)
@@ -223,7 +228,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
         {/* Chrome type ("Normal" / "Reads" / "Trust" / "YOLO" are labels), so no
             `font-mono` — that pinned `var(--mono)`, which the Font Family
             setting never writes. */}
-        <button ref={triggerBtnRef} className={`h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-hidden focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2 ${spotlight || (nudge && !open) ? 'ring-2 ring-accent/60 bg-bg-hover text-text' : ''}`} title={i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
+        <button ref={triggerBtnRef} className={`h-7 px-2 rounded-lg text-[12px] text-muted hover:text-text hover:bg-bg-hover flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap outline-hidden focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-accent/50 focus-visible:-outline-offset-2 ${spotlight || (nudge && !open) ? 'ring-2 ring-accent/60 bg-bg-hover text-text' : ''}`} title={scopedTooltip || i18nT('components.approvalModePicker.approval_mode')} aria-label={i18nT('components.approvalModePicker.approval_mode_aria', { mode: displayText.label })}>
           <span className={`shrink-0 ${display.color}`}>{display.icon}</span>
           {!compact && displayText.label}
         </button>
@@ -244,7 +249,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
           <DropdownMenuItem
             key={s.key}
             disabled={blocked}
-            title={t.tooltip}
+            title={s.key === 'trust' && scopedTooltip ? scopedTooltip : t.tooltip}
             onSelect={e => {
               // Belt-and-braces with `disabled`: a denied mode must never reach
               // `pick()`, whose PUT the gateway answers with 403.

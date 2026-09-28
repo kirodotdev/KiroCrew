@@ -1755,6 +1755,96 @@ localised lead, so the hand-off carries the text AWS returned.
 `DrivePage.test.tsx::error surfaces reach the agent`,
 `AwsControlPage.test.tsx::edge states`, and `ConsoleView.test.tsx` pin these.
 
+## The crew bundle builder
+
+`crew/packaging/` curates an owner's local crew into the four-entry bundle the crew image
+copies in: `agent.json`, `mcp.json`, `manifest.json` and `skills/`. It runs as
+`python -m packaging.build` with the crew directory on the import path (the
+`crew/__init__.py` docstring records why that package file has to exist), and it imports as
+`kiro_crew.apps.builtins.aws_control.crew.packaging.build`. `plan` writes a deny-by-default
+review template into `--out` and prints the decision set; `build`, the default verb, writes
+the bundle and prints `SMC_BUNDLE_JSON=<report path>` as its last line. Every refusal is an
+`ExportRefused`, printed as `refused: <reason>` with exit status 2.
+
+The build fails closed. It refuses at its entry on a platform with no descriptor-relative
+no-follow open (Windows, feature-detected rather than named). It refuses a read when
+`kiro_crew.hooks` -- the hard-link, sensitive-path and UNC authority -- is not importable, and
+it refuses an external prompt reference when `kiro_crew.security.is_sensitive_path` is not. It
+ships a skill or MCP server only when a
+signed plan selects it and its content still matches the pin the review recorded. And it
+refuses, rather than skips, anything it cannot read, scan or hash.
+
+### Builder composition and ownership
+
+`packaging.build` is the builder's only import path and patch surface. What it runs lives in
+the private package `packaging.pipeline`, one owner per responsibility, lowest layer first:
+
+| Owner | Holds |
+|---|---|
+| `pipeline/contract.py` | the bundle, plan and report versions, `PLAN_FILENAME`, the staging top-level names, the read ceiling, `ExportRefused` |
+| `pipeline/scan.py` | `scan_text` and its detectors: the local hard patterns, the canonical detector and redactor when importable, the bounded base64 decode pass, the bare-secret detector. A finding carries four characters of the match and its length, never the match |
+| `pipeline/sensitive.py` | `refused_by_name`, `refused_by_location` and the standalone floor `_looks_sensitive_standalone`, checked with the shared validator and never instead of it |
+| `pipeline/pinned.py` | the platform predicate and the entry refusal, redirect detection, the reparse-safe walk, per-component no-follow directory pins, the leaf readers |
+| `pipeline/destination.py` | the `--out` UNC screen, the parent check before a `mkdir`, and the one no-follow writer every plan, marker, report and staged leaf goes through |
+| `pipeline/hashing.py` | the skill content pin `_tree_hash`, that pin over the staged copy, and `bundle_digest` |
+| `pipeline/crew.py` | `_validated_crew_name`, `_refuse_unless_launchable`, `resolve_crew`, and the agent-spec read |
+| `pipeline/candidates.py` | skill and MCP candidate enumeration; a candidate carries its pin or the reason it can never be included |
+| `pipeline/plan.py` | the review template, the guarded `--allow` read, `merge_plans`, `verify` and the decision set |
+| `pipeline/prompt.py` | the `file://` persona read: the UNC and redirect screens before resolution, the fences on the one resolution, the read bound to the pinned anchor's identity |
+| `pipeline/spec.py` | `build_spec`: the inlined prompt, the dropped keys, the approved and cleaned MCP servers, the narrowed tool grants |
+| `pipeline/layout.py` | the staged leaf writes with their last-chance scan, and the selected-skill copy |
+| `pipeline/staging.py` | the per-run staging marker, the ownership proof by path and through a held descriptor, and the private-aside disposal that deletes only the tree that proof verified |
+| `pipeline/report.py` | the report schema, the check that an existing report is this tool's, the hard-link capability probe, the no-replace publish |
+| `pipeline/transaction.py` | `build_bundle` |
+| `pipeline/cli.py` | the two verbs and `main` |
+
+`build_bundle` is one transaction. It claims staging beside `--out` with `mkdir` and a marker
+naming this run, writes every staged leaf relative to the retained staging descriptor,
+re-hashes each selected skill's staged copy against its reviewed pin, and carries the
+operator's plan across. The previous bundle is moved into a run-private directory under the
+pinned parent and verified there before it is kept or deleted, the staging inode is confirmed
+before the pinned-parent rename that promotes it, and the report is published by exclusive
+hard link only after promotion. A refusal before promotion releases this run's staging tree
+and marker and leaves the previous bundle and report in place. The one partial success is a
+promoted bundle whose report did not publish: the report is then absent, and a previous
+report is removed only while its bytes are the ones this run read at the start.
+
+A read through the facade answers from the owner that defines the name, on each access,
+through `sys.modules`: no owner-defined name is bound in the facade, the one-storage rule
+`test_mirrored_owner_storage.py` enforces, and the names are declared to the type checker
+under `TYPE_CHECKING`. A write or a delete through it lands on that owner. Inside the pipeline
+an owner calls a function another owner defines through that owner's module, never through a
+copy imported by name, so `monkeypatch.setattr(build, ...)` reaches every caller the way it
+did when the builder was one module. Classes and constants are imported by name, so a write
+of one through the facade reaches no owner that imported it; neither does a write of a name
+the facade does not forward (such as `os`, which each owner binds for itself), and a write
+that may create the name cannot be undone, because its undo only deletes.
+`test_pipeline_composition.py` reads every test module under `test/` and every `tests`
+directory under `src/` that can reach the builder, resolves each write's target and attribute
+from the syntax tree, and refuses those shapes. It resolves `mock.patch`, `patch.object` and
+`patch.multiple` reached through any import alias, called or used as a decorator, with
+positional, keyword, f-string or concatenated targets; `monkeypatch.setattr` and `delattr`
+in the object and dotted-string forms; the `setattr` and `delattr` builtins; and assignment,
+augmented assignment and `del` of an attribute. The facade it recognises is an import of it,
+a `load_build` copy, a fixture or helper returning one, a helper parameter its callers fill
+with one, or an assignment chain to any of them. A write passing `create` as anything but
+`False` or `raising` as anything but `True`, or naming an attribute the source does not fix, is
+refused, and one deliberate demonstration is exempt by file and enclosing test. The
+standard-library names the one-module builder bound stay bound in the facade, so each still
+resolves there. Run as `python -m packaging.build` the facade is `__main__`, so it resolves its
+owners against `__package__` rather than `__name__`; run by file path (`python .../build.py`)
+it has no package to resolve them against and refuses with exit status 2, naming the
+`python -m` entry.
+
+The suites in `crew/packaging/tests/` load a throwaway copy of the whole package
+(`test_producer.load_build`) so a mutation test can disable one guard in whichever owner holds
+it; an anchor has to occur in exactly one builder file, and a copy leaves `sys.modules` when
+the next test loads one, never from a garbage-collection callback. Source rules read every
+builder file. `test_pipeline_composition.py` pins the frozen name inventory, the export table
+against the owners' own definitions, that the facade's own code reads no forwarded name as a
+bare global, that a loaded owner is read and written without calling
+`importlib.import_module`, the layer order, the late-binding rule and the write rule above.
+
 ## The crew container runtime
 
 `crew/runtime/` is the source of a Linux container image, not code the owner's

@@ -146,8 +146,8 @@ def test_MUTATION_resolving_before_the_fence(tmp_path):
 
     bad = load_build(
         mutate=(
-            "if refused_by_location(resolved) or refused_by_location(path):",
-            "if refused_by_location(path):",
+            "if _sensitive.refused_by_location(resolved) or _sensitive.refused_by_location(path):",
+            "if _sensitive.refused_by_location(path):",
         )
     )
     accepted = bad._resolve_prompt_path(f"file://{link}", agents_dir)

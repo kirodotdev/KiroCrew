@@ -133,16 +133,16 @@ beforeEach(() => {
 describe('ChatPage — switch labels update without a slot-list round trip (#4523)', { timeout: 15_000 }, () => {
   it('model chip shows the new model as soon as the switch call resolves', async () => {
     const store = await renderChat()
-    expect(screen.getByTitle('Model: claude-opus-5')).toBeTruthy()
+    expect(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)).toBeTruthy()
     const slotsFetchesBeforePick = vi.mocked(api.chatSlots).mock.calls.length
 
-    const chip = screen.getByTitle('Model: claude-opus-5')
+    const chip = screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(option) })
 
     // Label reflects the pick…
-    expect(await waitFor(() => screen.getByTitle('Model: claude-sonnet-5'))).toBeTruthy()
+    expect(await waitFor(() => screen.getByTitle(/^Model: claude-sonnet-5(?: ·|$)/))).toBeTruthy()
     // …because the store was written on API success…
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.model).toBe('claude-sonnet-5')
     // …not because anything re-fetched the slot list (and no websocket exists
@@ -157,7 +157,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     // (factory default) answers 'claude-sonnet-5' — an implementation that
     // dispatches the REQUEST value writes 'auto' and fails the assertion.
     const store = await renderChat()
-    const chip = screen.getByTitle('Model: claude-opus-5')
+    const chip = screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)
     await act(async () => { fireEvent.click(chip) })
     // Pick the auto row; the (mocked) server answers with its stored value.
     const option = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
@@ -168,7 +168,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
   it('does not relabel the chip when the switch call fails', async () => {
     vi.mocked(api.chatSlotModel).mockRejectedValueOnce(new Error('boom'))
     const store = await renderChat()
-    const chip = screen.getByTitle('Model: claude-opus-5')
+    const chip = screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(option) })
@@ -176,7 +176,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     // The pick failed: the store keeps the pre-switch model and the chip
     // keeps naming it.
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.model).toBe('claude-opus-5')
-    expect(screen.getByTitle('Model: claude-opus-5')).toBeTruthy()
+    expect(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)).toBeTruthy()
   })
 
   it('serializes two rapid picks and ends on the LATEST one', async () => {
@@ -191,12 +191,12 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
       .mockImplementationOnce(async () => ({ ok: true, model: 'auto' }))
     const store = await renderChat()
 
-    const chip = screen.getByTitle('Model: claude-opus-5')
+    const chip = screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)
     await act(async () => { fireEvent.click(chip) })
     const first = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(first) })
     // The first call has not resolved, so the chip still names the old model.
-    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
+    await act(async () => { fireEvent.click(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)) })
     const second = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
     await act(async () => { fireEvent.click(second) })
 
@@ -279,7 +279,7 @@ describe('ChatPage — model picker closes on a row click', { timeout: 15_000 },
 
   it('a click on a model row switches the model and dismisses the picker', async () => {
     await renderChat()
-    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
+    await act(async () => { fireEvent.click(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)) })
     expect(modelList()).toBeTruthy()
     const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(option) })
@@ -288,27 +288,27 @@ describe('ChatPage — model picker closes on a row click', { timeout: 15_000 },
     // menu is gone before the switch resolves, the same as the agent picker.
     expect(modelList()).toBeNull()
     await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalledWith('slot-a', 'claude-sonnet-5'))
-    expect(await waitFor(() => screen.getByTitle('Model: claude-sonnet-5'))).toBeTruthy()
+    expect(await waitFor(() => screen.getByTitle(/^Model: claude-sonnet-5(?: ·|$)/))).toBeTruthy()
   })
 
   it('closes on the click even when the switch is rejected', async () => {
     // Failure is reported by the notice toast, not by a menu left open.
     vi.mocked(api.chatSlotModel).mockRejectedValueOnce(new Error('boom'))
     await renderChat()
-    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
+    await act(async () => { fireEvent.click(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)) })
     const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(option) })
     expect(modelList()).toBeNull()
     await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalled())
-    expect(screen.getByTitle('Model: claude-opus-5')).toBeTruthy()
+    expect(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)).toBeTruthy()
   })
 
   it('the picker reopens from the chip after a pick', async () => {
     await renderChat()
-    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
+    await act(async () => { fireEvent.click(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/)) })
     const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(option) })
-    const chip = await waitFor(() => screen.getByTitle('Model: claude-sonnet-5'))
+    const chip = await waitFor(() => screen.getByTitle(/^Model: claude-sonnet-5(?: ·|$)/))
     await act(async () => { fireEvent.click(chip) })
     expect(modelList()).toBeTruthy()
   })
@@ -332,7 +332,7 @@ describe('ChatPage — a model pick returns focus to the composer only if it had
     await renderChat()
     composer().focus()
     expect(document.activeElement).toBe(composer())
-    await pressChip(screen.getByTitle('Model: claude-opus-5'))
+    await pressChip(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/))
     // The press itself moved focus off the composer, as a real click does.
     expect(document.activeElement).not.toBe(composer())
     const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
@@ -346,7 +346,7 @@ describe('ChatPage — a model pick returns focus to the composer only if it had
     await renderChat()
     ;(document.activeElement as HTMLElement | null)?.blur?.()
     expect(document.activeElement).not.toBe(composer())
-    await pressChip(screen.getByTitle('Model: claude-opus-5'))
+    await pressChip(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/))
     const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(option) })
     await nextFrame()
@@ -357,14 +357,14 @@ describe('ChatPage — a model pick returns focus to the composer only if it had
   it('the snapshot is per press: a focused first open does not leak into a later unfocused one', async () => {
     await renderChat()
     composer().focus()
-    await pressChip(screen.getByTitle('Model: claude-opus-5'))
+    await pressChip(screen.getByTitle(/^Model: claude-opus-5(?: ·|$)/))
     let option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(option) })
     await nextFrame()
     expect(document.activeElement).toBe(composer())
 
     composer().blur()
-    await pressChip(await waitFor(() => screen.getByTitle('Model: claude-sonnet-5')))
+    await pressChip(await waitFor(() => screen.getByTitle(/^Model: claude-sonnet-5(?: ·|$)/)))
     option = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
     await act(async () => { fireEvent.click(option) })
     await nextFrame()

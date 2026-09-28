@@ -59,19 +59,25 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
+import unicodedata
+import uuid
+from dataclasses import asdict, dataclass, field
+from dataclasses import fields as fields_of
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Iterator
 from typing import List as _List
+from typing import Mapping
 
-from kiro_crew import hooks, pinned_fs
+from kiro_crew import hooks, pinned_fs, platform_compat
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.artifact_store import comments as _threads
 from kiro_crew.artifact_store import records as _records
-from kiro_crew.artifact_store.comments import (  # noqa: F401 — re-export for API compatibility
-    filter_comments_for_forward,
-)
+from kiro_crew.artifact_store import rules as _rules
+from kiro_crew.artifact_store.comments import filter_comments_for_forward
 from kiro_crew.artifact_store.folders import (  # noqa: F401 — re-export for API compatibility
     _NO_GENERATIONS,
     FOLDER_PATH_SEP,
@@ -84,7 +90,7 @@ from kiro_crew.artifact_store.images import (  # noqa: F401 — re-export for AP
     _sniff_jpeg_dimensions,
     _sniff_webp_dimensions,
 )
-from kiro_crew.artifact_store.model import (  # noqa: F401 — re-export for API compatibility
+from kiro_crew.artifact_store.model import (
     EXPECT_ABSENT,
     Artifact,
     ArtifactAlreadyExistsError,
@@ -132,12 +138,11 @@ from kiro_crew.artifact_store.rules import (  # noqa: F401 — re-export for API
     detect_editor_kind,
     has_unthemed_hardcoded_colors,
     is_document_path,
-    slug_is_well_formed,
     slugify,
 )
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.constants import ARTIFACT_MAX_CONTENT_BYTES
-from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API compatibility
+from kiro_crew.deploy.webapp_types import (
     WebAppArchitecture,
     WebAppCost,
     WebAppDeployTarget,
@@ -147,6 +152,7 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API 
     webapp_metadata_from_dict,
 )
 from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
+from kiro_crew.publish_provider import DEFAULT_PROVIDER
 from kiro_crew.security import (
     canonical_path_refusal,
     is_sensitive_canonical_path,
@@ -154,6 +160,94 @@ from kiro_crew.security import (
     is_unverifiable_path_refusal,
     sensitive_path_refusal,
 )
+from kiro_crew.slugs import slug_hash_fallback
+
+# The facade's whole star-import surface, the names its owner modules define included.
+__all__ = [
+    "ALLOWED_EVENT_TYPES",
+    "ALLOWED_KINDS",
+    "ALLOWED_SOURCES",
+    "ARTIFACTS_CREATED",
+    "ARTIFACT_MAX_CONTENT_BYTES",
+    "Any",
+    "Artifact",
+    "ArtifactAlreadyExistsError",
+    "ArtifactComment",
+    "ArtifactError",
+    "ArtifactFolderStore",
+    "ArtifactNotFoundError",
+    "ArtifactPublication",
+    "ArtifactReplacedError",
+    "ArtifactStillPublishedError",
+    "ArtifactStore",
+    "ArtifactValidationError",
+    "Callable",
+    "DEFAULT_PROVIDER",
+    "DOC_EXTENSIONS",
+    "EXPECT_ABSENT",
+    "FOLDER_PATH_SEP",
+    "ForkMetadata",
+    "ImageMetadata",
+    "Iterator",
+    "KiroCrewConfig",
+    "MAX_AUTO_WIDGET_ARTIFACTS",
+    "MAX_COMMENTS_PER_ARTIFACT",
+    "MAX_CONTENT_BYTES",
+    "MAX_DESCRIPTION_LEN",
+    "MAX_EVENTS_PER_ARTIFACT",
+    "MAX_FOLDER_DEPTH",
+    "MAX_NAME_LEN",
+    "MAX_SOURCE_PATH_LEN",
+    "MAX_TAGS",
+    "MAX_VERSIONS",
+    "Mapping",
+    "MappingProxyType",
+    "Path",
+    "USER_SELECTABLE_KINDS",
+    "WebAppArchitecture",
+    "WebAppCost",
+    "WebAppDeployTarget",
+    "WebAppLifecycle",
+    "WebAppMetadata",
+    "WebAppTeardown",
+    "annotations",
+    "asdict",
+    "canonical_path_refusal",
+    "config_dir",
+    "dataclass",
+    "datetime",
+    "detect_editor_kind",
+    "emit_counter",
+    "field",
+    "fields_of",
+    "filter_comments_for_forward",
+    "get_default_folder_store",
+    "get_default_store",
+    "has_unthemed_hardcoded_colors",
+    "hashlib",
+    "hooks",
+    "is_document_path",
+    "is_sensitive_canonical_path",
+    "is_sensitive_path",
+    "is_unverifiable_path_refusal",
+    "is_verifiable_root",
+    "json",
+    "logger",
+    "logging",
+    "os",
+    "pinned_fs",
+    "re",
+    "sensitive_path_refusal",
+    "slug_hash_fallback",
+    "slug_is_well_formed",
+    "slugify",
+    "tempfile",
+    "threading",
+    "timezone",
+    "unicodedata",
+    "uuid",
+    "webapp_metadata_from_dict",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +334,23 @@ def _validate_content(content: str) -> str:
     if len(encoded) > MAX_CONTENT_BYTES:
         raise ArtifactValidationError(f"content exceeds {MAX_CONTENT_BYTES} bytes ({len(encoded)})")
     return content
+
+
+def slug_is_well_formed(slug: str) -> bool:
+    """Whether this string could name an artifact, said without asking whether one exists.
+
+    Defined on top of the same validator every store method applies, so a caller deciding
+    what to do with a slug the store has not resolved cannot disagree with the store about
+    which strings are slugs at all. The publication guard needs exactly this question: an
+    artifact created inside a delete's own window has no record to resolve, so the guard has
+    to be taken on the NAME, while a malformed name is still passed through unguarded so the
+    store can answer for it.
+    """
+    try:
+        _validate_slug(slug)
+    except ArtifactValidationError:
+        return False
+    return True
 
 
 # ── Store ────────────────────────────────────────────────────────────────────
@@ -557,8 +668,8 @@ class ArtifactStore:
             width=width,
             height=height,
             sha256=hashlib.sha256(data).hexdigest(),
-            original_filename=str(original_filename or "")[:MAX_NAME_LEN],
-            alt=str(alt or "")[:MAX_DESCRIPTION_LEN],
+            original_filename=str(original_filename or "")[: _rules.MAX_NAME_LEN],
+            alt=str(alt or "")[: _rules.MAX_DESCRIPTION_LEN],
         )
 
         with self._lock:
@@ -1100,10 +1211,10 @@ class ArtifactStore:
                     # version bump and versions/v{N}.html write, leaving an
                     # orphaned file on disk because _write_meta is never
                     # reached. Validate first; commit second.
-                    if event_type is not None and event_type not in ALLOWED_EVENT_TYPES:
+                    if event_type is not None and event_type not in _records.ALLOWED_EVENT_TYPES:
                         raise ArtifactValidationError(
                             f"invalid event type {event_type!r}: "
-                            f"must be one of {sorted(ALLOWED_EVENT_TYPES)}"
+                            f"must be one of {sorted(_records.ALLOWED_EVENT_TYPES)}"
                         )
                     # Bump version + capture the new state under
                     # versions/v{N}.html so it's preserved in history.
@@ -2487,16 +2598,63 @@ class ArtifactStore:
 
     @staticmethod
     def _rmtree(path: Path) -> None:
-        # Stdlib-only recursive delete (we don't depend on shutil here for clarity).
-        for sub in sorted(path.rglob("*"), key=lambda p: -len(str(p))):
-            try:
-                if sub.is_file() or sub.is_symlink():
-                    sub.unlink()
-                elif sub.is_dir():
-                    sub.rmdir()
-            except OSError as exc:  # pragma: no cover — best-effort cleanup
-                logger.warning("rmtree partial failure at %s: %s", sub, exc)
-        path.rmdir()
+        """Remove *path* and everything under it, anchored to PINNED directories.
+
+        Stdlib-only (no ``shutil``), and deliberately not a walker. Screening a name
+        for a link and then acting on that name are two operations on two objects,
+        and every walker in the stdlib re-resolves the name in between:
+        ``os.walk``'s own descent-time re-check is ``os.path.islink``, which answers
+        False for a Windows junction, and ``rglob`` descends one unconditionally. A
+        junction planted at a child that screened clean was therefore still
+        descended, and this function unlinked the link target's files -- outside the
+        artifact store. Creating a junction needs no elevation, and the agent both
+        triggers a delete and can retry it, so the window is ordinary.
+
+        :class:`platform_compat.PinnedDirectory` is what closes it, and it closes
+        BOTH halves: the descent refuses a link in the open itself rather than in a
+        check before it, and each removal is anchored to the directory that was
+        inspected -- ``dir_fd``-relative on POSIX, and by a path the Windows pin
+        holds still. A parent stays pinned while its child is being emptied, so the
+        whole chain is pinned for the length of the sweep.
+
+        Failures: each entry that will not go is logged and the sweep continues, so
+        the warnings name every residual rather than stopping at the first. The
+        removal of *path* itself is NOT guarded -- a residual anywhere keeps it
+        non-empty, so it fails, and the caller must see that: it logs a successful
+        delete and fires its ``"delete"`` event unconditionally, and a Windows
+        sharing violation on a store file is an ordinary occurrence.
+        """
+
+        def _empty(pinned: platform_compat.PinnedDirectory) -> None:
+            for name in sorted(pinned.names()):
+                try:
+                    if pinned.is_link(name) or not pinned.is_dir(name):
+                        pinned.unlink(name)
+                        continue
+                    child = pinned.child_if_real_dir(name)
+                    if child is None:
+                        # Replaced between the screen above and the open, and the open
+                        # refusing IS the protection working. Whatever is at the name
+                        # now is a link or a plain file, so remove it as one; a real
+                        # directory (including a chain too deep to sweep) re-raises out
+                        # of the helper and is reported as a residual below.
+                        pinned.unlink(name)
+                        continue
+                    with child:
+                        _empty(child)
+                    pinned.rmdir(name)
+                except OSError as exc:
+                    logger.warning(
+                        "rmtree partial failure at %s: %s", os.path.join(pinned.path, name), exc
+                    )
+
+        # The PARENT is pinned too, so even the root's own removal is anchored
+        # rather than a by-name ``rmdir`` the pinning above would leave as the one
+        # unprotected step.
+        with platform_compat.pinned_directory(path.parent) as parent:
+            with parent.child(path.name) as root:
+                _empty(root)
+            parent.rmdir(path.name)
 
 
 # ── Module-level singleton ──────────────────────────────────────────────────
@@ -2523,5 +2681,9 @@ def get_default_folder_store() -> "ArtifactFolderStore":
     global _default_folder_store
     with _default_folder_store_lock:
         if _default_folder_store is None:
-            _default_folder_store = ArtifactFolderStore()
+            # The path comes from this module's ``config_dir``, the binding the
+            # default store's root reads, so one patch of it relocates both.
+            _default_folder_store = ArtifactFolderStore(
+                path=config_dir() / ArtifactFolderStore._FILE
+            )
         return _default_folder_store

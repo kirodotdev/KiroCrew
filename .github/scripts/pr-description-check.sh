@@ -16,7 +16,8 @@
 #
 # The rules:
 #   - every heading in REQUIRED_SECTIONS is present, as a real ATX heading
-#     outside fenced code, matched as a case-insensitive prefix;
+#     outside fenced code and HTML comments, matched as a case-insensitive
+#     prefix;
 #   - `## Problem / Motivation` carries a `**Goal:** <text>` line: the PR's
 #     frozen, one-sentence goal.
 #
@@ -75,6 +76,13 @@ headings="$(awk '
     n = 0
     while (n < 3 && substr(s, 1, 1) == " ") { s = substr(s, 2); n++ }
 
+    # An HTML comment block (CommonMark HTML block type 2) opens on a line
+    # starting `<!--` and closes on the first line containing `-->`. GitHub
+    # renders nothing inside it, so a commented-out heading neither satisfies
+    # a required section nor ends one. Checked before fences: a fence line
+    # inside a comment is comment text.
+    if (in_comment) { if (index(s, "-->") > 0) in_comment = 0; next }
+
     mch = ""
     if (substr(s, 1, 3) == "```") mch = "`"
     else if (substr(s, 1, 3) == "~~~") mch = "~"
@@ -91,6 +99,11 @@ headings="$(awk '
       if (mch == open && mlen >= olen && rest ~ /^[ \t]*$/) {
         open = ""; olen = 0
       }
+      next
+    }
+
+    if (substr(s, 1, 4) == "<!--") {
+      if (index(s, "-->") == 0) in_comment = 1
       next
     }
 

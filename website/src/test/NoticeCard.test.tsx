@@ -92,6 +92,16 @@ describe('NoticeCard', () => {
     expect(container.querySelector('.sr-only')).toBeNull()
   })
 
+  it('keeps a multi-line notice on its own lines', () => {
+    // A Slack thread's first message is recorded as a notice above the reply;
+    // its line breaks are the only structure it has.
+    const content = 'Thread started by Kiro Crew on Slack:\nShould the budget reset?\n- yes\n- no'
+    const { container } = render(<NoticeCard content={content} />)
+    const text = container.querySelector('[data-testid="notice-card-text"]')!
+    expect(text.classList.contains('whitespace-pre-line')).toBe(true)
+    expect(text.textContent).toBe(content)
+  })
+
   it('spans the full column width like the RecoveryCard it stacks with', () => {
     const { container } = render(<NoticeCard content="notice" />)
     const card = container.querySelector('[data-testid="notice-card"]')!

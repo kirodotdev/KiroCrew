@@ -518,48 +518,83 @@ class TestFleetProbe:
         proc = tmp_path / "proc"
         (proc / "4242").mkdir(parents=True)
         (proc / "4242" / "cmdline").write_bytes(
-            b"python\x00-m\x00pytest\x00--token\x00secret-token\x00test\x00"
+            b"python\x00-m\x00pytest\x00-n\x004\x00--token\x00secret-token\x00test\x00"
         )
         (proc / "4343").mkdir(parents=True)
-        (proc / "4343" / "cmdline").write_bytes(b"pytest\x00-n\x004\x00test/x.py\x00")
+        (proc / "4343" / "cmdline").write_bytes(b"pytest\x00-n\x00auto\x00test/x.py\x00")
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
-        assert "BANNED pid=4242" in out  # unbounded pytest
+        assert "BANNED pid=4242" in out  # an explicit count bypasses the budget
         assert "rule=" in out  # which rule fired is reported...
         assert "secret-token" not in out  # ...the argv itself never is
-        assert "pid=4343" not in out  # bounded -n 4 run is legitimate
+        assert "pid=4343" not in out  # the budgeted -n auto run is legitimate
 
-    def test_every_bounded_pytest_spelling_is_legitimate(self, tmp_path, capsys, monkeypatch):
-        """`-n 4`, `-n=4`, `-n4`, `--numprocesses=4` and `-n0` are all bounded
-        runs; flagging any of them would make the conductor stop a healthy worker
-        and discard its active turn.
+    def test_every_budgeted_pytest_spelling_is_legitimate(self, tmp_path, capsys, monkeypatch):
+        """The verdict table, row by row, plus the spellings the
+        ruling names: budgeted and single-process forms are quiet, an explicit count
+        of two or more is reported.
 
-        ``-n0`` earns its own case because it is the form the fleet is REQUIRED
-        to use: it is the repo's documented override (``setup.cfg``: "Override
-        with -n0 for debugging"), it is genuinely in-process, and a rule that
-        flagged the mandated form would stop every worker obeying it. It is
-        covered by the same ``\\d`` branch as ``-n4``, which is asserted here
-        rather than assumed."""
+        On this repository ``auto`` is the BOUNDED spelling -- ``xdist_budget.py``'s
+        ``pytest_xdist_auto_num_workers`` sizes it by memory and by the host's other
+        runs -- and ``setup.cfg`` states that "an explicit -n <N> bypasses the
+        budget". The gate runner (``scripts/run_scoped_tests.py``) emits ``-n auto``
+        and cannot pass a number; a bare pytest inherits ``-n auto`` from ``addopts``.
+        So flagging ``auto`` stopped every healthy worker's gate run, and staying
+        quiet on ``-n 32`` hid the one shape that can take a shared host down.
+
+        ``-n0`` stays quiet as the form the fleet is REQUIRED to use on its own test
+        runs (``setup.cfg``: "Override with -n0 for debugging"); ``-n 1`` is the same
+        single process spelled differently."""
         mod = self._mod()
         proc = tmp_path / "proc"
-        for pid, argv in (
-            ("11", b"pytest\x00-n=4\x00test/x.py\x00"),
-            ("12", b"pytest\x00-n4\x00test/x.py\x00"),
-            ("13", b"pytest\x00--numprocesses=4\x00test/x.py\x00"),
-            ("14", b"pytest\x00-n\x00auto\x00test/x.py\x00"),  # unbounded: fires
-            ("15", b"python\x00-m\x00pytest\x00-n0\x00test/x.py\x00-x\x00-q\x00"),
-            ("16", b"pytest\x00-n\x000\x00test/x.py\x00"),
-            ("17", b"pytest\x00--numprocesses=0\x00test/x.py\x00"),
-        ):
+        quiet = {
+            # The issue's table: gate full-suite argv, gate related-set argv, bare pytest.
+            "11": b"python\x00-m\x00pytest\x00-n\x00auto\x00--dist\x00loadgroup\x00test/\x00",
+            "12": b"python\x00-m\x00pytest\x00-n\x00auto\x00--dist\x00loadgroup\x00test/x.py\x00",
+            "13": b"python\x00-m\x00pytest\x00test/x.py\x00",
+            # The single-process spellings.
+            "14": b"pytest\x00-n0\x00test/x.py\x00",
+            "15": b"python\x00-m\x00pytest\x00-n0\x00test/x.py\x00-x\x00-q\x00",
+            "16": b"pytest\x00-n\x000\x00test/x.py\x00",
+            "17": b"pytest\x00-n=0\x00test/x.py\x00",
+            "18": b"pytest\x00-n\x001\x00test/x.py\x00",
+            "19": b"pytest\x00--numprocesses=0\x00test/x.py\x00",
+            "20": b"pytest\x00--numprocesses\x001\x00test/x.py\x00",
+            # The other hook-resolved spellings.
+            "21": b"pytest\x00-n\x00logical\x00test/x.py\x00",
+            "22": b"pytest\x00--numprocesses\x00auto\x00test/x.py\x00",
+            "23": b"pytest\x00-nauto\x00test/x.py\x00",
+            "24": b"pytest\x00-n=auto\x00test/x.py\x00",
+            # argparse last-wins: the effective count is auto.
+            "25": b"pytest\x00-n\x004\x00-n\x00auto\x00test/x.py\x00",
+        }
+        loud = {
+            # The issue's table: the budget bypass, in every spelling.
+            "31": b"pytest\x00-n\x0032\x00test\x00",
+            "32": b"pytest\x00-n=4\x00test/x.py\x00",
+            "33": b"pytest\x00-n4\x00test/x.py\x00",
+            "34": b"pytest\x00-n\x002\x00test/x.py\x00",
+            "35": b"pytest\x00--numprocesses=4\x00test/x.py\x00",
+            "36": b"pytest\x00--numprocesses\x002\x00test/x.py\x00",
+            "37": b"python\x00-m\x00pytest\x00-n\x008\x00--dist\x00loadgroup\x00test/\x00",
+            # argparse last-wins: the effective count is 4.
+            "38": b"pytest\x00-n\x00auto\x00-n\x004\x00test/x.py\x00",
+            # A value pytest rejects at argument parsing: fail-closed for a monitoring
+            # control, so it reports rather than exonerates.
+            "39": b"pytest\x00-n\x004abc\x00test/x.py\x00",
+        }
+        for pid, argv in {**quiet, **loud}.items():
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
-        for quiet in ("pid=11", "pid=12", "pid=13", "pid=15", "pid=16", "pid=17"):
-            assert quiet not in out, quiet
-        assert "pid=14" in out  # -n auto is the unbounded case
+        reported = {
+            ln.split("pid=")[1].split()[0] for ln in out.splitlines() if "BANNED pid=" in ln
+        }
+        assert reported & set(quiet) == set(), sorted(reported & set(quiet))
+        assert set(loud) <= reported, sorted(set(loud) - reported)
 
     def test_readout_separates_a_whole_suite_run_from_a_path_scoped_one(
         self, tmp_path, capsys, monkeypatch
@@ -580,10 +615,10 @@ class TestFleetProbe:
         for pid, argv in (
             # Absolute interpreter, no target: separators exist but only before
             # the runner token, so this must still read as a whole-suite run.
-            ("21", b"/usr/bin/python3\x00-m\x00pytest\x00-q\x00"),
-            ("22", b"pytest\x00-q\x00test/x.py\x00"),  # a plain file target
-            ("23", b"pytest\x00-q\x00test/x.py::test_one\x00"),  # a node id
-            ("24", b"pytest\x00-q\x00-k\x00some_name\x00"),  # a selector, no path
+            ("21", b"/usr/bin/python3\x00-m\x00pytest\x00-n4\x00-q\x00"),
+            ("22", b"pytest\x00-n4\x00-q\x00test/x.py\x00"),  # a plain file target
+            ("23", b"pytest\x00-n4\x00-q\x00test/x.py::test_one\x00"),  # a node id
+            ("24", b"pytest\x00-n4\x00-q\x00-k\x00some_name\x00"),  # a selector, no path
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -617,7 +652,7 @@ class TestFleetProbe:
         proc = tmp_path / "proc"
         (proc / "31").mkdir(parents=True)
         (proc / "31" / "cmdline").write_bytes(
-            b"python\x00-m\x00pytest\x00--token\x00sec\x00test\x00"
+            b"python\x00-m\x00pytest\x00-n4\x00--token\x00sec\x00test\x00"
         )
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
@@ -661,7 +696,7 @@ class TestFleetProbe:
         proc = tmp_path / "proc"
         glued = b"-m" + b"pytest"
         for pid, argv in (
-            ("61", b"pytest\x00--pyargs\x00kiro_crew.mod\x00"),
+            ("61", b"pytest\x00-n4\x00--pyargs\x00kiro_crew.mod\x00"),
             ("62", b"/usr/bin/python3\x00" + glued + b"\x00-q\x00"),
         ):
             (proc / pid).mkdir(parents=True)
@@ -695,11 +730,11 @@ class TestFleetProbe:
         proc = tmp_path / "proc"
         for pid, argv in (
             # A path-shaped value: the separator belongs to `--cov`, not a target.
-            ("51", b"/usr/bin/python3\x00-m\x00pytest\x00--cov\x00src/kiro_crew\x00-q\x00"),
+            ("51", b"/usr/bin/python3\x00-m\x00pytest\x00-n4\x00--cov\x00src/kiro_crew\x00-q\x00"),
             # A `::`-shaped value: a warning filter, not a node id.
-            ("52", b"pytest\x00-W\x00ignore::DeprecationWarning\x00-q\x00"),
+            ("52", b"pytest\x00-n4\x00-W\x00ignore::DeprecationWarning\x00-q\x00"),
             # An `--ignore <path>` narrows nothing about the run's fan-out.
-            ("53", b"pytest\x00--ignore\x00test/slow\x00"),
+            ("53", b"pytest\x00-n4\x00--ignore\x00test/slow\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -774,7 +809,7 @@ class TestFleetProbe:
             expected[pid] = (opt, value)
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(
-                b"pytest\x00" + opt.encode() + b"\x00" + value.encode() + b"\x00"
+                b"pytest\x00-n4\x00" + opt.encode() + b"\x00" + value.encode() + b"\x00"
             )
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
@@ -806,11 +841,11 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         for pid, argv in (
-            ("21", b"bash\x00-c\x00cd /x && pytest -q test/y.py\x00"),
-            ("22", b"/bin/bash\x00-c\x00pytest test/y.py\x00"),
+            ("21", b"bash\x00-c\x00cd /x && pytest -n 4 -q test/y.py\x00"),
+            ("22", b"/bin/bash\x00-c\x00pytest -n 4 test/y.py\x00"),
             ("23", b"sh\x00-c\x00vitest run\x00"),
-            ("24", b"/usr/bin/busybox\x00-c\x00pytest\x00"),
-            ("25", b"/usr/bin/bash.exe\x00-c\x00pytest -q\x00"),
+            ("24", b"/usr/bin/busybox\x00-c\x00pytest -n4\x00"),
+            ("25", b"/usr/bin/bash.exe\x00-c\x00pytest -n 4 -q\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -836,10 +871,10 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         for pid, argv in (
-            ("41", b"bash\x00-lc\x00pytest -q test/y.py\x00"),
-            ("42", b"bash\x00-ic\x00pytest test/y.py\x00"),
+            ("41", b"bash\x00-lc\x00pytest -n 4 -q test/y.py\x00"),
+            ("42", b"bash\x00-ic\x00pytest -n 4 test/y.py\x00"),
             ("43", b"sh\x00-euxc\x00vitest run\x00"),
-            ("44", b"/bin/bash\x00--noprofile\x00-lc\x00pytest\x00"),
+            ("44", b"/bin/bash\x00--noprofile\x00-lc\x00pytest -n4\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -864,7 +899,7 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         (proc / "51").mkdir(parents=True)
-        (proc / "51" / "cmdline").write_bytes(b"bash\x00/tmp/run.sh\x00-c\x00pytest\x00")
+        (proc / "51" / "cmdline").write_bytes(b"bash\x00/tmp/run.sh\x00-c\x00pytest -n4\x00")
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         self._exe_agrees_with_argv0(mod, monkeypatch, proc)
@@ -885,10 +920,10 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         for pid, argv in (
-            ("61", b"busybox\x00sh\x00-c\x00pytest -q test/y.py\x00"),
+            ("61", b"busybox\x00sh\x00-c\x00pytest -n 4 -q test/y.py\x00"),
             ("62", b"/bin/busybox\x00ash\x00-c\x00vitest run\x00"),
-            ("63", b"bash\x00-o\x00pipefail\x00-c\x00pytest test/y.py\x00"),
-            ("64", b"bash\x00-o\x00pipefail\x00-lc\x00pytest\x00"),
+            ("63", b"bash\x00-o\x00pipefail\x00-c\x00pytest -n 4 test/y.py\x00"),
+            ("64", b"bash\x00-o\x00pipefail\x00-lc\x00pytest -n4\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -959,7 +994,9 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         (proc / "104").mkdir(parents=True)
-        (proc / "104" / "cmdline").write_bytes(b"busybox\x00sh\x00-c\x00pytest -q test/y.py\x00")
+        (proc / "104" / "cmdline").write_bytes(
+            b"busybox\x00sh\x00-c\x00pytest -n 4 -q test/y.py\x00"
+        )
         real = os.readlink
 
         def fake_readlink(path, *a, **kw):
@@ -1014,7 +1051,9 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         (proc / "83").mkdir(parents=True)
-        (proc / "83" / "cmdline").write_bytes(b"bash\x00-c\x00cd /x && pytest -q test/y.py\x00")
+        (proc / "83" / "cmdline").write_bytes(
+            b"bash\x00-c\x00cd /x && pytest -n 4 -q test/y.py\x00"
+        )
         cfg = self._config(
             tmp_path,
             monkeypatch,
@@ -1041,9 +1080,9 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         for pid, argv in (
-            ("81", b"bash\x00--rcfile\x00/dev/null\x00-c\x00pytest -q test/y.py\x00"),
+            ("81", b"bash\x00--rcfile\x00/dev/null\x00-c\x00pytest -n 4 -q test/y.py\x00"),
             ("82", b"/bin/bash\x00--init-file\x00/tmp/rc\x00-lc\x00vitest run\x00"),
-            ("83", b"bash\x00--rcfile=/dev/null\x00-c\x00pytest\x00"),
+            ("83", b"bash\x00--rcfile=/dev/null\x00-c\x00pytest -n4\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -1070,7 +1109,7 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         (proc / "71").mkdir(parents=True)
-        (proc / "71" / "cmdline").write_bytes(b"bash\x00/tmp/a b -c pytest\x00")
+        (proc / "71" / "cmdline").write_bytes(b"bash\x00/tmp/a b -c pytest -n4\x00")
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         self._exe_agrees_with_argv0(mod, monkeypatch, proc)
@@ -1094,7 +1133,7 @@ class TestFleetProbe:
         proc = tmp_path / "proc"
         # argv[0] claims bash and carries a -c, so the pre-fix check exempted it.
         (proc / "91").mkdir(parents=True)
-        (proc / "91" / "cmdline").write_bytes(b"bash\x00-c\x00pytest -n auto test/y.py\x00")
+        (proc / "91" / "cmdline").write_bytes(b"bash\x00-c\x00pytest -n 4 test/y.py\x00")
         real = os.readlink
 
         def fake_readlink(path, *a, **kw):
@@ -1117,7 +1156,7 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         (proc / "92").mkdir(parents=True)
-        (proc / "92" / "cmdline").write_bytes(b"bash\x00-c\x00pytest -n auto test/y.py\x00")
+        (proc / "92" / "cmdline").write_bytes(b"bash\x00-c\x00pytest -n 4 test/y.py\x00")
         real = os.readlink
 
         def fake_readlink(path, *a, **kw):
@@ -1149,7 +1188,7 @@ class TestFleetProbe:
         mod = self._mod()
         proc = tmp_path / "proc"
         (proc / "93").mkdir(parents=True)
-        (proc / "93" / "cmdline").write_bytes(b"bash\x00-c\x00pytest -n auto test/y.py\x00")
+        (proc / "93" / "cmdline").write_bytes(b"bash\x00-c\x00pytest -n 4 test/y.py\x00")
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         # No `exe` entry, so readlink raises OSError exactly as it does for a process
@@ -1180,9 +1219,9 @@ class TestFleetProbe:
             "113": "/usr/bin/bash",  # the real thing: still exempt
         }
         for pid, argv in (
-            ("111", b"bash\x00-c\x00pytest -n auto test/y.py\x00"),
-            ("112", b"sh\x00-c\x00pytest test/y.py\x00"),
-            ("113", b"bash\x00-c\x00pytest -n auto test/y.py\x00"),
+            ("111", b"bash\x00-c\x00pytest -n 4 test/y.py\x00"),
+            ("112", b"sh\x00-c\x00pytest -n 4 test/y.py\x00"),
+            ("113", b"bash\x00-c\x00pytest -n 4 test/y.py\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -1227,9 +1266,9 @@ class TestFleetProbe:
             "116": "/tmp/bash (deleted)",  # marker must not bypass the dir gate
         }
         for pid, argv in (
-            ("114", b"bash\x00-c\x00pytest -n auto test/y.py\x00"),
-            ("115", b"pytest\x00test/y.py\x00"),
-            ("116", b"bash\x00-c\x00pytest -n auto test/y.py\x00"),
+            ("114", b"bash\x00-c\x00pytest -n 4 test/y.py\x00"),
+            ("115", b"pytest\x00-n4\x00test/y.py\x00"),
+            ("116", b"bash\x00-c\x00pytest -n 4 test/y.py\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -1268,15 +1307,15 @@ class TestFleetProbe:
         out = self._run(mod, cfg, capsys)
         assert "BANNED pid=94" in out, out
 
-    def test_an_unbounded_pytest_run_directly_still_fires(self, tmp_path, capsys, monkeypatch):
+    def test_an_unbudgeted_pytest_run_directly_still_fires(self, tmp_path, capsys, monkeypatch):
         """Skipping shell wrappers must not quiet the case the rule exists for.
-        A pytest whose worker count nobody chose is reported whether it was
-        spawned as the program itself or through the interpreter."""
+        A pytest whose explicit worker count bypasses the budget is reported whether
+        it was spawned as the program itself or through the interpreter."""
         mod = self._mod()
         proc = tmp_path / "proc"
         for pid, argv in (
-            ("31", b"pytest\x00-q\x00test/y.py\x00"),
-            ("32", b"python\x00-m\x00pytest\x00test/y.py\x00"),
+            ("31", b"pytest\x00-n4\x00-q\x00test/y.py\x00"),
+            ("32", b"python\x00-m\x00pytest\x00-n\x004\x00test/y.py\x00"),
         ):
             (proc / pid).mkdir(parents=True)
             (proc / pid / "cmdline").write_bytes(argv)
@@ -2025,8 +2064,8 @@ class TestFleetProbe:
         mod = self._mod()
         mine = tmp_path / "fleet" / "wt-a"
         theirs = tmp_path / "somebody-else" / "repo"
-        proc = self._proc(tmp_path, "5001", b"python\x00-m\x00pytest\x00test/x.py\x00", mine)
-        self._proc(tmp_path, "5002", b"python\x00-m\x00pytest\x00test/y.py\x00", theirs)
+        proc = self._proc(tmp_path, "5001", b"python\x00-m\x00pytest\x00-n4\x00test/x.py\x00", mine)
+        self._proc(tmp_path, "5002", b"python\x00-m\x00pytest\x00-n4\x00test/y.py\x00", theirs)
         cfg = self._config(
             tmp_path, monkeypatch, [], fleet_worktrees=[str(tmp_path / "fleet" / "wt-a")]
         )
@@ -2388,7 +2427,7 @@ class TestFleetProbe:
         being usable must not promote a process to the stopping class.
         """
         mod = self._mod()
-        proc = self._proc(tmp_path, "8001", b"pytest\x00-n\x00auto\x00", tmp_path / "elsewhere")
+        proc = self._proc(tmp_path, "8001", b"pytest\x00-n\x004\x00", tmp_path / "elsewhere")
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(tmp_path / "fleet")])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         # A root that cannot be spelled the way any cwd is spelled: the comparison
@@ -2488,7 +2527,10 @@ class TestFleetProbe:
         their_python = self._venv(theirs)
         # cwd=None is the unreadable case: no symlink for the probe to follow.
         proc = self._proc(
-            tmp_path, "7001", f"{their_python}\0-m\0pytest\0test_sandbox_x.py\0".encode(), None
+            tmp_path,
+            "7001",
+            f"{their_python}\0-m\0pytest\0-n4\0test_sandbox_x.py\0".encode(),
+            None,
         )
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(mine)])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
@@ -2505,7 +2547,9 @@ class TestFleetProbe:
         mine = tmp_path / "fleet" / "wt-a"
         mine.mkdir(parents=True, exist_ok=True)
         my_python = self._venv(mine)
-        proc = self._proc(tmp_path, "7002", f"{my_python}\0-m\0pytest\0test/x.py\0".encode(), None)
+        proc = self._proc(
+            tmp_path, "7002", f"{my_python}\0-m\0pytest\0-n4\0test/x.py\0".encode(), None
+        )
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(mine)])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
@@ -2530,7 +2574,7 @@ class TestFleetProbe:
         shim = tmp_path / "shims" / "python3"
         shim.parent.mkdir(parents=True, exist_ok=True)
         shim.write_text("", encoding="utf-8")
-        proc = self._proc(tmp_path, "7003", f"{shim}\0-m\0pytest\0test/x.py\0".encode(), None)
+        proc = self._proc(tmp_path, "7003", f"{shim}\0-m\0pytest\0-n4\0test/x.py\0".encode(), None)
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(mine)])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
@@ -2550,7 +2594,7 @@ class TestFleetProbe:
         proc = self._proc(
             tmp_path,
             "7004",
-            f"{their_python}\0-m\0pytest\0--token={secret}\0-n\0auto\0".encode(),
+            f"{their_python}\0-m\0pytest\0--token={secret}\0-n4\0".encode(),
             None,
         )
         cfg = self._config(
@@ -2568,8 +2612,12 @@ class TestFleetProbe:
         ``wt-a-old`` is not swallowed by ``wt-a``."""
         mod = self._mod()
         root = tmp_path / "fleet" / "wt-a"
-        proc = self._proc(tmp_path, "6001", b"pytest\x00test/x.py\x00", root / "test" / "deep")
-        self._proc(tmp_path, "6002", b"pytest\x00test/y.py\x00", tmp_path / "fleet" / "wt-a-old")
+        proc = self._proc(
+            tmp_path, "6001", b"pytest\x00-n4\x00test/x.py\x00", root / "test" / "deep"
+        )
+        self._proc(
+            tmp_path, "6002", b"pytest\x00-n4\x00test/y.py\x00", tmp_path / "fleet" / "wt-a-old"
+        )
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(root)])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
@@ -2623,7 +2671,7 @@ class TestFleetProbe:
         link = tmp_path / "via-link"
         make_dir_link(link, tmp_path / "real-fleet")
         # The process reports the REAL path; the config names the symlinked one.
-        proc = self._proc(tmp_path, "5100", b"pytest\x00test/x.py\x00", real)
+        proc = self._proc(tmp_path, "5100", b"pytest\x00-n4\x00test/x.py\x00", real)
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(link / "wt-a")])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
@@ -2967,7 +3015,7 @@ class TestFleetProbe:
         run inside the fleet goes unreported, so unknown is reported and
         counted."""
         mod = self._mod()
-        proc = self._proc(tmp_path, "7001", b"pytest\x00test/x.py\x00", None)
+        proc = self._proc(tmp_path, "7001", b"pytest\x00-n4\x00test/x.py\x00", None)
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(tmp_path / "fleet")])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
@@ -2980,7 +3028,9 @@ class TestFleetProbe:
         a failure the conductor cannot see -- so unscoped keeps the pre-2d
         behaviour: every match reported, every match counted."""
         mod = self._mod()
-        proc = self._proc(tmp_path, "8001", b"pytest\x00test/x.py\x00", tmp_path / "anywhere")
+        proc = self._proc(
+            tmp_path, "8001", b"pytest\x00-n4\x00test/x.py\x00", tmp_path / "anywhere"
+        )
         cfg = self._config(tmp_path, monkeypatch, [])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))
         out = self._run(mod, cfg, capsys)
@@ -2996,7 +3046,7 @@ class TestFleetProbe:
         mod = self._mod()
         mine = tmp_path / "fleet" / "wt-a"
         proc = self._proc(
-            tmp_path, "9001", b"pytest\x00--token\x00secret-token\x00test/x.py\x00", mine
+            tmp_path, "9001", b"pytest\x00-n4\x00--token\x00secret-token\x00test/x.py\x00", mine
         )
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(mine)])
         monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(proc))

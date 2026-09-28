@@ -272,7 +272,11 @@ project the user also drives with `claude` by hand, so a foreign
 neither for merging, rewrites neither, and deletes neither. A durable
 `seed_provenance` record stores the expected digest and arbitrates a live claim;
 that lets a later process recognize, claim, and re-seed a file Crew left behind
-after a crash without treating a user replacement as its own.
+after a crash without treating a user replacement as its own. The claim itself
+revalidates the claimant's digest against the durable entry under the
+cross-process lock, so a digest cached before another process recorded new
+bytes cannot authorize adopting — and later deleting — a user's restoration of
+the older bytes.
 
 A fresh create uses `O_EXCL` + `O_NOFOLLOW` at `0o600`, so two sessions sharing a
 `work_dir` cannot clobber each other. Re-seeding an owned file uses an inode-pinned
@@ -281,6 +285,101 @@ left in place. Teardown runs ownership check, durable revocation, and deletion i
 one shielded worker-thread transaction. If revocation or deletion cannot complete,
 the old seed is restored or re-recorded so a later session can repair it rather
 than leaving an unowned permission mode on disk.
+
+**One relaxation: a byte-identical sibling seed is SHARED, not refused.** Two
+sessions of the same agent in the same `work_dir` render the same payload, and
+refusing the second one bought nothing — it ran with the whole `mcpServers` array
+withheld, so only one session per project directory ever had Crew's tools
+(`spawn_run`, `cron_*`, `session_checkpoint`). When the file on disk is a live
+sibling's seed whose bytes equal BOTH Crew's durable record
+(`seed_provenance.share`, checked ignoring the live holder) AND the exact
+payload this client would have written, the client takes a shared-reader state
+(`_claude_settings_shared`): the permission surface counts as governed
+(`_permission_surface_governed`), so the array is delivered — but the client takes
+no live claim, records nothing, and `_claude_settings_authored` stays false, so its
+teardown neither unlinks the file the owning session is still running against nor
+pops that owner's live slot. A payload that differs in any byte — another
+permission mode, another agent's deny rules, another allowlist — fails the digest
+half and is refused exactly as before. The hazard the live-holder rule exists for
+only arises when the payloads differ, so byte-equality is the precise boundary of
+the relaxation. The boundary deliberately includes the model keys: the file pins
+model resolution for every session that reads it, so sharing across a model
+difference would silently override the sibling's own pick. Every refusal logs the
+same quiet informational message (`_log_declined_share`) naming what the session
+runs without.
+
+The sharer's stake is a live registration (`seed_provenance.share`, taken BEFORE
+the byte checks so the owner's teardown cannot validate-race it; withdrawn on the
+sharer's reset, and on a failed validation only when that validation created it —
+a re-validating sharer keeps the lease its original validation earned). The
+in-process registry (`_SHARERS`, like the `_LIVE` slot) is a cache; the authority
+a DIFFERENT process consults is the holder entry the registration persists into
+the durable record itself, under the module's cross-process file lock. Each
+persisted holder carries a PID-reuse-safe process identity (pid + process start
+id, from `platform_compat`), so `seed_provenance.claim` and the re-seed path
+refuse while ANY process holds a live stake, and a holder whose process is
+provably gone is stale and reclaimable — a crashed gateway leaves no permanent
+lock. The guarantee is scoped to hosts where every Crew process runs a revision
+that reads holder entries: a process on an older revision keeps only
+`{size, sha256}` from the sidecar and consults no holders, so version skew
+during an upgrade is the pre-existing digest-only exposure, not a regression
+this mechanism can close. On a host that cannot prove a process start id, the
+sidecar persists the
+digest with empty holder groups: cross-process live-holder distinction degrades
+to digest-only adoption, while `_LIVE` and `_SHARERS` continue to arbitrate
+same-process siblings. While any sharer is registered, the file's future is pinned for
+it: the owner's teardown leaves the file and the durable record in place (the
+recorded-orphan shape a `kill -9` already produces, which the next session adopts
+and repairs once the sharers are gone), `seed_provenance.claim` refuses new
+adoptions, and the owner's own re-seed is declined entirely while a sharer holds
+the file — `seed_provenance.record` refuses any digest change under a live sharer,
+so neither a post-capture model-key refresh nor an edited agent spec's deny rules
+land under a reader that validated the current bytes. Both are picked up once no
+sibling is reading the file; the client declines a digest-changing re-seed before
+the write and re-runs the check after it, so a sharer registering mid-re-seed
+still causes a restore, exactly as it retracts an in-flight adoption. The
+lingering file after a
+clean owner exit under a live sharer is a disclosed cost of that pin, accepted by
+design: no leaver ever deletes a permission surface another session is still
+reading, and the residue is recorded and self-healing — the next session
+recognizes the record, adopts the file, and repairs or removes it on its own
+teardown. A user replacing the file by
+hand remains their own action on their own machine — the same disclosed boundary
+the owner path has always had.
+
+Two supporting invariants keep every interleaving honest. Every durable provenance
+mutation reports whether the sidecar agrees, and the client changes its mirrored
+session flag only after that result succeeds — with one deliberate asymmetry: when
+a user has replaced Crew's seed, authorship (the half `_permission_surface_governed`
+reads) drops the moment the bytes are observed foreign, whether or not the durable
+hand-back landed, and a refused hand-back is carried on
+`_claude_settings_claim_unrevoked`, which feeds no governance decision and only
+makes teardown retry `forget`/`release` without touching the user's file. `record`
+also promotes a reader to
+owner in that one locked persist: the owner's reader lease disappears from both
+memory and the persisted holder groups before authorship is published, so no
+two-call owner-plus-own-sharer window can pin its teardown. A record reaches the
+in-memory table only once its sidecar persist has LANDED, so a sibling can never
+validate a share against a grant that then fails — which is also what lets a
+failing re-seed persist restore the moved-aside prior bytes (still the recorded
+ones) instead of stranding an unrecorded file. And every restore of a moved-aside
+entry into a vacated pathname is a type-agnostic no-clobber rename —
+`platform_compat.rename_noreplace` on POSIX, `os.rename` on Windows, which refuses
+an existing target natively — so whatever the move-aside captured (Crew's own seed,
+or a user's regular file, symlink or directory of any size) goes back exactly as it
+is, with no copy, no size cap and no read of its bytes, and the aside name is
+consumed by the move. On Windows that rename runs while
+`platform_compat.pin_directory` holds the parent open, so the parent cannot be
+swapped mid-restore and a junction already at the name makes the restore fail with
+the aside kept. A settings file recreated at the pathname in that window is
+preserved rather than silently overwritten: the rename refuses it and the moved
+entry stays recoverable beside it as `.crew-gc` litter. Only a POSIX host or
+filesystem without the no-clobber rename primitive falls back to the validated
+byte copy `pinned_fs.put_back_no_clobber`, both names pinned to the shared
+parent's descriptor; it restores only the regular-file inode captured at the
+move and refuses an occupied pathname the same way. When that parent cannot be
+opened, nothing is copied by name: the restore fails and the aside is kept as
+`.crew-gc` litter for the user to recover.
 
 What this deliberately does NOT do is preserve and restore a user's own file.
 Doing that means reading and rewriting a path a checked-out repository controls,

@@ -62,6 +62,22 @@ writes it, and the drawer reaches it through a cookie-authed route that checks t
 record's stored owner. See :func:`_real_dir_under_data_home` for the invariant all
 of that rests on -- one name, one inode, every disposition attached to it.
 
+What a template carries
+-----------------------
+A template is an HTML body fragment. It must carry :data:`DATA_MARKER`
+(``<!--kirocrew:panel-data-->``), which :func:`compose` replaces with the inert
+JSON data island (``<script type="application/json" id="kirocrew-panel-data">``);
+the template reads it with ``JSON.parse`` and renders through DOM text APIs.
+
+It MAY also carry ``<!--kirocrew:docked-->`` or ``<!--kirocrew:docked height=N-->``
+(:data:`DOCKED_MARKER_RE`) to be shown IN the Members drawer's docked card rather
+than only after Expand. The drawer then mints a second copy of the document with
+``<meta name="kirocrew-view" content="docked">`` prepended, renders it in the same
+``allow-scripts`` sandbox at a fixed height of N px (clamped to
+:data:`DOCKED_HEIGHT_RANGE`, default :data:`DOCKED_DEFAULT_HEIGHT`), and the
+template uses that meta to switch to a compact layout. A template without the
+marker keeps the native docked summary, which mints nothing until Expand.
+
 Deliberately generic
 --------------------
 Nothing here knows what a "worker" or a "pull request" is. The store holds an
@@ -116,6 +132,25 @@ DEFAULT_TEMPLATE_ID = "default"
 DATA_MARKER = "<!--kirocrew:panel-data-->"
 
 _DATA_ELEMENT_ID = "kirocrew-panel-data"
+
+#: The opt-in a template carries to be shown IN the docked drawer card, not only
+#: after Expand. Written ``<!--kirocrew:docked-->`` or
+#: ``<!--kirocrew:docked height=180-->``; the height is the fixed pixel height of
+#: the compact frame and is clamped to :data:`DOCKED_HEIGHT_RANGE`.
+#:
+#: Read from the COMPOSED document rather than the template file, so the answer
+#: comes from the same snapshot as the document it describes. That is safe
+#: because a crew cannot write this comment: the only crew-supplied bytes in the
+#: document are the data island, and :func:`escape_json_for_html` turns every
+#: ``<`` in it into ``\u003c``.
+DOCKED_MARKER_RE = re.compile(r"<!--kirocrew:docked(?:\s+height=(\d{1,4}))?\s*-->")
+
+#: Bounds for a docked frame's height. The floor keeps a frame from collapsing to
+#: an invisible strip; the ceiling keeps a template from turning the drawer card
+#: into a second dashboard, which is what Expand is for.
+DOCKED_HEIGHT_RANGE = (64, 320)
+
+DOCKED_DEFAULT_HEIGHT = 160
 
 _MAX_TITLE = 200
 #: Data, not layout. A panel carries a few dozen rows of state, so this is two
@@ -880,6 +915,22 @@ def read(slug: str) -> dict[str, Any] | None:
     if not TEMPLATE_ID_RE.match(str(raw.get("template", ""))):
         return None
     return raw
+
+
+def docked_height(document: str | None) -> int | None:
+    """The docked frame height a composed document opts in to, or ``None``.
+
+    ``None`` means the template did not opt in, and the drawer keeps its native
+    docked summary with no frame and no mint. See :data:`DOCKED_MARKER_RE`.
+    """
+    if not document:
+        return None
+    match = DOCKED_MARKER_RE.search(document)
+    if match is None:
+        return None
+    low, high = DOCKED_HEIGHT_RANGE
+    height = int(match.group(1)) if match.group(1) else DOCKED_DEFAULT_HEIGHT
+    return max(low, min(high, height))
 
 
 def render_record(record: dict[str, Any] | None) -> str | None:

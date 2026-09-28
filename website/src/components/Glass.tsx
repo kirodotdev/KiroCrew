@@ -1,0 +1,64 @@
+/**
+ * Glass — the one place the Liquid Glass recipe lives.
+ *
+ * Every surface that floats over the transcript in the composer dock (the
+ * composer itself, an approval bar, the follow-up chips, a tip or suggestion
+ * card, the queue, the memory chip, the jump-to-bottom button) and the mobile
+ * Settings search capsule wear the SAME material, from the SAME primitive:
+ * `--glass-tint` over a blurred backdrop, an even top/bottom light band in
+ * `--glass-band`, a 1px `--glass-edge` line down each side and a half-pixel
+ * `--glass-hairline` just outside the top and bottom edges. No ring: the
+ * reference material sets two lit edges against thin dark sides and draws
+ * nothing around the corners, so the host has no border. Call sites say what
+ * they are (`variant`), how round they are (`radius`) and which element they
+ * ARE (`as`); they never restate the optics.
+ *
+ * Two variants, one recipe: `panel` (frost 6, light 25) for the composer-sized
+ * boxes and `chip` (frost 4, light 18) for the small pills and cards, where
+ * the panel numbers read heavy at 30px tall.
+ *
+ * The pane IS the host element — there is no wrapper box. A follow-up chip is
+ * `<Glass as="button" …>`: the button is the flex item, carries the width cap,
+ * the entrance animation and its own `onClick`, and the effect layers sit
+ * inside it under the label. `className` and `style` go on that host and carry
+ * LAYOUT (margin, width, flex, padding) plus the box-shadow state the caller
+ * owns — `glass-shadow` for the neutral rest shadow, `composer-halo` for the
+ * session composer's focus glow, or `approval-glow` while a decision is
+ * pending — because which shadow a pane wears at this instant is the caller's
+ * state, not the material's. A hue is mixed INTO the tint with `glass-accent`
+ * (picked chip, tip card) or `glass-warn` (incognito chip), and `glass-hover`
+ * brightens an interactive pane a step on hover — all three swap `--glass-tint`
+ * on the host (index.css), so the pane stays the same material. The accent
+ * focus glow is the composer's alone: the material itself never lights up in
+ * the theme color. The optics are not open for override here — change the
+ * recipe, not the call site.
+ */
+import { forwardRef, type ReactElement, type Ref } from 'react'
+import { LiquidGlass, type GlassHostTag, type LiquidGlassOwnProps, type LiquidGlassProps } from './ui/liquid-glass'
+
+export type GlassVariant = 'panel' | 'chip'
+
+const RECIPE: Record<GlassVariant, Pick<LiquidGlassOwnProps, 'frost' | 'lightIntensity'>> = {
+  panel: { frost: 6, lightIntensity: 25 },
+  chip: { frost: 4, lightIntensity: 18 },
+}
+
+export type GlassProps<T extends GlassHostTag = 'div'> = Omit<LiquidGlassProps<T>, 'cornerRadius' | 'frost' | 'lightIntensity'> & {
+  variant?: GlassVariant
+  /** Corner radius in px of the pane. */
+  radius: number
+}
+
+function GlassImpl(
+  { variant = 'panel', radius, ...rest }: GlassProps<GlassHostTag>,
+  ref: Ref<HTMLElement>,
+) {
+  return <LiquidGlass {...(rest as Omit<LiquidGlassProps<GlassHostTag>, 'cornerRadius' | 'frost' | 'lightIntensity'>)} ref={ref} {...RECIPE[variant]} cornerRadius={radius} />
+}
+
+/** Polymorphic on `as`, like the primitive: `<Glass as="button" onClick …>` type-checks. */
+export const Glass = forwardRef(GlassImpl) as <T extends GlassHostTag = 'div'>(
+  props: GlassProps<T> & { ref?: Ref<HTMLElement> },
+) => ReactElement
+
+export default Glass

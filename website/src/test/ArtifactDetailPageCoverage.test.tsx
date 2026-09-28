@@ -928,6 +928,8 @@ describe('ArtifactDetailPage — mutation paths', () => {
       rangeCount: 1,
       getRangeAt: () => range,
       removeAllRanges: () => undefined,
+      // The composer's Escape hands the selection back through `addRange`.
+      addRange: () => undefined,
       toString: () => opts.text,
     } as unknown as Selection)
   }

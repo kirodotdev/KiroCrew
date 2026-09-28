@@ -14,6 +14,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import kiro_crew.messaging.queue_receipt as Q
 from kiro_crew.messaging.queue_receipt import (
     RECEIPT_MAX_ITEMS,
@@ -92,8 +94,8 @@ class TestLifecycle:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "first")
-                await q.create_or_grow_locked("s", s, "second")
+                await q.create_or_grow_locked("s", s, "first", "alice")
+                await q.create_or_grow_locked("s", s, "second", "alice")
 
         asyncio.run(go())
         assert len(s.sent) == 1, "a second message would orphan the first bubble"
@@ -104,10 +106,10 @@ class TestLifecycle:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
                 assert not q.has_receipt("s")
-                await q.create_or_grow_locked("s", s, "b")
+                await q.create_or_grow_locked("s", s, "b", "alice")
 
         asyncio.run(go())
         assert len(s.sent) == 2, "post-flip burst must start a NEW receipt"
@@ -117,8 +119,8 @@ class TestLifecycle:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"], deferred=4)
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], deferred=4, owner="alice")
 
         asyncio.run(go())
         assert "+4 deferred" in s.edits[-1][1]
@@ -128,8 +130,8 @@ class TestLifecycle:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.create_or_grow_locked("s", s, "b")
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.create_or_grow_locked("s", s, "b", "alice")
                 await q.finish_cancelled_locked("s", s)
 
         asyncio.run(go())
@@ -142,9 +144,9 @@ class TestLifecycle:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.create_or_grow_locked("s", s, "b")  # edit raises
-                await q.flip_answering_locked("s", s, ["a", "b"])  # raises too
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.create_or_grow_locked("s", s, "b", "alice")  # edit raises
+                await q.flip_answering_locked("s", s, ["a", "b"], owner="alice")  # raises too
 
         asyncio.run(go())  # must not raise
 
@@ -154,7 +156,7 @@ class TestLifecycle:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
+                await q.create_or_grow_locked("s", s, "a", "alice")
 
         asyncio.run(go())
         assert not q.has_receipt("s")
@@ -174,8 +176,8 @@ class TestATransitionIsPublishedOnlyWhenItLands:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
 
         asyncio.run(go())
         assert s.sent[-1] == receipt_text(["a"], answering=True), "the record reached the reader"
@@ -187,8 +189,8 @@ class TestATransitionIsPublishedOnlyWhenItLands:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
 
         asyncio.run(go())
         assert q._receipts["s"].owes_record
@@ -202,8 +204,8 @@ class TestATransitionIsPublishedOnlyWhenItLands:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.create_or_grow_locked("s", s, "b")
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.create_or_grow_locked("s", s, "b", "alice")
 
         asyncio.run(go())
         assert q.has_receipt("s"), "nothing has left the queue, so the bubble is still live"
@@ -216,8 +218,8 @@ class TestATransitionIsPublishedOnlyWhenItLands:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
 
         asyncio.run(go())
         assert "s" not in q._receipts
@@ -230,8 +232,8 @@ class TestATransitionIsPublishedOnlyWhenItLands:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
 
         asyncio.run(go())
         assert q._receipts["s"].owes_record
@@ -241,7 +243,7 @@ class TestATransitionIsPublishedOnlyWhenItLands:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
+                await q.create_or_grow_locked("s", s, "a", "alice")
                 await q.finish_cancelled_locked("s", s)
 
         asyncio.run(go())
@@ -258,10 +260,10 @@ class TestAnOwedRecordIsTheOneThatWasOwed:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])  # refused, now terminal
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")  # refused, now terminal
                 s.edit_refuses = False
-                await q.create_or_grow_locked("s", s, "b")
+                await q.create_or_grow_locked("s", s, "b", "alice")
 
         asyncio.run(go())
         owed = receipt_text(["a"], answering=True)
@@ -282,10 +284,10 @@ class TestAnOwedRecordIsTheOneThatWasOwed:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
                 s.edit_refuses = False
-                await q.create_or_grow_locked("s", s, "b")
+                await q.create_or_grow_locked("s", s, "b", "alice")
 
         asyncio.run(go())
         queued = [body for body in s.sent[1:] + [e[1] for e in s.edits] if "Queued" in body]
@@ -299,9 +301,9 @@ class TestAnOwedRecordIsTheOneThatWasOwed:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
-                await q.create_or_grow_locked("s", s, "b")
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
+                await q.create_or_grow_locked("s", s, "b", "alice")
 
         asyncio.run(go())
         assert q._receipts["s"].owes_record, "the record is still owed, so the key is held"
@@ -315,9 +317,9 @@ class TestAnOwedRecordIsTheOneThatWasOwed:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
-                await q.create_or_grow_locked("s", s, "b")
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
+                await q.create_or_grow_locked("s", s, "b", "alice")
 
         asyncio.run(go())
         owed = receipt_text(["a"], answering=True)
@@ -333,8 +335,8 @@ class TestAnOwedRecordIsTheOneThatWasOwed:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])  # owes "Now answering"
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")  # owes "Now answering"
                 s.edit_refuses = False
                 await q.finish_cancelled_locked("s", s)
 
@@ -350,10 +352,10 @@ class TestAnOwedRecordIsTheOneThatWasOwed:
 
         async def go() -> None:
             async with q.lock:
-                await q.create_or_grow_locked("s", s, "a")
-                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "a", "alice")
+                await q.flip_answering_locked("s", s, ["a"], owner="alice")
                 s.edit_refuses = False
-                await q.flip_answering_locked("s", s, ["zzz"])
+                await q.flip_answering_locked("s", s, ["zzz"], owner="alice")
 
         asyncio.run(go())
         assert s.edits[-1][1] == receipt_text(["a"], answering=True)
@@ -373,8 +375,10 @@ class TestLockIsCallerHeld:
 
         async def go() -> None:
             async with q.lock:
-                await asyncio.wait_for(q.create_or_grow_locked("s", s, "a"), timeout=2)
-                await asyncio.wait_for(q.flip_answering_locked("s", s, ["a"]), timeout=2)
+                await asyncio.wait_for(q.create_or_grow_locked("s", s, "a", "alice"), timeout=2)
+                await asyncio.wait_for(
+                    q.flip_answering_locked("s", s, ["a"], owner="alice"), timeout=2
+                )
                 await asyncio.wait_for(q.finish_cancelled_locked("s", s), timeout=2)
 
         asyncio.run(go())
@@ -391,11 +395,6 @@ def _dispatchers() -> list[Path]:
 #: channel's own thin wrapper around it. Both are checked, because a wrapper that forwards
 #: an owner says nothing about whether its own caller supplied one.
 _FLIP_CALLEES = frozenset({"flip_answering_locked", "_receipt_flip_locked"})
-
-#: Where the owner token sits positionally in both of them, after (session key, address,
-#: answered, deferred). Read as a position rather than as a substring anywhere in the call,
-#: so an argument that merely contains the word cannot stand in for it.
-_FLIP_OWNER_ARG = 4
 
 
 class TestRatchet:
@@ -482,7 +481,7 @@ class TestAnAddressKeyNamesOneConversation:
         async def go() -> tuple[ReceiptQueue, _Surface]:
             queue, nameless = ReceiptQueue(), _Surface(address="")
             async with queue.lock:
-                await queue.create_or_grow_locked("s", nameless, "hello")
+                await queue.create_or_grow_locked("s", nameless, "hello", "alice")
             return queue, nameless
 
         queue, nameless = asyncio.run(go())
@@ -609,9 +608,9 @@ class TestSeveralOwedRecordsSurviveInOrder:
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
                 # Refused edit AND refused post: the entry goes terminal owing this one.
-                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.flip_answering_locked("s", chat, ["first"], owner="alice")
                 await queue.create_or_grow_locked("s", chat, "second", "alice")
-                await queue.flip_answering_locked("s", chat, ["second"])
+                await queue.flip_answering_locked("s", chat, ["second"], owner="alice")
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
@@ -635,8 +634,8 @@ class TestSeveralOwedRecordsSurviveInOrder:
             bob = _Surface(address="bob")
             async with queue.lock:
                 await queue.create_or_grow_locked("s", alice, "alice asked", "alice")
-                await queue.flip_answering_locked("s", alice, ["alice asked"])
-                await queue.flip_answering_locked("s", bob, ["bob asked"])
+                await queue.flip_answering_locked("s", alice, ["alice asked"], owner="alice")
+                await queue.flip_answering_locked("s", bob, ["bob asked"], owner="alice")
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
@@ -651,9 +650,9 @@ class TestSeveralOwedRecordsSurviveInOrder:
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
-                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.flip_answering_locked("s", chat, ["first"], owner="alice")
                 await queue.create_or_grow_locked("s", chat, "second", "alice")
-                await queue.flip_answering_locked("s", chat, ["second"])
+                await queue.flip_answering_locked("s", chat, ["second"], owner="alice")
                 # The channel answers again, and a clear retries what is owed.
                 chat.edit_refuses = False
                 chat.send_fails_after = None
@@ -674,9 +673,9 @@ class TestSeveralOwedRecordsSurviveInOrder:
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
-                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.flip_answering_locked("s", chat, ["first"], owner="alice")
                 await queue.create_or_grow_locked("s", chat, "second", "alice")
-                await queue.flip_answering_locked("s", chat, ["second"])
+                await queue.flip_answering_locked("s", chat, ["second"], owner="alice")
                 chat.edit_refuses = False
                 chat.send_fails_after = None
                 await queue.create_or_grow_locked("s", chat, "third", "alice")
@@ -694,9 +693,9 @@ class TestSeveralOwedRecordsSurviveInOrder:
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
-                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.flip_answering_locked("s", chat, ["first"], owner="alice")
                 await queue.create_or_grow_locked("s", chat, "second", "alice")
-                await queue.flip_answering_locked("s", chat, ["second"])
+                await queue.flip_answering_locked("s", chat, ["second"], owner="alice")
                 # Edits work again, so the oldest lands in the bubble; sends still fail,
                 # so the later one does not.
                 chat.edit_refuses = False
@@ -725,7 +724,7 @@ class TestSeveralOwedRecordsSurviveInOrder:
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "m0", "alice")
                 for n in range(RECEIPT_MAX_OWED + 2):
-                    await queue.flip_answering_locked("s", chat, [f"m{n}"])
+                    await queue.flip_answering_locked("s", chat, [f"m{n}"], owner="alice")
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
@@ -752,7 +751,7 @@ class TestSeveralOwedRecordsSurviveInOrder:
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
-                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.flip_answering_locked("s", chat, ["first"], owner="alice")
                 for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 2):
                     await queue.create_or_grow_locked("s", chat, f"during outage {n}", "alice")
             return queue
@@ -777,8 +776,8 @@ class TestOnePublishedRecordSpendsTheBubble:
         queue = ReceiptQueue()
         async with queue.lock:
             await queue.create_or_grow_locked("s", chat, "first", "alice")
-            await queue.flip_answering_locked("s", chat, ["first"])
-            await queue.flip_answering_locked("s", chat, ["second"])
+            await queue.flip_answering_locked("s", chat, ["first"], owner="alice")
+            await queue.flip_answering_locked("s", chat, ["second"], owner="alice")
         return queue
 
     def test_a_landed_edit_stops_the_next_record_editing_over_it(self) -> None:
@@ -840,7 +839,7 @@ class TestOnePublishedRecordSpendsTheBubble:
             queue = ReceiptQueue()
             async with queue.lock:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
-                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.flip_answering_locked("s", chat, ["first"], owner="alice")
                 chat.edit_refuses = False
                 await queue.finish_cancelled_locked("s", chat)
             return chat
@@ -865,7 +864,7 @@ class TestReleasedRecordsAreCounted:
         async with queue.lock:
             await queue.create_or_grow_locked("s", chat, "first", "alice")
             for n in range(drains):
-                await queue.flip_answering_locked("s", chat, [f"drain {n}"])
+                await queue.flip_answering_locked("s", chat, [f"drain {n}"], owner="alice")
         return queue
 
     def test_the_cap_counts_what_it_releases(self) -> None:
@@ -965,7 +964,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
         queue = ReceiptQueue()
         async with queue.lock:
             await queue.create_or_grow_locked(key, chat, "first", "alice")
-            await queue.flip_answering_locked(key, chat, ["first"])
+            await queue.flip_answering_locked(key, chat, ["first"], owner="alice")
         assert queue._receipts[key].owes_record, "the record was refused, so it is owed"
         return queue
 
@@ -1020,7 +1019,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             async with queue.lock:
                 for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
                     await queue.create_or_grow_locked("s", chat, f"mid {n}", "alice")
-                    await queue.flip_answering_locked("s", chat, [f"mid {n}"])
+                    await queue.flip_answering_locked("s", chat, [f"mid {n}"], owner="alice")
             return queue
 
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
@@ -1072,7 +1071,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                 # spends it.
                 for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 2):
                     await queue.create_or_grow_locked("s", gone, "again", "alice")
-                await queue.flip_answering_locked("s", alive, ["hello"])
+                await queue.flip_answering_locked("s", alive, ["hello"], owner="bob")
             return queue, alive
 
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
@@ -1096,7 +1095,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             async with queue.lock:
                 for _ in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 2):
                     await queue.create_or_grow_locked("s", gone, "again", "alice")
-                await queue.flip_answering_locked("s", mute, ["hello"])
+                await queue.flip_answering_locked("s", mute, ["hello"], owner="bob")
             return queue
 
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
@@ -1118,7 +1117,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             async with queue.lock:
                 # A second record joins the debt, then arriving messages are turned away
                 # until one attempt short of the allowance.
-                await queue.flip_answering_locked("s", chat, ["second"])
+                await queue.flip_answering_locked("s", chat, ["second"], owner="alice")
                 while queue._receipts["s"].publish_failures < Q.RECEIPT_MAX_PUBLISH_ATTEMPTS - 1:
                     await queue.create_or_grow_locked("s", chat, "again", "alice")
                 spent = queue._receipts["s"].publish_failures
@@ -1150,7 +1149,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
             queue = await self._owing(chat)
             async with queue.lock:
                 for n in range(Q.RECEIPT_MAX_PUBLISH_ATTEMPTS):
-                    await queue.flip_answering_locked("s", chat, [f"drain {n}"])
+                    await queue.flip_answering_locked("s", chat, [f"drain {n}"], owner="alice")
             return queue
 
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
@@ -1180,7 +1179,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                     key = f"s:gen{n + 1}"
                     chat = _Surface(edit_refuses=True, send_fails_after=1, address=key)
                     await queue.create_or_grow_locked(key, chat, "m", "alice")
-                    await queue.flip_answering_locked(key, chat, ["m"])
+                    await queue.flip_answering_locked(key, chat, ["m"], owner="alice")
             return queue
 
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
@@ -1206,14 +1205,14 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                 # orphan and evict the one still being addressed.
                 orphan = _Surface(edit_refuses=True, send_fails_after=1, address="orphan")
                 await queue.create_or_grow_locked("orphan", orphan, "m", "alice")
-                await queue.flip_answering_locked("orphan", orphan, ["m"])
+                await queue.flip_answering_locked("orphan", orphan, ["m"], owner="alice")
                 # The retried debt is attempted again, which is what moves it behind.
                 await queue.create_or_grow_locked("retried", retried, "again", "alice")
                 for n in range(Q.RECEIPT_MAX_DEBTS - 1):
                     key = f"filler{n}"
                     chat = _Surface(edit_refuses=True, send_fails_after=1, address=key)
                     await queue.create_or_grow_locked(key, chat, "m", "alice")
-                    await queue.flip_answering_locked(key, chat, ["m"])
+                    await queue.flip_answering_locked(key, chat, ["m"], owner="alice")
             return queue
 
         queue = asyncio.run(go())
@@ -1236,7 +1235,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                 await queue.create_or_grow_locked("s", chat, "first", "alice")
                 # Six records owed: four retained, two counted as omitted.
                 for n in range(RECEIPT_MAX_OWED + 2):
-                    await queue.flip_answering_locked("s", chat, [f"drain {n}"])
+                    await queue.flip_answering_locked("s", chat, [f"drain {n}"], owner="alice")
                 overflowed = queue._receipts["s"]
                 assert len(overflowed.owed_bodies) == RECEIPT_MAX_OWED
                 assert overflowed.omitted_records == 2
@@ -1244,7 +1243,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                     key = f"s:gen{n + 1}"
                     other = _Surface(edit_refuses=True, send_fails_after=1, address=key)
                     await queue.create_or_grow_locked(key, other, "m", "alice")
-                    await queue.flip_answering_locked(key, other, ["m"])
+                    await queue.flip_answering_locked(key, other, ["m"], owner="alice")
             return queue
 
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
@@ -1268,7 +1267,7 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
                     key = f"debt{n}"
                     chat = _Surface(edit_refuses=True, send_fails_after=1, address=key)
                     await queue.create_or_grow_locked(key, chat, "m", "alice")
-                    await queue.flip_answering_locked(key, chat, ["m"])
+                    await queue.flip_answering_locked(key, chat, ["m"], owner="alice")
             return queue
 
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
@@ -1337,7 +1336,7 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
             s = _Surface()
             queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
             async with queue.lock:
-                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, owner=self.ALICE)
             return s
 
         s = asyncio.run(go())
@@ -1351,7 +1350,7 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
             s = _Surface()
             queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
             async with queue.lock:
-                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, owner=self.ALICE)
             return queue
 
         queue = asyncio.run(go())
@@ -1365,8 +1364,8 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
             s = _Surface()
             queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
             async with queue.lock:
-                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
-                await queue.flip_answering_locked("s", s, ["bob"], 0, self.BOB)
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, owner=self.ALICE)
+                await queue.flip_answering_locked("s", s, ["bob"], 0, owner=self.BOB)
             return queue, s
 
         queue, s = asyncio.run(go())
@@ -1387,7 +1386,7 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
             s = _Surface(edit_refuses=True)
             queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
             async with queue.lock:
-                await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)
+                await queue.flip_answering_locked("s", s, ["alice asked"], 0, owner=self.ALICE)
             return queue
 
         queue = asyncio.run(go())
@@ -1409,7 +1408,7 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
             async with queue.lock:
                 await queue.create_or_grow_locked("s", here, "alice asked", self.ALICE)
                 await queue.create_or_grow_locked("s", elsewhere, "bob elsewhere", self.BOB)
-                await queue.flip_answering_locked("s", here, ["alice asked"], 0, self.ALICE)
+                await queue.flip_answering_locked("s", here, ["alice asked"], 0, owner=self.ALICE)
             return queue, here
 
         queue, here = asyncio.run(go())
@@ -1428,24 +1427,11 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
             s = _Surface()
             queue = await self._shared_bubble(s, [(self.ALICE, "first"), (self.ALICE, "second")])
             async with queue.lock:
-                await queue.flip_answering_locked("s", s, ["first"], 1, self.ALICE)
+                await queue.flip_answering_locked("s", s, ["first"], 1, owner=self.ALICE)
             return queue, s
 
         queue, s = asyncio.run(go())
         assert "Now answering" in s.edits[-1][1] and "+1 deferred" in s.edits[-1][1]
-        assert not queue.has_receipt("s")
-
-    def test_an_unnamed_caller_finalises_the_whole_bubble_as_before(self) -> None:
-        """No principal named, so nothing can be told apart from it. Unchanged behaviour."""
-
-        async def go() -> ReceiptQueue:
-            s = _Surface()
-            queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
-            async with queue.lock:
-                await queue.flip_answering_locked("s", s, ["alice asked"])
-            return queue
-
-        queue = asyncio.run(go())
         assert not queue.has_receipt("s")
 
     def test_only_the_answered_lines_are_taken_not_the_principals_whole_list(self) -> None:
@@ -1549,11 +1535,15 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
         exist yet. Each dispatcher either passes an owner token at the flip or hands one
         to its own ``_receipt_flip_locked`` wrapper.
 
-        Judged PER CALL, and in the owner's own ARGUMENT POSITION. Asking whether the
-        file mentions an owner somewhere lets a wrapper that forwards one to the registry
+        Judged PER CALL, and on the ``owner=`` keyword itself. Asking whether the file
+        mentions an owner somewhere lets a wrapper that forwards one to the registry
         answer for the whole channel, while the drain call one layer above it -- the call
         that decides what the wrapper has to forward -- goes unread. And a substring test
         over every argument passes on any expression that merely contains the word.
+
+        mypy already refuses a call that leaves the keyword off (required, keyword-only
+        on every callee); what it cannot refuse is ``owner=""``, a str like any other,
+        which is the one spelling this scan still catches.
         """
         seen = 0
         offenders: list[str] = []
@@ -1568,9 +1558,9 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
                     continue
                 seen += 1
                 keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+                # Keyword only: ``owner`` is keyword-only on both callees, so a
+                # positional fifth argument is a TypeError, not an owner.
                 owner = keywords.get("owner")
-                if owner is None and len(node.args) > _FLIP_OWNER_ARG:
-                    owner = node.args[_FLIP_OWNER_ARG]
                 spelled = "" if owner is None else ast.unparse(owner)
                 if spelled in {"", '""', "''"}:
                     offenders.append(f"{path.parent.name}:{node.lineno} {name}")
@@ -1581,3 +1571,33 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
             "these flip calls do not name whose messages they answered, so the bubble is "
             f"retired over another principal's still-queued lines: {offenders}"
         )
+
+    def test_the_flip_has_no_unnamed_caller_fallback(self) -> None:
+        """``owner`` is required and keyword-only on the registry transition.
+
+        Every drain tags its entries through ``owner_token``, which never builds an
+        empty token, so no caller can reach a whole-bubble retire for an unnamed
+        principal. The contract matches the Discord and Telegram wrappers: leaving the
+        argument off is a ``TypeError`` at the call site, not a silent whole-bubble
+        retire. Read off the signature, so a default creeping in is caught without
+        having to construct the situation it would degrade.
+        """
+        import inspect
+
+        owner = inspect.signature(ReceiptQueue.flip_answering_locked).parameters["owner"]
+        assert owner.kind is inspect.Parameter.KEYWORD_ONLY, owner.kind
+        assert owner.default is inspect.Parameter.empty, "the unnamed-caller default is back"
+
+        async def go() -> None:
+            s = _Surface()
+            queue = await self._shared_bubble(s, [(self.ALICE, "alice asked"), (self.BOB, "bob")])
+            async with queue.lock:
+                with pytest.raises(TypeError):
+                    await queue.flip_answering_locked("s", s, ["alice asked"])  # type: ignore[call-arg, arg-type]
+                with pytest.raises(TypeError):
+                    await queue.flip_answering_locked("s", s, ["alice asked"], 0, self.ALICE)  # type: ignore[misc, arg-type]
+            # Neither refused call touched the bubble: both principals' lines are still listed.
+            assert queue.has_receipt("s")
+            assert queue._receipts["s"].texts == ["alice asked", "bob"]
+
+        asyncio.run(go())

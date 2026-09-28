@@ -32,6 +32,16 @@ Each member's log is a `member`-kind **crew log**, so it lives at `<data_home>/c
 
 A third kind rather than a second mechanism, because the protection is named at the root: `crew-log` is masked from a sandboxed process (`sandbox._CREW_HIDDEN_LEAVES`) and refused to the agent's own file tools (`security.paths._CREW_SECRET_LEAVES`), so a kind placed under it inherits both. Dispatch trust reads this log, and an append-only record an agent can rewrite is not an append-only record — that property has to hold by where the file lives, not by someone remembering to add a second fence entry when a new log appears.
 
+**One door removes a member's whole unit, and the roster is what opens it.** `MemberEventLogService.remove_unit` calls the store's `remove_unit` and drops this service's cached log and name for that slug in the same step, and the dashboard's crew-delete route is its only caller: the member whose config record has gone has no reader left for its history, and nothing else collects it, because the retention sweep ages a `session` unit from its `session/closed` and a member log has no such entry. Other member-delete paths do not reach this door; `crew-log-core.md` names them and says why widening the reach is a separate decision. The caller's reason arrives as a predicate the store calls as its `guard`, so it is re-asked under the removal's own lease hold — a same-name member created between the delete and the removal derives the same slug, and that unit is then its history. The predicate takes no argument deliberately: whether a member is still in the roster is a property of the config, not of the file, so re-reading the log there would answer a question nobody asked. The caller holds `memory_store_namespace_lock` across both the predicate and the unlink, because the predicate reads config and another process allocating the same member id would otherwise land inside that gap. `crew-log-core.md` states the authorization and its fail-closed direction in full.
+
+**A removal takes the member's pre-log activity source too, and that is what makes it mean anything.** Those rows are the member's own history from before the log existed. They live OUTSIDE the unit under `members/<slug>/`, while the marker recording that they were folded lives INSIDE it -- so a removal that took only the unit would leave the history on disk AND re-arm the fold, because the next fresh `ensure` finds no marker and reads the source again. That next `ensure` is not hypothetical: appends are queued on an ordered executor, so one submitted before the removal runs on a worker after it, and `kirocrew-core` is a second writer process besides the gateway. Removing the source settles it for every writer at once, where a process-local bar could not: a later append then recreates at most an empty header, which carries nothing. Every name the fold reads is covered -- the live file, its one rotation, and the retired names the fold renames them to. **A unit the store does not find leaves that source behind too, so the cleanup runs for an absent unit as well, and there it re-asks the roster itself.** A member whose log was never written, or whose fold has not run, has its history ONLY in that source, so skipping it there would leave the delete having removed nothing at all. The store calls the predicate as its guard only when there is a unit to hold, so for an absent one there is no answer to inherit; the predicate raising rather than answering keeps the source, which is the direction every other decision here takes.
+
+**The directory is PINNED to a descriptor and the leaves are unlinked by BASENAME against it.** `members.member_dir` resolves and then only containment-checks the result, so `members/<slug>` swapped for a link to a PEER's directory resolves inside the members root, passes that check, and returns the peer's real directory -- where these four names are ordinary files, so a link test on the leaves is false and the unlink destroys a live member's history. For a member whose own fold has not run, that file is the sole copy. `members/<slug>` is deliberately agent-writable, which is what makes the swap reachable. A test on the NAME cannot close that, whatever it tests for: the test and the unlink are separate syscalls, and whoever can plant the link chooses when. `platform_compat.pin_directory` refuses a link AS IT OPENS -- POSIX through `O_DIRECTORY | O_NOFOLLOW`, Windows by opening a reparse point as itself, so it answers for a junction as well as a symlink -- and every unlink then names a basename against that descriptor, so a later swap of the name reaches nothing. Windows has no `dir_fd`; there the same handle is what closes the window, because a directory held open without `FILE_SHARE_DELETE` can be neither renamed nor deleted, nor can any directory above it. **`O_NOFOLLOW` binds the FINAL component only, so the members ROOT is pinned first and the slug is opened relative to it**: `members_root()` is an unresolved path under the data home and nothing seals the `members` component, so a link planted there redirects an open of `members/<slug>` however carefully that leaf is no-followed, and the unlinks land outside the member area entirely. Two pins settle it -- the root refuses a link as it opens, and the slug is opened THROUGH that descriptor, so neither name is re-resolved from a string afterwards. The leaf test is kept as well, and it is not a second guess at the directory: it covers a single file swapped inside a directory that is genuinely this member's, where the worst case is removing a link rather than the file it names. The step REPORTS rather than shrugging: every name is attempted even after one refuses, and the answer is true only when none of the four is left -- including one left deliberately, because a name that is a link is a name the fold can still read through. A false answer keeps the unit, and with it the marker that stops the fold reading whatever survived.
+
+**The companion cleanup runs INSIDE the unit's cross-process lease.** `store.remove_unit` acquires that lease `sole` and cannot share it, so a caller that removed the legacy source after the function RETURNED would do it in the window between the release and its own next line -- where another process's `ensure` creates the unit afresh and folds the source back, because the fold's completion marker died with the unit. The source removal is therefore handed to `remove_unit` as its `in_hold` action, which runs FIRST -- before the unit's own contents, because the fold's completion marker is part of that unit, so destroying it while the source survives arms the fold instead of finishing the job. A false answer from the step keeps the unit, its marker and the source, and reports `failed`. The parameter is optional, so the session delete funnel and the retention sweep pass nothing and are unaffected.
+
+**The absent-unit branch takes that lease itself.** The race it has to win is a peer creating the very unit the store just failed to find and folding this source into it, and the lease is a file beside the unit's segments -- so the directory is created to carry it, the lease is taken, the source goes, and the directory goes again. That directory holds no segment, and `unit_ids` proves identity from a segment header and skips a directory with none, so it is not a unit to any reader while it exists; a lease that cannot be had answers false with the source untouched. **One residual remains, stated rather than implied.** A contending writer still makes the removal answer `owned`, in which case nothing is removed at all -- which is honest rather than a half-done delete, and is why no retry is added: `REMOVE_OWNED` does not distinguish a contending lease holder from the guard finding the slug claimed again by a recreated namesake, and that second case is a correct refusal a retry would hammer.
+
 Line 1 is a header, not an event:
 
 ```
@@ -264,6 +274,51 @@ and returns before writing when the two agree, so an unchanged config costs one 
 comparison per member and nothing is remembered between requests. A member with no
 log has no folded state to be stale, so neither reconcile runs for one, which is what
 keeps the roster read free of writes.
+
+That comparison is between two things of different ages, and each side has its own
+guard. The config side is older: `api_members` loads it once and reaches the row loop
+several reads later, so a save landing in between writes `config.json` AND appends its
+own `member/config`, leaving the fold carrying the NEW values while the request still
+holds the old ones — and the comparison then reads the save as drift and appends the
+pre-save snapshot over it, durably, because the fold is last-wins per field. So the
+request loads through `load_config_with_content_stamp`, which returns the config
+together with a digest bound INSIDE the load: the cache entry carries the digest of the
+bytes it was parsed from, so a hit reports its own provenance and a miss reports what
+it just read. A digest read around the load instead is defeated by a replacement
+presenting the same stat fingerprint, because the load then answers from cache while
+those reads hash the new bytes. `reconcile_member_config` takes the digest as a
+REQUIRED argument and refuses unless the live config is still those bytes.
+
+A digest names BYTES, so it is available whenever both files were read whole or were
+absent — "neither file exists" is a valid state with a digest of its own, and a document
+that read whole but would not parse still has bytes to name. Only a read that never
+completed leaves nothing to name, and that load binds no digest.
+
+Currency is therefore not the whole condition. The roster corrects the log FROM the
+config, so it reconciles only while that config is both current AND faithful: a file
+that would not parse leaves field DEFAULTS standing in for what the operator wrote, and
+correcting the log from those defaults would overwrite good values because of a typo —
+the same projection regression the currency check exists to prevent. `degraded_sections`
+is what reports faithfulness, and the roster folds both conditions into the stamp it
+passes, so no row can reach the reconcile without them. The rows still render either
+way; only the correcting write is withheld. The log side is younger
+but can still move: the correcting append goes through
+`append_closer_if_still_applies` with `_config_is_still_at`, so a writer committing
+between the comparison and the write keeps its newer word. All of these refusals are
+ordinary — the next roster read compares afresh.
+
+The startup sweep reconciles through the same single entry, under the same two
+conditions. It cannot meet them from the config object the gateway hands it: that was
+loaded when the gateway was constructed, and the sweep runs later as a background task
+with the HTTP port already listening, so a dashboard save can have landed in between
+and those values are no longer the operator's word. The sweep therefore loads config
+itself, in its own worker thread, and passes that load's digest — so a save that landed
+while the sweep was queued is what reaches the log, rather than being overwritten by
+it. Absent or degraded provenance withholds the member/config write and nothing else:
+the closers below are decided from live process state against the log, never from config
+content, so they still land. There is deliberately no second, exempt entry point — a
+caller that cannot name its bytes must not reconcile, and an exemption reachable by
+passing an empty stamp is one a caller reaches by accident.
 
 It reconciles the roster's `last_message` the same way
 (`eventlog_hooks.reconcile_member_preview`): the transcript's speech-only read is the

@@ -4,7 +4,10 @@ import { createPortal } from 'react-dom'
 import { i18nT } from '../i18n/t'
 
 /** Tiny ? button that shows a tooltip on click. Portal-rendered to escape overflow clipping. */
-export default function InfoTip({ text, placement = 'auto' }: { text: string; placement?: 'auto' | 'top' }) {
+export default function InfoTip({ text, placement = 'auto' }: {
+  text: string
+  placement?: 'auto' | 'top'
+}) {
   const [open, setOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const tipRef = useRef<HTMLDivElement>(null)

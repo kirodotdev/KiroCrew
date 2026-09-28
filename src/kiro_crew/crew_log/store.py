@@ -355,18 +355,61 @@ REMOVE_REMOVED = "removed"
 #: A writer owns the unit -- another process, or another handle in this one. The
 #: unit is LIVE, so it is skipped; a later pass gets it once its writer is gone.
 REMOVE_OWNED = "owned"
-#: There was nothing to remove: no directory, or one that no id addresses.
+#: There was nothing to remove: no directory, or one that no id addresses. PROVEN
+#: absence -- a caller may act on the unit's name being free, because nothing here
+#: stands in for a directory this function declined to look inside.
 REMOVE_ABSENT = "absent"
+#: The unit's own name is a LINK, so nothing was removed and nothing was inspected.
+#: Separate from ``absent`` because the two invite opposite actions: absence says the
+#: name is free, while this says a directory exists and reaching it means following a
+#: link into a unit that is very likely another member's live one. A caller acting on
+#: this as absence does its own cleanup at the RESOLVED path and corrupts that unit;
+#: what the condition actually needs is a person to remove the link.
+REMOVE_LINKED = "linked"
 #: Something in the unit survived. Reported, never counted as removed, and the
 #: unit is left identifiable so the next pass can aim at it again.
 REMOVE_FAILED = "failed"
 
 
-def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> str:
+def _run_in_hold(action: "Callable[[], bool]", kind: str, unit_id: str) -> bool:
+    """Run a caller's companion cleanup and report whether it finished.
+
+    The answer decides whether the removal proceeds, so a failure is NOT swallowed.
+    A caller passes a companion because something outside the unit belongs to the
+    same deletion, and the gate that stops it being read again can live INSIDE the
+    unit -- so a companion left behind while the unit goes is worse than nothing
+    removed at all: the surviving data becomes readable again with its gate gone.
+    Reporting the failure is what lets the caller keep both.
+
+    An exception is the same answer as a refusal, and its traceback is rendered to
+    text rather than attached as ``exc_info``: the action is the CALLER's callable,
+    so the retained frames would be ones this package cannot vet.
+    """
+    try:
+        return bool(action())
+    except Exception:
+        log_exception_text(
+            logger,
+            logging.WARNING,
+            "crew log retention: companion cleanup for %s log %r failed",
+            kind,
+            unit_id,
+        )
+        return False
+
+
+def remove_unit(
+    kind: str,
+    unit_id: str,
+    *,
+    guard: "Callable[[Path], bool]",
+    in_hold: "Callable[[], bool] | None" = None,
+) -> str:
     """Remove one unit's crew log entirely. Returns one of the ``REMOVE_*`` statuses.
 
     The ONE spelling of deletion in this package, called by the retention sweep
-    and by the permanent-delete funnel alike, for the reason the work crew log's
+    and by each permanent-delete funnel that reaches it -- a session's, and the
+    dashboard's crew-member route -- for the reason the work crew log's
     ``purge_matching`` docstring gives: two callers deleting the same tree two
     ways is two chances to get the order wrong, and the order is the whole
     correctness argument.
@@ -392,6 +435,25 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
     than a filter the caller applies first, and why there is no default that
     skips the re-decision. A caller whose precondition is not a property of the
     file passes ``lambda _dir: True`` and says at the call site what does decide.
+
+    **A caller with a companion file OUTSIDE the unit passes ``in_hold``, and it
+    runs while this lease is still held, BEFORE anything here is destroyed.** Some of
+    a unit's meaning lives outside its directory -- a member's pre-log activity source
+    is the case -- and a caller that removed such a file after this function RETURNED
+    would do it in the window between the release here and its own next line, where
+    another PROCESS can create the unit afresh and fold that source back in. The lease
+    is taken ``sole`` and so cannot be shared, which is why the caller cannot simply
+    hold it itself; a hook inside the hold closes that window without a second
+    spelling of deletion. Optional, so a caller with nothing outside the unit passes
+    nothing and is unaffected.
+
+    It runs FIRST, and a false answer stops the removal with ``failed`` and nothing
+    here touched. The gate that stops such a companion being read again can live
+    inside THIS unit -- a fold marker does -- so a unit destroyed while its companion
+    survives is not a partial success but an armed one: the survivor becomes readable
+    again with its gate gone, and nothing revisits the unit to notice. In this order a
+    refusal leaves both in place and both still gated, and the unit stays
+    identifiable for a later pass to aim at again.
 
     **Then order, with IDENTITY LAST.** Segments carry the header, so they are the
     history and they go first; the per-append lock file next; then any other
@@ -430,6 +492,12 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
     # so this and the ``crew_log_dir`` below read the same directory: a linked kind
     # root would otherwise be refused only on the second read, after this one had
     # already followed it.
+    #
+    # Answered as its OWN status rather than as absence. Absence says the name is
+    # free, and a caller acting on that does its own cleanup at the resolved path --
+    # which is where this link points, so it would reach into a unit that is very
+    # likely another member's live one. The two conditions invite opposite actions,
+    # so they cannot share a value.
     named = _checked_crew_log_root(kind) / _store_name(unit_id)
     if is_link(named):
         logger.warning(
@@ -437,7 +505,7 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
             kind,
             unit_id,
         )
-        return REMOVE_ABSENT
+        return REMOVE_LINKED
     directory = crew_log_dir(kind, unit_id)
     if not directory.is_dir():
         return REMOVE_ABSENT
@@ -460,6 +528,19 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
             # between the decision and this hold. Not a failure: nothing was
             # removed and nothing was written.
             return REMOVE_OWNED
+        if in_hold is not None and not _run_in_hold(in_hold, kind, unit_id):
+            # FIRST, and the removal stops here when it refuses. The caller's
+            # companion sits outside the unit while the gate that stops it being
+            # read again can sit inside -- so destroying this unit before the
+            # companion is gone is what arms that gate against a survivor. Taken in
+            # this order a refusal costs nothing: both are still here, both are
+            # still gated, and the unit stays identifiable for the next pass.
+            logger.warning(
+                "crew log retention: %s log %r not removed; its companion would not go",
+                kind,
+                unit_id,
+            )
+            return REMOVE_FAILED
         failures, history_gone = _remove_unit_contents(directory)
         if failures:
             # Say WHICH of the two failures this is. Segments go first, so a
@@ -527,7 +608,23 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
                     kind,
                     unit_id,
                 )
+            if history_gone and in_hold is not None:
+                # The companion is already gone -- it ran before any of this -- so a
+                # partial removal strands nothing. Recorded because the two facts
+                # read together: this unit's history is gone AND so is the companion
+                # whose gate lived here, which is why nothing revisiting it can
+                # re-import anything.
+                logger.debug(
+                    "crew log retention: %s log %r partly removed with its companion "
+                    "already gone",
+                    kind,
+                    unit_id,
+                )
             return REMOVE_FAILED
+        # Before the identity unlink below, not after: while the lease FILE exists it
+        # names the inode whose lock proves ownership, and once it is gone a second
+        # remover can lock a fresh one -- which would put another process inside the
+        # hold this removal, and the companion step it already ran, were given alone.
         lease_gone = unlink_lock_in_hold(lease_path)
     finally:
         release_lease(lease_key)
@@ -1381,6 +1478,69 @@ def unit_ids(kind: str) -> list[str]:
             continue
         out.append(own_id)
     return sorted(out)
+
+
+def unit_opened_previous(kind: str, unit_id: str) -> "str | None":
+    """The predecessor id *unit_id*'s own ``session/opened`` records, or None.
+
+    The DURABLE half of the supersede edge. The emitter writes ``previous.sid`` on
+    the opening entry and never rewrites it, so this answers "which crew log was
+    this slot writing before" from the file rather than from a process's memory --
+    which is what a caller recovering after a crash has and a caller reading its
+    own live state does not need.
+
+    Reads the OLDEST segment's SECOND line, which is where ``session/opened`` is:
+    the header is line 1 and the opening entry is appended immediately after it, so
+    this is O(1) whatever the crew log has grown to. A rotated log keeps its opening
+    entry in the first segment, which is why the segments are ordered rather than
+    the newest one read.
+
+    None is "cannot prove", never "there is no predecessor", exactly as in
+    :func:`_unit_header_object` and for the same reason: the refusals are a
+    directory that is a link, a header that does not fold back to the directory
+    holding it, no second line yet, a line that does not parse, a second line that
+    is not a ``session/opened``, and a ``previous`` that is absent or not shaped as
+    an object carrying a non-empty string ``sid``. A caller acting on this value
+    must treat None as "no recovery available here" rather than as a statement that
+    the crew log stands alone.
+
+    Read-only: it takes no lease and writes nothing, so it cannot disturb a crew log
+    another process is appending to.
+    """
+    require_kind(kind)
+    try:
+        named = _checked_crew_log_root(kind) / _store_name(unit_id)
+        if is_link(named):
+            return None
+        directory = crew_log_dir(kind, unit_id)
+        if is_link(directory):
+            return None
+        segments = [
+            (first, child)
+            for child in directory.iterdir()
+            if (first := _segment_first_seq(child)) is not None
+        ]
+    except (CrewLogError, OSError):
+        return None
+    if not segments:
+        return None
+    segments.sort(key=lambda pair: pair[0])
+    try:
+        header, entry, _has_line = read_head(segments[0][1])
+    except OSError:
+        return None
+    if header is None or entry is None:
+        return None
+    own_id = header.get("id")
+    if not isinstance(own_id, str) or not own_id or _store_name(own_id) != directory.name:
+        return None
+    if entry.type != "session/opened":
+        return None
+    previous = entry.data.get("previous")
+    if not isinstance(previous, dict):
+        return None
+    sid = previous.get("sid")
+    return sid if isinstance(sid, str) and sid else None
 
 
 def _remove_unit_contents(directory: Path) -> "tuple[int, int]":
@@ -2421,7 +2581,7 @@ class CrewLog:
         and a retry succeeds instead of being refused by the fragment.
 
         ``repair`` is what closes an INTERRUPTED TURN, and it is opt-in because
-        the two callers of ``open`` want opposite things. A RESUME -- the gateway
+        the callers of ``open`` want opposite things. A RESUME -- the gateway
         finding a session log whose writer is gone -- wants the open turn
         closed, and passes ``repair=True``. A live writer RECONNECTING to its own
         crew log must not: its turn is still running, and closing it would append a
@@ -2429,10 +2589,13 @@ class CrewLog:
         writing, so the record would claim an outcome the turn never had. A
         reconnect happens for reasons that have nothing to do with the writer's
         health -- a handle evicted from a bounded cache is enough -- so repair
-        cannot be inferred from the fact that an ``open`` is happening at all. See
-        :func:`_close_interrupted_tail`; the torn-tail truncation below is
-        unconditional because trailing bytes that are not a complete line are not
-        a record, so nothing can be reading them.
+        cannot be inferred from the fact that an ``open`` is happening at all. The
+        third caller is a SUPERSEDE, which wants the same thing a resume wants but
+        for a store that is not its own, and reaches it through
+        :meth:`repair_interrupted_turn` rather than this flag so it can report how
+        many closers landed. See :func:`_close_interrupted_tail`; the torn-tail
+        truncation below is unconditional because trailing bytes that are not a
+        complete line are not a record, so nothing can be reading them.
         """
         kind = require_kind(kind)
         # The NEWEST segment is the one a writer appends to, and with nothing
@@ -2502,10 +2665,15 @@ class CrewLog:
         """Close an open turn on this crew log. Returns how many closers landed.
 
         The method form of ``open(repair=True)``, for a caller that already holds
-        a handle. Same rule: only a resume calls it, never a live writer. And the
+        a handle. Two callers reach it: a RESUME, and a SUPERSEDE closing the tail
+        of the store its slot was writing before. Same rule for both, and it is
+        about the WRITER rather than about which caller asks -- never call this for
+        a turn that is still running, whoever is asking. And the
         same ``child_gone`` meaning: without a predicate an unmatched
         ``subagent/spawned`` is left open, because nothing else can rule out a live
-        child that is still about to report its own outcome.
+        child that is still about to report its own outcome. A supersede passes
+        none, because the children it would be answering for were dispatched by a
+        session that is gone.
         """
         # The closers are appends, so this takes write ownership exactly as one
         # does, and is refused the same way when another process holds the log.

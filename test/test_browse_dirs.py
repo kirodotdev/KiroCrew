@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import api_browse_dirs
@@ -21,7 +22,7 @@ from kiro_crew.dashboard.handlers.files import (
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/browse-dirs", api_browse_dirs)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture()

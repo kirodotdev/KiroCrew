@@ -245,6 +245,21 @@ class SlackClientOps(ABC):
         """
         return None
 
+    async def fetch_message_detail(self, channel: str, ts: str) -> dict[str, str] | None:
+        """Fetch a single message's text AND who posted it.
+
+        Returns ``{"text", "user", "bot_id", "bot_name"}`` (missing parts are
+        empty strings), or None on failure or when the message has no text.
+        ``text`` is extracted exactly as :meth:`fetch_message` extracts it.
+
+        The default asks :meth:`fetch_message` and knows no author, so a client
+        that only implements the text fetch still answers here.
+        """
+        text = await self.fetch_message(channel, ts)
+        if not text:
+            return None
+        return {"text": text, "user": "", "bot_id": "", "bot_name": ""}
+
     async def probe_channel_history(self, channel: str) -> str | None:
         """Probe whether the bot token can read *channel*'s history.
 
@@ -824,41 +839,82 @@ class RealSlackClient(SlackClientOps):
         Prefers content extracted from Block Kit ``blocks`` and falls back
         to the top-level ``text`` field when blocks yield nothing.
         """
+        message = await self._fetch_single_message(channel, ts)
+        return self._message_text(message) if message is not None else None
+
+    async def fetch_message_detail(self, channel: str, ts: str) -> dict[str, str] | None:
+        """Fetch a single message's text and author with one history read.
+
+        ``bot_name`` is the posting app's display name (``bot_profile.name``,
+        else the legacy ``username``) and is set only for app-posted messages.
+        """
+        message = await self._fetch_single_message(channel, ts)
+        if message is None:
+            return None
+        text = self._message_text(message)
+        if not text:
+            return None
+        bot_id = str(message.get("bot_id") or "")
+        bot_profile = message.get("bot_profile")
+        bot_name = ""
+        if bot_id:
+            if isinstance(bot_profile, dict):
+                bot_name = str(bot_profile.get("name") or "")
+            bot_name = bot_name or str(message.get("username") or "")
+        return {
+            "text": text,
+            "user": str(message.get("user") or ""),
+            "bot_id": bot_id,
+            "bot_name": bot_name,
+        }
+
+    async def _fetch_single_message(self, channel: str, ts: str) -> dict[str, Any] | None:
+        """The raw message at *ts* in *channel*, or None on failure."""
         try:
-            resp = await self._web.conversations_history(
-                channel=channel, oldest=ts, latest=ts, inclusive=True, limit=1
-            )
+            kwargs: dict[str, Any] = {
+                "channel": channel,
+                "oldest": ts,
+                "latest": ts,
+                "inclusive": True,
+                "limit": 1,
+            }
+            self._inject_team(channel, kwargs)
+            resp = await self._web.conversations_history(**kwargs)
             messages: list[dict[str, Any]] = resp.get("messages", [])
             if messages:
-                message = messages[0]
-                text = message.get("text", "")
-                parts: list[str] = []
-                for block in message.get("blocks", []):
-                    block_type = block.get("type")
-                    if block_type == "section":
-                        text_obj = block.get("text")
-                        if text_obj:
-                            section_text = text_obj.get("text", "")
-                            if section_text:
-                                parts.append(section_text)
-                    elif block_type == "rich_text":
-                        for rich_text_element in block.get("elements", []):
-                            # rich_text_list has children that are each rich_text_section;
-                            # rich_text_preformatted and rich_text_quote have inline
-                            # elements directly, so the else branch handles them correctly.
-                            leaves = (
-                                rich_text_element.get("elements", [])
-                                if rich_text_element.get("type") == "rich_text_list"
-                                else [rich_text_element]
-                            )
-                            for leaf in leaves:
-                                inline_texts = self._extract_inline_texts(leaf.get("elements", []))
-                                if inline_texts:
-                                    parts.append("".join(inline_texts))
-                return "\n".join(parts) or text or None
+                return messages[0]
         except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError):
             logger.debug("fetch_message failed for %s/%s", channel, ts, exc_info=True)
         return None
+
+    @classmethod
+    def _message_text(cls, message: dict[str, Any]) -> str | None:
+        """A message's readable text: Block Kit content first, then ``text``."""
+        text = message.get("text", "")
+        parts: list[str] = []
+        for block in message.get("blocks", []):
+            block_type = block.get("type")
+            if block_type == "section":
+                text_obj = block.get("text")
+                if text_obj:
+                    section_text = text_obj.get("text", "")
+                    if section_text:
+                        parts.append(section_text)
+            elif block_type == "rich_text":
+                for rich_text_element in block.get("elements", []):
+                    # rich_text_list has children that are each rich_text_section;
+                    # rich_text_preformatted and rich_text_quote have inline
+                    # elements directly, so the else branch handles them correctly.
+                    leaves = (
+                        rich_text_element.get("elements", [])
+                        if rich_text_element.get("type") == "rich_text_list"
+                        else [rich_text_element]
+                    )
+                    for leaf in leaves:
+                        inline_texts = cls._extract_inline_texts(leaf.get("elements", []))
+                        if inline_texts:
+                            parts.append("".join(inline_texts))
+        return "\n".join(parts) or text or None
 
     async def fetch_thread_replies(
         self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True

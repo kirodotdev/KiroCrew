@@ -33,9 +33,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from kiro_crew import runtime_death
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 from kiro_crew.agent_sdk.backends import Routing, routing_for
-from kiro_crew.agent_sdk.drivers.acp_vocab import classify_stop_reason
+from kiro_crew.agent_sdk.drivers.acp_vocab import classify_stop_reason, is_runtime_death
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import transcript_stem
@@ -1268,6 +1269,108 @@ def _provider_backend(provider: Any) -> str | None:
     return backend if isinstance(backend, str) else None
 
 
+def _breaker_threshold(sessions: Any) -> int | None:
+    """The circuit breaker's OWN trip threshold, read from the manager applying it.
+
+    Deliberately not a literal here. The number is handed to the allocation layer
+    through ``AllocationConstants``, so a copy in this module would be a second
+    value to keep in step with the counter the bound below stands in for -- and
+    importing the one definition is not available either, because this module
+    stays off the session package's import graph (see ``SessionClosingError``
+    above). Reading it from the manager is therefore the only way to be sure the
+    substitute bound and the real counter share a limit.
+
+    ``None`` when it cannot be read, and the caller then charges exactly as it
+    does today: an exemption whose bound is unknown is not an exemption.
+    """
+    build = getattr(sessions, "_allocation_deps", None)
+    if not callable(build):
+        return None
+    try:
+        threshold = build().constants.circuit_breaker_threshold
+    except Exception:
+        return None
+    if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0:
+        return None
+    return threshold
+
+
+async def charge_turn_failure(
+    sessions: Any,
+    session_key: str,
+    *,
+    exc: BaseException,
+    provider: object | None,
+    channel_type: str,
+) -> None:
+    """Charge one failed turn to *session_key*'s breaker, unless a SHARED process died.
+
+    The channel dispatchers catch a failed turn generically, so a dying runtime
+    reaches them as one more exception and every tenant of that process charges
+    its own breaker for it -- the misattribution :mod:`kiro_crew.runtime_death`
+    exists to end, arriving by a path no typed handler covers. One helper rather
+    than one copy per channel: four copies of an attribution rule drift, and the
+    rule is identical because the counter is.
+
+    Only a process death is ever exempt. Every other failure is the turn's own
+    and charges exactly as before -- consulting the death record for an unrelated
+    exception would exempt a real fault whenever some co-tenant's death happened
+    to be recorded against the same provider.
+
+    *provider* must be the one this turn ACQUIRED, never a fresh lookup. The
+    recovery around these handlers replaces a dead session, so a lookup at
+    failure time answers for the replacement and the question silently becomes
+    "was the NEW runtime shared".
+
+    The exemption is bounded, and at the limit it PERFORMS the actuator rather
+    than charging the counter it stood in for. ``record_failure`` trips into this
+    same reset, so a session on a permanently dying shared runtime recovers after
+    the threshold rather than after twice it, and its own failure count is left
+    alone -- it never misbehaved.
+    """
+    threshold = _breaker_threshold(sessions)
+    if (
+        threshold is None
+        or not is_runtime_death(exc)
+        or runtime_death.caused_by_this_session(provider)
+    ):
+        await sessions.record_failure(session_key)
+        return
+    streak = runtime_death.note_shared_death(session_key)
+    if streak < threshold:
+        logger.warning(
+            "%s: %s lost a turn to a SHARED runtime's death (%d running) — "
+            "not counting it toward the circuit breaker",
+            channel_type,
+            session_key,
+            streak,
+        )
+        return
+    logger.warning(
+        "%s: the runtime %s shares has died %d times running — resetting it now, "
+        "the same recovery the breaker performs",
+        channel_type,
+        session_key,
+        streak,
+    )
+    try:
+        await sessions.reset(session_key)
+        # Same transfer rule as the two typed hand-overs: the reset spends the
+        # streak, so it is forgotten here. Left in place it would sit at the
+        # threshold forever and every later shared death would reset again --
+        # the unexempted behaviour, arrived at by keeping the exemption's own
+        # bookkeeping. Cleared only after the reset returns, so a failed reset
+        # keeps the streak and the next death retries the actuator.
+        runtime_death.clear_shared_deaths(session_key)
+    except Exception:
+        logger.warning(
+            "%s: reset of %s after a shared runtime's deaths failed",
+            channel_type,
+            session_key,
+            exc_info=True,
+        )
+
+
 async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
     """Run one authorized inbound message end to end.
 
@@ -1283,6 +1386,12 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
     # flag and forget the agent that gives it teeth.
     session_agent = TOOLLESS_TURN_AGENT if turn.deny_all_tools else turn.agent
     _acquired = False
+    # The provider THIS turn acquired, for the failure handler's attribution
+    # question. Bound before the try so every handler can read it -- an
+    # attribution flag read on a path its assignment cannot reach is an
+    # UnboundLocalError inside an except arm, not a guard. Stays None when
+    # get_or_create never returned, and an unattributable death charges as before.
+    _turn_provider: object | None = None
     # Post-compaction re-injection bookkeeping for the finally: whether this
     # turn consumed the one-shot flag, and whether it landed (recorded success).
     needs_reinjection = False
@@ -1400,6 +1509,14 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 session_key, agent=session_agent, channel_id=turn.conversation_id, **extra
             )
             _acquired = True
+            # Hold the provider this attempt obtained, for the failure handler's
+            # attribution question. Captured HERE rather than looked up when a
+            # failure is handled: the recovery paths replace a dead session, so a
+            # lookup at failure time answers for the replacement and the question
+            # silently becomes "was the NEW runtime shared". Re-bound on every
+            # pass of the retry loop, so an attempt is never judged by the runtime
+            # a previous attempt used.
+            _turn_provider = provider
             if turn.deny_all_tools:
                 # The tool-less agent is a SPEC, and only a backend that mounts
                 # what the spec names honours it. On any other routing the
@@ -1668,6 +1785,13 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # that actually succeeded. ──
         try:
             sessions.record_success(session_key)
+            # Beside the counter it stands in for. The shared-death streak is a
+            # reading of whether this session can get work done at all, so a
+            # landed turn clears it exactly as it clears the consecutive-failure
+            # count -- left uncleared it would be a lifetime total, and the bound
+            # it feeds would stay permanently tripped while reporting the total as
+            # a consecutive run.
+            runtime_death.clear_shared_deaths(session_key)
         except Exception:
             logger.warning(
                 "%s: record_success failed session=%s",
@@ -1793,10 +1917,20 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             await renderer.on_done()
         except Exception:
             logger.warning("%s: could not display memory refusal", turn.channel_type, exc_info=True)
-    except Exception:
+    except Exception as exc:
         logger.exception("%s transport_dispatch: error handling message", turn.channel_type)
         if _acquired:
-            await sessions.record_failure(session_key)
+            # A dying runtime reaches this generic handler as one more exception,
+            # so without the attribution question every tenant of one process
+            # charges its own breaker for a single process event. The provider
+            # handed over is the one THIS turn acquired, never a fresh lookup.
+            await charge_turn_failure(
+                sessions,
+                session_key,
+                exc=exc,
+                provider=_turn_provider,
+                channel_type=turn.channel_type,
+            )
     finally:
         # A turn that consumed the post-compaction flag but never landed
         # discarded the prompt carrying the re-injected context; put the flag

@@ -81,11 +81,11 @@ Five profiles:
 | `none` | The user's own interactive terminal | No rlimits and no OOM bias, so the shim is skipped entirely unless the spawn also asks for a controlling terminal (`ctty_fd=`), which the terminal does |
 
 Async, shim-routed spawns cover MCP server probes (`mcp_discovery.py`), the app
-registry's clone and build spawns (`apps/registry.py`, `apps/routes.py`), the task
+registry's clone and build spawns (`apps/registry.py`, `apps/registry_pipeline/`, `apps/routes.py`), the task
 runner's test spawn (`task_executor.py`), agent-selected git (`git_coord.py`), shell
 hooks (`hooks.py`), the knowledge worker pool (`knowledge/llm_pool.py`), voice
 synthesis (`voice_reply.py`), the source-provider CLI spawns
-(`dashboard/handlers/source_providers.py`), and the builtin app subprocesses under
+(`dashboard/source_providers/runner.py`), and the builtin app subprocesses under
 `apps/builtins/`. Synchronous `subprocess.run` / `Popen` spawns route through
 `run_limited()` / `popen_limited()`, the sync siblings of the async wrapper: same
 post-exec delivery, same refusal of a caller-supplied `preexec_fn`, and the same
@@ -416,7 +416,7 @@ Linux VM or container where the cgroup scope applies.
 `systemd-run --user` reaches the user session bus via `XDG_RUNTIME_DIR` and
 `DBUS_SESSION_BUS_ADDRESS`, so those must be present in the environment the spawn is created
 with, not merely the gateway's. That environment is credential-scrubbed, and some callers
-(`dashboard/handlers/source_providers.py` builds it from a strict allowlist rather than
+(`dashboard/source_providers/runner.py` builds it from a strict allowlist rather than
 inheriting `os.environ`), so `sandboxed_spawn_argv` restores the two keys via
 `cgroup_scope_bus_env()` after the scrub, gated on the same availability probe that decides
 whether to wrap at all. Omitting them does not degrade to an unbounded spawn, it fails the

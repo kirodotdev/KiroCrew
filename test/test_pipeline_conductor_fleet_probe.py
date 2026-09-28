@@ -51,6 +51,13 @@ SCRIPT = (
 
 KEY = "dashboard_chat-601-1788099254"
 
+#: The one pytest shape the built-in rule reports: an explicit worker COUNT of two or more,
+#: which bypasses the memory budget the rootdir hook applies to ``auto``. A
+#: fixture that needs a reportable run carries this so the rest of its argv stays about
+#: the property under test. Glued, so ``cmd=`` prints it as the bare flag name ``-n``
+#: with nothing counted for the value -- the digits are withheld like every value.
+UNBUDGETED = ["-n4"]
+
 
 # Three platform facts meet this file, and each is handled by the mechanism the
 # repository already has for it.
@@ -826,19 +833,19 @@ def test_host_lines_reports_a_fleet_owned_unbounded_run(mod, tmp_path, monkeypat
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     (fleet / "src").mkdir(parents=True)
-    entry = proc_pid(root, "101", ["pytest", "-q"], starttime=50_000)
+    entry = proc_pid(root, "101", ["pytest", "-q", *UNBUDGETED], starttime=50_000)
     make_dir_link(entry / "cwd", fleet / "src")
     lines, host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
     assert lines == [
         f"BANNED pid=101 rule={mod.DEFAULT_BANNED_RES[0]} cwd=fleet age=500s scope=suite "
-        f"cmd=pytest,-q"
+        f"cmd=pytest,-q,-n"
     ]
     assert "banned 1 | foreign 0" in host
 
 
 #: A worker's test step, as the one multi-line script a single ``cmdline`` carries:
-#: a capped run, then a read of the log that run wrote. Both lines name ``pytest``
-#: and only one of them is a command.
+#: a single-process run, then a read of the log that run wrote. Both lines name
+#: ``pytest`` and only one of them is a command.
 CAPPED_STEP = (
     "set -euo pipefail\n"
     'timeout 900 "$PY" -m pytest -n0 test/test_x.py -q > /wt/pytest.log 2>&1\n'
@@ -862,17 +869,20 @@ def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
     token means naming ``.``, then ``-``, then ``:``, then ``=``, then ``@``, one
     false stop at a time. Requiring a whole shell token covers all of them at once.
 
-    The loud rows are the reason this cannot be fixed by matching less: a bare run
-    and a run capped on a DIFFERENT line of the same script must still be told
-    apart, which is what the last row pins.
+    The loud rows are the reason this cannot be fixed by matching less: an
+    unbudgeted run and a budgeted one on a DIFFERENT line of the same script must
+    still be told apart, which is what the last rows pin.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
     quiet = {
-        # The capped run itself, both spellings.
+        # The single-process run itself, both spellings, and the budgeted forms: the
+        # gate runner's own ``-n auto`` and a bare pytest whose ``addopts`` supply it.
         "201": ["python", "-m", "pytest", "-n0", "test/test_x.py", "-q"],
         "202": ["pytest", "-n0", "test/test_x.py"],
+        "216": ["python", "-m", "pytest", "-n", "auto", "--dist", "loadgroup", "test/"],
+        "217": ["pytest", "test/test_x.py"],
         # A filename that merely carries the word.
         "203": ["grep", "-E", "^(FAILED|ERROR)| passed|failed", "/wt/pytest.log"],
         "204": ["tail", "-2", "/wt/pytest.log"],
@@ -889,19 +899,22 @@ def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
         "213": ["pip", "install", "pytest==7.4.0"],
         "214": ["conda", "install", "pytest=7.4"],
         "215": ["npm", "i", "pytest@1.2.3"],
-        # The whole step: a capped run and a log read in one argument.
+        # The whole step: a single-process run and a log read in one argument.
         "206": ["bash", "-c", CAPPED_STEP],
+        # A NUMBER on a later line belongs to that line's command. A lookahead widened
+        # to the whole script text would read ``grep -n 5`` as the run's own count.
+        "218": ["bash", "-c", CAPPED_STEP + "grep -n 5 /wt/pytest.log\n"],
     }
     loud = {
-        # A run whose worker count nobody chose.
-        "207": ["pytest", "test/test_x.py"],
-        # The same step with an UNCAPPED run beside it, in both orders. A cap
-        # belongs to the command that carries it and can excuse no other, which is
+        # A run whose worker count bypasses the budget.
+        "207": ["pytest", *UNBUDGETED, "test/test_x.py"],
+        # The same step with an UNBUDGETED run beside it, in both orders. A count
+        # belongs to the command that carries it and can condemn no other, which is
         # what a lookahead widened to the whole script text would break: scanning
-        # forward past the command's own end reaches the cap on the line BELOW,
+        # forward past the command's own end reaches the count on the line BELOW,
         # and scanning backward would reach the one above.
-        "208": ["bash", "-c", "pytest -q test/test_y.py\n" + CAPPED_STEP],
-        "209": ["bash", "-c", CAPPED_STEP + "pytest -q test/test_y.py\n"],
+        "208": ["bash", "-c", "pytest -n 4 -q test/test_y.py\n" + CAPPED_STEP],
+        "209": ["bash", "-c", CAPPED_STEP + "pytest -n 4 -q test/test_y.py\n"],
     }
     for pid, argv in {**quiet, **loud}.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
@@ -917,12 +930,12 @@ def test_the_banned_line_names_the_command_without_echoing_its_arguments(
 ):
     """``cmd=`` has to make a match judgeable, and carry nothing that can be secret.
 
-    A pid alone cannot separate a real uncapped run from a command that only names
-    one, and by the time anybody opens ``ps`` the process is usually gone. The
+    A pid alone cannot separate a real unbudgeted run from a command that only
+    names one, and by the time anybody opens ``ps`` the process is usually gone. The
     field answers that -- but a command line is where a credential and a checkout
     layout ride, so only what cannot hold either is printed: program and runner
     NAMES from a fixed vocabulary, recognised option names with the value dropped --
-    the cap flag's digits included -- and a count for the rest.
+    the worker-count flag's digits included -- and a count for the rest.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -939,17 +952,18 @@ def test_the_banned_line_names_the_command_without_echoing_its_arguments(
             "s3cr3t-value",
             "--cov=/wt/private-checkout/src",
             "test/test_x.py",
+            *UNBUDGETED,
         ],
         # An environment assignment in front of the command: the one place a secret
         # sits in the LEADING token, where a program name would otherwise print.
-        "302": ["GITHUB_TOKEN=ghp-not-a-real-secret", "pytest", "test/test_x.py"],
-        # No flag keeps its value, the cap flag included, so `--maxfail=2` prints as
-        # its name and `-n auto` prints as `-n` with the word counted like any other
-        # bare token.
-        "303": ["pytest", "--maxfail=2", "-n", "auto", "test/test_x.py"],
+        "302": ["GITHUB_TOKEN=ghp-not-a-real-secret", "pytest", "test/test_x.py", *UNBUDGETED],
+        # No flag keeps its value, the worker-count flag included, so `--maxfail=2`
+        # prints as its name and `-n 97` prints as `-n` with the digits counted like
+        # any other bare token.
+        "303": ["pytest", "--maxfail=2", "-n", "97", "test/test_x.py"],
         # More flags than the field prints: the remainder is counted, never cut
         # silently.
-        "304": ["pytest", *(f"-{letter}" for letter in "abcdefghij")],
+        "304": ["pytest", *(f"-{letter}" for letter in "abcdefghij"), *UNBUDGETED],
     }
     for pid, argv in cases.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
@@ -958,10 +972,10 @@ def test_the_banned_line_names_the_command_without_echoing_its_arguments(
     line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
     assert set(line) == set(cases), lines
 
-    assert "cmd=python,-m,pytest,--cov,+3" in line["301"]
-    assert "cmd=pytest,+2" in line["302"]
+    assert "cmd=python,-m,pytest,--cov,-n,+3" in line["301"]
+    assert "cmd=pytest,-n,+2" in line["302"]
     assert "cmd=pytest,--maxfail,-n,+2" in line["303"]
-    assert "cmd=pytest,-a,-b,-c,-d,-e,-f,-g,+3" in line["304"]
+    assert "cmd=pytest,-a,-b,-c,-d,-e,-f,-g,+4" in line["304"]
 
     whole = "\n".join(lines)
     for secret in (
@@ -970,7 +984,7 @@ def test_the_banned_line_names_the_command_without_echoing_its_arguments(
         "private-checkout",
         ".venv",
         "test/test_x.py",
-        "auto",
+        "97",
     ):
         assert secret not in whole, secret
 
@@ -990,17 +1004,22 @@ def test_an_assignment_value_holding_a_separator_is_still_withheld(mod, tmp_path
     fleet.mkdir()
     cases = {
         # Slash-bearing, the shape a separator-stripping check gets wrong.
-        "311": ["OPAQUE_ONE=q7t/x2v/zPmKdR", "pytest", "test/test_x.py"],
+        "311": ["OPAQUE_ONE=q7t/x2v/zPmKdR", "pytest", "test/test_x.py", *UNBUDGETED],
         # Backslash-bearing: the strip folds ``\`` to ``/`` first, so it is the
         # same hole spelled for the other platform.
-        "312": [r"OPAQUE_TWO=abc\def\gHiJkL", "pytest", "test/test_x.py"],
+        "312": [r"OPAQUE_TWO=abc\def\gHiJkL", "pytest", "test/test_x.py", *UNBUDGETED],
         # A separator-bearing value on a token that is NOT first, so neither the
         # program branch nor the flag branch may take it.
-        "313": ["pytest", "TMPDIR=/wt/private-checkout/tmp", "test/test_x.py"],
+        "313": ["pytest", "TMPDIR=/wt/private-checkout/tmp", "test/test_x.py", *UNBUDGETED],
         # The case the ORDER alone decides: a value whose tail after the last
         # separator is itself a name the printable list carries, so dropping the
         # directory first hands the program branch a word it accepts.
-        "314": ["SECRET_PATH=/wt/private-checkout/bin/pytest", "pytest", "test/test_x.py"],
+        "314": [
+            "SECRET_PATH=/wt/private-checkout/bin/pytest",
+            "pytest",
+            "test/test_x.py",
+            *UNBUDGETED,
+        ],
     }
     for pid, argv in cases.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
@@ -1009,10 +1028,10 @@ def test_an_assignment_value_holding_a_separator_is_still_withheld(mod, tmp_path
     line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
     assert set(line) == set(cases), lines
 
-    assert "cmd=pytest,+2" in line["311"]
-    assert "cmd=pytest,+2" in line["312"]
-    assert "cmd=pytest,+2" in line["313"]
-    assert "cmd=pytest,+2" in line["314"]
+    assert "cmd=pytest,-n,+2" in line["311"]
+    assert "cmd=pytest,-n,+2" in line["312"]
+    assert "cmd=pytest,-n,+2" in line["313"]
+    assert "cmd=pytest,-n,+2" in line["314"]
     # Exactly one runner name: a second would be the assignment's tail arriving at
     # the program branch because the directory was dropped before the ``=`` was read.
     assert line["314"].split("cmd=")[1].split()[0].count("pytest") == 1
@@ -1045,9 +1064,9 @@ def test_a_short_option_value_is_dropped_whether_glued_or_spaced(mod, tmp_path, 
     fleet = tmp_path / "wt"
     fleet.mkdir()
     cases = {
-        "321": ["pytest", "-kMyCustomerName", "test/test_x.py"],
-        "322": ["pytest", "-k", "MyCustomerName", "test/test_x.py"],
-        "323": ["pytest", "-k=MyCustomerName", "test/test_x.py"],
+        "321": ["pytest", "-kMyCustomerName", "test/test_x.py", *UNBUDGETED],
+        "322": ["pytest", "-k", "MyCustomerName", "test/test_x.py", *UNBUDGETED],
+        "323": ["pytest", "-k=MyCustomerName", "test/test_x.py", *UNBUDGETED],
     }
     for pid, argv in cases.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
@@ -1056,9 +1075,9 @@ def test_a_short_option_value_is_dropped_whether_glued_or_spaced(mod, tmp_path, 
     line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
     assert set(line) == set(cases), lines
 
-    assert "cmd=pytest,-k,+1" in line["321"]
-    assert "cmd=pytest,-k,+2" in line["322"]
-    assert "cmd=pytest,-k,+1" in line["323"]
+    assert "cmd=pytest,-k,-n,+1" in line["321"]
+    assert "cmd=pytest,-k,-n,+2" in line["322"]
+    assert "cmd=pytest,-k,-n,+1" in line["323"]
     assert "MyCustomerName" not in "\n".join(lines)
 
 
@@ -1184,41 +1203,47 @@ def test_the_character_bound_clips_and_marks_an_over_long_token(mod, tmp_path, m
     monkeypatch.setattr(
         mod, "_SAFE_LONG_FLAG_NAMES", frozenset(mod._SAFE_LONG_FLAG_NAMES | {long_flag})
     )
-    entry = proc_pid(root, "341", ["pytest", long_flag], starttime=50_000)
+    entry = proc_pid(root, "341", ["pytest", long_flag, *UNBUDGETED], starttime=50_000)
     make_dir_link(entry / "cwd", fleet)
     lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
     assert len(lines) == 1, lines
     printed = lines[0].split("cmd=")[1].split()[0]
-    assert printed == f"pytest,{long_flag[: mod._MAX_CMD_TOKEN_CHARS]}~"
+    assert printed == f"pytest,{long_flag[: mod._MAX_CMD_TOKEN_CHARS]}~,-n"
     assert len(printed) < len(long_flag)
 
 
-def test_a_launchers_own_option_cannot_supply_the_runners_cap(mod, tmp_path, monkeypatch):
-    """Suppressing a genuinely uncapped run is the fail-OPEN direction, so it must not.
+def test_a_launchers_own_option_cannot_supply_the_runners_count(mod, tmp_path, monkeypatch):
+    """A launcher's number is not the run's worker count, in either direction.
 
-    Reading the cap from the tokens is what stops an argument's own bytes being read as
-    shell syntax, but it introduces the opposite risk: ``-n`` is not pytest's alone.
+    Reading the count from the tokens is what stops an argument's own bytes being read
+    as shell syntax, but it introduces the opposite risk: ``-n`` is not pytest's alone.
     ``nice`` spells its priority that way and ``xvfb-run`` its display number, and both
-    are launchers this scan recognises, so a scan starting at argv[0] finds a number
-    attached to the wrong program and withholds a run nobody capped. A conductor gates
-    intake on a zero banned count, so that row going missing is worse than a false one:
-    the run keeps its unbounded worker pool and nothing says so.
+    are launchers this scan recognises. A scan starting at argv[0] finds a number
+    attached to the wrong program and reads it as the run's count -- so a budgeted
+    ``pytest`` behind ``nice -n 10`` draws a fleet-owned row, which is a stopped worker
+    and its discarded turn. The scan therefore starts after the runner's own token, and
+    a count the RUNNER carries behind the same launcher is still read.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    loud = {
-        # The launcher's own numeric option, in each spelling, on an UNCAPPED run.
+    quiet = {
+        # The launcher's own numeric option, in each spelling, on a BUDGETED run.
         "391": ["nice", "-n", "10", "pytest", "test/"],
         "392": ["nice", "-n19", "python", "-m", "pytest", "test/"],
         "393": ["xvfb-run", "-n", "99", "pytest", "test/"],
-        # The launcher carries one AND the runner carries a non-numeric one.
+        # The launcher carries one AND the runner carries a budgeted one.
         "394": ["nice", "-n", "5", "pytest", "-n", "auto", "test/"],
-    }
-    quiet = {
-        # The RUNNER's own cap, behind the same launcher: genuinely capped.
+        # The launcher carries one AND the runner runs single-process.
         "395": ["nice", "-n", "10", "pytest", "-n0", "test/"],
+    }
+    loud = {
+        # The RUNNER's own count, behind the same launcher: genuinely unbudgeted.
         "396": ["nice", "-n19", "python", "-m", "pytest", "--numprocesses=4", "test/"],
+        "397": ["xvfb-run", "-n", "99", "pytest", "-n", "8", "test/"],
+        # And behind a launcher whose own number is priority 1 -- a value that would
+        # read as single-process if the scan started at argv[0].
+        "398": ["nice", "-n", "1", "pytest", "-n", "4", "test/"],
     }
     for pid, argv in {**loud, **quiet}.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
@@ -1233,11 +1258,13 @@ def test_a_launchers_own_option_cannot_supply_the_runners_cap(mod, tmp_path, mon
     # standalone runner token. The rule needs ``pytest`` as a whole shell token, and
     # wherever that sits inside a script string the launcher's options sit there too,
     # invisible to a token walk -- so this guard cannot be reached through
-    # ``_host_lines`` today. It is what keeps the answer conservative rather than
-    # launcher-derived if some future argv shape does arrive at it.
-    assert mod._argv_declares_a_worker_cap(["pytest", "-n0"]) is True
-    assert mod._argv_declares_a_worker_cap(["nice", "-n", "10", "pytest"]) is False
-    assert mod._argv_declares_a_worker_cap(["nice", "-n", "10"]) is False
+    # ``_host_lines`` today. It is what keeps the answer conservative (not budgeted,
+    # which reports) rather than launcher-derived if some future argv shape does
+    # arrive at it.
+    assert mod._argv_worker_pool_is_budgeted(["pytest", "-n0"]) is True
+    assert mod._argv_worker_pool_is_budgeted(["nice", "-n", "10", "pytest"]) is True
+    assert mod._argv_worker_pool_is_budgeted(["nice", "-n", "10", "pytest", "-n", "4"]) is False
+    assert mod._argv_worker_pool_is_budgeted(["nice", "-n", "10"]) is False
 
 
 def test_the_cap_scan_does_not_backtrack_over_bracketed_spans(mod):
@@ -1245,11 +1272,11 @@ def test_the_cap_scan_does_not_backtrack_over_bracketed_spans(mod):
 
     The scan's first branch must not also match the characters that OPEN its span
     branches, or every span has two parses -- whole, or character by character -- and k
-    spans admit 2**k of them. The star sits inside a NEGATIVE lookahead, so the case
-    forced to walk every parse is the one with no cap to find: exactly the ``BANNED``
-    case. A rerun naming a few dozen failed parametrized node ids is an ordinary command
-    line, nothing in this script bounds the cmdline length or the match time, and the
-    probe stalls inside the ``/proc`` walk, so the conductor loses the whole cycle.
+    spans admit 2**k of them. The star sits inside a lookahead that FAILS on every
+    budgeted run, so the case forced to walk every parse is the ordinary one: a worker's
+    own ``-n auto`` rerun naming a few dozen failed parametrized node ids. Nothing in
+    this script bounds the cmdline length or the match time, and the probe stalls inside
+    the ``/proc`` walk, so the conductor loses the whole cycle.
 
     Structural, not a stopwatch: a timing assertion on a shared runner is a flake, while
     the disjointness is the property that makes the blow-up impossible.
@@ -1262,58 +1289,76 @@ def test_the_cap_scan_does_not_backtrack_over_bracketed_spans(mod):
     for opener in ("[", "'", '"'):
         assert not first_branch.match(opener), (opener, leading.group(1))
 
-    # And the cheap end-to-end check: a many-span uncapped argv still resolves.
+    # And the cheap end-to-end check: a many-span argv still resolves, whether the walk
+    # ends with no count to find (the budgeted forms, which stay quiet) or has to cross
+    # every span to reach the count at the very end (reported).
     rule = re.compile(mod.DEFAULT_BANNED_RES[0])
     spans = " ".join(f"a.py::t[c{i}]" for i in range(40))
-    assert rule.search(f"pytest -n auto {spans}") is not None
+    assert rule.search(f"pytest -n auto {spans}") is None
     assert rule.search(f"pytest -n0 {spans}") is None
+    assert rule.search(f"pytest {spans}") is None
+    assert rule.search(f"pytest {spans} -n 4") is not None
 
 
-def test_a_separator_inside_one_argument_does_not_hide_the_runs_own_cap(mod, tmp_path, monkeypatch):
+def test_a_separator_inside_one_argument_does_not_hide_the_runs_own_count(
+    mod, tmp_path, monkeypatch
+):
     """``/proc`` gives NUL-separated arguments, so a metacharacter in one is not syntax.
 
     The arguments are joined before matching, which puts every byte of every argument
-    into the text the cap search walks -- and a node id, a log format or a ``-k``
-    expression all carry the bytes that end a shell command. A capped run whose own
-    ``-n0`` sits behind one therefore reads as uncapped, and the response to a
-    ``cwd=fleet`` line is to stop the worker and discard the turn it was in, so this
-    direction of the mistake costs work rather than signal.
+    into the text the count search walks -- and a node id or a ``--deselect`` value
+    carries the bytes that end a shell command. An unbudgeted run whose own ``-n 8``
+    sits behind one would read as budgeted, and that is the one shape the counter
+    exists to catch. The scan crosses a bracketed or quoted span whole, which covers the
+    spellings that mark themselves as data.
 
-    Two things answer it, and the second is what makes the first sufficient. The scan
-    crosses a bracketed or quoted span whole, which covers the spellings that mark
-    themselves as data. And for a pid that IS the runner rather than a shell holding a
-    script, the whole argv is ONE command, so the cap is re-asked of the TOKENS, where
-    an argument's own bytes can never be read as syntax -- which is the only thing that
-    covers an option value with no bracket or quote around it at all.
+    The loud rows with a shell keep the other direction: an UNQUOTED separator in shell
+    text really is one, and a budgeted run must not be condemned by a neighbour's number.
 
-    The loud rows keep the other direction: an UNQUOTED separator in shell text really
-    is one, and a bare run must not borrow a neighbour's cap.
+    What the joined line cannot cover is an option VALUE with no bracket and no quote
+    around it that happens to carry a separator (``--log-format=%(a)s|%(b)s``) followed
+    by the run's own count. Nothing in the text marks that ``|`` as data, the scan stops
+    at it, and the rule does not select the pid -- so the argv decider, which can only
+    exonerate a selected candidate, never sees it. The two rows under ``missed`` record
+    that residual so it is a known cost and not a surprise; a fix for it has to add a
+    plain-``pytest`` argv path, which is not this rule's business.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
     quiet = {
-        # A pipe and a semicolon inside a node id, on a properly capped run.
+        # A pipe and a semicolon inside a node id, on a single-process run.
         "381": ["pytest", "test/test_x.py::test_y[a|b]", "-n0"],
         "382": ["pytest", "test/test_x.py::test_y[a;b]", "-n0"],
-        # The same inside a quoted argument, and with the long cap spelling.
-        "383": ["pytest", "'test/test_x.py::test_y[a|b]'", "--numprocesses=4"],
-        # Cap BEFORE the bracketed separator rather than after it.
+        # The same inside a quoted argument, on a budgeted run.
+        "383": ["pytest", "'test/test_x.py::test_y[a|b]'", "--numprocesses=auto"],
+        # Single-process BEFORE the bracketed separator rather than after it.
         "384": ["pytest", "-n0", "test/test_x.py::test_y[a|b]", "--cov", "src"],
-        # A separator in an argument with NO bracket and NO quote around it: an option
-        # VALUE that happens to carry one. Nothing in the text marks it as data, which
-        # is why the TOKENS rather than the joined line have to answer.
-        "387": ["pytest", "--log-format=%(levelname)s|%(message)s", "-n0"],
-        "388": ["pytest", "-k", "not slow&not flaky", "-n", "4"],
-        "389": ["pytest", "--deselect", "f.py::t[a|b]", "--numprocesses", "2"],
+        # A separator in an option value, on a budgeted run: quiet for the right reason
+        # (the run IS budgeted), whichever way the scan reads the ``|``.
+        "387": ["pytest", "--log-format=%(levelname)s|%(message)s", "-n", "auto"],
+        # A real pipe: the number after it belongs to the NEXT command.
+        "385": ["bash", "-c", "pytest test/test_x.py | grep -n 4 out.log"],
+        # A bracketed separator must not let a LATER command's count reach back.
+        "386": ["bash", "-c", "pytest test/test_x.py::test_y[a|b];grep -n 4 g.log"],
     }
     loud = {
-        # A real pipe: the command before it carries no cap, so the run is unbounded.
-        "385": ["bash", "-c", "pytest test/test_x.py | tee out.log"],
-        # A bracketed separator must not let a LATER command's cap reach back.
-        "386": ["bash", "-c", "pytest test/test_x.py::test_y[a|b];pytest -n0 g.py"],
+        # The run's own count behind a bracketed separator, both flag spellings.
+        "390": ["pytest", "test/test_x.py::test_y[a|b]", "-n", "8"],
+        "389": ["pytest", "--deselect", "f.py::t[a|b]", "--numprocesses", "2"],
+        # And behind a quoted one.
+        "391": ["pytest", "'test/test_x.py::test_y[a|b]'", "--numprocesses=4"],
+        # A real pipe with the count BEFORE it: the first command is unbudgeted.
+        "392": ["bash", "-c", "pytest -n 4 test/test_x.py | tee out.log"],
     }
-    for pid, argv in {**quiet, **loud}.items():
+    missed = {
+        # The disclosed residual: an unquoted separator in an option value, then the
+        # count. Asserted as quiet so a change in this behaviour is noticed, not so the
+        # behaviour is endorsed.
+        "388": ["pytest", "-k", "not slow&not flaky", "-n", "4"],
+        "393": ["pytest", "--log-format=%(levelname)s|%(message)s", "-n", "8"],
+    }
+    for pid, argv in {**quiet, **loud, **missed}.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
         make_dir_link(entry / "cwd", fleet)
     lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
@@ -1321,6 +1366,7 @@ def test_a_separator_inside_one_argument_does_not_hide_the_runs_own_cap(mod, tmp
 
     assert reported & set(quiet) == set(), sorted(reported & set(quiet))
     assert set(loud) <= reported, sorted(set(loud) - reported)
+    assert reported & set(missed) == set(), sorted(reported & set(missed))
 
 
 def test_a_recognised_name_prints_its_vocabulary_entry_not_the_token(mod, tmp_path, monkeypatch):
@@ -1343,7 +1389,7 @@ def test_a_recognised_name_prints_its_vocabulary_entry_not_the_token(mod, tmp_pa
     fleet.mkdir()
     cases = {
         # A runner name in an OPERAND slot, in a casing the command chose.
-        "371": ["pytest", "--password", "PyTeSt", "test/test_x.py"],
+        "371": ["pytest", "--password", "PyTeSt", "test/test_x.py", *UNBUDGETED],
         # A recognised launcher and a Windows-cased runner, both path-qualified.
         "372": [
             "/wt/private-checkout/.venv/bin/PYTHON3.12",
@@ -1351,6 +1397,7 @@ def test_a_recognised_name_prints_its_vocabulary_entry_not_the_token(mod, tmp_pa
             "pytest",
             "PyTest.EXE",
             "f.py",
+            *UNBUDGETED,
         ],
     }
     for pid, argv in cases.items():
@@ -1360,8 +1407,8 @@ def test_a_recognised_name_prints_its_vocabulary_entry_not_the_token(mod, tmp_pa
     line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
     assert set(line) == set(cases), lines
 
-    assert "cmd=pytest,pytest,+2" in line["371"]
-    assert "cmd=python3.12,-m,pytest,pytest.exe,+1" in line["372"]
+    assert "cmd=pytest,pytest,-n,+2" in line["371"]
+    assert "cmd=python3.12,-m,pytest,pytest.exe,-n,+1" in line["372"]
 
     whole = "\n".join(lines)
     for chosen in ("PyTeSt", "PYTHON3.12", "PyTest.EXE", "--password"):
@@ -1385,11 +1432,17 @@ def test_an_opaque_word_in_the_program_position_is_withheld(mod, tmp_path, monke
     opaque = "q7TkV2xPmKdR9sLbN4zH"
     cases = {
         # Program-shaped by every test a shape can apply, and not a program.
-        "351": [opaque, "pytest", "test/test_x.py"],
+        "351": [opaque, "pytest", "test/test_x.py", *UNBUDGETED],
         # A recognised launcher, version and all, out of a private venv.
-        "352": ["/wt/private-checkout/.venv/bin/python3.12", "-m", "pytest", "test/test_x.py"],
+        "352": [
+            "/wt/private-checkout/.venv/bin/python3.12",
+            "-m",
+            "pytest",
+            "test/test_x.py",
+            *UNBUDGETED,
+        ],
         # The runner itself out of a venv: the case a path-derived name would blank.
-        "353": ["/wt/private-checkout/.venv/bin/pytest", "test/test_x.py"],
+        "353": ["/wt/private-checkout/.venv/bin/pytest", "test/test_x.py", *UNBUDGETED],
     }
     for pid, argv in cases.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
@@ -1398,9 +1451,9 @@ def test_an_opaque_word_in_the_program_position_is_withheld(mod, tmp_path, monke
     line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
     assert set(line) == set(cases), lines
 
-    assert "cmd=pytest,+2" in line["351"]
-    assert "cmd=python3.12,-m,pytest,+1" in line["352"]
-    assert "cmd=pytest,+1" in line["353"]
+    assert "cmd=pytest,-n,+2" in line["351"]
+    assert "cmd=python3.12,-m,pytest,-n,+1" in line["352"]
+    assert "cmd=pytest,-n,+1" in line["353"]
 
     whole = "\n".join(lines)
     assert opaque not in whole
@@ -1422,10 +1475,10 @@ def test_an_opaque_word_spelled_as_a_long_option_is_withheld(mod, tmp_path, monk
     opaque = "q7TkV2xPmKdR9sLbN4zH"
     cases = {
         # The secret wearing an option's spelling, bare and with a value.
-        "361": ["pytest", f"--{opaque}", "test/test_x.py"],
-        "362": ["pytest", f"--{opaque}=1", "test/test_x.py"],
+        "361": ["pytest", f"--{opaque}", "test/test_x.py", *UNBUDGETED],
+        "362": ["pytest", f"--{opaque}=1", "test/test_x.py", *UNBUDGETED],
         # A recognised concurrency flag still prints, with its value dropped.
-        "363": ["pytest", "--dist=loadscope", "test/test_x.py"],
+        "363": ["pytest", "--dist=loadscope", "test/test_x.py", *UNBUDGETED],
     }
     for pid, argv in cases.items():
         entry = proc_pid(root, pid, argv, starttime=50_000)
@@ -1434,9 +1487,9 @@ def test_an_opaque_word_spelled_as_a_long_option_is_withheld(mod, tmp_path, monk
     line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
     assert set(line) == set(cases), lines
 
-    assert "cmd=pytest,+2" in line["361"]
-    assert "cmd=pytest,+2" in line["362"]
-    assert "cmd=pytest,--dist,+1" in line["363"]
+    assert "cmd=pytest,-n,+2" in line["361"]
+    assert "cmd=pytest,-n,+2" in line["362"]
+    assert "cmd=pytest,--dist,-n,+1" in line["363"]
 
     whole = "\n".join(lines)
     assert opaque not in whole
@@ -1461,7 +1514,7 @@ def test_host_lines_counts_someone_elses_run_without_printing_it(mod, tmp_path, 
     fleet.mkdir()
     elsewhere = tmp_path / "other"
     elsewhere.mkdir()
-    entry = proc_pid(root, "102", ["pytest", "-q"], starttime=50_000)
+    entry = proc_pid(root, "102", ["pytest", "-q", *UNBUDGETED], starttime=50_000)
     make_dir_link(entry / "cwd", elsewhere)
     lines, host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
     assert lines == []
@@ -1670,7 +1723,7 @@ def test_host_lines_drops_the_age_when_the_pid_is_recycled_mid_scan(mod, tmp_pat
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    entry = proc_pid(root, "105", ["pytest", "-q"], starttime=50_000)
+    entry = proc_pid(root, "105", ["pytest", "-q", *UNBUDGETED], starttime=50_000)
     make_dir_link(entry / "cwd", fleet)
     reads = iter([50_000, 60_000])
     monkeypatch.setattr(mod, "_proc_starttime_ticks", lambda *args: next(reads))
@@ -1693,7 +1746,7 @@ def test_host_lines_degrades_one_row_when_a_process_vanishes(mod, tmp_path, monk
     """A pid that exits mid-scan costs its own row, never the cycle."""
     root = host_proc(tmp_path, monkeypatch)
     (root / "108").mkdir()
-    entry = proc_pid(root, "109", ["pytest", "-q"], starttime=50_000)
+    entry = proc_pid(root, "109", ["pytest", "-q", *UNBUDGETED], starttime=50_000)
     make_dir_link(entry / "cwd", tmp_path)
     lines, host = mod._host_lines({})
     assert [line.split()[1] for line in lines] == ["pid=109"]
@@ -1885,7 +1938,7 @@ def test_probe_prints_host_lines_beside_the_summary(mod, sessions, tmp_path, mon
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    entry = proc_pid(root, "107", ["pytest", "-q"], starttime=50_000)
+    entry = proc_pid(root, "107", ["pytest", "-q", *UNBUDGETED], starttime=50_000)
     make_dir_link(entry / "cwd", fleet)
     assert probe(mod, {"sessions": [], "fleet_worktrees": [str(fleet)]}, tmp_path) == 0
     out = capsys.readouterr().out
@@ -2143,16 +2196,60 @@ RUNNER_FORMS = {
     "alias-behind-launcher-with-own-flag": ["nice", "-n", "10", "pytest-3"],
 }
 
-# Every spelling of a numeric worker cap. `-n auto` is deliberately absent: the rule's
-# documented sense is that a count nobody chose is the reportable one, and `auto` is
-# bounded by the rootdir hook rather than by the caller.
-CAP_SPELLINGS = {
+# Every spelling that leaves the worker pool BUDGETED or single-process, and therefore
+# quiet. `auto` and `logical` hand the count to the rootdir hook, which sizes the
+# pool by memory and by the host's other runs; no `-n` at all inherits `-n auto` from the
+# default `addopts`; `0` and `1` run one process with xdist inactive. The last entry is
+# argparse's own rule -- a repeated option is resolved last-wins -- so `-n 4 -n auto` is
+# a budgeted run. Behind pytest's `--` every token is a path, so a count there is not the
+# run's; and an `-o addopts=...` override is walked BEFORE the run's own tokens, where
+# pytest puts it, so the run's own last `-n` still wins over the override's.
+BUDGETED_SPELLINGS = {
+    "absent": [],
+    "auto-split": ["-n", "auto"],
+    "auto-glued": ["-nauto"],
+    "auto-equals": ["-n=auto"],
+    "logical-split": ["-n", "logical"],
+    "long-auto-split": ["--numprocesses", "auto"],
+    "long-logical-equals": ["--numprocesses=logical"],
     "glued-zero": ["-n0"],
+    "split-zero": ["-n", "0"],
+    "equals-zero": ["-n=0"],
+    "glued-one": ["-n1"],
+    "split-one": ["-n", "1"],
+    "split-leading-zero-one": ["-n", "01"],
+    "long-equals-zero": ["--numprocesses=0"],
+    "long-split-one": ["--numprocesses", "1"],
+    "last-wins-auto": ["-n", "4", "-n", "auto"],
+    "single-process-then-terminator": ["-n0", "--", "-n32"],
+    "count-behind-terminator": ["--", "-n", "4"],
+    "override-then-own-auto": ["-o", "addopts=-n 16", "-n", "auto"],
+    "override-last-wins-auto": ["--override-ini=addopts=-n 16", "--override-ini=addopts=-n auto"],
+    "override-supplies-none": ["-o", "addopts="],
+    "override-of-another-key": ["-o", "testpaths=test", "-n", "auto"],
+}
+
+# Every spelling of an explicit worker COUNT of two or more: the form that bypasses the
+# budget hook (`setup.cfg`: "An explicit -n <N> bypasses the budget") and the one the rule
+# reports. `last-wins-four` is last-wins in the reporting direction; the terminator row
+# is a 32-worker run pointed at a path called `-n0`; the override rows carry the count in
+# the `addopts` an `-o` / `--override-ini` replaces the tree's with; the oversized row is
+# a count longer than the interpreter converts, judged lexically like every other.
+UNBUDGETED_SPELLINGS = {
     "glued-four": ["-n4"],
-    "split": ["-n", "0"],
-    "equals": ["-n=0"],
-    "long-equals": ["--numprocesses=0"],
-    "long-split": ["--numprocesses", "2"],
+    "split-four": ["-n", "4"],
+    "equals-four": ["-n=4"],
+    "split-two": ["-n", "2"],
+    "split-thirty-two": ["-n", "32"],
+    "long-equals-four": ["--numprocesses=4"],
+    "long-split-two": ["--numprocesses", "2"],
+    "last-wins-four": ["-n", "auto", "-n", "4"],
+    "count-then-terminator-then-zero": ["-n32", "--", "-n0"],
+    "override-long-equals": ["--override-ini=addopts=-n 16"],
+    "override-short-split": ["-o", "addopts=-n 16"],
+    "override-short-glued": ["-oaddopts=-n 16"],
+    "override-auto-then-own-four": ["-o", "addopts=-n auto", "-n", "4"],
+    "oversized-count": ["-n", "9" * 5000],
 }
 
 # Tokens that appear AFTER the cap and name the runner without being an invocation of
@@ -2316,40 +2413,47 @@ def with_prefixes(tokens: list[str], prefixes: dict[str, str]) -> list[str]:
 
 
 @pytest.mark.parametrize("form", sorted(RUNNER_FORMS))
-@pytest.mark.parametrize("cap", sorted(CAP_SPELLINGS))
-def test_every_runner_form_stays_quiet_when_it_declares_a_cap(
-    mod, tmp_path, monkeypatch, form, cap
+@pytest.mark.parametrize("count", sorted(BUDGETED_SPELLINGS))
+def test_every_runner_form_stays_quiet_when_its_worker_pool_is_budgeted(
+    mod, tmp_path, monkeypatch, form, count
 ):
-    """A run that CHOSE its worker count is never reported, however it is spelled.
+    """A budgeted or single-process run is never reported, however it is spelled.
 
     This is the direction that destroys work: the documented answer to a fleet-owned
     ``BANNED`` line is to stop that worker and discard the turn it was in, so a false
-    row here costs real work rather than signal.
+    row here costs real work rather than signal -- and the gate runner's own
+    ``-n auto`` is exactly such a row under an inverted rule.
     """
     prefixes = install_prefixes(tmp_path)
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir(exist_ok=True)
     form_argv = with_prefixes(RUNNER_FORMS[form], prefixes)
-    argv = [*form_argv, *CAP_SPELLINGS[cap], "test/test_x.py"]
+    argv = [*form_argv, *BUDGETED_SPELLINGS[count], "test/test_x.py"]
     fleet_pid(root, fleet, "401", argv)
-    assert banned_pids(mod, root, fleet) == set(), f"{form} + {cap} was reported while capped"
+    assert banned_pids(mod, root, fleet) == set(), f"{form} + {count} was reported while budgeted"
 
 
 @pytest.mark.parametrize("form", sorted(RUNNER_FORMS))
-def test_every_runner_form_is_reported_when_it_declares_no_cap(mod, tmp_path, monkeypatch, form):
-    """A run whose worker count nobody chose is reported, however it is spelled.
+@pytest.mark.parametrize("count", sorted(UNBUDGETED_SPELLINGS))
+def test_every_runner_form_is_reported_when_it_fixes_a_worker_count(
+    mod, tmp_path, monkeypatch, form, count
+):
+    """A run whose worker count bypasses the budget is reported, however it is spelled.
 
-    The other direction, and the one the probe exists for. A form missing here is an
-    unbounded run the conductor's banned counter cannot see, so intake keeps admitting
-    work while the host is being consumed.
+    The other direction, and the one the probe exists for. A form or a spelling missing
+    here is an unbudgeted run the conductor's banned counter cannot see, so intake keeps
+    admitting work while the host is being consumed -- ``pytest -n 32`` on a shared box
+    is invisible to an inverted rule.
     """
     prefixes = install_prefixes(tmp_path)
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir(exist_ok=True)
-    fleet_pid(root, fleet, "402", [*with_prefixes(RUNNER_FORMS[form], prefixes), "test/"])
-    assert banned_pids(mod, root, fleet) == {"402"}, f"{form} went unreported while uncapped"
+    form_argv = with_prefixes(RUNNER_FORMS[form], prefixes)
+    argv = [*form_argv, *UNBUDGETED_SPELLINGS[count], "test/"]
+    fleet_pid(root, fleet, "402", argv)
+    assert banned_pids(mod, root, fleet) == {"402"}, f"{form} + {count} went unreported"
 
 
 @pytest.mark.parametrize("form", sorted(RUNNER_FORMS))
@@ -2357,12 +2461,13 @@ def test_every_runner_form_is_reported_when_it_declares_no_cap(mod, tmp_path, mo
 def test_a_capped_run_stays_quiet_when_a_later_argument_names_the_runner(
     mod, tmp_path, monkeypatch, form, trailing
 ):
-    """A cap is still a cap when a LATER argument spells the runner's name.
+    """A single-process run stays one when a LATER argument spells the runner's name.
 
     ``--junitxml=build/pytest.xml`` and ``--log-file /var/tmp/pytest-run.log`` are
-    ordinary arguments of a bounded run. A forward-only cap lookahead re-tries at that
-    second occurrence, where the bound is behind it and cannot be seen, and reports the
-    run -- measured as two deterministic false rows on a live fleet.
+    ordinary arguments. A forward-only lookahead re-tries at that second occurrence,
+    where the ``-n0`` is behind it, and reports the run --
+    two deterministic false rows on a live fleet. The rows stay pinned: a second runner
+    token must never be read as a second, differently-counted invocation.
     """
     prefixes = install_prefixes(tmp_path)
     root = host_proc(tmp_path, monkeypatch)
@@ -2428,7 +2533,7 @@ def test_the_argv_row_names_the_argv_path_rather_than_a_rule_that_did_not_fire(
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "405", ["pytest-3", "test/"])
+    fleet_pid(root, fleet, "405", ["pytest-3", *UNBUDGETED, "test/"])
     lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
     assert len(lines) == 1
     assert f"rule={mod.ARGV_RUNNER_RULE_LABEL}" in lines[0]
@@ -2449,8 +2554,8 @@ def test_an_alias_run_reports_its_scope_instead_of_declining(mod, tmp_path, monk
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "406", ["pytest-3", "test/test_x.py"])
-    fleet_pid(root, fleet, "407", ["pytest-3", "--cov", "src/kiro_crew"])
+    fleet_pid(root, fleet, "406", ["pytest-3", *UNBUDGETED, "test/test_x.py"])
+    fleet_pid(root, fleet, "407", ["pytest-3", *UNBUDGETED, "--cov", "src/kiro_crew"])
     lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
     scopes = {
         line.split()[1].split("=", 1)[1]: line.split("scope=", 1)[1].split()[0] for line in lines
@@ -2631,10 +2736,10 @@ def test_an_installed_entry_point_directory_still_reports(mod, tmp_path, monkeyp
     fleet = tmp_path / "wt"
     fleet.mkdir(exist_ok=True)
     script = f"{prefixes[prefix]}/bin/pytest-3"
-    fleet_pid(root, fleet, "434", ["python3", script, "test/"])
+    fleet_pid(root, fleet, "434", ["python3", script, *UNBUDGETED, "test/"])
     assert banned_pids(mod, root, fleet) == {
         "434"
-    }, f"{prefix} entry point went unreported while uncapped"
+    }, f"{prefix} entry point went unreported while unbudgeted"
 
 
 def test_a_relative_script_path_is_not_resolved_against_the_probes_own_directory(
@@ -2714,12 +2819,12 @@ def test_an_interpreter_absent_from_the_scripts_directory_is_not_an_installation
     fleet = tmp_path / "wt"
     fleet.mkdir(exist_ok=True)
     script = f"{prefixes['sys']}/bin/pytest-3"
-    fleet_pid(root, fleet, "435", ["python3.13", script, "test/"])
+    fleet_pid(root, fleet, "435", ["python3.13", script, *UNBUDGETED, "test/"])
     assert banned_pids(mod, root, fleet) == set(), (
         "python3.13 was accepted against a prefix that only installed python3.12, so the "
         "check is not asking for the interpreter argv[0] names"
     )
-    fleet_pid(root, fleet, "436", ["python3.12", script, "test/"])
+    fleet_pid(root, fleet, "436", ["python3.12", script, *UNBUDGETED, "test/"])
     assert banned_pids(mod, root, fleet) == {
         "436"
     }, "the control failed: python3.12 IS installed there and must still report"
@@ -2754,11 +2859,12 @@ LAUNCHER_OWN_CAP_SHAPED_OPTIONS = {
 def test_a_runner_shaped_assignment_value_is_not_the_runners_own_position(
     mod, tmp_path, monkeypatch, value, launcher
 ):
-    """An UNCAPPED run is still reported when a token in front of it looks like the runner.
+    """A BUDGETED run stays quiet when a token in front of it looks like the runner.
 
-    This is the fail-open direction of the position lookup, and the expensive thing here is
-    not a false row but a lost one: the run really is unbounded, and the conductor's banned
-    counter never sees it, so intake keeps admitting work while the host is consumed.
+    Answering the position lookup with the assignment starts the count scan from there,
+    so the launcher's own ``-n 10`` is read as the run's worker count and a healthy run
+    draws a fleet-owned row -- a stopped worker and its discarded turn. The run here
+    carries no ``-n`` of its own, so any count found is the launcher's.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -2771,22 +2877,22 @@ def test_a_runner_shaped_assignment_value_is_not_the_runners_own_position(
         "test/",
     ]
     fleet_pid(root, fleet, "438", argv)
-    assert banned_pids(mod, root, fleet) == {"438"}, (
-        f"{value} + {launcher} went unreported: the position lookup answered with the "
-        "assignment, so the launcher's own option was read as the run's cap"
+    assert banned_pids(mod, root, fleet) == set(), (
+        f"{value} + {launcher} was reported: the position lookup answered with the "
+        "assignment, so the launcher's own option was read as the run's worker count"
     )
 
 
 @pytest.mark.parametrize("launcher", sorted(LAUNCHER_OWN_CAP_SHAPED_OPTIONS))
 @pytest.mark.parametrize("value", sorted(RUNNER_SHAPED_VALUES_BEFORE_THE_RUNNER))
-def test_the_runners_own_cap_still_silences_a_run_behind_such_a_value(
+def test_the_runners_own_count_is_still_read_behind_such_a_value(
     mod, tmp_path, monkeypatch, value, launcher
 ):
-    """The other direction: moving the position forward must not cost the cap.
+    """The other direction: moving the position forward must not lose the run's count.
 
-    Skipping the assignment makes the cap be read from the RUNNER's own arguments, which is
-    where it belongs -- so a run that chose its worker count stays silent, and this is the
-    direction whose failure would stop a healthy worker.
+    Skipping the assignment makes the count be read from the RUNNER's own arguments,
+    which is where it belongs -- so a run that fixed its worker count is still reported
+    behind the assignment and the launcher.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
@@ -2796,13 +2902,13 @@ def test_the_runners_own_cap_still_silences_a_run_behind_such_a_value(
         RUNNER_SHAPED_VALUES_BEFORE_THE_RUNNER[value],
         *LAUNCHER_OWN_CAP_SHAPED_OPTIONS[launcher],
         "pytest",
-        "-n0",
+        *UNBUDGETED,
         "test/",
     ]
     fleet_pid(root, fleet, "439", argv)
-    assert (
-        banned_pids(mod, root, fleet) == set()
-    ), f"{value} + {launcher} was reported despite the runner declaring its own cap"
+    assert banned_pids(mod, root, fleet) == {
+        "439"
+    }, f"{value} + {launcher} went unreported despite the runner fixing its own count"
 
 
 # A transparent launcher's OWN operand, standing where the candidate itself sits. Each
@@ -2849,37 +2955,37 @@ def test_an_assignment_in_front_does_not_hide_a_real_runner_behind_it(mod, tmp_p
     """Declining one candidate must not stop the search: a later token can be the runner.
 
     This argv holds BOTH -- an alias-shaped assignment that is the launcher's own grammar,
-    and a genuine uncapped run two tokens later. Answering only the FIRST candidate would
-    decide the pid on the assignment and never look at the runner, turning a fix for a
-    false positive into a missed detection.
+    and a genuine unbudgeted run two tokens later. Answering only the FIRST candidate
+    would decide the pid on the assignment and never look at the runner, turning a fix
+    for a false positive into a missed detection.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    argv = [*ASSIGNMENT_BEFORE_A_REAL_RUNNER, "pytest-3", "test/"]
+    argv = [*ASSIGNMENT_BEFORE_A_REAL_RUNNER, "pytest-3", *UNBUDGETED, "test/"]
     fleet_pid(root, fleet, "437", argv)
     assert banned_pids(mod, root, fleet) == {
         "437"
     }, "the runner behind the assignment went unreported"
 
 
-@pytest.mark.parametrize("cap", sorted(CAP_SPELLINGS))
-def test_a_runner_behind_an_assignment_still_stays_quiet_when_capped(
-    mod, tmp_path, monkeypatch, cap
+@pytest.mark.parametrize("count", sorted(BUDGETED_SPELLINGS))
+def test_a_runner_behind_an_assignment_still_stays_quiet_when_budgeted(
+    mod, tmp_path, monkeypatch, count
 ):
-    """The other direction: searching every candidate must not cost the cap.
+    """The other direction: searching every candidate must not cost the budget reading.
 
-    The cap is read from the runner's own arguments, so it is asserted here through the
+    The count is read from the runner's own arguments, so it is asserted here through the
     same cross product of spellings as every other invocation form.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    argv = [*ASSIGNMENT_BEFORE_A_REAL_RUNNER, "pytest-3", *CAP_SPELLINGS[cap], "test/"]
+    argv = [*ASSIGNMENT_BEFORE_A_REAL_RUNNER, "pytest-3", *BUDGETED_SPELLINGS[count], "test/"]
     fleet_pid(root, fleet, "438", argv)
     assert (
         banned_pids(mod, root, fleet) == set()
-    ), f"the runner behind the assignment was reported despite {cap}"
+    ), f"the runner behind the assignment was reported despite {count}"
 
 
 # A kernel binary that REFUTES the name the process gave itself. `argv[0]` is chosen by
@@ -3015,17 +3121,18 @@ def test_a_runner_after_only_the_launchers_own_grammar_is_still_the_program(
 ):
     """The other direction: an option, a number and an assignment are not subjects.
 
-    `timeout 900 pytest-3` is a real uncapped run. Declining these would hide exactly the
-    invocations the probe exists to see, so the allow-list has to admit each one.
+    `timeout 900 pytest-3 -n4` is a real unbudgeted run. Declining these would hide
+    exactly the invocations the probe exists to see, so the allow-list has to admit each
+    one.
     """
     launcher, operands = LAUNCHER_OWN_GRAMMAR[shape]
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "423", [*launcher, *operands, runner, "test/"])
+    fleet_pid(root, fleet, "423", [*launcher, *operands, runner, *UNBUDGETED, "test/"])
     assert banned_pids(mod, root, fleet) == {
         "423"
-    }, f"{shape} + {runner} went unreported while uncapped"
+    }, f"{shape} + {runner} went unreported while unbudgeted"
 
 
 @pytest.mark.parametrize("python", sorted(PYTHON_SPELLINGS))
@@ -3091,7 +3198,7 @@ def test_the_plain_module_spelling_is_still_reported_by_its_own_rule(
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "422", [*PYTHON_SPELLINGS[python], "-m", "pytest", "test/"])
+    fleet_pid(root, fleet, "422", [*PYTHON_SPELLINGS[python], "-m", "pytest", *UNBUDGETED, "test/"])
     assert banned_pids(mod, root, fleet) == {"422"}
 
 
@@ -3114,24 +3221,24 @@ def test_an_interpreter_reports_the_runner_standing_as_its_script_operand(
     fleet = tmp_path / "wt"
     fleet.mkdir(exist_ok=True)
     tail = with_prefixes(INTERPRETER_ENTRY_POINT_SCRIPTS[script], prefixes)
-    argv = [*PYTHON_SPELLINGS[python], *tail, "test/"]
+    argv = [*PYTHON_SPELLINGS[python], *tail, *UNBUDGETED, "test/"]
     fleet_pid(root, fleet, "426", argv)
     assert banned_pids(mod, root, fleet) == {
         "426"
-    }, f"{python} + {script} went unreported while uncapped"
+    }, f"{python} + {script} went unreported while unbudgeted"
 
 
-@pytest.mark.parametrize("cap", sorted(CAP_SPELLINGS))
+@pytest.mark.parametrize("count", sorted(BUDGETED_SPELLINGS))
 @pytest.mark.parametrize("script", sorted(INTERPRETER_ENTRY_POINT_SCRIPTS))
-def test_a_runner_as_the_script_operand_stays_quiet_when_it_declares_a_cap(
-    mod, tmp_path, monkeypatch, script, cap
+def test_a_runner_as_the_script_operand_stays_quiet_when_budgeted(
+    mod, tmp_path, monkeypatch, script, count
 ):
-    """Admitting the script position must not cost the cap, in either spelling.
+    """Admitting the script position must not cost the budget reading, in any spelling.
 
-    The expensive direction of this whole file: a run that CHOSE its worker count is
-    healthy, and reporting it stops a worker and discards its in-flight turn. The cap
-    is re-asked of the runner's own arguments, so it is read here through the same
-    function that reads it for every other form.
+    The expensive direction of this whole file: a budgeted or single-process run is
+    healthy, and reporting it stops a worker and discards its in-flight turn. The count
+    is asked of the runner's own arguments, so it is read here through the same function
+    that reads it for every other form.
     """
     prefixes = install_prefixes(tmp_path)
     root = host_proc(tmp_path, monkeypatch)
@@ -3140,13 +3247,13 @@ def test_a_runner_as_the_script_operand_stays_quiet_when_it_declares_a_cap(
     argv = [
         "python3",
         *with_prefixes(INTERPRETER_ENTRY_POINT_SCRIPTS[script], prefixes),
-        *CAP_SPELLINGS[cap],
+        *BUDGETED_SPELLINGS[count],
         "test/",
     ]
     fleet_pid(root, fleet, "427", argv)
     assert (
         banned_pids(mod, root, fleet) == set()
-    ), f"{script} + {cap} was reported despite declaring a cap"
+    ), f"{script} + {count} was reported despite being budgeted"
 
 
 @pytest.mark.parametrize("program", sorted(SPOOFED_ARGV0_KERNEL_PROGRAMS))
@@ -3217,7 +3324,7 @@ def test_a_kernel_binary_agreeing_with_argv0_confirms_it(mod, tmp_path, monkeypa
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "430", ["pytest-3", "test/"], unspoofed=False)
+    fleet_pid(root, fleet, "430", ["pytest-3", *UNBUDGETED, "test/"], unspoofed=False)
     (root / "430" / "exe").symlink_to("/home/u/wt/.venv/bin/pytest-3")
     assert banned_pids(mod, root, fleet) == {"430"}
 
@@ -3236,7 +3343,7 @@ def test_an_interpreter_kernel_binary_does_not_refute_a_shebang_runner(mod, tmp_
     prefixes = install_prefixes(tmp_path)
     require_resolvable_prefixes(prefixes)
     script = f"{prefixes['sys']}/bin/pytest-3"
-    fleet_pid(root, fleet, "431", ["python3", script, "test/"], unspoofed=False)
+    fleet_pid(root, fleet, "431", ["python3", script, *UNBUDGETED, "test/"], unspoofed=False)
     (root / "431" / "exe").symlink_to(f"{prefixes['sys']}/bin/python3")
     assert banned_pids(mod, root, fleet) == {"431"}
 
@@ -3353,7 +3460,13 @@ def test_an_interpreter_reports_the_alias_when_only_flags_stand_in_front(
     fleet.mkdir(exist_ok=True)
     prefixes = install_prefixes(tmp_path)
     require_resolvable_prefixes(prefixes)
-    argv = [*PYTHON_SPELLINGS[python], *flags, f"{prefixes['sys']}/bin/pytest-3", "test/"]
+    argv = [
+        *PYTHON_SPELLINGS[python],
+        *flags,
+        f"{prefixes['sys']}/bin/pytest-3",
+        *UNBUDGETED,
+        "test/",
+    ]
     fleet_pid(root, fleet, "424", argv)
     assert banned_pids(mod, root, fleet) == {
         "424"
@@ -3370,7 +3483,7 @@ def test_the_named_opt_out_switches_the_argv_shape_off(mod, tmp_path, monkeypatc
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "450", ["pytest-3", "test/"])
+    fleet_pid(root, fleet, "450", ["pytest-3", *UNBUDGETED, "test/"])
     off, _host = mod._host_lines({"fleet_worktrees": [str(fleet)], "argv_runner_detection": False})
     assert [line for line in off if line.startswith("BANNED pid=")] == []
     # The control: the same pid with the key absent IS reported, so the silence is the
@@ -3389,7 +3502,7 @@ def test_the_opt_out_and_the_rule_list_are_independent(mod, tmp_path, monkeypatc
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "451", ["pytest-3", "test/"])
+    fleet_pid(root, fleet, "451", ["pytest-3", *UNBUDGETED, "test/"])
     fleet_pid(root, fleet, "452", ["npm", "audit", "--json"])
     custom = [r"\bnpm\b\s+audit"]
 
@@ -3459,7 +3572,7 @@ def test_a_value_that_is_not_false_never_disables_the_shape(mod, tmp_path, monke
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "453", ["pytest-3", "test/"])
+    fleet_pid(root, fleet, "453", ["pytest-3", *UNBUDGETED, "test/"])
     lines, _host = mod._host_lines(
         {"fleet_worktrees": [str(fleet)], "argv_runner_detection": value}
     )
@@ -3484,12 +3597,12 @@ def test_only_transparent_launchers_can_ever_carry_a_detection(mod):
     behind the launcher set it is about.
     """
     tails = (
-        ["pytest-3", "test/"],
-        ["run", "pytest-3", "test/"],
-        ["-n", "1", "pytest-3", "test/"],
-        ["900", "pytest-3", "test/"],
-        ["CI=1", "pytest-3", "test/"],
-        ["build", "release", "pytest-3", "test/"],
+        ["pytest-3", *UNBUDGETED, "test/"],
+        ["run", "pytest-3", *UNBUDGETED, "test/"],
+        ["-n", "1", "pytest-3", *UNBUDGETED, "test/"],
+        ["900", "pytest-3", *UNBUDGETED, "test/"],
+        ["CI=1", "pytest-3", *UNBUDGETED, "test/"],
+        ["build", "release", "pytest-3", *UNBUDGETED, "test/"],
     )
     carriers = set()
     for base in sorted(mod._LAUNCHER_BASES):
@@ -3507,48 +3620,172 @@ def test_only_transparent_launchers_can_ever_carry_a_detection(mod):
     assert carriers, "no launcher carried a detection, the enumeration is broken"
 
 
-def test_the_cap_reader_accepts_every_spelling_its_flags_have(mod):
+def test_the_count_reader_reads_every_spelling_its_flags_have(mod):
     """The reader's COVERAGE, enumerated from ``_CAP_FLAGS`` rather than from the reader.
 
-    The implication pin below asks "whatever the reader accepts is never reported", which
-    is the asymmetry itself -- but it reads its own subject, so a reader that stops
-    recognising a spelling simply drops out of it and the pin stays green while a capped
-    run starts being reported. This asserts the other half: each flag's spellings are
-    generated from the flag list, and the reader must accept every one of them.
+    The implication pin below asks "whatever the reader calls budgeted is never
+    reported", which is the asymmetry itself -- but it reads its own subject, so a reader
+    that stops recognising a spelling simply drops out of it and the pin stays green while
+    a budgeted run starts being reported, or an unbudgeted one stops being. This asserts
+    the other half: each flag's spellings are generated from the flag list, and the reader
+    must read every one of them, in BOTH directions -- ``0``, ``1``, ``auto`` and
+    ``logical`` as budgeted, ``4`` as not.
 
     Glued digits are asserted only for a SHORT flag. The file documents why:
     ``--numprocessesN`` is not a spelling that option has, so a longer token starting with
-    it is a different option and must not be read as a cap.
+    it is a different option; with no other ``-n`` the run inherits ``addopts`` and is
+    budgeted.
     """
-    assert mod._CAP_FLAGS, "no cap flags to enumerate"
+    assert mod._CAP_FLAGS, "no count flags to enumerate"
     for flag in sorted(mod._CAP_FLAGS):
         short = len(flag) == 2 and flag.startswith("-") and not flag.startswith("--")
-        required = [[f"{flag}=0"], [flag, "0"], [f"{flag}=4"], [flag, "4"]]
+        budgeted = [[f"{flag}=0"], [flag, "0"], [flag, "1"], [f"{flag}=auto"], [flag, "logical"]]
+        unbudgeted = [[f"{flag}=4"], [flag, "4"], [flag, "32"]]
         if short:
-            required += [[f"{flag}0"], [f"{flag}4"]]
-        for cap in required:
-            assert mod._argv_declares_a_worker_cap(
-                ["pytest-3", *cap, "test/"]
-            ), f"the reader stopped recognising {' '.join(cap)!r} as a cap"
+            budgeted += [[f"{flag}0"], [f"{flag}1"], [f"{flag}auto"]]
+            unbudgeted += [[f"{flag}4"], [f"{flag}32"]]
+        for count in budgeted:
+            assert mod._argv_worker_pool_is_budgeted(
+                ["pytest-3", *count, "test/"]
+            ), f"the reader stopped reading {' '.join(count)!r} as budgeted"
+        for count in unbudgeted:
+            assert not mod._argv_worker_pool_is_budgeted(
+                ["pytest-3", *count, "test/"]
+            ), f"the reader stopped reading {' '.join(count)!r} as a budget bypass"
         if not short:
             glued = [f"{flag}0"]
-            assert not mod._argv_declares_a_worker_cap(
+            assert mod._argv_worker_pool_is_budgeted(
                 ["pytest-3", *glued, "test/"]
-            ), f"{glued[0]!r} is a different option, not a cap spelling"
+            ), f"{glued[0]!r} is a different option, so the run inherits addopts"
+    # The value pytest itself rejects at argument parsing: fail-closed, so it reports.
+    assert not mod._argv_worker_pool_is_budgeted(["pytest-3", "-n", "4abc", "test/"])
+    assert not mod._argv_worker_pool_is_budgeted(["pytest-3", "-n"])
 
 
-def test_a_cap_the_reader_accepts_is_never_reported(mod, tmp_path, monkeypatch):
-    """THE ASYMMETRY, as an implication: cap reader says yes, so the scan stays silent.
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("9" * 5000, id="more-digits-than-the-interpreter-converts"),
+        pytest.param("\u00b2", id="a-character-isdigit-accepts-and-int-refuses"),
+        pytest.param("\u0664", id="a-non-ascii-decimal-digit"),
+    ],
+)
+def test_the_count_is_judged_lexically_so_no_value_can_raise(mod, tmp_path, monkeypatch, value):
+    """No ``-n`` value, however long or however spelled, raises out of the reader.
+
+    The reader runs inside ``_host_lines`` with nothing above it catching a ``ValueError``,
+    so a value the interpreter refuses to convert -- a run of digits past its conversion
+    limit, or a character ``str.isdigit`` accepts and ``int`` does not -- ends the patrol
+    cycle, and ends it again on every cycle while that pid lives. The count is compared as
+    a string instead. Every such value is also a count no budget bounds, so the answer is
+    the reporting one; ``-n0`` under the same fixture stays quiet so the reporting is not
+    the fixture's.
+    """
+    assert mod._count_is_budgeted(value) is False
+    assert mod._argv_worker_pool_is_budgeted(["pytest-3", "-n", value, "test/"]) is False
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    fleet_pid(root, fleet, "451", ["pytest-3", "-n", value, "test/"])
+    fleet_pid(root, fleet, "452", ["pytest-3", "-n0", "test/"])
+    assert banned_pids(mod, root, fleet) == {"451"}
+
+
+def test_leading_zeros_do_not_change_which_count_is_single_process(mod):
+    """``0``, ``00``, ``01`` and ``001`` are the single-process counts pytest reads them as;
+    ``02`` and ``010`` are fixed pools of two and ten. Judged on the digits after the
+    leading zeros, so the lexical rule agrees with integer conversion everywhere the
+    latter would have answered."""
+    for single in ("0", "00", "1", "01", "001"):
+        assert mod._count_is_budgeted(single) is True, single
+    for fixed in ("2", "02", "010", "32"):
+        assert mod._count_is_budgeted(fixed) is False, fixed
+    assert mod._count_is_budgeted("") is False
+
+
+def test_the_terminator_ends_the_walk_for_the_runs_own_count(mod):
+    """``--`` is where pytest stops reading options, and so does the reader.
+
+    ``pytest -n32 -- -n0`` is a 32-worker run pointed at a path called ``-n0``; a walk
+    that read the second token as the count would let that run through on last-wins.
+    The converse holds too: ``-n0 -- -n32`` is one process pointed at a path, and
+    ``-- -n 4`` names two paths and inherits ``addopts``. A ``--`` inside an
+    ``addopts`` override terminates the run's own options as well, because pytest
+    prepends the override to them.
+    """
+    assert mod._argv_worker_pool_is_budgeted(["pytest", "-n32", "--", "-n0"]) is False
+    assert mod._argv_worker_pool_is_budgeted(["pytest", "-n0", "--", "-n32"]) is True
+    assert mod._argv_worker_pool_is_budgeted(["pytest", "--", "-n", "4"]) is True
+    assert mod._argv_worker_pool_is_budgeted(["pytest", "-o", "addopts=--", "-n", "4"]) is True
+
+
+def test_an_addopts_override_is_walked_before_the_runs_own_tokens(mod, tmp_path, monkeypatch):
+    """``-o addopts=...`` / ``--override-ini addopts=...`` carry the count pytest starts from.
+
+    pytest replaces the tree's ``addopts`` with the override and puts its tokens in front
+    of the run's own, so ``-o addopts='-n 16'`` is a 16-worker run with no ``-n`` token of
+    its own -- a reader that only read the run's own tokens would call it budgeted and
+    drop it. The override is folded in first: its ``-n`` is the run's unless a later token
+    of the run's own overrides it, the last override of the same key wins, an override of
+    another key is not read, an override that supplies no ``-n`` runs one process, and a
+    value the splitter refuses (an unbalanced quote, which pytest refuses too) is answered
+    fail-closed. The alias path is where the fail-closed answer is observable: the joined
+    rule's scan does not cross an unbalanced quote, so ``pytest-3`` carries it.
+    """
+    reader = mod._argv_worker_pool_is_budgeted
+    assert reader(["pytest", "--override-ini=addopts=-n 16", "test/"]) is False
+    assert reader(["pytest", "-o", "addopts=-n 16", "test/"]) is False
+    assert reader(["pytest", "-oaddopts=-n 16", "test/"]) is False
+    assert reader(["pytest", "-o=addopts=-n 16", "test/"]) is False
+    assert reader(["pytest", "--override-ini", "addopts=-n 16", "test/"]) is False
+    assert reader(["pytest", "-o", "addopts=--numprocesses=16", "test/"]) is False
+    assert reader(["pytest", "-o", "addopts=-n auto", "-n", "4"]) is False
+    assert reader(["pytest", "-o", "addopts=-n 16", "-n", "auto"]) is True
+    assert reader(["pytest", "-o", "addopts=-n 16", "-o", "addopts=-n auto"]) is True
+    assert reader(["pytest", "-o", "addopts=-n auto", "-o", "addopts=-n 16"]) is False
+    assert reader(["pytest", "-o", "addopts="]) is True
+    assert reader(["pytest", "-o", "addopts=-q"]) is True
+    assert reader(["pytest", "-o", "testpaths=test", "test/"]) is True
+    assert reader(["pytest", "-o", "addopts=-n '16", "test/"]) is False
+    assert mod._addopts_override(["-o", "addopts=-n 16", "-n", "auto"]) == ["-n", "16"]
+    assert mod._addopts_override(["-n", "4", "test/"]) is None
+    assert mod._addopts_override(["--", "-o", "addopts=-n 16"]) is None
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    fleet_pid(root, fleet, "461", ["pytest-3", "-o", "addopts=-n '16", "test/"])
+    fleet_pid(root, fleet, "462", ["pytest-3", "-o", "addopts=-n '16'", "-n", "auto", "test/"])
+    assert banned_pids(mod, root, fleet) == {"461"}
+
+
+def test_the_reader_answers_from_argv_and_does_not_open_a_named_config(mod):
+    """``-c other.ini`` names a file; its ``addopts`` are the checkout's business.
+
+    The reader's contract is the command line: a count it can see there is judged, and a
+    count that would have to be read out of a file is not -- the probe keys the stop on
+    ``cwd=fleet`` for exactly the reason that the checkout decides what ``auto`` means.
+    Pinned so the boundary is a stated one: a run naming another config and no count of
+    its own inherits that config's ``addopts``, which this reader reports as budgeted, and
+    a count it does see under such a run is judged as everywhere else.
+    """
+    reader = mod._argv_worker_pool_is_budgeted
+    assert reader(["pytest", "-c", "other.ini", "test/"]) is True
+    assert reader(["pytest", "-c", "other.ini", "-n", "4", "test/"]) is False
+    assert reader(["pytest", "-c", "other.ini", "-n0", "test/"]) is True
+
+
+def test_the_readers_verdict_decides_every_detectable_shape(mod, tmp_path, monkeypatch):
+    """THE ASYMMETRY, as an implication: reader says budgeted, so the scan stays silent.
 
     A false negative costs a signal. A false positive is a fleet-owned row, which is
     ``session_stop`` and a worker's discarded in-flight turn with no automatic recovery.
-    So the one thing that must never happen is a row against a run that declared its
-    worker count.
+    So the one thing that must never happen is a row against a run the reader calls
+    budgeted -- and the converse is pinned in the same enumeration, so the two paths
+    (joined-line rule, argv-only spelling) cannot drift apart on a spelling.
 
-    The cap positions are enumerated FROM SOURCE -- every flag in ``_CAP_FLAGS``, every
-    spelling around it -- and which of them count is decided by
-    ``_argv_declares_a_worker_cap`` itself rather than by a list written here. Whatever
-    that reader accepts, every detectable shape carrying it must produce no line.
+    The count positions are enumerated FROM SOURCE -- every flag in ``_CAP_FLAGS``,
+    every spelling around it -- and which of them are budgeted is decided by
+    ``_argv_worker_pool_is_budgeted`` itself rather than by a list written here.
     """
     candidates: list[list[str]] = []
     for flag in sorted(mod._CAP_FLAGS):
@@ -3556,12 +3793,20 @@ def test_a_cap_the_reader_accepts_is_never_reported(mod, tmp_path, monkeypatch):
         candidates.append([f"{flag}4"])
         candidates.append([f"{flag}=0"])
         candidates.append([f"{flag}=4"])
+        candidates.append([f"{flag}=auto"])
         candidates.append([flag, "0"])
+        candidates.append([flag, "1"])
         candidates.append([flag, "4"])
+        candidates.append([flag, "auto"])
+        candidates.append([flag, "logical"])
     accepted = [
-        cap for cap in candidates if mod._argv_declares_a_worker_cap(["pytest-3", *cap, "test/"])
+        count
+        for count in candidates
+        if mod._argv_worker_pool_is_budgeted(["pytest-3", *count, "test/"])
     ]
-    assert accepted, "the cap reader accepted no spelling, so this pin proves nothing"
+    rejected = [count for count in candidates if count not in accepted]
+    assert accepted, "the reader called no spelling budgeted, so this pin proves nothing"
+    assert rejected, "the reader called every spelling budgeted, so this pin proves nothing"
 
     prefixes = install_prefixes(tmp_path)
     shapes: dict[str, list[str]] = {
@@ -3575,12 +3820,26 @@ def test_a_cap_the_reader_accepts_is_never_reported(mod, tmp_path, monkeypatch):
     fleet.mkdir(exist_ok=True)
     pid = 700
     for shape, prefix in sorted(shapes.items()):
-        for cap in accepted:
+        for count in accepted:
             pid += 1
-            fleet_pid(root, fleet, str(pid), [*prefix, *cap, "test/test_x.py"])
+            fleet_pid(root, fleet, str(pid), [*prefix, *count, "test/test_x.py"])
     assert banned_pids(mod, root, fleet) == set(), (
-        f"a run declaring a cap was reported; {len(shapes)} shapes x {len(accepted)} "
-        "accepted cap spellings must all stay silent"
+        f"a budgeted run was reported; {len(shapes)} shapes x {len(accepted)} "
+        "budgeted spellings must all stay silent"
+    )
+
+    # The converse, beside the quiet pids above: every shape the probe can detect,
+    # carrying a spelling the reader calls a budget bypass, is reported -- and only those.
+    expected = set()
+    pid = 5000
+    for shape, prefix in sorted(shapes.items()):
+        for count in rejected:
+            pid += 1
+            expected.add(str(pid))
+            fleet_pid(root, fleet, str(pid), [*prefix, *count, "test/test_x.py"])
+    assert banned_pids(mod, root, fleet) == expected, (
+        f"an unbudgeted run went unreported; {len(shapes)} shapes x {len(rejected)} "
+        "budget-bypassing spellings must all be reported"
     )
 
 
@@ -3615,30 +3874,30 @@ def test_every_directory_link_in_this_file_goes_through_make_dir_link():
 def test_every_argv_only_spelling_is_also_a_recognised_runner_base(mod):
     """A spelling the argv path admits must also be one the CAP check can see.
 
-    `_runner_token_index` keys on `_is_runner_base`, and `_argv_declares_a_worker_cap`
-    declines to answer when no runner token stands alone. So a member of
+    `_runner_token_index` keys on `_is_runner_base`, and `_argv_worker_pool_is_budgeted`
+    declines to answer (not budgeted) when no runner token stands alone. So a member of
     `_ARGV_ONLY_RUNNER_BASES` that `_is_runner_base` does not recognise is reported
-    while its own `-n0` is invisible -- a CAPPED run drawing a stop, the most expensive
-    direction this file has. The invariant is asserted over the whole set rather than
-    one token, so adding a spelling cannot reopen it.
+    while its own `-n0` is invisible -- a single-process run drawing a stop, the most
+    expensive direction this file has. The invariant is asserted over the whole set
+    rather than one token, so adding a spelling cannot reopen it.
     """
     for base in sorted(mod._ARGV_ONLY_RUNNER_BASES):
-        assert mod._is_runner_base(base), f"{base} is admitted but its cap cannot be read"
+        assert mod._is_runner_base(base), f"{base} is admitted but its count cannot be read"
 
 
 @pytest.mark.parametrize("runner", ["py.test", "py.test.exe", "pytest.exe"])
-@pytest.mark.parametrize("cap", sorted(CAP_SPELLINGS))
-def test_a_capped_argv_only_spelling_is_never_reported(mod, tmp_path, monkeypatch, runner, cap):
-    """Every argv-only spelling honours a cap, through the same check as plain ``pytest``.
+@pytest.mark.parametrize("count", sorted(BUDGETED_SPELLINGS))
+def test_a_budgeted_argv_only_spelling_is_never_reported(mod, tmp_path, monkeypatch, runner, count):
+    """Every argv-only spelling honours the budget, through the same check as ``pytest``.
 
-    This is the direction that destroys work: the run chose its worker count, and a row
-    against it stops a worker doing exactly what the standing directive asks.
+    This is the direction that destroys work: the run is budgeted or single-process, and
+    a row against it stops a worker doing exactly what the standing directive asks.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "441", [runner, *CAP_SPELLINGS[cap], "test/test_x.py"])
-    assert banned_pids(mod, root, fleet) == set(), f"{runner} + {cap} was reported while capped"
+    fleet_pid(root, fleet, "441", [runner, *BUDGETED_SPELLINGS[count], "test/test_x.py"])
+    assert banned_pids(mod, root, fleet) == set(), f"{runner} + {count} was reported while budgeted"
 
 
 def test_a_custom_rule_list_does_not_switch_off_the_argv_shape(mod, tmp_path, monkeypatch):
@@ -3649,12 +3908,12 @@ def test_a_custom_rule_list_does_not_switch_off_the_argv_shape(mod, tmp_path, mo
     ``cfg["banned_process_res"]`` being set at all. Standing the argv shape down whenever
     an operator supplies a list would let a config EDIT switch a built-in protection off,
     which is a worse property than one extra line on a replaced policy -- and the line it
-    emits is factually true of the process, an uncapped alias run in a fleet worktree.
+    emits is factually true of the process, an unbudgeted alias run in a fleet worktree.
     """
     root = host_proc(tmp_path, monkeypatch)
     fleet = tmp_path / "wt"
     fleet.mkdir()
-    fleet_pid(root, fleet, "430", ["pytest-3", "test/"])
+    fleet_pid(root, fleet, "430", ["pytest-3", *UNBUDGETED, "test/"])
     custom, _host = mod._host_lines(
         {"fleet_worktrees": [str(fleet)], "banned_process_res": [r"\bnpm\b\s+audit"]}
     )
@@ -3690,13 +3949,13 @@ def test_a_custom_rule_list_still_reports_its_own_shape(mod, tmp_path, monkeypat
 @pytest.mark.parametrize(
     ("argv", "program"),
     [
-        pytest.param(["pytest-3", "test/"], "pytest-<version>", id="alias"),
-        pytest.param(["pytest-3.12", "test/"], "pytest-<version>", id="alias-minor"),
-        pytest.param(["/usr/bin/pytest-3", "test/"], "pytest-<version>", id="alias-abspath"),
-        pytest.param(["py.test-3", "test/"], "py.test-<version>", id="alias-py.test"),
-        pytest.param(["pytest-3.exe", "test/"], "pytest-<version>", id="alias-exe"),
-        pytest.param(["py.test", "test/"], "py.test", id="py.test"),
-        pytest.param(["pytest.exe", "test/"], "pytest.exe", id="pytest.exe"),
+        pytest.param(["pytest-3", "-n4", "test/"], "pytest-<version>", id="alias"),
+        pytest.param(["pytest-3.12", "-n4", "test/"], "pytest-<version>", id="alias-minor"),
+        pytest.param(["/usr/bin/pytest-3", "-n4", "test/"], "pytest-<version>", id="alias-abspath"),
+        pytest.param(["py.test-3", "-n4", "test/"], "py.test-<version>", id="alias-py.test"),
+        pytest.param(["pytest-3.exe", "-n4", "test/"], "pytest-<version>", id="alias-exe"),
+        pytest.param(["py.test", "-n4", "test/"], "py.test", id="py.test"),
+        pytest.param(["pytest.exe", "-n4", "test/"], "pytest.exe", id="pytest.exe"),
     ],
 )
 def test_an_argv_row_prints_the_program_it_fired_on(mod, tmp_path, monkeypatch, argv, program):

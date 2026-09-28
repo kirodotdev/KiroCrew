@@ -1,9 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { MessageSquare, MessageSquarePlus, X, Pencil, Check, Send, Copy } from 'lucide-react'
+import { MessageSquare, MessageSquarePlus, X, Pencil, Check, Send } from 'lucide-react'
 import { SendBtn } from './ui'
-import ErrorNotice from './ErrorNotice'
 import { offlineProps } from '../utils/offline'
-import { copyToClipboard } from '../utils/clipboard'
 import { useImeGuard } from '../hooks/useImeGuard'
 
 import { i18nT } from '../i18n/t'
@@ -19,161 +17,6 @@ export interface InlineComment {
   column?: number
   /** Character offset of the anchor in the rendered text (textContent space). Used to disambiguate repeated occurrences of the same anchor text. */
   startOffset?: number
-}
-
-/** How long the copy button shows its checkmark before reverting to the glyph. */
-const COPIED_FEEDBACK_MS = 1500
-
-/**
- * Popover that appears when user selects text and clicks "Comment".
- *
- * `copyText` is the selection the popover was opened for. The artifact pages
- * open this box straight off mouseup, and focusing its textarea collapses the
- * document selection — so by the time the user reaches for ⌘/Ctrl+C there is
- * nothing selected and the shortcut copies nothing. The host therefore hands
- * over the text it captured BEFORE focus moved, and the popover offers it two
- * ways: a Copy button in its header, and the copy shortcut while the input is
- * still empty (once a draft exists, the shortcut is the textarea's own).
- */
-function CommentPopover({ x, y, onSubmit, onCancel, containerRef, scrollRef, copyText }: {
-  x: number; y: number; onSubmit: (text: string) => void; onCancel: () => void; containerRef?: React.RefObject<HTMLElement | null>; scrollRef?: React.RefObject<HTMLElement | null>
-  /** The selected text this comment annotates, offered for copying. Omit to hide the Copy button. */
-  copyText?: string
-}) {
-  const [text, setText] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [copyFailed, setCopyFailed] = useState(false)
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
-  const popoverRef = useRef<HTMLDivElement>(null)
-  const ime = useImeGuard()
-  const onCancelRef = useRef(onCancel)
-  useEffect(() => { onCancelRef.current = onCancel }, [onCancel])
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => inputRef.current?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [])
-  // The "copied" reset timer must not outlive the popover: a late setState
-  // after unmount is a React warning at best and a post-teardown throw in jsdom.
-  useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current) }, [])
-  // Dismiss on scroll — coordinates are stale after scrolling
-  useEffect(() => {
-    const target = scrollRef?.current ?? containerRef?.current ?? window
-    const handler = () => onCancelRef.current()
-    target.addEventListener('scroll', handler, { passive: true })
-    return () => target.removeEventListener('scroll', handler)
-  }, [scrollRef, containerRef])
-  // Dismiss on click outside
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        onCancelRef.current()
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
-  const autoGrow = useCallback((el: HTMLTextAreaElement) => { el.style.height = 'auto'; const maxH = 160; el.style.height = Math.min(el.scrollHeight, maxH) + 'px'; el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden' }, [])
-
-  // The checkmark is gated on the clipboard ACTUALLY taking the text (see
-  // `copyToClipboard`); a refusal is reported in place instead of flashed as
-  // success.
-  const copySelection = useCallback(async () => {
-    if (!copyText) return
-    const ok = await copyToClipboard(copyText)
-    if (!ok) { setCopyFailed(true); return }
-    setCopyFailed(false)
-    setCopied(true)
-    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-    copyTimerRef.current = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS)
-  }, [copyText])
-
-  // When containerRef is provided, position absolute relative to that container
-  const container = containerRef?.current
-  const rect = container?.getBoundingClientRect()
-  const useAbsolute = !!(container && rect)
-  const posX = useAbsolute ? x - rect.left + container.scrollLeft : x
-  const posY = useAbsolute ? y - rect.top + container.scrollTop : y
-  const maxW = useAbsolute ? rect.width : window.innerWidth
-  // Flip check uses viewport-relative position (y - rect.top) so it works regardless of scroll
-  const viewportY = useAbsolute ? y - rect!.top : y
-  const viewportH = useAbsolute ? rect!.height : window.innerHeight
-  const flipped = viewportY + 8 + 200 > viewportH
-
-  const copyLabel = i18nT('components.selectionToolbar.copy')
-  const copyHint = i18nT('components.selectionToolbar.copy_selection_hint')
-
-  return (
-    <div
-      ref={popoverRef}
-      className={`${useAbsolute ? 'absolute' : 'fixed'} z-50 bg-card border border-border rounded-lg shadow-lg p-3 animate-scale-in`}
-      style={{ left: Math.min(posX, maxW - 320), top: flipped ? Math.max(0, posY - 60) : posY + 8, width: 300 }}
-    >
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-text">{i18nT('components.commentOverlay.add_comment')}</span>
-        <div className="flex items-center gap-0.5">
-          {copyText && (
-            <button
-              type="button"
-              aria-label={copyLabel}
-              // The hint says WHAT is copied: next to a comment input, a bare
-              // copy glyph reads as "copy the comment".
-              title={copyHint}
-              // Keep focus (and the caret) in the textarea across the click.
-              onMouseDown={e => e.preventDefault()}
-              className="p-0.5 rounded text-muted hover:text-text cursor-pointer bg-transparent border-none transition-colors"
-              onClick={() => { void copySelection() }}
-            >{copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}</button>
-          )}
-          <button
-            aria-label={i18nT('components.commentOverlay.close')}
-            className="p-0.5 rounded text-muted hover:text-text cursor-pointer bg-transparent border-none transition-colors"
-            onClick={onCancel}
-          ><X size={14} /></button>
-        </div>
-      </div>
-      <div className="relative">
-        <textarea
-          ref={inputRef}
-          aria-label={i18nT('components.commentOverlay.add_a_comment')}
-          placeholder={i18nT('components.commentOverlay.write_a_comment')}
-          value={text}
-          rows={1}
-          onChange={e => { setText(e.target.value); autoGrow(e.target) }}
-          {...ime.bindComposition()}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey && text.trim()) { if (ime.claimEnter(e)) { e.stopPropagation(); onSubmit(text.trim()) } }
-            if (e.key === 'Escape') { ime.reset(); e.preventDefault(); e.stopPropagation(); onCancel() }
-            // Only an EMPTY input hands Copy to the selection the box was opened
-            // for; once a draft exists the shortcut is the textarea's own.
-            if (copyText && (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'c' && text.length === 0) {
-              e.preventDefault()
-              void copySelection()
-            }
-          }}
-          className="bg-bg-elevated border border-border rounded-md pl-3 pr-8 py-2 text-text text-sm font-body outline-hidden w-full transition-colors focus-ring resize-none leading-[21px] overflow-hidden"
-        />
-        <button
-          aria-label={i18nT('components.commentOverlay.add_comment')}
-          disabled={!text.trim()}
-          className="absolute right-2 top-2 p-0.5 rounded text-muted hover:text-accent cursor-pointer bg-transparent border-none transition-colors disabled:opacity-30 disabled:cursor-default"
-          onClick={() => text.trim() && onSubmit(text.trim())}
-        ><MessageSquarePlus size={14} /></button>
-      </div>
-      {/* No hand-off: the comment draft in this box's textarea is unsaved, and
-          the agent hand-off navigates away, which would discard it. A refused
-          clipboard write is recoverable in place (close the box, select and
-          copy again). */}
-      {copyFailed && (
-        <ErrorNotice
-          variant="inline"
-          className="mt-2"
-          message={i18nT('components.selectionToolbar.copy_failed')}
-          onDismiss={() => setCopyFailed(false)}
-        />
-      )}
-    </div>
-  )
 }
 
 /** Single comment row with inline edit support. */
@@ -396,5 +239,5 @@ export function formatArtifactCommentsMessage(
   return lines.join('\n')
 }
 
-export { CommentPopover, CommentList }
+export { CommentList }
 export type { InlineComment as Comment }

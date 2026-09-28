@@ -13,6 +13,7 @@ import {
 } from '../../hooks/useNotificationSound'
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
+import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
@@ -288,6 +289,7 @@ export function NotificationsPanel() {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
+  const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
 
   // Cross-window sync: a settings write in ANOTHER tab (or the running session's
   // own useNotificationSound reacting to one) fires a DOM `storage` event here.
@@ -378,6 +380,12 @@ export function NotificationsPanel() {
             description={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
             checked={notifyChatComplete}
             onChange={v => { setNotifyChatComplete(v); saveChatCompleteNotify(v) }}
+          />
+          <SettingsToggle
+            label={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting')}
+            description={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting_description')}
+            checked={unreadOnAttention}
+            onChange={v => { if (saveUnreadOnAttention(v)) setUnreadOnAttention(v) }}
           />
         </SettingsCard>
       </SettingsSection>

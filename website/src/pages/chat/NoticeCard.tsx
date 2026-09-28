@@ -81,7 +81,11 @@ export default memo(function NoticeCard({ content, tone: toneOverride }: { conte
           }`}
           aria-hidden="true"
         />
-        <span className="min-w-0 break-words">
+        {/* `whitespace-pre-line` keeps a multi-line notice (a Slack thread's first
+            message, recorded above the reply) on its own lines instead of folding
+            it into one paragraph. It collapses runs of spaces like the default,
+            so a single-line notice renders identically. */}
+        <span className="min-w-0 break-words whitespace-pre-line" data-testid="notice-card-text">
           {severity && <span className="sr-only">{severity} </span>}
           {text}
         </span>

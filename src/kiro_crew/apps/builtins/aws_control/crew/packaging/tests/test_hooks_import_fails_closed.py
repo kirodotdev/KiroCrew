@@ -20,7 +20,7 @@ import pathlib
 
 import pytest
 
-from .test_producer import load_build, make_crew
+from .test_producer import builder_source_text, load_build, make_crew
 
 
 def _hide_hooks(monkeypatch) -> None:
@@ -163,7 +163,7 @@ def test_only_one_hooks_import_needs_a_guard(tmp_path: pathlib.Path) -> None:
     # Read the file by path rather than through ``mod.__file__``, which mypy types as
     # ``str | None`` -- and the sibling source-rule tests in this directory read it the
     # same way, so the two cannot drift.
-    source = (pathlib.Path(__file__).parent.parent / "build.py").read_text(encoding="utf-8")
+    source = builder_source_text()
     imports = source.count("from kiro_crew.hooks import")
     guarded = source.count("except ImportError as exc:")
     bare = source.count("Imported bare, and that is deliberate")
@@ -547,7 +547,7 @@ def test_MUTATION_a_by_name_spec_read_ships_a_hard_linked_spec(
             "    try:\n"
             "        data = (\n"
             "            _b.encode('utf-8')\n"
-            "            if (_b := _read_text_openat(anchor, path.relative_to(anchor))) "
+            "            if (_b := _pinned._read_text_openat(anchor, path.relative_to(anchor))) "
             "is not None\n"
             "            else None\n"
             "        )\n"

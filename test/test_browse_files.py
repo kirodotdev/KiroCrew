@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from conftest import requires_symlinks
 from kiro_crew.dashboard.handlers import api_browse_files
@@ -24,7 +25,7 @@ from kiro_crew.dashboard.handlers.files import _browse_files_sync
 def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/browse-files", api_browse_files)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture()

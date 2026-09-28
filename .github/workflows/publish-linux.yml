@@ -167,8 +167,8 @@ jobs:
       # and arch with no hook to change it, so two formats cannot share a
       # directory without one overwriting the other's feed. A per-format
       # subdirectory leaves that derivation — including the -arm64 suffix —
-      # completely untouched; auto-update.js points a package install at the same
-      # subdirectory via buildFeedBase()'s `variant`.
+      # completely untouched; runtime/update/feed-lane.js points a package install
+      # at the same subdirectory via auto-update.js's buildFeedBase() `variant`.
       - name: Resolve format-dependent names
         run: |
           set -euo pipefail

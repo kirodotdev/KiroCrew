@@ -2599,12 +2599,22 @@ class TestTheHopOwnershipInvariantHolds:
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         reg, mgr, hop = self._lent(tmp_path, monkeypatch)
+        # The give-up path also schedules a diagnosis, and the real one spawns
+        # `ssh c-host` on this box. That task is still in flight when `asyncio.run`
+        # returns, so the runner has to cancel it on the way out -- and a cancel that
+        # lands while the subprocess transport is still being set up is a wait the
+        # runner cannot bound, which on the macOS lane ran past the 180s test timeout.
+        # The invariant under test says nothing about the diagnosis, so record that it
+        # was asked for and run none.
+        diagnoses: list[str] = []
+        monkeypatch.setattr(mgr, "_schedule_diagnosis", diagnoses.append)
         try:
             mgr._tunnels["c"].status.state = TunnelState.ERROR
             mgr._recover_attempts["c"] = mgr._max_recovery + 5
 
             asyncio.run(mgr._recover_after("c", 0))
 
+            assert diagnoses == ["c"], "fixture did not reach the give-up path"
             assert mgr.hop_ownership_violations() == {}, (
                 "the give-up path leaves the lent port owned by nothing for the rest of "
                 "the credential's life"

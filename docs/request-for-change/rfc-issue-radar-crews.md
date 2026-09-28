@@ -492,7 +492,7 @@ hook), so Kiro Crew's own policy still hard-refuses destructive commands,
 force-pushes to protected branches, and credential-file reads. Branch protection
 keeps crews off `main`. Every PR needs human approval before merge, so nothing
 lands unreviewed. `_repo_can_write` fails closed on permission checks
-(`routes.py:1357`). The `crew: ` label prefix is enforceable server-side at the
+(`routes.py`). The `crew: ` label prefix is enforceable server-side at the
 label route. The one-editing-item rule is enforced by the store.
 
 **Asked for, not enforced.** Not modifying the gate configs that judge a crew's own
@@ -521,7 +521,7 @@ and then fails, silently.
 
 Fix: set `slot._trust = True` per crew, and re-establish it every cycle from a
 crew watchdog. `_trust` is **not persisted** — `auto_research` re-sets it each
-watchdog cycle for exactly this reason (`handlers.py:867-869`, "restart-durable;
+watchdog cycle for exactly this reason (`auto_research/campaign/watchdog.py`, `_watchdog_loop`: "restart-durable;
 bounded above"). A process-wide yolo toggle is not a substitute: it dies with the
 process while autonudge survives it, so the first turn after a restart walks into
 the 7200s wait. A crew that finds itself unauthorised must report and pass rather than

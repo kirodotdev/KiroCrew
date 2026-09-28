@@ -12451,6 +12451,50 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     )
 
 
+async def _end_trust_scopes(slots: list[Any], audit_caller: Callable[[str], str]) -> None:
+    """End the app-armed scoped grants these slots carry, when a person picks Normal or Reads.
+
+    The header shows a live ``_trust_scope`` as Trust, so any choice narrower
+    than Trust must end that grant too, or the slot keeps auto-approving writes
+    under the narrower label: ``SafetyOverride.deactivate()`` only ends the
+    process-wide override and never touches a scoped grant. The SEL record names
+    the person's choice as the cause, apart from the grant's own
+    ``deactivate_scope`` record.
+
+    Only the grants: the caller clears every slot flag and stored policy after
+    this returns, in one pass with no await, so a concurrent mode change cannot
+    land between a slot's flags and its session's policy.
+    """
+    for slot in slots:
+        scope = str(getattr(slot, "_trust_scope", "") or "")
+        if scope:
+            await _end_trust_scope(scope, audit_caller(f"dashboard:{slot.key}"))
+
+
+def _still_owning(state: Any, slots: list[Any], key: str) -> list[Any]:
+    """The slots from ``slots`` that are still live in ``state`` and still address ``key``.
+
+    A revoke resolves its slots before awaiting the grant ends; a slot closed and
+    re-created on the same key during that await is a different slot that the
+    request was never authorized for, so its flags and the session policy stay.
+    """
+    return [s for s in slots if state._slots.get(s.key) is s and effective_session_key(s) == key]
+
+
+async def _end_trust_scope(scope: str, caller: str) -> None:
+    await asyncio.to_thread(safety_override().deactivate_scope, scope)
+    try:
+        await asyncio.to_thread(
+            sel().log_api_access,
+            caller=caller,
+            operation="approval_mode.scope_cleared_by_user",
+            outcome="disabled",
+            resources=f"scope:{scope}",
+        )
+    except Exception:
+        logger.warning("SEL audit failed for scope clear on %s", scope, exc_info=True)
+
+
 async def api_chat_mode(request: web.Request) -> web.Response:
     """POST /api/chat/mode — set tool approval mode.
 
@@ -12622,13 +12666,24 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             logger.warning("SEL audit failed for YOLO mode activation", exc_info=True)
     elif mode == "trust_reads":
         if slot is not None:
-            slot._trust = False
-            slot._trust_reads = True
-            state.sessions.set_approval_policy(effective_session_key(slot), "")
+            _reads_key = effective_session_key(slot)
+            _reads_sharing = [
+                s for s in list(state._slots.values()) if effective_session_key(s) == _reads_key
+            ]
+            await _end_trust_scopes(_reads_sharing, audit_caller)
+            _reads_live = _still_owning(state, _reads_sharing, _reads_key)
+            for _sharing in _reads_live:
+                _sharing._trust = False
+                _sharing._trust_reads = True
+                _sharing._trust_scope = ""
+            if _reads_live:
+                state.sessions.set_approval_policy(_reads_key, "")
         else:
+            await _end_trust_scopes(list(state._slots.values()), audit_caller)
             for s in state._slots.values():
                 s._trust = False
                 s._trust_reads = True
+                s._trust_scope = ""
                 state.sessions.set_approval_policy(effective_session_key(s), "")
         try:
             sel().log_api_access(
@@ -12691,19 +12746,33 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             # session back to "auto" from it. The policy is per SESSION; the flag
             # is per slot; so the revoke has to clear every slot that shares it.
             _revoked_key = effective_session_key(slot)
-            for _sharing in state._slots.values():
-                if effective_session_key(_sharing) == _revoked_key:
-                    _sharing._trust = False
-                    _sharing._trust_reads = False
-            state.sessions.set_approval_policy(_revoked_key, "")
+            _revoked = [
+                s for s in list(state._slots.values()) if effective_session_key(s) == _revoked_key
+            ]
+            await _end_trust_scopes(_revoked, audit_caller)
+            _revoked_live = _still_owning(state, _revoked, _revoked_key)
+            for _sharing in _revoked_live:
+                _sharing._trust = False
+                _sharing._trust_reads = False
+                _sharing._trust_scope = ""
+            if _revoked_live:
+                state.sessions.set_approval_policy(_revoked_key, "")
             linked_ch = getattr(slot, "_slack_channel", None)
-            if not request_app and mgr and linked_ch and linked_ch in mgr._channels:
+            if (
+                slot in _revoked_live
+                and not request_app
+                and mgr
+                and linked_ch
+                and linked_ch in mgr._channels
+            ):
                 mgr._channels[linked_ch].trusted = False
                 mgr._channels[linked_ch]._save()
         else:
+            await _end_trust_scopes(list(state._slots.values()), audit_caller)
             for s in state._slots.values():
                 s._trust = False
                 s._trust_reads = False
+                s._trust_scope = ""
                 state.sessions.set_approval_policy(effective_session_key(s), "")
             if mgr:
                 for ch in mgr._channels.values():

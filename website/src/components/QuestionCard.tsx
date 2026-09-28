@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, memo } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, MessageSquare } from 'lucide-react'
+import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -199,7 +200,12 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
        only once you can reach a chevron. The cap is viewport-relative so the
        composer and the conversation keep their share on a short window, with an
        absolute ceiling so a tall window does not stretch the card to fill it. */
-    <div className="border border-accent/30 rounded-xl bg-card shadow-md overflow-hidden animate-scale-in flex flex-col max-h-[min(60vh,32rem)]">
+    <Glass variant="chip" radius={12} className="glass-accent glass-shadow rounded-xl animate-scale-in flex flex-col max-h-[min(60vh,32rem)]">
+      {/* The clip lives one level in, not on the pane: the pane's hairlines sit
+          half a pixel OUTSIDE its top and bottom edges, and `overflow: hidden`
+          on the pane itself would cut them. The inner box inherits the radius
+          so the scroller's edge and its scrollbar are still clipped to the arc. */}
+      <div className="flex flex-col min-h-0 overflow-hidden rounded-[inherit]">
       {/* The scroller holds ONLY the questions; the action row below stays out of
           it so Submit / Dismiss are reachable without scrolling to the end. */}
       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -345,7 +351,8 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
           {i18nT('components.questionCard.dismiss_hint')}
         </div>
       )}
-    </div>
+      </div>
+    </Glass>
   )
 }
 
