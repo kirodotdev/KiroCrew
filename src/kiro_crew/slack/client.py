@@ -617,6 +617,16 @@ class RealSlackClient(SlackClientOps):
         user_id: str | None = None,
     ) -> str | None:
         """Start a streaming message via chat.startStream with task plan mode."""
+        # chat.startStream REQUIRES recipient_user_id. A turn with no originating
+        # Slack user -- a subagent run, or a cron job streaming into a channel --
+        # carries user_id="", so the body below omits recipient_user_id and Slack
+        # rejects the call with ``missing_recipient_user_id``. That path is caught
+        # further down, logged as a full traceback, and demoted to chat.update.
+        # Skip the doomed round-trip: return None here and let the caller demote
+        # exactly as it would on the API failure -- same outcome, without the
+        # per-turn traceback. An interactive user turn always carries a user_id.
+        if not user_id:
+            return None
         try:
             # Resolve this channel's home workspace before reading the cache.
             # Inbound Slack handlers call ensure_channel_team() once per message,
