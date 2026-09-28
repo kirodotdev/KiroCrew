@@ -864,26 +864,49 @@ class SessionAllocationService:
                         self._starting_pids.discard(starting_pid)
                 return runtime
 
-    async def release_subagent_runtime(self, parent_session_key: str) -> None:
-        """Serialize release with spawn and kill the detached runtime off-map."""
+    async def release_subagent_runtime(
+        self, parent_session_key: str, *, expected: Any = None
+    ) -> bool:
+        """Serialize release with spawn and kill the detached runtime off-map.
+
+        ``expected`` pins the release to ONE runtime object: the pop happens
+        only while that object is still the registered one. A caller that
+        decided to release from a snapshot (the identity sweep) waits for the
+        per-parent lock behind a respawn in flight; that respawn installs a
+        replacement under the same key before letting go, and a pop by key
+        alone would then kill the replacement the caller never looked at.
+        Returns whether a runtime was popped (and so killed).
+        """
         lock = self._subagent_runtime_locks.get(parent_session_key)
         if lock is not None:
             async with lock:
+                if (
+                    expected is not None
+                    and self._subagent_runtimes.get(parent_session_key) is not expected
+                ):
+                    return False
                 runtime = self._subagent_runtimes.pop(parent_session_key, None)
                 # A waiter on this removed lock re-checks canonical identity in
                 # get_subagent_runtime and retries under the live lock.
                 self._subagent_runtime_locks.pop(parent_session_key, None)
         else:
+            if (
+                expected is not None
+                and self._subagent_runtimes.get(parent_session_key) is not expected
+            ):
+                return False
             runtime = self._subagent_runtimes.pop(parent_session_key, None)
-        if runtime is not None:
-            try:
-                await runtime.kill(expected=True, reason="subagent runtime released")
-            except Exception:
-                self._deps.logger.warning(
-                    "Failed to kill subagent runtime for %s",
-                    parent_session_key,
-                    exc_info=True,
-                )
+        if runtime is None:
+            return False
+        try:
+            await runtime.kill(expected=True, reason="subagent runtime released")
+        except Exception:
+            self._deps.logger.warning(
+                "Failed to kill subagent runtime for %s",
+                parent_session_key,
+                exc_info=True,
+            )
+        return True
 
     async def _get_or_bootstrap_run_runtime(
         self,

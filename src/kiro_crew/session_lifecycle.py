@@ -24,6 +24,8 @@ from kiro_crew.kiro_prerequisite import (
     identity_park_grace_remaining,
     identity_stamp_mismatch,
     mark_identity_parked,
+    spawn_identity_of,
+    spawned_under,
 )
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.messaging.link import canonical_key
@@ -187,15 +189,17 @@ class SessionLifecycleOwner(Protocol):
 
     async def _retire_stale_backend_bg_runtime(self) -> None: ...
 
-    async def release_subagent_runtime(self, parent_session_key: str) -> None: ...
+    async def release_subagent_runtime(
+        self, parent_session_key: str, *, expected: Any = None
+    ) -> bool: ...
 
     async def _retire_kiro_warm_pool(self) -> bool: ...
 
     def _mark_identity_epoch(self) -> None: ...
 
-    async def _retire_kiro_subagent_runtimes(self) -> bool: ...
+    async def _retire_kiro_subagent_runtimes(self, *, live: str = "") -> bool: ...
 
-    async def _retire_kiro_bg_runtime(self) -> bool: ...
+    async def _retire_kiro_bg_runtime(self, *, live: str = "") -> bool: ...
 
     async def _reap_drained_bg_runtimes_locked(self) -> None: ...
 
@@ -1439,10 +1443,7 @@ class SessionLifecycleService:
                 provider = sess.provider
                 if not self._deps.provider_uses_kiro_identity_store(provider):
                     continue
-                stamp = getattr(provider, "spawn_identity", "") or getattr(
-                    getattr(provider, "_runtime", None), "spawn_identity", ""
-                )
-                if identity_stamp_mismatch(stamp, live):
+                if identity_stamp_mismatch(spawn_identity_of(provider), live):
                     sess.retire_on_identity_change = True
                     flagged.append(key)
         # Drop the durable resume pointer for every flagged key, mirroring
@@ -1501,8 +1502,12 @@ class SessionLifecycleService:
         *fingerprint* is the live identity the caller observed. It keys the
         generation fence below, so a retry for the same pending change skips
         successors that already restarted under the new account, while a sweep
-        under a different fingerprint captures afresh. Empty means the store
-        could not be read; see the comment at the fence.
+        under a different fingerprint captures afresh. It is also the spare
+        test: a holder whose spawn-identity stamp EQUALS it provably
+        authenticated as the live account and is left alone -- neither retired
+        nor counted against completeness -- because retiring it buys nothing
+        and costs its in-flight children (see the loop). Empty means the store
+        could not be read: nothing is spared (and see the comment at the fence).
         """
         owner = self._owner
         logger = self._deps.logger
@@ -1538,22 +1543,36 @@ class SessionLifecycleService:
                     # Selection and unregistering share one lock hold so a
                     # chosen idle object cannot start a turn before its pop.
                     #
-                    # Every session backed by the Kiro identity store is retired,
-                    # with no attempt to spare one that registered after the
-                    # pending change. Telling a new-account successor from an
-                    # old-account holder needs the identity each session
-                    # authenticated under, and registration order does not carry
-                    # it: a cold start that began before the switch registers
-                    # after it, so an order-based test hands the old account a
-                    # session it was asked to retire. Retiring one extra idle
-                    # session costs a fresh native conversation; sparing the
-                    # wrong one is the signature rejection this sweep exists to
-                    # prevent.
+                    # Telling a new-account successor from an old-account holder
+                    # needs the identity each session authenticated under, and
+                    # registration order does not carry it: a cold start that
+                    # began before the switch registers after it. The spawn
+                    # stamp does carry it, so a session whose stamp EQUALS the
+                    # live fingerprint is spared -- not retired, not flagged,
+                    # and not counted against completeness -- while an
+                    # unstamped or differently-stamped one is retired as before.
+                    #
+                    # The spare is what lets a sweep on a busy host FINISH. Its
+                    # completeness is what advances the baseline and clears the
+                    # pending fingerprint; without the spare it required every
+                    # kiro-backed session to be idle at once, which a gateway
+                    # with a dozen live chats never is, so every turn re-swept,
+                    # recycled every idle session -- and a parent that ended
+                    # its turn with ``spawn_run`` children still running IS
+                    # idle by the semaphore test, so its retirement cancelled
+                    # them ("provider shutdown") on every turn any chat took.
+                    # A retired live-account session also costs a fresh native
+                    # conversation for nothing. The spare needs exact equality
+                    # (``spawned_under``); sparing the wrong one is the
+                    # signature rejection this sweep exists to prevent, and an
+                    # unstamped child keeps the pre-stamping treatment.
                     retired_keys: list[str] = []
                     invalidated_keys: list[str] = []
                     for key in list(owner._sessions):
                         sess = owner._sessions[key]
                         if not self._deps.provider_uses_kiro_identity_store(sess.provider):
+                            continue
+                        if spawned_under(sess.provider, fingerprint):
                             continue
                         if sess.semaphore.locked():
                             sess.retire_on_identity_change = True
@@ -1631,9 +1650,11 @@ class SessionLifecycleService:
         # facade to retain direct manager monkeypatches and its fill-lock policy.
         if not await owner._retire_kiro_warm_pool():
             skipped = True
-        if not await owner._retire_kiro_subagent_runtimes():
+        # Same spare for the companion runtimes: one that provably spawned
+        # under the live account is neither reaped nor a reason to re-sweep.
+        if not await owner._retire_kiro_subagent_runtimes(live=fingerprint):
             skipped = True
-        if not await owner._retire_kiro_bg_runtime():
+        if not await owner._retire_kiro_bg_runtime(live=fingerprint):
             skipped = True
         if owner._starting_pids:
             # With every cold-start permit held above, residue here means a
@@ -1658,6 +1679,8 @@ class SessionLifecycleService:
         self,
         should_retire: Callable[[object], bool] | None = None,
         retired: list[str] | None = None,
+        *,
+        live: str = "",
     ) -> bool:
         """Retire idle Kiro-backed companion runtimes.
 
@@ -1675,7 +1698,20 @@ class SessionLifecycleService:
         sweep-quiescence post-conditions (spawn locks held, runtimes still
         registered) only apply to the unfiltered sweep, since under a filter
         the surviving runtimes are the expected outcome, not incompleteness.
-        ``retired`` collects the parent keys actually released.
+        ``retired`` collects the parent keys actually released. ``live`` is
+        the unfiltered sweep's spare: a REGISTERED runtime whose spawn stamp
+        equals it (``spawned_under``) provably authenticated as the live
+        account, so it is neither released nor counted by the post-conditions
+        -- the same spare the session loop applies, without which a sweep on a
+        host with any subagent in flight could never complete. Ignored under
+        a filter, and not consulted by the parked-runtime reaper that runs
+        first in the body: a parked runtime is a proven wrong-account holder
+        and still drains. The release itself is pinned to the runtime this
+        pass looked at (``expected=``): the sweep waits for the per-parent
+        lock behind any respawn in flight, and that respawn installs a
+        live-stamped replacement under the same key before letting go, which
+        a pop by key alone would kill. A skipped release leaves the
+        replacement to the post-condition, which spares it if live-stamped.
 
         Under a filter, a runtime the predicate proves wrong-account is
         DISPLACED rather than killed, busy and idle alike: popped from the
@@ -1740,6 +1776,8 @@ class SessionLifecycleService:
             runtime = owner._subagent_runtimes.get(parent_key)
             if runtime is None or not self._deps.provider_uses_kiro_identity_store(runtime):
                 continue
+            if should_retire is None and spawned_under(runtime, live):
+                continue
             if should_retire is not None:
                 if not should_retire(runtime):
                     continue
@@ -1775,8 +1813,8 @@ class SessionLifecycleService:
                 complete = False
                 continue
             try:
-                await owner.release_subagent_runtime(parent_key)
-                if retired is not None:
+                released = await owner.release_subagent_runtime(parent_key, expected=runtime)
+                if released and retired is not None:
                     retired.append(parent_key)
             except Exception:
                 logger.warning(
@@ -1789,9 +1827,12 @@ class SessionLifecycleService:
             if any(lock.locked() for lock in owner._subagent_runtime_locks.values()):
                 complete = False
             # This post-condition catches a runtime installed after the snapshot but
-            # before its per-parent spawn lock was released.
+            # before its per-parent spawn lock was released. A spared
+            # live-account runtime is the expected survivor, not a leftover.
             if any(
-                runtime is not None and self._deps.provider_uses_kiro_identity_store(runtime)
+                runtime is not None
+                and self._deps.provider_uses_kiro_identity_store(runtime)
+                and not spawned_under(runtime, live)
                 for runtime in list(owner._subagent_runtimes.values())
             ):
                 complete = False
@@ -1799,6 +1840,7 @@ class SessionLifecycleService:
             # under the old account; the sweep is not done until it drains.
             if any(
                 self._deps.provider_uses_kiro_identity_store(runtime)
+                and not spawned_under(runtime, live)
                 for runtime in owner._draining_subagent_runtimes
             ):
                 complete = False
@@ -1809,6 +1851,8 @@ class SessionLifecycleService:
         should_retire: Callable[[object], bool] | None = None,
         retired: list[str] | None = None,
         reason: str = "deliberate logout teardown",
+        *,
+        live: str = "",
     ) -> bool:
         """Retire the idle Kiro-backed background runtime and drained holders.
 
@@ -1816,7 +1860,8 @@ class SessionLifecycleService:
         :meth:`_retire_kiro_subagent_runtimes` (``None`` retires
         unconditionally -- identity-sweep semantics); ``retired`` collects
         ``"background-runtime"`` when the kill lands; ``reason`` labels the
-        kill for the process record.
+        kill for the process record; ``live`` is the unfiltered sweep's spare
+        (``spawned_under``), as on the companion reaper.
         """
         owner = self._owner
         logger = self._deps.logger
@@ -1824,10 +1869,13 @@ class SessionLifecycleService:
             await owner._reap_drained_bg_runtimes_locked()
             complete = not any(
                 self._deps.provider_uses_kiro_identity_store(runtime)
+                and not spawned_under(runtime, live)
                 for runtime in owner._draining_bg_runtimes
             )
             runtime = owner._bg_runtime
             if runtime is None or not self._deps.provider_uses_kiro_identity_store(runtime):
+                return complete
+            if should_retire is None and spawned_under(runtime, live):
                 return complete
             if should_retire is not None and not should_retire(runtime):
                 return complete

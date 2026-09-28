@@ -1374,6 +1374,42 @@ def identity_stamp_mismatch(stamp: str, live: str) -> bool:
     return bool(stamp_vault and live_vault and stamp_vault != live_vault)
 
 
+def spawn_identity_of(holder: Any) -> str:
+    """The spawn-time identity stamp recorded on *holder*, or ``""``.
+
+    A standalone provider carries ``spawn_identity`` itself; a demuxed
+    session's provider rides a shared ``AcpRuntime`` and the stamp lives on
+    that runtime (``_runtime``). Empty means unstamped: the spawn-time read
+    failed, disagreed with its pre-spawn read, or the stamping is unwired.
+    """
+
+    return str(
+        getattr(holder, "spawn_identity", "")
+        or getattr(getattr(holder, "_runtime", None), "spawn_identity", "")
+        or ""
+    )
+
+
+def spawned_under(holder: Any, live: str) -> bool:
+    """Whether *holder*'s child PROVABLY authenticated as the live account.
+
+    The identity sweep's spare test, and the converse of
+    :func:`identity_stamp_mismatch` -- deliberately stricter. A mismatch is
+    proven component-wise, because a read can LOSE a component under failure
+    and two nonempty values that differ cannot be a blip. Sparing a holder
+    from retirement is the opposite bet: a wrong spare keeps a wrong-account
+    child answering turns, so only a nonempty stamp EQUAL to a nonempty live
+    fingerprint, whole, qualifies. An unstamped child is never spared -- it
+    keeps exactly the pre-stamping treatment (retired by the sweep) -- and an
+    unreadable store (empty *live*) spares nothing, so a host whose store
+    cannot be fingerprinted keeps the fail-safe retire-everything sweep.
+    """
+
+    if not live:
+        return False
+    return spawn_identity_of(holder) == live
+
+
 async def pre_spawn_identity(reader: Any) -> str:
     """Best-effort identity read taken immediately BEFORE a child spawns.
 

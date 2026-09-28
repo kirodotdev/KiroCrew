@@ -2174,9 +2174,17 @@ class SessionManager:
             parent_session_key, agent=agent
         )
 
-    async def release_subagent_runtime(self, parent_session_key: str) -> None:
-        """Release the shared companion runtime for a parent."""
-        await self._allocation_boundary().release_subagent_runtime(parent_session_key)
+    async def release_subagent_runtime(
+        self, parent_session_key: str, *, expected: Any = None
+    ) -> bool:
+        """Release the shared companion runtime for a parent.
+
+        ``expected`` restricts the release to that runtime object (see the
+        allocation boundary); returns whether one was released.
+        """
+        return await self._allocation_boundary().release_subagent_runtime(
+            parent_session_key, expected=expected
+        )
 
     async def _get_or_bootstrap_run_runtime(
         self, parent_session_key: str, *, agent: str | None = None, cwd: str | None = None
@@ -2908,13 +2916,19 @@ class SessionManager:
         """Disqualify already-pooled providers from claims after an account change."""
         self._pool.mark_identity_epoch()
 
-    async def _retire_kiro_subagent_runtimes(self) -> bool:
-        """Retire idle companion runtimes that use Kiro's identity store."""
-        return await self._lifecycle_boundary()._retire_kiro_subagent_runtimes()
+    async def _retire_kiro_subagent_runtimes(self, *, live: str = "") -> bool:
+        """Retire idle companion runtimes that use Kiro's identity store.
 
-    async def _retire_kiro_bg_runtime(self) -> bool:
-        """Retire the idle shared background runtime after an identity change."""
-        return await self._lifecycle_boundary()._retire_kiro_bg_runtime()
+        ``live`` spares runtimes whose spawn stamp equals it (see the sweep).
+        """
+        return await self._lifecycle_boundary()._retire_kiro_subagent_runtimes(live=live)
+
+    async def _retire_kiro_bg_runtime(self, *, live: str = "") -> bool:
+        """Retire the idle shared background runtime after an identity change.
+
+        ``live`` spares a runtime whose spawn stamp equals it (see the sweep).
+        """
+        return await self._lifecycle_boundary()._retire_kiro_bg_runtime(live=live)
 
     async def remove_if_unclaimed(self, key: str) -> bool:
         """Remove a speculative session only before its first real claimant."""

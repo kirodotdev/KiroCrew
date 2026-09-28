@@ -1484,6 +1484,199 @@ class TestRetirementCoverage:
         assert "parent" in smap._subagent_runtimes
         assert complete is False
 
+    # -- The live-account spare ---------------------------------------------
+    #
+    # A holder whose spawn stamp EQUALS the live fingerprint provably
+    # authenticated as the live account. Retiring it buys nothing and costs
+    # its in-flight children, and counting it against completeness keeps a
+    # sweep on a busy host from finishing: every turn re-sweeps and every
+    # idle parent's subagents die as "provider shutdown".
+
+    LIVE = "cli-live"
+
+    @pytest.mark.asyncio
+    async def test_an_idle_session_stamped_with_the_live_account_is_spared(self) -> None:
+        smap = self._manager()
+        spared = _FakeProvider("")
+        spared.spawn_identity = self.LIVE  # type: ignore[attr-defined]
+        unstamped = _FakeProvider("")
+        other = _FakeProvider("")
+        other.spawn_identity = "cli-other"  # type: ignore[attr-defined]
+        smap._sessions["spared"] = self._session(spared)
+        smap._sessions["unstamped"] = self._session(unstamped)
+        smap._sessions["other"] = self._session(other)
+
+        retired, complete = await smap.retire_kiro_identity_sessions(fingerprint=self.LIVE)
+
+        assert sorted(retired) == ["other", "unstamped"]
+        assert complete is True
+        assert "spared" in smap._sessions
+        assert spared.shutdown_calls == 0
+        assert not smap._sessions["spared"].retire_on_identity_change
+        assert unstamped.shutdown_calls == 1
+        assert other.shutdown_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_a_busy_session_stamped_with_the_live_account_does_not_block_completion(
+        self,
+    ) -> None:
+        """This is the livelock: a busy live-account holder kept every sweep
+        incomplete, so the baseline never advanced and the next turn swept
+        again. It is not holding the previous account, so it is not a reason
+        to retry."""
+
+        smap = self._manager()
+        busy = _FakeProvider("")
+        busy.spawn_identity = self.LIVE  # type: ignore[attr-defined]
+        smap._sessions["busy-live"] = self._session(busy, busy=True)
+
+        retired, complete = await smap.retire_kiro_identity_sessions(fingerprint=self.LIVE)
+
+        assert retired == []
+        assert complete is True
+        assert "busy-live" in smap._sessions
+        assert not smap._sessions["busy-live"].retire_on_identity_change
+        assert smap.pending_identity_sweep_fingerprint == ""
+
+    @pytest.mark.asyncio
+    async def test_a_demuxed_session_is_spared_through_its_runtime_stamp(self) -> None:
+        """A demuxed session's provider carries no stamp of its own; the shared
+        runtime it rides does."""
+
+        smap = self._manager()
+        provider = _FakeProvider("")
+        provider._runtime = SimpleNamespace(spawn_identity=self.LIVE)  # type: ignore[attr-defined]
+        smap._sessions["demuxed"] = self._session(provider)
+
+        retired, complete = await smap.retire_kiro_identity_sessions(fingerprint=self.LIVE)
+
+        assert retired == []
+        assert complete is True
+        assert provider.shutdown_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_the_spare_needs_the_whole_fingerprint_to_match(self) -> None:
+        """Sparing is stricter than the mismatch gate: a stamp that agrees on
+        the CLI component but lost or differs on the vault component is not
+        proof of the live account, so it is retired like any other."""
+
+        smap = self._manager()
+        partial = _FakeProvider("")
+        partial.spawn_identity = "cli-live"  # type: ignore[attr-defined]
+        smap._sessions["partial"] = self._session(partial)
+        live = kp._combine_identity_fingerprints("cli-live", "vault-x")
+
+        retired, _ = await smap.retire_kiro_identity_sessions(fingerprint=live)
+
+        assert retired == ["partial"]
+        assert partial.shutdown_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_store_spares_nothing(self) -> None:
+        """An empty live fingerprint means "cannot tell"; a stamped holder is
+        then retired exactly as before the spare existed (the sign-out path
+        sweeps with no fingerprint on purpose)."""
+
+        smap = self._manager()
+        stamped = _FakeProvider("")
+        stamped.spawn_identity = self.LIVE  # type: ignore[attr-defined]
+        smap._sessions["stamped"] = self._session(stamped)
+
+        retired, _ = await smap.retire_kiro_identity_sessions(fingerprint="")
+
+        assert retired == ["stamped"]
+        assert stamped.shutdown_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_a_live_stamped_subagent_runtime_is_spared_even_when_busy(self) -> None:
+        smap = self._manager()
+        live_runtime = _FakeRuntime("", active=True)
+        live_runtime.spawn_identity = self.LIVE  # type: ignore[attr-defined]
+        old_runtime = _FakeRuntime("")
+        smap._subagent_runtimes["parent-live"] = live_runtime  # type: ignore[assignment]
+        smap._subagent_runtimes["parent-old"] = old_runtime  # type: ignore[assignment]
+
+        _, complete = await smap.retire_kiro_identity_sessions(fingerprint=self.LIVE)
+
+        assert live_runtime.killed == 0
+        assert "parent-live" in smap._subagent_runtimes
+        assert old_runtime.killed == 1
+        assert "parent-old" not in smap._subagent_runtimes
+        assert complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_release_pinned_to_a_stale_runtime_spares_its_replacement(self) -> None:
+        """The sweep decides from a snapshot, then waits for the per-parent
+        lock. A respawn holding that lock installs a live-stamped replacement
+        under the same key before letting go; the release must not pop it."""
+
+        smap = self._manager()
+        stale = _FakeRuntime("")
+        replacement = _FakeRuntime("", active=True)
+        replacement.spawn_identity = self.LIVE  # type: ignore[attr-defined]
+        smap._subagent_runtimes["parent"] = replacement  # type: ignore[assignment]
+        smap._subagent_runtime_locks["parent"] = asyncio.Lock()
+
+        released = await smap.release_subagent_runtime("parent", expected=stale)
+
+        assert released is False
+        assert replacement.killed == 0
+        assert smap._subagent_runtimes["parent"] is replacement
+        assert "parent" in smap._subagent_runtime_locks
+
+    @pytest.mark.asyncio
+    async def test_a_release_pinned_to_the_registered_runtime_still_kills_it(self) -> None:
+        smap = self._manager()
+        runtime = _FakeRuntime("")
+        smap._subagent_runtimes["parent"] = runtime  # type: ignore[assignment]
+
+        released = await smap.release_subagent_runtime("parent", expected=runtime)
+
+        assert released is True
+        assert runtime.killed == 1
+        assert "parent" not in smap._subagent_runtimes
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_installed_mid_sweep_survives_and_the_sweep_completes(
+        self,
+    ) -> None:
+        """Same interleaving through the sweep itself: the idle probe on the
+        stale runtime is the suspension the respawn wins, so a swap there
+        models a replacement landing between the snapshot and the release."""
+
+        smap = self._manager()
+        replacement = _FakeRuntime("", active=True)
+        replacement.spawn_identity = self.LIVE  # type: ignore[attr-defined]
+
+        class _StaleRuntime(_FakeRuntime):
+            def has_active_or_initializing_sessions(self) -> bool:
+                smap._subagent_runtimes["parent"] = replacement  # type: ignore[assignment]
+                return False
+
+        stale = _StaleRuntime("")
+        smap._subagent_runtimes["parent"] = stale  # type: ignore[assignment]
+
+        retired, complete = await smap.retire_kiro_identity_sessions(fingerprint=self.LIVE)
+
+        assert retired == []
+        assert stale.killed == 0
+        assert replacement.killed == 0
+        assert smap._subagent_runtimes["parent"] is replacement
+        assert complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_live_stamped_background_runtime_is_spared_even_when_busy(self) -> None:
+        smap = self._manager()
+        bg = _FakeRuntime("", active=True)
+        bg.spawn_identity = self.LIVE  # type: ignore[attr-defined]
+        smap._bg_runtime = bg  # type: ignore[assignment]
+
+        _, complete = await smap.retire_kiro_identity_sessions(fingerprint=self.LIVE)
+
+        assert bg.killed == 0
+        assert smap._bg_runtime is bg
+        assert complete is True
+
     @pytest.mark.asyncio
     async def test_a_provider_mid_start_makes_the_sweep_incomplete(self) -> None:
         """A provider between start() and registration is in none of the maps.

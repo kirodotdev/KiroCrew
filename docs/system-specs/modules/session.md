@@ -505,6 +505,29 @@ from orphan cleanup by `_starting_pids`, and every stamp await sits under a
 teardown guard so cancellation cannot leak a started child. An unstamped
 child keeps exactly the pre-stamping protections.
 
+**Live-account spare** (`spawned_under`, inside the sweep): a session or
+companion runtime whose spawn stamp EQUALS the live fingerprint — the whole
+fingerprint, both components — provably authenticated as the live account and
+is skipped by `retire_kiro_identity_sessions`: not retired, not flagged, and
+not counted against completeness (the runtime reapers take the fingerprint as
+`live=` and apply the same test to their post-conditions). Without it the
+sweep retired every kiro-backed idle session and could complete only when
+every kiro-backed holder was idle at once, which a busy gateway never is:
+each turn re-swept, and an idle parent whose `spawn_run` children were still
+running was retired with them — every subagent on the host died as
+`AcpProcessDied ... (provider shutdown)` on every turn any chat took
+(#14605). The spare is the strict converse of the mismatch gate: a mismatch
+is proven component-wise (a read can only LOSE components), a spare needs
+exact equality, an unstamped child is never spared, and an empty live
+fingerprint (unreadable store, and the sign-out path, which sweeps with no
+fingerprint on purpose) spares nothing. The sweep's release is pinned to the
+runtime it inspected (`release_subagent_runtime(key, expected=runtime)`): it
+decides from a snapshot and then waits for the per-parent spawn lock, and a
+respawn holding that lock installs a live-stamped replacement under the same
+key before letting go, so a pop by key alone would kill the runtime the spare
+exists to keep. A release whose pin no longer matches pops nothing, returns
+`False`, and leaves the replacement to the post-condition.
+
 **Per-turn stamp gate** (`flag_identity_stamp_mismatches`, before the
 unchanged early-return in the turn gate): a session whose stamp provably
 differs from the live account is flagged `retire_on_identity_change` and its
