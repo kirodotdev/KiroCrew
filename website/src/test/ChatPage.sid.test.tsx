@@ -819,6 +819,48 @@ describe('ChatPage ?sid= URL parameter', () => {
       await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-3-300'))
       await waitFor(() => expect(currentUrl).toContain('sid=chat-3-300'))
     })
+
+    // Regression (closed-session dead-end): a Back POP whose target session was
+    // CLOSED since the entry was pushed used to fall through in total silence —
+    // the pre-fix reader guarded the switch with `filteredSlots.some(key===urlSid)`,
+    // so a gone target dispatched nothing, armed no in-flight flag, and the URL
+    // flicked straight back with no notice (the reported "click Back, nothing
+    // moves"). The fix routes the POP through the same `announceOnMissing`
+    // gesture every other session reference uses. Assert the two halves that
+    // distinguish the fix from the silent no-op: (1) the gone target raises the
+    // page-level "Session not found" notice (`switchSlotGone`), and (2) the URL
+    // self-heals back to the current session rather than dead-ending on the
+    // dead sid.
+    it('announces and self-heals when Back targets a session closed since it was visited', async () => {
+      const navSlots = [slot('chat-1-100', 'Alpha'), slot('chat-2-200', 'Beta'), slot('chat-3-300', 'Gamma')]
+      const { store } = renderForPop(navSlots)
+
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1-100'))
+      // A→B→C, each a genuine switch that PUSHES a ?sid history entry.
+      await act(async () => { await store.dispatch(switchSlot('chat-2-200')) })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-2-200'))
+      await act(async () => { await store.dispatch(switchSlot('chat-3-300')) })
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-3-300'))
+
+      // B is CLOSED: the authoritative slots frame drops it (the exact reflection
+      // of a session close), and its transcript fetch now 404s like a gone slot.
+      vi.mocked(api.chatSlotDetail).mockImplementation((key: string) =>
+        key === 'chat-2-200'
+          ? Promise.reject(Object.assign(new Error('not found'), { status: 404 }))
+          : Promise.resolve({ messages: [], has_more: false, total: 0 }),
+      )
+      await act(async () => { store.dispatch(sseSlots([slot('chat-1-100', 'Alpha'), slot('chat-3-300', 'Gamma')])) })
+
+      // Back: C → (gone B). Pre-fix this was a silent no-op; now it must announce.
+      await act(async () => { navBack() })
+      await waitFor(() => expect(store.getState().chat.switchSlotGone).not.toBeNull())
+      expect(store.getState().chat.switchSlotGone?.kind).toBe('gone')
+      // And the URL heals back to the current live session (C) — never stuck on
+      // the dead ?sid=chat-2-200 the pre-fix path left it flickering against.
+      await waitFor(() => expect(currentUrl).toContain('sid=chat-3-300'))
+      expect(currentUrl).not.toContain('sid=chat-2-200')
+      expect(store.getState().chat.activeSlot).toBe('chat-3-300')
+    })
   })
 })
 

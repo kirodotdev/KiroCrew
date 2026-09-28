@@ -7760,7 +7760,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             locus, through the required ErrorNotice surface. The store carries
             the NAME; the sentence resolves here so a locale switch re-renders it. */}
         <ErrorNotice
-          message={switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name) : ''}
+          message={switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name, switchSlotGone.gestureNeutral) : ''}
           report={switchSlotGone?.report}
           onDismiss={() => dispatch(clearSwitchSlotGone())}
           askAgent
