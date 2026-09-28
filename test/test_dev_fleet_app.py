@@ -968,6 +968,50 @@ async def test_upstream_remote_reads_config():
     repository_mod._UPSTREAM_REMOTE = None
 
 
+@pytest.mark.asyncio
+async def test_resolve_base_branch_clears_cached_upstream_remote():
+    """Re-resolving the base branch replaces the stale cached upstream remote.
+
+    F2 (GPT 5.6): ``_UPSTREAM_REMOTE`` latches on first resolution and is derived
+    from the remote the base was resolved against, while ``_rebase_locked`` re-resolves
+    the base. A base that moves from a guess to a stated default must NOT keep the
+    remote derived from the old resolution, or the worktree is rebased onto a
+    ``<stale-remote>/<new-base>`` with no undo. ``_resolve_base_branch`` therefore drops
+    the stale value and re-seeds the cache with the remote THIS resolution used, so
+    later reads and sync target the resolved remote rather than a stale or wrong one.
+    """
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    # Save every module global this test mutates: _resolve_base_branch writes
+    # BASE_BRANCH and _BASE_BRANCH_POSITIVE, which other tests read at their default.
+    _saved_base = repository_mod.BASE_BRANCH
+    _saved_positive = repository_mod._BASE_BRANCH_POSITIVE
+    # A stale remote cached against a prior base.
+    repository_mod._UPSTREAM_REMOTE = "fork"
+
+    # Drive tier-1 resolution: origin advertises HEAD -> trunk (live ls-remote).
+    async def fake_git(_repo, *args, **kwargs):
+        if args[:1] == ("remote",):
+            return "origin\nfork"
+        if args[:1] == ("ls-remote",) and args[-1] == "HEAD":
+            return "ref: refs/heads/trunk\tHEAD\n<sha>\tHEAD\n"
+        return ""
+
+    try:
+        with patch.object(repository_mod, "_repo", return_value="/fake/repo"), \
+             patch.object(repository_mod, "_git", new=AsyncMock(side_effect=fake_git)):
+            await mod._resolve_base_branch()
+
+        # The stale 'fork' is gone; the cache now holds the remote this resolution used.
+        assert repository_mod._UPSTREAM_REMOTE == "origin"
+        assert repository_mod.BASE_BRANCH == "trunk"
+        assert repository_mod._BASE_BRANCH_POSITIVE is True
+    finally:
+        repository_mod.BASE_BRANCH = _saved_base
+        repository_mod._BASE_BRANCH_POSITIVE = _saved_positive
+        repository_mod._UPSTREAM_REMOTE = None
+
+
 # --- sync runner emits ::step:: markers ---
 @pytest.mark.asyncio
 async def test_sync_script_emits_step_markers():
@@ -2367,6 +2411,10 @@ def _assert_git_neutralizers(env):
     # git answers from, so every answer this handler acts on describes the
     # history the checkout actually holds rather than a grafted substitute.
     assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
+    # Also not a config key: it pins WHAT GIT WRITES on a read. `git status`
+    # refreshes the index and saves it back under `index.lock`, so a command that
+    # is a read to its caller is a write to the repository.
+    assert env["GIT_OPTIONAL_LOCKS"] == "0"
     # Full config-driven-execution neutralizer set, injected as env so it
     # covers EVERY git call (background fetch, rebase, sync pull included).
     pairs = {
@@ -2378,6 +2426,15 @@ def _assert_git_neutralizers(env):
         "core.hooksPath": "/dev/null",
         "credential.helper": "",
         "core.sshCommand": "ssh",
+        # Signature verification is the third driver class, and it is reached by a
+        # READ: `[log] showSignature=true` makes every `git log` verify, and
+        # verification EXECS the program these name. All four spellings, because
+        # `gpg.openpgp.program` is a synonym that OVERRIDES the bare `gpg.program`.
+        "gpg.program": "true",
+        "gpg.openpgp.program": "true",
+        "gpg.ssh.program": "true",
+        "gpg.x509.program": "true",
+        "log.showSignature": "false",
     }
 
 
@@ -3461,9 +3518,10 @@ def test_git_env_neutralizers_present():
     assert n["GIT_ALLOW_PROTOCOL"] == "https:ssh"
     assert n["GIT_PROTOCOL_FROM_USER"] == "0"
     assert n["GIT_NO_REPLACE_OBJECTS"] == "1"
-    # GIT_NO_REPLACE_OBJECTS is an env var in its own right, NOT one of the
-    # config pairs, so the count must not have grown to cover it.
-    assert n["GIT_CONFIG_COUNT"] == "4"
+    # GIT_NO_REPLACE_OBJECTS and GIT_OPTIONAL_LOCKS are env vars in their own
+    # right, NOT config pairs, so the count must not have grown to cover them.
+    assert n["GIT_OPTIONAL_LOCKS"] == "0"
+    assert n["GIT_CONFIG_COUNT"] == "9"
     assert n["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
     assert n["GIT_CONFIG_VALUE_0"] == "false"
     assert n["GIT_CONFIG_KEY_1"] == "core.hooksPath"
@@ -3472,6 +3530,27 @@ def test_git_env_neutralizers_present():
     assert n["GIT_CONFIG_VALUE_2"] == ""
     assert n["GIT_CONFIG_KEY_3"] == "core.sshCommand"
     assert n["GIT_CONFIG_VALUE_3"] == "ssh"
+    # Signature verification EXECS the program these name, and `showSignature` is
+    # the trigger that makes a plain `git log` reach for one. All four program
+    # spellings, because `gpg.openpgp.program` is a synonym that OVERRIDES the bare
+    # `gpg.program`, so pinning only the bare key leaves an unpinned way in.
+    assert n["GIT_CONFIG_KEY_4"] == "gpg.program"
+    assert n["GIT_CONFIG_VALUE_4"] == "true"
+    assert n["GIT_CONFIG_KEY_5"] == "gpg.openpgp.program"
+    assert n["GIT_CONFIG_VALUE_5"] == "true"
+    assert n["GIT_CONFIG_KEY_6"] == "gpg.ssh.program"
+    assert n["GIT_CONFIG_VALUE_6"] == "true"
+    assert n["GIT_CONFIG_KEY_7"] == "gpg.x509.program"
+    assert n["GIT_CONFIG_VALUE_7"] == "true"
+    assert n["GIT_CONFIG_KEY_8"] == "log.showSignature"
+    assert n["GIT_CONFIG_VALUE_8"] == "false"
+    # The count DERIVED, not retyped: an undercount silently drops the tail of the
+    # list, so the pins past it would be absent while this test still read green
+    # against a hardcoded number that matched the stale count.
+    pairs = sum(1 for k in n if k.startswith("GIT_CONFIG_KEY_"))
+    assert n["GIT_CONFIG_COUNT"] == str(pairs), "the count must cover every pinned pair"
+    for i in range(pairs):
+        assert f"GIT_CONFIG_VALUE_{i}" in n, f"key {i} has no value beside it"
 
 
 @pytest.mark.skipif(
