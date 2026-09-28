@@ -3010,6 +3010,38 @@ class TestWhatsAppSection:
         assert "_doctor_whatsapp(cfg, issues)" in source
 
 
+def _report_source() -> str:
+    """The source of every function that prints a row of the doctor report.
+
+    The orchestrator plus each ``kiro_crew.doctor_checks`` family, so an invariant
+    asserted over the report holds wherever a section lives.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    from kiro_crew import doctor_checks
+
+    families = [
+        importlib.import_module(f"{doctor_checks.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(doctor_checks.__path__)
+    ]
+    return "\n".join([inspect.getsource(cli_doctor._doctor)] + [inspect.getsource(m) for m in families])
+
+
+#: The install-channel guard, spelled bare in the orchestrator and through the
+#: facade in a family module.
+_CHANNEL_GUARD = re.compile(r"if (cli_doctor\.)?pip_install_channel_available\(\):")
+
+
+def _line_above(lines: list[str], index: int) -> str:
+    """The statement line above *index*, stepping over a wrapped ``print(`` opener."""
+    above = index - 1
+    while lines[above].strip() == "print(":
+        above -= 1
+    return lines[above]
+
+
 class TestFaissHint:
     """The absent-faiss advice has to name the interpreter that would import it.
 
@@ -3026,9 +3058,7 @@ class TestFaissHint:
     """
 
     def _source(self) -> str:
-        import inspect
-
-        return inspect.getsource(cli_doctor._doctor)
+        return _report_source()
 
     def test_the_hint_is_rendered_for_this_interpreter(self) -> None:
         assert "pip_install_command_for('faiss-cpu')" in self._source()
@@ -3050,11 +3080,11 @@ class TestFaissHint:
         is worse than naming nothing, which is what the dashboard's own install
         card does in the same state."""
         source = self._source()
-
-        assert "if pip_install_channel_available():" in source
-        gate = source.index("if pip_install_channel_available():")
         call = source.index("pip_install_command_for('faiss-cpu')")
-        assert gate < call, "the render must sit inside the guard, not beside it"
+        guards = [m.start() for m in _CHANNEL_GUARD.finditer(source)]
+
+        assert guards, "the render must sit inside the guard, not beside it"
+        assert min(guards) < call, "the render must sit inside the guard, not beside it"
 
     def test_the_bundled_interpreter_yields_no_install_channel(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3078,9 +3108,7 @@ class TestVoiceAwsHint:
     """
 
     def _source(self) -> str:
-        import inspect
-
-        return inspect.getsource(cli_doctor._doctor)
+        return _report_source()
 
     def test_both_voice_aws_lines_name_this_interpreter(self) -> None:
         assert self._source().count("pip_install_command('voice-aws')") == 2
@@ -3105,7 +3133,7 @@ class TestVoiceAwsHint:
 
         assert len(renders) == 2
         for index in renders:
-            assert "if pip_install_channel_available():" in lines[index - 1]
+            assert _CHANNEL_GUARD.search(_line_above(lines, index))
 
 
 class TestDoctorPrintsNoBareInstallCommand:
@@ -3120,9 +3148,7 @@ class TestDoctorPrintsNoBareInstallCommand:
     """
 
     def _source(self) -> str:
-        import inspect
-
-        return inspect.getsource(cli_doctor._doctor)
+        return _report_source()
 
     def test_no_printed_line_carries_a_bare_pip_install(self) -> None:
         """Scoped to printed lines, so the surrounding code comments that mention
@@ -3140,7 +3166,7 @@ class TestDoctorPrintsNoBareInstallCommand:
         renders = [i for i, ln in enumerate(lines) if "pip_install_command_for('-e', '.')" in ln]
 
         assert len(renders) == 1
-        assert "if pip_install_channel_available():" in lines[renders[0] - 1]
+        assert _CHANNEL_GUARD.search(_line_above(lines, renders[0]))
 
     def test_the_fts5_fix_names_this_interpreter_and_is_gated(self) -> None:
         lines = self._source().splitlines()
@@ -3149,7 +3175,7 @@ class TestDoctorPrintsNoBareInstallCommand:
         ]
 
         assert len(renders) == 1
-        assert "if pip_install_channel_available():" in lines[renders[0] - 1]
+        assert _CHANNEL_GUARD.search(_line_above(lines, renders[0]))
 
     def test_the_fts5_alternative_survives_the_gate(self) -> None:
         """The one place gating must NOT hide the whole message. Where pip cannot
