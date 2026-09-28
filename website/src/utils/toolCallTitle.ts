@@ -78,6 +78,7 @@ import { i18nT } from '../i18n/t'
 
 import { classifyShellCommand, hostOf } from './shellCommandParse'
 import type { ToolAction } from './toolAction'
+import declaredMcpToolTitles from '../../../src/kiro_crew/data/mcp_tool_titles.json'
 
 export type { ToolAction } from './toolAction'
 
@@ -377,6 +378,15 @@ export function salientMcpArg(args: Record<string, unknown> | undefined): string
   return undefined
 }
 
+/** The `Tool.title` Kiro Crew's own servers declare (the table their `tools/list`
+ *  serves), keyed by server so a same-named third-party tool keeps its
+ *  humanised name. Own-property lookups only: a tool named `constructor` has none. */
+export function declaredMcpToolTitle(server: string, tool: string): string | undefined {
+  const titles: Record<string, Record<string, string>> = declaredMcpToolTitles
+  if (!Object.hasOwn(titles, server) || !Object.hasOwn(titles[server], tool)) return undefined
+  return titles[server][tool]
+}
+
 function classifyMcp(inp: ToolCallTitleInput): ClassifiedToolCall | null {
   const fromTitle = mcpIdentityFromTitle(inp.title || '')
   const tool = inp.toolName || fromTitle?.tool
@@ -384,8 +394,9 @@ function classifyMcp(inp: ToolCallTitleInput): ClassifiedToolCall | null {
   if (!inp.mcpServer && !fromTitle) return null
   const args = parseToolArgs(inp.rawInput)
   const arg = salientMcpArg(args)
+  const title = declaredMcpToolTitle(inp.mcpServer || fromTitle?.server || '', tool)
   return {
-    action: { type: 'mcp', tool, ...(arg ? { arg } : {}) },
+    action: { type: 'mcp', tool, ...(title ? { title } : {}), ...(arg ? { arg } : {}) },
     more: 0,
     kind: inp.kind && inp.kind !== 'unknown' ? inp.kind : 'other',
   }
@@ -579,7 +590,7 @@ export function renderToolAction(action: ToolAction): string {
     case 'view_image':
       return i18nT('utils.toolCallTitle.view_image', { path: cap(action.path) })
     case 'mcp': {
-      const label = humanizeToolName(action.tool)
+      const label = action.title || humanizeToolName(action.tool)
       return action.arg ? i18nT('utils.toolCallTitle.mcp_with_arg', { title: label, arg: action.arg }) : label
     }
     case 'unknown':

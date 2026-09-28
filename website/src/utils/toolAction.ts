@@ -28,5 +28,5 @@ export type ToolAction =
   | { type: 'edit'; path: string }
   | { type: 'create'; path: string }
   | { type: 'view_image'; path: string }
-  | { type: 'mcp'; tool: string; arg?: string }
+  | { type: 'mcp'; tool: string; title?: string; arg?: string }
   | { type: 'unknown'; cmd: string }

@@ -61,6 +61,7 @@ from kiro_crew.mcp_shared import (
     run_mcp_stdio_loop,
     spawned_without_gateway_identity,
 )
+from kiro_crew.mcp_tool_titles import with_titles
 from kiro_crew.mcp_tools import build_tool_list, dispatch
 from kiro_crew.members import record_activity
 from kiro_crew.memory_stores import UnknownMemoryStore
@@ -74,6 +75,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import (
+    CORE_MCP_SERVER,
     DIRECTIVE_TOOLS,
     clear_vouch,
     refuse_if_markerless,
@@ -478,7 +480,7 @@ def _list_tools() -> list[dict[str, Any]]:
     Declared per domain under :mod:`kiro_crew.mcp_tools`; this stays the
     entry point kiro-cli and in-process discovery both read.
     """
-    return build_tool_list()
+    return with_titles(CORE_MCP_SERVER, build_tool_list())
 
 
 def _internal_secret() -> str:

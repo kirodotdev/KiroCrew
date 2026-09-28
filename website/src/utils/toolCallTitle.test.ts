@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   backendShellDescription,
   classifyToolCall,
+  declaredMcpToolTitle,
   deriveToolCallTitle,
   formatRawCommand,
   humanizeToolName,
@@ -147,6 +148,15 @@ describe('humanizeToolName', () => {
     ['wait', 'Wait'],
   ])('%s -> %s', (name, expected) => {
     expect(humanizeToolName(name)).toBe(expected)
+  })
+})
+
+describe('declaredMcpToolTitle', () => {
+  it('reads the server-keyed table and only its own properties', () => {
+    expect(declaredMcpToolTitle('kirocrew-dashboard', 'session_send')).toBe('Send to session')
+    expect(declaredMcpToolTitle('other-mcp', 'session_send')).toBeUndefined()
+    expect(declaredMcpToolTitle('kirocrew-core', 'constructor')).toBeUndefined()
+    expect(declaredMcpToolTitle('__proto__', 'toString')).toBeUndefined()
   })
 })
 

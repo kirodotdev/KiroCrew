@@ -55,6 +55,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from kiro_crew.mcp_tool_titles import declared_tool_title
+
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
@@ -1962,6 +1964,9 @@ def classify_mcp(inp: _Input) -> ClassifiedToolCall | None:
     args = parse_tool_args(inp.raw_input)
     arg = salient_mcp_arg(args)
     action: ToolAction = {"type": "mcp", "tool": tool}
+    declared = declared_tool_title(inp.mcp_server or (from_title[0] if from_title else ""), tool)
+    if declared:
+        action["title"] = declared
     if arg:
         action["arg"] = arg
     return ClassifiedToolCall(
@@ -2192,7 +2197,7 @@ def render_tool_action(action: ToolAction) -> str:
     if t == "view_image":
         return f"View image {cap('path')}"
     if t == "mcp":
-        label = humanize_tool_name(action["tool"])
+        label = action.get("title") or humanize_tool_name(action["tool"])
         return f"{label}: {action['arg']}" if action.get("arg") else label
     return str(action.get("cmd", ""))
 

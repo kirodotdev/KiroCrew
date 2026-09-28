@@ -2997,7 +2997,8 @@
       "expect": {
         "action": {
           "type": "mcp",
-          "tool": "wait"
+          "tool": "wait",
+          "title": "Wait"
         },
         "more": 0,
         "title": "Wait",
@@ -3880,10 +3881,11 @@
       "expect": {
         "action": {
           "type": "mcp",
-          "tool": "spawn_run"
+          "tool": "spawn_run",
+          "title": "Start sub-agent"
         },
         "more": 0,
-        "title": "Spawn run",
+        "title": "Start sub-agent",
         "kind": "other",
         "derived": true
       }
@@ -3898,10 +3900,11 @@
       "expect": {
         "action": {
           "type": "mcp",
-          "tool": "session_ledger_read"
+          "tool": "session_ledger_read",
+          "title": "Read progress log"
         },
         "more": 0,
-        "title": "Session ledger read",
+        "title": "Read progress log",
         "kind": "other",
         "derived": true
       }
@@ -3922,10 +3925,32 @@
         "action": {
           "type": "mcp",
           "tool": "artifact_folder_create",
+          "title": "Create artifact folder",
           "arg": "Research"
         },
         "more": 0,
-        "title": "Artifact folder create: Research",
+        "title": "Create artifact folder: Research",
+        "kind": "other",
+        "derived": true
+      }
+    },
+    {
+      "name": "MCP declared title is keyed by server: a same-named third-party tool is humanised",
+      "input": {
+        "kind": "other",
+        "title": "@other-mcp/spawn_run",
+        "rawInput": {
+          "task": "build"
+        }
+      },
+      "expect": {
+        "action": {
+          "type": "mcp",
+          "tool": "spawn_run",
+          "arg": "build"
+        },
+        "more": 0,
+        "title": "Spawn run: build",
         "kind": "other",
         "derived": true
       }
@@ -3943,7 +3968,8 @@
       "expect": {
         "action": {
           "type": "mcp",
-          "tool": "wait"
+          "tool": "wait",
+          "title": "Wait"
         },
         "more": 0,
         "title": "Wait",
@@ -4028,6 +4054,7 @@
         "action": {
           "type": "mcp",
           "tool": "send_message",
+          "title": "Send message",
           "arg": "Please pick up the connections pre-registration issue and…"
         },
         "more": 0,
@@ -4069,10 +4096,11 @@
       "expect": {
         "action": {
           "type": "mcp",
-          "tool": "autonudge_stop"
+          "tool": "autonudge_stop",
+          "title": "Stop nudge loop"
         },
         "more": 0,
-        "title": "Autonudge stop",
+        "title": "Stop nudge loop",
         "kind": "other",
         "derived": true
       }

@@ -94,6 +94,7 @@ from kiro_crew.mcp_core import (
     require_strict_session_key,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
+from kiro_crew.mcp_tool_titles import with_titles
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     CHAT_FOLDER_CREATE_SCHEMA,
@@ -803,7 +804,7 @@ def _list_tools() -> list[dict[str, Any]]:
     Reaching this process at all means an agent spec referenced this server, so
     the assignment already happened; there is nothing left to gate here.
     """
-    return _tool_definitions()
+    return with_titles(SERVER_NAME, _tool_definitions())
 
 
 def _get_rows(path: str) -> tuple[list[dict], str | None]:
