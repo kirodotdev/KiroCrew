@@ -56,6 +56,44 @@ an unrelated draft. Recovery adds no user row to a busy slot. That notice surviv
 but is not persisted across page unmounts. Creation failure does not re-arm a
 new-session intent for the next manual send.
 
+## Dashboard chat state
+
+The dashboard holds every open session's chat state in one Redux slice, `chat`.
+`website/src/store/chatSlice.ts` is its only `createSlice` call and the one path
+consumers import it through: every action creator, thunk, selector, constant and
+type resolves there, and every action type stays `chat/<name>`. The facade
+composes owners under `website/src/store/chat/`, and the dependency runs one
+way: no owner imports the facade, and no module in `website/src`,
+`website/integration` or `website/capture` outside `website/src/store` imports
+an owner (`website/src/store/chatSlice.ownership.test.ts`).
+
+| Owner | What it owns for a slot |
+|---|---|
+| `website/src/store/chat/state.ts` | `ChatState`, its initial value, and the persisted `mc-activity-open:<slot>` key family |
+| `website/src/store/chat/wire.ts` | the trust boundary: the `__proto__` / `constructor` / `prototype` key guards and the slot-detail read with its normalization |
+| `website/src/store/chat/runState.ts` | the active-slot handover, running / stopping state, the turn-start epoch, and the navigation MRU |
+| `website/src/store/chat/slotSwitch.ts` | `switchSlot`: the bounded slot-detail read, the atomic handover, the unwind when the target is gone, and the pane notice a failed gesture raises |
+| `website/src/store/chat/slotRefresh.ts` | `refreshSlot` and `warmSlotCache`, the re-reads that do not switch |
+| `website/src/store/chat/lifecycle.ts` | `createSlot`, `forkSlot`, `resumeFromHistory`, `fetchHistory` and `deleteHistorySession`, with the notices a failed attempt leaves |
+| `website/src/store/chat/slotResidue.ts` | teardown of slots that left the authoritative list, and the one list of per-slot maps every teardown clears |
+| `website/src/store/chat/activity.ts` | the activity panel and live tool log: the slot's tab and persisted open state, the inline tool-focus signal, and the tool-call / approval / tool-result frames that fill the log |
+| `website/src/store/chat/composerCards.ts` | the cards above the composer, one per slot: the question card, follow-up suggestions and the folder suggestion |
+| `website/src/store/chat/automations.ts` | monitor and goal-loop automations per slot, reconciled from the REST snapshots and upserted from live frames |
+| `website/src/store/chat/workflows.ts` | live dynamic-workflow runs, their reconcile against the authoritative run list, and the sidebar's per-session activity selectors |
+| `website/src/store/chat/selectors.ts` | slot-scoped reads, the composer's busy rule, the Continue predicate that mirrors `_has_conversation` in `dashboard/chat_handlers.py`, and the Resume predicate that mirrors `is_turn_interrupted` in `dashboard/state.py` |
+
+The facade keeps three constructs that a read-only check reads from this file:
+the live `chat_message` frame reducer with the question-retiring role set and the
+chunk-gap marker (`test/test_slot_needs_input_status.py` and the i18n ledger),
+`deleteSlot` with the one `dispatch(switchSlot(` site the call-site oracle counts
+here, and `loadOlderMessages` with the slot capture `chatPins.test.tsx` reads.
+`requestStop` stays too, because it dispatches this slice's own actions. The
+transcript-window and
+history-cache owners are listed in
+[history](history.md#the-dashboard-transcript-window-frontend); Side Chat,
+sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
+[mcp-apps](mcp-apps.md).
+
 ## Implementation Boundaries
 
 `SessionManager` remains the compatibility facade in `session.py`; callers keep

@@ -125,6 +125,6 @@ Both endpoints emit SEL audit records.
 | Arg schema | `src/kiro_crew/validation.py` |
 | Card endpoint | `src/kiro_crew/dashboard/chat_handlers.py` |
 | Worktree endpoint | `src/kiro_crew/dashboard/handlers/worktree.py` |
-| WS event → state | `website/src/hooks/useWebSocket.ts`, `website/src/store/chatSlice.ts` |
+| WS event → state | `website/src/hooks/useWebSocket.ts`, `website/src/store/chat/composerCards.ts` |
 | Card UI | `website/src/components/FollowUpCard.tsx` |
 | Render site | `website/src/pages/ChatPage.tsx` |

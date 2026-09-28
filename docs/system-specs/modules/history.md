@@ -185,6 +185,27 @@ lands at the end: a tail row streaming, and the host's chrome below the rows
 watches, so the working footer mounting under a reply that went quiet carries a
 followed reader down to it instead of leaving them its height short of the end).
 
+The rows themselves come from the chat store, not the hook.
+`website/src/store/chatSlice.ts` is the facade of the one `chat` slice (the
+slot-lifecycle and UI-state owners are in
+[session](session.md#dashboard-chat-state)); the transcript and history-cache
+owners behind it are:
+
+| Owner (`website/src/store/chat/`) | Owns |
+|---|---|
+| `transcript.ts` | message identity (the client id, the server `meta.mid`, the one-shot `sendId`), redelivery and duplicate detection, echo reconciliation, the chunk-seq floor a snapshot vouches for, and the bounded-page identity rules every slot-detail merge cuts by. Pure: callers pass the arrays in |
+| `paging.ts` | page sizes and limits, the switch and count-matched fetch limits, the coverage shortfall, the paging-cursor shift after a kept head, and the abort handle of the one older page in flight |
+| `slotCache.ts` | what a slot-detail page writes besides its rows: the active paging cursor (`has_more` and `next_before` become `slotHasMore` and `slotOldestIndex`), a background pane's page with its has-more and bounded markers, the retained server `total` baseline, and the context meter |
+| `messages.ts` | edits to a cached transcript outside the live frame: the optimistic send and its confirmation, streaming and final text, patches by tool-call id / `mid` / `ts`, and a background pane's one-time hydrate |
+| `thinking.ts` | client-only reasoning rows, re-seated after every server replace or parked until their anchor pages in |
+| `queue.ts` | queued rows, hydrated from a slot-detail `queue` field |
+| `lifecycle.ts` | the Older-sessions list (`fetchHistory`) and its paging, and resume and delete of a history row |
+
+`loadOlderMessages` stays in the facade. The chat host answers the hook's
+older-page request with it; it reads the page before `slotOldestIndex` and lands
+it only while the slot it was read for is still active. None of these owners filters rows by memory
+mode, so a restricted transcript is cached and paged like any other.
+
 ## ConversationLog (`history.py` facade)
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).
