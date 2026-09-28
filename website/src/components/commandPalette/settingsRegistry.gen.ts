@@ -1923,6 +1923,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Heartbeat task results"
   },
   {
+    "id": "notifications.mark-sessions-unread-only-when-they-need-you",
+    "label": "Mark sessions unread only when they need you",
+    "labelKey": "pages.settings.notificationsPanel.unread_only_when_done_or_waiting",
+    "description": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "notifications.notify-when-a-background-chat-finishes",
     "label": "Notify when a background chat finishes",
     "labelKey": "pages.settings.notificationsPanel.notify_when_a_background_chat_finishes",

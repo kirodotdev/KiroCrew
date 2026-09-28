@@ -15203,6 +15203,8 @@
         "desktop_alerts": "Alertes du bureau",
         "notify_when_a_background_chat_finishes": "Prévenir lorsqu’un chat en arrière-plan se termine",
         "notify_when_a_background_chat_finishes_description": "Affiche une notification système nommant le chat qui vient de se terminer, mais seulement lorsque cette fenêtre est réduite ou masquée par une autre application.",
+        "unread_only_when_done_or_waiting": "Marquer les sessions comme non lues seulement quand elles ont besoin de toi",
+        "unread_only_when_done_or_waiting_description": "Une session en arrière-plan est marquée comme non lue quand son agent a terminé ou attend ta réponse, et non à chaque nouveau message.",
         "always_interrupts_cannot_be_muted_or_lowered": "Interrompt toujours — impossible de mettre en sourdine ou d’abaisser la priorité",
         "app": "app",
         "category_agent": "Messages proactifs de l’agent",

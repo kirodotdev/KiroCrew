@@ -15203,6 +15203,8 @@
         "desktop_alerts": "Avvisi desktop",
         "notify_when_a_background_chat_finishes": "Avvisa quando una chat in background termina",
         "notify_when_a_background_chat_finishes_description": "Mostra una notifica di sistema con il nome della chat terminata, ma solo mentre questa finestra è ridotta a icona o dietro un’altra app.",
+        "unread_only_when_done_or_waiting": "Segna le sessioni come non lette solo quando hanno bisogno di te",
+        "unread_only_when_done_or_waiting_description": "Una sessione in background viene segnata come non letta quando il suo agente finisce o aspetta la tua risposta, non a ogni nuovo messaggio.",
         "always_interrupts_cannot_be_muted_or_lowered": "Interrompe sempre — non può essere silenziato né abbassato",
         "app": "app",
         "category_agent": "Messaggi proattivi dell’agente",

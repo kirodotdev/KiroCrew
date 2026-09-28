@@ -14978,6 +14978,8 @@
         "desktop_alerts": "ডেস্কটপ বিজ্ঞপ্তি",
         "notify_when_a_background_chat_finishes": "ব্যাকগ্রাউন্ডের চ্যাট শেষ হলে জানান",
         "notify_when_a_background_chat_finishes_description": "যে চ্যাট শেষ হয়েছে তার নাম জানিয়ে একটি সিস্টেম বিজ্ঞপ্তি দেখায়, তবে কেবল যখন এই উইন্ডো মিনিমাইজ করা থাকে বা অন্য কোনো অ্যাপের পিছনে থাকে।",
+        "unread_only_when_done_or_waiting": "সেশন শুধু তখনই অপঠিত হিসেবে চিহ্নিত করো যখন তোমাকে দরকার",
+        "unread_only_when_done_or_waiting_description": "ব্যাকগ্রাউন্ডের সেশন প্রতিটি নতুন মেসেজে নয়, শুধু তখনই অপঠিত হিসেবে চিহ্নিত হয় যখন এজেন্ট কাজ শেষ করে বা তোমার উত্তরের অপেক্ষা করে।",
         "always_interrupts_cannot_be_muted_or_lowered": "সব সময় বাধা দেয় — মিউট বা কমানো যায় না",
         "app": "app",
         "category_agent": "এজেন্টের নিজে থেকে পাঠানো বার্তা",

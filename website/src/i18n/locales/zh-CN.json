@@ -14753,6 +14753,8 @@
         "desktop_alerts": "桌面通知",
         "notify_when_a_background_chat_finishes": "后台聊天完成时通知",
         "notify_when_a_background_chat_finishes_description": "显示一条系统通知，其中包含已完成聊天的名称；仅在此窗口最小化或被其他应用遮挡时显示。",
+        "unread_only_when_done_or_waiting": "仅在需要你处理时将会话标记为未读",
+        "unread_only_when_done_or_waiting_description": "后台会话只在代理完成或等待你回复时标记为未读，而不是每条新消息都标记。",
         "always_interrupts_cannot_be_muted_or_lowered": "始终打断 — 无法静音或降低优先级",
         "app": "应用",
         "category_agent": "代理主动发送的消息",

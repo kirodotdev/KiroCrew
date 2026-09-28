@@ -15203,6 +15203,8 @@
         "desktop_alerts": "Alertas da área de trabalho",
         "notify_when_a_background_chat_finishes": "Avisar quando uma conversa em segundo plano terminar",
         "notify_when_a_background_chat_finishes_description": "Mostra uma notificação do sistema com o nome da conversa que terminou, mas apenas enquanto esta janela estiver minimizada ou atrás de outro aplicativo.",
+        "unread_only_when_done_or_waiting": "Marcar sessões como não lidas só quando precisarem de você",
+        "unread_only_when_done_or_waiting_description": "Uma sessão em segundo plano é marcada como não lida quando o agente termina ou espera sua resposta, e não a cada nova mensagem.",
         "always_interrupts_cannot_be_muted_or_lowered": "Sempre interrompe — não é possível silenciar nem reduzir a prioridade",
         "app": "app",
         "category_agent": "Mensagens proativas do agente",

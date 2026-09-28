@@ -48,6 +48,7 @@ import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpd
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone, shouldChimeOnPermissionRow } from './notificationEvent'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
+import { chatMessageMarksUnread, loadUnreadOnAttention } from './unreadOnAttention'
 import { postNativeNotification } from '../lib/nativeNotify'
 import { isChatPath } from './notificationBanner'
 import { emitThemeSound } from './themeSound'
@@ -1828,6 +1829,10 @@ export function useWebSocket() {
             // Suppressed during reconnect catch-up (same policy as turn-done).
             if (!reconnectingRef.current) {
               dispatchMcNotification(APPROVAL_KIND)
+              // Blocked on the user: badge it under the done-or-waiting opt-in.
+              if (typeof data.slot === 'string' && data.slot && loadUnreadOnAttention() && !isSlotOnScreen(data.slot)) {
+                dispatch(markSlotUnread({ slot: data.slot }))
+              }
             }
             // No OS toast here. The addNotification below is what reaches the
             // OS: useNativeNotification watches the unacked count and posts ONE
@@ -2018,7 +2023,10 @@ export function useWebSocket() {
                 data.role === 'user' || data.role === 'inject',
               )
             }
-            if (data.slot && !isSlotOnScreen(data.slot) && !reconnectingRef.current) dispatch(markSlotUnread({ slot: data.slot, ts: data.ts || undefined }))
+            if (data.slot && !isSlotOnScreen(data.slot) && !reconnectingRef.current) {
+              // The "only when done or waiting" opt-in leaves routine rows unbadged.
+              if (chatMessageMarksUnread(data.role)) dispatch(markSlotUnread({ slot: data.slot, ts: data.ts || undefined }))
+            }
             // The message landed in THIS window's active slot while the tab is
             // visible: the user is watching it arrive, so the fresh bubble the
             // other windows just lit for it is already read — relay that, with
@@ -2277,6 +2285,9 @@ export function useWebSocket() {
             if (current?.slot === data.slot && !reconnectingRef.current
                 && (!id || identityOf(previous) !== id)) {
               dispatchMcNotification(APPROVAL_KIND)
+              // A new card means the agent waits on the user. The default mode
+              // already badged the session on the rows that led here.
+              if (loadUnreadOnAttention() && !isSlotOnScreen(data.slot)) dispatch(markSlotUnread({ slot: data.slot }))
             }
             break
           }

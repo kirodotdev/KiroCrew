@@ -14978,6 +14978,8 @@
         "desktop_alerts": "डेस्कटॉप सूचनाएँ",
         "notify_when_a_background_chat_finishes": "बैकग्राउंड चैट पूरी होने पर सूचित करें",
         "notify_when_a_background_chat_finishes_description": "जो चैट पूरी हुई उसका नाम बताते हुए सिस्टम सूचना दिखाता है, लेकिन सिर्फ़ तब जब यह विंडो मिनिमाइज़ हो या किसी दूसरे ऐप के पीछे हो।",
+        "unread_only_when_done_or_waiting": "सेशन को अनपढ़ा तभी चिह्नित करो जब उसे तुम्हारी ज़रूरत हो",
+        "unread_only_when_done_or_waiting_description": "बैकग्राउंड सेशन हर नए संदेश पर नहीं, बल्कि तभी अनपढ़ा चिह्नित होता है जब एजेंट काम पूरा कर ले या तुम्हारे जवाब का इंतज़ार करे।",
         "always_interrupts_cannot_be_muted_or_lowered": "हमेशा टोकता है — इसे म्यूट या कम नहीं किया जा सकता",
         "app": "app",
         "category_agent": "एजेंट के अपने आप भेजे गए संदेश",

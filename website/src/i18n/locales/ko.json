@@ -14765,6 +14765,8 @@
         "desktop_alerts": "데스크톱 알림",
         "notify_when_a_background_chat_finishes": "백그라운드 채팅이 완료되면 알림",
         "notify_when_a_background_chat_finishes_description": "완료된 채팅의 이름이 담긴 시스템 알림을 표시합니다. 단, 이 창이 최소화되어 있거나 다른 앱 뒤에 있을 때만 표시됩니다.",
+        "unread_only_when_done_or_waiting": "확인이 필요할 때만 세션을 읽지 않음으로 표시",
+        "unread_only_when_done_or_waiting_description": "백그라운드 세션은 새 메시지마다가 아니라 에이전트가 완료되거나 답변을 기다릴 때만 읽지 않음으로 표시됩니다.",
         "always_interrupts_cannot_be_muted_or_lowered": "항상 알림을 표시합니다 — 음소거하거나 낮출 수 없습니다",
         "app": "앱",
         "category_agent": "에이전트의 능동적 메시지",

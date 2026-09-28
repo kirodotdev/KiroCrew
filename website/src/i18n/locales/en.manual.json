@@ -6547,6 +6547,8 @@
         "desktop_alerts": "Desktop alerts",
         "notify_when_a_background_chat_finishes": "Notify when a background chat finishes",
         "notify_when_a_background_chat_finishes_description": "Shows a system notification naming the chat that finished, but only while this window is minimized or behind another app.",
+        "unread_only_when_done_or_waiting": "Mark sessions unread only when they need you",
+        "unread_only_when_done_or_waiting_description": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message.",
         "always_interrupts_cannot_be_muted_or_lowered": "Always interrupts — cannot be muted or lowered",
         "channel_not_active_app_disabled_setting_retained": "Channel not active (app disabled) — setting retained",
         "default_priority": "Default priority: {{priority}}",
