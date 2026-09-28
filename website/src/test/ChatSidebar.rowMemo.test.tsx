@@ -68,6 +68,27 @@ vi.mock('framer-motion', async () => {
   }
 })
 
+// Count row-menu renders through the real components: the displacement test
+// below pins that a moved row does not rebuild its menus.
+const menuRenders = { dropdown: 0, contextContent: 0 }
+vi.mock('../components/ui/dropdown-menu', async (orig) => {
+  const React = await import('react')
+  const real = await orig<typeof import('../components/ui/dropdown-menu')>()
+  const DropdownMenu = (props: React.ComponentProps<typeof real.DropdownMenu>) => {
+    menuRenders.dropdown++
+    return React.createElement(real.DropdownMenu, props)
+  }
+  return { ...real, DropdownMenu }
+})
+vi.mock('../components/ui/context-menu', async (orig) => {
+  const React = await import('react')
+  const real = await orig<typeof import('../components/ui/context-menu')>()
+  const ContextMenuContent = React.forwardRef((props: React.ComponentProps<typeof real.ContextMenuContent>, ref) => {
+    menuRenders.contextContent++
+    return React.createElement(real.ContextMenuContent, { ...props, ref } as React.ComponentProps<typeof real.ContextMenuContent>)
+  })
+  return { ...real, ContextMenuContent }
+})
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 // Legacy single-lane list (no tag columns) keeps the rows flat + easy to query.
 vi.mock('../pages/chat/ChatSettings', () => ({
@@ -314,6 +335,36 @@ describe('chat sidebar — session row memo boundary', () => {
       expect(counts[`r-${String(i).padStart(3, '0')}`]).toBeUndefined()
     }
     expect(rerendered).toHaveLength(SIDEBAR_DISPLACEMENT_WINDOW + 1)
+  })
+
+  // A displaced row re-renders for the layout spring, but nothing in its ⋯
+  // dropdown or its context-menu content depends on position: those elements
+  // are memoized and React skips them. Building them on every displacement is
+  // ~90% of a pin's render work in a 65-session sidebar.
+  it('a displaced row re-renders without rebuilding its menus', () => {
+    const N = 20
+    const initial = Array.from({ length: N }, (_, i) => slot(`m-${String(i).padStart(2, '0')}`))
+    const setters: Array<(v: typeof initial) => void> = []
+    function Harness({ sidebar }: { sidebar: (s: typeof initial) => React.ReactElement }) {
+      const [rows, setRows] = React.useState(initial)
+      setters.push(setRows)
+      return sidebar(rows)
+    }
+    const { sidebarWithSlots, wrap } = renderSidebarWithSlots(initial)
+    render(wrap(<Harness sidebar={sidebarWithSlots} />))
+    for (const k of Object.keys(counts)) delete counts[k]
+    menuRenders.dropdown = 0
+    menuRenders.contextContent = 0
+
+    act(() => { setters[setters.length - 1]([slot('m-new'), ...initial]) })
+
+    // Every existing row moved down one slot and re-rendered...
+    for (const row of initial) expect(counts[row.key]).toBeGreaterThan(0)
+    // ...but only the NEW row built a context menu, and the dropdowns built are
+    // the new row's plus whatever the sidebar shell owns -- nowhere near one per
+    // displaced row.
+    expect(menuRenders.contextContent).toBe(1)
+    expect(menuRenders.dropdown).toBeLessThan(N / 2)
   })
 })
 

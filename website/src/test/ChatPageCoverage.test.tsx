@@ -158,12 +158,18 @@ vi.mock('../components/ModelEffortDropdown', () => ({
 }))
 vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
-vi.mock('../components/ChatInput', () => ({
-  default: (props: ChatInputProps) => {
-    chatInputProps = props
-    return null
-  },
-}))
+vi.mock('../components/ChatInput', async () => {
+  // The page hands the text over through the Composer root's draft store, not
+  // a `value` prop; the stand-in reads it the way the real ChatInput does.
+  const { useComposerDraftText } = await import('../chat-core/composer/Composer')
+  return {
+    default: function ChatInputStub(props: ChatInputProps) {
+      const draft = useComposerDraftText()
+      chatInputProps = draft === null ? props : { ...props, value: draft }
+      return null
+    },
+  }
+})
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))

@@ -430,7 +430,13 @@ describe('ChatPage composerSlotRef effect ordering', () => {
     // never to delete the guard (the ordering invariant it protects is real).
     const here = dirname(fileURLToPath(import.meta.url))
     const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
-    const textIdx = src.indexOf('setDraft(drafts.current, s, input)')
+    // The text draft persists from `onComposerDraftCommit`, which the
+    // `ComposerDraftSync` CHILD calls from its effect: a child's effects run
+    // before its parent's in the same commit, so the text write lands ahead
+    // of the advance whatever the declaration order. The declaration-order
+    // check still applies to the file and paste effects below.
+    const textIdx = src.indexOf('setDraft(drafts.current, s, text)')
+    expect(src, 'ComposerDraftSync must stay a child of the page').toContain('<ComposerDraftSync store={composerDraft}')
     const fileIdx = src.indexOf('setFileDraft(fileDrafts.current, s, pendingFiles)')
     const pasteIdx = src.indexOf('setPasteDraft(pasteDrafts.current, s, pasteBlocks)')
     const advanceIdx = src.indexOf('composerSlotRef.current = activeSlot')

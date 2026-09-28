@@ -18,11 +18,17 @@ import type { RootState } from '../store'
 
 // --- Stub child components ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
-vi.mock('../components/ChatInput', () => ({
-  default: ({ value }: { value: string }) => (
-    <textarea aria-label="test chat input" value={value} readOnly />
-  ),
-}))
+vi.mock('../components/ChatInput', async () => {
+  // The page hands the text over through the Composer root's draft store, not
+  // a `value` prop, so the stand-in reads it the way the real ChatInput does.
+  const { useComposerDraftText } = await import('../chat-core/composer/Composer')
+  return {
+    default: function ChatInputStub({ value }: { value?: string }) {
+      const draft = useComposerDraftText()
+      return <textarea aria-label="test chat input" value={draft ?? value ?? ''} readOnly />
+    },
+  }
+})
 vi.mock('../components/PendingQuestionCard', () => ({
   default: ({ onFallbackSend }: { onFallbackSend: (text: string) => void }) => (
     <button aria-label="send stale question fallback" onClick={() => onFallbackSend('Public only')}>
