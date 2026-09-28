@@ -80,7 +80,12 @@ describe('checkSubscribeAllowed', () => {
       'utf-8',
     )
     const names = (block: string): string[] => {
-      const m = py.match(new RegExp(`${block}[^{]*\\{([\\s\\S]*?)\\}\\)`))
+      // Tolerate both black layouts of a `frozenset({...})` wrapper: the compact
+      // `}\)` and the expanded `}\n)` (black re-wraps `frozenset(\n    {...}\n)`
+      // once the set carries a magic trailing comma). Without the `\s*` the
+      // non-greedy body runs past this table's own close to the next `})` in the
+      // file, folding the following table's members into this one.
+      const m = py.match(new RegExp(`${block}[^{]*\\{([\\s\\S]*?)\\}\\s*\\)`))
       if (!m) throw new Error(`block ${block} not found in ws_event_scope.py`)
       // Strip `#` comment lines first: a quoted word inside a comment (a payload
       // shape, a cross-reference) is prose, not a member, and reading it as one
