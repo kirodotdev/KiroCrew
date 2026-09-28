@@ -98,6 +98,7 @@
     "session_create": "Create session",
     "session_fork": "Fork session",
     "session_stop": "Stop session",
+    "session_set_model": "Set session model",
     "session_close": "Close session",
     "session_send": "Send to session",
     "session_adopt": "Adopt session",
