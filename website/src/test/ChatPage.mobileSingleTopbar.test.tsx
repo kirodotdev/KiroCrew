@@ -226,6 +226,16 @@ describe('ChatPage on the phone: its share of the single top bar', () => {
     expect(screen.queryByTestId('mobile-split-drawer')).toBeNull()
   })
 
+  it('gives the bar\'s small icon buttons a 44px touch hit area', async () => {
+    // `mc-touch-hit` grows the tap target with an invisible ::after under
+    // `(pointer: coarse)` only (touchHitArea.test.ts pins the CSS); the boxes
+    // themselves keep their 32-34px size.
+    const { slot, trail } = mountShellSlots()
+    renderChat()
+    expect(await within(slot).findByTestId('mobile-topbar-sessions-toggle')).toHaveClass('mc-touch-hit')
+    expect(await within(trail).findByRole('button', { name: 'More actions' })).toHaveClass('mc-touch-hit')
+  })
+
   it('keeps the inline title row when the shell rendered no slot', async () => {
     renderChat()
     // No portal target → today's layout: the row is inline, with its own toggle
@@ -238,5 +248,8 @@ describe('ChatPage on the phone: its share of the single top bar', () => {
     expect(screen.getByRole('button', { name: 'Session options' })).toBeInTheDocument()
     expect(screen.queryByTestId('session-title-menu')).toBeNull()
     expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull()
+    // The inline row's 24px toggle (and the empty-chat corner button, when it
+    // shows) carry the same touch hit area.
+    for (const toggle of screen.getAllByLabelText('Toggle sessions')) expect(toggle).toHaveClass('mc-touch-hit')
   })
 })

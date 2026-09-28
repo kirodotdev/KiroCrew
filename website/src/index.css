@@ -1919,6 +1919,46 @@ file-tree-container{
   .scrollbar-overlay::-webkit-scrollbar-thumb{background:var(--muted)}
 }
 
+/* ── 44px touch hit area for small icon controls ──
+   A finger needs a target of about 44x44 CSS px (Apple HIG; WCAG 2.5.5).
+   Many header and row icon buttons are drawn at 22-32px, so a slightly-off
+   tap misses them. These classes grow only the HIT AREA, never the box: an
+   invisible ::after centred on the control reaches 44px on each axis where
+   the control is smaller, and is 0 outset where it is already larger. Layout,
+   paint and focus rings are untouched, and a fine pointer gets no rule at all.
+
+     .mc-touch-hit      both axes (a lone button)
+     .mc-touch-hit-y    height only (a segment with a neighbour on both sides)
+     .mc-touch-hit-end  height, and width toward the inline end only (the last
+                        segment of a split button: it grows away from its
+                        neighbour, so the two hit areas never overlap)
+
+   `inset: min(0px, calc(50% - 22px))`: top/bottom percentages resolve
+   against the host's height and left/right against its width, so a 28px host
+   gets -8px (8 + 28 + 8 = 44) and a 44px-or-larger host gets 0.
+
+   The host is made `position: relative` so the pseudo-element anchors to it.
+   That rule sits in `@layer components` on purpose: the Tailwind utilities
+   are emitted unlayered (see the top of this file), so a host that is
+   itself `absolute`, `fixed` or `sticky` keeps its own position.
+
+   The hit area can only reach as far as the nearest `overflow: hidden`
+   ancestor: a clipped part of a box is not hit-testable. A host inside such
+   a wrapper must lift the clip under the same media query (the sidebar's
+   split New button does, see ChatSidebar). */
+@layer components {
+  @media (pointer: coarse) {
+    .mc-touch-hit, .mc-touch-hit-y, .mc-touch-hit-end { position: relative; }
+    .mc-touch-hit::after, .mc-touch-hit-y::after, .mc-touch-hit-end::after {
+      content: '';
+      position: absolute;
+      inset: min(0px, calc(50% - 22px));
+    }
+    .mc-touch-hit-y::after { inset-inline: 0; }
+    .mc-touch-hit-end::after { inset-inline-start: 0; inset-inline-end: min(0px, calc(100% - 44px)); }
+  }
+}
+
 /* ── Send button sweep ── */
 .btn-sweep{position:relative;overflow:hidden}
 .btn-sweep::after{content:'';position:absolute;inset:0;
