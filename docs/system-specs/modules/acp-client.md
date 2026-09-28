@@ -839,6 +839,16 @@ Other backends follow the selection and projection contracts in
 
 `initialize` → `session/load` or `session/new` → `set_mode` (conditional) → `set_model` (conditional) → drain notifications → `session/prompt`
 
+A provider error is classified as `AcpConversationBindingMismatch` only when one
+raw `message` or `data` field contains both the invalid preserved-thinking
+signature clause and the statement that the block is bound to another
+conversation. Splitting the clauses across fields does not qualify, and a merely
+invalid signature remains a terminal `AcpError`. The mismatch is non-transient:
+retrying the same native session resends the same rejected prefix. The dashboard
+may replace that native conversation once, rebuild from visible history, and
+retry only before any output or tool activity; attached sub-agents, Stop, a newer
+message, a steer, or a session rebind refuse the destructive recovery.
+
 `ensure_ready()` creates `_work_dir` once per instance (off-loop `mkdir -p`,
 remembered via a flag) so the per-prompt warm path pays no filesystem syscall;
 `_spawn()` re-creates it (also off-loop) on every spawn, and `_reset_state()`

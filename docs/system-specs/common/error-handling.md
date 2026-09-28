@@ -30,6 +30,11 @@ AcpError (base, acp/client.py)          — carries `transient`, the retry verdi
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
 ├── PiGateExtensionTampered — the shipped Pi gate extension failed its digest check
+├── AcpConversationBindingMismatch — preserved thinking is bound to a different
+│                            conversation prefix; non-transient, so retrying the
+│                            same native conversation is forbidden and the
+│                            dashboard may perform its bounded discard-and-replay
+│                            recovery
 ├── AcpModelUnavailable    — requested model not entitled; non-retryable
 └── AcpPromptBusy          — a prompt is already in flight on this session
 
@@ -60,6 +65,16 @@ decrement, because an arm that already spent attempts 1..2 would otherwise stay
 permanently short. The pending "retrying..." card is corrected by APPENDING a
 give-up row rather than retracted, so the affordance to continue comes back
 instead of the row simply disappearing.
+
+A recovery replay cancelled at its consume seam still owes the superseding user
+intent. It routes through the shared pre-dispatch abort finisher, which requeues
+unconsumed steers and starts one queued user successor while forbidding an
+automatic synthesis turn for work that never reached the provider. A recovery
+one-shot is re-armed only by a real, non-synthetic terminal whose stop reason is
+an ordinary end-of-turn and whose empty-response verdict is false. A refusal,
+synthetic terminal, or plain stream EOF is terminal handling, not evidence that
+the rebuilt conversation accepted a normal turn, so each leaves the one-shot
+spent.
 
 ## Boundaries
 

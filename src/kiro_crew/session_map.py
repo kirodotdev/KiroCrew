@@ -17,6 +17,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
@@ -115,6 +116,35 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 #: it is consumed, by the first cold start that honours it.
 SUPPRESS_REPLAY_FLAG = "suppress_replay"
 
+#: A fresh native conversation is rebuilding from visible Kiro Crew history.
+#: The prior SID remains the durable fallback, but allocation must not resume it
+#: while this flag is set. Settlement replaces the SID and clears the debt in
+#: one persistence transaction.
+REPLAY_PENDING_FLAG = "replay_pending"
+
+
+@dataclass(frozen=True)
+class _ReplaySettlement:
+    """Before-image and immutable payload for one replay settlement write."""
+
+    key: str
+    entry: dict
+    replay_flag: str
+    before_sid: tuple[bool, object]
+    before_provider: tuple[bool, object]
+    before_cwd: tuple[bool, object]
+    before_replay_flag: tuple[bool, object]
+    changed_sid: bool
+    changed_provider: bool
+    changed_cwd: bool
+    after_sid: str
+    after_provider: str
+    after_cwd: str
+    still_current: Callable[[], bool] | None
+    payload: str
+    seq: int
+
+
 # Highest explicit DM generation acknowledged before its first provider turn.
 # Stored on the stable bucket entry so repeated /new commands cost one integer,
 # not one immortal map row per empty generation.
@@ -131,9 +161,10 @@ GENERATION_FLOOR_FIELD = "generation_floor"
 # exists for — clear the pointer, restart the gateway, reinstall — so the flag would
 # be decorative. The forever-row cost does not apply to it either: the flag is
 # ONE-SHOT, so the row it keeps alive is collectable again as soon as the first
-# cold start consumes it. (The privacy flags below are retained on separate
-# grounds and bounded by a count; their own comment says why.)
-_DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG})
+# cold start consumes it. ``REPLAY_PENDING_FLAG`` has the same bounded lifetime:
+# settlement or suppression clears it. (The privacy flags below are retained on
+# separate grounds and bounded by a count; their own comment says why.)
+_DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG, REPLAY_PENDING_FLAG})
 
 # The ``!temporary`` / ``!incognito`` privacy modes, spelled exactly as
 # ``messaging.privacy_mode`` names them (MODE_TEMPORARY / MODE_INCOGNITO; a test
@@ -202,6 +233,10 @@ class PrivacyRowRefused(ValueError):
 # see ``_write_payload``'s tmp+rename), and durability-critical points force
 # the write through :meth:`SessionMap.flush` rather than waiting it out.
 _FLUSH_DEBOUNCE_SECS = 0.05
+
+# Cancellation cannot return until its newer compensation snapshot lands.
+_REPLAY_COMPENSATION_INITIAL_DELAY_SECS = 0.05
+_REPLAY_COMPENSATION_MAX_DELAY_SECS = 1.0
 
 
 def _has_durable_flag(entry: dict) -> bool:
@@ -2418,6 +2453,263 @@ class SessionMap:
         else:
             entry.pop("flags", None)
         self._save()
+
+    @staticmethod
+    def _field_state(entry: dict, field: str) -> tuple[bool, object]:
+        """Return presence and value without conflating missing with ``None``."""
+        return field in entry, entry.get(field)
+
+    @staticmethod
+    def _restore_field(entry: dict, field: str, before: tuple[bool, object]) -> None:
+        present, value = before
+        if present:
+            entry[field] = value
+        else:
+            entry.pop(field, None)
+
+    @_guarded
+    def _prepare_replay_settlement(
+        self,
+        key: str,
+        sid: str | None,
+        *,
+        provider: str,
+        cwd: str,
+        replay_flag: str,
+        still_current: Callable[[], bool] | None,
+    ) -> _ReplaySettlement:
+        """Mutate one replay settlement and snapshot its persistence payload."""
+        key = canonical_key(key)
+        entry = self._ensure_entry(key)
+        before_sid = self._field_state(entry, "sid")
+        before_provider = self._field_state(entry, "provider")
+        before_cwd = self._field_state(entry, "cwd")
+        flags = entry.get("flags")
+        before_replay_flag = (
+            (replay_flag in flags, flags.get(replay_flag))
+            if isinstance(flags, dict)
+            else (False, None)
+        )
+        changed_sid = sid is not None
+        changed_provider = bool(provider)
+        changed_cwd = bool(cwd)
+        if changed_sid:
+            entry["sid"] = sid
+        if changed_provider:
+            entry["provider"] = provider
+        if changed_cwd:
+            entry["cwd"] = cwd
+        if isinstance(flags, dict):
+            flags.pop(replay_flag, None)
+            if not flags:
+                entry.pop("flags", None)
+        self._dirty = False
+        payload, seq = self._serialize()
+        return _ReplaySettlement(
+            key=key,
+            entry=entry,
+            replay_flag=replay_flag,
+            before_sid=before_sid,
+            before_provider=before_provider,
+            before_cwd=before_cwd,
+            before_replay_flag=before_replay_flag,
+            changed_sid=changed_sid,
+            changed_provider=changed_provider,
+            changed_cwd=changed_cwd,
+            after_sid=sid or "",
+            after_provider=provider,
+            after_cwd=cwd,
+            still_current=still_current,
+            payload=payload,
+            seq=seq,
+        )
+
+    def _owns_replay_settlement(self, entry: dict | None, settlement: _ReplaySettlement) -> bool:
+        """Return whether every field still belongs to this settlement."""
+        if entry is not settlement.entry:
+            return False
+        if settlement.still_current is not None and not settlement.still_current():
+            return False
+        expected = (
+            ("sid", settlement.changed_sid, settlement.after_sid),
+            ("provider", settlement.changed_provider, settlement.after_provider),
+            ("cwd", settlement.changed_cwd, settlement.after_cwd),
+        )
+        for field, changed, value in expected:
+            if changed and self._field_state(entry, field) != (True, value):
+                return False
+        flags = entry.get("flags")
+        return not isinstance(flags, dict) or settlement.replay_flag not in flags
+
+    @_guarded
+    def _rollback_replay_settlement(self, settlement: _ReplaySettlement) -> tuple[str, int]:
+        """Restore an owned before-image and snapshot a newer compensation."""
+        entry = self._data.get(settlement.key)
+        if self._owns_replay_settlement(entry, settlement):
+            assert entry is not None
+            if settlement.changed_sid:
+                self._restore_field(entry, "sid", settlement.before_sid)
+            if settlement.changed_provider:
+                self._restore_field(entry, "provider", settlement.before_provider)
+            if settlement.changed_cwd:
+                self._restore_field(entry, "cwd", settlement.before_cwd)
+            if settlement.before_replay_flag[0]:
+                flags = entry.get("flags")
+                if not isinstance(flags, dict):
+                    flags = {}
+                    entry["flags"] = flags
+                flags[settlement.replay_flag] = settlement.before_replay_flag[1]
+        self._dirty = False
+        return self._serialize()
+
+    @staticmethod
+    async def _await_task_despite_cancellation(
+        task: "asyncio.Task[object]",
+        cancelled: "list[asyncio.CancelledError]",
+    ) -> None:
+        """Finish *task* while retaining the first cancellation for its caller."""
+        while True:
+            try:
+                await asyncio.shield(task)
+                return
+            except asyncio.CancelledError as exc:
+                if not cancelled:
+                    cancelled.append(exc)
+                if task.done():
+                    task.result()
+                    return
+
+    @staticmethod
+    async def _sleep_despite_cancellation(delay: float) -> None:
+        cancelled: list[asyncio.CancelledError] = []
+        sleeper = asyncio.create_task(asyncio.sleep(delay))
+        await SessionMap._await_task_despite_cancellation(sleeper, cancelled)
+
+    async def _write_payload_despite_cancellation(self, payload: str, seq: int) -> None:
+        cancelled: list[asyncio.CancelledError] = []
+        writer = asyncio.create_task(asyncio.to_thread(self._write_payload, payload, seq))
+        await self._await_task_despite_cancellation(writer, cancelled)
+
+    async def _compensate_replay_settlement(self, settlement: _ReplaySettlement) -> None:
+        delay = _REPLAY_COMPENSATION_INITIAL_DELAY_SECS
+        while True:
+            payload, seq = self._rollback_replay_settlement(settlement)
+            try:
+                await self._write_payload_despite_cancellation(payload, seq)
+                return
+            except Exception:
+                self._restore_dirty()
+                logger.exception(
+                    "Replay settlement compensation failed; retrying before cancellation exits"
+                )
+                await self._sleep_despite_cancellation(delay)
+                delay = min(delay * 2, _REPLAY_COMPENSATION_MAX_DELAY_SECS)
+
+    async def _settle_replay(
+        self,
+        key: str,
+        sid: str | None,
+        *,
+        provider: str,
+        cwd: str,
+        replay_flag: str,
+        still_current: Callable[[], bool] | None,
+    ) -> None:
+        settlement = self._prepare_replay_settlement(
+            key,
+            sid,
+            provider=provider,
+            cwd=cwd,
+            replay_flag=replay_flag,
+            still_current=still_current,
+        )
+        try:
+            await asyncio.to_thread(self._write_payload, settlement.payload, settlement.seq)
+        except asyncio.CancelledError:
+            await self._compensate_replay_settlement(settlement)
+            raise
+        except Exception:
+            self._rollback_replay_settlement(settlement)
+            self._restore_dirty()
+            raise
+
+    async def settle_replay_sid(
+        self,
+        key: str,
+        sid: str,
+        *,
+        provider: str,
+        cwd: str,
+        replay_flag: str,
+        still_current: Callable[[], bool] | None = None,
+    ) -> None:
+        """Durably promote a landed replay SID off the event loop."""
+        await self._settle_replay(
+            key,
+            sid,
+            provider=provider,
+            cwd=cwd,
+            replay_flag=replay_flag,
+            still_current=still_current,
+        )
+
+    async def settle_replay_flag(
+        self,
+        key: str,
+        *,
+        replay_flag: str,
+        still_current: Callable[[], bool] | None = None,
+    ) -> None:
+        """Durably clear replay debt without replacing the published SID."""
+        await self._settle_replay(
+            key,
+            None,
+            provider="",
+            cwd="",
+            replay_flag=replay_flag,
+            still_current=still_current,
+        )
+
+    @_guarded
+    def _prepare_replay_retirement(self, key: str, replay_flag: str) -> tuple[str, int]:
+        """Retire a confirmed-clear fallback and debt in one payload."""
+        key = canonical_key(key)
+        entry = self._ensure_entry(key)
+        _stash_and_clear_sid(entry)
+        flags = entry.get("flags")
+        if isinstance(flags, dict):
+            flags.pop(replay_flag, None)
+            if not flags:
+                entry.pop("flags", None)
+        self._dirty = False
+        return self._serialize()
+
+    async def retire_replay(self, key: str, *, replay_flag: str) -> None:
+        """Durably retire history after the provider confirmed deletion.
+
+        Unlike an ordinary replay settlement, this operation never restores its
+        before-image: the native history is already gone. Cancellation is held
+        until the retirement reaches disk, and transient write failures retry
+        fail-closed so a restart cannot revive the old fallback.
+        """
+        payload, seq = self._prepare_replay_retirement(key, replay_flag)
+        cancelled: list[asyncio.CancelledError] = []
+        delay = _REPLAY_COMPENSATION_INITIAL_DELAY_SECS
+        while True:
+            writer = asyncio.create_task(asyncio.to_thread(self._write_payload, payload, seq))
+            try:
+                await self._await_task_despite_cancellation(writer, cancelled)
+                break
+            except Exception:
+                self._restore_dirty()
+                logger.exception(
+                    "Confirmed-clear replay retirement failed; retrying before turn exit"
+                )
+                sleeper = asyncio.create_task(asyncio.sleep(delay))
+                await self._await_task_despite_cancellation(sleeper, cancelled)
+                delay = min(delay * 2, _REPLAY_COMPENSATION_MAX_DELAY_SECS)
+        if cancelled:
+            raise cancelled[0]
 
     def get_flag(self, key: str, flag: str) -> bool:
         """Return the value of a per-conversation boolean *flag* (default False)."""

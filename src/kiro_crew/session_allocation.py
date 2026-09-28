@@ -33,6 +33,7 @@ from kiro_crew.runtime_ownership import (
     acquire_session_lease,
     release_session_lease,
 )
+from kiro_crew.session_map import REPLAY_PENDING_FLAG
 from kiro_crew.validation import bounded_session_id
 
 if TYPE_CHECKING:
@@ -2018,20 +2019,25 @@ class SessionAllocationService:
                 **extra_factory_kwargs,
             )
 
-        resume_sid: str | None = None
+        mapped_resume_sid: str | None = None
+        durable_replay_pending = False
         is_stateless = (
             key in (constants.background_key, constants.heartbeat_key)
             or any(key.startswith(prefix) for prefix in constants.stateless_prefixes)
         ) and not owner._is_continuable_key(key)
         if not is_stateless:
-            resume_sid = owner._session_map.get(key)
+            mapped_resume_sid = owner._session_map.get(key)
+            durable_replay_pending = owner._session_map.get_flag(key, REPLAY_PENDING_FLAG)
+        # The mapped SID remains the restart fallback while binding recovery is
+        # unfinished, but resuming it would send the same rejected thinking prefix.
+        resume_sid = None if durable_replay_pending else mapped_resume_sid
         if speculative and resume_sid and not speculative_resume:
             raise SpeculativeResumeRefused(key)
 
         from kiro_crew.session_capabilities import prepare_runtime
 
         effective_cwd = cwd
-        if not effective_cwd and resume_sid:
+        if not effective_cwd and mapped_resume_sid:
             stored_cwd = owner._session_map.get_cwd(key)
             if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
                 effective_cwd = stored_cwd
@@ -2076,6 +2082,8 @@ class SessionAllocationService:
             pool_decision = "bypass_member_capabilities"
         elif resume_sid:
             pool_decision = "bypass_resume"
+        elif durable_replay_pending:
+            pool_decision = "bypass_binding_replay"
         elif is_stateless:
             pool_decision = "bypass_stateless"
         elif self._is_member_key(key):
@@ -2472,16 +2480,27 @@ class SessionAllocationService:
                     session.requested_model = model or ""
                     session.loaded_capabilities = stamp
                     self.state.capability_failures.pop(key, None)
-                    replay_needed = getattr(provider, "_history_replay_needed", False) is True
+                    provider_replay_needed = (
+                        getattr(provider, "_history_replay_needed", False) is True
+                    )
+                    replay_needed = provider_replay_needed or durable_replay_pending
                     provider_label = self._deps.provider_label(provider)
-                    defer_sid_promotion = (
-                        replay_needed
-                        and provider.defer_replay_sid_promotion is True
-                        and provider_label == constants.provider_label_default
+                    is_acp_provider = self._deps.is_acp_provider(provider)
+                    binding_replay_deferral = durable_replay_pending and is_acp_provider
+                    defer_sid_promotion = replay_needed and (
+                        binding_replay_deferral
+                        or (
+                            provider.defer_replay_sid_promotion is True
+                            and provider_label == constants.provider_label_default
+                        )
                     )
                     if provider_switched or replay_needed:
                         session.provider_switch_replay = True
-                    if replay_needed and provider_label != constants.provider_label_default:
+                    if (
+                        replay_needed
+                        and provider_label != constants.provider_label_default
+                        and not binding_replay_deferral
+                    ):
                         owner._session_map.clear_sid(key)
                     self._install_work_dir_claim_probe(key, provider)
                     self._sessions[key] = session

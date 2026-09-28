@@ -41,6 +41,7 @@ from kiro_crew.metrics.sessions import (
     record_sessions_ended,
 )
 from kiro_crew.process_identity import ProcessHandle, process_handle_of
+from kiro_crew.session_map import REPLAY_PENDING_FLAG
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -101,7 +102,11 @@ class _SessionEntry(Protocol):
 
 
 class _SessionMapPort(Protocol):
-    def clear_sid(self, key: str) -> None: ...
+    def clear_sid(self, key: str) -> bool: ...
+
+    def set_flag(self, key: str, flag: str, value: bool) -> None: ...
+
+    async def aflush(self) -> None: ...
 
     def delete(self, key: str, *, reason: str | None = None) -> None: ...
 
@@ -2138,6 +2143,7 @@ class SessionLifecycleService:
         replay: bool = True,
         skip_if_busy: bool = False,
         refuse_only_on_active_turn: bool = False,
+        preserve_replay_fallback: bool = False,
     ) -> bool:
         """Drop only the native conversation while preserving channel linkage.
 
@@ -2167,8 +2173,28 @@ class SessionLifecycleService:
         owner = self._owner
         requested_key = key
         key = owner._fold_key(key)
+        expected_session = None
+        if preserve_replay_fallback:
+            async with owner._lock:
+                expected_session = owner._sessions.get(key)
+                if expected_session is None:
+                    return False
+                if skip_if_busy and _turn_in_flight(
+                    expected_session,
+                    refuse_only_on_active_turn=refuse_only_on_active_turn,
+                ):
+                    return False
+                owner._session_map.set_flag(key, REPLAY_PENDING_FLAG, True)
+            # Keep the provider reachable while disk persistence runs, but do not
+            # hold the global session registry lock across that await.
+            await owner._session_map.aflush()
+
         async with owner._lock:
             current = owner._sessions.get(key)
+            if preserve_replay_fallback and current is not expected_session:
+                # Another teardown won while persistence was in flight. The debt
+                # stays fail-closed for its successor; this call owns no provider.
+                return False
             if skip_if_busy and _turn_in_flight(
                 current, refuse_only_on_active_turn=refuse_only_on_active_turn
             ):
@@ -2183,12 +2209,13 @@ class SessionLifecycleService:
             owner._compact_cooldown_until.pop(key, None)
             owner._compact_pending_verdict.pop(key, None)
             self._release_turn_ceiling(key, requested_key)
-            # Store replay suppression atomically with the pop. Origin-link
-            # state intentionally survives this operation.
-            if replay:
-                self._suppress_replay.discard(key)
-            else:
-                self._suppress_replay.add(key)
+            # A binding-recovery discard must not erase an existing suppression:
+            # uninstall/clear intent outranks replaying old visible history.
+            if not preserve_replay_fallback:
+                if replay:
+                    self._suppress_replay.discard(key)
+                else:
+                    self._suppress_replay.add(key)
             if session is not None:
                 # Same lock hold as the pop, exactly like the clear_sid below.
                 await record_session_ended(key, end_reason=END_REASON_DISCARDED)
@@ -2206,7 +2233,8 @@ class SessionLifecycleService:
         # ``clear_conversation``, which clears in this same position for this
         # same reason. Outside the lock rather than inside it because
         # ``clear_sid`` persists to disk, and the lock must not span blocking IO.
-        owner._session_map.clear_sid(key)
+        if not preserve_replay_fallback:
+            owner._session_map.clear_sid(key)
         try:
             if session:
                 await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -2217,7 +2245,8 @@ class SessionLifecycleService:
             await self._cancel_parent_children(key, teardown_children, verb="discard_conversation")
             await owner.release_subagent_runtime(key)
             self._deps.logger.info(
-                "Discarded native conversation (sid cleared, map entry kept): %s",
+                "Discarded native conversation (%s, map entry kept): %s",
+                ("sid retained as replay fallback" if preserve_replay_fallback else "sid cleared"),
                 key,
             )
         return True

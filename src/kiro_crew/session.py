@@ -210,6 +210,7 @@ from kiro_crew.session_lifecycle import (
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
 from kiro_crew.session_map import (
     MIRROR_OPT_OUT_FLAG,
+    REPLAY_PENDING_FLAG,
     SUPPRESS_REPLAY_FLAG,
     BindListener,
 )
@@ -2664,22 +2665,12 @@ class SessionManager:
         return True
 
     def commit_provider_switch_replay_sid(self, key: str) -> bool:
-        """Settle replay, promoting the live ACP SID when one was deferred.
-
-        Allocation leaves the prior resumable SID in ``SessionMap`` only for an
-        ACP provider that explicitly defers promotion. Other providers publish
-        their own SID during allocation, so a landed replay consumes the lease
-        without another mapping write. This keeps cross-provider history replay
-        one-shot instead of re-arming forever on a non-ACP session.
-        """
+        """Promote a live replay SID through the legacy non-durable path."""
         folded = self._fold_key(key)
         session = self._sessions.get(folded)
         if session is None or not session.provider_switch_replay:
             return False
-        if session.retire_on_identity_change:
-            session.provider_switch_replay = False
-            return True
-        if not _is_acp_provider(session.provider):
+        if session.retire_on_identity_change or not _is_acp_provider(session.provider):
             session.provider_switch_replay = False
             return True
         client = getattr(session.provider, "client", None)
@@ -2693,6 +2684,61 @@ class SessionManager:
             cwd=session.provider.cwd,
         )
         session.provider_switch_replay = False
+        return True
+
+    async def acommit_provider_switch_replay_sid(self, key: str) -> bool:
+        """Durably settle binding recovery, or delegate an ordinary replay."""
+        folded = self._fold_key(key)
+        if not self._session_map.get_flag(folded, REPLAY_PENDING_FLAG):
+            return self.commit_provider_switch_replay_sid(folded)
+
+        session = self._sessions.get(folded)
+        if session is None or not session.provider_switch_replay:
+            return False
+
+        def still_current() -> bool:
+            return self._sessions.get(folded) is session and session.provider_switch_replay
+
+        if session.retire_on_identity_change or not _is_acp_provider(session.provider):
+            await self._session_map.settle_replay_flag(
+                folded,
+                replay_flag=REPLAY_PENDING_FLAG,
+                still_current=still_current,
+            )
+            session.provider_switch_replay = False
+            return True
+
+        client = getattr(session.provider, "client", None)
+        sid = getattr(client, "_session_id", None)
+        if not isinstance(sid, str) or not sid:
+            return False
+        await self._session_map.settle_replay_sid(
+            folded,
+            sid,
+            provider=_provider_label(session.provider),
+            cwd=session.provider.cwd,
+            replay_flag=REPLAY_PENDING_FLAG,
+            still_current=still_current,
+        )
+        session.provider_switch_replay = False
+        return True
+
+    async def aretire_provider_switch_replay(self, key: str) -> bool:
+        """Retire replay debt and its fallback after native history deletion."""
+        folded = self._fold_key(key)
+        session = self._sessions.get(folded)
+        in_memory = bool(session is not None and session.provider_switch_replay)
+        durable = self._session_map.get_flag(folded, REPLAY_PENDING_FLAG)
+        if not (in_memory or durable):
+            return False
+        try:
+            await self._session_map.retire_replay(
+                folded,
+                replay_flag=REPLAY_PENDING_FLAG,
+            )
+        finally:
+            if session is not None:
+                session.provider_switch_replay = False
         return True
 
     def consume_provider_switch_replay(self, key: str) -> bool:
@@ -2731,11 +2777,19 @@ class SessionManager:
             in_memory = True
         if not (in_memory or persisted):
             return False
+        # Deletion/suppression outranks a pending history replay. Retire both
+        # durable debt and its old-SID fallback so a later restart cannot revive
+        # the history this cold start intentionally skipped.
+        if self._session_map.get_flag(folded, REPLAY_PENDING_FLAG):
+            self._session_map.set_flag(folded, REPLAY_PENDING_FLAG, False)
+            self._session_map.clear_sid(folded)
+        session = self._sessions.get(folded) or self._sessions.get(key)
+        if session is not None:
+            session.provider_switch_replay = False
         # The session that consumed the suppression starts with no history, so
         # its first confirmed reading is this key's floor. Marked here, on the
         # session itself, because this is the one place that knows the replay
         # was actually skipped -- and the flag then dies with the session.
-        session = self._sessions.get(folded) or self._sessions.get(key)
         if session is not None:
             session.floor_pending = True
         return True
@@ -2970,11 +3024,12 @@ class SessionManager:
         replay: bool = True,
         skip_if_busy: bool = False,
         refuse_only_on_active_turn: bool = False,
+        preserve_replay_fallback: bool = False,
     ) -> bool:
         """Drop native conversation state while retaining channel linkage.
 
-        Returns whether a session was actually torn down; False means
-        ``skip_if_busy`` refused because a turn was in flight. See
+        Returns whether a session was actually torn down; False means the
+        requested generation was not available for teardown. See
         :meth:`SessionLifecycleService.discard_conversation` for the guard's
         atomicity contract.
         """
@@ -2983,6 +3038,7 @@ class SessionManager:
             replay=replay,
             skip_if_busy=skip_if_busy,
             refuse_only_on_active_turn=refuse_only_on_active_turn,
+            preserve_replay_fallback=preserve_replay_fallback,
         )
 
     async def drain_active_turns(self, timeout: float | None = None) -> int:

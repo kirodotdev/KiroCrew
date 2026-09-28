@@ -3611,6 +3611,20 @@ class PiGateExtensionTampered(AcpError):  # noqa: N818
     """
 
 
+class AcpConversationBindingMismatch(AcpError):  # noqa: N818
+    """Preserved thinking belongs to a different conversation prefix.
+
+    The provider rejected the request before generation and its own text names
+    the stored native conversation as the problem. Retrying the same ACP session
+    resends the same incompatible history, so ``transient`` is always False; a
+    caller may recover only by dropping that native conversation.
+
+    Deliberately narrower than a generic invalid thinking signature: a tampered or
+    undecryptable signature does not say it is bound to another conversation and
+    stays a terminal :class:`AcpError`.
+    """
+
+
 class AcpModelUnavailable(AcpError):  # noqa: N818
     """An explicitly requested model is not available to this account.
 
@@ -4133,6 +4147,35 @@ _RE_PROCESS_FAILED = re.compile(r"failed to process the request", re.IGNORECASE)
 # _is_transient_raw_error (terminal verdict) so wording and retry-eligibility
 # never drift.
 _RE_MALFORMED_REQUEST = re.compile(r"[Ii]mproperly formed request", re.IGNORECASE)
+
+# A preserved-thinking signature rejection whose own provider text says the block
+# is bound to another conversation is recoverable by replacing the NATIVE
+# conversation. Both clauses must appear IN ONE FIELD: the shorter
+# invalid-signature form also covers tampered or undecryptable signatures, and
+# pairing a clause from ``data`` with unrelated prose from ``message`` would mint
+# a recoverable verdict the provider never sent.
+_RE_THINKING_SIGNATURE_INVALID = re.compile(
+    r"Invalid `signature` in `thinking` block", re.IGNORECASE
+)
+_RE_THINKING_BOUND_TO_OTHER_CONVERSATION = re.compile(
+    r"\bblock is bound to a different conversation\b", re.IGNORECASE
+)
+
+
+def _is_thinking_binding_mismatch(error: object) -> bool:
+    """Whether one raw provider field carries both binding-mismatch clauses."""
+    if not isinstance(error, dict):
+        return False
+    for key in ("data", "message"):
+        value = error.get(key)
+        if (
+            isinstance(value, str)
+            and _RE_THINKING_SIGNATURE_INVALID.search(value)
+            and _RE_THINKING_BOUND_TO_OTHER_CONVERSATION.search(value)
+        ):
+            return True
+    return False
+
 
 # kiro-cli's wording for a concurrent in-flight prompt on the session, read by
 # the user-facing formatter below and by `_raise_acp_error`'s AcpPromptBusy
@@ -5178,7 +5221,13 @@ def _raise_acp_error(
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
     if _PROMPT_BUSY_RE.search(raw_data):
         raise AcpPromptBusy(formatted)
-    err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+    # A binding mismatch changes only the exception TYPE and its retry verdict;
+    # it is built here, not raised early, so the tags below still read the frame.
+    err: AcpError
+    if _is_thinking_binding_mismatch(error):
+        err = AcpConversationBindingMismatch(formatted, transient=False)
+    else:
+        err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
     # Tag a STRUCTURAL rejection ("Improperly formed request") so a self-driving
     # caller can stop re-sending the same context rather than merely decline an
     # in-turn retry. Scoped to the provider `data` field only -- exactly the
