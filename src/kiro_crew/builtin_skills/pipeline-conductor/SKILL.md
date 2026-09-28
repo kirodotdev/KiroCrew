@@ -263,7 +263,12 @@ never relabel it success in the friction report.
    with `monitor_start`, never `wait`.** If live work needs a larger or renewed
    bound, raise it with `monitor_update` before it expires; `monitor_start` is
    create-only. Call `autonudge_stop` yourself when the exit condition fires —
-   coasting into the cycle cap is a failure, not a finish.
+   coasting into the cycle cap is a failure, not a finish. That ~90s interval is
+   also what sizes your panel's stale window: `BOARD_STALE_AFTER_SECONDS` in
+   `kiro_crew.dashboard.handlers.agent_panel` is about ten of these intervals, so a
+   board reads stale only after the log has been quiet across many cycles rather
+   than after one quiet cycle. Change the cadence here and that constant needs the
+   same look.
 
 Standing patrol instruction template (keep it CURRENT — steering edits go here
 via `monitor_update`, see "Live steering"):
@@ -297,6 +302,25 @@ via `monitor_update`, see "Live steering"):
 > slot is a supply reading, not a gap to fill. Quiet cycle = one line, end
 > turn. EXIT when queue empty and fleet drained: final tally, then
 > `autonudge_stop`.
+
+## Your panel: publish JUDGMENTS, never numbers
+
+`panel_publish` with template `kirocrew-pipeline-conductor` takes exactly four keys,
+and nothing else — an unknown key is refused and the refusal names it:
+
+| key | shape | what it is |
+|---|---|---|
+| `lede` | string | the one sentence a reader should start from |
+| `you` | object, item id -> string | what a person must DO about that ONE item |
+| `notes` | object, metric key -> string | the gloss on a metric tile |
+| `checks` | object, item id -> string | a CI check tally, `N/M` only |
+
+Every number on that board is derived from your work log by the host, so you cannot
+type one: counts, column names, the revision, the board's age and the dropped-entry
+count all come from the `work` projection. `you` and `checks` are keyed by ITEM ID,
+not by column, so a sentence lands on the card it is about. A `checks` value that is
+not a bare `N/M` is dropped and the cell reads as not said — that cell means a tally
+you read off a forge, and the work log has none.
 
 ## How the ledger behaves
 

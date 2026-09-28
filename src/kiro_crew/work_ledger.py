@@ -79,6 +79,7 @@ from kiro_crew.session_ledger import (
     unlink_lock_in_hold,
 )
 from kiro_crew.work_vocab import (
+    WORK_FOLD_NAME,
     WORK_ITEM_STATES,
     WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
@@ -2877,7 +2878,7 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
         for other in work_slots_naming_board(slot_key):
             if other not in extra_slots:
                 extra_slots.append(other)
-        folded = read_slot_projection(slot_key, "work", also_slots=extra_slots).value
+        folded = read_slot_projection(slot_key, WORK_FOLD_NAME, also_slots=extra_slots).value
         header = folded.get("conductor") if isinstance(folded, dict) else None
         if not isinstance(header, dict) or not header.get("entries"):
             # No entry names this board: nothing recorded, so nothing to rebuild

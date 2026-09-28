@@ -64,7 +64,7 @@ import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
@@ -124,7 +124,12 @@ from kiro_crew.session_ledger import EVENT_KINDS as LEDGER_EVENT_KINDS
 from kiro_crew.session_ledger import LEDGER_ENTRY_TYPE
 from kiro_crew.session_ledger import SCHEMA_VERSION as LEDGER_SCHEMA_VERSION
 from kiro_crew.session_ledger import TERMINAL_PHASES as LEDGER_TERMINAL_PHASES
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS, WORK_STORED_ITEM_LIMIT
+from kiro_crew.work_vocab import (
+    WORK_CONDUCTOR_FIELDS,
+    WORK_STORED_ITEM_LIMIT,
+    WorkBoardItem,
+    WorkBoardView,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3424,6 +3429,16 @@ def _work_start() -> dict[str, Any]:
         "omitted": 0,
         "entries": 0,
         "first_entry_at": "",
+        "last_entry_at": "",
+        # The epoch behind ``last_entry_at``, kept so the greatest stamp can be chosen
+        # by TIME rather than by spelling. ``_work_iso`` renders local time with an
+        # offset, so a plain string comparison is only accidentally ordered: at an
+        # autumn DST change the offset shrinks and a later entry spells an earlier
+        # string, which is exactly the inversion this field exists to refuse. Not
+        # rendered -- ``_work_render`` serves ``last_entry_at`` -- so it costs a reader
+        # nothing. A checkpoint written before this key existed differs from this shape
+        # and ``_state_matches_fold`` discards it, so no resumed state reads it absent.
+        "last_entry_ms": 0,
         "generation": "",
     }
 
@@ -3524,6 +3539,24 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
     state["entries"] += 1
     if not state["first_entry_at"]:
         state["first_entry_at"] = _work_iso(entry.time)
+    # HERE, where an entry is accepted, rather than beside any one action: this is the
+    # answer to "how old is this board's information", and a reader asking that must
+    # not get a different answer depending on which kind of entry came last. Taken from
+    # an item's own stamps instead, a conductor-only round -- a decision, a verdict, an
+    # acceptance, a bind -- moves nothing, so a board that just changed keeps ageing and
+    # eventually reads as stale while it is in fact current.
+    #
+    # The GREATEST accepted stamp, not the last one written, because the fold order is
+    # by UNIT and never by time: ``_work_units`` yields the conductor's units first and
+    # then each bound worker's, so a worker report appended before the conductor's
+    # latest round is folded after it. An unconditional write hands the board that older
+    # stamp, the age inflates to the gap between the two, and a current board reads as
+    # stale -- reproducibly, since the log order never changes. Scoped to the current
+    # board generation for free: the reset above runs first and clears both keys, so a
+    # purged board's newest stamp cannot pin a board born after it.
+    if entry.time >= state["last_entry_ms"]:
+        state["last_entry_ms"] = entry.time
+        state["last_entry_at"] = _work_iso(entry.time)
     if not state["created_at"] and data.get("actor") == "conductor":
         state["created_at"] = _work_iso(entry.time)
     action = _as_str(data.get("action"))
@@ -3747,10 +3780,18 @@ def _work_is_progress(event: Mapping[str, Any]) -> bool:
     return event.get("kind") == "report" and event.get("status") == "progress"
 
 
-def _work_render(state: dict[str, Any]) -> dict[str, Any]:
+def _work_render(state: dict[str, Any]) -> WorkBoardView:
     """The board in the shape its readers already consume: the conductor header and
-    every item in creation order, each with its event tail."""
-    items = []
+    every item in creation order, each with its event tail.
+
+    The return is NARROWED to :class:`~kiro_crew.work_vocab.WorkBoardView` rather than
+    left as ``dict``: a reader mapping this onto a dashboard's own contract type then
+    has both ends checked by mypy, and a field renamed here is an error at every such
+    reader instead of a key that silently reads as missing. The projection kernel in
+    ``kiro_crew.projection`` is unchanged -- its Protocol asks for ``-> dict`` and a
+    return type is covariant.
+    """
+    items: list[WorkBoardItem] = []
     for item_id in state["order"]:
         item = state["items"].get(item_id)
         if item is None:
@@ -3760,7 +3801,7 @@ def _work_render(state: dict[str, Any]) -> dict[str, Any]:
         rendered["events"] = [
             {key: value for key, value in event.items() if key != "_t"} for event in item["events"]
         ]
-        items.append(rendered)
+        items.append(cast("WorkBoardItem", rendered))
     return {
         "conductor": {
             "schema": 1,
@@ -3773,6 +3814,12 @@ def _work_render(state: dict[str, Any]) -> dict[str, Any]:
             "created_at": state["created_at"],
             "entries": state["entries"],
             "first_entry_at": state["first_entry_at"],
+            # Read directly, like its sibling keys. ``_work_start`` declares this key
+            # in the fold's durable top-level shape, and ``_state_matches_fold``
+            # refuses any checkpoint whose top-level keys differ from that shape, so a
+            # payload missing it is discarded and cold-folded rather than resumed. The
+            # key is present on every state that reaches here.
+            "last_entry_at": state["last_entry_at"],
             "generation": state["generation"],
         },
         "items": items,
@@ -4227,7 +4274,15 @@ _FOLDS: Final[dict[str, _Fold]] = {
         "work",
         _work_start,
         _work_step,
-        _work_render,
+        # ONE cast, here, because ``_work_render`` promises a TypedDict while this
+        # registry field asks for ``dict[str, Any]``. mypy refuses that assignment even
+        # though it holds at runtime: a TypedDict is assignable to a read-only mapping
+        # but not to a mutable ``dict[str, V]``, which is invariant in V. Widening the
+        # field to ``Mapping`` instead pushes the same refusal onto ``Projection.value``
+        # and two ``view`` methods, so it would cost three shared types rather than one
+        # line. Safe in the direction that matters: the registry only CALLS this, and a
+        # caller wanting the checked shape reads ``_work_render``'s own annotation.
+        cast("Callable[[dict[str, Any]], dict[str, Any]]", _work_render),
         bind_slot=_work_bind_slot,
         affects=frozenset({WORK_ENTRY_TYPE}),
     ),

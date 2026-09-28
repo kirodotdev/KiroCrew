@@ -24,13 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final, cast
 
 from aiohttp import web
 
 from kiro_crew import agent_panel
 from kiro_crew import members as members_mod
+from kiro_crew import pipeline_board_contract
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection
@@ -54,6 +56,7 @@ from kiro_crew.validation import (
     ValidationError,
     validate_tool_args,
 )
+from kiro_crew.work_vocab import WORK_FOLD_NAME, WorkBoardView
 
 logger = logging.getLogger(__name__)
 
@@ -562,7 +565,139 @@ def _panel_slot(cfg: KiroCrewConfig, member: str, slug: str) -> str:
     return slot
 
 
+#: How long a pipeline board's newest work entry may be before the header calls it
+#: stale. A HOST value: the fold cannot know it and the publisher must not decide when
+#: its own board stops counting as current.
+#:
+#: About TEN patrol intervals -- the conductor skill arms its patrol near 90 seconds --
+#: rather than one plus slack. One interval would call a board stale the moment a single
+#: cycle did no work, which is the normal quiet cycle and not news; ten means the log has
+#: been silent across many cycles, and a fleet nobody has heard from in a quarter of an
+#: hour is the thing a reader needs told.
+BOARD_STALE_AFTER_SECONDS: Final[int] = 900
+
+
 def _panel_record(slot: str, slug: str, owner_key: str) -> dict[str, Any] | None:
+    """The crew's panel record, with a contract template's NUMBERS taken from the log.
+
+    Two steps: pick the record (:func:`_published_record`, whose selection rules are
+    their own story), then, for the one template that has a declared contract, replace
+    its data with :func:`~kiro_crew.pipeline_board_contract.build_pipeline_board`'s
+    output. Everything else is served exactly as published.
+
+    Done HERE rather than in the drawer because both surfaces read this one record: the
+    composed document carries it in its data island, and the docked native summary is
+    rendered from the same ``data`` object travelling beside it. A frontend fix would
+    have to be made twice and could not be made at all in the document -- its srcdoc
+    runs on a null origin under ``connect-src 'none'``, so it can never fetch anything.
+    """
+    record = _published_record(slot, slug, owner_key)
+    if record is None:
+        return record
+    if str(record.get("template") or "") != pipeline_board_contract.BOARD_TEMPLATE_ID:
+        return record
+    return _with_board_numbers(slot, record)
+
+
+def _with_board_numbers(slot: str, record: dict[str, Any]) -> dict[str, Any]:
+    """*record* with its data rebuilt from the ``work`` fold, or *record* unchanged.
+
+    UNCHANGED is the answer for a board that is not there. A crew whose work fold is
+    absent, empty or unreadable must not be handed a complete board of zeros: zero
+    items is a fact about a board that exists, and "no board" is a different one. Left
+    as published, the template's three-state renderer reads the missing sections as
+    ABSENT and says "not said", which is the true statement.
+
+    The fold is read through the ordinary slot-keyed projection -- the same warm kernel
+    the panel fold above uses, so a second drawer open folds no entry again and this
+    route keeps no cache of its own. It is the member's OWN DM slot both times: a
+    conductor's board binds to the slot its conductor entries name, which for a crew
+    publishing its own panel is that same DM slot.
+
+    A publisher that wrote the free shape is not an error to the reader -- the author
+    is gone and the payload is already on disk -- so its unusable keys are dropped, the
+    derived numbers are rendered, and ``contract_replaced`` names what was dropped. A
+    publisher quietly overriding the log is the lie this whole contract exists to stop,
+    so being overridden has to leave a mark.
+    """
+    try:
+        view = projection.read_slot_projection(slot, WORK_FOLD_NAME).value
+    except Exception:
+        # Same totality contract as the panel fold above: a damaged log reads as
+        # "nothing folded" rather than as a 500, and WARNING because a panel whose
+        # numbers silently stopped updating is a crew-visible symptom with no other
+        # trace, reproduced on every read until an operator repairs the log.
+        logger.warning("work fold unreadable for slot %s", slot, exc_info=True)
+        return record
+    if not _is_work_board(view):
+        return record
+    try:
+        judgment = pipeline_board_contract.validate_judgment(record.get("data"))
+        replaced: list[str] = []
+    except pipeline_board_contract.JudgmentError as exc:
+        judgment = pipeline_board_contract.EMPTY_JUDGMENT
+        replaced = sorted(record.get("data") or {}) if isinstance(record.get("data"), dict) else []
+        logger.warning(
+            "panel data for slot %s is not a board judgment (%s); rendering the log's "
+            "own numbers and dropping the published keys %s",
+            slot,
+            exc,
+            replaced,
+        )
+    panel = pipeline_board_contract.build_pipeline_board(
+        # THE CAST'S LIMIT, stated rather than left to be assumed. ``Projection.value``
+        # is ``Any``, so this asserts the shape instead of checking it -- mypy proves
+        # the PROVIDER reads only fields ``WorkBoardView`` declares, and that
+        # ``_work_render`` writes exactly them, but nothing type-checks that this
+        # value came from that renderer. ``_is_work_board`` above is the runtime half
+        # that makes the assertion safe in the direction that bites: a value that is
+        # not a board at all is refused before it reaches here.
+        cast("WorkBoardView", view),
+        judgment,
+        name=str(record.get("crew") or ""),
+        captured_at=str(record.get("published_at") or ""),
+        stale_after_seconds=BOARD_STALE_AFTER_SECONDS,
+        now_epoch=time.time(),
+    )
+    out = dict(record)
+    # A SIBLING key, and ``data`` is left exactly as published.
+    #
+    # The two surfaces want different things from this record. The document renders the
+    # contract, so the composer reads ``board``. The drawer's DOCKED card is native
+    # React that walks ``data``'s own key order and prints the first entries as headline
+    # tiles -- so putting the derived board in ``data`` made a conductor's compact card
+    # lead with "contract version 1" and "omitted 0", which is the least interesting
+    # pair of numbers on it. The publisher's judgment is what belongs in a one-line
+    # card: it is the sentence a person wrote.
+    out["board"] = pipeline_board_contract.panel_payload(panel)
+    if replaced:
+        # On the RECORD, and deliberately not on the read route's JSON response: the
+        # override has to leave a mark a reader of this record can find, but a response
+        # field nothing renders is a field with no reader. The warning above is what
+        # reaches the operator, who is the party that can act on it.
+        out["contract_replaced"] = replaced
+    return out
+
+
+def _is_work_board(view: Any) -> bool:
+    """Whether *view* is a board that EXISTS, as opposed to an unbound empty fold.
+
+    ``entries``, not the item count: a conductor that recorded its goal and nothing
+    else has a real board with no items yet, and that board's zeros are true. A fold
+    over a slot that never carried a work entry has none, and its zeros are not.
+    """
+    if not isinstance(view, dict):
+        return False
+    conductor = view.get("conductor")
+    if not isinstance(conductor, dict):
+        return False
+    try:
+        return int(conductor.get("entries") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _published_record(slot: str, slug: str, owner_key: str) -> dict[str, Any] | None:
     """The crew's panel record: the folded one, else the stored file.
 
     THE FILE DECIDES THE PANEL when this owner has one, and the fold supplies the
@@ -665,14 +800,17 @@ def _read_and_compose(
         return record, None, True
 
 
-# The keys ``projection._panel_owner_record`` puts on a record, split into the two
-# disjoint sets the drawer read makes of each: SERVED reaches the client, WITHHELD
-# is for the server's own use and stays server-side. Every key the record carries
-# is in exactly one of these, and ``_panel_meta`` reddens on a key in neither, so a
-# field added to ``_panel_owner_record`` and classified in neither set fails loud --
-# ``test_the_drawer_serializer_classifies_every_record_key`` reds -- rather than
-# being silently served or silently dropped. An allow-list keyed on the record's OWN
-# keys is what keeps the fold's shape and the drawer's shape from diverging silently.
+# The keys a panel record carries by the time the drawer serializes it, split into
+# the two disjoint sets the read makes of each: SERVED reaches the client, WITHHELD
+# is for the server's own use and stays server-side. Most come from
+# ``projection._panel_owner_record``; the last two are added by this route's own
+# provider step. Every key the record carries is in exactly one of these, and
+# ``_panel_meta`` reddens on a key in neither, so a field added at either layer and
+# classified in neither set fails loud -- ``test_the_drawer_serializer_classifies_
+# every_record_key`` for the fold's keys, ``test_the_drawer_serializer_accepts_every_
+# key_the_provider_adds`` for this route's -- rather than being silently served or
+# silently dropped. An allow-list keyed on the record's OWN keys is what keeps the
+# record's shape and the drawer's shape from diverging silently.
 _PANEL_SERVED_KEYS = frozenset(
     {
         "template",
@@ -691,7 +829,13 @@ _PANEL_SERVED_KEYS = frozenset(
 #  * ``crew_key`` is a digest of the exact crew name, which may itself be
 #    credential-shaped; a sibling route test pins that it never reaches a client.
 #  * ``schema`` is the record's internal version tag, meaningful only to the fold.
-_PANEL_WITHHELD_KEYS = frozenset({"crew_key", "schema"})
+#  * ``board`` is the log-derived pipeline board ``_with_board_numbers`` puts on a
+#    contract template's record; the composer renders it into the document's data
+#    island, and the docked card walks ``data``, so no client reads it off the meta.
+#  * ``contract_replaced`` is the mark left on the record when a free-shape payload
+#    was overridden by the log's numbers; it has no renderer, so the operator's
+#    warning is what reaches a person, not a response field nothing reads.
+_PANEL_WITHHELD_KEYS = frozenset({"crew_key", "schema", "board", "contract_replaced"})
 
 
 def _panel_meta(record: Mapping[str, Any]) -> dict[str, Any]:
