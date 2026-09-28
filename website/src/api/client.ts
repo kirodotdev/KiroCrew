@@ -23,6 +23,7 @@ import {
   noteStaleOwnerResponse,
 } from './staleOwnerSignal'
 import { edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
+import { installCsrfOriginHandler, noteCsrfOriginResponse } from './csrfOriginSignal'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { installApiTransport } from './apiTransport'
 import { queryClient, invalidateAcrossQueryClients } from './queryClient'
@@ -716,6 +717,121 @@ function handleStaleOwnerSession(): void {
 // the blessed transport can reference the wire contract from one place.
 installStaleOwnerHandler(handleStaleOwnerSession)
 installSessionExpiryHandler(checkSessionExpired)
+
+/**
+ * sessionStorage key remembering that we already auto-reloaded this document to
+ * clear a stale-origin CSRF 403. Survives the reload (that is the point) and
+ * dies with the tab. Guards against a reload loop: if the very first request
+ * after the reload STILL trips the CSRF barrier, the origin mismatch is not a
+ * moved-port staleness this tab can fix by reloading (e.g. the tab is genuinely
+ * open on a host the gateway will never allow), so we stop reloading and let the
+ * actionable message surface instead.
+ */
+const CSRF_ORIGIN_RELOAD_FLAG = 'kc_csrf_origin_reloaded'
+
+/**
+ * Self-heal a stale-origin CSRF refusal (see `csrfOriginSignal`).
+ *
+ * The gateway rejected a mutating call because this tab's `Origin` no longer
+ * matches the gateway's current host:port — overwhelmingly a gateway restart
+ * that moved the port while the tab stayed open. A full-document reload
+ * re-bootstraps the SPA under the gateway's current origin, which is the manual
+ * fix users already discovered; we do it for them, once, behind a visible
+ * notice (detect → message → action) so the recovery is transparent and
+ * debuggable.
+ *
+ * Idempotent and loop-guarded:
+ *  - `_csrfOriginReloadScheduled` collapses a burst of 403s (several queued
+ *    POSTs fail together) into a single reload for this document lifetime.
+ *  - `CSRF_ORIGIN_RELOAD_FLAG` in sessionStorage means we already reloaded once
+ *    and it did not help; we then show the actionable banner instead of looping.
+ *
+ * Embedded (Instances pane) case: mirrors `checkSessionExpired` /
+ * `handleStaleOwnerSession` — hand recovery to the hub rather than reload the
+ * inner frame, since the hub owns the origin and an in-pane reload cannot fix an
+ * origin the pane does not control (and would discard pane state).
+ */
+let _csrfOriginReloadScheduled = false
+
+function handleCsrfOriginBlocked(): void {
+  if (typeof window === 'undefined') return
+  if (_csrfOriginReloadScheduled) return
+  _csrfOriginReloadScheduled = true
+
+  // Embedded in the Instances pane stack (an <iframe> inside the hub): the OUTER
+  // hub owns this document's origin and token, so reloading only the inner frame
+  // re-bootstraps it under the same wrong inner origin and cannot recover — and
+  // it discards pane state the sibling recovery paths (checkSessionExpired,
+  // handleStaleOwnerSession) deliberately preserve. Hand off to the hub, which
+  // reloads the iframe under the correct origin, mirroring those handlers.
+  if (window.parent && window.parent !== window) {
+    // eslint-disable-next-line no-console -- recovery breadcrumb (no secrets)
+    console.warn('[csrf-origin] origin mismatch in embedded pane — handing reload to hub')
+    if (postAuthExpiredToHub()) return
+    // Cross-origin parent unreachable — fall through to a local reload below.
+  }
+
+  let alreadyReloaded = false
+  try {
+    alreadyReloaded = window.sessionStorage.getItem(CSRF_ORIGIN_RELOAD_FLAG) === '1'
+  } catch {
+    // sessionStorage can throw (privacy mode, sandboxed frame). Treat as
+    // not-yet-reloaded: one reload attempt is still the right first move, and
+    // without the flag we simply cannot loop-guard — which the in-memory
+    // `_csrfOriginReloadScheduled` already prevents within a single document.
+    alreadyReloaded = false
+  }
+
+  if (alreadyReloaded) {
+    // The reload did not clear it: this is not a moved-port staleness a reload
+    // fixes. Clear the flag so a genuinely-transient future case can self-heal
+    // again, and fall back to the actionable banner. It is shown via the same
+    // session-expired banner surface, worded for the origin case.
+    // eslint-disable-next-line no-console -- recovery breadcrumb (no secrets)
+    console.warn('[csrf-origin] reload did not clear the mismatch — showing actionable banner')
+    try { window.sessionStorage.removeItem(CSRF_ORIGIN_RELOAD_FLAG) } catch { /* ignore */ }
+    _csrfOriginReloadScheduled = false
+    showSessionExpiredBanner(i18nT('api.client.csrf_origin_stale'))
+    return
+  }
+
+  // Show a brief "reconnecting" notice, then reload. The notice is best-effort:
+  // if DOM insertion fails for any reason we still reload, because the reload is
+  // the actual recovery and must not be gated on the cosmetics.
+  // eslint-disable-next-line no-console -- recovery breadcrumb (no secrets)
+  console.warn('[csrf-origin] origin mismatch — reloading once to re-bootstrap under the current origin')
+  try { window.sessionStorage.setItem(CSRF_ORIGIN_RELOAD_FLAG, '1') } catch { /* ignore */ }
+  try {
+    const el = document.createElement('div')
+    el.setAttribute('role', 'status')
+    el.style.cssText =
+      'position:fixed;top:0;left:0;right:0;z-index:99999;padding:10px 16px;text-align:center;' +
+      'background:#1e3a5f;color:#e0f2fe;font:14px system-ui;box-shadow:0 1px 3px rgba(0,0,0,.3);'
+    el.textContent = i18nT('api.client.csrf_origin_reconnecting')
+    document.body.prepend(el)
+  } catch { /* notice is cosmetic; the reload below is the recovery */ }
+
+  // Defer one frame so the notice paints before navigation tears the page down.
+  const doReload = () => { try { window.location.reload() } catch { /* nothing else to try */ } }
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(() => window.setTimeout(doReload, 150))
+  } else {
+    window.setTimeout(doReload, 150)
+  }
+}
+
+// Clear the stale-origin reload guard on the first SUCCESSFUL response — real
+// proof the origin now matches the gateway — so a genuinely-transient future
+// move-port case can self-heal again. This MUST NOT be done at module load:
+// after an auto-reload the module re-loads before the first request re-fires,
+// so clearing there would wipe the guard every reload and loop.
+function clearCsrfOriginReloadFlag(): void {
+  try {
+    if (typeof window !== 'undefined') window.sessionStorage.removeItem(CSRF_ORIGIN_RELOAD_FLAG)
+  } catch { /* ignore */ }
+}
+
+installCsrfOriginHandler(handleCsrfOriginBlocked)
 export { STALE_OWNER_SESSION_CODE }
 
 /**
@@ -768,11 +884,20 @@ const apiFailure = (r: Response, errText: string): ApiError => {
   // the BODY, which checkSessionExpired (a pre-body Response hook) cannot read;
   // the prompt itself is idempotent, so the factory raising it cannot spam.
   const staleOwnerSession = noteStaleOwnerResponse(r.status, errText)
+  // A stale-origin CSRF refusal: the gateway's own 403 whose body is
+  // "…request origin not allowed." and which carries NO `X-Auth-Required`. It
+  // is neither an auth lapse (silent refresh) nor a proxy page (edge), so it is
+  // checked here, and only when the gateway's auth header is absent. The handler
+  // reloads the document once behind a notice to re-bootstrap under the current
+  // origin; the loop guard downgrades a persistent mismatch to a clear message.
+  const csrfOrigin = authRequired
+    ? false
+    : noteCsrfOriginResponse(r.status, authRequired, errText)
   // A third denial neither of the above can see: a proxy in front of the gateway
   // answered with its own sign-in page, so the signals are status + type + body.
   // Skipped when the gateway's own header is present: that header proves the request
   // reached the gateway, so nothing interposed answered it.
-  const edgeOutcome = authRequired || staleOwnerSession
+  const edgeOutcome = authRequired || staleOwnerSession || csrfOrigin
     ? null
     : noteEdgeAuthChallenge(r.status, r.headers.get('content-type'), errText)
   // Every one of these needs a person: the gateway never saw the request, so a silent
@@ -782,9 +907,11 @@ const apiFailure = (r: Response, errText: string): ApiError => {
     ? i18nT('api.client.stale_owner_session_sign_in_again')
     : authRequired
       ? i18nT('api.client.session_expired_sign_in_again')
-      : edgeChallengeMessage(edgeOutcome)
-        || friendlyErrText(r.status, errText)
-        || `HTTP ${r.status}`
+      : csrfOrigin
+        ? i18nT('api.client.csrf_origin_stale')
+        : edgeChallengeMessage(edgeOutcome)
+          || friendlyErrText(r.status, errText)
+          || `HTTP ${r.status}`
   recordError({
     source: 'api',
     message,
@@ -813,7 +940,7 @@ const apiFailure = (r: Response, errText: string): ApiError => {
  */
 function sendResponseAuthRecovery(r: Response): Response {
   checkSessionExpired(r)
-  if (r.ok) removeAuthBanner()
+  if (r.ok) { removeAuthBanner(); clearCsrfOriginReloadFlag() }
   if (r.status === 401) {
     // Best-effort: a wire may hand back a Response-like without `clone`.
     try {
@@ -825,7 +952,7 @@ function sendResponseAuthRecovery(r: Response): Response {
 
 const j = async (r: Response) => {
   checkSessionExpired(r)
-  if (r.ok) removeAuthBanner()
+  if (r.ok) { removeAuthBanner(); clearCsrfOriginReloadFlag() }
   if (!r.ok) {
     const errText = await r.text()
     throw apiFailure(r, errText)
@@ -839,7 +966,7 @@ const j = async (r: Response) => {
  */
 const jNullable = async (r: Response) => {
   checkSessionExpired(r)
-  if (r.ok) removeAuthBanner()
+  if (r.ok) { removeAuthBanner(); clearCsrfOriginReloadFlag() }
   if (r.status === 204) return null
   if (!r.ok) {
     const errText = await r.text()
