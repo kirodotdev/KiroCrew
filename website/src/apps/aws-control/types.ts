@@ -486,6 +486,14 @@ export interface InstallIdentity {
  * must read back as they set it, while this says whether asking for it achieves
  * anything on this host. A surface that reads only the grant shows transcripts
  * as scheduled while none are produced.
+ * `nightlyBlocked` is the same answer for the scheduled-SNAPSHOT grant: a stable
+ * CODE (`snapshot_mask_off` for the settings cause, `snapshot_host_unsupported` for
+ * the platform limit) when that grant cannot run here, or absent when it can. A code
+ * rather than prose for the same reason `nightlySessionsBlocked` is one -- the console
+ * localizes it, where a backend sentence would be English in every locale. Separate
+ * from `nightly` for the same reason -- the grant reads back as the owner set it, while
+ * this says whether asking achieves anything, so the console can show the switch on AND
+ * say nothing is running instead of implying a backup that never happens.
  * `rememberedArchives` is, per kind, how many uploaded archives the install still
  * holds a record of. A RECORD COUNT, not an inventory, and wrong in both directions:
  * low because the record map is bounded and covers this install alone, high because
@@ -497,6 +505,7 @@ export interface InstallIdentity {
  */
 export interface BackupStatus {
   nightly: boolean
+  nightlyBlocked?: string | null
   nightlySessions?: boolean
   nightlySessionsBlocked?: string | null
   runs: Partial<Record<BackupKind, BackupRun>>

@@ -5288,6 +5288,8 @@
         "backup_start_no_drive": "Esta cuenta aún no tiene unidad. Crea una y luego inicia la copia de seguridad.",
         "backup_nightly": "Copiar cada noche",
         "backup_nightly_hint": "Ejecuta una copia de la memoria y el espacio de trabajo una vez al día.",
+        "backup_nightly_blocked_mask_off": "Las instantáneas nocturnas están en pausa. Vuelve a activar el entorno aislado del agente en Configuración para reanudarlas.",
+        "backup_nightly_blocked_host": "Las instantáneas nocturnas no pueden ejecutarse en este equipo.",
         "backup_nightly_sessions": "Copiar las sesiones cada noche",
         "backup_nightly_sessions_hint": "Sube el archivo de sesiones a la unidad de esta cuenta una vez al día. Contiene tus conversaciones tal cual, sin quitar nada.",
         "backup_nightly_sessions_destination": "Esa unidad es almacenamiento S3 en esta cuenta de AWS, y {{button}} envía el archivo al mismo lugar.",

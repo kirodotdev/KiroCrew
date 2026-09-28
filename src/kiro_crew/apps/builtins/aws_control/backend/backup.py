@@ -162,7 +162,9 @@ from pathlib import Path
 from types import ModuleType as _ModuleType
 from typing import IO, Any, NamedTuple, Optional
 
-from kiro_crew import hooks, snapshot
+from kiro_crew import hooks
+from kiro_crew import platform_compat as _platform_compat
+from kiro_crew import snapshot
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.egress_text import (
@@ -209,11 +211,14 @@ from kiro_crew.apps.builtins.aws_control.backend.backup_parts.state import (
 )
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.traversal import (
     _CAN_PIN_TRAVERSAL,
+    _NO_HELD_PAYLOAD_REASON,
+    _NO_HOLDABLE_BODY_REASON,
     _NO_PINNING_REASON,
     _O_DIRECTORY,
     _O_NOFOLLOW,
     _O_NONBLOCK,
     _add_pinned,
+    kind_unavailable_reason,
 )
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.uploads import (
     CALLER_OWNER,
@@ -314,12 +319,136 @@ def _publish_label(
         )
 
 
+def _refuse_snapshot_without_a_producer_held_payload(account: str, *, caller: str) -> None:
+    """Refuse a snapshot backup where its payload cannot be held from creation.
+
+    The archive path creates its own file and holds it, so on every platform the
+    bytes that are digested are the bytes that are uploaded. The snapshot path
+    cannot: ``snapshot_main`` and :func:`snapshot.prepare_redacted_copy` create and
+    close the payload by name, and only afterwards can this module open it. On POSIX
+    that gap is covered by the sandbox mask over the staging leaf, which removes the
+    writer entirely. On a platform with no such mask the writer is present, and the
+    checks available after the fact -- a regular file, singly named, owned by this
+    user -- all pass for a same-user replacement, while the fingerprint and the
+    upload then read the substituted descriptor and agree with each other.
+
+    So the run stops here, before a payload exists, rather than uploading bytes whose
+    provenance cannot be established. Refusing is the conservative direction: an
+    operator who gets no backup knows they have none, whereas one who gets a
+    substituted backup believes they are covered and finds out at restore, off-host,
+    with nothing left to compare against.
+
+    Archive backups are not affected by this refusal. Whether the sessions kind runs
+    on a given platform is a separate capability question with its own answer, so
+    neither this refusal nor its prose speaks for it. Removing this refusal is tracked
+    as producer-owned deny-write handles for both snapshot producers.
+
+    The same condition is readable BEFORE a run starts, through
+    :func:`kind_unavailable_reason`, which quotes this refusal's own reason. That
+    matters more than it looks: without it the route starts a run, this helper raises
+    inside the worker, and the owner gets a failed run record -- which reads like a
+    broken backup rather than a platform that never offered the feature.
+    """
+    if storage._staging_leaf_is_masked():
+        return
+    # Raise the SAME reason the pre-run check hands the owner, so the before-run answer
+    # (:func:`kind_unavailable_reason`) and the message a run would raise cannot drift
+    # -- the cause-specific prose (settings vs platform) is selected in one place.
+    reason = kind_unavailable_reason(KIND_SNAPSHOT) or _NO_HELD_PAYLOAD_REASON
+    _refuse_upload(account, reason, caller=caller)
+
+
+def _create_pinned_archive_fd(name: str, write_body) -> int:
+    """Build the archive via *write_body* and return its only descriptor, SEALED.
+
+    This is the first half of binding the archive's bytes to one object. The tar is
+    streamed by *write_body* into an exec'd NON-DUMPABLE helper that creates, fills and
+    seals an anonymous memfd (no name, no path) and hands back ONLY the sealed
+    descriptor; the gateway never holds a writable alias. The entry-set digest, the
+    size, the body digest and the upload all come from that one sealed descriptor, and
+    the seal (applied inside the helper, before the fd ever reaches the gateway) makes
+    the kernel refuse every write to the backing memory -- through this descriptor and
+    through any ``/proc/<pid>/fd`` alias a same-UID process could open -- so nothing
+    this run reads can be changed under it, and no same-UID process could change it
+    during the build either (the writable memfd lives only in the helper, whose
+    ``/proc`` entries are root-owned once it clears its dumpable flag).
+
+    No staging path or directory descriptor is taken: a memfd is anonymous
+    RAM-backed, so unlike the snapshot sibling :func:`_open_pinned_archive_fd` (which
+    opens an EXISTING file under a pinned directory) there is nothing on disk to
+    create relative to, and ``name`` is only the memfd's debugging label.
+
+    Only a Linux host with a sealable memfd can hold the archive body unrewritable
+    for the whole (minutes-long) transfer. Every other platform (macOS, the BSDs,
+    Windows, or a Linux without ``memfd_create``/file seals) fails closed inside
+    :func:`storage.build_sealed_upload_body` rather than stage a body only
+    point-in-time safe, and a helper that dies before sealing fails closed too. The
+    sessions archive is already reported unavailable on such a platform by
+    :func:`kind_unavailable_reason`, so this refusal is defence in depth.
+    """
+    return storage.build_sealed_upload_body(write_body, name)
+
+
+def _open_pinned_archive_fd(staging: Path, dir_fd: int, name: str) -> int:
+    """Open an EXISTING ``name`` under *dir_fd* and prove it is a file of its own.
+
+    The snapshot path needs this rather than :func:`_create_pinned_archive_fd`:
+    ``snapshot_main`` and :func:`snapshot.prepare_redacted_copy` create their own
+    files, so the earliest this run can take hold of one is after it exists. The
+    checks are the ones :func:`storage._verified_body_fd` makes, taken here so the
+    fingerprints and the upload share one already-proven descriptor.
+
+    *staging* is the directory the descriptor pins, consulted only where ``os.open``
+    cannot take a ``dir_fd`` -- which on a real host means Windows. This helper is
+    kind-agnostic, but the snapshot RUN never reaches its Windows arm:
+    :func:`run_snapshot_backup` calls
+    :func:`_refuse_snapshot_without_a_producer_held_payload` first, which refuses every
+    host whose staging leaf is not masked, and a non-POSIX host is always unmasked. So
+    the ``dir_fd``-less arm exists for correctness and is exercised by this helper's own
+    tests, not by a live Windows snapshot.
+
+    Raises ``OSError`` when the name is a symlink (``O_NOFOLLOW``) and
+    ``ValueError`` when the descriptor is not a singly-named regular file owned by
+    this process.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    if _platform_compat.IS_POSIX:
+        flags |= getattr(os, "O_NONBLOCK", 0)
+    if os.open in os.supports_dir_fd:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    else:
+        # Windows (and any platform with no ``dir_fd`` support). A live snapshot RUN
+        # never reaches this arm -- the mask refusal in ``run_snapshot_backup`` fires
+        # first on every unmasked host and Windows is always unmasked -- so it exists
+        # for correctness and is exercised by this helper's own tests. The payload was
+        # created and closed by another module before this runs; the reparse-point
+        # refusal + deny-write here opens that existing name without following a link
+        # and without letting another writer in while it is read.
+        fd = _platform_compat.open_file_no_reparse(
+            os.path.join(str(staging), name), deny_write=True
+        )
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("the staged archive is not a regular file")
+        if info.st_nlink != 1:
+            raise ValueError("the staged archive has more than one name")
+        if not _platform_compat.stat_owned_by_current_user(info):
+            raise ValueError("the staged archive is owned by another user")
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
 def run_snapshot_backup(
     account: str, profile: str, region: str, bucket: str, *, caller: str
 ) -> dict[str, Any]:
     """Build a snapshot archive and push it. Returns the run record."""
+    _refuse_snapshot_without_a_producer_held_payload(account, caller=caller)
     identity = install_identity()
-    with tempfile.TemporaryDirectory(prefix="kc-backup-") as tmp:
+    with storage.pinned_staging("kc-backup-") as (tmp_dir, dir_fd):
+        tmp = str(tmp_dir)
         rc = snapshot_main([tmp, "--keep", "1"])
         if rc != 0:
             raise RuntimeError(f"snapshot build failed (rc={rc})")
@@ -341,75 +470,110 @@ def run_snapshot_backup(
         # redacted copy never outlives the push.
         redacted = snapshot.prepare_redacted_copy(archive, Path(tmp), list(snapshot.COMPONENTS))
         payload = redacted or archive
-        # Does this archive carry anything the drive does not already hold? Taken over
-        # the PAYLOAD, so it is the bytes that would actually leave that are compared --
-        # a redaction switch flipped since the last run changes those without the source
-        # tree moving, and this notices.
-        #
-        # Placed BEFORE `_authorize_upload` deliberately. The gate's contract is that it
-        # sits immediately before the PUT with nothing in between, so a decision that
-        # can end the run has to be taken on this side of it; and a run that is about to
-        # send nothing has no upload to authorize in the first place.
-        tree = _tree_fingerprint(payload, volatile_root=True)
-        baseline = _unchanged_baseline(
-            account, KIND_SNAPSHOT, tree, profile, region, bucket, caller=caller
-        )
-        if baseline is not None:
-            record = _record_skip(account, KIND_SNAPSHOT, baseline, tree)
-            if record is not None:
+        # Take hold of the payload ONCE, and read nothing by name afterwards. Both
+        # files here are created by another module (``snapshot_main`` and
+        # ``prepare_redacted_copy``), so the earliest this run can pin one is now --
+        # but from here the entry-set digest, the size, the body digest and the AWS
+        # CLI's body all come from this descriptor. A name resolved once per step in
+        # a directory a same-UID process can write is a different answer per step,
+        # and a file swapped between two of them makes the upload carry bytes
+        # nothing measured. ``_open_pinned_archive_fd`` also refuses a link or a
+        # multiply-named file AT the name, which is what a bundle replaced before
+        # this point would be.
+        verified_fd = _open_pinned_archive_fd(tmp_dir, dir_fd, payload.name)
+        # The snapshot body is a NAMED on-disk file ``snapshot_main`` /
+        # ``prepare_redacted_copy`` wrote, so it is held by pinning its INODE
+        # (``_open_pinned_archive_fd``: O_NOFOLLOW + S_ISREG + st_nlink == 1 + owner),
+        # plus a deny-write open on Windows and the post-transfer ``_assert_same_file``
+        # inode backstop. Its CONTENT is not held from creation: a same-UID writer the
+        # staging census cannot see could rewrite the file. Copying it into a sealed
+        # memfd does NOT fix that -- the copy reads the source through the same
+        # unprotected window, so the seal would freeze already-substituted bytes
+        # (GPT 5.6, storage.py:988). The sound hold is producer-held-from-creation,
+        # which needs ``snapshot_main`` to write into the sealing helper rather than a
+        # named file -- the large follow-up tracked in ``rfc-s3-backup.md``. Until
+        # then the snapshot keeps the inode pin + deny-write + backstop it has always
+        # had (the residual predates this PR); only the sessions archive, whose
+        # producer this PR rewrote, gets the from-creation seal.
+        payload_fd = verified_fd
+        try:
+            # Does this archive carry anything the drive does not already hold? Taken
+            # over the PAYLOAD, so it is the bytes that would actually leave that are
+            # compared -- a redaction switch flipped since the last run changes those
+            # without the source tree moving, and this notices.
+            #
+            # Placed BEFORE `_authorize_upload` deliberately. The gate's contract is
+            # that it sits immediately before the PUT with nothing in between, so a
+            # decision that can end the run has to be taken on this side of it; and a
+            # run that is about to send nothing has no upload to authorize in the
+            # first place.
+            tree = _tree_fingerprint(payload, volatile_root=True, fd=payload_fd)
+            baseline = _unchanged_baseline(
+                account, KIND_SNAPSHOT, tree, profile, region, bucket, caller=caller
+            )
+            if baseline is not None:
+                record = _record_skip(account, KIND_SNAPSHOT, baseline, tree)
+                if record is not None:
+                    logger.info(
+                        "aws-control: snapshot backup for %s found the tree unchanged since "
+                        "the archive already in the drive, so it uploaded nothing",
+                        account,
+                    )
+                    # No label publish and no retention sweep. Both exist to follow a
+                    # push: a local rename reaches the drive on the next real upload
+                    # rather than on this skip, and retention retires copies by count --
+                    # running it here would let a stretch of unchanged nights walk the
+                    # keep window down and delete the very archive the next skip has to
+                    # prove is present.
+                    return record
                 logger.info(
-                    "aws-control: snapshot backup for %s found the tree unchanged since the "
-                    "archive already in the drive, so it uploaded nothing",
+                    "aws-control: snapshot backup for %s could not record its skip because "
+                    "the recorded baseline moved while the archive was being built, so it "
+                    "is uploading a full copy",
                     account,
                 )
-                # No label publish and no retention sweep. Both exist to follow a push:
-                # a local rename reaches the drive on the next real upload rather than
-                # on this skip, and retention retires copies by count -- running it here
-                # would let a stretch of unchanged nights walk the keep window down and
-                # delete the very archive the next skip has to prove is present.
-                return record
-            logger.info(
-                "aws-control: snapshot backup for %s could not record its skip because "
-                "the recorded baseline moved while the archive was being built, so it "
-                "is uploading a full copy",
-                account,
+            # snapshot_main names by second-resolution timestamp; a racing pair
+            # would collide on the key, so the pushed key carries its own
+            # entropy (the _stamp shape) rather than trusting the file name.
+            #
+            # The install id is a SEPARATE segment rather than more characters in the
+            # file name, and the shape is what buys the listing its answer: one
+            # delimited list of ``snapshots/`` returns the id of every install writing
+            # here as a folder AND the pre-namespace archives as files, so "whose is
+            # this" and "is another install writing here" come back together. An id
+            # folded into the name would need the whole prefix walked to learn either.
+            key = (
+                f"{KIND_SUBPATHS[KIND_SNAPSHOT]}/{identity['id']}/"
+                f"kirocrew-snapshot-{_stamp()}.tar.gz"
             )
-        # snapshot_main names by second-resolution timestamp; a racing pair
-        # would collide on the key, so the pushed key carries its own
-        # entropy (the _stamp shape) rather than trusting the file name.
-        #
-        # The install id is a SEPARATE segment rather than more characters in the
-        # file name, and the shape is what buys the listing its answer: one
-        # delimited list of ``snapshots/`` returns the id of every install writing
-        # here as a folder AND the pre-namespace archives as files, so "whose is
-        # this" and "is another install writing here" come back together. An id
-        # folded into the name would need the whole prefix walked to learn either.
-        key = f"{KIND_SUBPATHS[KIND_SNAPSHOT]}/{identity['id']}/kirocrew-snapshot-{_stamp()}.tar.gz"
-        # The gate sits IMMEDIATELY before the archive PUT with nothing in
-        # between -- no other network call, no second upload -- so the decision
-        # that authorizes these bytes cannot go stale before they leave. The
-        # label's own PUT takes its own authorization inside `_publish_label`,
-        # which is why it can safely run afterwards.
-        _authorize_upload(account, profile, region, caller=caller, payload_kind=KIND_SNAPSHOT)
-        version = storage.put_file(
-            profile,
-            region,
-            bucket,
-            "backup",
-            key,
-            str(payload),
-            account=account,
-            timeout=_PUSH_TIMEOUT_SECS,
-        )
-        record = _record_run(
-            account,
-            KIND_SNAPSHOT,
-            key,
-            payload.stat().st_size,
-            _body_fingerprint(payload),
-            version,
-            tree=tree,
-        )
+            # The gate sits IMMEDIATELY before the archive PUT with nothing in
+            # between -- no other network call, no second upload -- so the decision
+            # that authorizes these bytes cannot go stale before they leave. The
+            # label's own PUT takes its own authorization inside `_publish_label`,
+            # which is why it can safely run afterwards.
+            _authorize_upload(account, profile, region, caller=caller, payload_kind=KIND_SNAPSHOT)
+            version = storage.put_file(
+                profile,
+                region,
+                bucket,
+                "backup",
+                key,
+                str(payload),
+                account=account,
+                timeout=_PUSH_TIMEOUT_SECS,
+                body_fd=payload_fd,
+            )
+            record = _record_run(
+                account,
+                KIND_SNAPSHOT,
+                key,
+                os.fstat(payload_fd).st_size,
+                _body_fingerprint(fd=payload_fd),
+                version,
+                tree=tree,
+            )
+        finally:
+            os.close(payload_fd)
         # After the archive and after the ledger write, and with its own
         # authorization: a caption must never delay or endanger the payload.
         _publish_label(account, profile, region, bucket, identity, caller=caller)
@@ -1263,6 +1427,15 @@ def run_sessions_backup(
     """
     if not _CAN_PIN_TRAVERSAL:
         raise RuntimeError(_NO_PINNING_REASON)
+    if not storage.can_hold_upload_body_from_creation():
+        # The archive is created through a descriptor and every later step reads
+        # that descriptor -- but on an unconfined POSIX host the "nameless"
+        # O_TMPFILE inode is still reachable through /proc/<pid>/fd, and macOS/BSD
+        # can express neither a nameless inode nor a deny-write handle, so a
+        # same-UID process could rewrite the bytes before they upload. Refuse here,
+        # before any work, with the same reason `kind_unavailable_reason` quotes to
+        # the owner up front, rather than raising deeper in the build.
+        raise RuntimeError(_NO_HOLDABLE_BODY_REASON)
     identity = install_identity()
     crew_sessions = data_home() / SESSIONS_DIR_NAME
     cli_sessions = kiro_sessions_dir()
@@ -1284,76 +1457,119 @@ def run_sessions_backup(
     # says which of those happened.
     layer_b_scope = "cli" if layer_b and not layer_b_conversations else ""
     _audit_layer_b_decision(account, layer_b, conversations=layer_b_conversations, caller=caller)
-    with tempfile.TemporaryDirectory(prefix="kc-backup-") as tmp:
-        archive = Path(tmp) / f"sessions-{_stamp()}.tar.gz"
-        with tarfile.open(archive, "w:gz") as tar:
-            count = _add_tree(tar, crew_sessions, "crew")
-            # Counted separately because the RECORD below must describe the
-            # archive, not the permission. A permitted run whose kiro-cli
-            # directory is absent or empty -- an ordinary state on a fresh or
-            # CLI-idle install -- adds nothing, and the crew half alone keeps
-            # `count` past the guard, so recording the permission would file a
-            # crew-only archive as carrying Layer B. Nothing corrects that
-            # afterwards: a run record is written once, and a later run with real
-            # kiro-cli files records only itself. A restore reading it would go
-            # looking for a fidelity the object does not hold.
-            layer_b_files = _add_tree(tar, cli_sessions, "cli") if layer_b else 0
-            count += layer_b_files
-            # The kiro-cli terminal conversation store (the chat tables in
-            # `data.sqlite3`) is disjoint from both transcript halves above. It is
-            # exported table-scoped, never file-copied, because the same file holds
-            # live bearer tokens.
-            #
-            # It rides on the SAME permission as the `cli` tree, not on the crew
-            # half's terms, because it is the same data class: both carry what a
-            # model actually held, unredacted, while the crew transcript carries
-            # what was DISPLAYED with display-time redaction applied. An export
-            # that rode ungated would carry unredacted terminal context out of an
-            # install whose operator withheld exactly that, through a second path
-            # the permission does not watch -- and an object already in a bucket
-            # cannot be un-sent. It is also what puts the export behind the
-            # withdrawal recheck below, which keys off `layer_b`.
-            #
-            # Counted separately for the same reason as `layer_b_files`, and rows
-            # and members are kept apart because they disagree: a present-but-empty
-            # allowlisted table is carried so a restore sees the real schema, which
-            # is a `conversations/` root with zero rows. Folding that into the row
-            # count alone would let the "nothing to archive" guard below throw away
-            # members this already wrote.
-            # Gated on the grant's SCOPE, not just on the permission. Both reasonless
-            # exits here are the operator's own decision rather than a failed read: no
-            # grant at all, and a grant whose recorded scope does not reach this
-            # payload. Per the invariant this module walks, a policy decline may be
-            # reasonless -- and deliberately sets NO `conversations_skipped`, because
-            # that field suppresses the retention sweep. Writing one here would freeze
-            # retention on EVERY install that granted Layer B before the export
-            # existed, all at once, which is the unbounded-accumulation failure the
-            # suppression exists to avoid rather than an instance of it.
-            #
-            # And suppressing nothing is SAFE here, which is the claim that makes the
-            # reasonless exit legitimate rather than convenient. The sweep is only
-            # dangerous when an earlier archive holds conversations this run does not,
-            # and no released version wrote one: verified against this PR's base and
-            # against main, where the sessions archive has exactly the `crew` and `cli`
-            # roots and the export does not exist. Nothing needs protecting, under any
-            # grant. The bound on that claim is a host that ran an UNRELEASED build of
-            # this branch, which could hold conversations under a legacy grant; that is
-            # a pre-merge test host, not an operator install.
-            #
-            # Visibility is carried as the grant's STATE, the way the Layer B gate
-            # itself is: `layer_b_scope` below says the grant covers `cli`, rather than
-            # claiming an export was skipped.
-            conversations = (
-                _export_cli_conversations(tar)
-                if layer_b_conversations
-                else _ConversationExport(0, 0)
-            )
-            count += conversations.rows
+    # No staging directory is cut or pinned here: the sessions archive is built into
+    # an anonymous sealable memfd (see _create_pinned_archive_fd), which has no
+    # directory entry and resolves no path, so there is nothing on disk for a pinned
+    # directory handle to protect. (The snapshot path still pins a real directory --
+    # its producers write named files -- which is run_snapshot_backup's own concern.)
+    name = f"sessions-{_stamp()}.tar.gz"
+    # The archive is created through a descriptor, not through a name, and that
+    # The archive is built THROUGH a write pipe into an exec'd non-dumpable sealing
+    # helper (see storage.build_sealed_upload_body / sealed_body): the gateway never
+    # holds a writable memfd, so a same-UID process -- even a confined one sharing
+    # this pid namespace and /proc -- cannot reach the pre-seal bytes through
+    # /proc/<pid>/fd. The helper creates, fills and seals the memfd and hands back
+    # ONLY the sealed descriptor, which is the only thing every later step reads: the
+    # entry-set digest, the size, the body digest and the AWS CLI's body all come
+    # from it. There is no name for a same-UID process to plant an entry at or
+    # re-point mid-build -- the memfd has none -- so the whole class of
+    # name-resolution races the named-file design had to guard is simply absent.
+    build: dict[str, Any] = {}
+
+    def _write_tar(dst_fd: int) -> None:
+        # Streams the gzip tar into the helper's write pipe. closefd=False: the pipe
+        # fd is owned by build_sealed_body, which closes it to signal EOF once this
+        # returns; closing it here would race that. The counts the record below needs
+        # are produced during the write, so they are stashed in ``build``.
+        with os.fdopen(dst_fd, "wb", closefd=False) as raw:
+            with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+                count = _add_tree(tar, crew_sessions, "crew")
+                # Counted separately because the RECORD below must describe the
+                # archive, not the permission. A permitted run whose kiro-cli
+                # directory is absent or empty -- an ordinary state on a fresh or
+                # CLI-idle install -- adds nothing, and the crew half alone keeps
+                # `count` past the guard, so recording the permission would file a
+                # crew-only archive as carrying Layer B. Nothing corrects that
+                # afterwards: a run record is written once, and a later run with real
+                # kiro-cli files records only itself. A restore reading it would go
+                # looking for a fidelity the object does not hold.
+                layer_b_files = _add_tree(tar, cli_sessions, "cli") if layer_b else 0
+                count += layer_b_files
+                # The kiro-cli terminal conversation store (the chat tables in
+                # `data.sqlite3`) is disjoint from both transcript halves above. It is
+                # exported table-scoped, never file-copied, because the same file holds
+                # live bearer tokens.
+                #
+                # It rides on the SAME permission as the `cli` tree, not on the crew
+                # half's terms, because it is the same data class: both carry what a
+                # model actually held, unredacted, while the crew transcript carries
+                # what was DISPLAYED with display-time redaction applied. An export
+                # that rode ungated would carry unredacted terminal context out of an
+                # install whose operator withheld exactly that, through a second path
+                # the permission does not watch -- and an object already in a bucket
+                # cannot be un-sent. It is also what puts the export behind the
+                # withdrawal recheck below, which keys off `layer_b`.
+                #
+                # Counted separately for the same reason as `layer_b_files`, and rows
+                # and members are kept apart because they disagree: a present-but-empty
+                # allowlisted table is carried so a restore sees the real schema, which
+                # is a `conversations/` root with zero rows. Folding that into the row
+                # count alone would let the "nothing to archive" guard below throw away
+                # members this already wrote.
+                # Gated on the grant's SCOPE, not just on the permission. Both reasonless
+                # exits here are the operator's own decision rather than a failed read: no
+                # grant at all, and a grant whose recorded scope does not reach this
+                # payload. Per the invariant this module walks, a policy decline may be
+                # reasonless -- and deliberately sets NO `conversations_skipped`, because
+                # that field suppresses the retention sweep. Writing one here would freeze
+                # retention on EVERY install that granted Layer B before the export
+                # existed, all at once, which is the unbounded-accumulation failure the
+                # suppression exists to avoid rather than an instance of it.
+                #
+                # And suppressing nothing is SAFE here, which is the claim that makes the
+                # reasonless exit legitimate rather than convenient. The sweep is only
+                # dangerous when an earlier archive holds conversations this run does not,
+                # and no released version wrote one: verified against this PR's base and
+                # against main, where the sessions archive has exactly the `crew` and `cli`
+                # roots and the export does not exist. Nothing needs protecting, under any
+                # grant. The bound on that claim is a host that ran an UNRELEASED build of
+                # this branch, which could hold conversations under a legacy grant; that is
+                # a pre-merge test host, not an operator install.
+                #
+                # Visibility is carried as the grant's STATE, the way the Layer B gate
+                # itself is: `layer_b_scope` below says the grant covers `cli`, rather than
+                # claiming an export was skipped.
+                conversations = (
+                    _export_cli_conversations(tar)
+                    if layer_b_conversations
+                    else _ConversationExport(0, 0)
+                )
+                count += conversations.rows
+        build["count"] = count
+        build["layer_b_files"] = layer_b_files
+        build["conversations"] = conversations
+
+    # Builds, fills and SEALS inside the non-dumpable helper; returns the sealed fd.
+    # On a non-Linux/no-memfd/unmasked host this fails closed at creation, and if the
+    # helper dies before sealing the parent gets no descriptor and fails closed too --
+    # nothing unsealed ever reaches the upload.
+    archive_fd = _create_pinned_archive_fd(name, _write_tar)
+    try:
+        count = build["count"]
+        layer_b_files = build["layer_b_files"]
+        conversations = build["conversations"]
         if count == 0 and conversations.members == 0:
             raise RuntimeError("no session files to archive")
+        # The body is ALREADY sealed by the helper before this descriptor reached the
+        # gateway: the kernel refuses every write to the backing memory -- through this
+        # descriptor and through any /proc/<pid>/fd alias a same-UID process could open
+        # -- so the size, the tree digest, the body digest and the uploaded bytes all
+        # describe one object nothing can change for the rest of the transfer.
         # `volatile_root=False`: this archive's roots are `crew` and `cli`, which are
         # meaningful and stable. Only the snapshot bundle carries a timestamped root.
-        tree = _tree_fingerprint(archive, volatile_root=False)
+        # No name is passed: the entry set is read from the sealed descriptor (``fd``),
+        # not from a path -- there is no staged file, so None is the honest label.
+        tree = _tree_fingerprint(None, volatile_root=False, fd=archive_fd)
         baseline = _unchanged_baseline(
             account, KIND_SESSIONS, tree, profile, region, bucket, caller=caller
         )
@@ -1383,7 +1599,7 @@ def run_sessions_backup(
                 "is uploading a full copy",
                 account,
             )
-        key = f"{KIND_SUBPATHS[KIND_SESSIONS]}/{identity['id']}/{archive.name}"
+        key = f"{KIND_SUBPATHS[KIND_SESSIONS]}/{identity['id']}/{name}"
         # A WITHDRAWAL landing during the build must not ship. The permission is
         # read once at the top so one answer decides the whole tar, and that
         # invariant is deliberate -- but it leaves a window: enabled at the
@@ -1414,8 +1630,8 @@ def run_sessions_backup(
         #
         # The attended owner's withheld run is the one shape with neither: both
         # scheduled-only re-reads are skipped, the recheck short-circuits, and what
-        # remains -- `is_app_enabled`, `aws_consent`, STS -- is not stored in the
-        # engine's state file and takes no lock of ours, so an exclusive hold would
+        # remains -- `is_app_enabled`, `aws_consent`, STS -- is not stored in this
+        # module's state file and takes no lock of ours, so an exclusive hold would
         # order nothing. Taking none satisfies the invariant directly:
         # `_authorize_upload` and `put_file` sit adjacent with no blocking call
         # between them. Taking one costs what an exclusive hold costs -- the lock
@@ -1444,7 +1660,7 @@ def run_sessions_backup(
         # Nothing inside the block re-enters this lock. `_authorize_upload` reaches
         # `is_app_enabled`, `aws_consent`, an STS call, `_refuse_upload`, and -- for a
         # scheduled caller -- the unattended grant readers and
-        # `scheduled_sessions_blocked_reason`. The last two READ the engine's state
+        # `scheduled_sessions_blocked_reason`. The last two READ this module's state
         # file, which is what the hold above orders them against, but they read it
         # without taking the lock, so naming them here costs no reentrancy. The list
         # is written out in full deliberately: a list that stops at STS reads as
@@ -1519,16 +1735,17 @@ def run_sessions_backup(
                 bucket,
                 "backup",
                 key,
-                str(archive),
+                name,
                 account=account,
                 timeout=_PUSH_TIMEOUT_SECS,
+                body_fd=archive_fd,
             )
         record = _record_run(
             account,
             KIND_SESSIONS,
             key,
-            archive.stat().st_size,
-            _body_fingerprint(archive),
+            os.fstat(archive_fd).st_size,
+            _body_fingerprint(fd=archive_fd),
             version,
             tree=tree,
             layer_b=(layer_b_files > 0 or conversations.members > 0),
@@ -1656,6 +1873,8 @@ def run_sessions_backup(
                 recheck_conversations_retained=conversations.members == 0,
             )
         return record
+    finally:
+        os.close(archive_fd)
 
 
 #: The two Job SDK kinds this app registers. Same strings as ``KIND_*`` so a run
@@ -2245,7 +2464,10 @@ if _typing.TYPE_CHECKING:
         _SNAPSHOT_MANIFEST_NAME,
         _VOLATILE_MANIFEST_FIELDS,
         _archive_entries,
+        _entries_of,
         _manifest_digest,
+        _OffsetReader,
+        _read_at,
     )
     from kiro_crew.apps.builtins.aws_control.backend.backup_parts.identity import (  # noqa: F401
         _INSTALL_ID_RE,
@@ -2295,6 +2517,8 @@ if _typing.TYPE_CHECKING:
         _a_day_since_last_run,
         _backoff_withholds,
         _granted,
+        _log_snapshot_withheld_once,
+        _snapshot_withheld_state,
         _unattended_sessions_redaction_gap,
         due_for_nightly,
         due_for_sessions_nightly,
@@ -2306,6 +2530,8 @@ if _typing.TYPE_CHECKING:
         record_nightly_failure,
         scheduled_sessions_blocked_code,
         scheduled_sessions_blocked_reason,
+        scheduled_snapshot_blocked_code,
+        scheduled_snapshot_blocked_reason,
         set_nightly,
         set_nightly_sessions,
         snapshot_redact,
@@ -2377,7 +2603,10 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.builtins.aws_control.backend.backup_parts.traversal import (  # noqa: F401
         _MAX_TREE_DEPTH,
-        kind_unavailable_reason,
+        _NO_MASK_PAYLOAD_REASON,
+        SNAPSHOT_BLOCK_HOST_UNSUPPORTED,
+        SNAPSHOT_BLOCK_MASK_OFF,
+        snapshot_block_code,
     )
     from kiro_crew.apps.builtins.aws_control.backend.backup_parts.uploads import (  # noqa: F401
         _STOP,

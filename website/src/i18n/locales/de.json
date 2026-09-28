@@ -5208,6 +5208,8 @@
         "backup_start_no_drive": "Dieses Konto hat noch kein Laufwerk. Erstellen Sie eines und starten Sie die Sicherung dann.",
         "backup_nightly": "Jede Nacht sichern",
         "backup_nightly_hint": "Erstellt einmal täglich eine Sicherung von Speicher & Arbeitsbereich.",
+        "backup_nightly_blocked_mask_off": "Nächtliche Snapshots sind angehalten. Aktiviere die Agent-Sandbox in den Einstellungen wieder, um sie fortzusetzen.",
+        "backup_nightly_blocked_host": "Nächtliche Snapshots können auf diesem Computer nicht ausgeführt werden.",
         "backup_nightly_sessions": "Sitzungen jede Nacht sichern",
         "backup_nightly_sessions_hint": "Lädt das Sitzungsarchiv einmal täglich auf das Laufwerk dieses Kontos hoch. Es enthält Ihre Unterhaltungen unverändert, es wird nichts entfernt.",
         "backup_nightly_sessions_destination": "Dieses Laufwerk ist S3-Speicher in diesem AWS-Konto, und {{button}} sendet das Archiv an denselben Ort.",

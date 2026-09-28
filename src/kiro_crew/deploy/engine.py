@@ -16,6 +16,7 @@ the existing bucket + distribution by the ``kirocrew:site`` tag and reuses them
 opaque ``kirocrew-web-<random>`` (no account id); idempotency never relies on
 re-deriving it.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,6 +25,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import time
 from typing import Any, Optional
 
@@ -308,6 +310,7 @@ def run_aws(
     timeout: int = 30,
     *,
     extra_visible_dirs: tuple[str, ...] = (),
+    stdin_fd: int | None = None,
 ) -> tuple[int, str, str]:
     """Run an ``aws`` CLI command. Returns (returncode, stdout, stderr).
 
@@ -326,17 +329,35 @@ def run_aws(
     same-UID agent cannot swap the destination for a link) still needs the CLI
     itself to see that directory. Naming it here lifts the mask for the one
     fixed-argv child, never for the agent.
+
+    ``stdin_fd`` becomes the child's standard input, which is how a caller uploads
+    a file it has already opened and checked rather than a name the child would
+    resolve again: it pairs with ``--body /dev/stdin``, so the bytes the CLI sends
+    come from THAT descriptor and no path is resolved at all. The descriptor stays
+    the caller's to close. Omitted, ``stdin`` is ``DEVNULL`` -- closed, not
+    inherited -- so the CLI and any ``credential_process`` it spawns get no
+    inherited handle, and the dedicated descriptor is the only way a body reaches
+    the child.
     """
     sandboxed, cleanup = wrap_argv(
         _aws(args, profile), mode="standard", extra_visible_dirs=extra_visible_dirs
     )
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
+    # stdin is CLOSED by default rather than inherited. The CLI resolves credentials
+    # through its own provider chain, which can spawn a ``credential_process`` child;
+    # that child would inherit whatever this process's stdin happens to be, so an
+    # inherited handle is a path for one subprocess's input to reach another. A body
+    # upload passes its OWN descriptor here (paired with ``--body /dev/stdin``); every
+    # other call gets ``DEVNULL``, so no inherited handle is exposed to the CLI or to
+    # anything it spawns.
+    extra: dict[str, Any] = {"stdin": subprocess.DEVNULL if stdin_fd is None else stdin_fd}
     try:
         proc = run_limited(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
             sandboxed,
             capture_output=True,
             text=True,
             timeout=timeout,
+            **extra,
         )
     finally:
         if cleanup:
@@ -349,7 +370,9 @@ def run_aws(
 
 def map_access_denied(stderr: str) -> Optional[str]:
     """If stderr is an AccessDenied, return the IAM statement Sid to add (else None)."""
-    if not any(tok in stderr for tok in ("AccessDenied", "not authorized", "UnauthorizedOperation")):
+    if not any(
+        tok in stderr for tok in ("AccessDenied", "not authorized", "UnauthorizedOperation")
+    ):
         return None
     for action, sid in _ACTION_STATEMENT_HINTS.items():
         if action in stderr:
@@ -383,17 +406,18 @@ def _checked(
     action: str,
     timeout: int = 30,
     extra_visible_dirs: tuple[str, ...] = (),
+    stdin_fd: int | None = None,
 ) -> str:
     """Run an aws call, raising AWSError (with AccessDenied mapping) on failure."""
     # Forwarded only when set: ``run_aws`` is the chokepoint tests monkeypatch,
-    # and a call without a visible-dir grant keeps the exact call shape those
-    # stubs were written against.
+    # and a call without a visible-dir grant or a body descriptor keeps the exact
+    # call shape those stubs were written against.
+    extra: dict[str, Any] = {}
     if extra_visible_dirs:
-        rc, out, err = run_aws(
-            args, profile, timeout=timeout, extra_visible_dirs=extra_visible_dirs
-        )
-    else:
-        rc, out, err = run_aws(args, profile, timeout=timeout)
+        extra["extra_visible_dirs"] = extra_visible_dirs
+    if stdin_fd is not None:
+        extra["stdin_fd"] = stdin_fd
+    rc, out, err = run_aws(args, profile, timeout=timeout, **extra)
     if rc != 0:
         # Only attach an IAM-statement remediation hint when the failure is a
         # genuine authorization error. Client-side errors (NoRegion,
@@ -406,7 +430,10 @@ def _checked(
 
 # --- discovery (stateless-by-tag) -----------------------------------------
 
-def find_site_by_tag(site_id: str, profile: str, region: str = DEFAULT_REGION) -> Optional[dict[str, str]]:
+
+def find_site_by_tag(
+    site_id: str, profile: str, region: str = DEFAULT_REGION
+) -> Optional[dict[str, str]]:
     """Resolve an existing site's bucket + distribution by the kirocrew:site tag.
 
     Discovery is a TRUST decision — deploy syncs with --delete, recall
@@ -422,11 +449,15 @@ def find_site_by_tag(site_id: str, profile: str, region: str = DEFAULT_REGION) -
     """
     out = _checked(
         [
-            "resourcegroupstaggingapi", "get-resources",
-            "--tag-filters", f"Key={TAG_SITE},Values={site_id}",
+            "resourcegroupstaggingapi",
+            "get-resources",
+            "--tag-filters",
+            f"Key={TAG_SITE},Values={site_id}",
             f"Key={TAG_MANAGED},Values=true",
-            "--region", region or DEFAULT_REGION,
-            "--output", "json",
+            "--region",
+            region or DEFAULT_REGION,
+            "--output",
+            "json",
         ],
         profile,
         action="tag:GetResources",
@@ -465,6 +496,7 @@ def find_site_by_tag(site_id: str, profile: str, region: str = DEFAULT_REGION) -
 
 # --- create primitives -----------------------------------------------------
 
+
 def _harden_bucket(bucket: str, profile: str, tagset: str) -> None:
     """Apply every at-rest control for a deploy bucket. Idempotent puts, so this is
     safe whether the bucket was freshly created or recovered from a partial run.
@@ -474,25 +506,45 @@ def _harden_bucket(bucket: str, profile: str, tagset: str) -> None:
     runs. ``tagset`` is the only per-caller difference.
     """
     _checked(
-        ["s3api", "put-public-access-block", "--bucket", bucket,
-         "--public-access-block-configuration",
-         "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"],
-        profile, action="s3:PutBucketPublicAccessBlock",
+        [
+            "s3api",
+            "put-public-access-block",
+            "--bucket",
+            bucket,
+            "--public-access-block-configuration",
+            "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true",
+        ],
+        profile,
+        action="s3:PutBucketPublicAccessBlock",
     )
     _checked(
-        ["s3api", "put-bucket-ownership-controls", "--bucket", bucket,
-         "--ownership-controls", "Rules=[{ObjectOwnership=BucketOwnerEnforced}]"],
-        profile, action="s3:PutBucketOwnershipControls",
+        [
+            "s3api",
+            "put-bucket-ownership-controls",
+            "--bucket",
+            bucket,
+            "--ownership-controls",
+            "Rules=[{ObjectOwnership=BucketOwnerEnforced}]",
+        ],
+        profile,
+        action="s3:PutBucketOwnershipControls",
     )
     _checked(
-        ["s3api", "put-bucket-encryption", "--bucket", bucket,
-         "--server-side-encryption-configuration",
-         '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'],
-        profile, action="s3:PutEncryptionConfiguration",
+        [
+            "s3api",
+            "put-bucket-encryption",
+            "--bucket",
+            bucket,
+            "--server-side-encryption-configuration",
+            '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}',
+        ],
+        profile,
+        action="s3:PutEncryptionConfiguration",
     )
     _checked(
         ["s3api", "put-bucket-tagging", "--bucket", bucket, "--tagging", tagset],
-        profile, action="s3:PutBucketTagging",
+        profile,
+        action="s3:PutBucketTagging",
     )
     # Versioning is NOT enabled here, and neither is a noncurrent-version
     # lifecycle rule, even though the CloudFormation OriginBucket sets both and
@@ -550,9 +602,16 @@ def create_oac(name: str, profile: str) -> str:
         "SigningProtocol": "sigv4",
     }
     out = _checked(
-        ["cloudfront", "create-origin-access-control",
-         "--origin-access-control-config", json.dumps(config), "--output", "json"],
-        profile, action="cloudfront:CreateOriginAccessControl",
+        [
+            "cloudfront",
+            "create-origin-access-control",
+            "--origin-access-control-config",
+            json.dumps(config),
+            "--output",
+            "json",
+        ],
+        profile,
+        action="cloudfront:CreateOriginAccessControl",
     )
     return json.loads(out)["OriginAccessControl"]["Id"]
 
@@ -576,12 +635,14 @@ def distribution_config(
         "DefaultRootObject": "index.html",
         "Origins": {
             "Quantity": 1,
-            "Items": [{
-                "Id": origin_id,
-                "DomainName": origin_domain,
-                "OriginAccessControlId": oac_id,
-                "S3OriginConfig": {"OriginAccessIdentity": ""},
-            }],
+            "Items": [
+                {
+                    "Id": origin_id,
+                    "DomainName": origin_domain,
+                    "OriginAccessControlId": oac_id,
+                    "S3OriginConfig": {"OriginAccessIdentity": ""},
+                }
+            ],
         },
         "DefaultCacheBehavior": {
             "TargetOriginId": origin_id,
@@ -599,9 +660,15 @@ def distribution_config(
     }
 
 
-def create_distribution(bucket: str, region: str, oac_id: str, site_id: str, profile: str,
-                        tags: list[dict[str, str]] | None = None,
-                        response_headers_policy_id: str = "") -> dict[str, str]:
+def create_distribution(
+    bucket: str,
+    region: str,
+    oac_id: str,
+    site_id: str,
+    profile: str,
+    tags: list[dict[str, str]] | None = None,
+    response_headers_policy_id: str = "",
+) -> dict[str, str]:
     """Create a tagged distribution (tag-on-create, §5). Returns id/arn/domain.
 
     ``tags`` overrides the tag set written on create. It exists because the tags below
@@ -615,15 +682,28 @@ def create_distribution(bucket: str, region: str, oac_id: str, site_id: str, pro
         "DistributionConfig": distribution_config(
             bucket, region, oac_id, response_headers_policy_id
         ),
-        "Tags": {"Items": tags if tags is not None else [
-            {"Key": TAG_MANAGED, "Value": "true"},
-            {"Key": TAG_SITE, "Value": site_id},
-        ]},
+        "Tags": {
+            "Items": (
+                tags
+                if tags is not None
+                else [
+                    {"Key": TAG_MANAGED, "Value": "true"},
+                    {"Key": TAG_SITE, "Value": site_id},
+                ]
+            )
+        },
     }
     out = _checked(
-        ["cloudfront", "create-distribution-with-tags",
-         "--distribution-config-with-tags", json.dumps(payload), "--output", "json"],
-        profile, action="cloudfront:CreateDistributionWithTags",
+        [
+            "cloudfront",
+            "create-distribution-with-tags",
+            "--distribution-config-with-tags",
+            json.dumps(payload),
+            "--output",
+            "json",
+        ],
+        profile,
+        action="cloudfront:CreateDistributionWithTags",
     )
     dist = json.loads(out)["Distribution"]
     return {"id": dist["Id"], "arn": dist["ARN"], "domain": dist["DomainName"]}
@@ -662,7 +742,8 @@ def put_oac_bucket_policy(bucket: str, distribution_arn: str, profile: str) -> N
     }
     _checked(
         ["s3api", "put-bucket-policy", "--bucket", bucket, "--policy", json.dumps(policy)],
-        profile, action="s3:PutBucketPolicy",
+        profile,
+        action="s3:PutBucketPolicy",
     )
 
 
@@ -670,26 +751,46 @@ def sync_dir(src_dir: str, bucket: str, profile: str) -> None:
     # --no-follow-symlinks: never upload a symlink's target (defense-in-depth
     # against an in-dir symlink pointing at a sensitive file slipping past the
     # handler's is_sensitive_path guard).
-    _checked(["s3", "sync", src_dir, f"s3://{bucket}", "--delete", "--no-follow-symlinks"],
-             profile, action="s3:PutObject", timeout=120)
+    _checked(
+        ["s3", "sync", src_dir, f"s3://{bucket}", "--delete", "--no-follow-symlinks"],
+        profile,
+        action="s3:PutObject",
+        timeout=120,
+    )
 
 
 def invalidate(distribution_id: str, profile: str) -> None:
-    _checked(["cloudfront", "create-invalidation", "--distribution-id", distribution_id,
-              "--paths", "/*"], profile, action="cloudfront:CreateInvalidation")
+    _checked(
+        [
+            "cloudfront",
+            "create-invalidation",
+            "--distribution-id",
+            distribution_id,
+            "--paths",
+            "/*",
+        ],
+        profile,
+        action="cloudfront:CreateInvalidation",
+    )
 
 
 def distribution_status(distribution_id: str, profile: str) -> tuple[str, str]:
     """Return (status, domain) read live from the distribution (§5 live status)."""
-    out = _checked(["cloudfront", "get-distribution", "--id", distribution_id, "--output", "json"],
-                   profile, action="cloudfront:GetDistribution")
+    out = _checked(
+        ["cloudfront", "get-distribution", "--id", distribution_id, "--output", "json"],
+        profile,
+        action="cloudfront:GetDistribution",
+    )
     dist = json.loads(out)["Distribution"]
     return dist.get("Status", ""), dist.get("DomainName", "")
 
 
 # --- orchestration ---------------------------------------------------------
 
-def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGION) -> dict[str, Any]:
+
+def deploy(
+    site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGION
+) -> dict[str, Any]:
     """Idempotent deploy of ``src_dir`` to the site ``site_id``. Returns a result dict.
 
     First deploy: create bucket → OAC → distribution → bucket-policy → sync → invalidate.
@@ -704,8 +805,14 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
         sync_dir(src_dir, bucket, profile)
         invalidate(dist_id, profile)
         status, domain = distribution_status(dist_id, profile)
-        return {"site_id": site_id, "bucket": bucket, "distribution_id": dist_id,
-                "url": f"https://{domain}/", "status": status, "reused": True}
+        return {
+            "site_id": site_id,
+            "bucket": bucket,
+            "distribution_id": dist_id,
+            "url": f"https://{domain}/",
+            "status": status,
+            "reused": True,
+        }
 
     # Partial-deploy recovery (§5): a prior run created + tagged the bucket but
     # failed before the distribution existed. Reuse that bucket rather than
@@ -719,8 +826,11 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
             candidate = random_bucket_name()
             rc, _out, err = run_aws(
                 ["s3api", "create-bucket", "--bucket", candidate, "--region", region]
-                + ([] if region == "us-east-1"
-                   else ["--create-bucket-configuration", f"LocationConstraint={region}"]),
+                + (
+                    []
+                    if region == "us-east-1"
+                    else ["--create-bucket-configuration", f"LocationConstraint={region}"]
+                ),
                 profile,
             )
             if rc == 0:
@@ -736,7 +846,8 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
     # Harden the bucket (BPA / ownership / encryption / tag / versioning /
     # lifecycle / access logging) through the one shared helper.
     _harden_bucket(
-        bucket, profile,
+        bucket,
+        profile,
         f"TagSet=[{{Key={TAG_MANAGED},Value=true}},{{Key={TAG_SITE},Value={site_id}}}]",
     )
 
@@ -746,17 +857,28 @@ def deploy(site_id: str, src_dir: str, profile: str, region: str = DEFAULT_REGIO
     put_oac_bucket_policy(bucket, dist["arn"], profile)
     sync_dir(src_dir, bucket, profile)
     invalidate(dist["id"], profile)
-    return {"site_id": site_id, "bucket": bucket, "distribution_id": dist["id"],
-            "oac_id": oac_id,
-            "url": f"https://{dist['domain']}/", "status": "InProgress", "reused": False}
+    return {
+        "site_id": site_id,
+        "bucket": bucket,
+        "distribution_id": dist["id"],
+        "oac_id": oac_id,
+        "url": f"https://{dist['domain']}/",
+        "status": "InProgress",
+        "reused": False,
+    }
 
 
 # --- recall / destroy / list ----------------------------------------------
 
+
 def empty_bucket(bucket: str, profile: str) -> None:
     """Remove all objects from the bucket (s3 rm --recursive)."""
-    _checked(["s3", "rm", f"s3://{bucket}", "--recursive"], profile,
-             action="s3:DeleteObject", timeout=120)
+    _checked(
+        ["s3", "rm", f"s3://{bucket}", "--recursive"],
+        profile,
+        action="s3:DeleteObject",
+        timeout=120,
+    )
 
 
 def recall(site_id: str, profile: str, region: str = DEFAULT_REGION) -> dict[str, Any]:
@@ -773,13 +895,20 @@ def recall(site_id: str, profile: str, region: str = DEFAULT_REGION) -> dict[str
         empty_bucket(site["bucket"], profile)
     if site.get("distribution_id"):
         invalidate(site["distribution_id"], profile)
-    return {"site_id": site_id, "recalled": True,
-            "bucket": site.get("bucket", ""), "distribution_id": site.get("distribution_id", "")}
+    return {
+        "site_id": site_id,
+        "recalled": True,
+        "bucket": site.get("bucket", ""),
+        "distribution_id": site.get("distribution_id", ""),
+    }
 
 
 def _get_distribution_config(dist_id: str, profile: str) -> tuple[str, dict[str, Any]]:
-    out = _checked(["cloudfront", "get-distribution-config", "--id", dist_id, "--output", "json"],
-                   profile, action="cloudfront:GetDistributionConfig")
+    out = _checked(
+        ["cloudfront", "get-distribution-config", "--id", dist_id, "--output", "json"],
+        profile,
+        action="cloudfront:GetDistributionConfig",
+    )
     data = json.loads(out)
     return data["ETag"], data["DistributionConfig"]
 
@@ -788,9 +917,22 @@ def _disable_distribution(dist_id: str, profile: str) -> None:
     etag, config = _get_distribution_config(dist_id, profile)
     if config.get("Enabled", True):
         config["Enabled"] = False
-        _checked(["cloudfront", "update-distribution", "--id", dist_id,
-                  "--distribution-config", json.dumps(config), "--if-match", etag, "--output", "json"],
-                 profile, action="cloudfront:UpdateDistribution")
+        _checked(
+            [
+                "cloudfront",
+                "update-distribution",
+                "--id",
+                dist_id,
+                "--distribution-config",
+                json.dumps(config),
+                "--if-match",
+                etag,
+                "--output",
+                "json",
+            ],
+            profile,
+            action="cloudfront:UpdateDistribution",
+        )
 
 
 def _wait_until_deployed(dist_id: str, profile: str) -> None:
@@ -805,8 +947,11 @@ def _wait_until_deployed(dist_id: str, profile: str) -> None:
 
 def _delete_distribution(dist_id: str, profile: str) -> None:
     etag, _config = _get_distribution_config(dist_id, profile)  # latest ETag after disable
-    _checked(["cloudfront", "delete-distribution", "--id", dist_id, "--if-match", etag],
-             profile, action="cloudfront:DeleteDistribution")
+    _checked(
+        ["cloudfront", "delete-distribution", "--id", dist_id, "--if-match", etag],
+        profile,
+        action="cloudfront:DeleteDistribution",
+    )
 
 
 def _delete_oac_for_site(site_id: str, profile: str) -> bool:
@@ -821,8 +966,11 @@ def _delete_oac_for_site(site_id: str, profile: str) -> bool:
     skipped/denied and is deferred to the reaper.
     """
     try:
-        out = _checked(["cloudfront", "list-origin-access-controls", "--output", "json"],
-                       profile, action="cloudfront:ListOriginAccessControls")
+        out = _checked(
+            ["cloudfront", "list-origin-access-controls", "--output", "json"],
+            profile,
+            action="cloudfront:ListOriginAccessControls",
+        )
         items = (json.loads(out).get("OriginAccessControlList", {}) or {}).get("Items", [])
         # Exact-suffix match — a bare prefix cross-matches overlapping
         # site ids (see reaper_lambda). Names: <prefix>-<6 hex>.
@@ -830,11 +978,24 @@ def _delete_oac_for_site(site_id: str, profile: str) -> bool:
         for item in items:
             if oac_re.fullmatch(str(item.get("Name", ""))):
                 oac_id = item["Id"]
-                got = _checked(["cloudfront", "get-origin-access-control", "--id", oac_id, "--output", "json"],
-                               profile, action="cloudfront:GetOriginAccessControl")
+                got = _checked(
+                    ["cloudfront", "get-origin-access-control", "--id", oac_id, "--output", "json"],
+                    profile,
+                    action="cloudfront:GetOriginAccessControl",
+                )
                 etag = json.loads(got).get("ETag", "")
-                _checked(["cloudfront", "delete-origin-access-control", "--id", oac_id, "--if-match", etag],
-                         profile, action="cloudfront:DeleteOriginAccessControl")
+                _checked(
+                    [
+                        "cloudfront",
+                        "delete-origin-access-control",
+                        "--id",
+                        oac_id,
+                        "--if-match",
+                        etag,
+                    ],
+                    profile,
+                    action="cloudfront:DeleteOriginAccessControl",
+                )
     except AWSError:
         logger.warning("deploy-web: OAC cleanup deferred to reaper for %s", site_id)
         return False
@@ -858,8 +1019,13 @@ def destroy(site_id: str, profile: str, region: str = DEFAULT_REGION) -> dict[st
     if bucket:
         empty_bucket(bucket, profile)
         _checked(["s3api", "delete-bucket", "--bucket", bucket], profile, action="s3:DeleteBucket")
-    return {"site_id": site_id, "destroyed": True, "bucket": bucket,
-            "distribution_id": dist_id, "oac_cleanup": "done" if oac_cleaned else "deferred-to-reaper"}
+    return {
+        "site_id": site_id,
+        "destroyed": True,
+        "bucket": bucket,
+        "distribution_id": dist_id,
+        "oac_cleanup": "done" if oac_cleaned else "deferred-to-reaper",
+    }
 
 
 def list_sites(profile: str, region: str = DEFAULT_REGION) -> list[dict[str, Any]]:
@@ -869,10 +1035,18 @@ def list_sites(profile: str, region: str = DEFAULT_REGION) -> list[dict[str, Any
     from each distribution's Status field.
     """
     out = _checked(
-        ["resourcegroupstaggingapi", "get-resources",
-         "--tag-filters", f"Key={TAG_MANAGED},Values=true",
-         "--region", region or DEFAULT_REGION, "--output", "json"],
-        profile, action="tag:GetResources",
+        [
+            "resourcegroupstaggingapi",
+            "get-resources",
+            "--tag-filters",
+            f"Key={TAG_MANAGED},Values=true",
+            "--region",
+            region or DEFAULT_REGION,
+            "--output",
+            "json",
+        ],
+        profile,
+        action="tag:GetResources",
     )
     try:
         data = json.loads(out or "{}")

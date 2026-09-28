@@ -3791,6 +3791,8 @@
         "backup_start_no_drive": "This account has no drive yet. Create one, then start the backup.",
         "backup_nightly": "Back up every night",
         "backup_nightly_hint": "Runs a memory & workspace snapshot once a day.",
+        "backup_nightly_blocked_mask_off": "Nightly snapshots are paused. Turn the agent sandbox back on in Settings to resume them.",
+        "backup_nightly_blocked_host": "Nightly snapshots can’t run on this computer.",
         "backup_nightly_sessions": "Back up sessions every night",
         "backup_nightly_sessions_hint": "Uploads the sessions archive to this account's drive once a day. It carries your conversations as they are, with nothing removed.",
         "backup_nightly_sessions_destination": "That drive is S3 storage in this AWS account, and {{button}} sends the archive to the same place.",

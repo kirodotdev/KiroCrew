@@ -5288,6 +5288,8 @@
         "backup_start_no_drive": "Ce compte n'a pas encore de disque. Créez-en un, puis démarrez la sauvegarde.",
         "backup_nightly": "Sauvegarder chaque nuit",
         "backup_nightly_hint": "Effectue un instantané de la mémoire et de l'espace de travail une fois par jour.",
+        "backup_nightly_blocked_mask_off": "Les instantanés nocturnes sont suspendus. Réactive le bac à sable de l’agent dans les réglages pour les relancer.",
+        "backup_nightly_blocked_host": "Les instantanés nocturnes ne peuvent pas s’exécuter sur cet ordinateur.",
         "backup_nightly_sessions": "Sauvegarder les sessions chaque nuit",
         "backup_nightly_sessions_hint": "Envoie l’archive des sessions vers le lecteur de ce compte une fois par jour. Elle contient vos conversations telles quelles, sans rien retirer.",
         "backup_nightly_sessions_destination": "Ce lecteur est un stockage S3 dans ce compte AWS, et {{button}} envoie l’archive au même endroit.",

@@ -275,7 +275,6 @@ src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
 src/kiro_crew/workflows/context.py
-test/conftest.py
 test/fake_mcp_app_server.py
 test/metrics/test_context_occupancy.py
 test/metrics/test_cost_breakdown.py

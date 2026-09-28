@@ -3036,6 +3036,21 @@ class TestLibrary:
 
 
 class TestBackupEndpoints:
+    @pytest.fixture(autouse=True)
+    def _payload_can_be_held(self, monkeypatch):
+        # Same reason as the job-route class: these measure the ENDPOINTS, so the
+        # platform pre-check is held satisfied. Without this, a host that cannot hold
+        # a body from creation answers 501 to every snapshot start and the endpoint
+        # assertions below never run.
+        monkeypatch.setattr(routes_mod.backup_mod.storage, "_staging_leaf_is_masked", lambda: True)
+        # The sessions kind's availability also gates on can_hold_upload_body_from_creation
+        # (confined Linux + O_TMPFILE); these endpoint tests are not about that platform
+        # gate, so hold it satisfied -- otherwise a non-Linux CI shard answers the
+        # sessions endpoints 501 and the assertions below never run.
+        monkeypatch.setattr(
+            routes_mod.backup_mod.storage, "can_hold_upload_body_from_creation", lambda: True
+        )
+
     def test_status_reports_toggle_runs_and_remote_listing(self):
         handlers = _registered()
         p1, p2, p3 = _enabled_owner_env()
@@ -3196,6 +3211,46 @@ class TestBackupEndpoints:
         )
         assert resp.status == 503
         assert _payload(resp)["code"] == "backup_start_failed"
+
+    def test_the_platform_availability_probe_runs_off_the_event_loop(self):
+        # kind_unavailable_reason resolves the sandbox capability, which on a first
+        # macOS request runs a synchronous detect_backend subprocess probe. Called
+        # directly on the async route it freezes the gateway loop for the probe's
+        # duration; it must be handed to asyncio.to_thread. Thread identity tells
+        # the two spellings apart: a direct call records the loop's thread, a call
+        # inside the to_thread callable records a worker's.
+        from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
+
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        loop_thread = threading.get_ident()
+        seen: list[int] = []
+        real_reason = backup_mod.kind_unavailable_reason
+
+        def recording_reason(kind):
+            seen.append(threading.get_ident())
+            return real_reason(kind)
+
+        req = _request("POST", f"/backup/{ACCOUNT}/run", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value={"kind": backup_mod.KIND_SNAPSHOT})  # type: ignore[method-assign]
+        fake = SimpleNamespace(start_async=AsyncMock(return_value="e" * 32))
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod, "get_job_sdk", return_value=fake),
+            mock.patch.object(backup_mod, "_CAN_PIN_TRAVERSAL", True),
+            mock.patch.object(backup_mod, "kind_unavailable_reason", side_effect=recording_reason),
+        ):
+            asyncio.run(handlers[("POST", "/backup/{account}/run")](req))  # type: ignore[operator]
+        assert seen, "kind_unavailable_reason was never called, so this test measures nothing"
+        assert loop_thread not in seen, (
+            "kind_unavailable_reason ran on the event loop thread; it must be handed "
+            "to asyncio.to_thread so its synchronous detect_backend probe does not "
+            "freeze the gateway loop"
+        )
 
     def test_nightly_toggle_persists_the_flag(self):
         handlers = _registered()
@@ -3571,6 +3626,37 @@ class TestBackupEndpoints:
                 handlers[("GET", "/backup/{account}")](req)  # type: ignore[operator]
             )
         assert _payload(resp)["nightlySessionsBlocked"] is None
+
+    def test_the_snapshot_nightly_block_reason_is_reported_beside_the_grant(self):
+        # FP item 3: a withheld snapshot nightly must not be silent on the surface.
+        # The status route reports `nightlyBlocked` beside `nightly` as a stable CODE
+        # (the console localizes it), so the console can show the switch on AND state
+        # why nothing runs -- in the operator's language, not the backend's English.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(
+                routes_mod.backup_mod,
+                "scheduled_snapshot_blocked_code",
+                return_value="snapshot_mask_off",
+            ),
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=True),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod, "_account_jobs", return_value={}),
+            mock.patch.object(
+                routes_mod.accounts_mod, "default_account_id", AsyncMock(return_value=ACCOUNT)
+            ),
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](req)  # type: ignore[operator]
+            )
+        body = _payload(resp)
+        assert body["nightly"] is True
+        assert body["nightlyBlocked"] == "snapshot_mask_off"
 
     def test_restore_downloads_a_valid_archive_key(self):
         handlers = _registered()

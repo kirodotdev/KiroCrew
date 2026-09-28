@@ -5128,6 +5128,8 @@
         "backup_start_no_drive": "このアカウントにはまだドライブがありません。作成してからバックアップを開始してください。",
         "backup_nightly": "毎晩バックアップする",
         "backup_nightly_hint": "メモリーとワークスペースのスナップショットを 1 日 1 回実行します。",
+        "backup_nightly_blocked_mask_off": "夜間スナップショットは一時停止しています。設定でエージェントサンドボックスを再び有効にすると再開されます。",
+        "backup_nightly_blocked_host": "このコンピューターでは夜間スナップショットを実行できません。",
         "backup_nightly_sessions": "セッションを毎夜バックアップ",
         "backup_nightly_sessions_hint": "セッションのアーカイブをこのアカウントのドライブに 1 日 1 回アップロードします。会話はそのまま含まれ、何も削除されません。",
         "backup_nightly_sessions_destination": "そのドライブはこの AWS アカウント内の S3 ストレージで、{{button}} も同じ場所にアーカイブを送ります。",

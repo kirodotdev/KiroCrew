@@ -1355,6 +1355,11 @@ class TestBackup:
         from kiro_crew.apps.builtins.aws_control.backend import backup
 
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        # `due_for_nightly` reads the snapshot kind's capability first (an
+        # unavailable kind is "not due" rather than a failed run every wake). These
+        # due-logic cases are about the toggle/window, so hold the payload-can-be-held
+        # gate True to reach the branch they are about.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
         yield
 
     def test_run_rejects_unknown_kind(self):
@@ -3465,6 +3470,7 @@ class TestRound36Hardening:
 
         with (
             mock.patch.object(backup, "nightly_enabled", return_value=True),
+            mock.patch.object(backup.storage, "_staging_leaf_is_masked", lambda: True),
             mock.patch.object(
                 backup,
                 "last_runs",
@@ -3484,6 +3490,7 @@ class TestRound36Hardening:
         recent = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None).isoformat()
         with (
             mock.patch.object(backup, "nightly_enabled", return_value=True),
+            mock.patch.object(backup.storage, "_staging_leaf_is_masked", lambda: True),
             mock.patch.object(
                 backup, "last_runs", return_value={backup.KIND_SNAPSHOT: {"at": recent}}
             ),
@@ -3496,6 +3503,7 @@ class TestRound36Hardening:
         for bad in (5, ["2026-01-01"], None, {}):
             with (
                 mock.patch.object(backup, "nightly_enabled", return_value=True),
+                mock.patch.object(backup.storage, "_staging_leaf_is_masked", lambda: True),
                 mock.patch.object(
                     backup, "last_runs", return_value={backup.KIND_SNAPSHOT: {"at": bad}}
                 ),
