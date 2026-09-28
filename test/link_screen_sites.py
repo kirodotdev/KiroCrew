@@ -69,6 +69,7 @@ DECLARED_SITES = frozenset(
         ("apps/builtins/aws_control/backend/backup.py", "restore_download"),
         ("apps/builtins/aws_control/backend/storage.py", "_preview_staging_parent"),
         ("apps/builtins/code_review_sage/sage_lib/followup.py", "followup_dir"),
+        ("apps/builtins/design_critique/backend/routes.py", "_served_signature"),
         ("apps/builtins/design_tweak/backend/preview_files.py", "scan_html.walk"),
         ("apps/builtins/dev_fleet/fleet_state.py", "_dir_size_bytes"),
         ("apps/builtins/issue_radar/backend/crew_store.py", "_write_unit_order"),
