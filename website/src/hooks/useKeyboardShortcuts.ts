@@ -1190,4 +1190,111 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [handler])
+
+  // Mouse Back / Forward buttons walk MRU session history — the pointer twin of
+  // Alt+Shift+` (chat-mru-back), matching how the mouse Back/Forward buttons already
+  // navigate in Slack's desktop/web client. The two thumb buttons report as
+  // `MouseEvent.button` 3 (Back) and 4 (Forward).
+  //
+  // In the Electron shell (and any Chromium browser) those buttons are bound to
+  // native history Back/Forward by default — the same binding electron/splash-history.js
+  // documents. Chromium queues that navigation from `mousedown` and commits it on the
+  // button's click, so a `mouseup`-only `preventDefault()` can be too late: the guard
+  // therefore runs in TWO phases — `mousedown` cancels the native navigation the
+  // instant the button goes down, and `mouseup` performs the session switch. Both are
+  // listened for on the document so the gesture works anywhere in the dashboard.
+  //
+  // Back steps OLDER through `slotHistory` (tail = most recently left, the same stack
+  // the keyboard walk reads); Forward retraces the newer direction. Alt+Shift+` relies
+  // on holding Alt to keep its walk cursor and resets it on Alt keyup — the mouse has
+  // no such modifier-hold, so the walk cursor here (`mouseWalkIndexRef`) persists across
+  // CONSECUTIVE Back/Forward presses and resets whenever the active slot changes by any
+  // OTHER means (a sidebar click, a keyboard jump), detected by comparing the live
+  // activeSlot against the slot this handler last landed on.
+  const mouseWalkIndexRef = useRef(-1)
+  const mouseWalkLandedSlotRef = useRef<string | null>(null)
+  // The stable walk a Back/Forward chain steps over, captured when a fresh walk
+  // starts and then indexed WITHOUT re-reading `slotHistory` (which is rebuilt on
+  // every switch — indexing the live array made Forward stop one step short of
+  // the origin, finding #2). `path` is the slotHistory snapshot (index i ≥ 0 →
+  // path[len-1-i], tail = most recently left); `origin` is the slot the walk
+  // began on, the index −1 sentinel Forward retraces back to. Snapshotting both
+  // makes Back×2 then Forward×2 land back on the origin.
+  const mouseWalkPathRef = useRef<string[]>([])
+  const mouseWalkOriginRef = useRef<string | null>(null)
+  useEffect(() => {
+    // Resolve the slot a Back/Forward press would actually land on — direction-
+    // aware, cursor-aware, and liveness-checked — or null when the press is a
+    // no-op (fresh Forward at the newest end, a dead target, an unchanged slot).
+    // BOTH phases call this: mousedown only suppresses the native gesture when a
+    // real switch will follow (fixes the dead-press that swallowed the browser's
+    // own Forward while switching nothing, finding #3 / UX concern), and mouseup
+    // performs exactly the switch mousedown predicted.
+    const resolveNextTarget = (button: number): { target: string; nextIndex: number; path: string[]; origin: string | null } | null => {
+      if (button !== 3 && button !== 4) return null
+      if (!enabled || disabled) return null
+
+      const { dashboard: { slots, sidebarOrder }, chat: { activeSlot, slotHistory } } = appStore.getState()
+      if (slotHistory.length === 0) return null
+
+      // A switch made by anything other than our own last walk step starts a
+      // fresh walk: reset the cursor to −1 (the newest end = the active slot),
+      // and snapshot both the history path and the origin slot to retrace to.
+      const freshWalk = activeSlot !== mouseWalkLandedSlotRef.current
+      const cursor = freshWalk ? -1 : mouseWalkIndexRef.current
+      const path = freshWalk ? [...slotHistory] : mouseWalkPathRef.current
+      const origin = freshWalk ? activeSlot : mouseWalkOriginRef.current
+
+      const back = button === 3
+      const nextIndex = back
+        ? Math.min(cursor + 1, path.length - 1)
+        : cursor - 1
+      // Forward below the origin (index < −1) has nowhere newer to go — the walk
+      // already sits at the session it began on — so this press is a no-op.
+      if (nextIndex < -1) return null
+
+      // Index −1 is the origin (Forward retracing all the way back); index ≥ 0
+      // reads the snapshotted history, tail-first.
+      const target = nextIndex === -1 ? origin : path[path.length - 1 - nextIndex]
+      if (!target || target === activeSlot) return null
+      // Ignore a target the sidebar no longer lists (a closed session can linger
+      // in history one frame); orderSlotsBySidebar is the same liveness source
+      // the keyboard jumps trust.
+      if (!orderSlotsBySidebar(slots, sidebarOrder).some(s => s.key === target)) return null
+
+      return { target, nextIndex, path, origin }
+    }
+
+    // Phase 1 — mousedown: cancel Chromium's native history Back/Forward before it
+    // is queued, so the dashboard's own MRU switch (done on mouseup) is the only
+    // navigation that happens. Only claims a button that WILL switch — a no-op
+    // press is left entirely to the browser rather than half-swallowed.
+    const onMouseDown = (e: MouseEvent) => {
+      if (resolveNextTarget(e.button)) e.preventDefault()
+    }
+
+    // Phase 2 — mouseup: perform the MRU session switch mousedown predicted.
+    const onMouseUp = (e: MouseEvent) => {
+      const next = resolveNextTarget(e.button)
+      if (!next) return
+
+      // Belt-and-suspenders: mousedown already cancelled the native nav, but a
+      // Chromium build that commits on the button's click still sees this.
+      e.preventDefault()
+      mouseWalkIndexRef.current = next.nextIndex
+      mouseWalkLandedSlotRef.current = next.target
+      mouseWalkPathRef.current = next.path
+      mouseWalkOriginRef.current = next.origin
+      if (isMacPlatform()) releaseComposerForKeyboardSwitch()
+      dispatch(switchSlot({ key: next.target, announceOnMissing: true }))
+      navigate('/chat')
+    }
+
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('mouseup', onMouseUp)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [appStore, dispatch, navigate, enabled, disabled])
 }

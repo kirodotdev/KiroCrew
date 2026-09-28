@@ -8,7 +8,7 @@ import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
 import { matchShortcutEvent, resolveShortcuts } from '../lib/shortcutRegistry'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { switchSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import ShortcutsModal from '../components/ShortcutsModal'
 import type { RootState } from '../store'
@@ -1615,5 +1615,190 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     expect(help.key).toBe('/')
     expect(help.aliases).toEqual([{ key: 'k', alt: true }])
     expect(help.browserReserved).toBeUndefined()
+  })
+})
+
+/**
+ * Mouse Back / Forward buttons walk MRU session history — the pointer twin of
+ * Alt+Shift+` (chat-mru-back). `MouseEvent.button` 3 = Back, 4 = Forward. Back
+ * steps OLDER through slotHistory (tail = most recently left), Forward retraces
+ * newer. The handler preventDefault()s the button it claims so the browser does
+ * not ALSO run its own history navigation.
+ */
+describe('mouse Back/Forward walk MRU session history', () => {
+  // slotHistory tail is the most-recently-left slot, so ['slot-3','slot-2'] means
+  // slot-2 was left most recently and slot-3 before it. Active is slot-1.
+  const storeWith = (activeSlot: string | null, slotHistory: string[]) => createTestStore({
+    dashboard: { slots: [
+      { key: 'slot-1', title: 'Chat 1', messages: 0, running: false },
+      { key: 'slot-2', title: 'Chat 2', messages: 0, running: false },
+      { key: 'slot-3', title: 'Chat 3', messages: 0, running: false },
+    ] } as unknown as RootState['dashboard'],
+    chat: { ...createTestStore().getState().chat, activeSlot, slotHistory } as RootState['chat'],
+  })
+
+  function mount(store: ReturnType<typeof createTestStore>, disabled?: boolean) {
+    renderHookWithProviders(
+      () => useKeyboardShortcuts({ onToggleShortcutsModal: vi.fn(), onNewChat: vi.fn(), disabled }),
+      { store },
+    )
+  }
+
+  // button 3 = Back, button 4 = Forward. Returns true when preventDefault fired.
+  const clickButton = (button: number, target: EventTarget = document) => {
+    const event = new MouseEvent('mouseup', { button, cancelable: true, bubbles: true })
+    return !target.dispatchEvent(event)
+  }
+
+  // The mousedown-phase guard that cancels Chromium's native history nav.
+  const pressDown = (button: number, target: EventTarget = document) => {
+    const event = new MouseEvent('mousedown', { button, cancelable: true, bubbles: true })
+    return !target.dispatchEvent(event)
+  }
+
+  it('Back button jumps to the most-recently-left session (same as Alt+`)', () => {
+    const store = storeWith('slot-1', ['slot-3', 'slot-2'])
+    mount(store)
+    expect(clickButton(3)).toBe(true) // claimed, browser Back suppressed
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+  })
+
+  it('mousedown on an actionable Back cancels the native history nav (Chromium queues it there)', () => {
+    const store = storeWith('slot-1', ['slot-2'])
+    mount(store)
+    expect(pressDown(3)).toBe(true) // Back is actionable → native nav cancelled at mousedown
+    // mousedown does NOT switch — that happens on mouseup.
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('mousedown leaves a fresh Forward (no prior Back) to the browser', () => {
+    // Forward with no walk to retrace switches nothing on mouseup, so mousedown
+    // must NOT swallow the browser's own Forward — the guard claims a button only
+    // when a real switch will follow.
+    const store = storeWith('slot-1', ['slot-3', 'slot-2'])
+    mount(store)
+    expect(pressDown(4)).toBe(false)
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('mousedown leaves other buttons to the browser', () => {
+    const store = storeWith('slot-1', ['slot-2'])
+    mount(store)
+    expect(pressDown(0)).toBe(false) // left
+    expect(pressDown(1)).toBe(false) // middle
+    expect(pressDown(2)).toBe(false) // right
+  })
+
+  it('mousedown leaves a no-op Back press (empty history) to the browser', () => {
+    const store = storeWith('slot-1', [])
+    mount(store)
+    expect(pressDown(3)).toBe(false) // nothing to navigate → native nav untouched
+  })
+
+  it('does not cancel native nav on mousedown when shortcuts are disabled', () => {
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const store = storeWith('slot-1', ['slot-2'])
+    mount(store)
+    expect(pressDown(3)).toBe(false)
+  })
+
+  it('consecutive Back presses walk further back through MRU history', () => {
+    const store = storeWith('slot-1', ['slot-3', 'slot-2'])
+    mount(store)
+    clickButton(3)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+    // Second Back walks one older. After the first switch slotHistory is rebuilt
+    // (slot-2 stripped, slot-1 pushed → ['slot-3','slot-1']); the cursor persists
+    // because activeSlot matches where the walk last landed, so index 1 targets
+    // slotHistory[len-1-1] = slot-3.
+    clickButton(3)
+    expect(store.getState().chat.activeSlot).toBe('slot-3')
+  })
+
+  it('Forward button retraces toward the newest session after walking back', () => {
+    const store = storeWith('slot-1', ['slot-3', 'slot-2'])
+    mount(store)
+    clickButton(3) // → slot-2 (index 0)
+    clickButton(3) // → slot-3 (index 1)
+    expect(store.getState().chat.activeSlot).toBe('slot-3')
+    clickButton(4) // Forward: index back to 0 → slot-2
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+  })
+
+  it('Back×2 then Forward×2 returns to the session the walk began on', () => {
+    // The browser semantics the buttons imitate: retracing all the way forward
+    // lands back where you started. slotHistory is rebuilt on every switch, so a
+    // walk that re-read the live array stopped one step short of the origin
+    // (finding #2); the snapshotted walk path fixes that.
+    const store = storeWith('slot-1', ['slot-3', 'slot-2'])
+    mount(store)
+    clickButton(3) // → slot-2
+    clickButton(3) // → slot-3
+    expect(store.getState().chat.activeSlot).toBe('slot-3')
+    clickButton(4) // → slot-2
+    clickButton(4) // → slot-1 (the origin)
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('Forward at the newest entry does nothing (nowhere newer to go)', () => {
+    const store = storeWith('slot-1', ['slot-3', 'slot-2'])
+    mount(store)
+    // Fresh walk, no prior Back: Forward has no newer entry to retrace to, so the
+    // button is left unclaimed and the browser's own Forward is untouched.
+    expect(clickButton(4)).toBe(false)
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('a sidebar/keyboard switch resets the walk cursor to the freshest entry', () => {
+    const store = storeWith('slot-1', ['slot-3', 'slot-2'])
+    mount(store)
+    clickButton(3) // → slot-2 (cursor at index 0, landed slot-2)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+    // A switch by other means (direct dispatch, as a sidebar click would do):
+    // now active slot-3, history ['slot-1','slot-2'] (slot-3 stripped, slot-2 pushed).
+    act(() => { store.dispatch(switchSlot({ key: 'slot-3', announceOnMissing: true })) })
+    // The next Back does NOT continue the old walk; it starts fresh from the tail.
+    clickButton(3)
+    expect(store.getState().chat.activeSlot).toBe('slot-2')
+  })
+
+  it('does nothing (but stays claimed) with empty history', () => {
+    const store = storeWith('slot-1', [])
+    mount(store)
+    expect(clickButton(3)).toBe(false) // no history → not claimed, browser Back works
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('ignores left/middle/right mouse buttons', () => {
+    const store = storeWith('slot-1', ['slot-2'])
+    mount(store)
+    expect(clickButton(0)).toBe(false) // left
+    expect(clickButton(1)).toBe(false) // middle
+    expect(clickButton(2)).toBe(false) // right
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('does not claim the button when shortcuts are globally disabled', () => {
+    localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+    const store = storeWith('slot-1', ['slot-2'])
+    mount(store)
+    // Disabled → bail before claiming: no session switch, browser Back untouched.
+    expect(clickButton(3)).toBe(false)
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('is suppressed while another surface owns input (disabled)', () => {
+    const store = storeWith('slot-1', ['slot-2'])
+    mount(store, true)
+    clickButton(3)
+    expect(store.getState().chat.activeSlot).toBe('slot-1')
+  })
+
+  it('skips a history entry the sidebar no longer lists (closed session)', () => {
+    // slot-9 lingers in history but is not among the live slots.
+    const store = storeWith('slot-1', ['slot-9'])
+    mount(store)
+    clickButton(3)
+    expect(store.getState().chat.activeSlot).toBe('slot-1') // no switch to a dead slot
   })
 })

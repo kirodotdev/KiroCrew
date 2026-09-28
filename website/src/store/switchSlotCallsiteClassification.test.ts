@@ -38,7 +38,7 @@ const PINNED: Record<string, Counts> = {
   'src/components/ChatInput.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'mic-owner status-row click announces' },
   'src/components/commandPalette/providers/recentsProvider.ts': { announced: 1, keepTarget: 0, plain: 0, reason: 'palette recents row announces' },
   'src/components/notifications/NotificationDetailPanel.tsx': { announced: 3, keepTarget: 0, plain: 2, reason: 'go-to-chat buttons announce; the two plain sites switch to a slot a server API call resolved moments before, inside try/catch' },
-  'src/hooks/useKeyboardShortcuts.ts': { announced: 1, keepTarget: 0, plain: 0, reason: 'keyboard session jump announces' },
+  'src/hooks/useKeyboardShortcuts.ts': { announced: 2, keepTarget: 0, plain: 0, reason: 'keyboard session jump announces; mouse Back/Forward MRU walk announces' },
   'src/hooks/useSceneInteraction.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'worlds-scene click announces' },
   'src/hooks/useSessionActions.ts': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot (data.key)' },
   'src/pages/ArtifactDetailPage.tsx': { announced: 0, keepTarget: 0, plain: 2, reason: 'in-page nav intent + just-created slot; both self-handle within the page' },
