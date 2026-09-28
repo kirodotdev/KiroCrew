@@ -171,12 +171,14 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_pid import (
     _pgroup_has_member_besides,
     _pid_gone_or_unmanaged,
+    _pid_start_token,
     _replace_child_pids,
     _signal_orphaned_runtime_group,
     _track_pid,
     _track_session_pid,
     _untrack_child_pids,
     _untrack_pid,
+    _untrack_root_by_identity,
     _untrack_session_pid,
     group_vouching_available,
     register_protected_pid,
@@ -1709,6 +1711,10 @@ class AcpRuntime:
         # Process state
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
+        # The root's process-start identity, read once at spawn. It is what lets
+        # an OBSERVED death retire the registry lines that name this process and
+        # no other: the number alone can be recycled before the write lands.
+        self._spawn_start_token: str | None = None
         self._start_time: str | None = None
         self._spawn_monotonic: float | None = None
         # pid -> (start_id, basename): the record shape session_pid verifies a
@@ -2959,6 +2965,10 @@ class AcpRuntime:
         # LIVE runtime losing its shield and being SIGKILLed mid-use by the very
         # sweep this call exists to hide it from.
         register_protected_pid(self._pid)
+        # Read BEFORE the appends, so the identity held here is the one this
+        # process had when the gateway took it on. It is what lets an OBSERVED
+        # death retire the session line that names THIS process and no other.
+        self._spawn_start_token = _pid_start_token(self._pid)
         try:
             _track_pid(self._pid)
             _track_session_pid(self._pid)
@@ -4180,7 +4190,11 @@ class AcpRuntime:
                     try:
                         dropped = await _drain_oversize_line(stdout, exc)
                     except asyncio.IncompleteReadError:
+                        # The same observed EOF as the empty-line branch below,
+                        # reached with a torn frame in hand; the exit is confirmed
+                        # and retired the same way.
                         self._mark_dead("stdout closed mid-oversize-line")
+                        await self._retire_tracking_after_exit()
                         return
                     except OversizeLineUnrecoverable as fatal:
                         logger.error("stdout unrecoverable: %s", fatal)
@@ -4199,6 +4213,13 @@ class AcpRuntime:
                 if not line:
                     rc = self._process.returncode if self._process else "?"
                     self._mark_dead(self._exit_reason(rc))
+                    # The one death path that OBSERVES the exit rather than
+                    # causing it. ``kill()`` retires the registry entries after
+                    # its own reap; nothing else did, so an externally killed
+                    # root stayed in ``kiro_session_pids.txt`` until the
+                    # periodic sweep's next tick -- up to 300s of a dead pid a
+                    # reaper could resignal.
+                    await self._retire_tracking_after_exit()
                     return
 
                 self._last_activity = time.monotonic()
@@ -4821,6 +4842,18 @@ class AcpRuntime:
         so the gateway log holds the code too. Silent when the status is still
         unknown (both waits timed out): ``<not reaped>`` is then still true.
         """
+        self._note_reaped(rc, after_kill=True)
+
+    def _note_reaped(self, rc: object, *, after_kill: bool) -> None:
+        """Amend the death summary with *rc*; log it with the death's true origin.
+
+        ``after_kill`` selects the wording, nothing else. The observed-exit path
+        (the reader hitting EOF on a root that died from OUTSIDE -- an OOM kill,
+        an operator's ``pkill``) must not log "reaped after kill": ``kill()``'s
+        own contract is that a line saying "killed" names WHO killed, and a kill
+        Kiro Crew never issued has no such name. Attribution is the whole reason
+        the two paths log differently.
+        """
         if rc is None or self._death_summary is None:
             return
         if self._death_label != self._RC_NOT_REAPED:
@@ -4828,7 +4861,13 @@ class AcpRuntime:
         self._death_label = str(rc)
         self._compose_death_summary(self._death_reason, self._death_label, self._death_tail)
         log = logger.info if self._death_expected else logger.warning
-        log("AcpRuntime reaped after kill (PID %s): returncode=%s", self._pid, rc)
+        # Two LITERAL templates rather than one with the origin interpolated:
+        # the raw template is what log filters and the tests select on, and
+        # "reaped after kill" is the string they already match.
+        if after_kill:
+            log("AcpRuntime reaped after kill (PID %s): returncode=%s", self._pid, rc)
+        else:
+            log("AcpRuntime reaped after an observed exit (PID %s): returncode=%s", self._pid, rc)
 
     def _mark_dead(self, reason: str, *, expected: bool = False) -> None:
         """Mark runtime dead, fail all pending requests, poison all session queues.
@@ -4913,6 +4952,91 @@ class AcpRuntime:
                 queue.put_nowait(None)  # poison sentinel
             except asyncio.QueueFull:
                 pass
+
+    async def _retire_tracking_after_exit(self) -> None:
+        """Drop this root's registry entries once its exit is CONFIRMED, not inferred.
+
+        Called from the reader loop's EOF branch, which is the only death path that
+        observes an exit instead of causing one. ``_kill_inner`` untracks after it
+        reaps; a root killed from outside (an OOM kill, a ``pkill``, an operator)
+        reached no such step, so its ``kiro_session_pids.txt`` / ``kiro_pids.txt``
+        lines survived until the periodic sweep's next tick, bounded only by
+        ``SessionCleanup.MAX_TICK_INTERVAL_SECS`` (300s). A registry line naming a
+        dead pid is the hazard the start token exists to blunt, not one to leave
+        standing for five minutes when the process that owns the line has already
+        watched it die.
+
+        A closed stdout is NOT an exit: a backend can close its pipe and keep
+        running, and untracking a live process would hide it from every reaper
+        for the host's uptime. So the exit is waited for, bounded by the same
+        window the kill path gives a SIGKILLed child to be reaped, and the pid is
+        re-probed after the wait. Any doubt -- the wait timed out, the pid still
+        answers, the probe raised -- RETAINS the entries, which is the direction
+        every reaper in ``session_pid`` already fails toward.
+
+        The write itself is bound to the process, not the number: once the root
+        is gone its number is free, and a replacement root this gateway spawns
+        can be handed it before the write lands, so a prefix-matched untrack
+        could erase the successor's only durable record. ``_untrack_root_by_identity``
+        removes the session line only when its recorded start token is the one
+        read at THIS spawn, and the bare root line only when the number is dead
+        at the moment of a probe taken under the bare file's own lock -- a live
+        holder of the number keeps its line. The root's own lines only: a
+        descendant that outlived the root is reparented and still running, and
+        its own ``kiro_pids.txt`` line is what the sweep reaps it by.
+
+        Offloaded to a thread because the untrack takes the file locks the sweep
+        contends for, and this runs on the event loop.
+        """
+        process = self._process
+        if process is None:
+            return
+        pid = process.pid
+        try:
+            if process.returncode is None:
+                await asyncio.wait_for(process.wait(), timeout=self._KILL_REAP_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.debug(
+                "AcpRuntime: stdout closed but PID %s has not exited within %.1fs; "
+                "leaving it tracked for the sweep",
+                pid,
+                self._KILL_REAP_TIMEOUT,
+            )
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug(
+                "AcpRuntime: could not confirm the exit of PID %s; leaving it tracked",
+                pid,
+                exc_info=True,
+            )
+            return
+        # The wait just measured the status ``_mark_dead`` could not know (it ran
+        # on EOF, before the reap): amend the retained summary the same way the
+        # kill path does, so the ``AcpProcessDied`` a turn or a cron records
+        # carries the real code instead of ``<not reaped>``. Worded as an
+        # OBSERVED exit: nothing here issued a kill, and a log line that says
+        # "killed" without naming who killed would defeat the attribution the
+        # kill path's own docstring requires.
+        self._note_reaped(process.returncode, after_kill=False)
+        if platform_compat.pid_exists(pid):
+            return
+        try:
+            retired = await asyncio.to_thread(
+                _untrack_root_by_identity, pid, self._spawn_start_token
+            )
+        except Exception:
+            logger.debug("AcpRuntime: PID untracking after exit failed for %s", pid, exc_info=True)
+            return
+        if not retired:
+            logger.debug(
+                "AcpRuntime: registry lines for PID %s were not provably this runtime's; "
+                "leaving them for the sweep",
+                pid,
+            )
+            return
+        logger.info("AcpRuntime: retired registry tracking for PID %d after it exited", pid)
 
     # ── Protocol Interface (used by AcpSessionHandle) ──
 

@@ -2945,6 +2945,92 @@ def _untrack_session_pid(pid: int) -> bool:
         return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
+def _untrack_pid_if_dead(pid: int) -> bool:
+    """Remove *pid*'s bare ``kiro_pids.txt`` line only if the number is DEAD now.
+
+    The liveness probe runs INSIDE ``_pid_file_lock``, which is the lock
+    :func:`_track_pid` appends under, so at the moment of the probe the number's
+    holder is one of exactly two things. Either a successor already holds the
+    number and has appended its bare line -- it cannot be mid-append, because it
+    would need the lock this call holds -- in which case ``pid_exists`` is True
+    and the line is RETAINED; or the number's holder has not called
+    :func:`_track_pid` yet (or there is none), in which case a live holder still
+    answers the probe and the line is RETAINED, and a dead number does not and
+    the line is REMOVED. A retained bare line naming a LIVE successor is exactly
+    the line that successor's own ``_track_pid`` writes, so retaining is never
+    wrong, and the sweep prunes any bare line whose pid is dead within its tick.
+    ``pid_exists`` treats EPERM as alive: deny-by-default, the direction every
+    reaper in this module fails toward.
+
+    Returns whether the bare-line step is SETTLED: the line was removed, or it
+    was correctly retained for a live holder. A refused rewrite returns False.
+    """
+    with _pid_file_lock():
+        path = _pid_file_path()
+        if not path.exists():
+            return True
+        if platform_compat.pid_exists(pid):
+            return True
+        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = [ln for ln in lines if ln.strip() != str(pid)]
+        return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
+
+
+def _untrack_root_by_identity(pid: int, start_token: str | None) -> bool:
+    """Retire a root's registry lines only while they still name THAT process.
+
+    For the caller that learned of a death by OBSERVING it (the runtime reader
+    hitting EOF) rather than by causing it. A root that exited from outside has no
+    process left to re-check, so the number alone cannot say whose lines these
+    are: between the caller's liveness probe and this write the kernel can hand
+    the same number to a replacement root this gateway just tracked, and a
+    prefix-matched untrack would then erase the successor's only durable record.
+    The recorded start token is the identity the number lacks, so under
+    ``_session_pid_file_lock`` ONLY the line equal to
+    ``<gateway_pid>:<pid>:<start_token>`` is removed -- a line carrying a
+    different token is a successor's and is left alone, and a line with no token
+    cannot be proven ours and is left to the sweep. With no token to compare
+    (``None``) nothing is touched at all, which is the same deny-by-default every
+    reaper in this module fails toward.
+
+    The bare ``<pid>`` root line in ``kiro_pids.txt`` carries no identity, and a
+    successor handed the dead root's number may have no session line of its own
+    (:func:`_track_session_pid` dedups on the ``gw:pid`` prefix, so it returns
+    without writing while OUR line still stands). The session file therefore
+    cannot say whether the number has a new holder; the kernel can. The bare line
+    goes through :func:`_untrack_pid_if_dead`, which probes ``pid_exists`` inside
+    ``_pid_file_lock`` -- the lock ``_track_pid`` appends under -- and removes
+    the line only when the number is dead at that moment; a live holder keeps
+    it. The two per-file locks are taken in turn, never nested, and no lock
+    spans the pair: a successor's tracking may land between the two steps, and
+    then it finds its own bare line retained and its session line written by
+    itself, so neither ordering loses a live root.
+
+    Returns whether the retirement COMMITTED -- every write this call owed, not
+    merely the session one: the session rewrite landed AND the bare-line step
+    settled (removed, or retained for a live holder). The caller logs a full
+    retirement on a true answer (``acp/runtime.py``), so reporting the session
+    rewrite alone would claim a clean retirement while a stale bare root line
+    survives a refused ``kiro_pids.txt`` write; a refusal is not a commit. The
+    sweep does prune such a line within its tick, but a return value that
+    outruns the writes it reports is what the log then repeats.
+    """
+    if not start_token:
+        return False
+    ours = f"{os.getpid()}:{pid}:{start_token}"
+    with _session_pid_file_lock():
+        session_path = _session_pid_file_path()
+        if not session_path.exists():
+            return False
+        lines = session_path.read_text(encoding="utf-8").splitlines()
+        kept = [ln for ln in lines if ln.strip() != ours]
+        if len(kept) == len(lines):
+            return False
+        if not _rewrite_pid_file(session_path, "\n".join(kept) + "\n" if kept else ""):
+            return False
+    return _untrack_pid_if_dead(pid)
+
+
 # ── Sweep-protected PIDs ──────────────────────────────────────────────────
 # Live agent-process PIDs tracked in the PID file but NOT registered as
 # SessionMap sessions (e.g. app-managed worker pools / shared ACP runtimes).

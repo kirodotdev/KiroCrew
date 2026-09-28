@@ -2067,6 +2067,118 @@ async def test_mark_dead_is_idempotent():
     assert q["sA"].empty()
 
 
+# ── An exit the reader OBSERVES retires the registry entries too ─────────────
+#
+# ``_kill_inner`` untracks the root after its own reap. A root killed from outside
+# reached no kill, so its ``kiro_session_pids.txt`` / ``kiro_pids.txt`` lines
+# survived until the periodic sweep's next tick, up to 300s. Measured on the
+# nightly leak gate: SIGKILL of a background runtime left its line for 293s. The
+# reader loop's EOF branch now retires the two entries once the exit is CONFIRMED,
+# and only then -- a closed stdout on a process that is still running, or one
+# whose exit cannot be confirmed within the reap window, keeps its lines.
+
+
+def _track_untracks(monkeypatch, rt_mod, *, pid_exists: bool):
+    """Record every identity-bound retirement; the real one is pinned in
+    test_pid_lifecycle.py against the files themselves."""
+    calls: list[tuple[int, str | None]] = []
+    monkeypatch.setattr(
+        rt_mod, "_untrack_root_by_identity", lambda p, tok: calls.append((p, tok)) or True
+    )
+    monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda p: pid_exists)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_observed_exit_retires_registry_entries_once_reaped(monkeypatch):
+    """EOF on a root that the child watcher then reaps: both entries are dropped."""
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, reader, proc = _make_runtime()
+    rt._spawn_start_token = "tok-4242"
+    calls = _track_untracks(monkeypatch, rt_mod, pid_exists=False)
+
+    async def _reap():  # the reap lands after EOF, as in the field
+        proc.returncode = -9
+        return -9
+
+    proc.wait = _reap
+    task = await _start_reader(rt)
+    try:
+        reader.feed_eof()
+        await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        await _stop_reader(task)
+    assert rt._dead is True
+    # Bound to the identity read at spawn, never to the bare number.
+    assert calls == [(4242, "tok-4242")]
+    # The status the wait measured reaches the retained summary: a turn or a
+    # cron that records this death sees the real code, not ``<not reaped>``.
+    assert rt._death_label == "-9"
+    assert rt._death_summary is not None and "returncode=-9" in rt._death_summary
+
+
+@pytest.mark.asyncio
+async def test_observed_exit_keeps_tracking_while_the_root_still_runs(monkeypatch):
+    """A closed stdout is not an exit. A root that never exits within the reap
+    window, or one whose pid still answers after the wait, stays tracked -- an
+    untracked live process is invisible to every reaper for the host's uptime."""
+    import kiro_crew.acp.runtime as rt_mod
+
+    # Wait times out: the process closed its pipe and kept running.
+    rt, reader, proc = _make_runtime()
+    calls = _track_untracks(monkeypatch, rt_mod, pid_exists=False)
+    rt._KILL_REAP_TIMEOUT = 0.05
+
+    async def _never_exits():
+        await asyncio.sleep(10)
+
+    proc.wait = _never_exits
+    task = await _start_reader(rt)
+    try:
+        reader.feed_eof()
+        await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        await _stop_reader(task)
+    assert calls == []
+
+    # Reaped by the watcher's account, yet the pid still answers: retain.
+    rt, reader, proc = _make_runtime()
+    calls = _track_untracks(monkeypatch, rt_mod, pid_exists=True)
+    proc.returncode = 1
+    task = await _start_reader(rt)
+    try:
+        reader.feed_eof()
+        await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        await _stop_reader(task)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_eof_inside_an_oversize_line_retires_the_same_way(monkeypatch):
+    """The other observed-EOF return: stdout closes mid-oversize-line. Same
+    confirmed exit, same retirement -- a sibling left to the sweep would carry
+    the very 300s window the empty-line branch closes."""
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, reader, proc = _make_runtime()
+    rt._spawn_start_token = "tok-4242"
+    calls = _track_untracks(monkeypatch, rt_mod, pid_exists=False)
+    proc.returncode = 137
+    task = await _start_reader(rt)
+    try:
+        # Over the reader's line limit with no newline, then EOF: readuntil raises
+        # LimitOverrunError, the drain hits IncompleteReadError.
+        reader.feed_data(b"x" * (reader._limit + 1))
+        reader.feed_eof()
+        await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        await _stop_reader(task)
+    assert rt._dead is True
+    assert calls == [(4242, "tok-4242")]
+
+
 # ── Death-log severity: deliberate teardown vs genuine death ──
 #
 # A warm-pool TTL recycle tears runtimes down via kill() on a schedule; logging

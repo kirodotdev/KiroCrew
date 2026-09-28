@@ -1,13 +1,16 @@
-"""After N sessions open and close, what is still on this machine? Zero.
+"""After N sessions open and close, what is still on this machine? Only the gateway.
 
 This module is the leak gate. It boots ONE real gateway on a throwaway data
 home, drives ``SESSION_COUNT`` dashboard chat sessions through a full turn each,
 closes every one of them, and then asks the kernel and the product's own
 registry what survived. Four populations must be empty:
 
-* live pids inside the instance's own agent slice,
+* live pids inside the instance's own agent slice that any SESSION created --
+  the gateway's own background runtimes (``EXPECTED_BACKGROUND_RUNTIMES``) are
+  the one documented residue, bounded by count and identified by the agent they
+  run, never by argv shape or age,
 * managed MCP stub processes,
-* registry entries (nothing tracked, alive or dead),
+* registry entries naming a process that is gone,
 * crew-log write handles held by the gateway process.
 
 Why a real gateway subprocess and not the in-process boot in
@@ -108,6 +111,69 @@ QUIET_POLL_SECS = 1.0
 #: the invariant wrong.
 EXPECTED_POOL_SIZE = 0
 
+#: How many runtimes the GATEWAY itself may still hold after every slot is
+#: closed. These are not session residue: the persistent ``_bg`` background
+#: session is created at boot by ``start_pool()`` and is never idle-expired, and
+#: the multiplexed ``_bg_runtime`` behind ``get_bg_session()`` (auto-titles,
+#: suggestions) is spawned lazily and retired only by staleness, a backend
+#: switch, or ``close_all()`` -- see ``docs/system-specs/modules/session.md``,
+#: "Background Session" and "Multiplexed _bg runtime". Both run the background
+#: agent (``session.BACKGROUND_AGENT``) and neither belongs to a slot, so a slot
+#: close is not supposed to end them. EXACTLY one of each, pinned as an equality
+#: so the ratchet cannot loosen in either direction: a third background-agent
+#: runtime is a parked drain that never drained, or a leak, and one missing means
+#: the gateway lost a holder it depends on (every slot's first turn generates a
+#: title, so the lazy one is always spawned by the time the slots close).
+#: Anything running another agent is session residue and fails regardless of
+#: count.
+EXPECTED_BACKGROUND_RUNTIMES = 2
+
+
+def _authored_agent(home: Path, argv: str) -> str:
+    """The agent a runtime was spawned FOR, from the ``--agent`` it was spawned with.
+
+    The product hands the backend a projected skill-view alias
+    (``kirocrew-skill-view-<hash>``), not the authored name, and the same
+    authored agent yields the same alias, so the alias alone cannot say whether
+    a process is the background agent. The projection writes a sidecar per
+    alias into the agents directory the harness pins (``KIRO_HOME`` is
+    ``<home>/kiro`` -- ``harness_environment``), and that sidecar names the
+    authored agent. An un-aliased ``--agent`` is returned as written; a runtime
+    with no ``--agent`` at all, or an alias with no sidecar, answers ``""`` so
+    the caller classifies it as foreign rather than guessing.
+    """
+    from kiro_crew.acp.skill_projection import _MANAGED_AGENT, _PROJECTION_METADATA_DIR_NAME
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+
+    words = argv.split()
+    try:
+        agent = words[words.index("--agent") + 1]
+    except (ValueError, IndexError):
+        return ""
+    if not agent.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+        return agent
+    sidecar = home / "kiro" / "agents" / _PROJECTION_METADATA_DIR_NAME / f"{agent}.json"
+    try:
+        record = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    authored = record.get(_MANAGED_AGENT) if isinstance(record, dict) else None
+    return authored if isinstance(authored, str) else ""
+
+
+def _split_background_runtimes(home: Path, alive: tuple) -> tuple[list, list]:
+    """Partition live tracked processes into ``(background, foreign)``.
+
+    ``background`` runs the product's own background agent and is the residue
+    the gateway is documented to keep; ``foreign`` is everything else, which
+    after every slot is closed can only be a session's runtime that outlived it.
+    """
+    from kiro_crew.session import BACKGROUND_AGENT
+
+    background = [f for f in alive if _authored_agent(home, f.argv) == BACKGROUND_AGENT]
+    foreign = [f for f in alive if f not in background]
+    return background, foreign
+
 
 def _workspace_src() -> Path:
     """The in-repo ``src/`` the harness runs the product from."""
@@ -176,7 +242,14 @@ def _open_session_and_take_a_turn(client: _Client) -> tuple[str, str]:
 
 
 def _await_quiet(home: Path, ignore: frozenset[int]) -> Inventory:
-    """Poll the inventory until every population is empty, or the deadline.
+    """Poll the inventory until nothing but the gateway's background runtimes
+    remain, or the deadline.
+
+    "Quiet" is: no dead registry entry, no unowned live process, and every live
+    tracked process is a background-agent runtime (see
+    ``EXPECTED_BACKGROUND_RUNTIMES``). Those runtimes are the gateway's for its
+    whole life, so waiting for them to leave would spend the full deadline on
+    every healthy run and then report a leak that is not one.
 
     Returns the LAST inventory taken either way, so a caller that timed out
     reports what was still there rather than re-reading a machine that may have
@@ -185,7 +258,8 @@ def _await_quiet(home: Path, ignore: frozenset[int]) -> Inventory:
     deadline = time.monotonic() + QUIET_TIMEOUT
     latest = inventory(home, ignore_pids=ignore)
     while time.monotonic() < deadline:
-        if not (latest.owned_alive or latest.owned_dead or latest.unowned_alive):
+        _background, foreign = _split_background_runtimes(home, latest.owned_alive)
+        if not (foreign or latest.owned_dead or latest.unowned_alive):
             return latest
         time.sleep(QUIET_POLL_SECS)
         latest = inventory(home, ignore_pids=ignore)
@@ -292,9 +366,21 @@ def test_closing_every_session_leaves_nothing(real_user_session: Any) -> None:
             "agent slice with no registry entry, so nothing owns them and nothing "
             f"will ever reclaim them.\n{final.render()}"
         )
-        assert not final.owned_alive, (
-            f"{len(final.owned_alive)} tracked process(es) survived closing every "
-            f"session.\n{final.render()}"
+        background, foreign = _split_background_runtimes(home, final.owned_alive)
+        assert not foreign, (
+            f"{len(foreign)} tracked process(es) that are not the gateway's own "
+            "background runtimes survived closing every session: "
+            + ", ".join(
+                f"pid={f.pid} agent={_authored_agent(home, f.argv) or '?'}" for f in foreign
+            )
+            + f"\n{final.render()}"
+        )
+        assert len(background) == EXPECTED_BACKGROUND_RUNTIMES, (
+            f"{len(background)} background-agent runtime(s) alive after every session "
+            f"closed, expected exactly {EXPECTED_BACKGROUND_RUNTIMES}: the persistent _bg "
+            "session and one multiplexed _bg runtime. More means displaced runtimes "
+            "nothing reaped; fewer means the gateway lost a holder it still depends on."
+            f"\n{final.render()}"
         )
         assert not final.owned_dead, (
             f"{len(final.owned_dead)} registry entr(ies) still name a process that "

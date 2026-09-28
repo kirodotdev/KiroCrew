@@ -2232,6 +2232,54 @@ tree by awaiting `process.wait()` for the same reason the real
 so a double returning without it would report the placeholder on Windows and hide
 the amendment behind its own unfaithfulness.
 
+**An exit the reader OBSERVES retires the registry entries too, once it is
+confirmed.** `_kill_inner` drops the root's `kiro_pids.txt` /
+`kiro_session_pids.txt` lines after its own reap. A root killed from outside — an
+OOM kill, a `pkill`, an operator — reaches no kill: the reader loop hits EOF,
+`_mark_dead` unshields the pid in memory, and the two lines used to stand until
+the periodic sweep's next tick, bounded only by
+`SessionCleanup.MAX_TICK_INTERVAL_SECS` (measured on the nightly leak gate: a
+SIGKILLed background runtime stayed tracked for 293s). Both observed-EOF returns
+of the reader — the empty read, and `IncompleteReadError` while draining an
+oversize line — now call `_retire_tracking_after_exit`, which waits for the exit
+under the kill path's `_KILL_REAP_TIMEOUT`, amends the death summary with the
+measured code (logged as `reaped after an observed exit`, a literal template
+distinct from the kill path's `reaped after kill`, because a log line that says
+"killed" must name who killed), re-probes `pid_exists`, and retires the ROOT's
+lines off the loop (`asyncio.to_thread`, since the untrack takes the file locks
+the sweep contends for). The write is bound to the PROCESS, not the number: the
+reader has no process left to re-check, and the freed number can be handed to a
+replacement root this gateway just tracked before the write lands, so
+`session_pid._untrack_root_by_identity(pid, start_token)` removes, under the
+session file's lock, only the line equal to `<gw>:<pid>:<start_token>` where the
+token is the one `AcpRuntime` read at spawn (`_spawn_start_token`); a different
+or absent token, or no token to compare, touches nothing. The bare
+`kiro_pids.txt` line carries no identity, and a successor handed the number may
+have no session line of its own (`_track_session_pid` dedups on the `gw:pid`
+prefix), so the session file cannot say whether the number has a new holder —
+the kernel can: `_untrack_pid_if_dead` probes `pid_exists` INSIDE
+`_pid_file_lock`, the lock `_track_pid` appends under, and removes the bare line
+only when the number is dead at that moment. A live holder keeps it: it cannot be
+mid-append while the probe holds the lock, so its bare line is either already
+there or is the one its own `_track_pid` writes next, and the sweep prunes any
+dead bare line within its tick. `pid_exists` treats EPERM as alive. The two
+per-file locks are taken in turn, never nested, and no lock spans the pair. The
+call reports whether every write it owed committed — a refused `kiro_pids.txt`
+rewrite is reported as `False`, not as a clean retirement. Every other doubt
+retains too: a closed stdout is not an exit (a backend can close its pipe and
+keep running), a wait that times out or a pid that still answers keeps the lines,
+and an untrack that raises is logged at debug like the kill path's. Descendant
+lines are deliberately left alone — a child that outlived the root is reparented
+and still running, and its own `kiro_pids.txt` line is what the sweep reaps it
+by. The kill paths' post-reap prefix untracks (`_kill_inner`,
+`AcpClient._reset_state`) and the spawn paths' tracking pair are unchanged here;
+serializing root tracking and retirement across both registries is a follow-up.
+Pinned by `test_observed_exit_retires_registry_entries_once_reaped`,
+`test_observed_exit_keeps_tracking_while_the_root_still_runs` and
+`test_eof_inside_an_oversize_line_retires_the_same_way` in
+`test/test_acp_runtime.py`, and by the `_untrack_root_by_identity` cases in
+`test/test_pid_lifecycle.py`.
+
 ### Codex MCP result envelopes
 
 The parser extracts `rawOutput.result.content` text from successful Codex MCP

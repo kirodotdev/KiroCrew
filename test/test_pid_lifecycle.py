@@ -12,6 +12,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -156,6 +157,215 @@ class TestTrackUntrack:
         _untrack_child_pids({100: None})
         lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert "100" in lines  # bare line preserved
+
+    # ── _untrack_root_by_identity: an observed death retires ITS lines only ──
+    #
+    # The runtime reader that watches a root die has no process left to re-check,
+    # so the number alone cannot say whose lines these are: a replacement root can
+    # be handed the same number before the write lands. The recorded start token
+    # is the identity the number lacks for the session line; for the bare line,
+    # which carries none, the kernel is asked under the bare file's own lock.
+    #
+    # Every case here names a pid the host may genuinely be running, so the
+    # liveness probe is pinned explicitly: a real ``pid_exists`` answering for a
+    # stranger is not the case under test.
+
+    @staticmethod
+    def _pid_is(monkeypatch: pytest.MonkeyPatch, alive: bool) -> None:
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.platform_compat, "pid_exists", lambda p: alive)
+
+    def test_untrack_root_by_identity_retires_both_lines_for_the_recorded_token(
+        self, pid_file: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Dead pid, our token: both lines go, an unrelated root stays."""
+        from kiro_crew.session_pid import (
+            _track_pid,
+            _track_session_pid,
+            _untrack_root_by_identity,
+        )
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok-a")
+        self._pid_is(monkeypatch, alive=False)
+        _track_pid(4242)
+        _track_session_pid(4242)
+        _track_pid(7)  # an unrelated root stays
+        assert _untrack_root_by_identity(4242, "tok-a") is True
+        assert session_pid_file.read_text(encoding="utf-8").strip() == ""
+        assert pid_file.read_text(encoding="utf-8").strip().splitlines() == ["7"]
+
+    def test_untrack_root_by_identity_spares_a_successor_on_the_recycled_number(
+        self, pid_file: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE finding: the dead root's number was handed to a fresh root this
+        gateway already tracked, and its session line carries a different token.
+        A token mismatch retains everything -- the bare line is never reached."""
+        from kiro_crew.session_pid import (
+            _track_pid,
+            _track_session_pid,
+            _untrack_root_by_identity,
+        )
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok-new")
+        # Even a probe that says DEAD must not reach the bare line here: the
+        # session line is not ours, so nothing this call owns is on disk.
+        self._pid_is(monkeypatch, alive=False)
+        _track_pid(4242)
+        _track_session_pid(4242)
+        assert _untrack_root_by_identity(4242, "tok-old") is False
+        assert session_pid_file.read_text(encoding="utf-8").strip() == f"{os.getpid()}:4242:tok-new"
+        assert pid_file.read_text(encoding="utf-8").strip() == "4242"
+
+    def test_untrack_root_by_identity_keeps_the_bare_line_of_a_live_holder(
+        self, pid_file: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The successor has NO session line of its own: ``_track_session_pid``
+        dedups on the ``gw:pid`` prefix, so it returned without writing while our
+        line still stood. The session file cannot tell the number has a new
+        holder; the kernel can. Our session line is retired, the bare line the two
+        share stays because the number is alive, and that is a settled result."""
+        from kiro_crew.session_pid import (
+            _track_pid,
+            _track_session_pid,
+            _untrack_root_by_identity,
+        )
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok-a")
+        _track_pid(4242)
+        _track_session_pid(4242)
+        # The successor holds 4242 now: its own _track_pid dedups against the
+        # retained bare line, and its _track_session_pid found ours.
+        self._pid_is(monkeypatch, alive=True)
+        assert _untrack_root_by_identity(4242, "tok-a") is True
+        assert session_pid_file.read_text(encoding="utf-8").strip() == ""
+        assert pid_file.read_text(encoding="utf-8").strip() == "4242"
+
+    def test_untrack_root_by_identity_probes_liveness_under_the_bare_file_lock(
+        self, pid_file: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe runs INSIDE ``_pid_file_lock``, the lock ``_track_pid``
+        appends under: a successor cannot be mid-append when the answer is read,
+        so a live answer means its bare line is either already there or is the
+        one it is about to write itself -- retaining is never wrong."""
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp, "_pid_start_token", lambda p: "tok-a")
+        sp._track_pid(4242)
+        sp._track_session_pid(4242)
+        probed_with_lock: list[bool] = []
+        lock_depth = {"n": 0}
+        real_lock = sp._pid_file_lock
+
+        @contextmanager
+        def _counting_lock():  # type: ignore[no-untyped-def]
+            with real_lock():
+                lock_depth["n"] += 1
+                try:
+                    yield
+                finally:
+                    lock_depth["n"] -= 1
+
+        monkeypatch.setattr(sp, "_pid_file_lock", _counting_lock)
+        monkeypatch.setattr(
+            sp.platform_compat,
+            "pid_exists",
+            lambda p: probed_with_lock.append(lock_depth["n"] == 1) or False,
+        )
+        assert sp._untrack_root_by_identity(4242, "tok-a") is True
+        assert probed_with_lock == [True], "liveness must be read while holding the bare-file lock"
+        assert pid_file.read_text(encoding="utf-8").strip() == ""
+
+    def test_untrack_root_by_identity_reports_a_refused_bare_write_as_failure(
+        self, pid_file: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refusal is not a commit. The session rewrite landing is only half the
+        retirement this call owes; when the bare `kiro_pids.txt` rewrite is refused
+        the dead root's line survives, so a true answer would have the caller log a
+        clean retirement over a registry that still names it."""
+        from kiro_crew import session_pid as session_pid_module
+        from kiro_crew.session_pid import (
+            _track_pid,
+            _track_session_pid,
+            _untrack_root_by_identity,
+        )
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok-a")
+        self._pid_is(monkeypatch, alive=False)
+        _track_pid(4242)
+        _track_session_pid(4242)
+        real_rewrite = session_pid_module._rewrite_pid_file
+
+        def refuse_the_bare_file(path: Path, text: str) -> bool:
+            # The session file must still commit: the finding is specifically about
+            # the SECOND write being refused after the first one landed.
+            if path == pid_file:
+                return False
+            return real_rewrite(path, text)
+
+        monkeypatch.setattr("kiro_crew.session_pid._rewrite_pid_file", refuse_the_bare_file)
+        assert _untrack_root_by_identity(4242, "tok-a") is False
+        # The half that did commit stays committed -- this is about the REPORT.
+        assert session_pid_file.read_text(encoding="utf-8").strip() == ""
+        assert pid_file.read_text(encoding="utf-8").strip() == "4242"
+
+    def test_untrack_root_by_identity_reports_a_refused_session_write_as_failure(
+        self, pid_file: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The FIRST write refused: the session line survives, so the bare line
+        must not be touched either (the two are retired together or not at all)
+        and the answer is False."""
+        from kiro_crew import session_pid as session_pid_module
+        from kiro_crew.session_pid import (
+            _track_pid,
+            _track_session_pid,
+            _untrack_root_by_identity,
+        )
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: "tok-a")
+        self._pid_is(monkeypatch, alive=False)
+        _track_pid(4242)
+        _track_session_pid(4242)
+        real_rewrite = session_pid_module._rewrite_pid_file
+        monkeypatch.setattr(
+            "kiro_crew.session_pid._rewrite_pid_file",
+            lambda path, text: False if path == session_pid_file else real_rewrite(path, text),
+        )
+        assert _untrack_root_by_identity(4242, "tok-a") is False
+        assert session_pid_file.read_text(encoding="utf-8").strip() == f"{os.getpid()}:4242:tok-a"
+        assert pid_file.read_text(encoding="utf-8").strip() == "4242"
+
+    def test_untrack_root_by_identity_refuses_without_an_identity(
+        self, pid_file: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No token to compare, or a line that never recorded one: nothing is
+        touched -- not even a bare line whose pid the probe would call dead. The
+        sweep reaps a dead entry by liveness; erasing a live one by number is the
+        failure this guard exists to prevent."""
+        from kiro_crew.session_pid import (
+            _track_pid,
+            _track_session_pid,
+            _untrack_root_by_identity,
+        )
+
+        monkeypatch.setattr("kiro_crew.session_pid._pid_start_token", lambda p: None)
+        self._pid_is(monkeypatch, alive=False)
+        _track_pid(4242)
+        _track_session_pid(4242)  # legacy token-less line
+        # "Touches nothing" means the registries are not even opened: with no
+        # identity to compare there is no line this call could own.
+        monkeypatch.setattr(
+            "kiro_crew.session_pid._session_pid_file_path",
+            lambda: pytest.fail("no token: the session registry must not be read"),
+        )
+        assert _untrack_root_by_identity(4242, None) is False
+        assert _untrack_root_by_identity(4242, "") is False
+        monkeypatch.setattr(
+            "kiro_crew.session_pid._session_pid_file_path", lambda: session_pid_file
+        )
+        assert _untrack_root_by_identity(4242, "tok-a") is False
+        assert session_pid_file.read_text(encoding="utf-8").strip() == f"{os.getpid()}:4242"
+        assert pid_file.read_text(encoding="utf-8").strip() == "4242"
 
     def test_replace_child_pids_rewrites_only_the_children_it_names(self, pid_file: Path) -> None:
         """A whole-set write for the caller's OWN children, nothing else."""
