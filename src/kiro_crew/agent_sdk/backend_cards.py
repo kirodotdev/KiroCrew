@@ -253,19 +253,25 @@ class _LineSpec:
 #: edit. Grouped: what reaches a session, then what a crew member's session gets,
 #: then what a turn can do, then what can be tuned.
 USER_FACING_LINES: Tuple[_LineSpec, ...] = (
-    # Two channels carry Crew's tools, and a harness needs only one of them.
+    # Three channels carry Crew's tools, and a harness needs only one of them.
     # Members of the per-session array receive the server list on ``session/new``;
     # the kiro family is handed ``--agent`` and loads Crew's spec (its MCP servers
-    # included) itself, which is exactly why they are absent from that array. A
-    # harness in NEITHER has none of Crew's tools in its sessions, which is the
-    # single most consequential thing this card says.
+    # included) itself; Pi receives them through the sealed MCP bridge extension
+    # when that extension's probe verifies at spawn (seal alone does not mount).
+    # A harness in none of the Crew-tool channels has none of Crew's tools in its
+    # sessions, which is the single most consequential thing this card says.
     #
     # ``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` is the kiro-family marker and stands for
     # that family here. The runtime set does NOT: codex is served by the shared
     # runtime for TRANSPORT reasons while reading none of Crew's agent spec, so a
     # line keyed on it would hand codex this claim by the wrong route.
     _LineSpec(
-        LINE_CREW_TOOLS, ("ACP_BACKENDS_SESSION_MCP_ARRAY", "ACP_BACKENDS_KIRO_SLASH_COMMANDS")
+        LINE_CREW_TOOLS,
+        (
+            "ACP_BACKENDS_SESSION_MCP_ARRAY",
+            "ACP_BACKENDS_KIRO_SLASH_COMMANDS",
+            "ACP_BACKENDS_PI_MCP_BRIDGE",
+        ),
     ),
     _LineSpec(LINE_MEMBER_THREAD_TOOLS, ("ACP_BACKENDS_MEMBER_DISPATCH",)),
     _LineSpec(LINE_MEMBER_SAVED_AGENT, ("ACP_BACKENDS_MEMBER_CAPABILITIES",)),

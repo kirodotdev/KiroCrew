@@ -43,6 +43,7 @@ from kiro_crew import acp_tool_gate, sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp._dispatch import GATE_ENVELOPE_MARKER, build_permission_event, gate_envelope
 from kiro_crew.acp.client import (
+    _PI_EXTENSION_FLAG,
     _READBACK_FAULT_MAX_SHAPES,
     _READBACK_FAULT_SHAPES,
     _READBACK_STDERR_SCAN_CHARS,
@@ -50,6 +51,7 @@ from kiro_crew.acp.client import (
     PI_BIN,
     PI_GATE_EXTENSION_SHA256,
     PI_INSTALL_COMMAND,
+    PI_MCP_BRIDGE_EXTENSION_SHA256,
     PROTOCOL_VERSION_PI,
     AcpClient,
     AcpToolGateUnroutable,
@@ -63,7 +65,9 @@ from kiro_crew.acp.client import (
     _resolve_pi_bin,
     _seal_pi_gate_extension,
     pi_gate_extension_path,
+    pi_mcp_bridge_extension_path,
 )
+from kiro_crew.acp.pi_mcp_broker import PiMcpBroker, admit_server_roster
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
@@ -93,6 +97,13 @@ _ENV_PI_ACP_BIN = "PI_ACP_BIN"
 _ENV_PI_COMMAND = "PI_ACP_PI_COMMAND"
 PROBE = gate_probe_command_for(ACP_BACKEND_PI)
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _pi_broker(*, socket_path: str, session_key: str = "") -> PiMcpBroker:
+    """Construct through the same admitted-roster seam production uses."""
+    return PiMcpBroker(
+        roster=admit_server_roster([]), socket_path=socket_path, session_key=session_key
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -326,9 +337,15 @@ class TestATooOldPiIsRefusedByName:
             raise Reached
 
         monkeypatch.setattr(acp_client, "_run_preflight_bounded", reached)
+        stub = {"name": "pooled", "command": "/stub", "args": []}
+        monkeypatch.setattr(AcpClient, "_pooled_broker_stubs", lambda self: [stub])
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
         with pytest.raises(Reached):
             asyncio.run(client._spawn())
+        assert client._pooled_mcp_servers() == []
+        assert client._pooled_broker_stubs() == [stub]
+        kiro = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_KIRO)
+        assert kiro._pooled_mcp_servers() == [stub]
 
 
 def test_the_handshake_is_the_spec_dialect():
@@ -345,7 +362,7 @@ class TestGateLauncher:
 
     def test_the_posix_body_quotes_both_paths(self, monkeypatch):
         monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", False)
-        body = _pi_gate_launcher_body("/opt/my pi/pi", "/site/gate's.ts")
+        body = _pi_gate_launcher_body("/opt/my pi/pi", ["/site/gate's.ts"])
         assert body.startswith("#!/bin/sh\n")
         assert "'/opt/my pi/pi'" in body
         assert '"$@"' in body, "every argument the adapter passes must be forwarded"
@@ -354,7 +371,7 @@ class TestGateLauncher:
 
     def test_the_windows_body_is_a_cmd_that_forwards_arguments(self, monkeypatch):
         monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", True)
-        body = _pi_gate_launcher_body("C:\\tools\\pi.cmd", "C:\\site\\gate.ts")
+        body = _pi_gate_launcher_body("C:\\tools\\pi.cmd", ["C:\\site\\gate.ts"])
         assert body.startswith("@echo off")
         assert "%*" in body
         assert '"C:\\tools\\pi.cmd"' in body and '"C:\\site\\gate.ts"' in body
@@ -364,15 +381,28 @@ class TestGateLauncher:
         run_dir.mkdir()
         monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
-        first = _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
-        second = _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
+        first = _ensure_pi_gate_launcher(str(tmp_path / "pi"), [str(tmp_path / "gate.ts")])
+        second = _ensure_pi_gate_launcher(str(tmp_path / "pi"), [str(tmp_path / "gate.ts")])
         assert first == second
         assert Path(first).parent == run_dir
         assert Path(first).name.startswith("kirocrew_pi_gate_")
         assert str(tmp_path / "gate.ts") in Path(first).read_text(encoding="utf-8")
         # Different inputs are a different launcher, not a stale one.
-        other = _ensure_pi_gate_launcher(str(tmp_path / "pi2"), str(tmp_path / "gate.ts"))
+        other = _ensure_pi_gate_launcher(str(tmp_path / "pi2"), [str(tmp_path / "gate.ts")])
         assert other != first
+
+    def test_launcher_body_accepts_multiple_extensions(self):
+        body = _pi_gate_launcher_body("/opt/pi", ["/site/gate.ts", "/site/bridge.ts"])
+        assert _PI_EXTENSION_FLAG in body
+        assert body.count(_PI_EXTENSION_FLAG) == 2
+        assert "/site/gate.ts" in body
+        assert "/site/bridge.ts" in body
+
+    def test_bridge_extension_digest_matches_pin(self):
+        payload = acp_client._pi_gate_extension_bytes(
+            Path(pi_mcp_bridge_extension_path()).read_bytes()
+        )
+        assert hashlib.sha256(payload).hexdigest() == PI_MCP_BRIDGE_EXTENSION_SHA256
 
     def test_nothing_is_written_into_the_work_dir_or_the_pi_directory(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
@@ -381,7 +411,7 @@ class TestGateLauncher:
         work.mkdir()
         monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
-        _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
+        _ensure_pi_gate_launcher(str(tmp_path / "pi"), [str(tmp_path / "gate.ts")])
         assert list(work.iterdir()) == []
         assert not (tmp_path / ".pi").exists()
 
@@ -556,7 +586,7 @@ class TestGateArtifactsRefuseAnUnsafeDirectory:
         with pytest.raises(AcpToolGateUnroutable):
             _seal_pi_gate_extension()
         with pytest.raises(AcpToolGateUnroutable):
-            _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
+            _ensure_pi_gate_launcher(str(tmp_path / "pi"), [str(tmp_path / "gate.ts")])
         assert list(elsewhere.iterdir()) == []
 
     def test_both_writers_go_through_the_strict_resolver(self):
@@ -1140,7 +1170,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI, **kw)
 
     def test_a_missing_launcher_is_an_issue_with_the_harness_remedy(self, tmp_path):
-        issue, remedy = self._client(tmp_path)._verify_pi_gate(
+        issue, remedy, _commands = self._client(tmp_path)._verify_pi_gate(
             [str(tmp_path / "not-there"), "--mode", "rpc"], self.EXT
         )
         assert issue
@@ -1153,7 +1183,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "exit 3" in issue and "get_commands" in remedy
 
     def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
@@ -1171,7 +1201,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = "/bin/sh: /Users/me/.local/bin/pi: Permission denied\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "exit 126" in issue
         assert "the OS refused to execute it" in issue
         assert "/Users/me" not in issue
@@ -1185,7 +1215,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = "   \n\t\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert issue.endswith("(exit 126)")
 
     def test_a_response_that_never_came_still_reports_the_childs_reason(
@@ -1199,7 +1229,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = "pi: unknown flag --extension\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "no response" in issue
         assert "a flag this harness version does not accept" in issue
 
@@ -1219,7 +1249,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
 
             _Completed.stderr = stderr
             monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-            issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+            issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
             return issue
 
         unknown = _run(f"mystery: key={_AWS_SECRET_SHAPE} rejected\n")
@@ -1239,7 +1269,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert PROBE in issue
         assert "gate extension" in remedy
 
@@ -1257,7 +1287,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             return _Completed()
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", _fake_run)
-        assert self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT) == ("", "")
+        assert self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)[:2] == ("", "")
         # Used VERBATIM: the caller hands over an argv already through the sandbox
         # wrapper, so anything rebuilt here would run unwrapped.
         assert seen["argv"] == self.ARGV
@@ -1571,7 +1601,7 @@ def test_live_the_shipped_extension_loads_and_the_read_back_sees_it(tmp_path, mo
     pi_bin, _searched = _resolve_pi_bin()
     assert pi_bin
     extension = pi_gate_extension_path()
-    launcher = _ensure_pi_gate_launcher(pi_bin, extension)
+    launcher = _ensure_pi_gate_launcher(pi_bin, [extension])
     # The operator's own environment, as the spawn would carry it (a mise-managed
     # ``pi`` needs its HOME to resolve), with only pi's agent directory redirected.
     env = {
@@ -1602,7 +1632,7 @@ def test_live_the_shipped_extension_loads_and_the_read_back_sees_it(tmp_path, mo
     elsewhere = tmp_path / "mine.ts"
     elsewhere.write_text(Path(extension).read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
-    other = _ensure_pi_gate_launcher(pi_bin, str(elsewhere))
+    other = _ensure_pi_gate_launcher(pi_bin, [str(elsewhere)])
     completed = subprocess.run(
         [other, *acp_client._PI_RPC_ARGS],
         cwd=str(tmp_path),
@@ -1785,7 +1815,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         sealed = _seal_pi_gate_extension()
-        launcher = _ensure_pi_gate_launcher("/usr/bin/pi", sealed)
+        launcher = _ensure_pi_gate_launcher("/usr/bin/pi", [sealed])
         assert Path(sealed).parent == artifact_dir
         assert Path(launcher).parent == artifact_dir
         for function in (_seal_pi_gate_extension, _ensure_pi_gate_launcher):
@@ -1809,7 +1839,7 @@ class TestTheGateArtifactsStayReachableInsideTheSandbox:
         monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         sealed = _seal_pi_gate_extension()
-        _ensure_pi_gate_launcher("/usr/bin/pi", sealed)
+        _ensure_pi_gate_launcher("/usr/bin/pi", [sealed])
         families = sandbox._PI_GATE_DIR_ARTIFACTS
         written = sorted(entry.name for entry in artifact_dir.iterdir())
         assert written, "the writers produced nothing to check"
@@ -1896,7 +1926,8 @@ class TestTheReadBackAgainstARealChild:
     def test_a_launcher_the_os_will_not_run_reports_the_bare_exit(self, tmp_path):
         """A silent child reports only its exit status."""
         argv = self._fake(tmp_path, "exec 2>/dev/null\nexit 126\n")
-        issue, remedy = self._verify(tmp_path, argv)
+        issue, remedy, commands = self._verify(tmp_path, argv)
+        assert commands is None
         assert "the harness's command registry could not be read back" in issue
         assert issue.endswith("(exit 126)")
         assert PI_INSTALL_COMMAND in remedy
@@ -1907,7 +1938,9 @@ class TestTheReadBackAgainstARealChild:
         Path(sealed).write_text("// gate\n")
         payload = _response(_registry((PROBE, sealed))).replace("'", "'\\''")
         argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{payload}'\n")
-        assert self._verify(tmp_path, argv, sealed) == ("", "")
+        issue, remedy, commands = self._verify(tmp_path, argv, sealed)
+        assert (issue, remedy) == ("", "")
+        assert isinstance(commands, list)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
     def test_a_response_shape_this_gateway_cannot_read_is_refused(self, tmp_path):
@@ -1922,7 +1955,8 @@ class TestTheReadBackAgainstARealChild:
             }
         ).replace("'", "'\\''")
         argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{drifted}'\n")
-        issue, remedy = self._verify(tmp_path, argv)
+        issue, remedy, commands = self._verify(tmp_path, argv)
+        assert commands is None
         assert "could not be read back" in issue
         assert "no response" in issue
         assert PI_INSTALL_COMMAND in remedy
@@ -2448,6 +2482,701 @@ class TestThePushNeverNeedsARefusal:
         assert "EFFORT_LEVELS[: start + 1]" in body
         assert "_is_config_value_rejection(exc, effort_option)" in body
         assert "effort_config_option_value(self._client.backend, level)" in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_pi_broker_permissions_come_from_host_response(tmp_path, monkeypatch, allowed):
+    from unittest.mock import AsyncMock
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = _pi_broker(socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    monkeypatch.setattr(client, "_send_response", AsyncMock())
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, kind="other", input={"x": 1}), title=title)
+    client._build_permission_event(frame)
+    with pytest.raises(PermissionError):
+        broker._consume_approval(
+            "call_v0prcvqi",
+            title,
+            {"x": 1},
+            generation=broker._grant_generations.get("call_v0prcvqi"),
+        )
+    if allowed:
+        await client.approve_tool(frame.id)
+        broker._consume_approval(
+            "call_v0prcvqi",
+            title,
+            {"x": 1},
+            generation=broker._grant_generations.get("call_v0prcvqi"),
+        )
+    else:
+        await client.reject_tool(frame.id)
+        with pytest.raises(PermissionError):
+            broker._consume_approval(
+                "call_v0prcvqi",
+                title,
+                {"x": 1},
+                generation=broker._grant_generations.get("call_v0prcvqi"),
+            )
+
+
+@pytest.mark.asyncio
+async def test_pi_broker_transport_floor_refusal_never_grants(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = _pi_broker(socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    send = AsyncMock()
+    monkeypatch.setattr(client, "_send_response", send)
+    monkeypatch.setattr(
+        acp_client.permission_floor, "refusal_for", lambda *_args, **_kwargs: "blocked"
+    )
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, kind="other", input={"x": 1}), title=title)
+    client._build_permission_event(frame)
+
+    assert not await client.approve_tool(frame.id)
+    send.assert_awaited_once_with(frame.id, {"outcome": {"outcome": "selected", "optionId": "no"}})
+    with pytest.raises(PermissionError):
+        broker._consume_approval(
+            "call_v0prcvqi",
+            title,
+            {"x": 1},
+            generation=broker._grant_generations.get("call_v0prcvqi"),
+        )
+
+
+def test_pi_bridge_failure_is_in_session_report(tmp_path):
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_mcp_expected_servers = ("kirocrew-core",)
+    client._begin_session_report([])
+    report = client.mcp_session_report().payload()
+    assert report["failed"] == ["kirocrew-core"]
+    assert "unavailable" in report["failures"]["kirocrew-core"]
+
+
+def test_pi_admission_failure_is_in_session_report_without_broker(tmp_path):
+    roster = admit_server_roster([{"name": "invalid__name", "command": "echo"}])
+    assert not roster.specs
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_mcp_expected_servers = roster.expected_names
+    client._pi_mcp_admission_failures = roster.failures
+    client._begin_session_report([])
+    report = client.mcp_session_report().payload()
+    assert report["failed"] == ["invalid__name"]
+    assert report["failures"]["invalid__name"] == roster.failures["invalid__name"]
+
+
+def test_pi_spawn_reports_only_the_brokers_bounded_roster(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import acp_launch_capture
+
+    from kiro_crew.acp.session_mcp import ToolsAllowlist
+
+    servers = [
+        {"name": "healthy", "command": "echo"},
+        {"name": "oversized", "command": "echo", "args": ["x" * 200_000]},
+        {"name": "x" * 4_000, "command": "echo"},
+        *({"name": f"server-{index}", "command": "echo"} for index in range(68)),
+    ]
+    projection = SimpleNamespace(
+        servers=servers,
+        disabled_tools=frozenset(),
+        disabled_servers=frozenset(),
+        derived_spec_snapshot=None,
+        allowlist=ToolsAllowlist(applies=False, grant_all=False, refs=frozenset()),
+    )
+    admissions = []
+    real_admission = acp_client.ServerRosterAdmission
+
+    class RecordingAdmission(real_admission):
+        def __init__(self):
+            super().__init__()
+            admissions.append(self)
+
+        def offer(self, spec):
+            assert self.count < self.max_count
+            assert all(len(arg) < 64 * 1024 for arg in spec.get("args", []) if isinstance(arg, str))
+            return super().offer(spec)
+
+    monkeypatch.setattr(acp_client, "ServerRosterAdmission", RecordingAdmission)
+    observed: list[tuple[str, ...]] = []
+    original_spawn = AcpClient._spawn
+    original_stubs = acp_launch_capture._stub_common
+
+    async def capture_roster(client):
+        try:
+            return await original_spawn(client)
+        finally:
+            observed.append(client._pi_mcp_expected_servers)
+
+    def stub_common(stack, recorder, path, backend):
+        original_stubs(stack, recorder, path, backend)
+        stack.extend(
+            [
+                patch.object(
+                    AcpClient, "_project_pi_mcp_policy", return_value=(projection, frozenset())
+                ),
+                patch.object(AcpClient, "_pooled_broker_stubs", return_value=[]),
+                patch.object(
+                    acp_client, "_pi_bridge_probe_issue", return_value="fixture unavailable"
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(AcpClient, "_spawn", capture_roster)
+    monkeypatch.setattr(acp_launch_capture, "_stub_common", stub_common)
+    acp_launch_capture.capture(ACP_BACKEND_PI, tmp_path)
+
+    assert len(observed) == 1
+    assert len(observed[0]) == 65
+    assert observed[0][:4] == ("healthy", "oversized", "server[2]", "server-0")
+    assert observed[0][-1] == "<additional servers>"
+    assert not any(len(name) > 512 for name in observed[0])
+    assert len(admissions) == 1
+    assert len(admissions[0].specs) < admissions[0].max_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["error", "cancel", "no", "unknown"])
+async def test_broker_grant_requires_delivered_allow(tmp_path, monkeypatch, outcome):
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = _pi_broker(socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, kind="other", input={"x": 1}), title=title)
+    client._build_permission_event(frame)
+
+    async def send(*args):
+        with pytest.raises(PermissionError):
+            broker._consume_approval(
+                "call_v0prcvqi",
+                title,
+                {"x": 1},
+                generation=broker._grant_generations.get("call_v0prcvqi"),
+            )
+        if outcome == "error":
+            raise OSError("send failed")
+        if outcome == "cancel":
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(client, "_send_response", send)
+    if outcome in ("error", "cancel"):
+        with pytest.raises((OSError, asyncio.CancelledError)):
+            await client.approve_tool(frame.id)
+    else:
+        await client.approve_tool(frame.id, option_id=outcome)
+    with pytest.raises(PermissionError):
+        broker._consume_approval(
+            "call_v0prcvqi",
+            title,
+            {"x": 1},
+            generation=broker._grant_generations.get("call_v0prcvqi"),
+        )
+    assert not broker._delivering
+    assert frame.id not in client._permission_options
+
+
+@pytest.mark.asyncio
+async def test_broker_call_waits_for_allow_delivery(tmp_path, monkeypatch):
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = _pi_broker(socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, kind="other", input={"x": 1}), title=title)
+    client._build_permission_event(frame)
+    waiting = None
+
+    async def send(*args):
+        nonlocal waiting
+        waiting = asyncio.create_task(broker.wait_for_delivery("call_v0prcvqi"))
+        await asyncio.sleep(0)
+        assert not waiting.done()
+
+    monkeypatch.setattr(client, "_send_response", send)
+    await client.approve_tool(frame.id)
+    await waiting
+    broker._consume_approval(
+        "call_v0prcvqi", title, {"x": 1}, generation=broker._grant_generations.get("call_v0prcvqi")
+    )
+
+
+@pytest.mark.asyncio
+async def test_pi_broker_auto_approval_records_advertised_options(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = _pi_broker(socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    monkeypatch.setattr(client, "_send_response", AsyncMock())
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, kind="other", input={"x": 1}), title=title)
+    await client._handle_permission(frame)
+    broker._consume_approval(
+        "call_v0prcvqi", title, {"x": 1}, generation=broker._grant_generations.get("call_v0prcvqi")
+    )
+
+
+@pytest.mark.parametrize(
+    "grant", ["referenced", "unreferenced", "wildcard", "no-spec", "failed", "stub-failed"]
+)
+def test_pi_pooled_stubs_obey_projected_allowlist(tmp_path, monkeypatch, grant):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import acp_launch_capture
+
+    from kiro_crew.acp.session_mcp import ToolsAllowlist
+
+    projection = SimpleNamespace(
+        servers=[],
+        disabled_tools=frozenset({("pooled", "fresh_off")}),
+        disabled_servers=frozenset(),
+        derived_spec_snapshot=None,
+        allowlist=ToolsAllowlist(
+            applies=grant != "no-spec",
+            grant_all=grant == "wildcard",
+            refs=frozenset({"pooled"} if grant == "referenced" else {"other"}),
+        ),
+    )
+    broker = MagicMock()
+    broker.start = AsyncMock()
+    broker.endpoint = "fixture-broker"
+    factory = MagicMock(return_value=broker)
+    original = acp_launch_capture._stub_common
+
+    def stub_common(stack, rec, path, backend):
+        original(stack, rec, path, backend)
+        stack.extend(
+            [
+                patch.object(
+                    acp_client,
+                    "session_mcp_projection",
+                    side_effect=(
+                        RuntimeError("projection unavailable") if grant == "failed" else None
+                    ),
+                    return_value=projection,
+                ),
+                patch.object(
+                    acp_client,
+                    "injection_server_names",
+                    side_effect=(
+                        RuntimeError("stub lookup unavailable") if grant == "stub-failed" else None
+                    ),
+                    return_value={"pooled"},
+                ),
+                patch.object(acp_client, "identity_bound_crew_servers", return_value=frozenset()),
+                patch.object(
+                    AcpClient,
+                    "_pooled_broker_stubs",
+                    return_value=[
+                        {
+                            "name": "pooled",
+                            "command": "/stub",
+                            "args": [],
+                            "disabledTools": ["old_off"],
+                        }
+                    ],
+                ),
+                patch.object(acp_client, "_pi_bridge_probe_issue", return_value=""),
+                patch.object(acp_client, "PiMcpBroker", factory),
+                *(
+                    [patch.object(AcpClient, "_session_work_dir", return_value=".")]
+                    if grant == "referenced"
+                    else []
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(acp_launch_capture, "_stub_common", stub_common)
+    acp_launch_capture.capture(ACP_BACKEND_PI, tmp_path)
+    if grant in {"referenced", "wildcard", "no-spec"}:
+        assert list(factory.call_args.kwargs["roster"].specs) == [
+            {
+                "name": "pooled",
+                "command": "/stub",
+                "args": [],
+                "disabledTools": ["fresh_off", "old_off"],
+            }
+        ]
+        broker.start.assert_awaited_once()
+        assert factory.call_args.kwargs["host_control_plane_servers"] == frozenset()
+        if grant == "referenced":
+            assert factory.call_args.kwargs["work_dir"] == os.getcwd()
+    else:
+        factory.assert_not_called()
+
+
+def test_pi_projection_tracks_shared_mirror_identity_rules(tmp_path, monkeypatch):
+    """A new shared identity-bound server must also be withheld from Pi's broker."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import acp_launch_capture
+
+    from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, ToolsAllowlist
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+    from kiro_crew.providers.mirrors.identity import identity_bound_crew_servers
+
+    identity_bound = identity_bound_crew_servers()
+    assert identity_bound
+    servers = [
+        {"name": name, "command": "/managed", "args": []}
+        for name in sorted(identity_bound | frozenset(CONTROL_PLANE_SERVERS))
+    ]
+    servers.append(
+        {
+            "name": "fixture",
+            "command": "/safe-server",
+            "args": [],
+            "env": [{"name": "HELLO", "value": "world"}],
+        }
+    )
+    servers.append({"name": "disabled-direct", "command": "/disabled", "args": []})
+    projection = SimpleNamespace(
+        servers=servers,
+        disabled_tools=frozenset({("fixture", "off")}),
+        disabled_servers=frozenset({"disabled-direct", "disabled-pooled"}),
+        derived_spec_snapshot=None,
+        allowlist=ToolsAllowlist(applies=False, grant_all=False, refs=frozenset()),
+    )
+    broker = MagicMock()
+    broker.start = AsyncMock()
+    broker.endpoint = "fixture-broker"
+    factory = MagicMock(return_value=broker)
+    original = acp_launch_capture._stub_common
+
+    def stub_common(stack, rec, path, backend):
+        original(stack, rec, path, backend)
+        stack.extend(
+            [
+                patch.object(acp_client, "session_mcp_projection", return_value=projection),
+                patch.object(acp_client, "injection_server_names", return_value=frozenset()),
+                patch.object(
+                    AcpClient,
+                    "_pooled_broker_stubs",
+                    return_value=[{"name": "disabled-pooled", "command": "/disabled", "args": []}],
+                ),
+                patch.object(
+                    acp_client,
+                    "managed_mcp_spec_entry",
+                    side_effect=lambda name: (
+                        {"command": "/managed", "args": []}
+                        if name in CONTROL_PLANE_SERVERS
+                        else None
+                    ),
+                ),
+                patch.object(acp_client, "_pi_bridge_probe_issue", return_value=""),
+                patch.object(acp_client, "PiMcpBroker", factory),
+            ]
+        )
+
+    monkeypatch.setattr(acp_launch_capture, "_stub_common", stub_common)
+    acp_launch_capture.capture(ACP_BACKEND_PI, tmp_path)
+
+    mounted = {entry["name"]: entry for entry in factory.call_args.kwargs["roster"].specs}
+    assert set(mounted) == set(CONTROL_PLANE_SERVERS) | {"fixture"}
+    assert not set(mounted) & identity_bound
+    assert factory.call_args.kwargs["host_control_plane_servers"] == frozenset(
+        CONTROL_PLANE_SERVERS
+    )
+    trusted = factory.call_args.kwargs["trusted_server_env"]
+    assert set(trusted) == set(CONTROL_PLANE_SERVERS)
+    for name in CONTROL_PLANE_SERVERS:
+        env = {pair["name"]: pair["value"] for pair in mounted[name]["env"]}
+        assert env["KIROCREW_SESSION_KEY"] == "golden-session"
+        assert env[STUB_SESSION_TOKEN_ENV]
+        assert trusted[name]["KIROCREW_SESSION_KEY"] == "golden-session"
+        assert trusted[name][STUB_SESSION_TOKEN_ENV] == env[STUB_SESSION_TOKEN_ENV]
+    assert mounted["fixture"]["env"] == [{"name": "HELLO", "value": "world"}]
+    assert mounted["fixture"]["disabledTools"] == ["off"]
+
+
+@pytest.mark.asyncio
+async def test_pi_warm_pool_policy_snapshot_rejects_new_disables(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.session_mcp import ToolsAllowlist
+    from kiro_crew.providers.acp import AcpProvider
+
+    provider = AcpProvider(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client = provider.client
+    projection = SimpleNamespace(
+        servers=[{"name": "fixture", "command": "/server", "args": []}],
+        disabled_tools=frozenset(),
+        disabled_servers=frozenset(),
+        allowlist=ToolsAllowlist(applies=True, grant_all=False, refs=frozenset({"fixture"})),
+    )
+    monkeypatch.setattr(client, "_project_pi_mcp_policy", lambda: (projection, frozenset()))
+    client._pi_mcp_policy_snapshot = acp_client._pi_mcp_policy_digest(projection, frozenset())
+    assert await provider.pool_mcp_policy_current()
+
+    projection.disabled_tools = frozenset({("fixture", "ping")})
+    assert not await provider.pool_mcp_policy_current()
+    projection.disabled_tools = frozenset()
+    projection.disabled_servers = frozenset({"fixture"})
+    assert not await provider.pool_mcp_policy_current()
+
+    kiro = AcpProvider(work_dir=tmp_path, acp_backend=ACP_BACKEND_KIRO)
+    assert await kiro.pool_mcp_policy_current()
+
+
+def test_factory_uses_acp_provider_for_pi_and_kiro(tmp_path):
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.providers.acp import AcpProvider
+
+    cfg = KiroCrewConfig()
+    cfg.agent.acp_backend = ACP_BACKEND_PI
+    pi = cfg.create_provider_factory()(cwd=str(tmp_path))
+    assert type(pi) is AcpProvider
+
+    cfg.agent.acp_backend = ACP_BACKEND_KIRO
+    kiro = cfg.create_provider_factory()(cwd=str(tmp_path))
+    assert type(kiro) is AcpProvider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "expected_array"),
+    [
+        (ACP_BACKEND_KIRO, True),
+        (ACP_BACKEND_PI, False),
+        (ACP_BACKEND_CODEX, False),
+        (ACP_BACKEND_DEEPSEEK, True),
+    ],
+)
+async def test_pooled_stubs_use_each_backend_delivery_path(
+    tmp_path, monkeypatch, backend, expected_array
+):
+    from kiro_crew.providers.acp import AcpProvider
+
+    stub = {"name": "pooled", "command": "/stub", "args": []}
+    client = AcpProvider(work_dir=tmp_path, acp_backend=backend).client
+    monkeypatch.setattr(AcpClient, "_pooled_broker_stubs", lambda self: [stub])
+
+    assert type(client) is AcpClient
+    assert client._pooled_broker_stubs() == [stub]
+    if backend == ACP_BACKEND_PI:
+        client._withhold_pi_wire_stubs()
+    assert client._pooled_mcp_servers() == ([stub] if expected_array else [])
+    sent = []
+
+    async def send(method, params):
+        sent.append((method, params))
+        return len(sent)
+
+    async def wait(*_args, **_kwargs):
+        return {"sessionId": "fixture-session"}
+
+    async def work_dir():
+        return str(tmp_path)
+
+    monkeypatch.setattr(client, "_send_request", send)
+    monkeypatch.setattr(client, "_wait_for_response", wait)
+    monkeypatch.setattr(client, "_session_work_dir", work_dir)
+    await client._new_session_following_substitution()
+    assert sent[0][0] == "session/new"
+    assert sent[0][1]["mcpServers"] == ([stub] if expected_array else [])
+
+
+def test_mirror_receives_raw_pooled_stubs_for_its_projection(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from kiro_crew.providers.acp import AcpProvider
+
+    stub = {"name": "pooled", "command": "/stub", "args": []}
+    mirror = MagicMock()
+    mirror.session_projection.return_value = SimpleNamespace(
+        params={"mcpServers": [stub]},
+        denied_tools=frozenset(),
+        derived_spec_snapshot=None,
+        restricted_servers=frozenset(),
+        disabled_servers=frozenset(),
+    )
+    client = AcpProvider(work_dir=tmp_path, acp_backend=ACP_BACKEND_CODEX).client
+    monkeypatch.setattr(AcpClient, "_pooled_broker_stubs", lambda self: [stub])
+    monkeypatch.setattr(acp_client, "injection_server_names", lambda *_a, **_kw: {"pooled"})
+    monkeypatch.setattr(acp_client, "mirror_for", lambda _backend: mirror)
+
+    assert client._resolve_session_mcp_servers() == [stub]
+    assert mirror.session_projection.call_args.kwargs["stub_elements"] == [stub]
+    assert mirror.session_projection.call_args.kwargs["stub_server_names"] == {"pooled"}
+
+
+@pytest.mark.asyncio
+async def test_pi_restore_keeps_pooled_stubs_out_of_acp_array(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.providers.acp import AcpProvider
+
+    client = AcpProvider(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI).client
+    client._withhold_pi_wire_stubs()
+    client._resume_session_id = "stored-pi-session"
+    stub = {"name": "pooled", "command": "/stub", "args": []}
+    monkeypatch.setattr(AcpClient, "_pooled_broker_stubs", lambda self: [stub])
+    sent = []
+
+    async def send(method, params):
+        sent.append((method, params))
+        return len(sent)
+
+    async def wait(_req_id, **kwargs):
+        if kwargs.get("method") == "session/load":
+            return {"modes": []}
+        return {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
+
+    async def work_dir():
+        return str(tmp_path)
+
+    monkeypatch.setattr(client, "_send_request", send)
+    monkeypatch.setattr(client, "_wait_for_response", wait)
+    monkeypatch.setattr(client, "_session_work_dir", work_dir)
+    monkeypatch.setattr(client, "_apply_startup_model", AsyncMock())
+    monkeypatch.setattr(client, "_drain_notifications", AsyncMock())
+    await client._initialize_session()
+
+    assert client._resumed
+    assert [method for method, _params in sent] == ["initialize", "session/load"]
+    assert sent[1][1]["mcpServers"] == []
+    assert client._pooled_broker_stubs() == [stub]
+
+
+@pytest.mark.asyncio
+async def test_pi_broker_audit_tracks_warm_pool_rekey(tmp_path, monkeypatch):
+    from kiro_crew.acp import pi_mcp_broker
+
+    events = []
+
+    class AuditLog:
+        def log_tool_invocation(self, **kwargs):
+            events.append(kwargs)
+
+    monkeypatch.setattr(pi_mcp_broker, "sel", AuditLog)
+    publications = []
+    monkeypatch.setattr(acp_client, "schedule_claim", lambda *_args: None)
+    monkeypatch.setattr(
+        acp_client,
+        "schedule_session_token_publish",
+        lambda *args: publications.append(args),
+    )
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI, session_key="dashboard:old")
+    broker = _pi_broker(socket_path=str(tmp_path / "unused.sock"), session_key="dashboard:old")
+    client._pi_mcp_broker = broker
+
+    client.rekey("dashboard:new")
+    await broker._audit_tool_call("echo", "ping", "completed")
+
+    assert events[0]["session_key"] == "dashboard:new"
+    assert publications == [(client._stub_session_token, "dashboard:new")]
+
+
+@pytest.mark.asyncio
+async def test_pi_shutdown_retains_broker_until_failed_cleanup_can_retry(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    broker = SimpleNamespace(stop=AsyncMock(side_effect=[OSError("cleanup failed"), None]))
+    client._pi_mcp_broker = broker
+    client._pi_mcp_broker_endpoint = "old-endpoint"
+
+    with pytest.raises(OSError, match="cleanup failed"):
+        await client._stop_pi_mcp_broker_async()
+    assert client._pi_mcp_broker is broker
+    assert client._pi_mcp_broker_endpoint == ""
+
+    await client._stop_pi_mcp_broker_async()
+    assert client._pi_mcp_broker is None
+    assert broker.stop.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_pi_shutdown_waits_for_broker_stop_after_cancellation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    order = []
+
+    async def stop():
+        started.set()
+        await release.wait()
+        order.append("broker stopped")
+
+    client._pi_mcp_broker = SimpleNamespace(stop=stop)
+    monkeypatch.setattr(client, "_kill_process", AsyncMock())
+    monkeypatch.setattr(client, "_discard_bound_workspace", AsyncMock())
+    monkeypatch.setattr(client, "_discard_claude_settings_seed", AsyncMock())
+    monkeypatch.setattr(client, "_reset_state", lambda: order.append("state reset"))
+
+    shutdown = asyncio.create_task(client.shutdown())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    shutdown.cancel()
+    await asyncio.sleep(0)
+    assert not shutdown.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown
+    assert order == ["broker stopped", "state reset"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("windows_early", [False, True])
+async def test_pi_respawn_resets_state_when_broker_stop_is_cancelled(
+    tmp_path, monkeypatch, windows_early
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._process = SimpleNamespace(returncode=0)
+    client._work_dir_ready = True
+    reset = Mock()
+    monkeypatch.setattr(acp_client.platform_compat, "IS_WINDOWS", windows_early)
+    monkeypatch.setattr(client, "_kill_process", AsyncMock())
+    monkeypatch.setattr(client, "_discard_bound_workspace", AsyncMock())
+    monkeypatch.setattr(client, "_discard_claude_settings_seed", AsyncMock())
+    monkeypatch.setattr(
+        client, "_stop_pi_mcp_broker_async", AsyncMock(side_effect=asyncio.CancelledError)
+    )
+    monkeypatch.setattr(client, "_reset_state", reset)
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.ensure_ready()
+    reset.assert_called_once_with()
+
+
+@pytest.mark.parametrize("mounted", [None, frozenset(), frozenset({"third-party"})])
+def test_pi_unresolved_refs_require_initialized_broker_servers(tmp_path, mounted):
+    from types import SimpleNamespace
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    spec = {
+        "tools": ["@third-party", "@kirocrew-computer"],
+        "mcpServers": {"third-party": {}, "kirocrew-computer": {}},
+    }
+    client._mcp_ref_spec = spec
+    client._pi_mcp_broker = (
+        None if mounted is None else SimpleNamespace(initialized_servers=mounted)
+    )
+    client._guard_unresolved_mcp_refs([])
+    expected = ("@kirocrew-computer",) if mounted else ("@kirocrew-computer", "@third-party")
+    assert client.mcp_session_report().unresolved_refs == expected
+    assert client._mcp_ref_spec is spec
+    assert set(spec["mcpServers"]) == {"third-party", "kirocrew-computer"}
 
 
 # What pi-acp 0.0.34 answered, driving pi 0.87.1, when ``session/set_config_option``

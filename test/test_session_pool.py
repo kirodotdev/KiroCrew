@@ -51,6 +51,7 @@ def _make_provider() -> MagicMock:
     p = MagicMock()
     p.start = AsyncMock()
     p.shutdown = AsyncMock()
+    p.pool_mcp_policy_current = AsyncMock(return_value=True)
     p.is_process_alive = MagicMock(return_value=True)
     p.exit_code = None
     # session_map persistence reads provider.cwd (the LLMProvider ABC accessor);
@@ -223,6 +224,101 @@ class TestLivenessDrainLoop:
 
         dead.shutdown.assert_awaited_once()
         assert pooled is healthy
+
+    @pytest.mark.asyncio
+    async def test_changed_mcp_policy_discards_prewarmed_provider(self):
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        stale = _make_provider()
+        stale.pool_mcp_policy_current.return_value = False
+        current = _make_provider()
+        mgr._warm_pool.put_nowait((stale, time.monotonic()))
+        mgr._warm_pool.put_nowait((current, time.monotonic()))
+
+        assert await mgr._drain_and_claim("kirocrew") is current
+        stale.pool_mcp_policy_current.assert_awaited_once()
+        stale.shutdown.assert_awaited_once()
+        current.pool_mcp_policy_current.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_pi_policy_claim_settles_broker_before_returning(self, tmp_path):
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp_backends import ACP_BACKEND_PI
+
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+        client._discard_bound_workspace = AsyncMock()
+        client._discard_claude_settings_seed = AsyncMock()
+        client._reset_state = MagicMock()
+        broker_stopping = asyncio.Event()
+        allow_broker_stop = asyncio.Event()
+        broker_stopped = asyncio.Event()
+
+        async def stop_broker():
+            broker_stopping.set()
+            await allow_broker_stop.wait()
+            broker_stopped.set()
+
+        client._pi_mcp_broker = SimpleNamespace(stop=stop_broker)
+        provider = _make_provider()
+        provider._client = client
+        provider.shutdown = client.shutdown
+
+        async def kill_process(*, force):
+            provider.is_process_alive.return_value = False
+
+        client._kill_process = AsyncMock(side_effect=kill_process)
+        checking_policy = asyncio.Event()
+
+        async def check_policy():
+            checking_policy.set()
+            await asyncio.Future()
+
+        provider.pool_mcp_policy_current = check_policy
+        mgr._warm_pool.put_nowait((provider, time.monotonic()))
+        mgr._dispatch_hard_kill = MagicMock()
+        claim = asyncio.create_task(mgr._drain_and_claim("kirocrew"))
+        try:
+            await asyncio.wait_for(checking_policy.wait(), timeout=5)
+            claim.cancel()
+            await asyncio.wait_for(broker_stopping.wait(), timeout=5)
+            claim.cancel()
+            assert not claim.done(), "claim returned while the host broker was still stopping"
+            client._reset_state.assert_not_called()
+        finally:
+            allow_broker_stop.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(claim, timeout=5)
+        client._kill_process.assert_awaited_once_with(force=True)
+        client._reset_state.assert_called_once()
+        assert broker_stopped.is_set()
+        assert client._pi_mcp_broker is None
+        assert mgr._warm_pool.empty()
+        mgr._dispatch_hard_kill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_policy_claim_escalates_failed_shutdown(self):
+        mgr, _ = _make_manager(pool_agent="kirocrew")
+        provider = _make_provider()
+        checking_policy = asyncio.Event()
+
+        async def check_policy():
+            checking_policy.set()
+            await asyncio.Future()
+
+        provider.pool_mcp_policy_current = check_policy
+        provider.shutdown = AsyncMock(side_effect=RuntimeError("shutdown failed"))
+        mgr._warm_pool.put_nowait((provider, time.monotonic()))
+        claim = asyncio.create_task(mgr._drain_and_claim("kirocrew"))
+
+        with patch("kiro_crew.session._sync_kill_provider") as mock_kill:
+            await asyncio.wait_for(checking_policy.wait(), timeout=5)
+            claim.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(claim, timeout=5)
+
+        provider.shutdown.assert_awaited_once()
+        mock_kill.assert_called_once_with(provider)
 
     @pytest.mark.asyncio
     async def test_unanswerable_liveness_probe_is_discarded_fail_closed(self):

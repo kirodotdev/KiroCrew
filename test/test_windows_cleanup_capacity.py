@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew import platform_compat as pc
 
@@ -810,3 +811,23 @@ async def test_slow_identity_read_leaves_the_event_loop_serving(kernel, monkeypa
     # Pinned BEFORE the read, so a cancellation inside it still retains the child.
     assert pinned_during_read == [{100: root}]
     assert process._windows_cleanup_state.key == (100, 10)
+
+
+@pytest.mark.asyncio
+async def test_pi_mcp_child_releases_cleanup_capacity_after_root_exit(kernel, monkeypatch):
+    from kiro_crew.acp.pi_mcp_broker import _McpChild
+
+    kernel.add(_UNALLOCATABLE_PID)
+    process = SimpleNamespace(pid=_UNALLOCATABLE_PID, returncode=0, wait=AsyncMock(return_value=0))
+    monkeypatch.setattr(pc, "duplicate_asyncio_process_handle", lambda p: p.pid * 10)
+
+    async def factory(**kwargs):
+        return process
+
+    process = await pc.create_windows_cleanup_owned_process(factory)
+    assert pc._WINDOWS_TREE_ADMISSIONS
+    kernel.exit_(_UNALLOCATABLE_PID)
+    child = _McpChild(name="fixture", process=process)
+    await child.kill()
+    assert not pc._WINDOWS_TREE_ADMISSIONS
+    assert not pc._PENDING_WINDOWS_TREE_CLEANUPS

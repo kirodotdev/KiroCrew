@@ -4700,6 +4700,25 @@ class TestKillProcess:
 class TestResetStateExtended:
     """Extended _reset_state tests covering sandbox cleanup and PID untracking."""
 
+    @pytest.mark.asyncio
+    async def test_kiro_shutdown_resets_without_pi_cleanup_await(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        sandbox_file = tmp_path / "sandbox.sb"
+        sandbox_file.write_text("profile", encoding="utf-8")
+        client._sandbox_cleanup = str(sandbox_file)
+        client._kill_process = AsyncMock()
+        client._discard_bound_workspace = AsyncMock()
+        client._discard_claude_settings_seed = AsyncMock()
+        client._stop_pi_mcp_broker_async = AsyncMock(
+            side_effect=AssertionError("Kiro teardown must not await Pi cleanup")
+        )
+
+        await client.shutdown()
+
+        assert not sandbox_file.exists()
+        assert client._sandbox_cleanup is None
+        client._stop_pi_mcp_broker_async.assert_not_awaited()
+
     def test_sandbox_cleanup_removes_file(self, tmp_path):
         client = AcpClient()
         sb_file = tmp_path / "sandbox.sb"
@@ -6366,8 +6385,7 @@ class TestApproveTool:
 
     @pytest.mark.asyncio
     async def test_explicit_option_id_skips_recorded_pop(self, tmp_path):
-        """Explicit option_id bypasses the recorded entry — defensive retries
-        with a recorded entry left intact still send the explicit id."""
+        """An explicit id leaves recorded options intact for defensive retries."""
         from kiro_crew.acp.types import OUTCOME_SELECTED
 
         client = AcpClient(work_dir=tmp_path)

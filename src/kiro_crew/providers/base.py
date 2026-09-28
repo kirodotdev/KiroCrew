@@ -325,6 +325,13 @@ class LLMProvider(ABC):
         """
         return self.is_alive()
 
+    async def pool_mcp_policy_current(self) -> bool:
+        """Whether this prewarmed provider still has its spawn-time MCP policy.
+
+        Providers without a separate MCP policy snapshot are current by default.
+        """
+        return True
+
     @property
     def process_instance(self) -> str:
         """Identity of the CURRENT runtime process serving this provider.

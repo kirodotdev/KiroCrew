@@ -1322,6 +1322,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacted there before the payload leaves the backend.",
     ),
     (
+        "Pi MCP child metadata and results",
+        "acp/pi_mcp_broker.py",
+        "Child-authored descriptions, schemas, and tool results are scrubbed before "
+        "bridge/list or bridge/call sends them to Pi. This sink runs the exfiltration URL and "
+        "credential scanners, plus exact replacement of declared and trusted "
+        "child environment values; "
+        "callable names requiring redaction are withheld.",
+    ),
+    (
         "MCP app tool results",
         "dashboard/handlers/mcp_apps.py",
         "Recursively redacts every string leaf of an MCP app's tool result before "

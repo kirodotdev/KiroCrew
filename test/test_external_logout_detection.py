@@ -1035,6 +1035,9 @@ class _FakeProvider:
     def is_alive(self) -> bool:
         return True
 
+    async def pool_mcp_policy_current(self) -> bool:
+        return True
+
     async def shutdown(self) -> None:
         self.shutdown_calls += 1
 
