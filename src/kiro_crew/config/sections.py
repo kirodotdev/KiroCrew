@@ -1576,8 +1576,10 @@ class AgentConfig:
         default=0.5,
         metadata=_meta(
             "SubAgent Memory Cost (GB)",
-            "First-boot per-agent memory-cost fallback (GB) used to auto-size the "
-            "cap until a learned value accumulates.",
+            "Free memory (GB) each sub-agent start must find on top of the "
+            "admission floor; also the per-agent fallback used to auto-size the "
+            "cap until a learned value accumulates. Raise it on hosts whose "
+            "runtimes settle heavier.",
         ),
     )
     subagent_cpu_cost_cores: float = field(

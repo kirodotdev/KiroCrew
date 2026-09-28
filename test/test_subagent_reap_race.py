@@ -1461,7 +1461,7 @@ async def test_recovery_respawn_is_priced_as_a_fresh_process():
         # The guard's view at the moment the fresh process is launched: the
         # next start (6) plus this warming worker holding nothing yet (6).
         seen["reserve"] = _startup_memory_reserve_gb(
-            [_info], running_count=mgr._running_count, cost_gb=0.5, next_start_gb=6.0
+            [_info], running_count=mgr._running_count, cost_gb=6.0
         )
         if mgr._release_slot(_info):
             mgr._running_count = max(0, mgr._running_count - 1)

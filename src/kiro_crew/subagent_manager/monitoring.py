@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from ..subagent import (
         _CLK_TCK,
         _REAPER_INTERVAL,
-        _SAMPLE_MAX_AGE_SECS,
         _SUPPRESS_CEILING,
         OUTCOME_FAILED,
         OUTCOME_INTERRUPTED,
@@ -43,16 +42,13 @@ if TYPE_CHECKING:
         agent_dir_for_display,
         append_cost_sample,
         asyncio,
-        cap_buckets,
         compact_cost_log,
         consult_offloaded,
-        cost_log_identity,
         has_dashboard_surface,
         list_orphans,
         logger,
         maintenance_executor,
         prune_stale_tombstones,
-        read_learned_costs_checked,
         sel,
         single_completion_meta,
         subprocess_executor,
@@ -821,86 +817,6 @@ class OrphanStallMonitor(ManagerComponent):
                         info.peak_cpu_cores = cores
             info._cpu_jiffies_prev = jiffies
             info._cpu_sample_ts = now
-        # Same off-loop sweep, same store the samples above feed: publish the
-        # learned p90 the spawn guard prices an unmeasured start at. A plain
-        # attribute write of one float, read by the gate on the loop; the file
-        # itself is never opened there.
-        self._refresh_learned_cost_impl()
-
-    def _refresh_learned_cost_impl(self) -> None:
-        """Re-read the learned per-run memory p90 onto the manager. BLOCKING, off-loop.
-
-        The cost log is agent-writable and tiny (FIFO-trimmed to 50 records per
-        agent), but it is still a whole-file parse, so it runs on the maintenance
-        executor -- here and once at reaper start -- and the gate reads
-        ``_learned_costs_gb`` as arithmetic.
-
-        Three outcomes. An ABSENT log (first boot, or the operator's documented
-        reset: delete ``subagents/cost_samples.jsonl``) clears the map. A
-        COMPLETE read of a present, inspectable log REPLACES it -- the whole log
-        was parsed, so a bucket it does not yield has expired past the age
-        horizon or fallen below ``min_samples`` and its price retires on this
-        running process; a log that was replaced (new inode, or shrunk) is read
-        the same way. An INCOMPLETE read -- a refused record ended the parse
-        early, the present log could not be opened, or its identity could not be
-        inspected -- is MERGED, so a bucket the read could not reach keeps its
-        figure rather than being lowered silently. Only dedicated runs' samples
-        are read: a shared run's figure is a per-session share of one runtime,
-        not what a start that may run as its own process will cost.
-        """
-        try:
-            # Identity on both sides of the read: a log replaced DURING the read
-            # would otherwise pair pre-reset figures with the new file's identity
-            # and carry them into every later merge. A mismatch keeps the prior
-            # state; the next sweep reads a settled file.
-            before = cost_log_identity()
-            # Dedicated runs only: a start priced here may run as its own
-            # process, and a shared run's sample is a per-session share.
-            costs, complete = read_learned_costs_checked(
-                "mem_gb", dedicated_only=True, max_age_secs=_SAMPLE_MAX_AGE_SECS
-            )
-            identity = cost_log_identity()
-        except Exception:
-            logger.debug(
-                "learned subagent cost unreadable; keeping the previous value", exc_info=True
-            )
-            return
-        if identity != before:
-            logger.debug("cost log changed during the read; keeping the previous value")
-            return
-        manager = self._manager
-        if identity is None:
-            # Absent log: first boot, or the operator's reset. Nothing learned.
-            manager._learned_costs_gb = {}
-            manager._learned_costs_source = None
-            return
-        if len(identity) != 3:
-            # Present but not inspectable: nothing this read says is proven, so
-            # it is additive at most.
-            complete = False
-        previous = manager._learned_costs_source
-        replaced = (
-            previous is not None
-            and len(previous) == 3
-            and len(identity) == 3
-            and (identity[:2] != previous[:2] or identity[2] < previous[2])  # type: ignore[operator]
-        )
-        if replaced or previous is None or complete:
-            # Authoritative read: the whole log was parsed, so a bucket it does
-            # not yield has genuinely expired past the age horizon or fallen
-            # below min_samples, and its held price retires with it. Also the
-            # path for a log that was deleted and re-created within one sweep
-            # (the operator's reset), a compaction rewrite, and the first
-            # publication.
-            manager._learned_costs_gb = dict(costs)
-        else:
-            # Incomplete read -- an over-cap record ended the parse before the
-            # buckets after it: MERGE, so a bucket the read could not reach
-            # keeps its held figure while one it did reach takes the new value,
-            # up or down. Merge is reserved for exactly this degraded case.
-            manager._learned_costs_gb = cap_buckets({**manager._learned_costs_gb, **costs})
-        if len(identity) == 3:
-            manager._learned_costs_source = identity
 
     def _record_cost_impl(self, info: SubagentInfo) -> None:
         """Persist this run's high-water RSS/CPU to the learned-cost store."""
@@ -927,15 +843,6 @@ class OrphanStallMonitor(ManagerComponent):
             compact_cost_log()  # startup FIFO trim (§4.2)
         except Exception:
             logger.debug("Reaper: startup cost-log compaction failed", exc_info=True)
-        # Publish the learned cost BEFORE the first sleep: a fan-out in the
-        # first minute after boot must already be priced at it, not at the
-        # first-boot fallback. Off-loop for the same reason the sweep is.
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                maintenance_executor(), self._manager._refresh_learned_cost
-            )
-        except Exception:
-            logger.debug("Reaper: startup learned-cost refresh failed", exc_info=True)
         while True:
             await asyncio.sleep(_REAPER_INTERVAL)
             now = time.time()

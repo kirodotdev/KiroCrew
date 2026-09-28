@@ -1206,7 +1206,7 @@
       "sensitive": false,
       "tags": [],
       "label": "SubAgent Memory Cost (GB)",
-      "help": "First-boot per-agent memory-cost fallback (GB) used to auto-size the cap until a learned value accumulates.",
+      "help": "Free memory (GB) each sub-agent start must find on top of the admission floor; also the per-agent fallback used to auto-size the cap until a learned value accumulates. Raise it on hosts whose runtimes settle heavier.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.5

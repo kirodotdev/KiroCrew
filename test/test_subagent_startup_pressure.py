@@ -897,7 +897,6 @@ async def test_reaper_sweep_reaps_at_the_base_deadline_under_a_crowd(monkeypatch
         swept.set()
 
     mgr._force_reap = _force_reap  # type: ignore[method-assign]
-    mgr._refresh_learned_cost = MagicMock()  # type: ignore[method-assign]
     mgr._rebuild_conversation_registry = AsyncMock()  # type: ignore[method-assign]
     mgr._sample_live_costs = MagicMock()  # type: ignore[method-assign]
     mgr._sweep_stuck_waves_async = AsyncMock()  # type: ignore[method-assign]
