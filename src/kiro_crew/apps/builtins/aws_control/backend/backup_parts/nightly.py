@@ -537,12 +537,55 @@ def due_for_nightly(account: str, now: Optional[dt.datetime] = None) -> bool:
     The backoff is read LAST, after the grant and after the window, because it is
     the narrowest of the three: the first two answer whether a run is wanted at all,
     and this only answers whether to attempt one again yet.
+
+    Capability is read FIRST, the way :func:`due_for_sessions_nightly` reads its own
+    kind's: a host where the snapshot payload cannot be held from creation refuses
+    inside :func:`run_snapshot_backup`, so calling it anyway would raise on every
+    wake, record a failed run and audit a ``denied`` SEL event every half hour for a
+    kind that can never succeed there. Answering "not due" makes the capability
+    question a scheduling fact rather than a recurring error.
     """
+    if kind_unavailable_reason(KIND_SNAPSHOT) is not None:
+        # Not silent: an owner who sees the nightly snapshot scheduled and nothing
+        # ever uploading finds out only at the host-loss event the feature exists to
+        # survive. Log WHY it is withheld (deduped so an every-half-hour wake does not
+        # spam the log), and report the same reason through the status route
+        # (`scheduled_snapshot_blocked_reason`), exactly as the sessions kind does via
+        # `scheduled_sessions_blocked_reason` -- one surface cannot show the grant as
+        # running while the loop withholds it.
+        _log_snapshot_withheld_once(kind_unavailable_reason(KIND_SNAPSHOT))
+        return False
     if not nightly_enabled(account):
         return False
     if not _a_day_since_last_run(account, KIND_SNAPSHOT, now):
         return False
     return not _backoff_withholds(account, KIND_SNAPSHOT, now)
+
+
+#: Last snapshot-withheld reason logged, held in a mutable container so the NAME binding
+#: never changes (the facade re-exports every part name and requires one object per
+#: name across holders -- reassigning a bare module global would break that). A wake
+#: every ~half hour does not repeat the same line; a CHANGED reason logs again.
+_snapshot_withheld_state: dict[str, Optional[str]] = {"last": None}
+
+
+def _log_snapshot_withheld_once(reason: Optional[str]) -> None:
+    """Log the reason the nightly snapshot is withheld, once per distinct reason."""
+    if reason and reason != _snapshot_withheld_state["last"]:
+        logger.warning("nightly snapshot withheld on this host: %s", reason)
+        _snapshot_withheld_state["last"] = reason
+
+
+def scheduled_snapshot_blocked_reason() -> Optional[str]:
+    """Why the nightly SNAPSHOT grant cannot run here, or None when it can.
+
+    The snapshot sibling of :func:`scheduled_sessions_blocked_reason`, and reported
+    the same way: BESIDE the grant on the status route, never folded into it, so a
+    surface can show the switch as on AND say nothing is running. Derived from
+    :func:`kind_unavailable_reason` rather than deciding again, so the prose can only
+    describe the condition that function selected.
+    """
+    return kind_unavailable_reason(KIND_SNAPSHOT)
 
 
 def _unattended_sessions_redaction_gap() -> Optional[str]:

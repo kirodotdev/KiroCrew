@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import sqlite3
 import tarfile
 import threading
@@ -35,10 +36,80 @@ from unittest import mock
 import pytest
 
 from kiro_crew import platform_compat
-from kiro_crew.apps.builtins.aws_control.backend import backup, costs
+from kiro_crew.apps.builtins.aws_control.backend import backup, costs, storage
 from kiro_crew.config import loader
 
 ACCOUNT = "111122223333"
+
+
+def _stage_on_o_tmpfile_fs(tmp_path, monkeypatch):
+    """Point ``storage.staging_root`` at a directory the backup can stage under.
+
+    A backup that mocks the mask present produces the archive body into an
+    anonymous **memfd** (RAM-backed), so the staging directory's filesystem no
+    longer has to honour ``O_TMPFILE`` -- memfd works on any Linux filesystem, and
+    pytest's tmpfs/overlay basetemp is fine. The staging directory only needs to
+    exist, so point it at the fixture's own ``tmp_path``. Where no sealable memfd
+    exists at all the create fails closed, which the fail-closed tests pin.
+    """
+    root = tmp_path / "kc-aws-staging"
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(storage, "staging_root", lambda: root)
+
+
+def _stub_sealed_upload_body(tmp_path, monkeypatch):
+    """Make ``build_sealed_upload_body`` produce the body on ANY platform.
+
+    The real path builds the archive inside a non-dumpable sealing helper that needs
+    ``memfd_create`` + file seals, so it is Linux-only and FAILS CLOSED on macOS, the
+    BSDs and Windows -- the deliberate product shape (the sessions kind is withdrawn
+    where the bytes cannot be held unrewritable). That is pinned by its own
+    availability tests; these grant/membership tests are about the Layer-B permission
+    gate and archive contents, which are platform-independent. Stub the sealing step
+    with a plain on-disk producer (run the same ``write_body`` into a real file and
+    return a descriptor to it) so the full tar build + grant/withdrawal logic runs on
+    every CI platform. The seal's own correctness lives in
+    test_aws_control_sealed_body.py.
+    """
+    counter = {"n": 0}
+
+    def _produce(write_body, name):
+        counter["n"] += 1
+        path = tmp_path / f"kc-stub-body-{counter['n']}-{name}"
+        wfd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            write_body(wfd)
+        finally:
+            os.close(wfd)
+        return os.open(str(path), os.O_RDONLY)
+
+    # ``run_sessions_backup`` refuses up front where the body cannot be held from
+    # creation (``can_hold_upload_body_from_creation`` -> ``_NO_HOLDABLE_BODY_REASON``),
+    # which is false off Linux/memfd. These tests are about the Layer-B gate and
+    # archive contents, not that platform refusal (pinned by its own tests), so report
+    # the hold available and let the stubbed producer stand in for the real memfd.
+    monkeypatch.setattr(storage, "can_hold_upload_body_from_creation", lambda: True)
+    monkeypatch.setattr(storage, "build_sealed_upload_body", _produce)
+
+
+def _uploaded_tar_names(local_path, body_fd=None) -> list[str]:
+    """Sorted member names of the archive an upload stub received.
+
+    The archive is produced INTO a nameless inode on Linux (O_TMPFILE), so
+    ``local_path`` names nothing and the bytes are reachable only through the
+    descriptor ``put_file`` was handed. Read through ``body_fd`` when the name does
+    not resolve -- a ``dup`` so the caller's descriptor position is left alone -- and
+    fall back to the name on the Windows/named path.
+    """
+    if body_fd is not None and not (local_path and os.path.exists(local_path)):
+        dup = os.dup(body_fd)
+        os.lseek(dup, 0, os.SEEK_SET)
+        with os.fdopen(dup, "rb") as raw:
+            with tarfile.open(fileobj=raw, mode="r:gz") as tar:
+                return sorted(tar.getnames())
+    with tarfile.open(local_path) as tar:
+        return sorted(tar.getnames())
+
 
 #: Sentinel for `_store`'s `scope` argument. A sentinel rather than a default string
 #: because `None` has to mean "write NO scope marker" -- the legacy grant shape -- and
@@ -142,6 +213,21 @@ class TestAuthorizeUpload:
 
 
 class TestRunSnapshotBackup:
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
@@ -262,6 +348,48 @@ class TestRunSnapshotBackup:
         assert record["key"] == pushed_key
         assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == pushed_key
 
+    def test_the_snapshot_payload_is_streamed_from_a_pinned_descriptor(self):
+        # The snapshot body is a NAMED on-disk file ``snapshot_main`` /
+        # ``prepare_redacted_copy`` wrote. It is held by pinning the INODE
+        # (``_open_pinned_archive_fd``: O_NOFOLLOW + S_ISREG + st_nlink == 1 + owner),
+        # plus a Windows deny-write open and a post-transfer ``_assert_same_file``
+        # backstop -- it is NOT sealed. Copying a named source into a sealed memfd
+        # would read it through the same unprotected window and freeze
+        # already-substituted bytes (GPT 5.6, storage.py:988), so the sealed-copy was
+        # removed; the from-creation seal needs ``snapshot_main`` to write into the
+        # helper, the large follow-up tracked in rfc-s3-backup.md. This pins the real
+        # behaviour: put_file is handed a descriptor (not a name) that carries the
+        # archive's bytes, and nothing claims a seal the arm does not apply.
+        if not backup._CAN_PIN_TRAVERSAL:
+            pytest.skip("descriptor-pinned traversal is unavailable here")
+
+        def fake_snapshot(argv):
+            archive = Path(argv[0]) / "kirocrew-snapshot-20260101T000000Z.tar.gz"
+            with tarfile.open(archive, "w:gz"):
+                pass
+            return 0
+
+        seen: dict[str, object] = {}
+
+        def _capture(profile, region, bucket, section, key, local_path, **kwargs):
+            if key.endswith(backup.LABEL_OBJECT_NAME):
+                return "v-label"
+            fd = kwargs["body_fd"]
+            seen["body_fd"] = fd
+            seen["has_fd"] = fd is not None
+            return "v-test"
+
+        with (
+            mock.patch.object(backup, "snapshot_main", side_effect=fake_snapshot),
+            mock.patch.object(backup, "_authorize_upload"),
+            mock.patch.object(backup.storage, "put_file", side_effect=_capture),
+        ):
+            backup.run_snapshot_backup(ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_OWNER)
+
+        # A descriptor is handed over (no name resolution at the child), pinned to the
+        # verified inode. It is a plain file descriptor, not a sealed memfd.
+        assert seen["has_fd"] is True, "the snapshot body was not handed over as a descriptor"
+
     def test_a_failed_label_push_still_reports_the_backup_as_done(self):
         # The label is a caption. A backup whose archive reached the bucket must
         # not be reported as failed because a hundred-byte display string did not
@@ -297,6 +425,12 @@ class TestRunSessionsBackup:
         # sweep swallows its own failures, so leaving it unstubbed would attempt a
         # real CLI call from a passing test.
         monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
+        # The archive body is held from creation only on a confined host; the
+        # unconfined refusal is covered by TestSnapshotBackupRefusesWhereItsPayloadCannotBeHeld.
+        # Set the mask present so these cases reach the behaviour they are about.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+        _stage_on_o_tmpfile_fs(tmp_path, monkeypatch)
+        _stub_sealed_upload_body(tmp_path, monkeypatch)
         yield
 
     def test_empty_session_dirs_raise_before_upload(self, tmp_path, monkeypatch):
@@ -354,7 +488,16 @@ class TestRunSessionsBackup:
         pushed: dict[str, str] = {}
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 # The label sidecar rides along on the same push path; it is not
@@ -365,8 +508,7 @@ class TestRunSessionsBackup:
             pushed["local"] = local_path
             pushed["timeout"] = timeout
             # The names inside the archive prove both halves were tarred.
-            with tarfile.open(local_path) as tar:
-                pushed["names"] = sorted(tar.getnames())
+            pushed["names"] = _uploaded_tar_names(local_path, kwargs.get("body_fd"))
 
         with (
             mock.patch.object(backup, "_authorize_upload"),
@@ -420,6 +562,12 @@ class TestSessionsArchiveLayerBGate:
         # is immaterial to them and a reasonless pair keeps them from also asserting
         # suppression. Do not read it as the resolver's contract.
         monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (None, ""))
+        # The archive body is held from creation only on a confined host; the
+        # unconfined refusal has its own test. These cases exercise the Layer-B
+        # gate and archive membership, so set the mask present.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+        _stage_on_o_tmpfile_fs(tmp_path, monkeypatch)
+        _stub_sealed_upload_body(tmp_path, monkeypatch)
         yield
 
     @staticmethod
@@ -502,12 +650,20 @@ class TestSessionsArchiveLayerBGate:
         captured: dict[str, Any] = {}
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return
-            with tarfile.open(local_path) as tar:
-                captured["names"] = sorted(tar.getnames())
+            captured["names"] = _uploaded_tar_names(local_path, kwargs.get("body_fd"))
 
         with (
             mock.patch.object(backup, "_authorize_upload"),
@@ -799,11 +955,24 @@ class TestSessionsArchiveLayerBGate:
         uploaded: dict[str, int] = {}
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return None
-            uploaded[key] = Path(local_path).stat().st_size
+            body_fd = kwargs.get("body_fd")
+            if body_fd is not None and not (local_path and os.path.exists(local_path)):
+                uploaded[key] = os.fstat(body_fd).st_size
+            else:
+                uploaded[key] = Path(local_path).stat().st_size
             return "v1"
 
         def fake_head(profile, region, bucket, section, key, *, account):
@@ -1665,7 +1834,16 @@ class TestSessionsArchiveLayerBGate:
         uploaded: list[str] = []
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             uploaded.append(key)
 
@@ -1824,7 +2002,16 @@ class TestSessionsArchiveLayerBGate:
             return answer["free"]
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             # Keyed by which object is being written. The label is uploaded after
             # the lock is released, on purpose -- a caption must not hold the
@@ -1895,7 +2082,16 @@ class TestSessionsArchiveLayerBGate:
             return answer["free"]
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             # Keyed the same way as the sibling: the label is uploaded after the
             # block, so reading "the last put" would pass with any lock at all.
@@ -1958,7 +2154,16 @@ class TestSessionsArchiveLayerBGate:
             return answer["free"]
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             which = "label" if key.endswith(backup.LABEL_OBJECT_NAME) else "archive"
             seen[which] = _file_lock_is_free_to_another_thread()
@@ -2007,7 +2212,16 @@ class TestSessionsArchiveLayerBGate:
             return not thread.is_alive() and answer.get("done", False)
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return
@@ -2074,7 +2288,16 @@ class TestSessionsArchiveLayerBGate:
                 parked.set()
 
         def fake_put(
-            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+            profile,
+            region,
+            bucket,
+            section,
+            key,
+            local_path,
+            *,
+            account=None,
+            timeout=None,
+            **kwargs,
         ):
             if key.endswith(backup.LABEL_OBJECT_NAME):
                 return
@@ -3586,6 +3809,11 @@ class TestDueForNightlyBadStamp:
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        # `due_for_nightly` reads the snapshot kind's capability first; these
+        # malformed-stamp cases are about the window/stamp branch, so hold the
+        # payload-can-be-held gate True to reach it rather than the capability
+        # short-circuit.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
         yield
 
     def test_unparseable_last_run_timestamp_reads_as_due(self):
@@ -4778,6 +5006,12 @@ class TestNightlyRetryBackoff:
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        # The backoff/stamp/grant logic these tests exercise only runs once the
+        # snapshot kind is available; `due_for_nightly` now reads that capability
+        # first (an unavailable kind is "not due" rather than a failed run every
+        # wake). Hold the payload-can-be-held gate True so these cases reach the
+        # logic they are about rather than the capability short-circuit.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
         yield
 
     @staticmethod
@@ -6113,3 +6347,205 @@ class TestRememberedArchives:
             backup.KIND_SNAPSHOT: 0,
             backup.KIND_SESSIONS: 0,
         }
+
+
+class TestSnapshotBackupRefusesWhereItsPayloadCannotBeHeld:
+    """The snapshot path stops where it cannot prove the bytes it would upload.
+
+    Both backup kinds now stop where the upload body cannot be held unrewritable.
+    The snapshot payload is written and closed BY NAME by ``snapshot_main`` and
+    ``snapshot.prepare_redacted_copy`` before this module can open it; the archive
+    produces its own body into a nameless O_TMPFILE inode. Either way, on POSIX the
+    hold is real only when the sandbox mask removes the same-user writer -- a
+    nameless inode is still reachable through ``/proc/<pid>/fd`` by a writer the mask
+    has not excluded, and macOS/BSD can express no hold at all. Where the mask is
+    absent every check available afterwards passes for a same-user replacement, and
+    the fingerprint and the upload then read the substituted file and agree.
+
+    So that platform refuses instead of uploading. These tests pin the refusal where
+    it matters -- that it happens BEFORE a payload exists and that the reason is
+    stated up front -- by driving the capability predicate rather than the platform,
+    so the behaviour is measurable on any host.
+    """
+
+    @staticmethod
+    def _no_mask(monkeypatch):
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: False)
+
+    def test_no_snapshot_payload_is_produced(self, monkeypatch):
+        # The refusal has to precede the BUILD, not just the upload: a payload written
+        # and then abandoned would have spent the whole unguarded window on disk.
+        self._no_mask(monkeypatch)
+        built: list[Any] = []
+        monkeypatch.setattr(backup, "snapshot_main", lambda *a, **k: built.append(a) or 0)
+        with pytest.raises(RuntimeError, match="snapshot backups are paused"):
+            backup.run_snapshot_backup(
+                "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+            )
+        assert built == [], "the snapshot builder must not run when the payload cannot be held"
+
+    def test_nothing_is_uploaded(self, monkeypatch):
+        self._no_mask(monkeypatch)
+        monkeypatch.setattr(backup, "snapshot_main", lambda *a, **k: 0)
+        with mock.patch.object(backup.storage, "put_file") as put:
+            with pytest.raises(RuntimeError, match="snapshot backups are paused"):
+                backup.run_snapshot_backup(
+                    "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+                )
+        assert not put.called, "no object may be written when the snapshot path refuses"
+
+    def test_the_error_names_the_cause_and_not_the_other_kind(self, monkeypatch):
+        # An operator reading this has to learn that snapshots are off and why. On a
+        # Linux host the mask being absent is a SETTINGS cause (sandbox off, or a live
+        # agent unconfined), not a platform limit, so the message must name that fix
+        # rather than claim the platform cannot run snapshots. What it must NOT do is
+        # speak for the sessions kind, which answers through `kind_unavailable_reason`
+        # for its own capability.
+        self._no_mask(monkeypatch)
+        with pytest.raises(RuntimeError) as caught:
+            backup.run_snapshot_backup(
+                "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+            )
+        message = str(caught.value)
+        assert "snapshot backups are paused" in message
+        assert "agent.sandbox" in message, "name the setting the Linux operator must change"
+        assert "same user could replace the" in message
+        assert "Archive backups are unaffected and still run here" not in message
+
+    def test_the_refusal_is_recorded_for_an_auditor(self, monkeypatch):
+        # A denial that leaves no trace makes the audited denials look like the only
+        # ones, so this goes through _refuse_upload rather than a bare raise.
+        self._no_mask(monkeypatch)
+        with mock.patch.object(backup, "_refuse_upload", side_effect=RuntimeError("x")) as refused:
+            with pytest.raises(RuntimeError):
+                backup.run_snapshot_backup(
+                    "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_SCHEDULED
+                )
+        assert refused.called
+        # Attributed to the caller that was actually running, so an unattended refusal
+        # at 03:00 is not recorded against the dashboard owner.
+        assert refused.call_args.kwargs["caller"] == backup.CALLER_SCHEDULED
+
+    def test_the_capability_predicate_reports_the_real_platform(self, monkeypatch):
+        # The tests above patch the predicate, so none of them would notice it being
+        # wired to a constant. This one reads it for real. A predicate stuck at False
+        # would disable snapshot backups on every platform while every other test here
+        # still passed, which is the failure a reader of this class would least expect
+        # to be possible.
+        # POSIX is NECESSARY but not sufficient: the mask is a mount-namespace bind
+        # the sandbox builds, and it only exists when that sandbox actually runs.
+        if not platform_compat.IS_POSIX:
+            assert storage._staging_leaf_is_masked() is False
+        # When the sandbox mask does NOT run -- agent.sandbox='off', a host with no
+        # backend, or a delegated spawn -- an unconfined same-UID writer is present on
+        # the leaf in a supported configuration, so the leaf is NOT masked even on
+        # POSIX and the snapshot payload must be refused rather than uploaded.
+        monkeypatch.setattr(storage, "credential_mask_applies", lambda _mode: False)
+        assert storage._staging_leaf_is_masked() is False
+        monkeypatch.setattr(storage, "credential_mask_applies", lambda _mode: True)
+        monkeypatch.setattr(storage, "spawn_delegates_masking", lambda: True)
+        assert storage._staging_leaf_is_masked() is False
+        # With the mask carried AND not delegated, the answer is exactly what the
+        # platform can offer: True on POSIX, False on Windows -- PROVIDED no already
+        # running agent is unconfined. ``agent.sandbox`` is a live setting with no
+        # restart marker, so the config predicates above answer about the next spawn
+        # while a session spawned under the old tier is still running; the live-pid
+        # check is what covers that, so it is stubbed to "all confined, snapshot
+        # complete" here to isolate the platform answer.
+        monkeypatch.setattr(storage, "spawn_delegates_masking", lambda: False)
+        monkeypatch.setattr(
+            "kiro_crew.session_pid._read_tracked_agent_pids", lambda: ({4321}, True)
+        )
+        monkeypatch.setattr(storage, "unconfined_live_agent_pid", lambda _pids: None)
+        assert storage._staging_leaf_is_masked() is bool(platform_compat.IS_POSIX)
+        if platform_compat.IS_POSIX:
+            # A live agent that is NOT confined re-opens the same-UID-writer hole even
+            # with both config predicates satisfied: the leaf is unmasked.
+            monkeypatch.setattr(storage, "unconfined_live_agent_pid", lambda _pids: 4321)
+            assert storage._staging_leaf_is_masked() is False
+            # An incomplete PID snapshot could be hiding an unconfined agent, so it is
+            # treated as one -- fail closed rather than trust a partial view.
+            monkeypatch.setattr(storage, "unconfined_live_agent_pid", lambda _pids: None)
+            monkeypatch.setattr(
+                "kiro_crew.session_pid._read_tracked_agent_pids", lambda: (set(), False)
+            )
+            assert storage._staging_leaf_is_masked() is False
+
+    def test_the_archive_path_is_not_refused(self, monkeypatch):
+        # The whole point of scoping this to snapshots: the archive path holds its own
+        # file from creation, so it is sound on every platform and must keep running.
+        #
+        # Asserted on the REFUSAL rather than on how far the archive path gets. How far
+        # it gets depends on the platform and on everything else stubbed here, so a
+        # progress assertion would fail for reasons unrelated to the gate -- which is
+        # exactly what it did on Windows. Whether the gate fires is the property.
+        self._no_mask(monkeypatch)
+        with mock.patch.object(
+            backup, "_refuse_snapshot_without_a_producer_held_payload"
+        ) as refusal:
+            with contextlib.suppress(Exception):
+                backup.run_sessions_backup(
+                    "111122223333", "p", "us-east-1", "b", caller=backup.CALLER_OWNER
+                )
+        assert not refusal.called, "the snapshot refusal must not reach the archive path"
+
+    def test_a_masked_staging_leaf_is_not_refused(self, monkeypatch):
+        # The POSIX half, so the refusal is pinned as CONDITIONAL. Without this a
+        # predicate stuck at False would pass every test above and disable snapshots
+        # everywhere. Asserted by letting the real helper run and observing that it
+        # returns instead of raising, which is the behaviour rather than a stand-in.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+        backup._refuse_snapshot_without_a_producer_held_payload(
+            "111122223333", caller=backup.CALLER_OWNER
+        )
+
+    def test_the_kind_is_offered_as_unavailable_before_a_run_starts(self, monkeypatch):
+        # The refusal alone is not enough. The route asks `kind_unavailable_reason`
+        # BEFORE creating a run record and answers 501 when it speaks; silent there,
+        # the run starts, the helper raises inside the worker, and the owner is handed
+        # a failed run record -- the outcome that function exists to prevent.
+        self._no_mask(monkeypatch)
+        assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is not None
+
+    def test_the_answer_is_the_refusal_own_words(self, monkeypatch):
+        # One sentence, not two that drift: what an owner is told before pressing the
+        # button has to be what the refusal would have raised.
+        self._no_mask(monkeypatch)
+        reason = backup.kind_unavailable_reason(backup.KIND_SNAPSHOT)
+        with pytest.raises(RuntimeError) as raised:
+            backup._refuse_snapshot_without_a_producer_held_payload(
+                "111122223333", caller=backup.CALLER_OWNER
+            )
+        assert reason is not None and reason in str(raised.value)
+
+    def test_the_kind_is_offered_normally_where_the_payload_can_be_held(self, monkeypatch):
+        # The conditional half of the pre-check, for the same reason the refusal has
+        # one: an answer stuck at "unavailable" would withdraw snapshot backups from
+        # every platform while the tests above still passed.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+        assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is None
+
+    def test_the_sessions_kind_answers_for_its_own_capability(self, monkeypatch):
+        # Each kind is unavailable for ITS OWN missing capability. The sessions
+        # (archive) kind now needs TWO capabilities: descriptor-pinned traversal AND
+        # an upload body it can hold unrewritable for the whole transfer. With pinning
+        # available but no holdable body -- an unconfined POSIX host, macOS/BSD, or
+        # Windows, all of which fail closed per the ruling -- the sessions kind reports
+        # unavailable for the holdable-body reason, and the snapshot kind for its own.
+        # `can_hold_upload_body_from_creation` is the exact gate `kind_unavailable_reason`
+        # reads, so drive it directly rather than the platform underneath it: that keeps
+        # the assertion true on every OS (on Windows the real predicate is always False,
+        # so mocking the underlying mask would not make the kind available).
+        monkeypatch.setattr(backup, "_CAN_PIN_TRAVERSAL", True)
+        self._no_mask(monkeypatch)
+        monkeypatch.setattr(backup.storage, "can_hold_upload_body_from_creation", lambda: False)
+        sessions_reason = backup.kind_unavailable_reason(backup.KIND_SESSIONS)
+        assert sessions_reason is not None
+        assert "sessions backup is unavailable" in sessions_reason
+        assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is not None
+        # Holdable body available (a confined Linux host with O_TMPFILE): the sessions
+        # kind is offered. Drive the gate directly so this holds on every platform.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+        monkeypatch.setattr(backup.storage, "can_hold_upload_body_from_creation", lambda: True)
+        assert backup.kind_unavailable_reason(backup.KIND_SESSIONS) is None
+        assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is None

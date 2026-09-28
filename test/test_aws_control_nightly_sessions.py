@@ -54,6 +54,13 @@ def _isolated_backup_state(tmp_path, monkeypatch):
     the key's SHAPE rather than of this fixture.
     """
     monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+    # kind_unavailable_reason(SESSIONS) now gates on the archive body being holdable
+    # from creation (a confined-Linux + O_TMPFILE capability) as well as on pinned
+    # traversal. Every test host here is unconfined, so default that capability
+    # present -- these tests exercise pinning, grants and the redaction gap, not the
+    # held-body gate, and the tests that DO exercise it patch it themselves.
+    monkeypatch.setattr(backup.storage, "can_hold_upload_body_from_creation", lambda: True)
+    monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
     backup._unpersisted_runs.clear()
     yield
     backup._unpersisted_runs.clear()
@@ -113,7 +120,10 @@ class TestTheTranscriptWindowIsItsOwn:
         to False and therefore overrides this fixture.
         """
         with mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", True):
-            yield
+            with mock.patch.object(
+                backup.storage, "can_hold_upload_body_from_creation", return_value=True
+            ):
+                yield
 
     def test_authorized_and_never_run_is_due(self):
         backup.set_nightly_sessions(ACCOUNT, True)
@@ -144,6 +154,18 @@ class TestTheTranscriptWindowIsItsOwn:
         with mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", False):
             assert backup.kind_unavailable_reason(backup.KIND_SESSIONS) is not None
             assert backup.due_for_sessions_nightly(ACCOUNT) is False
+
+    def test_a_platform_that_cannot_hold_the_snapshot_payload_is_never_due(self):
+        # The snapshot sibling of the above: `run_snapshot_backup` refuses up front
+        # where the payload cannot be held from creation, so `due_for_nightly` must
+        # read that capability first. Left due, every wake records a failed run and
+        # audits a SEL `denied` for a kind that can never succeed there. The real
+        # payload-held gate is patched off, not the reason helper, so this pins the
+        # composition rather than a stub that agrees with itself.
+        backup.set_nightly(ACCOUNT, True)
+        with mock.patch.object(backup.storage, "_staging_leaf_is_masked", lambda: False):
+            assert backup.kind_unavailable_reason(backup.KIND_SNAPSHOT) is not None
+            assert backup.due_for_nightly(ACCOUNT) is False
 
 
 def _run(coro):
@@ -546,18 +568,39 @@ class TestTheGrantIsRereadBeforeTheBytesLeave:
         (crew / "t.jsonl").write_bytes(b"transcript\n")
         monkeypatch.setattr(backup, "data_home", lambda: tmp_path / "crew_home")
         monkeypatch.setattr(backup, "kiro_sessions_dir", lambda: tmp_path / "absent_cli")
+        # The archive body is an anonymous memfd (RAM-backed), so the staging
+        # directory's filesystem need not honour O_TMPFILE -- stage under tmp_path
+        # and the run reaches the grant gate under test. Where no sealable memfd
+        # exists the create fails closed first, pinned by its own tests.
+        staging = tmp_path / "kc-aws-staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(backup.storage, "staging_root", lambda: staging)
         _authorized_env(monkeypatch)
         _walk_by_name(monkeypatch)
 
         with mock.patch.object(backup.storage, "put_file") as put_file:
-            with pytest.raises(RuntimeError, match="no longer holds"):
-                backup.run_sessions_backup(
-                    ACCOUNT,
-                    "p",
-                    "us-west-2",
-                    "bkt",
-                    caller=backup.CALLER_SCHEDULED,
-                )
+            if not backup.storage._UNNAMED_BODY_SUPPORTED:
+                # No sealable memfd (Windows/macOS/BSD): the real archive create
+                # fails closed BEFORE the grant gate, raising ``AWSError`` ("cannot be
+                # held unrewritable"). Assert that outcome rather than skipping -- the
+                # run must still never upload on an unholdable host, whichever stop
+                # fires first.
+                with pytest.raises(
+                    (backup.storage.AWSError, RuntimeError),
+                    match="unrewritable|whole transfer|memfd|held",
+                ):
+                    backup.run_sessions_backup(
+                        ACCOUNT, "p", "us-west-2", "bkt", caller=backup.CALLER_SCHEDULED
+                    )
+            else:
+                with pytest.raises(RuntimeError, match="no longer holds"):
+                    backup.run_sessions_backup(
+                        ACCOUNT,
+                        "p",
+                        "us-west-2",
+                        "bkt",
+                        caller=backup.CALLER_SCHEDULED,
+                    )
         put_file.assert_not_called()
 
 
@@ -764,16 +807,24 @@ class TestAGrantedButIdleNightlyIsReported:
         # Without this the helper could be a constant refusal and every test above
         # would still pass, which would withhold the nightly everywhere.
         with mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", True):
-            with mock.patch.object(backup, "_unattended_sessions_redaction_gap", return_value=None):
-                assert backup.scheduled_sessions_blocked_reason() is None
+            with mock.patch.object(
+                backup.storage, "can_hold_upload_body_from_creation", return_value=True
+            ):
+                with mock.patch.object(
+                    backup, "_unattended_sessions_redaction_gap", return_value=None
+                ):
+                    assert backup.scheduled_sessions_blocked_reason() is None
 
     def test_the_redaction_gap_is_reported_when_the_host_is_capable(self, monkeypatch):
         # Both causes reach the same reader, so a surface needs only one field.
         with mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", True):
             with mock.patch.object(
-                backup, "_unattended_sessions_redaction_gap", return_value="redaction is on"
+                backup.storage, "can_hold_upload_body_from_creation", return_value=True
             ):
-                assert backup.scheduled_sessions_blocked_reason() == "redaction is on"
+                with mock.patch.object(
+                    backup, "_unattended_sessions_redaction_gap", return_value="redaction is on"
+                ):
+                    assert backup.scheduled_sessions_blocked_reason() == "redaction is on"
 
     def test_the_capability_reason_wins_over_the_redaction_gap(self):
         # Ordered deliberately: the capability is a property of the machine that no
@@ -975,3 +1026,54 @@ class TestTheBlockedAnswerIsACodeAndProse:
                 with mock.patch.object(backup, "nightly_sessions_enabled", return_value=True):
                     with mock.patch.object(backup, "_a_day_since_last_run", return_value=True):
                         assert backup.due_for_sessions_nightly("111122223333") is True
+
+
+class TestAWithheldSnapshotNightlySaysWhy:
+    """FP item 3: a nightly snapshot that stops being scheduled must not go silent.
+
+    ``due_for_nightly`` answering False when the snapshot kind is unavailable is the
+    correct scheduling decision, but on its own it leaves an owner who turned the
+    nightly ON watching it never run with no statement of why. The reason is now
+    surfaced two ways: logged (deduped) when the loop withholds, and reported through
+    ``scheduled_snapshot_blocked_reason`` for the status route.
+
+    Patched through the ``backup`` FACADE, not ``backup_parts.nightly`` directly: the
+    facade write reaches every holder, so the function under test runs the patched
+    object (see the composition-contract tests). Each case uses a DISTINCT reason
+    string so the once-per-reason dedup logs it without a cross-test state reset.
+    """
+
+    def test_due_for_nightly_logs_the_reason_when_the_kind_is_unavailable(self, caplog):
+        with mock.patch.object(
+            backup, "kind_unavailable_reason", return_value="snapshot paused: distinct-A"
+        ):
+            with caplog.at_level("WARNING", logger="kiro_crew.apps.builtins.aws_control.backend"):
+                assert backup.due_for_nightly(ACCOUNT) is False
+        assert "nightly snapshot withheld" in caplog.text
+        assert "snapshot paused: distinct-A" in caplog.text
+
+    def test_the_same_reason_is_not_relogged_every_wake(self, caplog):
+        with mock.patch.object(
+            backup, "kind_unavailable_reason", return_value="snapshot paused: distinct-B"
+        ):
+            with caplog.at_level("WARNING", logger="kiro_crew.apps.builtins.aws_control.backend"):
+                backup.due_for_nightly(ACCOUNT)
+                backup.due_for_nightly(ACCOUNT)
+                backup.due_for_nightly(ACCOUNT)
+        assert caplog.text.count("snapshot paused: distinct-B") == 1
+
+    def test_scheduled_snapshot_blocked_reason_reports_the_cause_for_the_status_route(self):
+        with mock.patch.object(
+            backup, "kind_unavailable_reason", return_value="snapshot paused: distinct-C"
+        ):
+            assert backup.scheduled_snapshot_blocked_reason() == "snapshot paused: distinct-C"
+
+    def test_a_runnable_snapshot_kind_reports_no_block_and_logs_nothing(self, caplog):
+        with mock.patch.object(backup, "kind_unavailable_reason", return_value=None):
+            with caplog.at_level("WARNING", logger="kiro_crew.apps.builtins.aws_control.backend"):
+                # Grant off so due-ness still resolves to False without the capability
+                # being the cause -- the point is only that nothing is logged.
+                with mock.patch.object(backup, "nightly_enabled", return_value=False):
+                    backup.due_for_nightly(ACCOUNT)
+            assert backup.scheduled_snapshot_blocked_reason() is None
+        assert "nightly snapshot withheld" not in caplog.text

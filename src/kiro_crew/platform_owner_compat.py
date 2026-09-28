@@ -320,6 +320,32 @@ def local_user_id() -> int:
     return zlib.crc32(sid.encode("utf-8"))
 
 
+def stat_owned_by_current_user(st: os.stat_result) -> bool:
+    """Is the object *st* describes owned by the account this process runs as?
+
+    Answered from an ALREADY-STATTED object, so a caller holding an open
+    descriptor gets an answer about the bytes it has rather than about whatever
+    the name resolves to next. That is the point of asking it this way: the
+    callers are TOCTOU-sensitive paths that ``fstat`` a held descriptor.
+
+    Real AND effective, for the reason
+    :func:`stat_writable_by_current_user` gives: this answers "is this account
+    the owner", and a process holding a real id can regain it.
+
+    Windows has no uid -- ``st_uid`` is reported as ``0`` for every object -- so
+    there is nothing to compare and the answer is ``True``. That is not a claim
+    of ownership; it says this predicate carries no information there, and a
+    caller that needs a refusal on Windows must get it from something else (a
+    held handle, an owner-only DACL). Lives in this module because ``os.getuid``
+    does not exist on Windows at all.
+    """
+    from kiro_crew.platform_compat import IS_POSIX
+
+    if not IS_POSIX:
+        return True
+    return st.st_uid in (os.getuid(), os.geteuid())
+
+
 def stat_writable_by_current_user(st: os.stat_result) -> bool:
     """Could a process running as this account write the file *st* describes?
 

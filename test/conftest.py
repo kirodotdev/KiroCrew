@@ -101,7 +101,9 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
 # ── Hypothesis profiles ─────────────────────────────────────────────────
 # Default (CI): fast iteration.  Run ``HYPOTHESIS_PROFILE=thorough python -m pytest``
 # for deeper coverage.
-settings.register_profile("default", max_examples=20, suppress_health_check=[HealthCheck.too_slow], deadline=None)
+settings.register_profile(
+    "default", max_examples=20, suppress_health_check=[HealthCheck.too_slow], deadline=None
+)
 settings.register_profile("thorough", max_examples=100)
 settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
 
@@ -224,11 +226,7 @@ def _collect_ignore_from(listname: str) -> list:
     path = os.path.join(os.path.dirname(__file__), listname)
     try:
         with open(path, encoding="utf-8") as fh:
-            return [
-                name
-                for name in (ln.split("#", 1)[0].strip() for ln in fh)
-                if name
-            ]
+            return [name for name in (ln.split("#", 1)[0].strip() for ln in fh) if name]
     except OSError:  # pragma: no cover - list file absent in a partial checkout
         return []
 
@@ -383,9 +381,7 @@ CREDENTIAL_STRADDLE_SHAPES = [
     pytest.param("https://evil.test/?q=AKIAIOSFODNN7", "EXAMPLE.", id="url-punctuation"),
     pytest.param("[l](https://ex.test/x/AKIAIOSF", "ODNN7EXAMPLE)", id="cut-inside-a-url"),
     pytest.param(f"{_PEM_DASHES}BEGIN RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor"),
-    pytest.param(
-        f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"
-    ),
+    pytest.param(f"{_PEM_DASHES}BEG**IN** RSA PRIV", _PEM_TAIL_HALF, id="pem-anchor-markup-split"),
     pytest.param("AKIAIOSF", "ODNN7EXAMPLE", id="no-markup-at-all"),
 ]
 
@@ -448,8 +444,7 @@ def assert_rejected_without_backtracking(reject, build_pump) -> None:
     for n in REDOS_LARGE_PUMPS:
         cost = cheapest(build_pump(n), REDOS_LARGE_BUDGET_SECONDS)
         assert cost < REDOS_LARGE_BUDGET_SECONDS, (
-            f"handling a {n}-unit pump cost {cost:.2f}s of CPU -- superlinear in the "
-            "pump length"
+            f"handling a {n}-unit pump cost {cost:.2f}s of CPU -- superlinear in the " "pump length"
         )
 
 
@@ -761,9 +756,7 @@ def pytest_handlecrashitem(crashitem, report, sched) -> None:
     _crash_victims.append(str(crashitem))
 
 
-def _format_abandoned_run_report(
-    crashes: list[tuple[str, str]], victims: list[str]
-) -> str:
+def _format_abandoned_run_report(crashes: list[tuple[str, str]], victims: list[str]) -> str:
     """Build the terminal report for a run abandoned after worker crashes.
 
     Wording is deliberately non-causal: worker replacement is routine here
@@ -1728,7 +1721,18 @@ class MockSlackClient(SlackClientOps):
         return f"D{user_id}"
 
     async def post_ephemeral(self, channel, user_id, text, blocks=None, thread_ts=None):
-        self.actions.append(("ephemeral", {"channel": channel, "user_id": user_id, "text": text, "blocks": blocks, "thread_ts": thread_ts}))
+        self.actions.append(
+            (
+                "ephemeral",
+                {
+                    "channel": channel,
+                    "user_id": user_id,
+                    "text": text,
+                    "blocks": blocks,
+                    "thread_ts": thread_ts,
+                },
+            )
+        )
 
     async def views_publish(self, user_id, view):
         self.actions.append(("views_publish", {"user_id": user_id, "view": view}))
@@ -1754,7 +1758,9 @@ class MockSlackClient(SlackClientOps):
         )
 
     async def start_stream(self, channel, thread_ts, initial_text=None, team_id=None, user_id=None):
-        if not getattr(self, "_stream_enabled", False) or getattr(self, "_start_stream_fails", False):
+        if not getattr(self, "_stream_enabled", False) or getattr(
+            self, "_start_stream_fails", False
+        ):
             return None
         ts = f"{self._next_ts}.000000"
         self._next_ts += 1
@@ -1809,8 +1815,20 @@ class MockSlackClient(SlackClientOps):
         self.actions.append(("fetch_message", {"channel": channel, "ts": ts}))
         return self._fetch_message_result
 
-    async def fetch_thread_replies(self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True) -> list[dict]:
-        self.actions.append(("fetch_thread_replies", {"channel": channel, "thread_ts": thread_ts, "limit": limit, "warn_on_pagination": warn_on_pagination}))
+    async def fetch_thread_replies(
+        self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True
+    ) -> list[dict]:
+        self.actions.append(
+            (
+                "fetch_thread_replies",
+                {
+                    "channel": channel,
+                    "thread_ts": thread_ts,
+                    "limit": limit,
+                    "warn_on_pagination": warn_on_pagination,
+                },
+            )
+        )
         return self._fetch_thread_replies_result
 
 
@@ -2053,9 +2071,7 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 
     real_check = subagent.check_memory_available
 
-    def _pinned_check(
-        min_gb: float | None = None, path: str | None = None
-    ) -> tuple[bool, float]:
+    def _pinned_check(min_gb: float | None = None, path: str | None = None) -> tuple[bool, float]:
         if path is None:
             return (True, _HEALTHY_AVAILABLE_GB)
         if min_gb is None:

@@ -549,6 +549,11 @@ class TestFailedAttemptIsRecorded:
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(hooks.backup_mod, "_state_path", lambda: tmp_path / "backup.json")
+        # `due_for_nightly` reads the snapshot kind's capability first; these cases
+        # drive the real loop to the push and record a fault, so hold the
+        # payload-can-be-held gate True to reach it rather than the capability
+        # short-circuit that would make the loop skip the push entirely.
+        monkeypatch.setattr(hooks.backup_mod.storage, "_staging_leaf_is_masked", lambda: True)
         yield
 
     @contextlib.contextmanager

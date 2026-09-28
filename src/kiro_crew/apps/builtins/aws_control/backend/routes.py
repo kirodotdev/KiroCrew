@@ -2298,6 +2298,15 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
     account, profile, region = target
     payload: dict[str, Any] = {
         "nightly": await asyncio.to_thread(backup_mod.nightly_enabled, account),
+        # Why the nightly SNAPSHOT grant cannot run here, or None when it can.
+        # Reported BESIDE `nightly` for the same reason `nightlySessionsBlocked` is
+        # reported beside `nightlySessions`: the grant is what the owner asked for and
+        # must read back as they set it, while this says whether asking achieves
+        # anything on this host. Without it the console can only show the switch as on,
+        # which on a host that cannot hold the body unrewritable is a claim that
+        # snapshots are being backed up when none ever are -- and the loss surfaces
+        # only at the host-loss event the feature exists for.
+        "nightlyBlocked": await asyncio.to_thread(backup_mod.scheduled_snapshot_blocked_reason),
         # The EFFECTIVE count the sweep would use, not the raw stored value, and
         # `null` when retention is off. A panel reporting a number the sweep would
         # clamp or ignore is worse than reporting none.
@@ -2437,7 +2446,13 @@ async def _handle_backup_run(request: web.Request) -> web.Response:
     # like a broken backup rather than a platform that never offered the feature.
     # 501 and not 400: the request is well-formed and would be honoured on
     # another host, so it is this server that does not implement it.
-    unavailable = backup_mod.kind_unavailable_reason(kind)
+    #
+    # Off the loop: this resolves the sandbox capability, which on a first
+    # macOS request runs a synchronous ``detect_backend`` subprocess probe --
+    # blocking the event loop for the probe's duration. ``asyncio.to_thread`` is
+    # the same offload this module already uses for every other blocking call
+    # (e.g. ``publish_denied_reason`` above).
+    unavailable = await asyncio.to_thread(backup_mod.kind_unavailable_reason, kind)
     if unavailable is not None:
         return web.json_response(
             {"error": unavailable, "code": "kind_unavailable_on_platform"}, status=501
