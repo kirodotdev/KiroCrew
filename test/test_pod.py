@@ -3693,13 +3693,18 @@ class TestPodNameMutexOnLinux:
         module-level helper `boot` reaches that takes the lock would all deadlock
         identically, so pinning only the direct bare-name call would pin the letter
         of the rule rather than the property.
+
+        Read across the whole pod runtime -- ``runtime.py`` and every
+        ``runtime_*.py`` owner beside it -- because boot and the helpers it reaches
+        live in several of those modules, and a walk confined to one file would stop
+        at the first call that crosses into another.
         """
-        tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
-        funcs = {
-            n.name: n
-            for n in ast.walk(tree)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        funcs: dict[str, list[ast.AST]] = {}
+        for source in sorted(Path(rt.__file__).parent.glob("runtime*.py")):
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    funcs.setdefault(n.name, []).append(n)
 
         def called_names(fn: ast.AST) -> set[str]:
             out: set[str] = set()
@@ -3719,7 +3724,8 @@ class TestPodNameMutexOnLinux:
             if name in reached or name not in funcs:
                 continue
             reached.add(name)
-            stack.extend(called_names(funcs[name]))
+            for fn in funcs[name]:
+                stack.extend(called_names(fn))
 
         assert "boot" in reached, "boot must exist for this guard to mean anything"
         assert "pod_name_mutex" not in reached
@@ -7107,20 +7113,33 @@ class TestSessionBus:
     def test_systemctl_env_is_the_only_env_source_for_systemd_calls(self) -> None:
         """Anti-regression: a future direct ``subprocess.run(["systemctl", ...])``
         that forgets ``env=_systemctl_env()`` would silently reintroduce the bug,
-        so pin every systemd/journalctl spawn in the module to that one source.
+        so pin every systemd/journalctl spawn in the pod runtime -- ``runtime.py``
+        and every ``runtime_*.py`` owner beside it -- to that one source.
         """
         import ast
 
-        src = Path(rt.__file__).read_text(encoding="utf-8")
-        tree = ast.parse(src)
+        tree = ast.parse(Path(rt.__file__).read_text(encoding="utf-8"))
+        owner_trees = [
+            ast.parse(source.read_text(encoding="utf-8"))
+            for source in sorted(Path(rt.__file__).parent.glob("runtime_*.py"))
+        ]
+        assert owner_trees, "no pod runtime owner found beside runtime.py; the scan is mis-aimed"
 
+        # An owner reaches the core as ``runtime.<name>``, so both helpers also
+        # accept that spelling: ``runtime.subprocess.run`` and
+        # ``env=runtime._systemctl_env()``.
         def _is_subprocess_run(node: ast.Call) -> bool:
             fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "run"):
+                return False
+            receiver = fn.value
+            if isinstance(receiver, ast.Name):
+                return receiver.id == "subprocess"
             return (
-                isinstance(fn, ast.Attribute)
-                and fn.attr == "run"
-                and isinstance(fn.value, ast.Name)
-                and fn.value.id == "subprocess"
+                isinstance(receiver, ast.Attribute)
+                and receiver.attr == "subprocess"
+                and isinstance(receiver.value, ast.Name)
+                and receiver.value.id == "runtime"
             )
 
         def _uses_systemctl_env(node: ast.Call) -> bool:
@@ -7128,15 +7147,21 @@ class TestSessionBus:
                 if kw.arg != "env":
                     continue
                 val = kw.value
+                if not isinstance(val, ast.Call):
+                    return False
+                fn = val.func
+                if isinstance(fn, ast.Name):
+                    return fn.id == "_systemctl_env"
                 return (
-                    isinstance(val, ast.Call)
-                    and isinstance(val.func, ast.Name)
-                    and val.func.id == "_systemctl_env"
+                    isinstance(fn, ast.Attribute)
+                    and fn.attr == "_systemctl_env"
+                    and isinstance(fn.value, ast.Name)
+                    and fn.value.id == "runtime"
                 )
             return False
 
         literal_systemd = 0
-        for node in ast.walk(tree):
+        for node in (n for t in (tree, *owner_trees) for n in ast.walk(t)):
             if not isinstance(node, ast.Call) or not _is_subprocess_run(node):
                 continue
             argv = node.args[0] if node.args else None

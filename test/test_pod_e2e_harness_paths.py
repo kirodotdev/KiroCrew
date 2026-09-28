@@ -40,7 +40,9 @@ SCRIPT = (
     / "src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-e2e.sh"
 )
 POD_CLI = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/cli.py"
-POD_RUNTIME = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/runtime.py"
+#: ``runtime.mint_token`` is defined in the pod runtime client owner; the runtime
+#: module re-exports it.
+POD_RUNTIME_CLIENT = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/runtime_client.py"
 POD_CONFIG = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/config.py"
 TOKEN_AUTH = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/token_auth.py"
 TOKEN_HANDLER = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/handlers/core.py"
@@ -1322,7 +1324,7 @@ def _door_token_pattern() -> str:
 
 
 def _producer_token_alphabet() -> set[str]:
-    runtime = _function_node(POD_RUNTIME, "mint_token")
+    runtime = _function_node(POD_RUNTIME_CLIENT, "mint_token")
     assert any(
         isinstance(node, ast.Constant)
         and isinstance(node.value, str)

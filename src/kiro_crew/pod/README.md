@@ -227,11 +227,23 @@ response text and transport failures never include the authenticated URL.
   prints the gateway's own journal, stops the half-started unit, and tells you this
   is the worktree build failing — not the pod tool.
 
+Inside this package the control plane is `kiro_crew.pod.runtime`, the one namespace
+the verbs, Dev Fleet and the tests use. It holds the core — names, the per-pod env
+file, worktree resolution, the `systemd --user` adapter and platform dispatch, the
+lifecycle locks, seed sanitization and the pod environment — and re-exports six
+owners that build on it: `runtime_ports`, `runtime_attestation`, `runtime_client`,
+`runtime_home`, `runtime_lifecycle` and `runtime_boot`. A patch of a function or
+constant as `kiro_crew.pod.runtime.<name>` reaches the module that reads it; a
+module the runtime imports is patched by attribute (`runtime.time.sleep`), and
+rebinding it there is refused. What each owner
+holds is mapped in the Dev Fleet spec's
+[Pod runtime ownership](../../../docs/system-specs/modules/dev-fleet.md#pod-runtime-ownership).
+
 ## Mechanism (Linux `systemd --user`)
 
 `kirocrew pod install` writes a template unit `kirocrew-pod@.service` whose
 `ExecStart` re-enters `kirocrew pod _run <wt>` (boot logic lives in
-`kiro_crew.pod.runtime.boot`). Before each start, `pod up` writes a per-instance
+`kiro_crew.pod.runtime_boot.boot`, reached as `kiro_crew.pod.runtime.boot`). Before each start, `pod up` writes a per-instance
 drop-in that replaces the template's `ExecStart` with the resolved checkout's
 own `.venv/bin/kirocrew`; it refuses to fall back to a global install that may
 not understand the requested seed. `pod down` removes that drop-in and reloads
@@ -245,7 +257,7 @@ recreated the directory by reopening their audit log in append mode — and it a
 fired on the stop half of a `Restart=`, bringing the pod back on a home stripped
 of its sessions and config. So `kirocrew pod down` owns reclamation on every
 platform: it stops the service, waits for the unit's cgroup to drain, deletes the
-HOME through `runtime.cleanup_home` (which re-validates the name and refuses
+HOME through `runtime.cleanup_home` (defined in `runtime_home`; it re-validates the name and refuses
 `..`/absolute/empty, since teardown safety must not rely on systemd `%i`
 semantics), then VERIFIES the directory is gone and fails loudly if it is not.
 The trade is that a pod which goes away without a `down` — a crash, a raw
