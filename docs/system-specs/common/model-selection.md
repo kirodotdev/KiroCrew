@@ -253,6 +253,13 @@ its own once the cache refreshes with a list that carries it.
 - **Pickers** MUST list options from `GET /api/models`, the advertised set, never a
   static in-code list. A hand-maintained list offers models the account cannot run and
   hides the ones it can.
+- Backends with `resolves_model_from_advertised_list` use their own advertised
+  model namespace. Claude retains its registry display-name reconciliation.
+  Other advertised-selection backends use their live session's model ids, then
+  their persisted namespace cache, preserving exact wire ids (including Pi
+  provider/model ids) without substituting the Kiro CLI catalog. A cold cache
+  offers `auto` and a scoped configured default until that backend advertises
+  its choices.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`; the composer then uses its existing
