@@ -7557,7 +7557,9 @@
         "search": "खोजें…",
         "show_less": "कम दिखाएँ",
         "show_muted_count": "म्यूट दिखाओ ({{count}})",
-        "try_a_different_search": "कोई दूसरी खोज आज़माएँ"
+        "try_a_different_search": "कोई दूसरी खोज आज़माएँ",
+        "approving": "स्वीकृत किया जा रहा है…",
+        "rejecting": "अस्वीकार किया जा रहा है…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "दूर रहने पर भी अलर्ट पाओ",

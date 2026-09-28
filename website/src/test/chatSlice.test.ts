@@ -2143,6 +2143,24 @@ describe('permission cls parsing and approval resolution', () => {
     expect(state.messages[0].meta?.resolved).toBe('rejected')
   })
 
+  it('resolveByApprovalId with no registry never settles a pending row of another request under the id', () => {
+    // A coordinator row already settled by its frame, and a chat runner's
+    // pending row raised under the same id: a registry-less completion must
+    // not pick the pending one just because it is pending.
+    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'coord', meta: { approval_id: 'dup', registry: 'coordinator', resolved: 'approved' } }))
+    state = reducer(state, sseChatMessage({ slot, role: 'permission', content: 'native', meta: { approval_id: 'dup', registry: 'native' } }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'dup', decision: 'approved' }))
+    expect(state.messages.map(m => m.meta?.resolved)).toEqual(['approved', undefined])
+  })
+
+  it('resolveByApprovalId with a registry settles that registry\'s pending row past its settled one', () => {
+    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'old', meta: { approval_id: 'rec', registry: 'coordinator', resolved: 'rejected' } }))
+    state = reducer(state, sseChatMessage({ slot, role: 'permission', content: 'native', meta: { approval_id: 'rec', registry: 'native' } }))
+    state = reducer(state, sseChatMessage({ slot, role: 'permission', content: 'new', meta: { approval_id: 'rec', registry: 'coordinator' } }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'rec', decision: 'approved', registry: 'coordinator' }))
+    expect(state.messages.map(m => m.meta?.resolved)).toEqual(['rejected', undefined, 'approved'])
+  })
+
   it('resolveByApprovalId is no-op for unknown id', () => {
     const cls = JSON.stringify({ request_id: 'req-3' })
     let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))

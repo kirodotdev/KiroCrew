@@ -7446,7 +7446,9 @@
         "search": "検索…",
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
-        "try_a_different_search": "別の検索を試す"
+        "try_a_different_search": "別の検索を試す",
+        "approving": "承認中…",
+        "rejecting": "拒否中…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "離席中も通知を受け取る",

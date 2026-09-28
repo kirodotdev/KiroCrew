@@ -73,4 +73,16 @@ describe('ChatPage CollapsibleToolGroup mounts (#5434 contract)', () => {
       expect(block).toContain('hasPermission={false}')
     }
   })
+
+  it('a chat decision hands its outcome to the feed row, so the row reads Approved/Rejected, not expired', () => {
+    // `dismissApproval` retires the matching notification with this outcome;
+    // without it the row would claim the approval expired after a decision
+    // that landed. Both resolving mounts must pass the decision they sent.
+    const calls = source.match(/await api\.resolveApproval\(aid, a\);?\s*dismissApproval\(aid, a\)/g) ?? []
+    expect(calls).toHaveLength(2)
+    expect(source).not.toMatch(/dismissApproval\(aid\)/)
+    // And the chat row records the same decision: a missing one defaults to
+    // `approved` and would overwrite a rejection the backend frame wrote.
+    expect(source).toMatch(/resolveByApprovalId\(\{ id: aid, slot: activeSlot \|\| undefined, decision \}\)/)
+  })
 })

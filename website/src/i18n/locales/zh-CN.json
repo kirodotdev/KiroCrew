@@ -7446,7 +7446,9 @@
         "search": "搜索…",
         "show_less": "收起",
         "show_muted_count": "显示已静音（{{count}}）",
-        "try_a_different_search": "换个搜索词试试"
+        "try_a_different_search": "换个搜索词试试",
+        "approving": "正在批准…",
+        "rejecting": "正在拒绝…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "离开时也能收到提醒",

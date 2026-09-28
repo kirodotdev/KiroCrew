@@ -13,7 +13,7 @@ import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/arti
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
 import { metricColor } from './utils/metricColor'
-import { fetchNotifications, armBootNotificationsFallback } from './store/notificationsSlice'
+import { fetchNotifications, armBootNotificationsFallback, selectUnreadNotes } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
 import { useConfigAutolinkRules } from './hooks/useConfigAutolinkRules'
@@ -749,11 +749,12 @@ function NotificationsBellButton() {
   // the rail uses, so the chord has exactly one derivation in the dashboard.
   const shortcut = useNavShortcutHint('/notifications')
   const sheet = useNotificationSheet()
-  const { items, open, containerRef, bellRef } = sheet
+  const { open, containerRef, bellRef } = sheet
   // Badge counts attention-worthy rows only (RFC Phase 3): passive and
   // muted-channel (silenced) rows are excluded, mirroring the backend's
-  // _unread_count semantics.
-  const unacked = items.filter(n => !n.acked && n.priority !== 'passive' && !n.silenced)
+  // _unread_count semantics. A retired approval is excluded too: it asks for
+  // nothing, even while a refused ack puts its flag back to unread.
+  const unacked = useAppSelector(selectUnreadNotes)
 
   // RFC Phase 4: mirror the unread count onto the desktop dock/taskbar badge.
   useEffect(() => {

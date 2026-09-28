@@ -36,7 +36,7 @@ import { useAppSelector } from '../store'
 // Shared with the tab-title attention count rather than kept file-local: two
 // attention surfaces that spell this rule separately can drift apart, and the
 // backend states it once for all of them.
-import { isSilencedNote } from '../store/notificationsSlice'
+import { selectUnreadNotes } from '../store/notificationsSlice'
 // A note's `body` is MARKDOWN by contract -- the detail panel renders it as
 // markdown and producers write `**name** -- description`, `_italics_`,
 // `**Triggers:**` (see `_pending_skill_notification`, dashboard/server.py).
@@ -53,13 +53,11 @@ import { nativeNotificationPermitted, postNativeNotification } from '../lib/nati
 import { i18nT } from '../i18n/t'
 
 export function useNativeNotification(botName: string, avatar: string) {
-  const notifCount = useAppSelector(
-    (s) => s.notifications.items.filter((n) => !n.acked && !isSilencedNote(n)).length,
-  )
-  const latestNotif = useAppSelector((s) => {
-    const unacked = s.notifications.items.filter((n) => !n.acked && !isSilencedNote(n))
-    return unacked.length > 0 ? unacked[unacked.length - 1] : null
-  })
+  // The shared unread rule, so a retired approval whose ack was rolled back
+  // is not taken for a new arrival and announced.
+  const unacked = useAppSelector(selectUnreadNotes)
+  const notifCount = unacked.length
+  const latestNotif = unacked.length > 0 ? unacked[unacked.length - 1] : null
 
   const prev = useRef(0)
   useEffect(() => {

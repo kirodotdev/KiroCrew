@@ -7557,7 +7557,9 @@
         "search": "Suchen…",
         "show_less": "Weniger anzeigen",
         "show_muted_count": "Stummgeschaltete anzeigen ({{count}})",
-        "try_a_different_search": "Versuche eine andere Suche"
+        "try_a_different_search": "Versuche eine andere Suche",
+        "approving": "Wird genehmigt…",
+        "rejecting": "Wird abgelehnt…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Lass dich benachrichtigen, wenn du weg bist",

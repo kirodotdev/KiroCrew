@@ -66,13 +66,13 @@ describe('NotificationFeed Phase 4: inline approval actions', () => {
   it('one-click approve resolves via the approvals endpoint', () => {
     renderFeed([approval])
     fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
-    expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'approve')
+    expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'approve', undefined)
   })
 
   it('one-click reject resolves via the approvals endpoint', () => {
     renderFeed([approval])
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
-    expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'reject')
+    expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'reject', undefined)
   })
 
   it('acked approval rows show no inline buttons', () => {

@@ -218,6 +218,16 @@ describe('ApprovalCard', () => {
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
   })
 
+  it('moves focus to the notice when a terminal refusal withdraws the pressed button', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(404, 'not found')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    const approve = screen.getByText('Approve').closest('button')!
+    approve.focus()
+    fireEvent.click(approve)
+    const alert = await screen.findByRole('alert')
+    await waitFor(() => expect(document.activeElement).toBe(alert.closest('[tabindex="-1"]')))
+  })
+
   it('keeps a live approval retryable on other 400 refusals (e.g. invalid action)', async () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(400, 'invalid action')))
     render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)

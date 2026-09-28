@@ -7668,7 +7668,9 @@
         "search": "Pesquisar…",
         "show_less": "Mostrar menos",
         "show_muted_count": "Mostrar silenciadas ({{count}})",
-        "try_a_different_search": "Tente outra busca"
+        "try_a_different_search": "Tente outra busca",
+        "approving": "Aprovando…",
+        "rejecting": "Rejeitando…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Receba alertas quando estiver longe",

@@ -7779,7 +7779,9 @@
         "search": "Поиск…",
         "show_less": "Свернуть",
         "show_muted_count": "Показать без звука ({{count}})",
-        "try_a_different_search": "Попробуй другой запрос"
+        "try_a_different_search": "Попробуй другой запрос",
+        "approving": "Одобрение…",
+        "rejecting": "Отклонение…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Получайте оповещения, когда вас нет",

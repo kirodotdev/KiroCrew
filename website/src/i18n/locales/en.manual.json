@@ -2813,7 +2813,9 @@
         "open_notification": "Open notification: {{title}}",
         "show_less": "Show less",
         "show_muted_count": "Show muted ({{count}})",
-        "try_a_different_search": "Try a different search"
+        "try_a_different_search": "Try a different search",
+        "approving": "Approving…",
+        "rejecting": "Rejecting…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Get alerted when you're away",

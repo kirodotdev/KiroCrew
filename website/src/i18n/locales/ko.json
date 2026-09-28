@@ -7446,7 +7446,9 @@
         "search": "검색…",
         "show_less": "간략히 보기",
         "show_muted_count": "음소거 표시 ({{count}})",
-        "try_a_different_search": "다른 검색어로 시도하세요"
+        "try_a_different_search": "다른 검색어로 시도하세요",
+        "approving": "승인 중…",
+        "rejecting": "거부 중…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "자리에 없을 때도 알림 받기",

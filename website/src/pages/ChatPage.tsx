@@ -38,7 +38,7 @@ import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
-import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
+import { addNotification, settleDecidedApproval, liveApprovalRows } from '../store/notificationsSlice'
 import { useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
@@ -2430,10 +2430,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // `toApiDecision` (utils/approvalDecision.ts) is fail-closed and is the only
   // place that mapping is spelled — a Trust affordance on this path would claim
   // a standing grant the backend never records (#5400, #5434).
-  const dismissApproval = useCallback((aid: string, decision?: string) => {
+  const dismissApproval = useCallback((aid: string, action: ReturnType<typeof toApiDecision>) => {
+    // The decision that was sent: without it the reducer records `approved`,
+    // which would overwrite a rejection the backend's frame already wrote.
+    const decision = action === 'approve' ? 'approved' : action === 'reject_once' ? 'rejected_once' : 'rejected'
     dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    const n = store.getState().notifications.items.find(x => x.approval_id === aid)
-    if (n) dispatch(removeNotificationByTs(n.ts))
+    // The live row: the id recurs, so a retired row for an earlier request
+    // can share it, and settling that one would leave this one's buttons up.
+    const n = liveApprovalRows(store.getState().notifications, aid).at(-1)
+    // The decision landed: retire the feed row with its outcome, then remove it
+    // once the server confirms (a failure keeps it listed and says so there).
+    if (n) {
+      void dispatch(settleDecidedApproval(n.ts, action === 'approve' ? 'approve' : 'reject'))
+    }
   }, [activeSlot, dispatch])
   const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template') => {
     if (!activeSlot) {
@@ -4356,7 +4365,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           onApprove={(() => {
             const aid = unresolvedPerms.at(-1)?.meta?.approval_id as string | undefined
             if (!aid) return approve
-            return async (action: string) => { await api.resolveApproval(aid, toApiDecision(action)); dismissApproval(aid) }
+            return async (action: string) => { const a = toApiDecision(action); await api.resolveApproval(aid, a); dismissApproval(aid, a) }
           })()}
           onViewActivity={toggleAct}
           activityOpen={activityOpen}
@@ -5920,8 +5929,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     const aid = unresolvedGroupPerms.at(-1)?.meta?.approval_id as string | undefined
                     if (!aid) return approve
                     return async (action: string) => {
-                      await api.resolveApproval(aid, toApiDecision(action))
-                      dismissApproval(aid)
+                      const a = toApiDecision(action)
+                      await api.resolveApproval(aid, a)
+                      dismissApproval(aid, a)
                     }
                   })()}
                   onViewActivity={toggleAct}

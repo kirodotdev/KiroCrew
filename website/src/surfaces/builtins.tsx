@@ -14,7 +14,7 @@ import { KiroGhostMark } from '../components/KiroGhostMark'
 import { CrewMemberMark } from '../components/CrewMemberMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
 import { selectSubagentActivityCount } from '../store/chatSlice'
-import { isSilencedNote } from '../store/notificationsSlice'
+import { selectUnreadNotes } from '../store/notificationsSlice'
 import { PREVIEW_CREW, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import type { RootState } from '../store'
 
@@ -28,9 +28,11 @@ import type { RootState } from '../store'
 // a `(n)` in the title that no surface the user can open accounts for: the bell
 // omits it and the feed keeps silenced rows behind the muted disclosure, so
 // there is nothing to click that would clear it.
+// `selectUnreadNotes` also leaves out a retired approval, which asks for
+// nothing even while its ack is being rolled back.
 const selectUnacknowledgedNotificationCount = createSelector(
-  (s: RootState) => s.notifications.items,
-  items => items.filter(n => !n.acked && !isSilencedNote(n)).length,
+  (s: RootState) => selectUnreadNotes(s),
+  unread => unread.length,
 )
 
 // ── Main ───────────────────────────────────────────────────────────────────

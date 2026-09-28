@@ -25,6 +25,13 @@ def _redact(text: object, redact_url: _Redactor, redact_secret: _Redactor) -> st
     return value
 
 
+def _instance_of(state: Any, approval_id: str) -> str:
+    """The ``instance`` of the coordinator record currently held under *approval_id*."""
+    record = state._pending_approvals.get(approval_id)
+    instance = record.get("instance") if isinstance(record, dict) else ""
+    return instance if isinstance(instance, str) else ""
+
+
 def _push_slots(state: Any) -> None:
     """Recompute the slot lane flags; a failed push never breaks the approval."""
     try:
@@ -132,7 +139,13 @@ class ApprovalCoordinator:
         decision = _EXPIRED_DECISION
         session_key = slot_key if slot_key else "state"
         try:
-            state._audit_and_broadcast_approval(session_key, approval_id, False, decision)
+            state._audit_and_broadcast_approval(
+                session_key,
+                approval_id,
+                False,
+                decision,
+                instance=_instance_of(state, approval_id),
+            )
         except Exception:
             state._log.warning(
                 "audit/broadcast failed for expired approval %s", approval_id, exc_info=True
@@ -169,6 +182,7 @@ class ApprovalCoordinator:
         decision: str,
         *,
         audit_provider: Callable[[], Any],
+        instance: str = "",
     ) -> None:
         ApprovalCoordinator.audit(
             state, session_key, approval_id, approved, decision, audit_provider=audit_provider
@@ -177,6 +191,11 @@ class ApprovalCoordinator:
             payload: dict = {"id": approval_id, "approved": approved}
             if session_key and session_key != "state":
                 payload["slot"] = session_key
+            # Names WHICH request under this recurring id was resolved, so a
+            # client holding an earlier request's retired row under the same id
+            # retires the live one and not that row.
+            if instance:
+                payload["instance"] = instance
             # A decided approval's payload stays as it is: approved/rejected
             # is derivable from ``approved``, and the client renders it so.
             if decision == _EXPIRED_DECISION:
@@ -190,7 +209,9 @@ class ApprovalCoordinator:
         future = state._approval_futures.get(approval_id)
         if future and not future.done():
             future.set_result(approved)
-            state._audit_and_broadcast_approval("state", approval_id, approved)
+            state._audit_and_broadcast_approval(
+                "state", approval_id, approved, instance=_instance_of(state, approval_id)
+            )
             return True
         return False
 

@@ -24,6 +24,7 @@ export interface NotificationCardAction {
   /** Pushes this action to the row's far end (the feed's stack toggle). */
   trailing?: boolean
   'aria-expanded'?: boolean
+  disabled?: boolean
 }
 
 export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title' | 'onClick'> {
@@ -48,6 +49,9 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
   /** A silenced row: the pane thins to the `glass-faded` tint step, its
    *  content dims and its title reads muted. */
   muted?: boolean
+  /** A settled row (a retired approval): no unread dot, and it recedes like a
+   *  read row, whatever its ack flag says. */
+  settled?: boolean
   /** Rendered under the actions (a failure notice the card must keep showing). */
   footer?: ReactNode
   /** Replaces the clamped excerpt. A card whose actions authorize a command
@@ -84,11 +88,11 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
  */
 export default function NotificationCard({
   n, onOpen, openLabel, onDismiss, dismissLabel, dismissTestId, dismissVisible = false,
-  actions = [], actionsAlign = 'start', trailing, active = false, muted = false, footer, body: bodyOverride, className = '', ...rest
+  actions = [], actionsAlign = 'start', trailing, active = false, muted = false, settled = false, footer, body: bodyOverride, className = '', ...rest
 }: NotificationCardProps) {
   const km = KIND_META[n.kind] || DEFAULT_META
   const prio = notePriority(n)
-  const dim = muted ? 'opacity-50' : (n.acked && !active) || prio === 'passive' ? 'opacity-55' : ''
+  const dim = muted ? 'opacity-50' : ((n.acked || settled) && !active) || prio === 'passive' ? 'opacity-55' : ''
   const body = (
     <>
       <span className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center shrink-0 text-[13px] ${km.color}`}>{km.icon}</span>
@@ -101,7 +105,7 @@ export default function NotificationCard({
       <div className="flex flex-col items-end gap-0.5 shrink-0">
         <span className="text-[11px] text-muted">{fmtRelativeMinute(n.ts)}</span>
         {trailing}
-        {!muted && !n.acked && (
+        {!muted && !n.acked && !settled && (
           <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
         )}
       </div>
@@ -122,6 +126,7 @@ export default function NotificationCard({
       <div className="flex items-start gap-2.5">
         {interactive ? (
           <Clickable
+            data-notif-open
             onClick={onOpen}
             aria-label={openLabel}
             className={`flex items-start gap-2 flex-1 min-w-0 text-left cursor-pointer ${dim}`}
@@ -145,6 +150,7 @@ export default function NotificationCard({
               key={a.id}
               type="button"
               aria-expanded={a['aria-expanded']}
+              disabled={a.disabled}
               className={`${MAC_ACTION_BTN_CLASS} ${TONE_CLASS[a.tone ?? 'text']} ${a.trailing ? 'ml-auto' : ''}`}
               onClick={e => { e.stopPropagation(); a.onClick(e) }}
             >{a.label}</button>
