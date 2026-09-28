@@ -227,7 +227,11 @@ def imported_modules(text, path=""):
             if not base:
                 continue
         found.add(base)
-        names = (m.group("names") or "").strip()
+        names = (m.group("names") or "").split("#", 1)[0].strip()
+        if names.startswith("(") and ")" not in names:
+            # A parenthesized import spans lines; its names run to the close paren.
+            close = text.find(")", m.end())
+            names += re.sub(r"#[^\n]*", "", text[m.end() : close if close != -1 else None])
         if names.startswith("*"):
             continue
         for chunk in names.strip("()").split(","):
@@ -237,20 +241,41 @@ def imported_modules(text, path=""):
     return found
 
 
-def _imports_touch(imported, changed_dotted):
+def _package_init_paths(package):
+    rel = package.replace(".", GIT_SEP) + GIT_SEP + "__init__.py"
+    return ("src" + GIT_SEP + rel, rel)
+
+
+def _imports_touch(imported, changed_dotted, read=None, _seen=None):
     """The changed module an import binds, or "" when none.
 
     Matching runs in both directions on a dot boundary: importing
     ``kiro_crew.ledger.store`` reaches a changed ``kiro_crew/ledger/__init__.py``
     (package below module), and importing the package ``kiro_crew.ledger``
     reaches a changed ``kiro_crew/ledger/store.py`` (module below package).
+    The package-above-module direction is bounded to the changed module's own
+    parent package, and never to a top-level token: every module sits below the
+    source-root package, so ``from kiro_crew import X`` would otherwise reach
+    every changed file. That form still matches through its ``kiro_crew.X`` name.
+    A deeper package still reaches the changed module when its ``__init__.py``,
+    read through ``read``, imports toward it: a facade that re-exports a module
+    two levels down is a real dependency.
     """
+    seen = set() if _seen is None else _seen
     for target in sorted(imported):
         for changed in sorted(changed_dotted):
-            if target == changed:
+            if target == changed or target.startswith(changed + "."):
                 return changed
-            if target.startswith(changed + ".") or changed.startswith(target + "."):
+            if "." not in target or not changed.startswith(target + "."):
+                continue
+            if changed.rsplit(".", 1)[0] == target:
                 return changed
+            if read and (target, changed) not in seen:
+                seen.add((target, changed))
+                for path in _package_init_paths(target):
+                    text = read(path)
+                    if text and _imports_touch(imported_modules(text, path), {changed}, read, seen):
+                        return changed
     return ""
 
 
@@ -300,8 +325,9 @@ def classify_overlap(moved, mine, read_moved):
 
     ``read_moved(path)`` returns the moved file's text on the base branch, or
     ``""`` when it cannot be read (the base deleted it, or it is not text). It
-    is only ever called for a ``.py`` file that reached the ``import`` class, so
-    a fresh PR pays for no blob reads at all.
+    is called once per moved ``.py`` file that reaches the ``import`` check, and
+    once per package ``__init__.py`` that check follows; each path is read at most
+    once per run. A PR that changed no ``.py`` file pays for no blob reads at all.
 
     Returns a list of ``{"moved", "mine", "class"}`` dicts, ordered by moved
     path so two runs on the same pair of commits print the same line.
@@ -314,6 +340,12 @@ def classify_overlap(moved, mine, read_moved):
             mine_by_dir.setdefault(module_dir, path)
     changed_dotted = dotted_module_paths(mine)
     dir_names = changed_dir_names(mine)
+    blobs: dict[str, str] = {}
+
+    def read_once(path):
+        if path not in blobs:
+            blobs[path] = read_moved(path)
+        return blobs[path]
 
     overlaps = []
     for path in sorted(set(moved)):
@@ -325,7 +357,8 @@ def classify_overlap(moved, mine, read_moved):
             overlaps.append({"moved": path, "mine": sibling, "class": "same-dir"})
             continue
         if path.endswith(".py") and changed_dotted:
-            hit = _imports_touch(imported_modules(read_moved(path), path), changed_dotted)
+            imported = imported_modules(read_once(path), path)
+            hit = _imports_touch(imported, changed_dotted, read_once)
             if hit:
                 overlaps.append({"moved": path, "mine": hit, "class": "import"})
                 continue
