@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { withDeadline } from '../lib/withDeadline'
+import { isDeadlineError, retryPolicy } from '../api/queryClient'
+import { searchErrorCause } from '../lib/searchErrorCause'
 
 /** A request that settles ONLY when its signal aborts — a wedged endpoint. */
 const neverArrives = (signal: AbortSignal) => new Promise<string>((_res, rej) => {
@@ -8,6 +10,43 @@ const neverArrives = (signal: AbortSignal) => new Promise<string>((_res, rej) =>
 })
 
 const name = (e: unknown) => (e as Error)?.name
+
+/**
+ * Executable form of this module's stated MUST: a replacement transport has to reject with a
+ * `TimeoutError`-named `Error`. Asserted on a hand-built rejection, NOT one from `withDeadline`,
+ * because the point is to bind whatever ships next — a pin that only exercises this module would
+ * still pass while a new transport rejected with a shape none of these three consumers recognise.
+ */
+describe('the rejection shape a replacement transport must satisfy', () => {
+  const conforming = () => Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+
+  it('is recognised as a deadline, so the notice can name a timeout apart from a failure', () => {
+    expect(isDeadlineError(conforming())).toBe(true)
+  })
+
+  it('classifies as timed_out, which is the cause every notice added here keys on', () => {
+    expect(searchErrorCause(conforming())).toBe('timed_out')
+  })
+
+  it('is not retried, so the bound is not silently doubled by a second attempt', () => {
+    expect(retryPolicy(0, conforming())).toBe(false)
+  })
+
+  describe('a shape that drifts off the contract', () => {
+    // Both are plausible rejections for a transport-level bound to reach for.
+    const abortShaped = () => new DOMException('aborted', 'AbortError')
+    const plainError = () => new Error('deadline exceeded')
+
+    it.each([
+      ['an AbortError DOMException', abortShaped],
+      ['an Error carrying no TimeoutError name', plainError],
+    ])('degrades %s to the generic failed copy and retries it', (_label, make) => {
+      expect(isDeadlineError(make())).toBe(false)
+      expect(searchErrorCause(make())).toBe('failed')
+      expect(retryPolicy(0, make())).toBe(true)
+    })
+  })
+})
 
 describe('withDeadline', () => {
   it('rejects with TimeoutError when the attempt never settles on its own', async () => {

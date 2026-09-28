@@ -82,8 +82,9 @@ describe('FolderPanel', () => {
   it('surfaces a listing failure instead of rendering a silently empty folder', async () => {
     vi.spyOn(api, 'browseFiles').mockRejectedValue(new Error('Access denied'))
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
-    await waitFor(() => expect(screen.getByText('Access denied')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Unable to list folder')).toBeTruthy())
     expect(screen.queryByText('Empty folder')).toBeNull()
+    expect(screen.queryByText('Access denied')).toBeNull()
   })
 
   it('reveals the directory in the OS file manager', async () => {
