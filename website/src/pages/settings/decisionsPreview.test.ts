@@ -29,6 +29,9 @@ const OFF = {
   supported: false,
   enabled: false,
   configuredEndpoint: '',
+  // No classification reads as the hosted service: the wording that never
+  // understates what leaves the machine.
+  endpointKind: 'typesafe',
   endpointMoved: false,
   // The tool-argument egress scope reads FALSE for an unreadable body, on the same
   // fail-closed terms as `enabled`: a body nobody could parse grants nothing.
@@ -56,6 +59,7 @@ describe('readConsent', () => {
         supported: true,
         enabled: true,
         configuredEndpoint: ENDPOINT,
+        endpointKind: 'typesafe',
         endpointMoved: false,
         // Consent to SEND is not consent to send tool arguments: a body that does
         // not mention the scope grants none of it.
@@ -70,6 +74,12 @@ describe('readConsent', () => {
         // Nor does it consent to prior turns: an unmentioned ceiling is 0.
         historyBudget: 0,
       })
+    // Only an exact 'local' or 'other' changes the wording; anything else is the hosted service.
+    expect(readConsent({ enabled: true, configured_endpoint: ENDPOINT, endpoint_kind: 'local' }).endpointKind).toBe('local')
+    expect(readConsent({ enabled: true, configured_endpoint: ENDPOINT, endpoint_kind: 'other' }).endpointKind).toBe('other')
+    for (const sloppy of ['LOCAL', true, 1, null, 'elsewhere']) {
+      expect(readConsent({ enabled: true, configured_endpoint: ENDPOINT, endpoint_kind: sloppy }).endpointKind).toBe('typesafe')
+    }
     for (const sloppy of [false, 'true', 1, null]) {
       expect(readConsent({ enabled: sloppy, configured_endpoint: ENDPOINT, permits: false }).enabled).toBe(false)
     }
@@ -154,6 +164,7 @@ describe('readDecisions', () => {
         supported: true,
         enabled: true,
         configuredEndpoint: ENDPOINT,
+        endpointKind: 'typesafe',
         endpointMoved: false,
         bucket: 25,
         toolArgs: false,

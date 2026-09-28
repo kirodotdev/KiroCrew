@@ -521,6 +521,9 @@ class TestHandler:
             "enabled": False,
             "endpoint": "",
             "configured_endpoint": DEFAULT_ENDPOINT,
+            # The default address is TypeSafe's hosted API, so the card keeps its
+            # "over the internet to Jev" wording.
+            "endpoint_kind": "typesafe",
             "permits": False,
             "history_budget_chars": 0,
             # Reported so the card draws the scope actually recorded rather than

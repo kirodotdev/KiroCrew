@@ -379,6 +379,7 @@ def _payload(state: dict, *, denied: bool) -> dict:
     """
     from kiro_crew.decisions import consent
     from kiro_crew.decisions import gate as _gate
+    from kiro_crew.decisions.impl_jev import endpoint_kind
 
     configured = _gate.configured_endpoint()
     permits = consent.permits(configured, state) and not denied
@@ -386,6 +387,11 @@ def _payload(state: dict, *, denied: bool) -> dict:
         "enabled": consent.is_enabled(state),
         "endpoint": consent.consented_endpoint(state),
         "configured_endpoint": configured,
+        # Where the configured address sends a decision -- ``local`` (this
+        # machine, e.g. JuL's ``jul serve``), ``typesafe`` (the hosted Jev API) or
+        # ``other`` -- so the card's egress note says whether anything leaves the
+        # machine instead of always saying "over the internet to Jev".
+        "endpoint_kind": endpoint_kind(configured),
         # Whether a decision would actually be sent right now: consent given, and
         # for THIS address. False with enabled=true is the redirected-config state.
         # A governance denial makes the gate read the keystone as off, so it lands

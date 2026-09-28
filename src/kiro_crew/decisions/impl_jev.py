@@ -1,5 +1,9 @@
 """Jev Choice questions over HTTP, using https://docs.typesafe.ai/api.
 
+Any server speaking that protocol works as the endpoint, including JuL's
+``jul serve`` (https://github.com/usejul/jul) run on this machine, which keeps
+the request local. A loopback endpoint needs no API key.
+
 Requests map options to nullable rubric text in ``criteria``. Responses must
 carry the matching ``choice`` type and a finite probability for the chosen
 option. The gate validates answer domains before a skill selection is consumed.
@@ -9,9 +13,11 @@ Transport and protocol failures raise; the gate supplies fallback, not retries.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import math
 from typing import Any
+from urllib.parse import urlsplit
 
 from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT
 from kiro_crew.decisions.types import Answer, Answers, Choice, Question, is_model_id
@@ -153,6 +159,57 @@ def _as_float_or_none(raw: Any) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def is_loopback_endpoint(endpoint: str) -> bool:
+    """Whether *endpoint* names this machine: ``localhost`` or a loopback IP literal.
+
+    A Jev-compatible server on loopback -- JuL's ``jul serve``, which speaks the
+    Jev HTTP protocol and runs the model locally -- needs no API key by default,
+    so a request to it may go without one. No DNS lookup: only the literal name
+    ``localhost`` and loopback addresses count, so a hostname that merely resolves
+    to 127.0.0.1 today is not trusted with a keyless request.
+    """
+    try:
+        host = urlsplit(endpoint.strip()).hostname or ""
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # ``::ffff:127.0.0.1`` is loopback only on Python >= 3.12.4 / 3.13 when asked
+    # directly, so the IPv4 it maps is checked instead, the same on every version.
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return (mapped or addr).is_loopback
+
+
+#: What :func:`endpoint_kind` answers. The dashboard words its egress note from it.
+ENDPOINT_KIND_LOCAL = "local"
+ENDPOINT_KIND_TYPESAFE = "typesafe"
+ENDPOINT_KIND_OTHER = "other"
+_TYPESAFE_DOMAIN = "typesafe.ai"
+
+
+def endpoint_kind(endpoint: str) -> str:
+    """Where *endpoint* sends a decision: this machine, TypeSafe, or somewhere else.
+
+    ``local`` is :func:`is_loopback_endpoint`; ``typesafe`` is the hosted Jev API
+    (``typesafe.ai`` or a subdomain of it); ``other`` is any other address -- a
+    JuL server on the operator's own infrastructure, or a proxy. A value that does
+    not parse is ``other``: it claims neither "stays here" nor a named recipient.
+    """
+    if is_loopback_endpoint(endpoint):
+        return ENDPOINT_KIND_LOCAL
+    try:
+        host = (urlsplit(endpoint.strip()).hostname or "").rstrip(".")
+    except ValueError:
+        return ENDPOINT_KIND_OTHER
+    if host == _TYPESAFE_DOMAIN or host.endswith("." + _TYPESAFE_DOMAIN):
+        return ENDPOINT_KIND_TYPESAFE
+    return ENDPOINT_KIND_OTHER
+
+
 class JevOracle:
     """Ask Jev for the Choice answers consumed by the decision gate."""
 
@@ -171,8 +228,14 @@ class JevOracle:
         if not questions:
             raise JevProtocolError("no questions to ask")
         api_key = await asyncio.to_thread(resolve_api_key, self._api_key_setting)
-        if not api_key:
+        # A loopback server (``jul serve``) runs keyless by default, so no key is
+        # not a refusal there. Anywhere else an empty bearer would come back 401
+        # and read as a bad key, so the request is refused before it is sent.
+        if not api_key and not is_loopback_endpoint(self._endpoint):
             raise JevProtocolError("no api key configured")
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
         import aiohttp
 
@@ -188,10 +251,7 @@ class JevOracle:
                 self._endpoint,
                 json=body,
                 allow_redirects=False,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
             ) as resp:
                 if resp.status < 200 or resp.status >= 300:
                     raise JevHttpError(f"HTTP {resp.status}")

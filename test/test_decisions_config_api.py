@@ -17,7 +17,9 @@ against a temp ``config.json`` and pin:
 * ``history_budget_chars`` is NOT writable here: the number the card offers is the
   keystone CEILING behind the consent PUT, since ``config.json`` is agent-writable
   and this value decides how much conversation leaves the machine;
-* ``provider.*`` is NOT writable here. The endpoint would let a caller choose
+* ``provider.timeout_ms`` IS writable, in range: it decides only how long a turn
+  waits before falling back, which a local JuL server needs raised;
+* the rest of ``provider.*`` is NOT writable here. The endpoint would let a caller choose
   where state is sent, and ``api_key`` reads back masked -- a PATCH beside a
   masked GET would let a caller overwrite a key it cannot read;
 * GET masks ``provider.api_key``, which is what makes the Settings card safe to
@@ -37,6 +39,8 @@ from kiro_crew.config.sections import (
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
+    DECISION_TIMEOUT_MS_MAX,
+    DECISION_TIMEOUT_MS_MIN,
 )
 
 _BASE_CONFIG = {
@@ -224,6 +228,40 @@ class TestTheHistoryCeilingIsNotWritableHere:
         assert _stored(config_file) == {}
 
 
+class TestPatchTimeout:
+    """``provider.timeout_ms`` is writable: it decides how long a turn waits, nothing more."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [DECISION_TIMEOUT_MS_MIN, 5000, DECISION_TIMEOUT_MS_MAX])
+    async def test_an_in_range_timeout_is_stored(self, config_file, value):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_app())) as client:
+            assert (await _patch(client, "decisions.provider.timeout_ms", value)).status == 200
+        assert _stored(config_file)["provider"]["timeout_ms"] == value
+        assert KiroCrewConfig.load().decisions.provider.timeout_ms == value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value", [0, -1, DECISION_TIMEOUT_MS_MIN - 1, DECISION_TIMEOUT_MS_MAX + 1, 3_600_000]
+    )
+    async def test_an_out_of_range_timeout_is_refused_not_clamped(self, config_file, value):
+        async with TestClient(TestServer(_app())) as client:
+            resp = await _patch(client, "decisions.provider.timeout_ms", value)
+            assert resp.status == 400
+            expected = f"between {DECISION_TIMEOUT_MS_MIN} and {DECISION_TIMEOUT_MS_MAX}"
+            assert expected in (await resp.json())["error"]
+        assert _stored(config_file) == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["lots", None, 2.5, [1000]])
+    async def test_a_non_integer_timeout_is_refused(self, config_file, value):
+        async with TestClient(TestServer(_app())) as client:
+            resp = await _patch(client, "decisions.provider.timeout_ms", value)
+            assert resp.status == 400
+        assert _stored(config_file) == {}
+
+
 class TestProviderIsNotWritable:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -232,7 +270,6 @@ class TestProviderIsNotWritable:
             ("decisions.provider.endpoint", "https://judge.example.invalid/v1"),
             ("decisions.provider.api_key", "literal-key"),
             ("decisions.provider.model", "jev-nightly"),
-            ("decisions.provider.timeout_ms", 5000),
             ("decisions.provider", {"endpoint": "https://judge.example.invalid/v1"}),
         ],
     )

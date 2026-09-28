@@ -461,6 +461,12 @@ export interface DecisionsConsentData {
   configured_endpoint: string
   permits: boolean
   /**
+   * Where `configured_endpoint` sends a decision: `local` (this machine, e.g. JuL's
+   * `jul serve`), `typesafe` (the hosted Jev API) or `other` (a server elsewhere,
+   * e.g. JuL on the owner's own infrastructure). Absent on an older gateway.
+   */
+  endpoint_kind?: 'local' | 'typesafe' | 'other'
+  /**
    * Whether the owner consented to sending TOOL-CALL ARGUMENTS — the extra egress
    * category `tool.risk` needs. Absent on a gateway older than the scope, which
    * reads as not consented; the keystone's own absent value reads the same way, so a

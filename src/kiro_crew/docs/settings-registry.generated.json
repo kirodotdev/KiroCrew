@@ -948,6 +948,12 @@
       "description": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine."
     },
     {
+      "id": "developer.how-long-one-decision-may-wait-in-milliseconds",
+      "label": "How long one decision may wait, in milliseconds",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.how-long-one-decision-may-wait-in-milliseconds"
+    },
+    {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",

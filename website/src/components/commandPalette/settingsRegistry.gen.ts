@@ -1644,6 +1644,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.how-long-one-decision-may-wait-in-milliseconds",
+    "label": "How long one decision may wait, in milliseconds",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions_timeout_label",
+    "tab": "developer",
+    "type": "input",
+    "occurrence": 1
+  },
+  {
     "id": "developer.jev-api-key",
     "label": "Jev API key",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",

@@ -90,6 +90,7 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
   DECISIONS_SETTING_ID,
   'developer.jev-api-key',
   'developer.earlier-conversation-one-decision-may-carry-in-characters',
+  'developer.how-long-one-decision-may-wait-in-milliseconds',
   // The per-point consent switches. Declared in `settingsManual` because the card draws
   // them from one component labelled by scope, so the extractor cannot see them -- but
   // they are the card's rows and the fleet ceiling withdraws them with it.

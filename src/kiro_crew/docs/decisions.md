@@ -56,6 +56,27 @@ The configuration shape is:
 
 Create the API-key secret through the existing [secrets vault](secrets-vault.md) under the name `TYPESAFE_API_KEY`; that is the only vault entry this feature reads, and only for the default Jev endpoint. The reference above is a placeholder, not a working key.
 
+### Keeping decisions on this machine with JuL
+
+[JuL](https://github.com/usejul/jul) runs a decision model locally and its `jul serve` command answers the same HTTP protocol as Jev. Point `provider.endpoint` at it and nothing leaves the machine:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # uv, which installs JuL; skip if you have it
+uv tool install "jul[mlx]"   # on Apple Silicon; "jul[torch]" anywhere else
+jul setup                    # downloads the default model, answers one test decision
+jul serve                    # http://127.0.0.1:8577, local only
+```
+
+JuL needs Python 3.10 or newer, which uv fetches on its own; `pip install jul` into the Python 3.9 a Mac ships with finds no release. Install the backend in the same command (`"jul[mlx]"`): uv's tool environments carry no pip, so `jul setup` cannot add it afterwards.
+
+```json
+{ "decisions": { "provider": { "endpoint": "http://127.0.0.1:8577/v1/systemone" } } }
+```
+
+The same steps, with a copy button beside each command, are under **How to keep decisions on this machine with JuL** on the Decisions card in Settings, and the wait below is set from the same card.
+
+An endpoint on this machine (`localhost` or a loopback address such as `127.0.0.1`) needs no `TYPESAFE_API_KEY`: `jul serve` runs without a key on loopback, so the request goes without an `Authorization` header. If you started it with `--api-key`, store that key in the vault as `TYPESAFE_API_KEY` and it is sent as usual. Consent is recorded for the address you changed to, so turn the Decisions switch off and on again after editing the endpoint. The Decisions card in Settings then says your messages go only to the server at that address on this machine and that Kiro Crew itself sends nothing over the internet (if that server relays requests elsewhere, they go where it sends them); for a JuL server elsewhere on your own infrastructure it says they go to that address instead of TypeSafe. A local model is slower than the hosted one: on an M1 Pro, `jul serve` answered a skill choice in 0.6 to 1 s, and 2 s for the first one after it started; on a CPU without a GPU it took about 3.3 s. The default wait of 1000 ms dropped every one of them in that test and kept trigger matching, so raise **How long one decision may wait** on the Decisions card (`decisions.provider.timeout_ms`) to about 5000. The card accepts 100 to 10000 ms; the skill choice never waits more than ten seconds whatever the number says.
+
 `bucket` chooses a percentage of sessions. It is a fixed sample, not a random draw per message. A session stays selected or unselected while its key and bucket remain unchanged. `0` samples none and `100` samples all otherwise eligible sessions. Its default is `100`, so with the switch on and no `bucket` set, every otherwise-eligible session is sampled. A value that is not a whole number reads as `0`, so a typo never widens the sample.
 
 `history_budget_chars` bounds how much of the conversation so far is sent with one decision, in characters, on top of the current message. **Its default is `2000`, about the last two or three turns.** It is only what the decision ASKS for: your consent records a ceiling of its own, the smaller of the two is what goes, and that ceiling is `0` until you set one, so a fresh install still sends your new message alone. Inside the ceiling, earlier user and assistant turns are added newest first until the budget is spent, with the last one admitted clipped to fit. At most the 20 most recent turns are read, so a budget far above a few thousand characters stops adding turns. Tool output is never sent, by any of the features on this page. A value that does not parse reads as the default, and your consented ceiling clamps that too, so a typo never sends more than you reviewed.

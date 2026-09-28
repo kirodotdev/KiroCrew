@@ -6057,6 +6057,18 @@ class InstancesConfig:
 DECISION_BUCKET_MIN = 0
 DECISION_BUCKET_MAX = 100
 
+# Bounds on ``decisions.provider.timeout_ms`` as the dashboard may write it. The
+# floor keeps a typo from making every call expire before it is sent. The ceiling
+# matches the longest cap a point puts on its own wait (``MAX_WAIT_SECS`` is 10 s
+# in ``skills_select``, ``tool_risk`` and ``compaction_keep``; ``memory_recall``
+# stops at 7 s), so a larger number could not take effect there. ``message.steer``,
+# ``model.route`` and the Jev lane of ``nudge.wake`` have no cap of their own and
+# wait the full value, so this ceiling is what bounds them; the LLM lane of
+# ``nudge.wake`` clamps it into 8..60 s instead. A hand-edited value outside
+# these bounds is still read as before -- only the dashboard write is bounded.
+DECISION_TIMEOUT_MS_MIN = 100
+DECISION_TIMEOUT_MS_MAX = 10000
+
 DECISION_PROVIDER_ENDPOINT_DEFAULT = "https://api.typesafe.ai/v1/systemone"
 DECISION_PROVIDER_MODEL_DEFAULT = "jev-latest"
 
@@ -6230,7 +6242,9 @@ class DecisionProviderConfig:
             "Endpoint",
             "Full URL of the evaluation endpoint. Override only to point at a "
             "compatible proxy — the request and response field names are fixed by "
-            "the TypeSafe API, not by this setting.",
+            "the TypeSafe API, not by this setting. JuL's `jul serve` speaks it on this "
+            "machine (http://127.0.0.1:8577/v1/systemone), and a loopback endpoint "
+            "needs no API key.",
         ),
     )
     api_key: str = field(
@@ -6243,7 +6257,8 @@ class DecisionProviderConfig:
             "key here is NOT used, and no other vault entry is readable through this "
             "field, because config.json is agent-writable. With no usable key the "
             "seam logs a row saying so and returns None — it never sends an empty "
-            "bearer credential.",
+            "bearer credential — except for an endpoint on this machine (localhost "
+            "or a loopback address), which is asked without an Authorization header.",
             sensitive=True,
         ),
     )
@@ -6264,7 +6279,8 @@ class DecisionProviderConfig:
             "Total budget for one decision, in milliseconds. Exceeding it logs "
             "error='timeout' and returns None, so this is the ceiling the seam "
             "adds to the path it sits in — not a target. Values at or below zero "
-            "are floored to 1ms rather than disabling the timeout.",
+            "are floored to 1ms rather than disabling the timeout. Set it from the "
+            "Decisions card (100 to 10000); a local JuL server needs about 5000.",
         ),
     )
 

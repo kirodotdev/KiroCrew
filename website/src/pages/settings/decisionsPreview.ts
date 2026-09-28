@@ -84,9 +84,9 @@ export const DECISIONS_MEMORY_POINT = 'memory.recall'
 export const DECISIONS_NUDGE_WAKE_POINT = 'nudge.wake'
 
 /**
- * Config path of the sampling share. One of the six `decisions.*` values the config
- * PATCH accepts, beside the three `model_route` tiers and the two `nudge_wake` keys;
- * the address and the credential are deliberately not among them.
+ * Config path of the sampling share. One of the seven `decisions.*` values the config
+ * PATCH accepts, beside the three `model_route` tiers, the two `nudge_wake` keys and
+ * `provider.timeout_ms`; the address and the credential are deliberately not among them.
  */
 export const DECISIONS_BUCKET_PATH = 'decisions.bucket'
 
@@ -105,12 +105,36 @@ export const DECISIONS_HISTORY_BUDGET_PATH = 'decisions.history_budget_chars'
  * Config path of the address decisions are sent to.
  *
  * READ-ONLY from the dashboard, deliberately: `PATCH /api/config/kirocrew` excludes
- * `decisions.provider.*` so a dashboard caller cannot choose where the state a
+ * `decisions.provider.*` (all but `timeout_ms`) so a dashboard caller cannot choose where the state a
  * decision point collects is sent, and `api_key` beside it is schema-sensitive, so
  * the masked read hands back a sentinel a write would clobber. The card shows the
  * address and names this path; an operator moves it in the file.
  */
 export const DECISIONS_ENDPOINT_PATH = 'decisions.provider.endpoint'
+
+/**
+ * Config path of how long one decision may wait for its answer, in milliseconds.
+ * The one `provider.*` key the config PATCH accepts: it chooses neither where state
+ * goes nor with which key, only how long a turn waits before falling back. Bounds
+ * mirror `DECISION_TIMEOUT_MS_MIN` / `_MAX` in the backend's config sections.
+ */
+export const DECISIONS_TIMEOUT_PATH = 'decisions.provider.timeout_ms'
+export const DECISIONS_TIMEOUT_MIN = 100
+export const DECISIONS_TIMEOUT_MAX = 10000
+/** The shipped default, sized for the hosted API (~100 ms per answer). */
+export const DECISIONS_TIMEOUT_DEFAULT = 1000
+
+/**
+ * `decisions.provider.timeout_ms` out of a `GET /api/config/kirocrew` body, or the
+ * shipped default when the config does not name a whole number.
+ */
+export function readTimeout(config: unknown): number {
+  const root = asRecord(config)
+  const decisions = root ? asRecord(root.decisions) : null
+  const provider = decisions ? asRecord(decisions.provider) : null
+  const raw = provider?.timeout_ms
+  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : DECISIONS_TIMEOUT_DEFAULT
+}
 
 /** Config path prefix of the tier-to-model map `model.route` reads. */
 export const DECISIONS_MODEL_ROUTE_PATH = 'decisions.model_route'
@@ -220,6 +244,8 @@ export function readPoints(body: unknown): DecisionPointRow[] {
 const BUCKET_MIN = 0
 const BUCKET_MAX = 100
 
+export type EndpointKind = 'local' | 'typesafe' | 'other'
+
 export interface DecisionsView {
   /**
    * Whether this gateway has the consent endpoint at all. An older gateway
@@ -234,6 +260,13 @@ export interface DecisionsView {
    * so the reader consents to an ADDRESS, not just to "sending".
    */
   configuredEndpoint: string
+  /**
+   * Where that address sends a decision, as the gateway classifies it. Words the
+   * egress note: only an exact `local` or `other` changes it, so an older gateway
+   * (no field) or an unknown value keeps the "over the internet to Jev" wording,
+   * which never understates what leaves the machine.
+   */
+  endpointKind: EndpointKind
   /**
    * Consent was given, but for a different address than the config names now
    * (`provider.endpoint` was edited afterwards). Nothing is sent in this state;
@@ -312,6 +345,7 @@ const UNSUPPORTED: DecisionsView = {
   supported: false,
   enabled: false,
   configuredEndpoint: '',
+  endpointKind: 'typesafe',
   endpointMoved: false,
   bucket: null,
   toolArgs: false,
@@ -365,6 +399,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
       supported: false,
       enabled: false,
       configuredEndpoint: '',
+      endpointKind: 'typesafe',
       endpointMoved: false,
       toolArgs: false,
       compaction: false,
@@ -379,6 +414,8 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
   // rather than re-deriving equality here, so the card and the gate cannot
   // disagree about whether anything is being sent.
   const endpointMoved = enabled && root.permits !== true
+  const endpointKind: EndpointKind =
+    root.endpoint_kind === 'local' || root.endpoint_kind === 'other' ? root.endpoint_kind : 'typesafe'
   // An exact `true`, like `enabled` above: this field decides whether a new
   // category of conversation content leaves the machine, so a truthy stand-in is
   // not a deliberate yes. An older gateway omits it entirely and reads as off.
@@ -404,6 +441,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
     supported: true,
     enabled,
     configuredEndpoint,
+    endpointKind,
     endpointMoved,
     toolArgs,
     compaction,

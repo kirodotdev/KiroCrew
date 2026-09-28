@@ -406,6 +406,50 @@ describe('Decisions (Jev) preview card', () => {
     expect(screen.getByText(/falls back to the same rule/i)).toBeInTheDocument()
   })
 
+  it('says nothing goes over the internet when the endpoint is on this machine', async () => {
+    stubGateway(
+      consentOf(true, {
+        endpoint: 'http://127.0.0.1:8577/v1/systemone',
+        configured_endpoint: 'http://127.0.0.1:8577/v1/systemone',
+        endpoint_kind: 'local',
+      }),
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/sent only to the decision server at the address below, on this machine/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+  })
+
+  it('names a self-hosted server instead of TypeSafe for any other address', async () => {
+    stubGateway(
+      consentOf(true, {
+        endpoint: 'https://jul.internal.example/v1/systemone',
+        configured_endpoint: 'https://jul.internal.example/v1/systemone',
+        endpoint_kind: 'other',
+      }),
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/instead of TypeSafe's hosted Jev service/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+  })
+
+  it('keeps the internet wording when an older gateway does not classify the address', async () => {
+    // No `endpoint_kind` at all: the card must not guess "local" from the URL.
+    stubGateway(
+      consentOf(true, {
+        endpoint: 'http://127.0.0.1:8577/v1/systemone',
+        configured_endpoint: 'http://127.0.0.1:8577/v1/systemone',
+      }),
+    )
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+    })
+  })
+
   it('lists one row per point the GATEWAY projects, never a list of its own', async () => {
     stubGateway({ enabled: true }, { decisions: { bucket: 100 } })
     renderSection()
@@ -778,6 +822,51 @@ describe('Decisions (Jev) preview card', () => {
     fireEvent.pointerUp(slider)
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('shows the saved wait, and the shipped 1000 ms when the config names none', async () => {
+    stubGateway({ enabled: true }, { decisions: { bucket: 100 } })
+    renderSection()
+    const box = await screen.findByLabelText(/How long one decision may wait/i)
+    expect((box as HTMLInputElement).value).toBe('1000')
+  })
+
+  it('writes a new wait to decisions.provider.timeout_ms on blur', async () => {
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    stubGateway({ enabled: true }, { decisions: { bucket: 100, provider: { timeout_ms: 1000 } } })
+    renderSection()
+    const box = await screen.findByLabelText(/How long one decision may wait/i)
+    fireEvent.change(box, { target: { value: '5000' } })
+    fireEvent.blur(box)
+    await waitFor(() => {
+      expect(patch).toHaveBeenCalledWith('decisions.provider.timeout_ms', 5000)
+    })
+  })
+
+  it('writes no wait outside 100..10000 ms or one it cannot read', async () => {
+    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    stubGateway({ enabled: true }, { decisions: { bucket: 100, provider: { timeout_ms: 1000 } } })
+    renderSection()
+    const box = await screen.findByLabelText(/How long one decision may wait/i)
+    for (const value of ['50', '20000', '5s', '']) {
+      fireEvent.change(box, { target: { value } })
+      fireEvent.blur(box)
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(patch).not.toHaveBeenCalled()
+    expect((box as HTMLInputElement).value).toBe('1000')
+  })
+
+  it('offers the JuL install guide with copyable commands that were run', async () => {
+    stubGateway({ enabled: false })
+    renderSection()
+    await screen.findByText(/keep decisions on this machine with JuL/i)
+    for (const command of ['uv tool install "jul[mlx]"', 'jul setup', 'jul serve']) {
+      expect(screen.getByText(command)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: `Copy ${command}` })).toBeInTheDocument()
+    }
+    // `jul download` is not a JuL command; the first draft of this guide named it.
+    expect(screen.queryByText(/jul download/)).toBeNull()
   })
 
   it('does not accept a ceiling while consent is off, because the write throws it away', async () => {

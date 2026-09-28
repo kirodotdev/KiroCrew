@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { resolveLegacyHighlightId } from '../../hooks/useSettingHighlight'
-import { AlertTriangle, CircleDot } from 'lucide-react'
+import { AlertTriangle, Check, CircleDot, Copy } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -20,15 +20,21 @@ import {
   DECISIONS_NUDGE_WAKE_MODEL_PATH,
   DECISIONS_NUDGE_WAKE_POINT,
   DECISIONS_NUDGE_WAKE_PROVIDER_PATH,
+  DECISIONS_TIMEOUT_MAX,
+  DECISIONS_TIMEOUT_MIN,
+  DECISIONS_TIMEOUT_PATH,
   POINT_ACTIVE,
   POINT_NEEDS_SCOPE,
   readDecisions,
   readModelRoute,
   readNudgeWake,
+  readTimeout,
   type DecisionPointRow,
+  type EndpointKind,
 } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { copyToClipboard } from '../../utils/clipboard'
 
 /**
  * One point's own settings, on a lazy boundary.
@@ -136,6 +142,87 @@ const DecisionsPointPanel = lazy(async () => ({
 const GLOBAL_PANEL_ID = 'decisions-global-panel'
 const POINT_PANEL_ID = 'decisions-point-panel'
 const EGRESS_NOTE_ID = 'decisions-egress-note'
+
+/**
+ * The commands of the JuL install guide. Not translated: they are typed into a
+ * terminal. Each was run on an Apple Silicon Mac before it was written here:
+ * `uv tool install "jul[mlx]"` installs the CLI with its backend (a plain
+ * `uv tool install jul` leaves `jul setup` unable to add the backend, since uv's
+ * tool environments carry no pip), `jul setup` downloads the default model and
+ * answers one test decision, and `jul serve` listens on 127.0.0.1:8577, keyless.
+ */
+const JUL_INSTALL_STEPS: ReadonlyArray<{ labelKey: string; command?: string }> = [
+  { labelKey: 'pages.developer.featurePreviewsTab.decisions_jul_step_uv', command: 'curl -LsSf https://astral.sh/uv/install.sh | sh' },
+  { labelKey: 'pages.developer.featurePreviewsTab.decisions_jul_step_install', command: 'uv tool install "jul[mlx]"' },
+  { labelKey: 'pages.developer.featurePreviewsTab.decisions_jul_step_setup', command: 'jul setup' },
+  { labelKey: 'pages.developer.featurePreviewsTab.decisions_jul_step_serve', command: 'jul serve' },
+  { labelKey: 'pages.developer.featurePreviewsTab.decisions_jul_step_endpoint', command: '"endpoint": "http://127.0.0.1:8577/v1/systemone"' },
+  { labelKey: 'pages.developer.featurePreviewsTab.decisions_jul_step_consent' },
+]
+
+/** One command of the install guide, selectable, with a copy button beside it. */
+function JulCommand({ command }: { command: string }) {
+  const [done, setDone] = useState(false)
+  const label = i18nT('pages.developer.featurePreviewsTab.decisions_jul_copy', { command })
+  return (
+    <span className="mt-0.5 flex items-center gap-1.5">
+      <code className="rounded bg-bg px-1.5 py-0.5 font-mono text-[12px] text-text break-all select-all">
+        {command}
+      </code>
+      <Btn
+        aria-label={label}
+        title={label}
+        onClick={async () => {
+          // `copyToClipboard` resolves false instead of rejecting when even its
+          // textarea fallback failed, so the tick only shows for a real copy.
+          if ((await copyToClipboard(command)) === false) return
+          setDone(true)
+          window.setTimeout(() => setDone(false), 1500)
+        }}
+      >
+        {done ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+      </Btn>
+    </span>
+  )
+}
+
+/**
+ * How to install and run JuL, so decisions stay on this machine. Collapsed by
+ * default: most readers either already run it or use the hosted service, and an
+ * open guide would push the switch's own facts down the card.
+ */
+function JulInstallGuide() {
+  return (
+    <details className="rounded-md border border-border bg-bg-accent px-2.5 py-1.5">
+      <summary className="cursor-pointer text-[13px] font-semibold text-text">
+        {i18nT('pages.developer.featurePreviewsTab.decisions_jul_title')}
+      </summary>
+      <div className="mt-1.5 flex flex-col gap-2">
+        <p className="m-0 text-[12px] text-muted">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_jul_intro')}
+        </p>
+        <ol className="m-0 flex list-decimal flex-col gap-1.5 pl-5 text-[12px] text-text">
+          {JUL_INSTALL_STEPS.map(step => (
+            <li key={step.labelKey}>
+              {i18nT(step.labelKey)}
+              {step.command && <JulCommand command={step.command} />}
+            </li>
+          ))}
+        </ol>
+        <p className="m-0 text-[12px] text-muted">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_jul_other_platforms')}
+        </p>
+      </div>
+    </details>
+  )
+}
+
+/** The egress sentence for where the configured address sends a decision. */
+const EGRESS_KEY: Record<EndpointKind, string> = {
+  local: 'pages.developer.featurePreviewsTab.decisions_egress_local',
+  other: 'pages.developer.featurePreviewsTab.decisions_egress_self_hosted',
+  typesafe: 'pages.developer.featurePreviewsTab.decisions_egress',
+}
 const BACKEND_NOTE_ID = 'decisions-backend-note'
 const BUCKET_INPUT_ID = 'decisions-bucket-slider'
 /**
@@ -197,6 +284,7 @@ export function DecisionsCard() {
     queryFn: () => api.secretsList(),
   })
   const view = readDecisions(consentQ.data, configQ.data)
+  const timeoutMs = readTimeout(configQ.data)
   const modelsQ = useAvailableModelsQuery()
 
   /* ── Which row the panel belongs to ──────────────────────────────────────── */
@@ -227,6 +315,7 @@ export function DecisionsCard() {
 
   /* ── Drafts: the fields that commit on blur or a button, not on a keystroke ── */
   const [budgetDraft, setBudgetDraft] = useState<string | null>(null)
+  const [timeoutDraft, setTimeoutDraft] = useState<string | null>(null)
   // The slider's own position while a drag is in flight. Without it the thumb reads
   // the SAVED share on every tick, so it snaps back to where it started until each
   // refetch lands and the drag stutters -- and every tick in between is a config
@@ -492,7 +581,7 @@ export function DecisionsCard() {
         id={EGRESS_NOTE_ID}
         className={backendMissing ? 'text-[12px] text-muted opacity-40' : 'text-[12px] text-text'}
       >
-        {i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
+        {i18nT(EGRESS_KEY[view.endpointKind])}
       </p>
       {/* The sampling share, stated in BOTH switch states and OUTSIDE the disclosure.
         * The decisions module spec under docs/system-specs/modules pins it there: the
@@ -527,6 +616,9 @@ export function DecisionsCard() {
           {i18nT('pages.developer.featurePreviewsTab.decisions_endpoint_pointer')}
         </p>
       )}
+      {/* How to keep decisions on this machine. Offered whatever the address is: a
+          reader on the hosted service is exactly the one deciding whether to move. */}
+      {view.supported && <JulInstallGuide />}
       {/* The redirected-config state: consent stands for one address, config.json now
           names another, so nothing is sent. A WARNING, not a paragraph: it is the one
           state where the switch reads "on" and the truth is "off". */}
@@ -685,6 +777,36 @@ export function DecisionsCard() {
                 className="w-full accent-[var(--accent)]"
               />
             </div>
+            {/* How long one decision may wait. A number box: a reader raising it has a
+                latency in mind (what `jul serve` takes), and the shipped 1000 ms is
+                sized for the hosted service. The write is refused outside the
+                backend's bounds, so a value the box cannot read, or one out of range,
+                is left alone and the saved number stays on screen. */}
+            <SettingsInput
+              label={i18nT('pages.developer.featurePreviewsTab.decisions_timeout_label')}
+              description={i18nT('pages.developer.featurePreviewsTab.decisions_timeout_desc', {
+                min: DECISIONS_TIMEOUT_MIN,
+                max: DECISIONS_TIMEOUT_MAX,
+              })}
+              configKey={DECISIONS_TIMEOUT_PATH}
+              type="number"
+              min={DECISIONS_TIMEOUT_MIN}
+              max={DECISIONS_TIMEOUT_MAX}
+              step={100}
+              value={timeoutDraft ?? String(timeoutMs)}
+              onChange={setTimeoutDraft}
+              onBlur={() => {
+                const raw = timeoutDraft
+                setTimeoutDraft(null)
+                if (raw === null) return
+                const digits = raw.trim()
+                if (!/^[0-9]+$/.test(digits)) return
+                const next = Number.parseInt(digits, 10)
+                if (next < DECISIONS_TIMEOUT_MIN || next > DECISIONS_TIMEOUT_MAX || next === timeoutMs) return
+                configMut.mutate({ path: DECISIONS_TIMEOUT_PATH, value: next })
+              }}
+              disabled={frozen}
+            />
             {/* How much PRIOR conversation one decision may carry. A number box and not
                 a slider: the units are characters, so a reader who wants a budget has
                 one in mind, and the shipped default of 0 — the message alone — is the

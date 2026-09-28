@@ -62,6 +62,8 @@ from kiro_crew.config.sections import (
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
+    DECISION_TIMEOUT_MS_MAX,
+    DECISION_TIMEOUT_MS_MIN,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     STT_LANGUAGE_AUTO,
@@ -2702,7 +2704,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # is the keystone `decisions_consent.json`, written only by the browser-only
     # `PUT /api/decisions/consent` (handlers/decisions.py), because config.json
     # is agent-writable and consent to egress must not be. `provider.*` is
-    # deliberately NOT here either. The endpoint would let a dashboard caller
+    # deliberately NOT here either, except `timeout_ms` below. The endpoint would let a dashboard caller
     # choose where the state a decision point collects is sent, and `api_key` is
     # schema-`sensitive`, so the masked GET returns the sentinel for it — a PATCH
     # offered next to that would let a caller overwrite a key it cannot read
@@ -2715,6 +2717,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "int",
         "min": DECISION_BUCKET_MIN,
         "max": DECISION_BUCKET_MAX,
+    },
+    # How long one decision may wait for its answer. The one `provider.*` key that
+    # IS editable, because it grants nothing: it chooses neither where state goes
+    # nor with which key, only how long a turn waits before falling back to the
+    # rule it would have used anyway. A local JuL server (`jul serve`) answers in
+    # 0.6-1 s where the hosted API answers in ~100 ms, so the 1000 ms default drops
+    # its answers until the owner raises it -- which they now can from the card.
+    "decisions.provider.timeout_ms": {
+        "type": "int",
+        "min": DECISION_TIMEOUT_MS_MIN,
+        "max": DECISION_TIMEOUT_MS_MAX,
     },
 }
 

@@ -144,13 +144,22 @@ class TestRequestShape:
         asyncio.run(_run(rec, [URGENT]))
         assert rec.headers[0]["Authorization"] == "Bearer sk-live-abc"
 
-    def test_a_literal_key_in_config_never_reaches_the_network(self):
+    def test_a_literal_key_in_config_never_reaches_the_network(self, monkeypatch):
         """``provider.api_key`` is agent-writable: a literal there could be any
         secret the agent read, so it is not a credential and nothing is sent."""
+        import kiro_crew.decisions.impl_jev as impl_jev
+
+        monkeypatch.setattr(impl_jev, "is_loopback_endpoint", lambda _endpoint: False)
         rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
         with pytest.raises(JevProtocolError, match="no api key"):
             asyncio.run(_run(rec, [URGENT], api_key="sk-live-abc"))
         assert rec.requests == []
+
+    def test_a_literal_key_is_not_sent_to_a_loopback_server_either(self):
+        """Keyless on loopback is not a way round the rule: the literal stays unsent."""
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        asyncio.run(_run(rec, [URGENT], api_key="sk-live-abc"))
+        assert "sk-live-abc" not in json.dumps(rec.headers[0])
 
     @pytest.mark.parametrize(
         "model",
@@ -364,12 +373,93 @@ class TestFailures:
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             asyncio.run(_run(rec, [URGENT], timeout_ms=100))
 
-    def test_no_api_key_raises_before_any_request(self):
-        """An empty bearer would come back 401 and be indistinguishable from a bad key."""
+    def test_no_api_key_raises_before_any_request(self, monkeypatch):
+        """An empty bearer would come back 401 and be indistinguishable from a bad key.
+
+        The recorder listens on loopback, which is keyless on purpose, so the test
+        server is made to read as remote here.
+        """
+        import kiro_crew.decisions.impl_jev as impl_jev
+
+        monkeypatch.setattr(impl_jev, "is_loopback_endpoint", lambda _endpoint: False)
         rec = _Recorder(body=_ok_body({"is_urgent": _yes(0.1)}))
         with pytest.raises(JevProtocolError, match="no api key"):
             asyncio.run(_run(rec, [URGENT], api_key=""))
         assert rec.requests == [], "nothing may reach the network without a key"
+
+    def test_a_loopback_server_is_asked_without_a_key(self):
+        """``jul serve`` on this machine runs keyless: no key, no Authorization header."""
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes(0.1)}))
+        answers = asyncio.run(_run(rec, [URGENT], api_key=""))
+        assert answers["is_urgent"].value == "yes"
+        assert "Authorization" not in rec.headers[0]
+
+    def test_a_loopback_server_still_gets_the_key_when_there_is_one(self):
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes(0.1)}))
+        asyncio.run(_run(rec, [URGENT]))
+        assert rec.headers[0]["Authorization"] == f"Bearer {VAULT_KEY}"
+
+
+class TestEndpointKind:
+    @pytest.mark.parametrize(
+        ("endpoint", "kind"),
+        [
+            ("http://127.0.0.1:8577/v1/systemone", "local"),
+            ("http://localhost:8577/v1/systemone", "local"),
+            ("https://api.typesafe.ai/v1/systemone", "typesafe"),
+            ("https://typesafe.ai/v1/systemone", "typesafe"),
+            ("https://api.typesafe.ai./v1/systemone", "typesafe"),
+            ("https://nottypesafe.ai/v1/systemone", "other"),
+            ("https://typesafe.ai.evil.example/v1/systemone", "other"),
+            ("https://jul.internal.example/v1/systemone", "other"),
+            ("http://10.0.0.5:8577/v1/systemone", "other"),
+            ("http://[::1", "other"),
+        ],
+    )
+    def test_kind(self, endpoint, kind):
+        from kiro_crew.decisions.impl_jev import endpoint_kind
+
+        assert endpoint_kind(endpoint) == kind
+
+
+class TestLoopbackEndpoint:
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://127.0.0.1:8577/v1/systemone",
+            "http://localhost:8577/v1/systemone",
+            "http://[::1]:8577/v1/systemone",
+            "http://127.1.2.3/v1/systemone",
+            "http://LOCALHOST:8577/v1/systemone",
+            "http://[::ffff:127.0.0.1]:8577/v1/systemone",
+        ],
+    )
+    def test_loopback(self, endpoint):
+        from kiro_crew.decisions.impl_jev import is_loopback_endpoint
+
+        assert is_loopback_endpoint(endpoint)
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://api.typesafe.ai/v1/systemone",
+            "http://127.0.0.1.evil.example/v1/systemone",
+            "http://localhost.evil.example/v1/systemone",
+            "http://user@evil.example/?h=127.0.0.1",
+            "http://10.0.0.5:8577/v1/systemone",
+            "http://0.0.0.0:8577/v1/systemone",
+            "http://127.1:8577/v1/systemone",
+            "http://localhost.:8577/v1/systemone",
+            "http://169.254.169.254/v1/systemone",
+            "http://[::ffff:10.0.0.5]:8577/v1/systemone",
+            "http://[::1",
+            "",
+        ],
+    )
+    def test_not_loopback(self, endpoint):
+        from kiro_crew.decisions.impl_jev import is_loopback_endpoint
+
+        assert not is_loopback_endpoint(endpoint)
 
     def test_no_questions_raises(self):
         rec = _Recorder(body=_ok_body({}))
