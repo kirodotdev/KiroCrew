@@ -391,6 +391,10 @@ class TestCgroupAvailable:
         v2 = PurePosixPath("/sys/fs/cgroup")
         v1 = PurePosixPath("/sys/fs/cgroup/memory")
         monkeypatch.setattr(sa, "_cgroup_memory_roots", lambda: [(v2, v2, True), (v1, v1, False)])
+        # These cases fabricate only the limit/usage files; the page-cache read
+        # goes through ``open`` and would otherwise see the runner's real
+        # /sys/fs/cgroup/memory.stat.
+        monkeypatch.setattr(sa, "_read_inactive_file_bytes", lambda directory, v2: 0)
 
     def _reader(self, values: dict[str, int | None]):
         return lambda path: values.get(path)

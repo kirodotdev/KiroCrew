@@ -1573,6 +1573,50 @@ def _read_int_file(path: str) -> int | None:
         return None
 
 
+#: Upper bound on one ``memory.stat`` read; the real file is a few KB.
+_MEMORY_STAT_READ_CAP = 64 * 1024
+
+
+def _read_inactive_file_bytes(directory: PurePosixPath | Path, v2: bool) -> int:
+    """Inactive page cache charged to a cgroup, in bytes; 0 when unreadable.
+
+    A cgroup's ``memory.current`` (v1: ``memory.usage_in_bytes``) counts the
+    page cache its members touched. On a build-heavy host that cache fills the
+    group up to its ceiling and stays there, so ``limit - usage`` reads as zero
+    headroom while almost all of it is cache the kernel drops on demand.
+    Inactive file pages are the part it reclaims first and cheaply; subtracting
+    them gives the working set, the same figure the kubelet and cAdvisor evict
+    on. Active cache and anonymous memory stay counted as used.
+
+    v2 ``memory.stat`` is hierarchical, so ``inactive_file`` covers the whole
+    subtree. v1 keeps the subtree figure in ``total_inactive_file``. Read
+    through this module's ``open`` for the same reason as :func:`_read_int_file`.
+    """
+    key = "inactive_file" if v2 else "total_inactive_file"
+    try:
+        with open(str(directory / "memory.stat"), encoding="ascii") as fh:
+            # A kernel-written file of ~40 short lines; the cap only keeps a
+            # read on a fabricated or unexpected file bounded.
+            text = fh.read(_MEMORY_STAT_READ_CAP)
+        for line in text.splitlines():
+            name, _, value = line.partition(" ")
+            if name == key:
+                return max(0, int(value))
+    except (OSError, UnicodeDecodeError, ValueError):
+        pass
+    return 0
+
+
+def _working_set(directory: PurePosixPath | Path, v2: bool, usage: int) -> int:
+    """*usage* minus the group's inactive page cache, never below zero.
+
+    The two files are read at different instants, so the cache figure can
+    briefly exceed the usage figure; the floor keeps headroom from ever
+    reading larger than the limit itself.
+    """
+    return max(0, usage - _read_inactive_file_bytes(directory, v2))
+
+
 def _cgroup_memory_roots() -> list[tuple[PurePosixPath, PurePosixPath, bool]]:
     """Return (process directory, mount boundary, v2) for visible memory mounts."""
     try:
@@ -1653,10 +1697,14 @@ def _cgroup_available_gb() -> float:
     The slice is a sibling of the gateway's own cgroup, not an ancestor, so the
     ancestry walk never sees it; and the walk reads hard limits only, never
     ``memory.high``, which is the ceiling the kernel throttles at. Without the
-    slice term a bare host with tens of GB free reads as "ample" while the
-    kernel is already throttling the whole agent subtree, so admission keeps
-    admitting into the throttle. The tighter of the two readings is returned;
-    -1.0 only when neither constrains (``dynamic-subagent-sizing.md`` §9).
+    slice term a bare host with tens of GB free reads as "ample" while agent
+    process memory has already filled that ceiling, so admission keeps
+    admitting into a throttle that reclaim cannot relieve. Both terms measure
+    the working set, so a slice held at ``memory.high`` only by inactive page
+    cache is not refused; ``sandbox.agents_slice_throttling`` still reports
+    that state to the cold-start handshake. The tighter of the two readings is
+    returned; -1.0 only when neither constrains (``dynamic-subagent-sizing.md``
+    §9).
     """
     readings = [
         gb for gb in (_container_cgroup_available_gb(), _agents_slice_available_gb()) if gb >= 0
@@ -1672,7 +1720,8 @@ def _container_cgroup_available_gb() -> float:
     cgroup and its visible ancestors. Each limit is paired with usage at the
     SAME level, including siblings charged to a parent. A finite limit with
     unknown usage contributes zero headroom, never zero usage. Ancestors
-    hidden above a mount cannot be measured.
+    hidden above a mount cannot be measured. Usage excludes the level's
+    inactive page cache (:func:`_read_inactive_file_bytes`).
     """
     available = -1.0
     for leaf, mount, v2 in _cgroup_memory_roots():
@@ -1691,7 +1740,7 @@ def _container_cgroup_available_gb() -> float:
                 if limit is not None and 0 <= limit < _CGROUP_UNLIMITED:
                     # No spare capacity is established when usage is unknown.
                     headroom = (
-                        max(0.0, (limit - current) / (1024**3))
+                        max(0.0, (limit - _working_set(directory, v2, current)) / (1024**3))
                         if current is not None and current >= 0
                         else 0.0
                     )
@@ -1708,9 +1757,13 @@ def _agents_slice_available_gb() -> float:
     The slice carries two ceilings: ``memory.high`` (past it the kernel
     throttles-and-reclaims the whole subtree) and ``memory.max`` (past it the
     kernel OOM-kills a scope). The lower one binds, so headroom is
-    ``min(high, max) - current``, floored at zero: usage can sit ABOVE
+    ``min(high, max) - working set``, floored at zero: usage can sit ABOVE
     ``memory.high`` while the kernel reclaims, and a negative figure would
-    mislead every threshold comparison downstream.
+    mislead every threshold comparison downstream. The working set is
+    ``memory.current`` minus inactive page cache
+    (:func:`_read_inactive_file_bytes`); without that, a slice whose cache has
+    filled it to ``memory.high`` reads as zero headroom and raises a critical
+    memory alert on a host with hundreds of GB available.
 
     The slice directory comes from ``sandbox._agents_slice_cgroup_dir`` (which
     knows systemd's dash-hierarchy); the files are read through the same
@@ -1732,7 +1785,7 @@ def _agents_slice_available_gb() -> float:
     if not ceilings:
         return -1.0
     current = _read_int_file(str(slice_dir / "memory.current")) or 0
-    return max(0.0, (min(ceilings) - current) / (1024**3))
+    return max(0.0, (min(ceilings) - _working_set(slice_dir, True, current)) / (1024**3))
 
 
 def compute_max_subagents(cfg: KiroCrewConfig) -> int:

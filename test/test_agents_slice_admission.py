@@ -113,6 +113,35 @@ class TestAgentsSliceHeadroom:
         monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
         assert sa._agents_slice_available_gb() == 0.0
 
+    def test_inactive_page_cache_is_headroom(self, tmp_path, monkeypatch, no_container_cgroup):
+        """A build-heavy host fills the slice with page cache up to memory.high
+        and leaves it there. That cache is reclaimable, so it must not read as a
+        full slice: this shape raised a 0.0 GB critical alert on a host with
+        370 GB available."""
+        slice_dir = _fabricate_slice(tmp_path, high=370 * GIB, maximum=394 * GIB, current=364 * GIB)
+        (slice_dir / "memory.stat").write_text(
+            f"anon {57 * GIB}\nfile {279 * GIB}\nactive_file {126 * GIB}\n"
+            f"inactive_file {151 * GIB}\nshmem {2 * GIB}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        # 370 - (364 - 151); active cache and anon stay counted as used.
+        assert sa._agents_slice_available_gb() == pytest.approx(157.0)
+
+    def test_cache_read_ahead_of_usage_never_exceeds_the_ceiling(
+        self, tmp_path, monkeypatch, no_container_cgroup
+    ):
+        slice_dir = _fabricate_slice(tmp_path, high=20 * GIB, maximum=26 * GIB, current=1 * GIB)
+        (slice_dir / "memory.stat").write_text(f"inactive_file {2 * GIB}\n", encoding="utf-8")
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        assert sa._agents_slice_available_gb() == pytest.approx(20.0)
+
+    def test_unreadable_stat_counts_all_usage(self, tmp_path, monkeypatch, no_container_cgroup):
+        slice_dir = _fabricate_slice(tmp_path, high=20 * GIB, maximum=26 * GIB, current=19 * GIB)
+        (slice_dir / "memory.stat").write_text("inactive_file garbage\n", encoding="utf-8")
+        monkeypatch.setattr(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path))
+        assert sa._agents_slice_available_gb() == pytest.approx(1.0)
+
     def test_max_sentinel_on_high_falls_back_to_hard_ceiling(
         self, tmp_path, monkeypatch, no_container_cgroup
     ):

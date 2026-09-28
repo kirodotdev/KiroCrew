@@ -1008,6 +1008,38 @@ class TestCgroupAvailable:
         monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
         assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
 
+    def test_v2_inactive_page_cache_is_headroom(self, cgroup_files, monkeypatch) -> None:
+        """A container whose usage is mostly cold page cache is not full: the
+        kernel drops inactive file pages before it OOM-kills anything."""
+        import kiro_crew.subagent as sub
+
+        gib = 1024**3
+        vals = {
+            "/sys/fs/cgroup/memory.max": 16 * gib,
+            "/sys/fs/cgroup/memory.current": 15 * gib,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        cgroup_files["/sys/fs/cgroup/memory.stat"] = (
+            f"anon {3 * gib}\nfile {12 * gib}\nactive_file {2 * gib}\n"
+            f"inactive_file {10 * gib}\n"
+        )
+        assert sub._cgroup_available_gb() == pytest.approx(11.0, abs=0.01)
+
+    def test_v1_reads_the_hierarchical_inactive_cache(self, cgroup_files, monkeypatch) -> None:
+        import kiro_crew.subagent as sub
+
+        gib = 1024**3
+        vals = {
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": 8 * gib,
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": 7 * gib,
+        }
+        monkeypatch.setattr(sub, "_read_int_file", lambda p: vals.get(p))
+        # v1's local ``inactive_file`` excludes children; only the total counts.
+        cgroup_files["/sys/fs/cgroup/memory/memory.stat"] = (
+            f"inactive_file {1 * gib}\ntotal_inactive_file {4 * gib}\n"
+        )
+        assert sub._cgroup_available_gb() == pytest.approx(5.0, abs=0.01)
+
     @pytest.mark.parametrize("used_gb", [2, 3])
     def test_nested_exhaustion_blocks_admission(self, monkeypatch, cgroup_files, used_gb):
         monkeypatch.setattr(subagent.platform_compat, "IS_LINUX", True)
