@@ -128,6 +128,15 @@ export function compareVersions(a: string, b: string): number | null {
   return compareTails(left.tail, right.tail)
 }
 
+/** True when `a` and `b` share the same numeric release core (`0.8.0` vs `0.8.0-insider.1`). */
+function sameReleaseCore(a: Parsed, b: Parsed): boolean {
+  const width = Math.max(a.core.length, b.core.length)
+  for (let i = 0; i < width; i++) {
+    if ((a.core[i] ?? 0) !== (b.core[i] ?? 0)) return false
+  }
+  return true
+}
+
 /**
  * True when a changelog section for *section* describes something this build has
  * and the reader has not been shown: `lastSeen < section <= running`.
@@ -137,12 +146,35 @@ export function compareVersions(a: string, b: string): number | null {
  * dev build was shown the last released line's notes. The lower one is what makes
  * the modal a diff rather than an archive.
  *
+ * ## The prerelease-of-its-own-release case
+ *
+ * `compareVersions` follows SemVer: a release outranks every prerelease of
+ * itself, so `compareVersions('0.8.0', '0.8.0-insider.1') === 1`. A strict
+ * `section <= running` upper bound therefore SUPPRESSES the `[0.8.0]` section on
+ * a `0.8.0-insider.1` build — the notes for the very release the reader is on —
+ * and the newest section that qualifies is `[0.7.1]` instead. That is the
+ * reported defect (an insider stepping 0.7.x -> 0.8.0-insider.N sees the 0.7.x
+ * notes front-and-center, 0.8.0 hidden below the fold).
+ *
+ * The fix relaxes the upper bound for EXACTLY that case: a section whose release
+ * core equals the running build's core is in-build even when it is the release
+ * and the running build a prerelease of it. It does NOT admit a future release —
+ * `[0.9.0]` on `0.8.0-insider.1` differs in core, so `section <= running` still
+ * governs and still excludes it.
+ *
  * Returns false whenever a comparison is unorderable, so a version spelling
  * nobody anticipated shows NO notes instead of the wrong ones.
  */
 export function isNewSection(section: string, lastSeen: string, running: string): boolean {
+  const parsedSection = parse(section)
+  const parsedRunning = parse(running)
+  if (!parsedSection || !parsedRunning) return false
   const withinBuild = compareVersions(section, running)
-  if (withinBuild === null || withinBuild > 0) return false
+  if (withinBuild === null) return false
+  // Upper bound: the section is at or below the running build, OR it is the
+  // release of the very line the running build is a prerelease of (same core).
+  const inBuild = withinBuild <= 0 || sameReleaseCore(parsedSection, parsedRunning)
+  if (!inBuild) return false
   const afterSeen = compareVersions(section, lastSeen)
   return afterSeen !== null && afterSeen > 0
 }
