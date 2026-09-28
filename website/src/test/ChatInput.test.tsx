@@ -673,7 +673,23 @@ describe('ChatInput', () => {
   })
 
   describe('prompt history', () => {
-    const sent = ['first', 'second', 'third']
+    const sent = [{ text: 'first' }, { text: 'second' }, { text: 'third' }]
+
+    it('keeps the recalled prompt when older history loads in front mid-browse', () => {
+      const onChange = vi.fn()
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third" />)
+      ta.setSelectionRange(0, 0)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).toHaveBeenLastCalledWith('second')
+      const grown = [{ text: 'older-a' }, { text: 'older-b' }, ...sent]
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={grown} value="second" />)
+      ta.setSelectionRange(0, 0)
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).toHaveBeenLastCalledWith('first')
+    })
 
     it('ArrowUp on empty input recalls newest message', () => {
       const onChange = vi.fn()
@@ -811,7 +827,7 @@ describe('ChatInput', () => {
 
     it('ArrowDown in history mode is ignored when caret is not at end', () => {
       const onChange = vi.fn()
-      const multiLine = ['first', 'line1\nline2', 'third']
+      const multiLine = [{ text: 'first' }, { text: 'line1\nline2' }, { text: 'third' }]
       const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={multiLine} value="" />)
       const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
       fireEvent.keyDown(ta, { key: 'ArrowUp' })

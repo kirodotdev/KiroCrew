@@ -256,6 +256,7 @@ import ModelEffortDropdown from '../components/ModelEffortDropdown'
 import ChatInput from '../components/ChatInput'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { promptHistoryFromMessages, samePromptHistory, type PromptHistoryItem } from '../components/composerPromptHistory'
 import SessionControlHost from '../components/SessionControlHost'
 import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
 import type { ChatFolder } from '../types'
@@ -730,7 +731,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // `messages` gets a new reference on every streaming chunk; preserve the
   // previous array when user-message content is unchanged so `sentMessages`
   // stays referentially stable and doesn't re-run downstream effects.
-  const sentMessagesRef = useRef<string[]>([])
+  const sentMessagesRef = useRef<PromptHistoryItem[]>([])
   const sentMessagesSlotRef = useRef<string | null>(null)
   // Per-slot timestamp (ms) of the last soft-stop press, used to arm the
   // force-kill. A force press (second click while soft_pending) arriving
@@ -740,13 +741,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // press against another slot's timestamp.
   const softStopAtMapRef = useRef<Map<string, number>>(new Map())
   const sentMessages = useMemo(() => {
-    const out: string[] = []
-    for (const m of messages) {
-      if (m.role !== 'user') continue
-      const text = m.rawText ?? m.content
-      if (!text || text === out[out.length - 1]) continue
-      out.push(text)
-    }
+    const out = promptHistoryFromMessages(messages)
     // Reset the cached reference when switching slots — otherwise two
     // conversations with matching length+tail would share the prior array.
     if (sentMessagesSlotRef.current !== activeSlot) {
@@ -756,7 +751,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // Append-only within a slot — full element-wise compare (array is small).
     const prev = sentMessagesRef.current
-    if (prev.length === out.length && prev.every((v, i) => v === out[i])) {
+    if (samePromptHistory(prev, out)) {
       return prev
     }
     sentMessagesRef.current = out

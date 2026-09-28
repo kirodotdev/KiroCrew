@@ -71,6 +71,7 @@ import {
 import type { SendMode } from '../pages/chat/ChatSettings'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import type { ComposerControl } from './composerControl'
+import { livePromptHistoryCursor, stepPromptHistory, type PromptHistoryCursor, type PromptHistoryItem } from './composerPromptHistory'
 import {
   isRawPasteChord,
   clipboardFiles,
@@ -670,7 +671,7 @@ interface ChatInputProps {
   projectDetached?: boolean
   memoryMode?: string
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
-  sentMessages?: string[]
+  sentMessages?: PromptHistoryItem[]
   /** Authoritative automation record for this slot (if any). */
   onAutomationClick?: (open: boolean) => void
   automation?: AutomationRecord | null
@@ -2236,10 +2237,10 @@ function ChatInput({
    *  effect or event handler reads it. */
   const parkedRef = useRef(false)
 
-  // Prompt history navigation: -1 = draft (not in history), else index into sentMessages.
-  // Refs keep the handler stable across re-renders while preserving state between keystrokes.
-  const historyIdxRef = useRef(-1)
-  const draftRef = useRef('')
+  // Prompt history navigation: null = not browsing. The cursor names its entry
+  // (see composerPromptHistory.ts) so it survives `sentMessages` changing
+  // underneath it; a ref keeps it across re-renders between keystrokes.
+  const historyCursorRef = useRef<PromptHistoryCursor | null>(null)
   // Refs mirror frequently-changing props/state read from inside the keydown handler
   // so it doesn't re-create on every keystroke.
   const valueRef = useRef(value)
@@ -2506,12 +2507,9 @@ function ChatInput({
     }
     // Exit history mode when value diverges from the recalled message
     // (user edited it, or the send pipeline cleared it).
-    if (historyIdxRef.current !== -1 && value !== sentMessages?.[historyIdxRef.current]) {
-      historyIdxRef.current = -1
-      draftRef.current = ''
-    }
+    historyCursorRef.current = livePromptHistoryCursor(historyCursorRef.current, value)
     prevValueRef.current = value
-  }, [value, resetHeight, sentMessages])
+  }, [value, resetHeight])
 
   // ChatInput is one instance shared by every slot, so a switch would carry the
   // previous tab's menu over; an unsent draft never hits the clear above.
@@ -2520,6 +2518,8 @@ function ChatInput({
     setFilePickerOpen(false); setFileQuery('')
     setSkillPickerOpen(false); setSkillQuery('')
     setPathPickerOpen(false); setPathQuery('')
+    // Prompt-history browsing belongs to the slot it started in.
+    historyCursorRef.current = null
   }, [slotId])
 
   // Record undo snapshots as the controlled value changes.
@@ -3086,7 +3086,6 @@ function ChatInput({
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
     const ta = e.currentTarget
-    const len = sentMessages.length
     const cur = valueRef.current
     // After recall, place the caret where the next arrow press will re-engage
     // history immediately (↑ → start, ↓ → end). Deferred to next frame so the
@@ -3099,44 +3098,29 @@ function ChatInput({
         el.setSelectionRange(p, p)
       })
     }
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    const cursor = livePromptHistoryCursor(historyCursorRef.current, cur)
+    historyCursorRef.current = cursor
     if (e.key === 'ArrowUp') {
       // Only intercept when input is empty OR caret is collapsed at position 0.
       const atStart = ta.selectionStart === 0 && ta.selectionEnd === 0
       if (!atStart && cur !== '') return
-      const idx = historyIdxRef.current
-      if (idx === -1) {
-        // Entering history mode — save current draft (may be empty).
-        draftRef.current = cur
-        historyIdxRef.current = len - 1
-        onChange(sentMessages[len - 1])
-        moveCaretAfterRecall('start')
-      } else if (idx > 0) {
-        historyIdxRef.current = idx - 1
-        onChange(sentMessages[idx - 1])
-        moveCaretAfterRecall('start')
-      } else {
-        // Already at oldest — consume to avoid caret jumping in textarea.
-      }
-      e.preventDefault()
-    } else if (e.key === 'ArrowDown') {
-      const idx = historyIdxRef.current
-      if (idx === -1) return // not in history mode — let textarea handle
+    } else {
+      if (!cursor) return // not in history mode — let textarea handle
       // Only intercept when caret is at end (so multi-line edits still navigate within).
       const atEnd = ta.selectionStart === cur.length && ta.selectionEnd === cur.length
       if (!atEnd) return
-      if (idx < len - 1) {
-        historyIdxRef.current = idx + 1
-        onChange(sentMessages[idx + 1])
-        moveCaretAfterRecall('end')
-      } else {
-        // Past newest — restore draft and exit history mode.
-        historyIdxRef.current = -1
-        onChange(draftRef.current)
-        draftRef.current = ''
-        moveCaretAfterRecall('end')
-      }
-      e.preventDefault()
     }
+    const step = stepPromptHistory(sentMessages, cursor, e.key === 'ArrowUp' ? 'older' : 'newer', cur)
+    if (!step) return
+    historyCursorRef.current = step.cursor
+    // ↑ on the oldest entry resolves to the text already shown: consume the
+    // key so the caret does not jump, but leave the value alone.
+    if (step.cursor === null || step.text !== cur || cursor === null) {
+      onChange(step.text)
+      moveCaretAfterRecall(e.key === 'ArrowUp' ? 'start' : 'end')
+    }
+    e.preventDefault()
   }, [fireComposer, onChange, sentMessages, sendOnEnter, pasteBlocks, onPasteBlocksChange, connected, ime, optimizePrompt, promptOptimizer])
 
   /** Intercept clipboard paste — files go to upload path, big text gets collapsed into a token. */
@@ -4451,6 +4435,7 @@ function ChatInput({
                 onReady={markLexicalReady}
                 onSelectionChange={publishLexicalSelection}
                 sentMessages={sentMessages}
+                historyScope={slotId}
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
                 placeholder={activePlaceholder}
                 disabled={disabled}
