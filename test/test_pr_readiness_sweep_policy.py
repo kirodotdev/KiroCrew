@@ -30,5 +30,10 @@ def test_concurrency_never_cancels_the_incumbent_run() -> None:
     alone collapses overlap (GitHub keeps at most one pending run per group);
     the incumbent must never be a cancellation target."""
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    assert doc["concurrency"]["group"] == "pr-readiness-sweep"
+    # One group per scope (delivery / full), each fixed for its trigger, so a
+    # slow full scan never queues a delivery tick behind it -- and neither
+    # group cancels its incumbent.
+    assert doc["concurrency"]["group"] == (
+        "pr-readiness-sweep-${{ github.event_name == 'workflow_run' && 'delivery' || 'full' }}"
+    )
     assert doc["concurrency"]["cancel-in-progress"] is False

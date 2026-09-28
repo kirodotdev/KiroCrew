@@ -22,6 +22,13 @@ name: PR Readiness Self-Heal Sweep
 # verdict (including `pending` again, harmlessly, if a long CI run is genuinely
 # still in flight) and stops.
 #
+# The scan has two SCOPES, picked by trigger (SCAN_MODE below). A delivery tick
+# reads every open pull request's verdict on a light page and the check
+# evidence only for the pull requests that can be stale on evidence; the
+# scheduled tick reads every rollup. Reading every rollup on every tick took
+# 261 s at 625 open pull requests -- longer than the cadence, so each tick
+# queued behind the last and a completed lane waited two sweeps, not one.
+#
 # What the event path still carries is the one signal completions cannot: a
 # lane going BACK to running. `pr-readiness.yml` keeps `workflow_run:
 # in_progress` and answers it with a write-only `pending`, so a re-run of a
@@ -150,7 +157,16 @@ concurrency:
   # (The old "the sweep is idempotent, so cancelling an in-flight run is safe"
   # reasoning considered only an executing run and missed that queued runs are
   # cancellation targets too.)
-  group: pr-readiness-sweep
+  #
+  # One group PER SCOPE (see SCAN_MODE below). The full scan reads every open
+  # pull request's rollup and takes minutes; the delivery scan is the path a
+  # completed lane reaches the verdict by and takes about one. In one group
+  # every delivery tick that arrived during a full scan would queue behind it,
+  # so the slow scope would set the fast scope's latency. Both dispatch the
+  # same idempotent recompute, which readiness's own `pr+sha` group collapses,
+  # so the two running side by side cost one duplicate dispatch and nothing
+  # else.
+  group: pr-readiness-sweep-${{ github.event_name == 'workflow_run' && 'delivery' || 'full' }}
   cancel-in-progress: false
 
 jobs:
@@ -189,11 +205,48 @@ jobs:
           # set in a single sweep, so a genuine backlog drains in one pass; it
           # exists only to bound a single sweep against a pathological run.
           MAX_DISPATCH: "200"
+          # Which scope the scan reads -- see the scanner's --mode and its
+          # `_is_candidate`. `delivery` reads every open pull request's VERDICT
+          # on a light page (100 a page, 7 pages, 19 s measured at 625 open) and
+          # the check evidence only for the ones that can be stale on evidence:
+          # every pending, a terminal verdict on a pull request active inside
+          # ACTIVITY_WINDOW_MINUTES, and a green verdict whose rollup aggregate
+          # is red. Measured against the live repository: 117 candidates, 59 s,
+          # where reading every rollup took 25 pages and 261 s -- longer than
+          # the cadence, so every delivery tick queued behind the last. `full`
+          # reads every rollup. The one shape only `full` observes is a re-run
+          # on a QUIET pull request whose `in_progress` event GitHub also
+          # dropped (readiness holds `pending` on that event, which would have
+          # made the head a candidate), so the schedule runs `full` and the
+          # Fast Gate completion, which is the delivery path and the majority
+          # of ticks, runs `delivery`. A manual dispatch is a rescue and reads
+          # everything.
+          SCAN_MODE: ${{ github.event_name == 'workflow_run' && 'delivery' || 'full' }}
+          # How long after its last activity a terminal verdict's pull request
+          # is still worth a disposition-comment read (mode 5) and, in the
+          # delivery scan, an evidence read. Shared by the scanner and the jq
+          # program below so the two cannot disagree about who is a candidate.
+          #
+          # The bound exists because "the pull request moved since the verdict"
+          # is true of nearly every old red PR -- anything bumps `updatedAt`,
+          # a label, a bot comment, a review -- and it was measured true for
+          # 478 of 566 terminal verdicts at once. Each cost a paginated REST
+          # comment read, on the installation pool the lanes share, EVERY
+          # sweep: 500-900 requests and about three minutes a tick, for a mode
+          # that fires a handful of times a day. A disposition edit is itself
+          # the activity that bumps `updatedAt`, so every sweep inside the
+          # window sees it, the first one dispatches, and the republished
+          # verdict is newer than the edit, so the ones after find nothing --
+          # the read is now paid at most window/cadence times per activity,
+          # not forever. Six hours is 72 cadences and ten times the longest
+          # scheduler delay measured (35 minutes).
+          ACTIVITY_WINDOW_MINUTES: "360"
         run: |
           set -euo pipefail
 
           now_epoch="$(date -u +%s)"
           stale_seconds=$(( STALE_MINUTES * 60 ))
+          activity_window_seconds=$(( ACTIVITY_WINDOW_MINUTES * 60 ))
 
           # How far BEFORE a readiness verdict's publication a check-run may have
           # completed and still be evidence the verdict did not see.
@@ -327,8 +380,12 @@ jobs:
           # with a `::warning::` (a cursor comes only from the page that failed),
           # so the sweep runs less completely rather than not at all -- the same
           # trade the concurrency block above already takes.
+          #
+          # `--mode` picks the scope (SCAN_MODE above); the window is the same
+          # number the jq program gates mode 5 on.
           scan="$(python3 .github/scripts/readiness_sweep_scan.py \
-            --repo "$REPO" --status-context "$STATUS_CONTEXT")"
+            --repo "$REPO" --status-context "$STATUS_CONTEXT" \
+            --mode "$SCAN_MODE" --activity-window-seconds "$activity_window_seconds")"
 
           total=0
           [ -z "$scan" ] || total="$(printf '%s\n' "$scan" | wc -l | tr -d ' ')"
@@ -355,14 +412,16 @@ jobs:
           # old enough to ask whether it is the read-failure class), or
           # rest:disposition (a terminal verdict whose PR moved since, to ask
           # whether a disposition record did). Every field but the last is
-          # non-empty by construction (`evidence` is complete|partial, a missing
-          # stamp is "-"): bash `read` on a tab IFS collapses an EMPTY field into
-          # its neighbour and shifts everything after it one column left.
+          # non-empty by construction (`evidence` is complete|partial|unread, a
+          # missing stamp is "-"): bash `read` on a tab IFS collapses an EMPTY
+          # field into its neighbour and shifts everything after it one column
+          # left.
           classified="$(jq -rs \
             --argjson now "$now_epoch" \
             --argjson stale "$stale_seconds" \
             --argjson lag "$publish_lag_seconds" \
-            --argjson min_age "$pending_min_age_seconds" '
+            --argjson min_age "$pending_min_age_seconds" \
+            --argjson window "$activity_window_seconds" '
             def epoch: if . == null or . == "" then 0 else (try fromdateiso8601 catch 0) end;
             .[]
             | .number as $number
@@ -407,9 +466,24 @@ jobs:
             # anyway, because
             # missing evidence can only fail to prove a verdict stale, never
             # invent staleness -- the worst case is a rescue delayed one tick.
+            # UNREAD is different: the delivery scan asked for no evidence on
+            # this pull request at all (an unpublished verdict, or a terminal
+            # one on a pull request nobody touched inside the window), so
+            # nothing is missing and nothing is reported -- the arms below
+            # decide it on the age or activity of the pull request itself, and every
+            # evidence test reads as "none" exactly as it would with no checks.
             | (.newest_completed_check_at | epoch) as $newest
             | (.newest_failed_check_at | epoch) as $newest_fail
-            | (if .checks_complete == true then "complete" else "partial" end) as $evidence
+            | (if .checks_requested == false then "unread"
+               elif .checks_complete == true then "complete"
+               else "partial" end) as $evidence
+            # Whether the pull request itself moved after the verdict AND
+            # recently enough to be worth a comment read -- the mode 5 gate,
+            # bounded by ACTIVITY_WINDOW_MINUTES for the reason given at that
+            # variable. The scanner applies the same test to pick its evidence
+            # candidates, so a pull request this says "read" for is one whose
+            # evidence was read.
+            | ($pr_updated > $updated and $pr_updated >= ($now - $window)) as $moved
             | (
               if $state == "__unpublished__" then
                 # Age from the last activity of the PR itself, so a brand-new PR whose
@@ -471,12 +545,13 @@ jobs:
                 # absorbs same-second ordering. Failing that, a disposition
                 # record posted or edited after the verdict changes it too, and
                 # readiness has no issue_comment trigger; that read costs a REST
-                # request and is made only when the PR itself moved since.
+                # request and is made only when the PR itself moved since, and
+                # recently (see $moved).
                 if $updated == 0 then {v: "skip", n: ""}
                 elif $newest > ($updated + 5) then
                   {v: "dispatch",
                    n: "failure published at \($updated_at) but a check completed later at \(.newest_completed_check_at)"}
-                elif $pr_updated > $updated then {v: "rest:disposition", n: ""}
+                elif $moved then {v: "rest:disposition", n: ""}
                 else {v: "skip", n: ""} end
               elif ($state == "success" or $state == "error") then
                 # The mechanism of mode 2 is direction-blind: a job re-run that flips a
@@ -492,7 +567,7 @@ jobs:
                 elif $newest_fail > ($updated + 5) then
                   {v: "dispatch",
                    n: "\($state) published at \($updated_at) but a check FAILED later at \(.newest_failed_check_at)"}
-                elif $pr_updated > $updated then {v: "rest:disposition", n: ""}
+                elif $moved then {v: "rest:disposition", n: ""}
                 else {v: "skip", n: ""} end
               # Any state this sweep does not model is left to a real event.
               else {v: "skip", n: ""} end
