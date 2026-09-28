@@ -2810,6 +2810,70 @@ React 18 + TypeScript + Vite 8 + Redux Toolkit + React Router v7 + Tailwind CSS 
 - `DiffBlock.tsx` — dedicated diff renderer with a single colored line-number gutter (adds/context show the new number, deletions the old; the number carries the add/del color and changed rows get a 2px inset edge bar — no `+`/`-` sign column). Raw `@@` hunk headers are not rendered: between hunks a slim "N unchanged lines" separator appears instead — a pill-shaped count bubble flanked by zigzag rules (the zigzag is the `.zigzag-rule` CSS mask over `currentColor`, no SVG element in TSX). Per-file parse state resets at `---`/`+++`/`diff --git` headers so multi-file patches never fabricate a cross-file separator, and the first hunk renders nothing. Unified and split views with forced line wrap (`whitespace-pre-wrap break-words` — these surfaces are width-constrained, so no horizontal scroll; the Monaco editor diff is the full-width surface), file meta headers, "Copy patch" button (raw patch, signs intact), provisional "generating diff…" indicator for incomplete streaming blocks. Supports both standard unified diff and kiro-cli `+N:`/`-N:` format. The Changes panel's `PullRequestPanel.tsx` `DiffView` renders through the same `PierrePatch` component, so the gutter looks alike, but the two title their files differently — `DiffBlock` draws its own header row per file (`PlainFilePairHeader`, named, counted and — added / deleted / binary / executable-bit change — worded by `splitPatchSections` in `utils/diffLineCounts.ts`; a multi-file patch opens with a card-level row carrying the file count, the whole-card totals and the patch-wide controls; Pierre's file header is disabled and the patch reaches Pierre untouched), `DiffView` through `withUnifiedPatchHeaders` in `components/unifiedPatchHeaders.ts`.
 - `TypewriterText.tsx` — animated title reveal
 
+**Chat table width**: top-level assistant Markdown tables use the transcript pane's
+available width minus a 40px band at each pane edge (never narrower than the
+message row's own 16px gutters). Prose and the composer keep
+the configured reading width. `TranscriptScrollShell` publishes the scroller's
+`clientWidth` as the inherited `--chat-pane-width` custom property
+(`PANE_WIDTH_PROPERTY`) from its own ResizeObserver, undebounced, and the table
+rules under `.chat-container` size against it. The scroller must not establish a
+containing block that can trap `position: fixed` descendants (no query container
+or `contain` on it): `McpAppFrame` promotes its full-screen sheet in place, and a
+containing scroller would centre it on the pane and clip it. Off-screen row measurement inherits the same property
+because the measure farm renders inside the scroller; a host that does not
+publish it falls back to ordinary sizing. Only the table-bearing message wrappers
+release horizontal clipping; `flow-root` preserves bubble margin containment and
+Raw-view height measurement. Tables inside quotations or lists, user-message
+tables, and standalone Markdown keep their local bounds. Wide tables scroll inside
+their own positioned wrapper on narrow panes, so absolute screen-reader copy
+status spans remain inside the table's scroll area rather than expanding the
+transcript's scroll width. Breakout changes a table's width only, never
+how its inline code wraps: cells keep the message's own `.msg-content
+:not(pre)>code` rule, so on a phone an identifier pill wraps inside its cell as
+it does in prose instead of pushing its column past the pane edge with no scroll
+cue. A breakout table stops 80px short of the pane width — 40px from each pane
+edge, the band `TurnNavigationMinimap` needs free (`MIN_GUTTER_PX`) and paints
+its button into — and is centred on the column. The clearance is in px like the
+constant, so a browser's smaller root font cannot shrink it under the band.
+The rail therefore stays static on either edge while tables scroll past: it
+probes only the content column, never tables, so there is no per-table yield, no
+scrollbar toggling and no pane-width (height-cache bucket) change as a table
+enters or leaves view. The main page and bare-session transcript height scope is
+`<slot>:tables1:w<bucket>`. `VirtualTranscript` recognizes only the shipped
+`pane:<slot>`, `side:<slot>` and `embed:<slot>` forms with a nonempty, colon-free
+slot, and uses `<slot>:tables1:<host>:w<bucket>` for their heights. The raw slot
+comes first so `storageGc` retains live caches and deletes every host partition
+for exactly that slot; the host still separates different surfaces' measurements.
+Other caller IDs remain opaque and keep `<sessionId>:tables1:w<bucket>` rather
+than guessing their owner. The namespace separates known host partitions from
+opaque caller IDs: `pane:slot` uses `slot:tables1:pane:w<bucket>`, whereas the
+opaque `slot:pane` uses `slot:pane:tables1:w<bucket>`. Without that segment both
+would write `slot:pane:w<bucket>`. Valid live-slot caches survive startup GC;
+session deletion still removes their height partitions. The `sessionId` passed
+to `useVirtualChat`, and thus saved scroll-anchor identity, never changes. The
+16px width buckets are uncapped because table height can change above the
+prose-width cap. Both hosts share `useTranscriptWidth`, bound to the live
+scroller element rather than to its ref:
+the shell hands its element to the hook on mount and `null` on unmount, so a
+host that mounts before any shell exists (the main page's welcome hero) or
+replaces its shell on the same stable ref observes exactly the mounted element.
+Cache-scope updates settle for 200ms, while each measurement
+write checks that the live pane width and the published table width both match
+that scope; with no bound scroller every write is rejected. Observer callbacks, ref seeds and farm records reject transition
+measurements rather than flushing new-width heights into the old-width cache.
+The gate suppresses cache writes only: a re-wrap above the reader is still
+compensated exactly once, as the residual between where the reader's row sits
+after layout and where it was last seen (its bottom held when it re-wraps
+itself), so an engine whose native scroll anchoring already moved scrollTop
+before the observer fired is not paid a second time and one with no anchoring
+is paid in full; trailing-footer growth still follows a
+bottom-parked reader without moving a reader who released follow.
+A scope change remeasures mounted rows from live DOM without waiting for another
+resize notification and announces them in the same commit's layout phase, not
+through the debounce; the reader's row, captured render-phase before the cold
+owner's estimate spacer committed, is paid back in the re-render that follows.
+Unmounted rows retain only their own width's measurements.
+
 **Syntax highlighting** — `highlight.js` (tree-shaken: js/ts/py/bash/json/yaml/html/css/sql/rust/java/md). Custom One Dark / One Light theme in `index.css` using design tokens. `hljs.highlight()` for known languages, `hljs.highlightAuto()` for unknown. Output sanitized via DOMPurify.
 
 **Pierre worker cache identity**: code and diff surfaces load the portable worker through Vite's `?worker&url` import in `website/src/pierre/PierreImpl.tsx`, then add the stable `csp=wasm-v1` query parameter before construction. An immutable HTTP cache retains response headers as well as bytes; a worker cached before the gateway allowed `wasm-unsafe-eval` still enforces that old CSP even after the page and gateway upgrade. The library bundle's bytes and hash need not change when the selected engine or server policy changes. The versioned request obtains the current headers without clearing cookies, drafts, or other cached assets, and every retry shares the same cache key. The gateway policy and bounded WASM engine are unchanged; JavaScript `unsafe-eval` remains disallowed.

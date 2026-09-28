@@ -99,6 +99,8 @@ export function useShiftCapture<T>(ctx: {
   items: T[]
   getKey: (item: T, index: number) => string
   sessionId: string
+  /** The caller's height scope (width bucket); TRIGGER 7 keys on it changing. */
+  heightScopeKey: string | undefined
   itemCount: number
   /** The PROP, not its ref -- see the head-page-out note below. */
   onTopReached: (() => void) | undefined
@@ -113,7 +115,7 @@ export function useShiftCapture<T>(ctx: {
   follow: Pick<FollowState, 'stickRef'>
 }): ShiftCapture {
   const {
-    items, getKey, sessionId, itemCount, onTopReached, windowRange, windowRangeRef,
+    items, getKey, sessionId, heightScopeKey, itemCount, onTopReached, windowRange, windowRangeRef,
     scrollerRef, elIndexRef, itemsRef, getKeyRef, getStableIdRef, anchorIdOf,
   } = ctx
   const { stickRef } = ctx.follow
@@ -161,13 +163,15 @@ export function useShiftCapture<T>(ctx: {
   const heightAnchorPendingRef = useRef<{ cands: { key: string; top: number }[]; at: number; scrollTop: number } | null>(null)
 
   /**
-   * ONE compensation routine, SIX triggers, ONE capture point.
+   * ONE compensation routine, SEVEN triggers, TWO slots (see TRIGGER 7).
    *
    *   TRIGGER 1 — prepend (load-older history): every index shifts up, so
    *     pre-existing rows move down by the inserted height.
-   *   TRIGGER 2 — upward window shift (scroll recompute / top-sentinel
-   *     expansion): rows mount above the viewport, and they are re-measured
-   *     from the flat estimate, so the content above the reader changes height.
+   *   TRIGGER 2 — window shift (scroll recompute / top-sentinel expansion):
+   *     rows mount above the viewport and are re-measured from the flat
+   *     estimate, or unmount above it and are replaced by a spacer the tree
+   *     prices from stale heights, so the content above the reader changes
+   *     height either way.
    *   TRIGGER 3 — tail append (a new message arrives while the reader is
    *     scrolled up): nothing is inserted above them, but the growth re-syncs
    *     the offset tree, and every row that has never been measured is
@@ -194,8 +198,13 @@ export function useShiftCapture<T>(ctx: {
    *     slot for an unrelated later commit — the stranded-anchor hazard the
    *     render-phase capture exists to remove. It participates in the height
    *     RETIREMENT below on the same commit.
+   *   TRIGGER 7 — WIDTH-SCOPE swap (the settled width bucket changes): the
+   *     height owner constructs a cold index during the render and the
+   *     before-spacer is re-priced from its estimates in the same commit. This
+   *     one rides the HEIGHT-SYNC slot (heightAnchorPendingRef) and its
+   *     consumer, not shiftAnchorRef — see its capture below.
    *
-   * All six are "the height above the reader changed"; the correction is
+   * All seven are "the height above the reader changed"; the correction is
    * identical, so they share this slot and the single consumer below. A parallel
    * path would fight this one for `scrollTop`, which is why append folds in here
    * rather than getting an anchor slot of its own.
@@ -291,12 +300,13 @@ export function useShiftCapture<T>(ctx: {
    *  index, misnaming the anchor by the inserted count. */
   const prependPrevRef = useRef<{
     session: string
+    heightScopeKey: string | undefined
     count: number
     firstKey: string | null
     items: T[]
     getKey: (it: T, i: number) => string
   }>({
-    session: sessionId, count: itemCount, firstKey: null, items, getKey,
+    session: sessionId, heightScopeKey, count: itemCount, firstKey: null, items, getKey,
   })
   const prependPrev = prependPrevRef.current
   const prependFirstKey = itemCount > 0 ? getKey(items[0], 0) : null
@@ -583,23 +593,36 @@ export function useShiftCapture<T>(ctx: {
   // makes interleaved renders CUMULATIVE: attempts A->B and A->C within one
   // commit both compare against A, so the committed capture spans every
   // page that landed, not just the last attempt's slice.
-  const prependMirrorNext = { session: sessionId, count: itemCount, firstKey: prependFirstKey, items, getKey }
+  const prependMirrorNext = { session: sessionId, heightScopeKey, count: itemCount, firstKey: prependFirstKey, items, getKey }
   useLayoutEffect(() => {
     prependPrevRef.current = prependMirrorNext
     spliceBumpLatchRef.current = false
   })
 
   // TRIGGER 2 capture. Read BEFORE the mirror advances, so the comparison is
-  // against the range that is still on screen. Keyed on the range having
-  // ACTUALLY moved up in committed state — not on a shift being scheduled —
+  // against the range that is still on screen. Keyed on the range's START
+  // having ACTUALLY moved in committed state — not on a shift being scheduled —
   // which is what makes a no-op window commit incapable of stranding an anchor.
   // A re-base in flight owns the slot: part 1 moving the range UP (a negative
   // displacement) reads here exactly like a window shift, and capturing again
   // would replace the prepend anchor with a row of the not-yet-corrected frame.
+  //
+  // EITHER direction. Rows mounting above the reader are re-priced from the
+  // estimate (the upward case this trigger was written for); rows UNMOUNTING
+  // above the reader are replaced by a spacer priced from the tree, and that
+  // price equals the DOM they replace only while the tree is current. During
+  // a width transition it is not: the gate keeps the old width's heights out
+  // of reach of the new width's re-wraps, so a scroll recompute that walks
+  // the start down hands the reader a spacer short by every re-wrap it swept
+  // up (probe, anchoring off: three table rows +320 each unmounted in one
+  // recompute, the reader's row 960px higher with nothing to correct it —
+  // Chromium's native anchoring absorbed the same shift, WebKit has none).
+  // A downward shift over current prices measures a zero delta and writes
+  // nothing, so the consumer's cost there is the read alone.
   if (
     !anchorCapturedThisRender &&
     shiftStageRef.current !== 'rebased' &&
-    windowRange.start < windowRangeRef.current.start &&
+    windowRange.start !== windowRangeRef.current.start &&
     !stickRef.current
   ) {
     const shiftEl = scrollerRef.current
@@ -667,6 +690,19 @@ export function useShiftCapture<T>(ctx: {
     // whole 120ms re-measure batches went uncompensated — a controlled
     // fixed-velocity probe saw a 749px one-frame lurch with every anchor
     // counter silent.
+    //
+    // An UNCONSUMED capture is kept, not overwritten. The consumer clears the
+    // slot in the commit each announcement schedules, so a capture is still
+    // pending here only when both land in ONE commit: TRIGGER 7 captures the
+    // reader's row against the last committed frame in the swap's render, and
+    // the mounted-row reseed announces the cold owner's first prices in that
+    // commit's layout phase -- against a DOM showing the cold spacer. Re-
+    // capturing there would baseline on that intermediate frame and
+    // pay back only the reseed's move, leaving the swap's own move uncorrected
+    // (probe: row 41 -> 111). The earlier capture is the painted one, and its
+    // scrollTop guard (heightAnchorStillUsable) still drops it if the reader
+    // moved in between.
+    if (heightAnchorPendingRef.current) return
     if (!stickRef.current && scrollerRef.current) {
       const a = captureTopAnchorFrom(scrollerRef.current, elIndexRef.current.entries(), (i) => {
         const it = itemsRef.current[i]
@@ -690,6 +726,44 @@ export function useShiftCapture<T>(ctx: {
       heightAnchorPendingRef.current = { cands: [], at: performance.now(), scrollTop: scrollerRef.current.scrollTop }
     }
   }, [scrollerRef, captureAnchorCands, stickRef, elIndexRef, itemsRef, getKeyRef])
+
+  // TRIGGER 7 capture -- the WIDTH-SCOPE swap. Every other geometry change
+  // that can move the reader announces through HeightIndex.syncAndAnnounce,
+  // whose beforeNotify is the capture above. The scope swap is the one that
+  // does not: the height owner constructs the COLD index for the new width
+  // during this very render and the same render reads the before-spacer from
+  // it, so the spacer goes from the old width's measured prefix to the new
+  // scope's flat estimates in one commit while scrollTop stays put (probe:
+  // same window, spacerBefore 9353 -> 3500, scrollTop unchanged, one blank
+  // frame, then a row 70 places away under the reader). The rows above the
+  // reader legitimately have no height at the new width -- that is the
+  // bucket working -- so the discontinuity cannot be measured away, only
+  // ANCHORED. Same slot and same consumer as the height sync. The
+  // mounted-row reseed announces the cold owner's first prices in this
+  // commit's layout phase, so the consumer runs in the re-render that
+  // follows, re-reads the row against the reseeded spacer and pays the whole
+  // move -- last committed frame to reseeded frame -- in one write (probe:
+  // spacer +5784.5, scrollTop +5785, reader row held to the half-pixel). The
+  // reseed's own beforeNotify capture stands down for this pending one (see
+  // captureHeightSyncAnchor), which is what makes it exactly once. Without a
+  // `canMeasure` gate there is no reseed, and the swap commits unanchored as
+  // it always did -- both shipped hosts pass the gate.
+  //
+  // Gated to a SAME-SESSION swap over an unchanged list: the capture prices
+  // mounted nodes through the CURRENT items at the nodes' previous indices,
+  // which names the row a node shows only when no index changed hands. A true
+  // session switch replaces every row (the reading-position entry places the
+  // reader, not this), and a swap landing in the same commit as a list change
+  // is that change's trigger: its consumer measures the row's actual
+  // displacement, spacer included.
+  if (
+    heightScopeKey !== prependPrev.heightScopeKey &&
+    sameSessionCount &&
+    itemCount === prependPrev.count &&
+    !anyIndexMoved
+  ) {
+    captureHeightSyncAnchor()
+  }
 
   // A restore places the reader at an absolute offset priced against the
   // transcript that already contains any rows a pending capture was taken for,
@@ -720,8 +794,9 @@ export function useShiftCapture<T>(ctx: {
 }
 
 export interface ShiftCompensation {
-  /** The resize observer's same-fire correction for rows repriced above the fold. */
-  compensateAboveFold: (el: HTMLDivElement, aboveFoldReprice: number) => void
+  /** The resize observer's same-fire correction for rows repriced above the
+   *  fold. Returns whether it wrote. */
+  compensateAboveFold: (el: HTMLDivElement, aboveFoldReprice: number) => boolean
 }
 
 /** The consuming half, all pre-paint layout effects. Called after the height
@@ -756,10 +831,18 @@ export function useShiftCompensation<T>(ctx: {
   const { settleMeasuringRef } = ctx.reading
   const { recomputeWindow } = ctx.ops
 
-  const compensateAboveFold = useCallback((el: HTMLDivElement, aboveFoldReprice: number) => {
-    // Hold a RELEASED reader against a reprice above them, in this fire. A
-    // followed reader is deliberately excluded: the pin below already puts
-    // them at the bottom, and adding this would move them twice.
+  /** The owner whose announcements the height-sync consumer is paying -- an
+   *  identity change there is the width-scope swap, not a reprice. */
+  const heightOwnerSeenRef = useRef<HeightIndex>(offsetIndex)
+
+  const compensateAboveFold = useCallback((el: HTMLDivElement, aboveFoldReprice: number): boolean => {
+    // Hold a RELEASED reader against a reprice above them, in this fire. The
+    // amount is the residual the measurement owner computed against the
+    // reader's row's last seen position (see measureResizeEntries), so it is
+    // whatever the engine's native anchoring left undone -- the whole batch
+    // where there is none. A followed reader is deliberately excluded: the
+    // pin below already puts them at the bottom, and adding this would move
+    // them twice.
     //
     // This runs BEFORE the rail-settle deferral because it is not part of the
     // write storm that deferral exists to hold back: it is one write per
@@ -770,7 +853,9 @@ export function useShiftCompensation<T>(ctx: {
     // which fights an absolute placement rather than preserving it.
     if (shiftCompensationAllowed({ stick: stickRef.current, settleMeasuring: settleMeasuringRef.current }) && Math.abs(aboveFoldReprice) > 0.5) {
       writeScrollTop(el, el.scrollTop + aboveFoldReprice, 'auto', 'pin', 'abovefold')
+      return true
     }
+    return false
   }, [writeScrollTop, stickRef, settleMeasuringRef])
 
   /**
@@ -855,7 +940,7 @@ export function useShiftCompensation<T>(ctx: {
   }, [windowRange, rebaseScheduledRef, shiftStageRef])
 
   /**
-   * Part 2 — the single consumer for ALL SIX triggers: re-read the anchor row in
+   * Part 2 — the single consumer for TRIGGERS 1-6: re-read the anchor row in
    * the shifted DOM and move scrollTop by however far it travelled, which holds
    * the user's place whatever mix of inserted rows and re-estimated heights
    * caused the shift.
@@ -987,7 +1072,56 @@ export function useShiftCompensation<T>(ctx: {
   // call that mutates the tree, so there is no bump site to miss. It is also a
   // real subscribed value rather than a token invisible to tooling, which is why
   // no exhaustive-deps exemption is needed here any more.
+  //
+  // TRIGGER 7 (the width-scope swap) captures in the swap's own render but is
+  // NOT paid in the swap's commit. That commit renders the cold owner's
+  // flat-estimate spacer, and the mounted-row reseed (useMeasurementScopeReseed)
+  // announces the cold owner's first real prices in that commit's layout phase,
+  // so the re-render follows in the same task. Paying the swap against the cold
+  // spacer would move scrollTop into a coordinate system nothing else shares:
+  // the passive window recompute that follows the swap (and the scroll event
+  // the write itself raises) map that scrollTop through the now-reseeded tree
+  // and unmount the rows under the reader. Consuming in the announced commit
+  // instead measures the row's move from the last PAINTED geometry to the
+  // reseeded one in a single write. The owner's identity is a key so the swap
+  // commit is SEEN (and stood down from) even when the two owners' versions
+  // are equal -- see the guard at the top of the effect.
   useLayoutEffect(() => {
+    // An owner IDENTITY change is not an announcement. The swap commit reaches
+    // here because the two owners' versions happen to differ (a warm owner has
+    // announced at least once; a cold one never has), or -- when they are equal
+    // -- because `offsetIndex` is a key of this effect: either way the pending
+    // capture stays in the slot for the reseed's announced commit, which is
+    // where the geometry it must be paid against is committed.
+    if (heightOwnerSeenRef.current !== offsetIndex) {
+      heightOwnerSeenRef.current = offsetIndex
+      // The swap commit's cold document can be SHORTER than the reader's
+      // position: every unmounted row is priced at the flat estimate, so the
+      // engine clamps scrollTop to the new ceiling with no application write
+      // anywhere (both engines, at a matched depth: captured 35365, cold
+      // scrollHeight 22983 against a 900 viewport, scrollTop 22083). The
+      // reseed grows the document back but scrollTop stays at the ceiling, so
+      // the freshness guard below would read that drop as the reader's and
+      // drop the payment: one blank frame, then a row far above under the
+      // reader. Re-base the capture to the clamped value -- and ONLY when the
+      // live scrollTop is exactly the ceiling a capture above it was dragged
+      // to. The candidates keep their painted geometry, so the reseed pays the
+      // whole move; a drop that is not the ceiling (native anchoring, 14662
+      // for the same capture) is left alone and the guard drops it as before;
+      // and anything that moves the viewport after the clamp still differs
+      // from the re-based value, so the guard still wins. No input can land
+      // between this render and its layout phase, which is what makes the
+      // ceiling coincidence the clamp and nothing else.
+      const pending = heightAnchorPendingRef.current
+      const el = scrollerRef.current
+      if (pending && el) {
+        const ceiling = el.scrollHeight - el.clientHeight
+        if (pending.scrollTop > ceiling && heightAnchorStillUsable(ceiling, el.scrollTop)) {
+          heightAnchorPendingRef.current = { ...pending, scrollTop: el.scrollTop }
+        }
+      }
+      return
+    }
     const pending = heightAnchorPendingRef.current
     heightAnchorPendingRef.current = null
     if (!pending) return
@@ -1037,8 +1171,8 @@ export function useShiftCompensation<T>(ctx: {
     if (Math.abs(delta) > 0.5) {
       writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin', 'growth')
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- heightCommit is the sole trigger; geometry is read live
-  }, [heightCommit, scrollerRef, writeScrollTop])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- heightCommit and the owner's identity are the triggers; geometry is read live
+  }, [heightCommit, offsetIndex, scrollerRef, writeScrollTop])
 
   return { compensateAboveFold }
 }

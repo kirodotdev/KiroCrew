@@ -106,7 +106,7 @@ import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscri
 import { useChatPageSessionController } from './chat/useChatPageSessionController'
 import { useChatPageResourcesController } from './chat/useChatPageResourcesController'
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
-import TranscriptScrollShell from './chat/TranscriptScrollShell'
+import TranscriptScrollShell, { useTranscriptWidth } from './chat/TranscriptScrollShell'
 import { devLog, devWatchMessages, inspectorOn } from '../dev/scrollInspector'
 import TurnNavigationMinimap from './chat/TurnNavigationMinimap'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
@@ -1272,25 +1272,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     scrollToDisplayIndex,
   } = useScrollManager()
 
-  // Width bucket for the height cache's scope (see heightScopeKey below).
-  // Quantized to 16px; capped at 944 because the content column maxes out at
-  // 900px + 32px row padding, so all wider scrollers share one bucket.
-  // Initialized from innerWidth (the scroller is not mounted yet on first
-  // render) and corrected from the real clientWidth in the layout effect.
-  const [scrollerWidthBucket, setScrollerWidthBucket] = useState(() =>
-    Math.min(typeof window !== 'undefined' ? Math.round(window.innerWidth / 16) * 16 : 944, 944))
-  useLayoutEffect(() => {
-    const el = scrollerRef.current
-    if (!el) return
-    const compute = () => setScrollerWidthBucket(Math.min(Math.round(el.clientWidth / 16) * 16, 944))
-    compute()
-    if (typeof ResizeObserver === 'undefined') return
-    // Debounced: mid-drag resize storms must not thrash the height index.
-    let t: ReturnType<typeof setTimeout> | undefined
-    const ro = new ResizeObserver(() => { clearTimeout(t); t = setTimeout(compute, 200) })
-    ro.observe(el)
-    return () => { ro.disconnect(); clearTimeout(t) }
-  }, [scrollerRef])
+  // Share the settled cache scope and live-layout measurement gate with every
+  // transcript host. Layout itself still follows the pane without a debounce.
+  const { widthBucket: scrollerWidthBucket, canMeasure, bindScroller } = useTranscriptWidth()
 
   // Single scroll controller: the virtualizer (`virt`, created below) owns
   // follow + scroll-to-bottom. These refs bridge the early effects/handlers
@@ -5535,12 +5519,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     prefetchStartIndex,
     sessionId: activeSlot ?? '__no_slot__',
     // Width-bucketed height scope: measured row heights are only valid for
-    // the width they were measured at. The content column is capped at 900px
-    // (+32px row padding), so every scroller wider than the cap shares ONE
-    // bucket (desktop sidebar toggles do not re-measure); below the cap the
-    // bucket quantizes to 16px so a phone, a rotated phone, and a narrow
-    // desktop window each keep their own measured geometry.
-    heightScopeKey: `${activeSlot ?? '__no_slot__'}@w${scrollerWidthBucket}`,
+    // the width they were measured at. Breakout tables use the full pane, so
+    // the uncapped 16px buckets re-measure desktop resizes as well as phones.
+    // Colon-delimited, because the persisted key is `vc_heights_<scope>` and
+    // storageGc reads the owning session as the segment before the first ':'
+    // (and deletes a session's keys at that delimiter): a scope joined with
+    // any other separator is orphaned on every boot and missed on delete.
+    heightScopeKey: `${activeSlot ?? '__no_slot__'}:tables1:w${scrollerWidthBucket}`,
+    canMeasure,
     estimatedHeight: 100,
     // Overscan tradeoff (experimental):
     //   smaller (3)   → least memory, frequent widget remounts on small scrolls
@@ -6441,7 +6427,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return (
       <MessageSearchScope key={key} messageIdx={i}>
       <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
-        <div className={`flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
+        <div className={`chat-message-body flex flex-col gap-0.5 min-w-0 overflow-hidden max-w-full ${isUser ? 'items-end' : ''}`}>
           {isUser ? (
             <UserMessage
               content={m.content}
@@ -8149,6 +8135,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // column and the spacer would be a blank band under the bar.
               headerSpacer={!titleInTopbar}
               scrollerRef={scrollerRef}
+              onScrollerElement={bindScroller}
               onScroll={onScrollPin}
               virt={virt}
               loadingOlder={loadingOlder}

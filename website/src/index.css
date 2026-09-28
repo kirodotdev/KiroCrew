@@ -3422,3 +3422,38 @@ html[data-font-family="opendyslexic"] .nav-item {
      to read at a glance. 0.4 was chosen by eye on the dogfood build. */
   --pane-dim-opacity: 0.4;
 }
+
+/* Tables borrow the transcript's unused gutters, not the viewport's width.
+   The pane width arrives as the inherited `--chat-pane-width` property that
+   TranscriptScrollShell publishes on `.chat-container` (PANE_WIDTH_PROPERTY),
+   so the scroller never becomes a containing block that could trap
+   McpAppFrame's in-place `position: fixed` full-screen sheet. The measure
+   farm lives inside this same scroller, so off-screen rows inherit identical
+   column widths and heights. Hosts that do
+   not publish the property fall back to ordinary markdown sizing. */
+/* Only top-level assistant tables may escape the reading column. The
+   intervening div is rehypeStableRootKeys' display:contents wrapper;
+   quoted/list tables and formatted code cards retain their own bounds. */
+.chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table),
+.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+  overflow: visible;
+}
+.chat-container [data-role="assistant"] > .message-bubble:has(> [data-image-scope] > div > .markdown-table) {
+  /* Preserve the bubble's margin containment and raw-view height measurement
+     while allowing its table to paint into the surrounding gutters. */
+  display: flow-root;
+}
+.chat-container [data-role="assistant"] > .message-bubble > [data-image-scope] > div > .markdown-table {
+  /* Stop 40px short of each pane edge: the band TurnNavigationMinimap needs
+     free beside the content column (MIN_GUTTER_PX, a px constant — so px here,
+     not rem, or a browser's smaller root font would shrink the clearance under
+     the band) and paints its 28px button into, 8px in from the edge. Keeping
+     every breakout table out of that band on both sides lets the rail stay
+     static while tables scroll past: no per-table yield, no scrollbar
+     toggling, no width-bucket flips. The 100% floor keeps the row's own px-4
+     gutters on panes too narrow to break out; the negative margin centres the
+     wider box on the column. The table's inner wrapper still owns horizontal
+     scroll. */
+  width: max(100%, calc(var(--chat-pane-width, 100%) - 80px));
+  margin-inline: min(0px, calc((100% - (var(--chat-pane-width, 100%) - 80px)) / 2));
+}
