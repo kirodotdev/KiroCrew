@@ -11,7 +11,6 @@ from test_snapshot import unpinnable_argv
 
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
-from kiro_crew import snapshot_restore
 
 
 class TestAFailedRevertIsNotReportedAsSuccess:
@@ -54,7 +53,7 @@ class TestAFailedRevertIsNotReportedAsSuccess:
 
         # Recovery restores a saved DIRECTORY through _copytree_safe now (the standalone
         # _copytree_rollback helper is gone); make that copy refuse.
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", refuse)
+        monkeypatch.setattr(snap, "_copytree_safe", refuse)
         failed = snap._restore_everything_from_rollback(backup, home, ["workspace"], {"workspace"})
         assert failed and "workspace" in failed[0]
         assert "No space left" in failed[0]
@@ -80,15 +79,11 @@ class TestAFailedRevertIsNotReportedAsSuccess:
         def blow_up(*a, **k):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", blow_up)
+        monkeypatch.setattr(snap, "_do_replace_mutations", blow_up)
         monkeypatch.setattr(
-            snapshot_restore,
-            "_restore_everything_from_rollback",
-            lambda *a, **k: ["workspace (denied)"],
+            snap, "_restore_everything_from_rollback", lambda *a, **k: ["workspace (denied)"]
         )
-        monkeypatch.setattr(
-            snapshot_restore, "_refuse_unsafe_destination_roots", lambda *a, **k: None
-        )
+        monkeypatch.setattr(snap, "_refuse_unsafe_destination_roots", lambda *a, **k: None)
 
         with pytest.raises(snap.RollbackIncomplete) as e:
             snap._do_replace(snapdir, home, ["workspace"], allow_unpinned=bool(unpinnable_argv()))
@@ -107,13 +102,9 @@ class TestAFailedRevertIsNotReportedAsSuccess:
         def blow_up(*a, **k):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", blow_up)
-        monkeypatch.setattr(
-            snapshot_restore, "_restore_everything_from_rollback", lambda *a, **k: []
-        )
-        monkeypatch.setattr(
-            snapshot_restore, "_refuse_unsafe_destination_roots", lambda *a, **k: None
-        )
+        monkeypatch.setattr(snap, "_do_replace_mutations", blow_up)
+        monkeypatch.setattr(snap, "_restore_everything_from_rollback", lambda *a, **k: [])
+        monkeypatch.setattr(snap, "_refuse_unsafe_destination_roots", lambda *a, **k: None)
 
         with pytest.raises(OSError) as e:
             snap._do_replace(snapdir, home, ["workspace"], allow_unpinned=bool(unpinnable_argv()))

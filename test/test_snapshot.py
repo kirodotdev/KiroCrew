@@ -17,7 +17,6 @@ import pytest
 
 from conftest import requires_o_nofollow, requires_symlinks
 from kiro_crew import snapshot as snapshot_mod
-from kiro_crew import snapshot_merge
 from kiro_crew.jsonl_util import OversizedRecord, UndecodableRecord, UnreadableRecord
 from kiro_crew.snapshot import restore_main, snapshot_main
 
@@ -1776,7 +1775,7 @@ class TestNotificationMergeWriteSideContract:
         The cap is moved rather than writing a 128 MiB fixture; the read is a
         global lookup at call time for exactly that reason.
         """
-        monkeypatch.setattr(snapshot_merge, "_NOTIFICATION_RECORD_CAP", 64)
+        monkeypatch.setattr(snapshot_mod, "_NOTIFICATION_RECORD_CAP", 64)
         oversized = b'{"ts":"2026-03-06T00:00:00Z","msg":"' + b"x" * 200 + b'"}\n'
         src, dst = self._files(tmp_path, self.GOOD + oversized, self.LIVE)
         with pytest.raises(OversizedRecord):
@@ -1826,7 +1825,7 @@ class TestNotificationMergeWriteSideContract:
         exception is only the trigger that reaches the print; it is not the thing
         being verified, so it does not have to be a real undecodable byte.
         """
-        real = snapshot_merge.strict_raw_records
+        real = snapshot_mod.strict_raw_records
         calls = {"n": 0}
 
         def flaky(handle, path, **kw):
@@ -1841,7 +1840,7 @@ class TestNotificationMergeWriteSideContract:
         dst = tmp_path / "live.jsonl"
         src.write_bytes(self.GOOD)
         dst.write_bytes(self.LIVE)
-        monkeypatch.setattr(snapshot_merge, "strict_raw_records", flaky)
+        monkeypatch.setattr(snapshot_mod, "strict_raw_records", flaky)
         with pytest.raises(UnreadableRecord):
             snapshot_mod._merge_notifications(src, dst)
         out = capsys.readouterr().out
@@ -2018,7 +2017,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         exception out of the same reader, and an ``except`` narrowed to the
         encoding one would leave this reason escaping past the cleanup.
         """
-        monkeypatch.setattr(snapshot_merge, "_NOTIFICATION_RECORD_CAP", 64)
+        monkeypatch.setattr(snapshot_mod, "_NOTIFICATION_RECORD_CAP", 64)
         snap, home = self._snap(tmp_path, self.GOOD + b'{"msg":"' + b"x" * 200 + b'"}\n')
         with pytest.raises(OversizedRecord):
             self._merge(snap, home)
@@ -2054,7 +2053,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
                     f.write(delivered.decode())
             return real_key(record, path)
 
-        monkeypatch.setattr(snapshot_merge, "_notification_key", keyed)
+        monkeypatch.setattr(snapshot_mod, "_notification_key", keyed)
         with pytest.raises(UndecodableRecord):
             self._merge(snap, home)
         assert live.is_file(), "the rollback deleted a file this call did not create"
@@ -2142,7 +2141,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
                 source.write_bytes(b"")  # the source is gone from here on
             return real_key(record, path)
 
-        monkeypatch.setattr(snapshot_merge, "_notification_key", keyed)
+        monkeypatch.setattr(snapshot_mod, "_notification_key", keyed)
         self._merge(snap, home)
 
         assert fired, "the injection point never ran, so this test proved nothing"
@@ -2164,7 +2163,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         appear in the message so an operator can tell an over-cap refusal from a
         corrupt archive without reading code.
         """
-        monkeypatch.setattr(snapshot_merge, "_NOTIFICATION_SOURCE_CAP", 64)
+        monkeypatch.setattr(snapshot_mod, "_NOTIFICATION_SOURCE_CAP", 64)
         oversized = self.GOOD * 4
         assert len(oversized) > 64
         snap, home = self._snap(tmp_path, oversized)
@@ -2224,7 +2223,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
             return real_key(record, path)
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(snapshot_merge, "_notification_key", keyed)
+            mp.setattr(snapshot_mod, "_notification_key", keyed)
             self._merge(snap, home)
 
         installed = (home / "notifications.jsonl").read_bytes()

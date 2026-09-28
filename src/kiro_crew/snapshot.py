@@ -1,13 +1,20 @@
 """Kiro Crew snapshot and restore — portable state management.
 
 The command and API facade. ``snapshot`` and ``restore`` are implemented here, together
-with the seam that prepares a redacted copy for an off-host upload. The rules they apply
-live in owner modules and are re-exported below, so every existing import keeps
-resolving; a test that replaces a helper replaces it on the module that calls it.
+with the seam that prepares a redacted copy for an off-host upload. ``restore_main``
+sequences extraction and the bundle-shape refusals, and writes their
+``state_restore_rejected`` audits. The rules both commands apply live in owner modules and
+are re-exported below, so every existing import keeps resolving. The owners read the
+helpers, drivers and limits a test replaces through this module at call time
+(:func:`kiro_crew.snapshot_components._facade`), so a patch of one of those names here
+reaches the owners' call sites too. Every other name resolves in the owner that defines or
+imports it, and a patch of it belongs on that owner.
 
 * :mod:`kiro_crew.snapshot_components` -- the component table and the tree-root check
-* :mod:`kiro_crew.snapshot_archive` -- staging, the bundle format and its screens
-* :mod:`kiro_crew.snapshot_restore` -- bundle and destination refusals, and the replace transaction
+* :mod:`kiro_crew.snapshot_archive` -- staging and the bundle format: the pinned copy, the
+  extraction filter, the archive bound and the manifest readers
+* :mod:`kiro_crew.snapshot_restore` -- the bundle predicates, the content-soundness refusal,
+  the destination guards, and the replace transaction with its rollback
 * :mod:`kiro_crew.snapshot_merge` -- merge-mode algorithms
 """
 
@@ -24,14 +31,31 @@ import sys
 import tarfile
 import tempfile
 from contextlib import ExitStack, closing
+from dataclasses import dataclass  # noqa: F401 - facade re-exports
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from enum import Enum  # noqa: F401 - facade re-exports
+from pathlib import Path, PurePosixPath, PureWindowsPath  # noqa: F401 - facade re-exports
+from typing import TYPE_CHECKING, Any, Callable  # noqa: F401 - facade re-exports
 
 from kiro_crew import pinned_fs, platform_compat
-from kiro_crew.jsonl_util import UnreadableRecord
-from kiro_crew.member_memory_backup import hold_stores_for_read
-from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
+from kiro_crew.jsonl_util import (  # noqa: F401 - facade re-exports
+    RECORD_CAP,
+    UndecodableRecord,
+    UnreadableRecord,
+    strict_raw_records,
+)
+from kiro_crew.member_memory_backup import (  # noqa: F401 - facade re-exports
+    StoresInUse,
+    hold_stores_for_read,
+    hold_stores_for_replace,
+)
+from kiro_crew.memory_stores import (  # noqa: F401 - facade re-exports
+    MEMBER_BACKUPS_DIR_NAME,
+    MEMORY_STORES_DIR_NAME,
+    is_host_local_store_state,
+    memory_store_namespace_lock,
+    named_store_product_file,
+)
 from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _CONTROL_CHARS,
     _DB_SIDECAR_GLOBS,
@@ -92,6 +116,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     Purpose,
     SecretPolicy,
     UnsafeComponentRoot,
+    _facade,
     _is_host_local,
     _mc_dir,
     _never_ships,

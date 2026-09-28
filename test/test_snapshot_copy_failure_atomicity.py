@@ -16,7 +16,6 @@ import pytest
 from test_snapshot import _setup_fake_kirocrew, snapshot_family_source, unpinnable_argv
 
 from kiro_crew import snapshot as snap
-from kiro_crew import snapshot_restore
 
 
 @pytest.fixture
@@ -274,7 +273,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
                 raise OSError("No space left on device")
             return real(src, dst, **kw)
 
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", flaky)
+        monkeypatch.setattr(snap, "_copytree_safe", flaky)
         rc = snap.restore_main([str(bundle), "--mode", "replace", "--force", *unpinnable_argv()])
         assert rc == 1
         out = capsys.readouterr().out
@@ -301,7 +300,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
         # Recovery now restores with `_copytree_safe` (the save refuses a tree with a
         # link, so the rollback set is links-free and needs no link-preserving copy), so
         # that is where a failure has to be injected to reach this path.
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", refuse)
+        monkeypatch.setattr(snap, "_copytree_safe", refuse)
         snap._restore_everything_from_rollback(
             backup, home, ["workspace"], {"workspace"}, allow_unpinned=bool(unpinnable_argv())
         )
@@ -347,7 +346,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
                 raise OSError("No space left on device")
             return real(src, dst, **kw)
 
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", flaky)
+        monkeypatch.setattr(snap, "_copytree_safe", flaky)
         rc = snap.restore_main(
             [
                 str(bundle),
@@ -408,7 +407,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
                 raise OSError("No space left on device")
             return real(src, dst, **kw)
 
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", flaky)
+        monkeypatch.setattr(snap, "_copytree_safe", flaky)
         rc = snap.restore_main(
             [
                 str(bundle),
@@ -483,7 +482,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
                 raise OSError("Input/output error")
             return real(src, dst, **kw)
 
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", fail_the_save)
+        monkeypatch.setattr(snap, "_copytree_safe", fail_the_save)
         rc = snap.restore_main([str(bundle), "--mode", "replace", "--force"])
         assert rc == 1
         out = capsys.readouterr().out
@@ -516,7 +515,7 @@ class TestAFailedTreeReplacementPutsTheTreeBack:
                 raise OSError("No space left on device")
             return real(src, dst, **kw)
 
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", flaky)
+        monkeypatch.setattr(snap, "_copytree_safe", flaky)
         rc = snap.restore_main(
             [str(bundle), "--mode", "replace", "--force", "--components", "skills"]
         )

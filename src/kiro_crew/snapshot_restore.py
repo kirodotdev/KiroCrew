@@ -1,8 +1,17 @@
-"""Restoring into a live data home: refuse an unsound bundle, then replace atomically.
+"""Restoring into a live data home: the checks a restore refuses on, then the atomic replace.
 
-Every refusal here runs before live state moves, because that is where declining still
-costs nothing. Replace takes a complete rollback set first and mutates second, so a
-failure in the mutation phase is reverted target by target from a set known to be whole
+:func:`kiro_crew.snapshot.restore_main` sequences extraction and the bundle-shape
+refusals, and writes their ``state_restore_rejected`` audits. This module supplies the
+bundle predicates those refusals rest on (:func:`_component_payload_absent`,
+:func:`_components_absent_from_bundle`, :func:`_trees_absent_from_bundle`), the
+content-soundness refusal (:func:`_refuse_corrupt_source_databases`), the destination
+guards, and the replace transaction with its rollback. The helpers and limits a test
+replaces on :mod:`kiro_crew.snapshot` are read through it when used
+(:func:`kiro_crew.snapshot_components._facade`), so a patch there reaches the calls here.
+
+Each refusal runs before live state moves, because that is where declining still costs
+nothing. Replace takes a complete rollback set first and mutates second, so a failure in
+the mutation phase is reverted target by target from a set known to be whole
 (:func:`_do_replace`). Merge mode reuses the destination guards and the locked-document
 installer from here; its algorithms live in :mod:`kiro_crew.snapshot_merge`.
 """
@@ -14,13 +23,12 @@ import os
 import shutil
 import stat as _stat
 from contextlib import ExitStack, closing
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import Callable, cast
 
 from kiro_crew import pinned_fs, platform_compat
-from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.member_memory_backup import StoresInUse, hold_stores_for_replace
+from kiro_crew.member_memory_backup import StoresInUse
 from kiro_crew.memory_stores import (
     MEMBER_BACKUPS_DIR_NAME,
     MEMORY_STORES_DIR_NAME,
@@ -29,9 +37,7 @@ from kiro_crew.memory_stores import (
 )
 from kiro_crew.snapshot_archive import (
     _bundle_carries_named_stores,
-    _copytree_safe,
     _safe_name,
-    _staging_is_pinned,
 )
 from kiro_crew.snapshot_components import (
     _CORE_FILE_COMPONENTS,
@@ -46,6 +52,7 @@ from kiro_crew.snapshot_components import (
     CORE_FILES,
     CORE_FILES_FLAT,
     UnsafeComponentRoot,
+    _facade,
     _want,
     is_product_tree_database,
     safe_tree_root,
@@ -299,7 +306,9 @@ def _backup_and_copy(
     descriptor with ``O_EXCL``. A name that is still occupied after the backup move
     is refused instead of written through, which is the symlink case above.
     """
-    if not _staging_is_pinned(allow_unpinned=allow_unpinned, what=f"restore of {component!r}"):
+    if not _facade()._staging_is_pinned(
+        allow_unpinned=allow_unpinned, what=f"restore of {component!r}"
+    ):
         for f in CORE_FILES.get(component, ()):
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
@@ -491,7 +500,7 @@ def _backup_tree_or_refuse(
     ordering that cannot lose data: the operator keeps a complete tree and a message
     naming what could not be copied.
     """
-    _copytree_safe(
+    _facade()._copytree_safe(
         src,
         dst,
         allow_unpinned=allow_unpinned,
@@ -806,9 +815,9 @@ def _refuse_unless_sound(src: Path, label: str, *, strict: bool) -> None:
             "   Refusing to restore it over live state."
         )
     try:
-        with closing(sqlite3.connect(str(src))) as conn:
+        with closing(_facade().sqlite3.connect(str(src))) as conn:
             result = conn.execute("PRAGMA integrity_check;").fetchone()[0]
-    except sqlite3.Error as e:
+    except _facade().sqlite3.Error as e:
         if not strict:
             return  # not a database; not this code's business
         raise SourceComponentUnsound(
@@ -835,7 +844,7 @@ def _allocate_rollback_dir(mc: Path) -> Path:
     `mkdir` without `exist_ok` is the allocation: it is atomic, so the winner of a race
     gets the name and the loser moves to the next suffix rather than both proceeding.
     """
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = _facade().datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     for attempt in range(1, 64):
         name = f"pre-restore-{ts}" if attempt == 1 else f"pre-restore-{ts}-{attempt}"
         candidate = mc / name
@@ -863,10 +872,11 @@ def _do_replace(
     to be complete -- the ordering an earlier revision got wrong by running the core-file
     swap loop first, which aborted with the new databases live and the old trees live.
     """
+    facade = _facade()
     # Before anything is created or copied: a destination tree root that does not resolve
     # inside the data home would have the restore write outside it.
-    _refuse_unsafe_destination_roots(mc, components)
-    backup = _allocate_rollback_dir(mc)
+    facade._refuse_unsafe_destination_roots(mc, components)
+    backup = facade._allocate_rollback_dir(mc)
     print("🔄 Replace mode — backing up current state...")
 
     # `memory` names two subtrees of workspace/ plus memory_stores/. When `workspace` is
@@ -938,7 +948,9 @@ def _do_replace(
                     store_names.update(
                         p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
                     )
-        barrier.enter_context(hold_stores_for_replace(mc / MEMORY_STORES_DIR_NAME, store_names))
+        barrier.enter_context(
+            facade.hold_stores_for_replace(mc / MEMORY_STORES_DIR_NAME, store_names)
+        )
     except BaseException as exc:
         barrier.close()
         backup.rmdir()
@@ -961,7 +973,7 @@ def _do_replace(
                     if local_backups.resolve() != local_backups.absolute():
                         raise UnsafeComponentRoot("named store rollback directory is redirected")
                     platform_compat.make_owner_only_dir(local_backups)
-                    store_backup = _allocate_rollback_dir(local_backups)
+                    store_backup = cast(Path, facade._allocate_rollback_dir(local_backups))
 
                     def ignore_host_local_root(directory: str, contents: list[str]) -> set[str]:
                         if Path(directory) != d:
@@ -1025,7 +1037,7 @@ def _do_replace(
         # target the phase never reached.
         installed: set[str] = set()
         try:
-            _do_replace_mutations(
+            facade._do_replace_mutations(
                 snap, mc, backup, components, mem_roots, installed, allow_unpinned=allow_unpinned
             )
         except BaseException as e:
@@ -1045,7 +1057,7 @@ def _do_replace(
             #
             # Phase one is deliberately outside this try: a refusal there happens before any
             # mutation, so there is nothing to roll back and the clean refusal is the answer.
-            failed = _restore_everything_from_rollback(
+            failed = facade._restore_everything_from_rollback(
                 backup,
                 mc,
                 targets,
@@ -1193,9 +1205,10 @@ def _do_replace_mutations(
     `_trees_absent_from_bundle` as covering that: it refuses only bundles with no component
     map, and a v3 bundle may legitimately declare `memory` without carrying every tree of it.
     """
+    facade = _facade()
     for comp in _CORE_FILE_COMPONENTS:
         if _want(components, comp):
-            _backup_and_copy(
+            facade._backup_and_copy(
                 mc, backup, snap, comp, allow_unpinned=allow_unpinned, installed=installed
             )
             print(f"  ✅ {comp}")
@@ -1248,7 +1261,7 @@ def _do_replace_mutations(
                 # `must_create` is what makes the removal mean something. Without it the
                 # walk accepted a root recreated between the rmtree and the copy, so files
                 # the archive does not contain survived a REPLACE that reported success.
-                _copytree_safe(
+                facade._copytree_safe(
                     sd,
                     d,
                     allow_unpinned=allow_unpinned,
@@ -1305,7 +1318,7 @@ def _do_replace_mutations(
             # home that has no `workspace/` at all is the ordinary case for a restore onto
             # a fresh machine, which is exactly what this component is for.
             d.parent.mkdir(parents=True, exist_ok=True)
-            _copytree_safe(
+            facade._copytree_safe(
                 sd,
                 d,
                 allow_unpinned=allow_unpinned,
@@ -1357,6 +1370,7 @@ def _restore_everything_from_rollback(
     at stake. Whatever cannot be undone is named, and this function never deletes the
     rollback directory.
     """
+    facade = _facade()
     if not backup.is_dir():
         print(f"⚠️  No rollback directory at {backup}; nothing to put back.")
         # Reported as a failed revert, not as success with a warning: the caller's summary
@@ -1444,7 +1458,7 @@ def _restore_everything_from_rollback(
                 # directory it is false: core FILES are saved by a different function that
                 # MOVES a symlink aside on purpose, and reading it that broadly leaves the
                 # saved-link case with no branch to match.
-                _copytree_safe(
+                facade._copytree_safe(
                     saved,
                     target,
                     # The operator's opt-in has to reach HERE, not just the forward path.

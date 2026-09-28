@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from test_snapshot import _setup_fake_kirocrew, unpinnable_argv
 
 from kiro_crew import snapshot as snap
-from kiro_crew import snapshot_restore
 
 
 def _peek(bundle, tmp_path):
@@ -161,7 +160,7 @@ class TestTwoRestoresInOneSecondKeepSeparateRollbackSets:
             def now(tz=None):
                 return frozen
 
-        monkeypatch.setattr(snapshot_restore, "datetime", _Frozen)
+        monkeypatch.setattr(snap, "datetime", _Frozen)
 
         (md / "preferences.md").write_text("live state A")
         assert (

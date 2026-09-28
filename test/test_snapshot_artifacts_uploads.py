@@ -31,7 +31,6 @@ from test_snapshot import _setup_fake_kirocrew, unpinnable_argv
 
 from conftest import requires_symlinks
 from kiro_crew import snapshot as snap
-from kiro_crew import snapshot_restore
 
 FOLDERS = '[{"id": "abc123abc123", "name": "Reports", "order": 0, "parent_id": ""}]'
 
@@ -366,7 +365,7 @@ class TestAnEmptyLibraryDoesNotVetoTheWholeRestore:
             (home / "artifacts" / "imported.md").write_text("saved while the restore ran")
             raise OSError("disk full")
 
-        monkeypatch.setattr(snapshot_restore, "_backup_and_copy", fail_after_a_concurrent_save)
+        monkeypatch.setattr(snap, "_backup_and_copy", fail_after_a_concurrent_save)
         rc = snap.restore_main([str(bundle), "--mode", "replace", "--force", *unpinnable_argv()])
         out = capsys.readouterr().out
         assert rc == 1, out

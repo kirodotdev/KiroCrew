@@ -18,7 +18,6 @@ import pytest
 from test_snapshot import unpinnable_argv
 
 from kiro_crew import snapshot as snap
-from kiro_crew import snapshot_archive
 
 
 def _real_db(path: Path) -> bytes:
@@ -160,7 +159,7 @@ class TestTheArchiveBoundCoversALocalBundle:
         self, home, tmp_path, capsys, monkeypatch
     ):
         """Local is not a trust boundary, and on 3.10 the fallback materialises members."""
-        monkeypatch.setattr(snapshot_archive, "_MAX_ARCHIVE_MEMBERS", 12)
+        monkeypatch.setattr(snap, "_MAX_ARCHIVE_MEMBERS", 12)
         bundle = tmp_path / "many.tar.gz"
         with tarfile.open(bundle, "w:gz") as tf:
             root = tarfile.TarInfo("kirocrew-snapshot-20260101T000000Z")

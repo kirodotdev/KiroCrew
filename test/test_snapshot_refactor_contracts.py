@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -27,21 +28,25 @@ from kiro_crew import snapshot as snap
 
 REPO_SRC = Path(__file__).resolve().parents[1] / "src"
 
-#: Every name ``kiro_crew.snapshot`` itself defined, plus the imported objects callers
-#: and tests still reach through it: the ``sqlite3`` binding, the pinned and platform
-#: helpers, the ``os``/``shutil``/``tarfile`` modules, ``datetime`` and ``closing``.
-#: Frozen from the facade before any code moved behind it. Portability, the dashboard
-#: handlers, the AWS Control backup, the CLI and the test suite import or patch these by
-#: this path. A name the facade only imported from another module for its own use is not
-#: part of it.
+#: Every attribute a caller may import or patch through ``kiro_crew.snapshot``; portability,
+#: the dashboard handlers, the AWS Control backup, the CLI and the tests reach these by this
+#: path. Derived by AST from ``src/kiro_crew/snapshot.py`` at 20ed6a1dc, the facade the
+#: owner modules were split from, and not chosen by hand: every module-level ``def``,
+#: ``class`` and assignment (the ``try``-bound ``_DASHBOARD_PORT`` included) plus every
+#: name its module-level ``from ... import`` statements bind. Left out are the
+#: ``__future__`` directive and the ``TYPE_CHECKING``-only import, neither of which is bound
+#: at run time, and the names an ``import <stdlib module>`` binds; the three of those that
+#: tests patch through the facade are pinned apart below.
 FACADE_NAMES = frozenset(
     {
+        "Any",
         "COMPONENTS",
         "COMPONENT_HELP",
         "COMPONENT_JSON_OBJECTS",
         "COMPONENT_TREES",
         "CORE_FILES",
         "CORE_FILES_FLAT",
+        "Callable",
         "ComponentRefused",
         "ComponentSpec",
         "DB_COPIED",
@@ -49,19 +54,31 @@ FACADE_NAMES = frozenset(
         "DB_UNSAFE_SOURCE",
         "DatabaseCopyFailed",
         "EXPORT_MANIFEST_VERSION",
+        "Enum",
+        "ExitStack",
         "MANIFEST_VERSION",
+        "MEMBER_BACKUPS_DIR_NAME",
+        "MEMORY_STORES_DIR_NAME",
         "ManifestUnreadable",
         "NEVER_SNAPSHOT_FILES",
         "NamedStoresInUse",
         "NotificationCopyUnsupported",
         "PRODUCT_TREE_DATABASES",
+        "Path",
+        "PurePosixPath",
+        "PureWindowsPath",
         "Purpose",
+        "RECORD_CAP",
         "RedactionFailed",
         "RollbackIncomplete",
         "SECURITY_SENSITIVE_FILES",
         "SKIP_DB_UNPINNED_SOURCE",
         "SecretPolicy",
         "SourceComponentUnsound",
+        "StoresInUse",
+        "TYPE_CHECKING",
+        "UndecodableRecord",
+        "UnreadableRecord",
         "UnsafeComponentRoot",
         "VALID_COMPONENTS",
         "_ArchiveTooLarge",
@@ -158,21 +175,25 @@ FACADE_NAMES = frozenset(
         "_usable_cron_shape",
         "_validate_identifier",
         "_want",
+        "closing",
+        "dataclass",
+        "datetime",
+        "hold_stores_for_read",
+        "hold_stores_for_replace",
+        "is_host_local_store_state",
         "is_product_tree_database",
+        "memory_store_namespace_lock",
+        "named_store_product_file",
+        "pinned_fs",
+        "platform_compat",
         "prepare_redacted_copy",
         "resolve_components",
         "restore_main",
         "safe_tree_root",
         "snapshot_main",
-        # Imported objects reached through the facade.
-        "closing",
-        "datetime",
-        "os",
-        "pinned_fs",
-        "platform_compat",
-        "shutil",
         "sqlite3",
-        "tarfile",
+        "strict_raw_records",
+        "timezone",
     }
 )
 
@@ -180,6 +201,13 @@ FACADE_NAMES = frozenset(
 def test_the_facade_still_answers_every_name_it_exported() -> None:
     missing = sorted(n for n in FACADE_NAMES if not hasattr(snap, n))
     assert missing == [], f"kiro_crew.snapshot no longer exports: {missing}"
+
+
+def test_the_facade_binds_the_real_stdlib_modules_tests_patch_through() -> None:
+    """``snapshot.os.rename`` and ``snapshot.shutil.rmtree`` are patched by this path."""
+    assert snap.os is os
+    assert snap.shutil is shutil
+    assert snap.tarfile is tarfile
 
 
 def _parser_rows(main) -> list[tuple]:

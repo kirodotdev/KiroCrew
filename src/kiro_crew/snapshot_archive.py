@@ -23,11 +23,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from kiro_crew import pinned_fs, platform_compat
-from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 from kiro_crew.snapshot_components import (
     COMPONENTS,
     SECURITY_SENSITIVE_FILES,
+    _facade,
     _is_host_local,
     _never_ships,
     _tree_roots_replace_clears,
@@ -375,7 +375,7 @@ def _copy_database_consistently(
     contained all 421 rows -- 371 of them WAL-resident -- and passed ``integrity_check``.
     A check-then-copy-bytes design has the race; this one has no check to race.
     """
-    if not _chain_is_link_free(root, rel_parts):
+    if not _facade()._chain_is_link_free(root, rel_parts):
         if require_database:
             # Same reasoning as the not-a-database case below, and it has to apply to
             # BOTH: applying it to only one lets a snapshot that omitted a REQUIRED
@@ -393,9 +393,9 @@ def _copy_database_consistently(
         return DB_UNSAFE_SOURCE
     ro_uri = f"{src.absolute().as_uri()}?mode=ro"
     try:
-        with closing(sqlite3.connect(ro_uri, uri=True)) as probe:
+        with closing(_facade().sqlite3.connect(ro_uri, uri=True)) as probe:
             probe.execute("PRAGMA schema_version").fetchone()
-    except sqlite3.DatabaseError as e:
+    except _facade().sqlite3.DatabaseError as e:
         # `sqlite_errorname` is read defensively for 3.10 and the message is the
         # documented fallback. Either way the DEFAULT is to raise: an error this code
         # cannot classify is not evidence the file is safe to copy byte-for-byte.
@@ -434,8 +434,8 @@ def _copy_database_consistently(
     # the database.
     try:
         with (
-            closing(sqlite3.connect(ro_uri, uri=True)) as src_conn,
-            closing(sqlite3.connect(str(dst))) as dst_conn,
+            closing(_facade().sqlite3.connect(ro_uri, uri=True)) as src_conn,
+            closing(_facade().sqlite3.connect(str(dst))) as dst_conn,
         ):
             # The file is a readable database, so a failure here means the consistent copy
             # did not happen. Absorbing it would leave the caller's byte copy -- taken
@@ -443,7 +443,7 @@ def _copy_database_consistently(
             # it is raised, but typed and naming the file so the command boundary reports
             # which database failed instead of exiting on a traceback.
             src_conn.backup(dst_conn)
-    except sqlite3.Error as e:
+    except _facade().sqlite3.Error as e:
         raise DatabaseCopyFailed(src, e) from e
     if require_database:
         _refuse_unsound_required_capture(src, dst)
@@ -491,7 +491,7 @@ def _refuse_unsound_required_capture(src: Path, dst: Path) -> None:
         if src.stat().st_size == 0:
             raise DatabaseCopyFailed(
                 src,
-                sqlite3.DatabaseError(
+                _facade().sqlite3.DatabaseError(
                     "the live database is EMPTY (zero bytes). SQLite opens such a file as "
                     "a valid empty database and the staged copy passes an integrity check, "
                     "so this would archive nothing and a later restore would install "
@@ -501,16 +501,19 @@ def _refuse_unsound_required_capture(src: Path, dst: Path) -> None:
     except OSError as e:
         raise DatabaseCopyFailed(src, e) from e
     try:
-        with closing(sqlite3.connect(str(dst))) as check:
+        with closing(_facade().sqlite3.connect(str(dst))) as check:
             result = check.execute("PRAGMA integrity_check;").fetchone()[0]
-    except sqlite3.Error as e:
+    except _facade().sqlite3.Error as e:
         # Severe corruption makes the pragma RAISE rather than answer -- the measurement
         # above got `DatabaseError: database disk image is malformed` here -- so this arm is
         # the common path for a page-corrupt database, not a defensive afterthought.
         raise DatabaseCopyFailed(src, e) from e
     if result != "ok":
         raise DatabaseCopyFailed(
-            src, sqlite3.DatabaseError(f"integrity check on the staged copy failed ({result})")
+            src,
+            _facade().sqlite3.DatabaseError(
+                f"integrity check on the staged copy failed ({result})"
+            ),
         )
 
 
@@ -770,13 +773,13 @@ def _copytree_safe(
     bundle whose manifest names the gap. Restore and merge leave it off, because
     there the unreadable name is the archive's own content.
     """
-    report = on_skip or _report_skip
+    report = on_skip or _facade()._report_skip
     outer_ignore = kwargs.pop("ignore", None)
     kwargs.pop("dirs_exist_ok", None)
     if kwargs:
         raise TypeError(f"_copytree_safe got unexpected keyword arguments: {sorted(kwargs)}")
 
-    if _staging_is_pinned(allow_unpinned=allow_unpinned, what=f"tree {src.name!r}"):
+    if _facade()._staging_is_pinned(allow_unpinned=allow_unpinned, what=f"tree {src.name!r}"):
         pinned_fs.stage_tree_pinned(
             src,
             dst,
@@ -934,23 +937,24 @@ def _refuse_oversized_archive(probe: tarfile.TarFile) -> None:
     millions of members performs. Bailing on the member that crosses the bound means the
     work is bounded by the bound, not by what the archive claims.
     """
+    facade = _facade()
     total = 0
     count = 0
     while (member := probe.next()) is not None:
         count += 1
-        if count > _MAX_ARCHIVE_MEMBERS:
+        if count > facade._MAX_ARCHIVE_MEMBERS:
             raise _ArchiveTooLarge(
-                f"This archive declares more than {_MAX_ARCHIVE_MEMBERS:,} "
+                f"This archive declares more than {facade._MAX_ARCHIVE_MEMBERS:,} "
                 "entries, which no memory bundle produces"
             )
         # Only regular files carry payload; a directory or link header declares a size
         # that extraction never writes, so counting those would refuse honest archives.
         if member.isfile():
             total += max(member.size, 0)
-            if total > _MAX_ARCHIVE_BYTES:
+            if total > facade._MAX_ARCHIVE_BYTES:
                 raise _ArchiveTooLarge(
                     "This archive declares more than "
-                    f"{_MAX_ARCHIVE_BYTES // (1024 ** 3)} GiB of uncompressed content, "
+                    f"{facade._MAX_ARCHIVE_BYTES // (1024 ** 3)} GiB of uncompressed content, "
                     "which no memory bundle produces"
                 )
 

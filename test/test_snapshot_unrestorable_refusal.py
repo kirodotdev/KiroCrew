@@ -14,7 +14,6 @@ import pytest
 from test_snapshot import unpinnable_argv
 
 from kiro_crew import snapshot as snap
-from kiro_crew import snapshot_archive
 
 
 @pytest.fixture
@@ -28,7 +27,7 @@ def home(tmp_path, monkeypatch):
 
 class TestANewArchiveIsBoundedBeforeSuccessAndPrune:
     def test_an_oversized_new_archive_is_refused(self, home, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(snapshot_archive, "_MAX_ARCHIVE_MEMBERS", 2)
+        monkeypatch.setattr(snap, "_MAX_ARCHIVE_MEMBERS", 2)
         out = tmp_path / "out"
         rc = snap.snapshot_main([str(out), "--components", "memory"] + unpinnable_argv())
         captured = capsys.readouterr().out
@@ -49,7 +48,7 @@ class TestANewArchiveIsBoundedBeforeSuccessAndPrune:
             (out / name).write_bytes(b"older bundle")
         before = sorted(p.name for p in out.glob("kirocrew-snapshot-*.tar.gz"))
 
-        monkeypatch.setattr(snapshot_archive, "_MAX_ARCHIVE_MEMBERS", 2)
+        monkeypatch.setattr(snap, "_MAX_ARCHIVE_MEMBERS", 2)
         rc = snap.snapshot_main(
             [str(out), "--components", "memory", "--keep", "1"] + unpinnable_argv()
         )

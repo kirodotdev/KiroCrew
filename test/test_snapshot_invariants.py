@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -59,11 +60,16 @@ class TestMergeReleasesItsSourceHandles:
 
     def test_the_integrity_check_connection_is_closed(self):
         body = inspect.getsource(_merge_memory)
-        assert "closing(sqlite3.connect(str(src_db)))" in body, (
+        # The driver is read through the facade (`_facade().sqlite3`) or bound directly.
+        assert re.search(
+            r"closing\((?:_facade\(\)\.|facade\.)?sqlite3\.connect\(str\(src_db\)\)\)", body
+        ), (
             "the integrity-check connection must be wrapped in closing(); a bare "
             "`with sqlite3.connect(...)` leaves it open and holds the source file"
         )
-        assert "with sqlite3.connect(str(src_db))" not in body
+        assert not re.search(
+            r"with\s+(?:_facade\(\)\.|facade\.)?sqlite3\.connect\(str\(src_db\)\)", body
+        )
 
 
 def _snapshot(out: Path, extra: list[str]) -> Path:

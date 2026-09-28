@@ -326,17 +326,33 @@ path gives up is ancestor-swap resistance, not link resistance.
 
 Each rule above has one owner. `kiro_crew.snapshot` is the command and API facade: it
 holds `snapshot_main` and `restore_main`, the `MANIFEST.json` writer (`_build_snapshot`),
-the outbound redaction seam, the merge-mode driver and the notification copy. It re-exports
-the owners' names, so every existing import keeps resolving. A test that replaces a helper
-replaces it on the module that calls it.
+the outbound redaction seam, the merge-mode driver and the notification copy.
+`restore_main` sequences extraction and the bundle-shape refusals, and writes their
+`state_restore_rejected` audits. The facade re-exports the owners' names, so every existing
+import keeps resolving. The owners read the helpers, drivers and limits a test replaces
+(`_copytree_safe`, `_do_replace_mutations`, `sqlite3`, `_MAX_ARCHIVE_MEMBERS` and the rest
+of `LATE_BOUND` in `test/test_snapshot_refactor_seams.py`) through `kiro_crew.snapshot` when
+they use them, via `snapshot_components._facade()`, so a patch of one of those names on the
+facade reaches the owners' call sites too, and the facade stays a plain module. Every other
+name an owner uses resolves in that owner's own globals, so a test patches it on the owner
+module. The same test file scans `test/` and every `tests` package under `src/kiro_crew` and
+fails on a patch no call site sees: a facade patch of a name an owner reads from its own
+globals, an owner patch of a `LATE_BOUND` name, and a patch of either whose name it cannot
+resolve outside the sites it lists. No owner imports the facade: `_facade()` reads it from
+`sys.modules`, since the facade imports every owner and is loaded before any of them runs.
+`test_snapshot_refactor_ownership.py` pins both halves: no owner imports the facade, and no
+module outside the snapshot family imports an owner.
 
 - `kiro_crew.snapshot_components` owns the component table, the never-ship and host-local
   rules, and the tree-root check `safe_tree_root`.
 - `kiro_crew.snapshot_archive` owns staging and the bundle format. That covers the pinned
   tree copy with its refusal (`_staging_is_pinned`), the consistent SQLite capture, the
   extraction filter, the archive bound and the manifest readers.
-- `kiro_crew.snapshot_restore` owns the checks that refuse an unsound bundle or an unsafe
-  destination before live state moves, plus the replace transaction and its rollback.
+- `kiro_crew.snapshot_restore` supplies the bundle predicates those refusals rest on
+  (`_component_payload_absent`, `_components_absent_from_bundle`,
+  `_trees_absent_from_bundle`), the content-soundness refusal
+  (`_refuse_corrupt_source_databases`), the destination guards, and the replace transaction
+  with its rollback.
 - `kiro_crew.snapshot_merge` owns the merge algorithms: memory rows, cron jobs,
   notification records and no-overwrite trees.
 

@@ -10,9 +10,11 @@ about it, plus the one filesystem check every component tree root goes through,
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 from kiro_crew import platform_compat
 from kiro_crew.memory_stores import (
@@ -430,6 +432,22 @@ COMPONENT_HELP = {name: spec.help for name, spec in COMPONENTS.items()}
 VALID_COMPONENTS: tuple[str, ...] = tuple(COMPONENTS)
 
 
+def _facade() -> ModuleType:
+    """``kiro_crew.snapshot``, read from ``sys.modules`` when called: the owners' patch target.
+
+    The owner modules call the helpers and read the limits a test replaces on the facade --
+    ``_copytree_safe``, ``_do_replace_mutations``, ``sqlite3``, ``_MAX_ARCHIVE_MEMBERS`` and
+    the like -- through this, so a patch of one of those names on ``kiro_crew.snapshot``
+    reaches the owners' call sites as it reaches the facade's own code. Every other name an
+    owner uses resolves in that owner's own globals. The facade is looked up, never
+    imported: it imports every owner and is the only way into them, so it is loaded before
+    any owner function runs, and no owner depends on it by import. A stored reference would
+    go stale when a test purges and re-imports the facade. A function that reads the facade
+    in a loop resolves it once, before the loop.
+    """
+    return sys.modules["kiro_crew.snapshot"]
+
+
 def _mc_dir() -> Path:
     # Use the shared resolver so snapshot/restore honor the documented
     # KIROCREW_HOME override (and the same ~/.kiro/crew default) as every other
@@ -469,7 +487,7 @@ def safe_tree_root(root: Path, *, what: str, home: Path | None = None) -> Path |
     whatever the link points at under the name of the component that was asked for.
     Containment cannot see this, because nothing left the home.
     """
-    base = (home or _mc_dir()).resolve()
+    base = (home or _facade()._mc_dir()).resolve()
     try:
         resolved = root.resolve()
     except OSError as e:  # broken link, ELOOP, permission on an ancestor

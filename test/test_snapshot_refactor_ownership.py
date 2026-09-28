@@ -2,9 +2,10 @@
 
 ``kiro_crew.snapshot`` is the command and API facade; the rules it applies live in four
 owner modules. These tests pin the ownership map itself: every name is defined in
-exactly one module, the facade re-exports the owner's object rather than a copy, the
-owners depend on one another in one direction only and never reach back into the
-facade, and every module is registered with the family source scans.
+exactly one module, the facade re-exports the owner's object rather than a copy and a
+patch on the facade reaches the owner that calls it, the owners depend on one another in
+one direction only and reach the facade only when a call reads a seam through it, and
+every module is registered with the family source scans.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_TREE_DOCUMENT_VALIDATORS",
         "_WHOLE_TREE_COMPONENTS",
         "_is_host_local",
+        "_facade",
         "_mc_dir",
         "_never_ships",
         "_tree_roots_replace_clears",
@@ -283,6 +285,38 @@ def test_owners_depend_downward_only_and_never_on_the_facade(module: str) -> Non
     ), f"{module} imports {sorted(family - ALLOWED_IMPORTS[module])}, which sit above it"
 
 
+def test_only_the_snapshot_family_imports_an_owner_module() -> None:
+    """Owners are reached only through ``kiro_crew.snapshot``, so ``_facade()`` finds it loaded.
+
+    ``_facade()`` looks the facade up in ``sys.modules`` instead of importing it. That holds
+    only while every production path into an owner runs through the facade, which imports
+    them all: a module outside the family that imported an owner directly could reach one
+    in a process that never loaded the facade.
+    """
+    owners = set(_OWNER_MODULES)
+    stems = {m.rpartition(".")[2] for m in owners}
+    family = {_module_path(m) for m in OWNERS}
+    direct: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        if path in family or "tests" in path.relative_to(SRC).parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not any(stem in text for stem in stems):
+            continue
+        tree = ast.parse(text)
+        imported = _imported_modules(tree) & owners
+        imported |= {
+            f"kiro_crew.{name}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level
+            for name in [node.module or "", *(a.name for a in node.names)]
+            if name in stems
+        }
+        if imported:
+            direct.append(f"{path.relative_to(SRC).as_posix()}: {sorted(imported)}")
+    assert direct == [], f"imported without the facade: {direct}"
+
+
 @pytest.mark.parametrize("module", sorted(OWNERS))
 def test_no_module_binds_the_config_class_at_import(module: str) -> None:
     """The redaction switch is read from its own file, never from ``config.json``."""
@@ -296,14 +330,16 @@ def test_every_sqlite_binding_is_the_resolved_driver(module: str) -> None:
         assert mod.sqlite3 is _sqlite_compat.sqlite3
 
 
-def test_every_owner_binds_stdlib_sqlite_past_a_husk_driver(tmp_path: Path) -> None:
-    """The owners bind the resolver's driver, so a pruned ``pysqlite3`` husk is harmless.
+def test_the_facade_binds_stdlib_sqlite_past_a_husk_driver(tmp_path: Path) -> None:
+    """The one ``sqlite3`` binding is the facade's, so a pruned ``pysqlite3`` husk is harmless.
 
-    The same fresh-interpreter shape as ``test_sqlite_compat_resolver``: the husk has to
-    be in place before the first ``import kiro_crew``.
+    The owners reach the driver through the facade when they open a database, as the claim
+    for this split asked, so the facade's binding is the only one to check. The same
+    fresh-interpreter shape as ``test_sqlite_compat_resolver``: the husk has to be in place
+    before the first ``import kiro_crew``.
     """
     sites = [m for m in OWNERS if hasattr(_MODULES[m], "sqlite3")]
-    assert "kiro_crew.snapshot" in sites and len(sites) > 1
+    assert sites == ["kiro_crew.snapshot"]
     script = textwrap.dedent("""
         import importlib
         import sqlite3
@@ -333,29 +369,27 @@ def test_every_owner_binds_stdlib_sqlite_past_a_husk_driver(tmp_path: Path) -> N
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_a_helper_is_replaced_on_the_module_that_calls_it(
+def test_a_helper_patched_on_the_facade_is_the_one_its_owner_calls(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The seam moves with its owner: patching the facade name does not reach it.
+    """The seam stays on the facade: patching the facade name reaches the owner's call site.
 
-    ``_do_replace`` resolves ``_do_replace_mutations`` in ``snapshot_restore``, so a test
-    that wants to fail the mutation phase patches it there. Pinned in both directions,
-    because a patch that silently stops intercepting turns a failure test into a pass.
+    ``_do_replace`` reads ``_do_replace_mutations`` through the facade when it calls it, so
+    the facade is the one patch target. The owner's own binding is not consulted, which is
+    what keeps a single patch sufficient.
     """
     seen: list[str] = []
-
-    def _record(*_a, **_k) -> None:
-        seen.append("owner")
-
-    monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", _record)
     home = tmp_path / "home"
     bundle = tmp_path / "bundle"
     home.mkdir()
     bundle.mkdir()
-    snap._do_replace(bundle, home, ["crons"], allow_unpinned=True)
-    assert seen == ["owner"]
 
-    monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", _record)
     monkeypatch.setattr(snap, "_do_replace_mutations", lambda *_a, **_k: seen.append("facade"))
     snap._do_replace(bundle, home, ["crons"], allow_unpinned=True)
-    assert seen == ["owner", "owner"], "the facade name reached a call site it does not own"
+    assert seen == ["facade"], "the facade patch did not reach the owner's call site"
+
+    monkeypatch.setattr(
+        snapshot_restore, "_do_replace_mutations", lambda *_a, **_k: seen.append("owner")
+    )
+    snap._do_replace(bundle, home, ["crons"], allow_unpinned=True)
+    assert seen == ["facade", "facade"], "the owner's own binding was consulted"

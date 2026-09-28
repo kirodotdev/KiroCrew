@@ -19,7 +19,6 @@ import pytest
 from test_snapshot import unpinnable_argv
 
 from kiro_crew import snapshot as snap
-from kiro_crew import snapshot_archive
 from kiro_crew import snapshot_redact as redact
 
 TOKEN = "8412345678:AAH9xSECRETtokenvalue_here12345"
@@ -797,7 +796,7 @@ class TestTheDatabaseRestageChecksAndOpensTheSameFile:
                 (real / "workspace").symlink_to(outside, target_is_directory=True)
             return real_check(root, rel_parts)
 
-        monkeypatch.setattr(snapshot_archive, "_chain_is_link_free", swap_then_check)
+        monkeypatch.setattr(snap, "_chain_is_link_free", swap_then_check)
         snap._restage_databases(real, stage, bundle_root=stage)
         assert swapped["done"], "the swap never fired; the test proves nothing"
 

@@ -33,7 +33,6 @@ from test_snapshot import _make_snapshot, _setup_fake_kirocrew, unpinnable_argv
 from kiro_crew import member_memory_backup, platform_compat, portability
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
-from kiro_crew import snapshot_restore
 from kiro_crew.memory import INDEX_DB_FILE
 from kiro_crew.memory_stores import (
     EXECUTION_LOGS_DIR_NAME,
@@ -1014,7 +1013,7 @@ class TestNamedStoreRollbackSafety:
                         os.close(fd)
             return copy(source, target, **kwargs)
 
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", fail_forward)
+        monkeypatch.setattr(snap, "_copytree_safe", fail_forward)
         with pytest.raises(OSError, match="injected store copy failure"):
             snap._do_replace(src, dst, ["memory"], allow_unpinned=True)
         assert len(attempts) == 2, "the saved tree is copied back after the failed install"
@@ -1092,7 +1091,7 @@ class TestNamedStoreRollbackSafety:
                 raise OSError("store copy unavailable")
             return copy(source, target, **kwargs)
 
-        monkeypatch.setattr(snapshot_restore, "_copytree_safe", fail_store_copy)
+        monkeypatch.setattr(snap, "_copytree_safe", fail_store_copy)
         with pytest.raises(snap.RollbackIncomplete) as excinfo:
             snap._do_replace(src, dst, ["memory"], allow_unpinned=True)
         saved = next((dst / ROOT / MEMBER_BACKUPS_DIR_NAME).glob("pre-restore-*"))
@@ -1134,7 +1133,7 @@ async def test_named_v1_markdown_write_cannot_be_lost_during_replace(
         acknowledged.append(memory.write_preferences("acknowledged write"))
         return mutate(*args, **kwargs)
 
-    monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", write_after_backup)
+    monkeypatch.setattr(snap, "_do_replace_mutations", write_after_backup)
     try:
         if without_admission:
             snap._do_replace(src, destination, ["memory"], allow_unpinned=True)
@@ -1296,7 +1295,7 @@ def test_provisioning_waits_for_replace_and_rollback(
             if fail_replace:
                 raise OSError("injected failure after store replacement")
 
-        monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", begin_creation)
+        monkeypatch.setattr(snap, "_do_replace_mutations", begin_creation)
         if fail_replace:
             with pytest.raises(OSError, match="injected failure"):
                 snap._do_replace(src, destination, ["memory"], allow_unpinned=True)
@@ -1374,7 +1373,7 @@ def test_file_only_writes_serialize_with_replace(
     assert (destination / ROOT / STORE / MEMORY_DB_FILE).exists() is (version == 2)
     # Manual files must serialize even without an open SQLite handle's lifetime admission.
     monkeypatch.setattr(member_memory_backup, "acquire_store_use_lock", lambda path: None)
-    monkeypatch.setattr(snapshot_restore, "hold_stores_for_replace", lambda *args: nullcontext())
+    monkeypatch.setattr(snap, "hold_stores_for_replace", lambda *args: nullcontext())
     target, method, args = {
         "preferences": (memory, "write_preferences", ("acknowledged",)),
         "projects": (memory, "write_projects", ("acknowledged",)),
@@ -1417,7 +1416,7 @@ def test_file_only_writes_serialize_with_replace(
             if fail_replace:
                 raise OSError("injected replacement failure")
 
-        monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", interleave)
+        monkeypatch.setattr(snap, "_do_replace_mutations", interleave)
         if fail_replace:
             with pytest.raises(OSError, match="injected replacement failure"):
                 snap._do_replace(source, destination, ["memory"], allow_unpinned=True)
@@ -1654,7 +1653,7 @@ def test_cold_vector_open_waits_until_replace_or_rollback_finishes(
                 if fail_replace:
                     raise OSError("injected replace failure")
 
-            monkeypatch.setattr(snapshot_restore, "_do_replace_mutations", interleave)
+            monkeypatch.setattr(snap, "_do_replace_mutations", interleave)
             if fail_replace:
                 with pytest.raises(OSError, match="injected replace failure"):
                     snap._do_replace(src, destination, ["memory"], allow_unpinned=True)
