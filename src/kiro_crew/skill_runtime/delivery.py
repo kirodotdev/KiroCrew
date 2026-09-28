@@ -410,7 +410,9 @@ def get_context(
         # do not depend on directory iteration order.
         by_key = sorted(on_demand, key=lambda s: s["key"])
         named: set[str] = set()
-        for skill in loader._user_first(sorted(by_key, key=loader._rank_key, reverse=True))[:8]:
+        for skill in loader._user_first(sorted(by_key, key=loader._rank_key, reverse=True))[
+            : sk._INDEX_HEAD_SLOTS
+        ]:
             line = f"- {skill['key']}: {loader._short_desc(skill['description'])[:100]}\n"
             if len(wrap([pointer + line])) <= optional_budget:
                 pointer += line

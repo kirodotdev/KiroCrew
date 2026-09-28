@@ -3604,13 +3604,18 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 one bounded directory. The default is the usage-ranked index with a family hint
 for omitted rows; false selects a shorter search pointer. A `false` that 0.6.x
 materialized (when it meant the full listing) is removed once on upgrade; see the
-legacy `skills.lazy_load` rewrite in [config](config.md). Both variants order the
-user's own skills ahead of shipped ones before ranking fills the budget (or the
-pointer's eight names): `_is_user_authored` counts a packaged key, a copy
-carrying the builtin sync's provenance marker, an app skill resolving into a
-provider root, and an edition root as shipped; everything else — user-created,
-`skills.extra_paths`, trusted project, mapped — is the user's, so a new install's
-empty usage ledger cannot hand every slot to shipped skills. A `skill://` mapping
+legacy `skills.lazy_load` rewrite in [config](config.md). Both variants order
+rows through one function, `_user_first`: the user's own skills take up to
+`_INDEX_USER_SLOTS` (6) of the first `_INDEX_HEAD_SLOTS` (8) positions, highest
+rank first; the rest of those eight go to the highest-ranked remaining rows of
+either kind; after the eighth position the remaining user rows precede the
+shipped ones, each group in rank order. Reserving most of the head, not all of
+it, is deliberate: a new install's empty usage ledger cannot hand every slot to
+the ~60 shipped skills, and a large user tree cannot evict a shipped skill the
+user actually uses. `_is_user_authored` counts a packaged key, a copy carrying
+the builtin sync's provenance marker, an app skill resolving into a provider
+root, and an edition root as shipped; everything else — user-created,
+`skills.extra_paths`, trusted project, mapped — is the user's. A `skill://` mapping
 restricts availability, not eager body delivery. Directory, search, paginated
 list, exact reads and `$full/key` expansion resolve the same project-aware mapping.
 Unqualified `$leaf` fallback is permitted only when unique. External mapped files
@@ -5676,7 +5681,8 @@ Long history blocks keep framing and the newest tail rather than disappearing.
 Confined project bodies, pinned or not, retain a separate 24,750-character
 allowance and descriptor-pinned byte-limited reads. First-turn and post-compaction
 skill injection both split protected bodies from discovery. The default discovery
-entry lists up to eight usage-ranked names and short purposes and requests short
+entry lists up to eight names and short purposes — up to six of them the user's
+own skills, the rest the highest-ranked remaining skills — and requests short
 keywords. Scoped search filters `repo_scope` and byte-identical duplicates just as
 the catalog does, and returns confined project bodies through the same reader,
 never an unconfined live path. UI language, date/runtime identity, withholding, member mode and stop notes

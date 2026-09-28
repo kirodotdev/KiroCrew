@@ -3348,7 +3348,8 @@ The default entry (`lazy_load=true`) is a bounded usage-ranked index carrying ea
 skill's path, and one line naming the families it leaves out. An install last
 written by 0.6.x or earlier has its materialized `false` removed once on upgrade
 (see "The legacy `skills.lazy_load` rewrite"). `lazy_load=false`
-selects the shorter entry: up to eight usage-ranked names with short purposes plus
+selects the shorter entry: up to eight names (up to six of them the user's own
+skills, the rest the highest-ranked remaining skills) with short purposes plus
 `skill_search` guidance for short keywords. An agent with its own `skill://`
 mapping gets neither -- those skills arrive as complete instructions. Both preserve pinned instructions, confined project-body
 limits and explicit loading. Thread history scales with the model window

@@ -408,8 +408,10 @@ transport protocol. MCP Tool Search discovers tool schemas, not skill bodies.
    the omitted tail. Ordinary trusted project skills also activate on demand,
    through the descriptor-confined reader rather than a mutable checkout path.
 2. **`skills.lazy_load`** (default true) selects the ranked `## Available Skills`
-   index. False selects the shorter search pointer and up to eight usage-ranked
-   names. Both use the same allowance; mapping never expands it.
+   index. False selects the shorter search pointer and up to eight names. Both
+   order rows the same way (the user's own skills take up to six of the first
+   eight places, the highest-ranked remaining skills fill the rest) and use the
+   same allowance; mapping never expands it.
 3. **Required instructions.** The operator's `always: true` bodies share an
    explicit 99,000-byte startup capacity, including rendered headings and framing.
    An unavailable or over-capacity required body fails context construction with an

@@ -56,6 +56,7 @@ from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names  # noqa: F401
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
+from kiro_crew.deploy import _SKILLS_DIR as _DEPLOY_SKILLS_DIR
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import (  # noqa: F401
     FileTooLargeError,
@@ -217,6 +218,13 @@ _SHORT_DESC_CHARS = 300
 # ranking so a freshly-added, never-used skill still surfaces instead of being
 # starved by the rich-get-richer usage ordering.
 _NEW_SKILL_BOOST_WINDOW_SECS = 7 * 24 * 60 * 60
+# The startup pointer names this many skills; the ranked index's head is the
+# same width so both variants agree on which rows are "the front".
+_INDEX_HEAD_SLOTS = 8
+# Of those slots, how many the user's own skills may claim on provenance alone.
+# Fewer than all of them, so a shipped skill with real usage keeps a name even
+# under a large user tree — the mirror of the empty-ledger case this guards.
+_INDEX_USER_SLOTS = 6
 
 # ── $skill inline trigger ──
 # A ``$skillname`` token anywhere in a user message explicitly loads that skill,
@@ -891,11 +899,9 @@ def _packaged_skill_names() -> frozenset[str]:
     startup index asks this per row to tell a shipped skill from one the user
     wrote.
     """
-    from kiro_crew.deploy import _SKILLS_DIR as deploy_skills_dir
-
     return frozenset(
         name
-        for root in (_BUILTIN_SKILLS_DIR, deploy_skills_dir)
+        for root in (_BUILTIN_SKILLS_DIR, _DEPLOY_SKILLS_DIR)
         if root.is_dir()
         for name, _ in _iter_skill_files(root)
     )
@@ -5576,15 +5582,33 @@ class SkillsLoader:
         return not _within_any(os.path.realpath(path), _trusted_skill_roots())
 
     def _user_first(self, ranked: list[dict]) -> list[dict]:
-        """Stable partition of *ranked*: user-authored skills ahead of shipped ones.
+        """Reorder *ranked* so the user's own skills lead without owning the head.
 
-        A new install has no usage history, so rank alone lets the ~60 shipped
-        skills take every slot and a skill the user just wrote is never named.
-        Each half keeps its rank order.
+        The first ``_INDEX_HEAD_SLOTS`` positions hold up to ``_INDEX_USER_SLOTS``
+        user-authored rows — the highest-ranked ones — and whatever positions
+        those leave are filled from the rank order of everything else, shipped or
+        overflow user rows alike. After the head, user rows precede shipped rows,
+        each group in rank order.
+
+        A new install has no usage history, so rank alone would let the ~60
+        shipped skills take every slot and a skill the user just wrote is never
+        named; reserving the whole head for the user instead lets a large user
+        tree evict a shipped skill the user genuinely relies on. The quota fixes
+        the first without causing the second. Order within each group is the
+        caller's rank order, so the existing key tie-break still decides ties.
         """
-        user = [s for s in ranked if self._is_user_authored(s)]
-        mine = {id(s) for s in user}
-        return user + [s for s in ranked if id(s) not in mine]
+        user_ids = {id(s) for s in ranked if self._is_user_authored(s)}
+        head = [s for s in ranked if id(s) in user_ids][:_INDEX_USER_SLOTS]
+        head_ids = {id(s) for s in head}
+        rest = [s for s in ranked if id(s) not in head_ids]
+        fill = _INDEX_HEAD_SLOTS - len(head)
+        head += rest[:fill]
+        tail = rest[fill:]
+        return (
+            head
+            + [s for s in tail if id(s) in user_ids]
+            + [s for s in tail if id(s) not in user_ids]
+        )
 
     @staticmethod
     def _short_desc(desc: str, suffix: str = "...") -> str:
