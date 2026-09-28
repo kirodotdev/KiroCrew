@@ -15,12 +15,12 @@ test.describe('Overview Page E2E Tests', () => {
     // Old sub-tab bar is gone.
     await expect(page.getByRole('button', { name: 'KiroCrew Config', exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Import/Export', exact: true })).toHaveCount(0)
-    // Three summary cards (Usage, WakaTime, Memory) expose the same drill-in verb.
-    await expect(page.getByRole('button', { name: 'View details' })).toHaveCount(3)
+    // Four summary cards (Usage, WakaTime, Memory, Today) expose the same drill-in verb.
+    await expect(page.getByRole('button', { name: 'View details' })).toHaveCount(4)
   })
 
   test('drills into the Memory browser and back', async ({ page }) => {
-    // Card order: Usage (0), WakaTime (1), Memory (2).
+    // Card order: Usage (0), WakaTime (1), Memory (2), Today (3).
     await page.getByRole('button', { name: 'View details' }).nth(2).click()
     await expect(page.getByRole('heading', { name: 'Memory store', exact: true })).toBeVisible({ timeout: 5000 })
     await expect(page.getByRole('combobox', { name: 'Memory store', exact: true })).toContainText('Global Memory V1')

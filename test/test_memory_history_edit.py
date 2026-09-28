@@ -253,3 +253,67 @@ async def test_private_history_replacement_keeps_one_day_across_midnight(env, mo
 
     assert tier._read_editable_history_for_day(day_name) == "after midnight"
     assert tier._read_editable_history_for_day(next_day.isoformat()) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_name", ["", "member-alice"], ids=["global-v1", "member-v2"])
+async def test_history_date_query_reads_only_that_day(env, store_name):
+    store = await document_store(env, store_name)
+    day = date.today()
+    yesterday = (day - timedelta(days=1)).isoformat()
+    prior = "# Yesterday\nPrior day sentinel.\n"
+    current = "# Today\nCurrent day sentinel.\n"
+    if store_name:
+        # V2 keeps each day as a database row, not a dated file.
+        tier = env.tiers[store_name]
+
+        def seed_day(day_name, content):
+            with tier.db:
+                tier._write_history(day_name, content)
+
+        await asyncio.to_thread(seed_day, yesterday, prior)
+        await asyncio.to_thread(seed_day, day.isoformat(), current)
+    else:
+        today_file = store._today_history_file()
+        # newline="" keeps the bytes as written: the endpoint returns the file
+        # verbatim, and Windows text mode would otherwise store CRLF.
+        await asyncio.to_thread(
+            today_file.with_name(f"{yesterday}.md").write_text,
+            prior,
+            encoding="utf-8",
+            newline="",
+        )
+        await asyncio.to_thread(today_file.write_text, current, encoding="utf-8", newline="")
+    query = {"date": yesterday}
+    if store_name:
+        query["store"] = store_name
+
+    response = await memory.api_memory_history(
+        request(env, query=query, owner=True, session="dashboard:ui")
+    )
+
+    assert response.status == 200
+    assert json.loads(response.text) == {"content": prior, "content_redacted": False}
+
+    # A day with no file is an ordinary empty day, not an error.
+    blank = {**query, "date": f"{day - timedelta(days=2)}"}
+    empty = await memory.api_memory_history(
+        request(env, query=blank, owner=True, session="dashboard:ui")
+    )
+    assert empty.status == 200
+    assert json.loads(empty.text) == {"content": "", "content_redacted": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_date", ["today", "2026-13-01", "2026-9-1", "../preferences", "2026-09-01/../x"]
+)
+async def test_history_date_query_rejects_malformed_dates(env, bad_date):
+    await document_store(env, "")
+
+    response = await memory.api_memory_history(
+        request(env, query={"date": bad_date}, owner=True, session="dashboard:ui")
+    )
+
+    assert response.status == 400
+    assert json.loads(response.text)["code"] == "invalid_history_date"

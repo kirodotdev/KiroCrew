@@ -51,6 +51,10 @@ vi.mock('../api/client', () => ({
       history_max_days: 90,
       migrated: false,
     }),
+    // The Today card reads these three on mount.
+    sessions: vi.fn().mockResolvedValue({ sessions: [] }),
+    chatFolders: vi.fn().mockResolvedValue([]),
+    memoryHistory: vi.fn().mockResolvedValue({ content: '' }),
   },
 }))
 
