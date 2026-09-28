@@ -70,6 +70,7 @@ import type { SendMode } from '../pages/chat/ChatSettings'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import type { ComposerControl } from './composerControl'
 import {
+  isRawPasteChord,
   clipboardFiles,
   hasPlainClipboardText,
   stripTrailingBlankLines,
@@ -2755,11 +2756,12 @@ function ChatInput({
   }, [runOptimize, pasteBlocks, slotId, chatStore])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Cmd/Ctrl+Shift+V → next paste inserts full text inline (no chip collapse).
+    // Cmd/Ctrl+Shift+V (or Cmd+Option+Shift+V on macOS) → next paste inserts
+    // full text inline (no chip collapse).
     // Self-clearing: any other keydown resets the flag so it only ever affects
     // the paste that immediately follows this exact shortcut. We do NOT
     // preventDefault — the browser still fires the paste event we hook below.
-    rawPasteRef.current = (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v'
+    rawPasteRef.current = isRawPasteChord(e)
     // Undo / redo — drive the explicit per-slot history so Ctrl/Cmd+Z restores
     // text even after a programmatic reset (send-clear, ↑/↓ recall, optimize)
     // wiped the browser's native undo stack. We own the gesture and

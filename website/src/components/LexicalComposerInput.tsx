@@ -43,6 +43,7 @@ import { MacLineEdgePlugin } from './composerLineEdge'
 import { createImeLatch } from '../hooks/useImeGuard'
 import type { ComposerControl, ComposerSelection } from './composerControl'
 import {
+  isRawPasteChord,
   clipboardFiles,
   hasPlainClipboardText,
   stripTrailingBlankLines,
@@ -349,8 +350,7 @@ function InteractionPlugin({
     const unregisterModifier = editor.registerCommand(
       KEY_MODIFIER_COMMAND,
       event => {
-        rawPasteRef.current = (event.metaKey || event.ctrlKey) && event.shiftKey &&
-          !event.altKey && event.key.toLowerCase() === 'v'
+        rawPasteRef.current = isRawPasteChord(event)
         return false
       },
       COMMAND_PRIORITY_HIGH,
