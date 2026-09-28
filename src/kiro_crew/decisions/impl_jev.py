@@ -142,7 +142,29 @@ def _answer_from_wire(q: Question, raw: dict) -> Answer:
         value=chosen,
         p=probability,
         confidence=_as_float_or_none(raw.get("confidence")),
+        probabilities=_distribution(q, probabilities),
     )
+
+
+def _distribution(q: Question, raw: Any) -> dict[str, float] | None:
+    """The declared options' probabilities from *raw*, each finite and in ``0..1``.
+
+    A key the question did not declare, or a value that is not such a number, is
+    dropped rather than failing the answer: the chosen option's probability above is
+    what the gate consumes, and this map is read only by a point that measures the
+    rest of the distribution. ``None`` when nothing usable remains.
+    """
+    if not isinstance(raw, dict):
+        return None
+    declared = set(q.options)
+    kept: dict[str, float] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or key not in declared:
+            continue
+        number = _as_float_or_none(value)
+        if number is not None and 0.0 <= number <= 1.0:
+            kept[key] = number
+    return kept or None
 
 
 def _as_float_or_none(raw: Any) -> float | None:

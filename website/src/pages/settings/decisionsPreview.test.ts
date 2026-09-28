@@ -39,6 +39,8 @@ const OFF = {
   memoryText: false,
   // And the wake-evidence scope.
   nudgeEvidence: false,
+  // And the option ranker's scope.
+  optionsText: false,
   // And the prior-conversation ceiling reads 0, which is the least that can leave.
   historyBudget: 0,
 }
@@ -67,6 +69,8 @@ describe('readConsent', () => {
         // Nor the evidence a waiting loop is watching, which comes from OTHER
         // sessions and so is not covered by any yes about this one.
         nudgeEvidence: false,
+        // Nor a reply and the options it offers.
+        optionsText: false,
         // Nor does it consent to prior turns: an unmentioned ceiling is 0.
         historyBudget: 0,
       })
@@ -92,10 +96,15 @@ describe('readConsent', () => {
     expect(readConsent({ ...base, nudge_evidence: true }).compaction).toBe(false)
     expect(readConsent({ ...base, compaction: true }).nudgeEvidence).toBe(false)
     expect(readConsent({ ...base, tool_args: true }).nudgeEvidence).toBe(false)
+    // The option ranker's scope reads on the same terms and stands alone.
+    expect(readConsent({ ...base, options_text: true }).optionsText).toBe(true)
+    expect(readConsent({ ...base, options_text: true }).memoryText).toBe(false)
+    expect(readConsent({ ...base, memory_text: true }).optionsText).toBe(false)
     for (const sloppy of [undefined, false, 'true', 1, 0, null, [], {}]) {
       expect(readConsent({ ...base, tool_args: sloppy }).toolArgs).toBe(false)
       expect(readConsent({ ...base, memory_text: sloppy }).memoryText).toBe(false)
       expect(readConsent({ ...base, nudge_evidence: sloppy }).nudgeEvidence).toBe(false)
+      expect(readConsent({ ...base, options_text: sloppy }).optionsText).toBe(false)
     }
   })
 
@@ -160,6 +169,7 @@ describe('readDecisions', () => {
         compaction: false,
         memoryText: false,
         nudgeEvidence: false,
+        optionsText: false,
         // Absent from this payload, so the ceiling reads as 0 — the shipped
         // default, and the least that can leave the machine.
         historyBudget: 0,

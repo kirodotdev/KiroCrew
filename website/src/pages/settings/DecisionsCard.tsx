@@ -344,6 +344,7 @@ export function DecisionsCard() {
     ),
     'memory.recall': i18nT('pages.developer.featurePreviewsTab.decisions_point_memory_recall'),
     'nudge.wake': i18nT('pages.developer.featurePreviewsTab.decisions_point_nudge_wake'),
+    'options.rank': i18nT('pages.developer.featurePreviewsTab.decisions_point_options_rank'),
   }
   const POINT_WHAT: Record<string, string> = {
     'skills.select': i18nT('pages.developer.featurePreviewsTab.decisions_what_skills_select'),
@@ -357,6 +358,7 @@ export function DecisionsCard() {
       'pages.developer.featurePreviewsTab.decisions_what_memory_recall',
     ),
     'nudge.wake': i18nT('pages.developer.featurePreviewsTab.decisions_what_nudge_wake'),
+    'options.rank': i18nT('pages.developer.featurePreviewsTab.decisions_what_options_rank'),
   }
   const STATUS_WORD: Record<string, string> = {
     [POINT_ACTIVE]: i18nT('pages.developer.featurePreviewsTab.decisions_status_active'),
@@ -372,12 +374,14 @@ export function DecisionsCard() {
     compaction: i18nT('pages.developer.featurePreviewsTab.decisions_compaction'),
     memory_text: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text'),
     nudge_evidence: i18nT('pages.developer.featurePreviewsTab.decisions_nudge_evidence'),
+    options_text: i18nT('pages.developer.featurePreviewsTab.decisions_options_text'),
   }
   const SCOPE_DESC: Record<string, string> = {
     tool_args: i18nT('pages.developer.featurePreviewsTab.decisions_tool_args_desc'),
     compaction: i18nT('pages.developer.featurePreviewsTab.decisions_compaction_desc'),
     memory_text: i18nT('pages.developer.featurePreviewsTab.decisions_memory_text_desc'),
     nudge_evidence: i18nT('pages.developer.featurePreviewsTab.decisions_nudge_evidence_desc'),
+    options_text: i18nT('pages.developer.featurePreviewsTab.decisions_options_text_desc'),
   }
   const TIER_LABEL: Record<string, string> = {
     simple: i18nT('pages.developer.featurePreviewsTab.decisions_tier_simple'),
@@ -409,6 +413,7 @@ export function DecisionsCard() {
     compaction: view.compaction,
     memory_text: view.memoryText,
     nudge_evidence: view.nudgeEvidence,
+    options_text: view.optionsText,
   }
 
   const nameOf = (id: string) => POINT_NAME[id] ?? id

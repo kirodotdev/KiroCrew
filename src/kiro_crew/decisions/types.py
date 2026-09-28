@@ -37,12 +37,19 @@ Question = Choice
 
 @dataclass
 class Answer:
-    """A chosen option, its probability and optional provider confidence."""
+    """A chosen option, its probability and optional provider confidence.
+
+    ``probabilities`` is the provider's full distribution over the question's
+    declared options, when it sends one: only declared options with a finite value
+    in ``0..1`` are kept, so a consumer can read it without re-validating. ``None``
+    means no distribution was returned, which is what every lane but Jev reports.
+    """
 
     id: str
     value: object
     p: float
     confidence: float | None = None
+    probabilities: dict[str, float] | None = None
 
 
 Answers = dict[str, Answer]
