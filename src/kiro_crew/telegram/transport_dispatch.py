@@ -433,10 +433,10 @@ _PICKER_LIMIT = 24
 
 #: An agent kept out of the channel ``/agent`` picker BY DEFAULT: the picker
 #: offers the agents a person driving from Telegram actually chooses between,
-#: not KiroCrew's own machinery. Two disjoint signals, both authoritative on
+#: not Kiro Crew's own machinery. Two disjoint signals, both authoritative on
 #: their own field rather than on the display name:
 #:
-#: * ``kirocrew_owned`` — the KiroCrew-generated internal agents (the chat
+#: * ``kirocrew_owned`` — the Kiro Crew-generated internal agents (the chat
 #:   agent, the background/heartbeat/conductor/worker/knowledge specs). This is
 #:   the ``name in OWNED_KIRO_AGENT_FILES`` flag ``list_agents`` already sets, so
 #:   a user's OWN hand-authored ``kirocrew-custom.json`` — which merely shares
@@ -446,7 +446,7 @@ _PICKER_LIMIT = 24
 #:   ``<app>--<agent>.json`` link filename (see ``apps.bridges``/``apps.execution``).
 #:   These belong to an installed app, not to the person picking an agent, so
 #:   they are hidden alongside the internals. The double-dash is a filename
-#:   convention KiroCrew writes, not a name a user types, so matching the
+#:   convention Kiro Crew writes, not a name a user types, so matching the
 #:   FILENAME (not the possibly-bare declared name) is what identifies them.
 _APP_AGENT_LINK_SEP = "--"
 
@@ -2882,7 +2882,7 @@ class TelegramDispatcher:
         """Selectable agent names for the picker, user-level scope, sorted.
 
         System and internal agents are excluded (:func:`_agent_is_internal`):
-        the picker offers the agents a person chooses between, so KiroCrew's own
+        the picker offers the agents a person chooses between, so Kiro Crew's own
         machinery and app-installed agents do not occupy its slots and crowd out
         the user's own agents. The classification is on the roster row's fields,
         not the display name, so a user's own ``kirocrew``-prefixed agent stays.
