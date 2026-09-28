@@ -2050,16 +2050,23 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 # first and only falls back to rehydrating from history, so a
                 # brand-new tab that has not logged anything yet is a legitimate
                 # target and absence of a log does not prove the key is wrong.
-                slot = session_key.removeprefix("dashboard:")
+                #
+                # Look the FULL session key up, not the slot. Transcripts are
+                # keyed by the whole key (``dashboard_chat-9-....jsonl``), so
+                # asking for the prefix-stripped slot found nothing for EVERY
+                # dashboard session and warned on every correct adopt -- which
+                # trains the operator to ignore the one message that would also
+                # be a real typo's only signal.
                 try:
-                    known = ConversationLog().has_log(slot)
+                    known = ConversationLog().has_log(session_key)
                 except Exception:
                     known = True  # cannot tell -> stay quiet rather than cry wolf
                 if not known:
                     print(
-                        f"Warning: no recorded session named {slot!r}. If that is a typo, "
-                        f"the job's results will not reach anyone -- re-run with the right "
-                        f"key, or `--release` to undo.",
+                        f"Warning: no recorded session named "
+                        f"{session_key.removeprefix('dashboard:')!r}. If that is a "
+                        f"typo, the job's results will not reach anyone -- re-run "
+                        f"with the right key, or `--release` to undo.",
                         file=sys.stderr,
                     )
             else:
