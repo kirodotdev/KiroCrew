@@ -315,6 +315,7 @@ import { SIDEBAR_MIN, SIDEBAR_MAX, clampSidebarWidth } from './chat/sidebarWidth
 import { resolveMsgIndex } from '../utils/shareUrl'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts as persistDrafts, setDraft, appendTypedText, typedDuringCreate } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
+import { loadFileTokenDrafts, saveFileTokenDrafts as persistFileTokenDrafts } from '../utils/chatFileTokenDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
 import { addSessionRef, removeSessionRef, mergeSessionRefs, appendSessionRefLinks, type SessionRef } from '../utils/sessionRefs'
@@ -892,7 +893,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const sessionRefDrafts = useRef<Record<string, SessionRef[]>>(null!)
   if (sessionRefDrafts.current === null) sessionRefDrafts.current = loadSessionRefDrafts()
   const saveDraftsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current) }, [])
+  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current); persistFileTokenDrafts(pickedFileTokens.current) }, [])
   const saveDraftsDebounced = useCallback(() => {
     if (saveDraftsTimer.current) clearTimeout(saveDraftsTimer.current)
     saveDraftsTimer.current = setTimeout(() => { saveDraftsTimer.current = null; saveDrafts() }, DRAFT_SAVE_DEBOUNCE_MS)
@@ -1889,6 +1890,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     for (const [k, v] of Object.entries(stored)) { if (!(k in drafts.current)) drafts.current[k] = v }
     const storedFiles = loadFileDrafts()
     for (const [k, v] of Object.entries(storedFiles)) { if (!(k in fileDrafts.current)) fileDrafts.current[k] = v }
+    const storedFileTokens = loadFileTokenDrafts()
+    for (const [k, v] of Object.entries(storedFileTokens)) { if (!(k in pickedFileTokens.current)) pickedFileTokens.current[k] = v }
     const storedPastes = loadPasteDrafts()
     for (const [k, v] of Object.entries(storedPastes)) { if (!(k in pasteDrafts.current)) pasteDrafts.current[k] = v }
     const storedSessionRefs = loadSessionRefDrafts()
@@ -2099,10 +2102,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   //   clear:    send-clear (captures sentSlotTokens first), slot teardown
   //   read:     reconciliation effect, insertion clamp,
   //             remove-chip strip, send-boundary replaceTokens
-  //   outside:  fileDrafts persistence (reload/cross-tab, #11256), steer
+  //   persist:  saveDrafts writes it beside fileDrafts (chatFileTokenDrafts,
+  //             sessionStorage) and mount / the slot-switch rehydrate load it,
+  //             so a reloaded chip keeps its aliases
+  //   outside:  steer
   //             (attachments discarded by design), split-view pane (no
   //             alias consumer -- see ChatPane's restoreDraft adapter)
-  const pickedFileTokens = useRef<Record<string, Record<string, string[]>>>({})
+  const pickedFileTokens = useRef<Record<string, Record<string, string[]>>>(null!)
+  if (pickedFileTokens.current === null) pickedFileTokens.current = loadFileTokenDrafts()
   // useCallback (not a plain function) purely so a caller wrapped in its own
   // useCallback/useEffect gets a STABLE reference to depend on -- the body
   // only reads refs, which never change identity, so `[]` deps are already
@@ -3848,6 +3855,46 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     revealComposer()
   }, [recordSlotToken, clampOutOfTokens, currentSlotTokens, relMentionedHere, setInput])
 
+  // Recorded aliases of every known path other than `p` that are LIVE in
+  // `input`, optionally limited to the paths in `onlyPaths`. Presence is
+  // tested with the permissive boundary and no cross-alias context (no
+  // recursion). The reconciliation below explains why each protecting set
+  // has the scope it has.
+  const liveOtherAliases = useCallback((
+    input: string, known: Record<string, string[]>, p: string, onlyPaths?: ReadonlySet<string>,
+  ) => {
+    const others = new Set<string>()
+    for (const [otherPath, otherTokens] of Object.entries(known)) {
+      if (otherPath === p || (onlyPaths && !onlyPaths.has(otherPath))) continue
+      otherTokens.forEach(t => { if (relMentionedHere(input, t.slice(1))) others.add(t) })
+    }
+    return others
+  }, [relMentionedHere])
+
+  // THE revival decision: would the reconciliation re-stage the unstaged file
+  // `p` off the mentions in `input`, given the recorded `known` aliases and
+  // the `staged` set? One function, so the chip remove handler asks exactly
+  // the question the reconciliation will ask on the next commit (fork GPT
+  // review): a leftover the reconciliation would never revive from, such as
+  // an old project's alias, must not cost the chip its undo. The reasoning
+  // for each condition is at its use in `reconcileFileChips`.
+  const fileChipRevives = useCallback((
+    input: string, p: string, known: Record<string, string[]>, staged: ReadonlySet<string>,
+  ) => {
+    const aliases = known[p]
+    if (!aliases?.length) return false
+    const sameSlash = (a: string, b: string) => a.replace(/\\/g, '/') === b.replace(/\\/g, '/')
+    const currentRel = makeRelative(p, normalizeWindowsPath(currentProjectRef.current || ''))
+    const otherAliases = liveOtherAliases(input, known, p)
+    const stagedLive = liveOtherAliases(input, known, p, staged)
+    return aliases.some(token => {
+      const storedRel = token.slice(1)
+      if (!sameSlash(storedRel, currentRel)) return false
+      if ([...stagedLive].some(s => extendsConsumably(s, token))) return false
+      return relMentionedHere(input, storedRel, otherAliases)
+    })
+  }, [liveOtherAliases, relMentionedHere])
+
   // pickedFileTokens reconciliation -- keeps a file chip in sync with its
   // `@rel` alias(es) in BOTH directions, the same way a folder chip (line
   // ~1737) already is for free by being text-derived. A file chip is
@@ -3876,9 +3923,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // re-deriving against the NEW project would falsely call it stale and drop
   // a still-referenced attachment).
   //
-  // Entries are NOT deleted on unstage (only on the chip's own ✕, which also
-  // strips every recorded alias from the text, so revival can never fire for
-  // it) -- keeping the mapping alive is what makes revival possible.
+  // Entries are NOT deleted on unstage, nor on the chip's own ✕ -- keeping
+  // the mapping alive is what makes revival possible, and it is how an undo
+  // after ✕ brings the attachment back with its mention. The ✕ drops them
+  // only when a mention it could not strip is left in the text.
   // Uploaded/dropped files carry no recorded aliases and are never touched by
   // either direction -- there is no text mention to lose or regain.
   //
@@ -3893,14 +3941,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // disagree, so a stale cross-project alias can never revive on a
   // coincidental rel match.
   //
-  // KNOWN LIMITATION: `pickedFileTokens` is in-memory only, while `pendingFiles`
-  // persists across a reload/slot-restore via `fileDrafts` (localStorage). A
-  // file chip restored that way has no recorded aliases, so a hand-edit on it
-  // post-restore is invisible to this effect and the chip sticks -- the same
-  // tradeoff the remove button's own token derivation already documents below
-  // ("the ref is in-memory only: a restored draft ... re-stages the file
-  // without it"). Not fixed here: it would mean persisting the aliases
-  // alongside the draft too, a separate change from this reconciliation.
+  // Reload / slot-restore: `pickedFileTokens` is persisted beside `fileDrafts`
+  // (`chatFileTokenDrafts`, same sessionStorage lifetime), so a chip restored
+  // from a draft keeps the aliases it was recorded under and this effect
+  // treats it exactly like a chip picked in this mount. Only a draft saved
+  // before the aliases were persisted restores alias-less; such a chip sticks
+  // on a hand-edit until the next pick records an alias for it.
   //
   // Runs from the composer-draft commit (`onComposerDraftCommit`, via
   // `reconcileFileChipsRef`) rather than an `[input]` effect: the text lives
@@ -3910,7 +3956,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const known = currentSlotTokens()
     if (!known) return
     const staged = new Set(pendingFiles)
-    const sameSlash = (a: string, b: string) => a.replace(/\\/g, '/') === b.replace(/\\/g, '/')
     // Deliberately NOT a general boundary-checked path-SUFFIX fallback (tried
     // and reverted -- fork GPT review, two rounds): recognizing "any suffix of
     // this path is mentioned" as proof of reference sounds safe for a single
@@ -3942,24 +3987,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // staged file's own, entirely ordinary punctuated mention, and
     // wrongly unstaged the attachment the user is actually still typing
     // about.
-    const otherAliasesFor = (p: string) => {
-      const others = new Set<string>()
-      for (const [otherPath, otherTokens] of Object.entries(known)) {
-        if (otherPath === p || !staged.has(otherPath)) continue
-        // Only aliases LIVE in the current input protect (fork GPT review):
-        // the `staged` snapshot is pre-effect, so a sibling whose own
-        // mention was deleted in THIS SAME edit still sat here and forced
-        // the strict boundary onto a survivor's ordinary punctuated
-        // mention (`@report!` dying with `@report,`) -- dropping BOTH
-        // attachments. A dead alias has no text occurrence left to
-        // mis-attribute, so it protects nothing; the round-18 hazard
-        // needs the longer mention actually present. Presence is tested
-        // with the permissive boundary and no cross-alias context (no
-        // recursion).
-        otherTokens.forEach(t => { if (relMentionedHere(input, t.slice(1))) others.add(t) })
-      }
-      return others
-    }
+    //
+    // Only aliases LIVE in the current input protect (fork GPT review):
+    // the `staged` snapshot is pre-effect, so a sibling whose own
+    // mention was deleted in THIS SAME edit still sat here and forced
+    // the strict boundary onto a survivor's ordinary punctuated
+    // mention (`@report!` dying with `@report,`) -- dropping BOTH
+    // attachments. A dead alias has no text occurrence left to
+    // mis-attribute, so it protects nothing; the round-18 hazard
+    // needs the longer mention actually present.
+    const otherAliasesFor = (p: string) => liveOtherAliases(input, known, p, staged)
     const stale = pendingFiles.filter(p => {
       const aliases = known[p]
       if (aliases == null || aliases.length === 0) return false
@@ -3978,47 +4015,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // occurrence to mis-attribute and still protects nothing. Residual,
     // preferred over the false positive it replaces: an OLD project's alias
     // literally live in the text refuses to revive a same-prefix file -- a
-    // visible false negative, one pick away.
-    const liveAliasesFor = (p: string) => {
-      const others = new Set<string>()
-      for (const [otherPath, otherTokens] of Object.entries(known)) {
-        if (otherPath === p) continue
-        otherTokens.forEach(t => { if (relMentionedHere(input, t.slice(1))) others.add(t) })
-      }
-      return others
-    }
-    const revived = Object.keys(known).filter(p => {
-      if (staged.has(p) || stale.includes(p)) return false
-      const currentRel = makeRelative(p, normalizeWindowsPath(currentProjectRef.current || ''))
-      const otherAliases = liveAliasesFor(p)
-      // Revival asymmetry guard (fork GPT review): a LONGER candidate whose
-      // text occurrence merely extends a STAGED file's live alias with
-      // boundary-consumable characters is not unambiguous evidence -- typing
-      // a comma after a staged `@report` reads as that mention plus
-      // punctuation, not as the deleted sibling `report,` re-typed. The
-      // prefix-sibling `unsafe` test is one-directional by design (it forces
-      // strict onto the SHORTER staged alias), so without this the longer
-      // candidate always got the permissive boundary against a shorter
-      // staged sibling and silently re-attached. Same predicate, opposite
-      // direction; staged-scoped and liveness-gated via otherAliasesFor, so
-      // the M2(b) both-unstaged revival (no staged sibling) is untouched and
-      // the round-20 dead-history hazard stays closed. Accepted residual:
-      // pasting `@report,` back while `report` is staged does not revive
-      // `report,` -- a visible false negative, one pick away.
-      const stagedLive = otherAliasesFor(p)
-      return known[p].some(token => {
-        const storedRel = token.slice(1)
-        if (!sameSlash(storedRel, currentRel)) return false
-        if ([...stagedLive].some(s => extendsConsumably(s, token))) return false
-        return relMentionedHere(input, storedRel, otherAliases)
-      })
-    })
+    // visible false negative, one pick away. (`fileChipRevives` builds this
+    // set as `liveOtherAliases(input, known, p)`.)
+    //
+    // Revival asymmetry guard (fork GPT review), also in `fileChipRevives`:
+    // a LONGER candidate whose
+    // text occurrence merely extends a STAGED file's live alias with
+    // boundary-consumable characters is not unambiguous evidence -- typing
+    // a comma after a staged `@report` reads as that mention plus
+    // punctuation, not as the deleted sibling `report,` re-typed. The
+    // prefix-sibling `unsafe` test is one-directional by design (it forces
+    // strict onto the SHORTER staged alias), so without this the longer
+    // candidate always got the permissive boundary against a shorter
+    // staged sibling and silently re-attached. Same predicate, opposite
+    // direction; staged-scoped and liveness-gated like otherAliasesFor, so
+    // the M2(b) both-unstaged revival (no staged sibling) is untouched and
+    // the round-20 dead-history hazard stays closed. Accepted residual:
+    // pasting `@report,` back while `report` is staged does not revive
+    // `report,` -- a visible false negative, one pick away.
+    const revived = Object.keys(known).filter(p =>
+      !staged.has(p) && !stale.includes(p) && fileChipRevives(input, p, known, staged))
     if (!stale.length && !revived.length) return
     setPendingFiles(prev => {
       const next = prev.filter(p => !stale.includes(p))
       return revived.reduce((acc, p) => addPendingFile(acc, p), next)
     })
-  }, [currentSlotTokens, relMentionedHere, pendingFiles])
+  }, [currentSlotTokens, relMentionedHere, liveOtherAliases, fileChipRevives, pendingFiles])
   reconcileFileChipsRef.current = reconcileFileChips
 
   // ── Follow-up card actions (suggest_followup MCP tool) ───────────────────
@@ -8839,9 +8861,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 // adds a second `@rel` form for the same file without
                 // replacing the first (fork GPT review) -- stripping only one
                 // would leave the other sitting in the text with no chip
-                // behind it. The aliases are in-memory only, though: a
-                // restored draft or a failed-send restore re-stages the file
-                // without any. Fall back to deriving the file's EXACT rel
+                // behind it. The aliases survive a reload (chatFileTokenDrafts),
+                // but a draft saved before they were persisted re-stages the
+                // file without any. Fall back to deriving the file's EXACT rel
                 // under the current project -- the only form the picker ever
                 // inserts -- and strip that if it is mentioned. Never a
                 // suffix walk: a shortened
@@ -8889,8 +8911,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   const otherRel = makeRelative(otherPath, normalizeWindowsPath(currentProjectRef.current || ''))
                   if (otherRel !== otherPath) otherAliases.add(`@${otherRel}`)
                 }
-                if (slotTokens) delete slotTokens[p]
-                if (!tokens.length) return
+                if (!tokens.length) {
+                  if (slotTokens) delete slotTokens[p]
+                  return
+                }
                 // On a Windows-shaped project a chip's OWN mention can have
                 // been hand-edited to another separator spelling of the SAME
                 // file after it was staged (rounds 9-12), uniform or mixed
@@ -8923,7 +8947,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   }
                   return out + orig.slice(last)
                 }
-                setInput(prev => tokens.reduce((text, token) => {
+                const stripMentions = (source: string) => tokens.reduce((text, token) => {
                   const candidate = fold(token)
                   if (foldedOthers.has(candidate)) return text
                   // Shares `mentionBoundary` (via `mentionBoundaryFor`, which also
@@ -8979,7 +9003,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     stripped = cutFolded(stripped, new RegExp(`(^|\\s)${openEsc}${esc}${lineSuffix}${closeEsc}(?: |(?=${boundarySrc})|$)`, 'g'))
                   }
                   return cutFolded(stripped, new RegExp(`(${leadingMentionBoundary})${esc}${lineSuffix}(?: |(?=${boundarySrc})|$)`, 'g'))
-                }, prev))
+                }, source)
+                // Removal is undoable: the chip's aliases stay recorded, so an undo
+                // that brings the mention back revives the chip through the
+                // reconciliation effect above, and a redo that takes it out again
+                // unstages it. The send-clear drops them. When a mention of this file
+                // survives the strip (a copy shared with another staged file, or a
+                // second copy the strip cannot reach) the aliases are dropped instead,
+                // or that leftover would revive the chip this click just removed.
+                // The survival check IS the reconciliation's revival decision
+                // (`fileChipRevives`), asked of the stripped text with the
+                // aliases this file would keep (`tokens`, including a live
+                // derived spelling a restored draft never recorded) and this
+                // file already out of the staged set. If the next commit would
+                // revive the chip off a leftover, the aliases are dropped. If
+                // it would not -- the leftover is a longer sibling's own
+                // mention (fork Opus review) or an old project's alias the
+                // revival never accepts (fork GPT review) -- they stay, and
+                // undo can bring the chip back. A restored sibling protects
+                // through the aliases persisted with the draft; only a
+                // sibling from a draft saved before that protects nothing, so
+                // its `@report,` reads as this file mentioned and the aliases
+                // are dropped, as the reconciliation would otherwise revive it.
+                const after = stripMentions(inputRef.current)
+                const keptStaged = new Set(pendingFiles.filter(f => f !== p))
+                if (slotTokens && fileChipRevives(after, p, { ...slotTokens, [p]: tokens }, keptStaged)) delete slotTokens[p]
+                else if (liveToken) recordSlotToken(p, liveToken)
+                setInput(prev => stripMentions(prev))
               }}
               onRemoveDir={rel => {
                 // The chip derives from the `@rel/` token, so removing the

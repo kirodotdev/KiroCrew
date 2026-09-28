@@ -2592,6 +2592,10 @@ function ChatInput({
     // A bulk change (clear, recall, optimize, select-all-delete) or a pause
     // starts a new boundary so it can be undone on its own. The `prev !== ''`
     // guard also makes the first char typed from empty its own boundary.
+    // One exception to the timing rule: a file/folder chip remove clears
+    // undoLastEditRef before calling the parent (see removeFileEndingUndoBurst),
+    // so a short mention strip right after a keystroke is never merged into the
+    // typing burst that holds the pre-remove text.
     const incremental =
       prev !== undefined && prev !== '' && value !== '' &&
       Math.abs(value.length - prev.length) < UNDO_BULK_DELTA
@@ -2607,6 +2611,18 @@ function ChatInput({
     }
     undoLastEditRef.current = now
   }, [value, autoFocusKey, composerControl])
+
+  // A chip remove strips the chip's mention from `value` in the parent. Ending
+  // the burst first gives that change its own undo entry, so Ctrl/Cmd+Z brings
+  // the mention (and through it the chip) back instead of skipping past it.
+  const removeFileEndingUndoBurst = useMemo(() => onRemoveFile && ((path: string) => {
+    undoLastEditRef.current = 0
+    onRemoveFile(path)
+  }), [onRemoveFile])
+  const removeDirEndingUndoBurst = useMemo(() => onRemoveDir && ((path: string) => {
+    undoLastEditRef.current = 0
+    onRemoveDir(path)
+  }), [onRemoveDir])
 
   const handleInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
     // This IS the user's edit, so the caret is followed.
@@ -4346,7 +4362,7 @@ function ChatInput({
           </div>
         )}
         <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} rootRef={sessionStripRef} />
-        <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={onRemoveFile} onRemoveDir={onRemoveDir} rootRef={fileStripRef} />
+        <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={removeFileEndingUndoBurst} onRemoveDir={removeDirEndingUndoBurst} rootRef={fileStripRef} />
 
         {/* Cancel cue for the hold gesture. Rendered above the dictation panel so
             the drop zone is genuinely UP from the thumb, and only while a press is
