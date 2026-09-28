@@ -4532,16 +4532,74 @@ def _fuzzy_score(q: str, name: str, rel: str) -> float:
     return score
 
 
+async def _audit_file_search_exit(
+    caller: str, resources: str, error: str = ""
+) -> None:
+    """Record one file-search outcome without blocking the loop or raising.
+
+    Two properties this endpoint needs and a bare ``_sel()`` call does not give:
+
+    * The singleton is warmed at gateway start, but a FAILED warm leaves
+      construction to the first caller -- key load and a tail read of the log --
+      and this runs on the event loop. Same gate and hop as
+      ``handlers/decisions._audit`` and ``server._audit_middleware_denial``: two
+      attribute reads on the healthy path, a worker thread on the degraded one
+      (``no-blocking-call-on-event-loop``).
+    * Best-effort. These calls sit on EARLY-EXIT paths that answered cleanly
+      before, so an audit that raised would turn a 200 or a 404 into a 500. The
+      record is what degrades, never the response.
+    """
+    from kiro_crew.sel import sel_is_warm
+
+    def _write() -> None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="file_search",
+            outcome="allowed",
+            resources=resources,
+            error=error,
+        )
+
+    try:
+        if sel_is_warm():
+            _write()
+        else:
+            await asyncio.to_thread(_write)
+    except Exception:  # noqa: BLE001 - the record degrades, not the answer
+        logger.warning("SEL logging failed for file_search", exc_info=True)
+
+
 async def api_file_search(request: web.Request) -> web.Response:
-    """GET /api/file-search?q=... — fuzzy filename search for the @-mention file picker."""
+    """GET /api/file-search?q=... — fuzzy filename search for the @-mention file picker.
+
+    OWNER-ONLY, like every other reader in this module (``file_read``,
+    ``file_grep``, ``browse_dirs``, ``browse_files`` and the rest). The gate
+    matters more here than on any of them, because this is the one path reader
+    that takes an ARBITRARY root: ``?project=`` names any directory on the host
+    and only ``is_sensitive_path`` is consulted, so without the gate a non-owner
+    dashboard session could walk the host outside the credential set and read
+    back real names, sizes and mtimes. ``/api/path-complete`` answers the same
+    picker and is not in that position: it resolves the SERVER-HELD value its
+    ``path`` matched against the known project directories.
+    """
     # Re-imported at call time (not reused from the module-level binding) so a
     # test that stubs ``kiro_crew.security.is_sensitive_path`` is observed by the
     # project-root rejection below.
     from kiro_crew.security import is_sensitive_path  # noqa: F811
 
+    owner_denied = await require_owner_dashboard_request(request, "file_search")
+    if owner_denied is not None:
+        return owner_denied
     caller = request.get("user", "dashboard")
     query = request.query.get("q", "").strip().lower()
     if len(query) < 2:
+        # Audited like every other exit of this handler. The shared gate records
+        # only denials, so an exit that answers without an audit of its own leaves
+        # a SUCCESSFUL authorization with no SEL event at all -- the access was
+        # granted and nothing says so. Same idiom as ``api_file_diff``'s early
+        # ``allowed`` events: the ordinary outcome vocabulary, distinguished by
+        # ``resources``, rather than a marker only this handler emits.
+        await _audit_file_search_exit(caller, "short_query")
         return web.json_response({"results": []})
 
     # Result page size. Default mirrors SEARCH_RESULT_CAP in FolderPanel.tsx;
@@ -4581,6 +4639,11 @@ async def api_file_search(request: web.Request) -> web.Response:
         if project_is_dir:
             search_roots.append(project)
         else:
+            # Audited for the same reason as the short-query exit above: the
+            # authorization succeeded, so the record must not end at the gate.
+            await _audit_file_search_exit(
+                caller, f"project={project}", error="not a directory"
+            )
             return web.json_response(
                 {"results": [], "error": "Project directory not found"}, status=404
             )
