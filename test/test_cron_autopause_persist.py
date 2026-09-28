@@ -459,11 +459,11 @@ class TestExecuteSuccessResetsCounter:
 
         svc._on_job = cancelled_shape
         meta = _RunClaim(trigger="scheduled", claimed_at=0.0)  # the marker keys on identity
-        svc._cancelled_jobs.mark(job.id, meta)
+        svc._runs.cancelled.mark(job.id, meta)
         try:
             asyncio.run(svc._execute(job, meta))
         finally:
-            svc._cancelled_jobs.consume(job.id, meta)
+            svc._runs.cancelled.consume(job.id, meta)
         assert job.consecutive_failures == 3
 
     def test_another_runs_cancel_marker_does_not_suppress_the_reset(self, tmp_path: Path) -> None:
@@ -480,9 +480,9 @@ class TestExecuteSuccessResetsCounter:
         svc._on_job = succeeding
         prior_run = _RunClaim(trigger="manual", claimed_at=0.0)
         this_run = _RunClaim(trigger="manual", claimed_at=1.0)
-        svc._cancelled_jobs.mark(job.id, prior_run)
+        svc._runs.cancelled.mark(job.id, prior_run)
         try:
             asyncio.run(svc._execute(job, this_run))
         finally:
-            svc._cancelled_jobs.consume(job.id, prior_run)
+            svc._runs.cancelled.consume(job.id, prior_run)
         assert job.consecutive_failures == 0

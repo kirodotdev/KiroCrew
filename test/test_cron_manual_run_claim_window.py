@@ -300,7 +300,7 @@ class TestCancelInsideTheClaimWindow:
         assert wrapper is not None and wrapper.cancelled()
         assert executed == []
         assert job.id not in svc._claims
-        assert not svc._cancelled_jobs._marks
+        assert not svc._runs.cancelled._marks
         assert job.last_status == "error"
         assert (job.last_error or "").startswith("Cancelled by user")
         runs, total = await svc._history.get_job_history(job.id)
@@ -361,7 +361,7 @@ class TestCancelInsideTheClaimWindow:
         ), f"the run was dispatched {dispatched!r} while cancel() was tearing it down"
         assert wrapper.done() and not wrapper.cancelled() and wrapper.result() is False
         assert job.id not in svc._claims
-        assert not svc._cancelled_jobs._marks
+        assert not svc._runs.cancelled._marks
         runs, total = await svc._history.get_job_history(job.id)
         assert total == 1
         assert runs[0]["status"] == "cancelled"
@@ -455,7 +455,7 @@ class TestCancelInsideTheClaimWindow:
 
         assert second.done() and not second.cancelled() and second.result() is True
         assert job.id not in svc._claims
-        assert not svc._cancelled_jobs._marks
+        assert not svc._runs.cancelled._marks
         assert (job.last_error or "").startswith("Cancelled by user")
         runs, total = await svc._history.get_job_history(job.id)
         assert total == 2
@@ -558,7 +558,7 @@ class TestCancelInsideTheClaimWindow:
 
         assert tracked.done() and not tracked.cancelled() and tracked.result() is True
         assert job.id not in svc._claims
-        assert not svc._cancelled_jobs._marks
+        assert not svc._runs.cancelled._marks
         runs, total = await svc._history.get_job_history(job.id)
         assert total == 2
         assert [r["status"] for r in runs] == ["cancelled", "cancelled"]
@@ -646,7 +646,7 @@ class TestCancelInsideTheClaimWindow:
 
         assert read_markers(tmp_path) == []
         assert job.id not in svc._claims
-        assert not svc._cancelled_jobs._marks
+        assert not svc._runs.cancelled._marks
         runs, total = await svc._history.get_job_history(job.id)
         assert total == 2
         assert [r["status"] for r in runs] == ["cancelled", "cancelled"]
@@ -697,7 +697,7 @@ class TestCancelInsideTheClaimWindow:
                         clearing.parked(1), "the first run never reached its marker clear"
                     )
                     assert not prior.done()
-                    assert svc._cancelled_jobs.has(job.id, prior_claim)
+                    assert svc._runs.cancelled.has(job.id, prior_claim)
 
                     # The replacement is accepted, dispatches, and is cancelled too.
                     replacement = await client.post(f"/api/crons/{job.id}/run")
@@ -723,11 +723,11 @@ class TestCancelInsideTheClaimWindow:
                     clearing.release(1).set()
                     await _settled(prior)
                     assert prior.cancelled()
-                    assert svc._cancelled_jobs.has(job.id, later_claim), (
+                    assert svc._runs.cancelled.has(job.id, later_claim), (
                         "the prior run's finalizer consumed the replacement run's cancel "
                         "marker, so the replacement will finalize as if it had completed"
                     )
-                    assert not svc._cancelled_jobs.has(
+                    assert not svc._runs.cancelled.has(
                         job.id, prior_claim
                     ), "the prior run's finalizer consumed a marker that was not its own"
 
@@ -738,7 +738,7 @@ class TestCancelInsideTheClaimWindow:
             finally:
                 clearing.release_all()
 
-        assert not svc._cancelled_jobs._marks
+        assert not svc._runs.cancelled._marks
         assert job.id not in svc._claims
         runs, total = await svc._history.get_job_history(job.id)
         assert [r["status"] for r in runs] == ["cancelled", "cancelled"], (
@@ -1194,7 +1194,7 @@ class TestCancelInsideTheClaimWindow:
 
         assert executed == [job.id]
         assert job.id not in svc._claims
-        assert not svc._cancelled_jobs._marks
+        assert not svc._runs.cancelled._marks
         assert (job.last_error or "").startswith("Cancelled by user")
         runs, total = await svc._history.get_job_history(job.id)
         assert total == 1
@@ -1288,7 +1288,7 @@ class TestCancelInsideTheClaimWindow:
         assert executed == [], "the cancelled-before-start run executed"
         assert task.done()
         assert job.id not in svc._claims
-        assert not svc._cancelled_jobs._marks, "the run's cancel marker was never consumed"
+        assert not svc._runs.cancelled._marks, "the run's cancel marker was never consumed"
         # The task stamped nothing: a task handed the claim but not re-checking
         # it would have drawn a generation and stamped the monotonic start and
         # the jitter on a claim that is not its own to release.

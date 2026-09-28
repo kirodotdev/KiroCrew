@@ -99,7 +99,7 @@ class TestCronServiceCancel:
 
         assert job.last_status == "error"
         assert "Cancelled by user" in (job.last_error or "")
-        assert svc._cancelled_jobs.has("run1", claim)
+        assert svc._runs.cancelled.has("run1", claim)
         assert "run1" not in svc._claims
         task.cancel.assert_called_once()
         # ``ends_conversation``: cancelling the job ends its conversation, so its
@@ -219,7 +219,7 @@ class TestCronServiceCancel:
 
         assert "refused" not in svc._claims
         task.cancel.assert_called_once()
-        assert svc._cancelled_jobs.has("refused", claim)
+        assert svc._runs.cancelled.has("refused", claim)
         assert (job.last_error or "").startswith("Cancelled by user after")
         assert "; kill failed: ValueError: kill_process_group: refusing" in (job.last_error or "")
         runs, total = await svc._history.get_job_history("refused")
@@ -273,7 +273,7 @@ class TestCronServiceCancel:
 
         assert "cron:popped" not in svc._sessions._sessions, "the fixture did not pop the session"
         group_kill.assert_called_once_with(5252, platform_compat.SIGKILL)
-        assert svc._cancelled_jobs.has("popped", claim)
+        assert svc._runs.cancelled.has("popped", claim)
         assert "kill failed" not in (job.last_error or "")
         assert mock_sel().log_tool_invocation.call_args.kwargs["outcome"] == "cancelled"
 
@@ -547,7 +547,7 @@ class TestCronServiceCancel:
         job = _make_job("run3")
         svc._jobs = [job]
         claim = svc._claim_run("run3", "manual")
-        svc._cancelled_jobs.mark("run3", claim)
+        svc._runs.cancelled.mark("run3", claim)
 
         with patch.object(svc, "_merge_job_result") as mock_merge:
             await svc._run_job_isolated(job, claim)
@@ -555,7 +555,7 @@ class TestCronServiceCancel:
         mock_merge.assert_not_called()
         _, total = await svc._history.get_job_history("run3")
         assert total == 0
-        assert not svc._cancelled_jobs.has("run3", claim)  # flag consumed
+        assert not svc._runs.cancelled.has("run3", claim)  # flag consumed
 
     @pytest.mark.asyncio
     async def test_cancel_ends_every_key_of_the_run_not_only_the_newest(

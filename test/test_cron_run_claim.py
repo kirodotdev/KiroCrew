@@ -93,10 +93,10 @@ class TestClaimIdentity:
         lookalike = _RunClaim(
             trigger=stored.trigger, claimed_at=stored.claimed_at, marker_run=stored.marker_run
         )
-        assert svc._holds_claim("j1", stored)
-        assert not svc._holds_claim("j1", lookalike)
-        assert not svc._holds_claim("j1", None)
-        assert not svc._holds_claim("other", stored)
+        assert svc._runs.holds("j1", stored)
+        assert not svc._runs.holds("j1", lookalike)
+        assert not svc._runs.holds("j1", None)
+        assert not svc._runs.holds("other", stored)
 
 
 class TestReleaseClearsEveryField:
@@ -108,7 +108,7 @@ class TestReleaseClearsEveryField:
         claim.jitter = 12.5
         claim.task = _live_task()
 
-        assert svc._release_claim("j1", claim) is True
+        assert svc._runs.release("j1", claim) is True
 
         assert "j1" not in svc._claims
         assert not svc.is_running("j1")
@@ -150,8 +150,8 @@ class TestReleaseClearsEveryField:
     def test_release_of_an_unstored_claim_is_a_noop(self) -> None:
         svc = _service()
         stray = _RunClaim(trigger="manual", claimed_at=0.0)
-        assert svc._release_claim("j1", stray) is False
-        assert svc._release_claim("j1", None) is False
+        assert svc._runs.release("j1", stray) is False
+        assert svc._runs.release("j1", None) is False
         assert not svc.is_running("j1")
 
 
@@ -159,12 +159,12 @@ class TestStaleClaimNeverReleasesTheCurrentRun:
     def test_a_previous_runs_claim_leaves_the_replacement_alone(self) -> None:
         svc = _service()
         previous = svc._claim_run("j1", "manual")
-        assert svc._release_claim("j1", previous) is True
+        assert svc._runs.release("j1", previous) is True
         replacement = svc._claim_run("j1", "scheduled")
 
         # The previous run's late finalizer / backstop / wrapper release:
-        assert svc._release_claim("j1", previous) is False
-        assert not svc._holds_claim("j1", previous)
+        assert svc._runs.release("j1", previous) is False
+        assert not svc._runs.holds("j1", previous)
         assert svc._claims["j1"] is replacement
         assert svc.is_running("j1")
 
@@ -173,17 +173,17 @@ class TestStaleClaimNeverReleasesTheCurrentRun:
         claim = svc._claim_run("j1", "manual")
         claim.task = _live_task()
 
-        taken = svc._take_claim("j1")
+        taken = svc._runs.take("j1")
         assert taken is claim and claim.taken is True
         # Occupied through the teardown, silent to the badge, fenced off the run.
         assert svc.is_running("j1")
         assert svc.running_since("j1") is None
-        assert not svc._holds_claim("j1", claim)
-        assert svc._release_claim("j1", claim) is False
+        assert not svc._runs.holds("j1", claim)
+        assert svc._runs.release("j1", claim) is False
         assert svc._claims["j1"] is claim
         # A second teardown finds nothing to take.
-        assert svc._take_claim("j1") is None
-        assert svc._take_claim("other") is None
+        assert svc._runs.take("j1") is None
+        assert svc._runs.take("other") is None
 
     def test_finish_pops_only_a_taken_claim_and_cancels_its_task(self) -> None:
         svc = _service()
@@ -191,23 +191,23 @@ class TestStaleClaimNeverReleasesTheCurrentRun:
         claim.task = _live_task()
 
         # Not taken: a replacement run's claim is never a teardown's to finish.
-        svc._finish_taken_claim("j1")
+        svc._runs.finish_taken("j1")
         assert svc._claims["j1"] is claim
         claim.task.cancel.assert_not_called()
 
-        svc._take_claim("j1")
-        svc._finish_taken_claim("j1")
+        svc._runs.take("j1")
+        svc._runs.finish_taken("j1")
         assert "j1" not in svc._claims
         claim.task.cancel.assert_called_once()
         # Idempotent: a concurrent teardown that reached this step first left nothing.
-        svc._finish_taken_claim("j1")
+        svc._runs.finish_taken("j1")
 
     def test_finish_does_not_cancel_a_task_that_already_ended(self) -> None:
         svc = _service()
         claim = svc._claim_run("j1", "scheduled")
         claim.task = MagicMock(done=MagicMock(return_value=True))
-        svc._take_claim("j1")
-        svc._finish_taken_claim("j1")
+        svc._runs.take("j1")
+        svc._runs.finish_taken("j1")
         assert "j1" not in svc._claims
         claim.task.cancel.assert_not_called()
 
@@ -236,7 +236,7 @@ class TestStaleClaimNeverReleasesTheCurrentRun:
             reap.await_args.kwargs.get("claim") is claim
         ), "the sweep did not hand _force_reap the claim it measured"
 
-        assert svc._take_claim("j1") is claim
+        assert svc._runs.take("j1") is claim
         with patch.object(svc, "_force_reap", new_callable=AsyncMock) as reap, _one_sweep():
             with pytest.raises(asyncio.CancelledError):
                 await svc._reaper_loop()
@@ -267,7 +267,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
     """A taken claim is its taker's to finish; a later teardown must not pop it.
 
     ``cancel()`` and ``_force_reap`` take the claim, then await their kills,
-    then pop it (``_finish_taken_claim``). A second ``cancel()`` (a
+    then pop it (``RunClaims.finish_taken``). A second ``cancel()`` (a
     double-clicked Cancel, or a Cancel during a live reap) that lands inside
     that await finds the claim already taken. Carrying on anyway would pop
     the FIRST teardown's claim early -- the job reads idle while its kill is
@@ -300,7 +300,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
             first = asyncio.get_running_loop().create_task(svc.cancel("j1"))
             await asyncio.wait_for(parked.wait(), timeout=5)
             assert claim.taken and svc._claims["j1"] is claim
-            assert svc._cancelled_jobs.has("j1", claim)
+            assert svc._runs.cancelled.has("j1", claim)
 
             second = await svc.cancel("j1")
 
@@ -337,9 +337,9 @@ class TestASecondTeardownLeavesTheFirstAlone:
         cancel's to finish, and its row the only one owed.
         """
         svc, job, claim, task = _cancel_fixture(tmp_path)
-        assert svc._take_claim("j1") is claim  # a cancel() inside its kill await
-        svc._cancelled_jobs.mark("j1", claim)
-        generation_before = svc._run_generations.get("j1", 0)
+        assert svc._runs.take("j1") is claim  # a cancel() inside its kill await
+        svc._runs.cancelled.mark("j1", claim)
+        generation_before = svc._runs.generations.get("j1", 0)
 
         with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
             await svc._force_reap("j1", _JOB_TIMEOUT_SECS + 60, claim=claim)
@@ -347,12 +347,12 @@ class TestASecondTeardownLeavesTheFirstAlone:
         assert svc._claims.get("j1") is claim, "the reap popped the cancel's taken claim"
         task.cancel.assert_not_called()
         svc._sessions.reset.assert_not_awaited()
-        assert not svc._reaped_jobs.has(
+        assert not svc._runs.reaped.has(
             "j1", claim
         ), "the reap marked a run cancel() already marked"
         assert job.last_status != "error" and not (job.last_error or "").startswith("Reaped")
         assert (
-            svc._run_generations.get("j1", 0) == generation_before
+            svc._runs.generations.get("j1", 0) == generation_before
         ), "the reap drew a generation for a terminal row it does not own"
         _runs, total = await svc._history.get_job_history("j1")
         assert total == 0, "the reap wrote a reaped row beside the cancel's cancelled row"
@@ -369,7 +369,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
         svc = _service()
         claim = svc._claim_run("j1", "manual")
         claim.task = MagicMock(done=MagicMock(return_value=True))
-        assert svc._take_claim("j1") is claim
+        assert svc._runs.take("j1") is claim
 
         assert (
             svc.discard_finished_run("j1") is False
@@ -378,7 +378,7 @@ class TestASecondTeardownLeavesTheFirstAlone:
         assert svc.is_running("j1")
 
         # The teardown's own finish still pops it, task done or not.
-        svc._finish_taken_claim("j1")
+        svc._runs.finish_taken("j1")
         assert "j1" not in svc._claims
 
 
@@ -394,7 +394,7 @@ class TestAnAbortedTeardownStillFinishesItsClaim:
 
     From the take onwards, by design, the run's own fences fail, the reaper
     sweep skips the claim and ``discard_finished_run`` refuses it: only the
-    taker's ``_finish_taken_claim`` pops it. ``cancel()`` and ``_force_reap``
+    taker's ``RunClaims.finish_taken`` pops it. ``cancel()`` and ``_force_reap``
     run kill awaits between the take and that finish -- the executor hop to
     ``kill_running_process``, the session reset, ``_sigkill_session`` -- and a
     raise there (an executor shut down under the hop, the route's handler
@@ -575,7 +575,7 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
             assert claim_a.taken and svc._claims["j1"] is claim_a
             # While job A's reap awaits its reset, job B's run ends on its own
             # and the due-scan claims the job again: a fresh run, seconds old.
-            assert svc._release_claim("j2", stale_b) is True
+            assert svc._runs.release("j2", stale_b) is True
             replacement = svc._claim_run("j2", "scheduled")
             replacement.started_monotonic = time.monotonic()
             replacement.jitter = 0.0
@@ -591,8 +591,8 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
         assert replacement.task is not None
         replacement.task.cancel.assert_not_called()
         assert reset_keys == ["cron:j1"], "the sweep reset a replacement run's session"
-        assert not svc._reaped_jobs.has("j2", replacement)
-        assert not svc._reaped_jobs.has("j2", stale_b)
+        assert not svc._runs.reaped.has("j2", replacement)
+        assert not svc._runs.reaped.has("j2", stale_b)
         assert job_b.last_status != "error" and not (job_b.last_error or "").startswith("Reaped")
         _runs, total_b = await svc._history.get_job_history("j2")
         assert total_b == 0, "the sweep wrote a timeout row for a run seconds old"
@@ -631,7 +631,7 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
         assert replacement.task is not None
         replacement.task.cancel.assert_not_called()
         svc._sessions.reset.assert_not_awaited()
-        assert not svc._reaped_jobs.has("j2", replacement)
+        assert not svc._runs.reaped.has("j2", replacement)
         assert job_b.last_status != "error"
         _runs, total = await svc._history.get_job_history("j2")
         assert total == 0
@@ -664,14 +664,14 @@ class TestTheSweepReapsOnlyTheClaimItMeasured:
             trigger=stored.trigger, claimed_at=stored.claimed_at, marker_run=stored.marker_run
         )
 
-        assert svc._take_claim("j1", expected=lookalike) is None
+        assert svc._runs.take("j1", expected=lookalike) is None
         assert stored.taken is False, "a take for another run took the stored claim"
-        assert svc._take_claim("other", expected=stored) is None
+        assert svc._runs.take("other", expected=stored) is None
 
-        assert svc._take_claim("j1", expected=stored) is stored
+        assert svc._runs.take("j1", expected=stored) is stored
         assert stored.taken is True
         # Taken once: the same expected claim is not taken a second time.
-        assert svc._take_claim("j1", expected=stored) is None
+        assert svc._runs.take("j1", expected=stored) is None
 
 
 class TestTaskTracking:

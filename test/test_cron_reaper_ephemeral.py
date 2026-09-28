@@ -120,7 +120,7 @@ class TestReaperUsesActiveSessionKey:
         svc = CronService()
         older = svc._claim_run("j1", "scheduled")
         svc.register_active_session_key("j1", "cron:j1:older")
-        assert svc._release_claim("j1", older)
+        assert svc._runs.release("j1", older)
         current = svc._claim_run("j1", "scheduled")
         svc.register_active_session_key("j1", "cron:j1:agentA")
         svc.register_active_session_key("j1", "cron:j1:agentB")
@@ -139,7 +139,7 @@ class TestReaperUsesActiveSessionKey:
         svc = CronService()
         first = svc._claim_run("j1", "scheduled")
         svc.register_active_session_key("j1", "cron:j1")
-        assert svc._release_claim("j1", first)
+        assert svc._runs.release("j1", first)
         second = svc._claim_run("j1", "scheduled")
         svc.register_active_session_key("j1", "cron:j1")
 

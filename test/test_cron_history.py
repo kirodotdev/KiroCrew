@@ -303,10 +303,11 @@ def test_record_from_dict_ignores_extra_keys() -> None:
 
 @pytest.mark.asyncio
 async def test_run_job_returns_false_when_already_executing() -> None:
-    from kiro_crew.cron import CronJob, CronService, _RunClaim
+    from kiro_crew.cron import CronJob, CronService, RunClaims, _RunClaim
 
     svc = CronService.__new__(CronService)
     svc._jobs = [CronJob(id="j1", name="test", schedule="* * * * *", message="hi")]
+    svc._runs = RunClaims()
     svc._claims = {"j1": _RunClaim(trigger="scheduled", claimed_at=0.0)}
     svc._loop = None
     svc._file = None
@@ -318,11 +319,11 @@ async def test_run_job_returns_false_when_already_executing() -> None:
 
 @pytest.mark.asyncio
 async def test_run_job_stores_manual_trigger_meta() -> None:
-    from kiro_crew.cron import CronJob, CronService
+    from kiro_crew.cron import CronJob, CronService, RunClaims
 
     svc = CronService.__new__(CronService)
     svc._jobs = [CronJob(id="j1", name="test", schedule="* * * * *", message="hi")]
-    svc._claims = {}
+    svc._runs = RunClaims()
     svc._loop = None
     svc._file = None
 

@@ -204,7 +204,7 @@ class TestScriptExecution:
     async def test_skip_defers_strike_reset_to_execute(self):
         # The Skip branch must NOT reset the counter or lift auto-pause itself:
         # that is record_success's job, reached only through
-        # CronScheduler._execute, whose reset is guarded by the _cancelled_jobs
+        # CronScheduler._execute, whose reset is guarded by the cancel markers
         # cancel-race check. An unguarded reset in this branch would clear the
         # pause and re-enable a job cancelled mid-tick, so the callback layer
         # leaves the bookkeeping untouched and defers to _execute. (The guarded
@@ -1574,7 +1574,7 @@ class TestCronUsageRow:
 def test_shutdown_cancel_keeps_the_last_completed_result(tmp_path) -> None:
     """A shutdown cancel must not wipe the previous run's result.
 
-    stop() cancels the in-flight task but never adds the job to _cancelled_jobs,
+    stop() cancels the in-flight task but never adds the job to the cancel markers,
     so the funnel's result-less clear would otherwise run on every gateway stop
     and persist an empty result over the last completed run's output.
     """

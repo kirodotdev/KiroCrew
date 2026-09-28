@@ -17,24 +17,31 @@ Supports three schedule types:
 - ``every`` — recurring interval (min 60s)
 - ``at`` — one-shot at a unix timestamp
 - ``cron`` — standard cron expression (min hour dom month dow)
+
+:class:`CronService` is defined here and composes the owners in
+:mod:`kiro_crew.cron_service` (schedule evaluation, the job record, run identity,
+run claims, run deadlines, the store format and lock, field validation, the
+serviceless store readers, cron folders). It keeps the service's live state, its
+run lifecycle, the reaper and ``cancel()`` teardown, and every store transaction.
+
+This module is also the subsystem's import and patch surface: every function,
+class and constant it defined before those owners moved out still resolves here
+as the same object.
+The names tests patch here that moved code reads -- ``datetime``,
+``get_local_tz``, ``published_config_timezone``, ``cron_expr_matches``,
+``config_dir``, ``_record_is_enabled``, ``sel`` and ``_JOB_TIMEOUT_SECS`` -- the
+owners read through this module on each call, so a patch here reaches them.
 """
 
 from __future__ import annotations
 
 import asyncio
-import copy
-import hashlib
-import json
 import logging
-import math
-import random
-import re
+import random  # noqa: F401 -- patch seam: tests patch kiro_crew.cron.random.uniform
 import threading
 import time
-import uuid
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime  # noqa: F401 -- patch seam the owners read through here
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -44,29 +51,19 @@ from typing import (
     Collection,
     Coroutine,
     Iterator,
-    NamedTuple,
 )
-from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 
-try:
-    from cron_descriptor import Options, get_description  # type: ignore[import-untyped]
-except ImportError:
-    Options = None  # type: ignore[assignment,misc]
-    get_description = None  # type: ignore[assignment]
-from croniter import croniter  # type: ignore[import-untyped]
-
 from kiro_crew import (
     cron_inflight,
     cron_script,
-    platform_compat,
     sel,
     shutdown_event,
     stall_attribution,
 )
-from kiro_crew.config.loader import (
+from kiro_crew.config.loader import (  # noqa: F401 -- patch seams the owners read through here
     KiroCrewConfig,
     config_dir,
     data_home,
@@ -74,7 +71,101 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
-from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
+from kiro_crew.cron_service.claims import (  # noqa: F401 -- re-exported
+    RunClaims,
+    _manual_run_refused,
+    _RunClaim,
+    _RunMarkers,
+)
+from kiro_crew.cron_service.execution import (  # noqa: F401 -- re-exported
+    _SUBPROC_CLEANUP_ALLOWANCE_SECS,
+    _gate_budget_allowance,
+    _pool_queue_allowance,
+    _vet_allowance,
+    apply_run_record,
+    close_run,
+    effective_wake_budget,
+)
+from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
+    _CHAT_FOLDER_NEEDS_PERSISTENT,
+    _CRON_STRING_FIELD_CAPS,
+    _MIN_INTERVAL_SECS,
+    _validate_cron_string_fields,
+    apply_job_update,
+    build_job,
+)
+from kiro_crew.cron_service.folders import (  # noqa: F401 -- re-exported
+    _CRON_FOLDERS_FILE,
+    CronFolderLookup,
+    _read_cron_folders,
+    load_cron_folders,
+    lookup_cron_folder_id,
+)
+from kiro_crew.cron_service.identity import (  # noqa: F401 -- re-exported
+    agent_sequence_dispatches,
+    bind_cron_memory,
+    build_cron_session_context,
+    cron_session_key_is_stable,
+    resolve_cron_memory,
+)
+from kiro_crew.cron_service.model import (  # noqa: F401 -- re-exported
+    _AUTO_PAUSE_THRESHOLD,
+    _JOB_TIMEOUT_SECS,
+    CronJob,
+    CronSchedule,
+)
+from kiro_crew.cron_service.readers import (  # noqa: F401 -- re-exported
+    _SKILL_TOKEN_RE,
+    _captured_template_id,
+    dispatched_agents_from_disk,
+    enabled_count_from_disk,
+    job_agent_names_from_disk,
+    referenced_skill_names,
+)
+from kiro_crew.cron_service.schedule import (  # noqa: F401 -- re-exported
+    _JITTER_DAILY_MAX,
+    _JITTER_HOURLY_MAX,
+    _MAX_SKIP_DATE_HORIZON_SECS,
+    _MAX_SKIP_DATE_LOOKAHEAD,
+    _RE_IN_DURATION,
+    _TIMER_POLL_SECS,
+    _UNIT_SECS,
+    _compute_next_run_ts_raw,
+    _humanize_cron,
+    _job_tz,
+    _next_cron_boundary_ts,
+    compute_jitter,
+    compute_next_run_ts,
+    cron_expr_matches,
+    format_schedule,
+    get_local_tz,
+    is_due,
+    is_valid_skip_date,
+    is_valid_timezone,
+    next_wake_secs,
+    parse_time_string,
+    validate_cron_expr,
+)
+from kiro_crew.cron_service.store import (  # noqa: F401 -- re-exported
+    _CRONS_FILE,
+    _FILE_LOCK_POLL_SECS,
+    _FILE_LOCK_TIMEOUT_SECS,
+    _STORE_VERSION,
+    CronPendingMismatch,
+    CronStoreBusy,
+    CronStoreUnreadable,
+    _is_loadable_record,
+    _is_representable_number,
+    _job_from_record,
+    _read_job_records,
+    _record_is_enabled,
+    _record_user_paused,
+    cron_store_lock,
+    decode_jobs,
+    encode_store,
+    store_digest,
+)
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.metrics.events import CRON_FIRES, emit_counter
 from kiro_crew.process_identity import (
     ProcessHandle,
@@ -95,545 +186,34 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.resource_status import admission_check
 from kiro_crew.runtime_ownership import authorize_runtime_kill
-from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
 
-# ── Constants ──
 
-# Shown verbatim under the Schedule form's Save button, so it names the rule
-# and the next step rather than only the refusal.
-_CHAT_FOLDER_NEEDS_PERSISTENT = (
-    "Filing runs into a chat folder needs a persistent session: a stateless job "
-    "has no job-wide tab to file. Clear the chat folder, or keep the session."
-)
+def cron_job_id_from_session_key(session_key: object) -> str:
+    """The job id inside a ``cron:`` session key, or ``""`` for any other value.
 
-# Table-driven string-field caps for the persistence chokepoint. Every
-# caller-supplied string field persisted by _build_job/_update_job_locked
-# is listed here with its cap matching the REST/MCP boundary schemas
-# (CRON_ADD_SCHEMA / cron_update ToolSchema in validation.py). A helper
-# iterates this table so adding a field requires ONE edit, not two.
-_CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
-    ("name", MAX_SHORT_STRING),
-    ("message", MAX_CRON_MESSAGE),
-    ("channel", CHANNEL_MAX_LEN),
-    ("thread_ts", 30),
-    ("agent_id", MAX_SHORT_STRING),
-    ("member_id", MAX_SHORT_STRING),
-    ("created_by", MAX_SHORT_STRING),
-    ("source_preset", MAX_SHORT_STRING),
-    ("source_template_prompt", MAX_CRON_MESSAGE),
-    ("folder_id", MAX_SHORT_STRING),
-    ("chat_folder_id", MAX_SHORT_STRING),
-    ("session_key", MAX_SHORT_STRING),
-    ("model", MAX_SHORT_STRING),
-    ("command", 5000),
-    ("script", 200),
-    ("timezone", 50),
-    # Secret-grant fields have no boundary FieldSpec: the pins are sha256 hex
-    # digests computed server-side by the grant endpoint / cron_secret_request
-    # tool (grant validity is enforced by pin equality at fire time, not by
-    # this length gate). Per the no-schema convention they use the general ID cap.
-    ("secret_env_pin", MAX_SHORT_STRING),
-    ("secret_env_pending_pin", MAX_SHORT_STRING),
-)
+    Every shape this repository mints is ``cron:<job_id>`` with an OPTIONAL third
+    segment, and a job id is ``uuid4().hex[:8]`` so it never contains a colon --
+    which is what makes taking the second segment exact rather than a guess.
 
-
-def _validate_cron_string_fields(
-    values: dict[str, object],
-    *,
-    required: frozenset[str] = frozenset(),
-) -> None:
-    """Type+length gate for every caller-supplied string field.
-
-    Iterates _CRON_STRING_FIELD_CAPS. For each field:
-    - If in *required*: always validates (rejects non-str or over-cap).
-    - Otherwise: ``None`` and ``""`` mean "not set" and are skipped; any
-      other value — including falsy non-strings like ``[]`` or ``0``, which
-      a bare truthiness test would silently admit — must be a string within
-      the cap.
+    A FALSY key (``None`` or ``""``) is one of the "any other key" cases, not an
+    input error: ``session_key`` is an optional caller-supplied field, so the
+    falsy-skip at creation persists ``None`` on the row, and an ownerless row is
+    the documented state the CLI and the Schedule page manage. A non-string JSON
+    value is malformed persisted data, but it gets the same non-cron answer here:
+    this parser is shared by removal cleanup, where calling ``.startswith`` on a
+    list or mapping would abort after the target row was filtered from memory and
+    let a later save silently commit a removal the caller saw fail. Answering
+    ``""`` here is what every consumer already expects of a non-cron owner -- the
+    same reading ``_owned_by`` gives an empty key (reaches nothing) and the release
+    paths give one (``if not job.session_key: continue``). Guarding at this one
+    boundary rather than at each call site keeps the "ONE key parser" invariant
+    that :func:`cron_owner_matches` and the liveness checks depend on.
     """
-    for field_name, cap in _CRON_STRING_FIELD_CAPS:
-        val = values.get(field_name)
-        if field_name in required:
-            if not isinstance(val, str):
-                raise ValueError(f"{field_name} must be a string")
-            if len(val) > cap:
-                raise ValueError(f"{field_name} exceeds max length {cap}")
-        else:
-            if val is None or val == "":
-                continue
-            if not isinstance(val, str):
-                raise ValueError(f"{field_name} must be a string")
-            if len(val) > cap:
-                raise ValueError(f"{field_name} exceeds max length {cap}")
-
-
-# Resolved per call, never captured at import: an import-time binding freezes
-# the data home and defeats pod isolation, the lazy legacy-home migration and
-# test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home";
-# dashboard/handlers/usage.py is the reference implementation.
-_DEFAULT_DIR: Path | None = None
-
-
-def _default_dir() -> Path:
-    """Cron data directory, resolved against the live data home."""
-    return _DEFAULT_DIR if _DEFAULT_DIR is not None else data_home()
-
-
-_CRONS_FILE = "crons.json"
-
-# ``$skill`` token pattern (mirrors skills._DOLLAR_SKILL_PATTERN; duplicated
-# here to avoid a cron<->skills import cycle).
-_SKILL_TOKEN_RE = re.compile(r"(?<![\w$])\$([a-z0-9][a-z0-9/_-]*)")
-
-
-class CronStoreUnreadable(ValueError):
-    """A mutation could not be persisted because the last load failed.
-
-    Derives from ``ValueError`` rather than ``RuntimeError`` so a refusal lands in
-    the per-item handlers callers already have. The onboarding importer's apply
-    loop catches ``(OSError, ValueError, TypeError, sqlite3.Error)`` per item; a
-    ``RuntimeError`` escaped that tuple, so ONE corrupt ``crons.json`` failed the
-    whole apply request with a 500 and lost every later item in the plan, instead
-    of rejecting the single schedule it actually blocks. The three sites that
-    catch both classes list ``CronStoreUnreadable`` BEFORE ``ValueError``, so they
-    keep binding their own arm and their messages do not change.
-
-    Raised by :meth:`CronService._save` when ``_load`` could not read
-    ``crons.json``. The in-memory job list is empty for that reason rather than
-    because the store is empty, so writing it would overwrite records that are
-    still on disk. Persisting is refused AND the refusal is raised, so a
-    user-initiated mutation reports failure instead of returning success for a
-    write that never happened. Background writers (the reaper merge, the job
-    result merge, the deferred-removal drain) catch it and degrade: a corrupt
-    store must not take down the scheduler loop.
-
-    Also raised by :func:`dispatched_agents_from_disk` when the store is PRESENT
-    but nothing loads from it, so a reader that must fail CLOSED (the template
-    delete guard) does not mistake an unreadable store for an empty one.
-    """
-
-
-def _is_loadable_record(j: dict[str, Any]) -> bool:
-    """True when the SCHEDULER could build a job from *j*. NEVER raises.
-
-    :func:`_job_from_record` is the authority on that — it raises
-    ``KeyError``/``TypeError``/``AttributeError`` on a record that is not shaped
-    like a job — so asking it is the only honest test. ``isinstance(j, dict)``
-    is a weaker stand-in: ``{}`` is a dict the loader rejects. Wrapped here so
-    :func:`_read_job_records` keeps its non-raising contract.
-    """
-    try:
-        # warn_on_coercion=False: this probe runs at WS status-pusher cadence
-        # (count_enabled_from_disk on every push cycle, per connected
-        # dashboard) and never precedes a store rewrite, so the coercion
-        # recovery-window WARNING belongs to _load alone — emitting it here
-        # would repeat it indefinitely for one bad record.
-        _job_from_record(j, warn_on_coercion=False)
-    except Exception:
-        return False
-    return True
-
-
-def _read_job_records(path: Path) -> tuple[list[dict[str, Any]], bool]:
-    """Read *path*, returning ``(records, loadable)``. NEVER raises.
-
-    ``loadable`` is False only when the store is PRESENT but the scheduler can
-    build nothing from it. It exists for the DIAGNOSTIC caller, which must tell
-    "you have no crons" (fine) from "your crons stopped loading" (a fault);
-    runtime readers take ``[0]`` and keep degrading quietly, so the records
-    half is unchanged by it.
-
-    Single owner of the read-parse-shape prologue for the three readers that
-    deliberately bypass the scheduler so they work with no running gateway
-    (:func:`referenced_skill_names`, :func:`unhealthy_jobs_from_disk`,
-    :meth:`CronService.count_enabled_from_disk`). Each had grown its own
-    spelling of this prologue and they had drifted in WHICH corruption they
-    survived, so a store that one reader shrugged off crashed another. This is
-    NOT every reader of the file — see the exclusions below.
-
-    Every failure mode collapses to "no records", because all three callers
-    degrade quietly by contract rather than propagate:
-
-    * ``OSError`` — no file at all (every fresh install), permissions, or a
-      directory where the file should be.
-    * ``UnicodeError`` — the store is bytes on disk and can hold invalid
-      UTF-8. Reading with an explicit encoding also pins the decode to the
-      one :func:`~kiro_crew.atomic_write.atomic_write` writes, rather than to
-      the caller's locale.
-    * ``ValueError`` / ``TypeError`` — unparseable JSON.
-    * ``RecursionError`` — deeply nested JSON. It subclasses ``RuntimeError``,
-      NOT ``ValueError``, so it escapes a decode-error tuple and would abort
-      the caller from inside the read it expected to be safe.
-    * Shape — a document that parses but is not an object holding a ``jobs``
-      list (a top-level ``[]``, a scalar, ``{"jobs": null}``).
-
-    Non-dict entries are dropped here so that no caller repeats the check.
-    All three already discarded them — two by an explicit ``isinstance``
-    guard, one by letting :func:`_job_from_record` reject them — so
-    filtering centrally preserves each caller's behaviour exactly.
-
-    Three readers are deliberately NOT served, because each owes the user or
-    the scheduler a louder reaction than a quiet degrade:
-
-    * :meth:`CronService._load` reads bytes handed over by ``_sync``, logs a
-      warning naming the corruption, and resets the store fingerprint — those
-      are scheduler-state side effects folding in here would silence.
-    * :func:`~kiro_crew.portability._sanitize_imported_crons` rewrites an
-      unreadable import to an empty store and reports it to the caller.
-    * :func:`~kiro_crew.snapshot._merge_crons` prints which path it could not
-      read, skips the merge, and answers ``False`` so its caller can report
-      the refusal instead of a success.
-
-    The latter two still guard on ``(OSError, ValueError)`` only, so a deeply
-    nested store aborts an import or a snapshot merge there. That is a real
-    remaining gap, left for separate work: both owe the user a message naming
-    the file, which this quiet loader cannot give them.
-    """
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        # An ABSENT store is the fresh-install case: nothing to load is not a
-        # fault. A path that is PRESENT but unusable — a directory, a broken
-        # symlink, unreadable bytes — is the opposite, since the scheduler
-        # loads nothing from it either and only that is worth reporting.
-        # ``is_file()`` cannot draw this line: it is False for a directory and
-        # for a broken symlink just as it is for a missing file. Use the
-        # ``exists() or is_symlink()`` form ``cli_doctor`` already uses for the
-        # same "present but not a usable file" distinction.
-        try:
-            present = path.exists() or path.is_symlink()
-        except OSError:
-            present = True
-        return ([], not present)
-    try:
-        data = json.loads(raw)
-    except (ValueError, TypeError, RecursionError):
-        return ([], False)
-    records = data.get("jobs", []) if isinstance(data, dict) else None
-    if not isinstance(records, list):
-        return ([], False)
-    kept = [j for j in records if isinstance(j, dict)]
-    # Entries were present but NONE of them is loadable: the shape parsed, yet
-    # nothing the scheduler can run came out of it. That is a read failure for
-    # the diagnostic's purposes even though json.loads succeeded — distinct
-    # from an honestly empty `{"jobs": []}`, which yields nothing because there
-    # is nothing. Ask the LOADER, not `isinstance(dict)`: `{}` is a dict it
-    # rejects, so `{"jobs":[{}]}` would otherwise report healthy while the
-    # scheduler loads zero jobs. `kept` is returned UNCHANGED either way, so
-    # partial salvage still reaches the runtime readers.
-    return (kept, (not records) or any(_is_loadable_record(j) for j in kept))
-
-
-def referenced_skill_names() -> set[str]:
-    """Skill slugs referenced via ``$skill`` tokens in any cron job's message.
-
-    Read-only + best-effort: reads ``crons.json`` directly (so it needs no
-    running scheduler) and returns an empty set on any error. The skill
-    lifecycle uses this to exempt cron-referenced skills from eviction — a job
-    that says ``$deploy-helper`` keeps ``auto/deploy-helper`` from being
-    archived out from under it. Returns both the raw token and its last path
-    segment so callers can match either a full key or a bare slug.
-    """
-    out: set[str] = set()
-    try:
-        for j in _read_job_records(config_dir() / _CRONS_FILE)[0]:
-            msg = j.get("message") or ""
-            for m in _SKILL_TOKEN_RE.finditer(msg):
-                tok = m.group(1)
-                if any(c.isalpha() for c in tok):
-                    out.add(tok)
-                    out.add(tok.split("/")[-1])
-    except Exception:
-        return set()
-    return out
-
-
-def agent_sequence_dispatches(seq: list[str]) -> bool:
-    """Whether a job's ``agent_sequence`` is what dispatch actually runs.
-
-    A sequence of more than one agent takes precedence over ``agent_id``; a
-    shorter one is dormant and dispatch falls through to ``agent_id``. This is
-    the ONE spelling of that gate -- the Slack dispatch path, session-key
-    stability, and the doctor's disk reader all call it, so a change to the
-    dispatch semantics cannot silently leave a consumer reporting (or keying)
-    against the old rule.
-    """
-    return len(seq) > 1
-
-
-def dispatched_agents_from_disk(*, loadable_only: bool) -> list[tuple[str, str, str]]:
-    """``(job id, holder label, agent name)`` for every agent a stored job DISPATCHES.
-
-    The ONE walk that encodes the dispatch-mirroring rule, so the two readers
-    that need it -- ``kirocrew doctor`` through :func:`job_agent_names_from_disk`
-    and the Agent templates delete guard -- cannot drift when a job kind is
-    added. Reads ``crons.json`` directly (no running scheduler) and lets any
-    read or parse error propagate; the doctor wrapper is the one that swallows.
-
-    Mirrors dispatch, not storage: a ``script`` or ``command`` job bypasses
-    agent dispatch entirely, so its agent fields are dormant and the record is
-    skipped whole; otherwise, when :func:`agent_sequence_dispatches` the
-    sequence entries are reported and ``agent_id`` is dormant, else the
-    template the job actually runs is reported and the sequence (if any) is
-    dormant. That template is the captured ``execution_context.template_id``
-    when the record carries one (:func:`resolve_cron_memory` and the gateway
-    dispatch both read it there -- a schedule created from a template chat
-    with no ``agent`` argument names its template ONLY there, ``agent_id``
-    staying empty), else ``agent_id`` for a legacy record. A record whose
-    AGENT fields the scheduler's loader rejects (a non-list sequence, a
-    non-string entry or ``agent_id``) dispatches nothing and contributes nothing.
-
-    *loadable_only* is where the two readers legitimately differ. The delete
-    guard passes ``True``: it counts only records the scheduler could build
-    (:func:`_is_loadable_record`), because a record with no ``schedule`` never
-    fires and must not pin a template forever. Doctor passes ``False``: it
-    warns about every deprecated name written on disk, including a partial or
-    legacy record the operator can still see and repoint.
-    """
-    store = config_dir() / _CRONS_FILE
-    records, loadable = _read_job_records(store)
-    if not records and not loadable:
-        # Present but unreadable (permissions, bytes, JSON, shape): the
-        # scheduler loads nothing from it NOW, but a repaired store brings its
-        # jobs back with the agents they name -- so this is not "no
-        # references", it is "the references cannot be read", and the caller
-        # decides how loud to be. A store whose records parsed but none of
-        # which the scheduler can build is NOT this case: those records are
-        # returned and each reader applies its own loadability rule below.
-        raise CronStoreUnreadable(str(store))
-    out: list[tuple[str, str, str]] = []
-    for j in records:
-        if loadable_only and not _is_loadable_record(j):
-            continue
-        if j.get("script") or j.get("command"):
-            continue  # runs with no LLM; agent fields are dormant
-        seq = j.get("agent_sequence", [])
-        if not isinstance(seq, list) or any(not isinstance(s, str) for s in seq):
-            continue  # the scheduler's loader rejects this record whole
-        agent_id = j.get("agent_id", "")
-        if agent_id is not None and not isinstance(agent_id, str):
-            continue  # same rejection class
-        job_id = j.get("id")
-        job_id = job_id if isinstance(job_id, str) else ""
-        name = j.get("name")
-        label = name if isinstance(name, str) and name else (job_id or "<unnamed job>")
-        if agent_sequence_dispatches(seq):
-            names = [s for s in seq if s]
-        else:
-            runs = _captured_template_id(j.get("execution_context")) or agent_id
-            names = [runs] if runs else []
-        out.extend((job_id, label, agent) for agent in dict.fromkeys(names))
-    return out
-
-
-def _captured_template_id(execution_context: Any) -> str:
-    """The template a stored job's captured execution names, or ``""``.
-
-    Read leniently on purpose: this is a reference scan over records on disk,
-    not the loader, so a record whose context is missing or malformed simply
-    contributes no captured name and falls back to ``agent_id`` -- the same
-    order the dispatcher applies when it has no usable context.
-    """
-    if not isinstance(execution_context, dict):
+    if not isinstance(session_key, str) or not session_key.startswith("cron:"):
         return ""
-    template_id = execution_context.get("template_id")
-    return template_id if isinstance(template_id, str) else ""
-
-
-def job_agent_names_from_disk() -> list[tuple[str, str]]:
-    """``(job name, agent name)`` for every agent a stored cron job dispatches.
-
-    Read-only + best-effort like :func:`referenced_skill_names`: the doctor
-    wrapper over :func:`dispatched_agents_from_disk` that returns an empty list
-    on any error (an unreadable store included -- doctor reports that fault
-    through its own check), so ``kirocrew doctor`` can warn about a job that
-    still names a deprecated agent spec without failing over the store.
-    """
-    try:
-        return [
-            (label, agent)
-            for _job_id, label, agent in dispatched_agents_from_disk(loadable_only=False)
-        ]
-    except Exception:
-        return []
-
-
-_STORE_VERSION = 2
-_MIN_INTERVAL_SECS = 60
-_JOB_TIMEOUT_SECS = 1800  # 30 min per job
-# Margin the per-wake budget must leave above a command/script subprocess
-# timeout: the wake deadline cancels only the executor FUTURE (threads are
-# not interruptible), so a budget shorter than the subprocess bound leaves
-# the subprocess running while the guards clear and later wakes duplicate it.
-_SUBPROC_CLEANUP_ALLOWANCE_SECS = 5
-_TIMER_POLL_SECS = 30  # check for due cron-expr jobs
-_AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
-_REAPER_INTERVAL = 60  # seconds between reaper sweeps
-_REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
-#: How many ROUNDS of key-ending a reap or cancel runs over a run
-#: (``_end_run_sessions``): the first ends every key the run had registered,
-#: each with ONE reset-then-kill pass (``_end_run_processes``) under the key's
-#: ENDING FENCE (``SessionManager.ending_key``), held from before the pass until
-#: the run's terminal record and audit are written -- a claim or cold start under
-#: a fenced key is HELD at the door (it lands once the fence lifts, under the
-#: recorded key), one already in flight is refused at registration with its
-#: provider hard-killed there, so no session lands under a fenced key after the
-#: pass and the pass is never repeated for a key. What CAN land is a NEW key: a
-#: sequential run whose hung agent's session was reset moves on and registers
-#: its next agent's key while the round runs (the run's task is cancelled only
-#: after the passes), so after each round the run's keys are read again and a
-#: key no round has ended gets the next round, fenced too. Bounded so a run that
-#: keeps registering cannot hold the reaper: a key registered after the last
-#: round is a named kill failure, audited ``failed``, never ``reaped``. Each
-#: round spends at most ``_REAPER_RESET_TIMEOUT`` plus the kill's own bounds.
-_ENDING_ROUNDS = 2
-
-
-def _pool_queue_allowance(job: CronJob | None) -> int:
-    """Queue budget a command/script job may spend before its own code runs.
-
-    Single-sourced deliberately. TWO deadlines bound one run -- the execution
-    guard in :meth:`CronService._execute_with_timeout` and the reaper's
-    defence-in-depth sweep -- and the cron pool's queue wait happens inside both.
-    If only one of them accounts for that wait, the other pre-empts it, and the
-    two failures are opposite and both silent: a reaper that does not account for
-    it cancels a job that never executed (a skipped run), while an execution
-    deadline that does not account for it kills a job still sitting in the pool
-    queue and reports it as an overrun (the misdiagnosis this change exists to
-    remove, which also lets a claimed subprocess run on while the overlap guards
-    clear). Deriving both from this one function is what keeps them from drifting.
-
-    Only command and script jobs dispatch through the pool to EXECUTE, so only
-    they need the allowance; a message job gets none and neither deadline is
-    widened for it. That scoping holds only because the one piece of pool work
-    every job kind shares -- the fire-time governance gate -- is dispatched to
-    the GOVERNANCE pool rather than this one. Gating on the cron pool would put
-    a message job's gate behind job-duration work while its deadline was already
-    armed, spending an execution budget it has no allowance to cover; the fix
-    for that belongs at the gate's dispatch, not in a wider deadline here, since
-    widening would also delay the wedged-delivery backstop for runs that never
-    queue at all. See the gate sites in slack/gateway.py.
-    """
-    if job is None:
-        return 0
-    return _CRON_QUEUE_WAIT_SECS if (job.command or job.script) else 0
-
-
-def _gate_budget_allowance(job: CronJob | None) -> int:
-    """Seconds the fire-time gate may consume inside a pool-dispatching job's deadline.
-
-    A third term of the same shape as :func:`_pool_queue_allowance`.  The gate is
-    awaited BEFORE the pool dispatch and inside the deadline armed for the whole
-    run, so a gate that spends its full bound leaves the subprocess that much
-    less -- and a thread cannot be interrupted, so when the deadline then fires
-    with a worker already claimed, the overlap guards clear while the subprocess
-    runs on and the next wake duplicates its side effects.  That is the hazard
-    ``_SUBPROC_CLEANUP_ALLOWANCE_SECS`` exists for; the queue wait was a second
-    term it did not account for, and the gate bound is a third.
-
-    Scoped to command/script for the same reason the queue allowance is: only
-    those dispatch through the pool to EXECUTE, so only they carry the
-    claimed-worker hazard.  A message job's budget is left exactly as set -- its
-    protection is that :func:`cron_gate_budget` lands strictly below the wake
-    deadline and is the gate's TOTAL across both its phases, so the gate's own
-    bound fires first and the run is retained.
-
-    Rounded UP to an int: the value is added to a deadline that reaches the
-    operator as ``Timed out after {deadline}s``, and a float would render there
-    as ``2.0s``.  Up is the safe direction -- it can only add headroom.
-    """
-    if job is None or not (job.command or job.script):
-        return 0
-    return math.ceil(cron_gate_budget(effective_wake_budget(job)))
-
-
-def _vet_allowance(job: CronJob | None) -> int:
-    """Seconds the CLAIM-TIME vet may consume inside a pool-dispatching job's deadline.
-
-    A FOURTH term of the same shape as the three above, and it exists for the
-    same reason :func:`_gate_budget_allowance` does.  The fire-time gate runs
-    ``vet_job_at_fire_time`` BEFORE the pool dispatch; the claim-time vet runs
-    the SAME function again INSIDE the worker, ahead of the subprocess it
-    authorises -- so it too is spent inside the deadline armed for the whole run,
-    and a vet that spends its bound leaves the subprocess that much less.  A
-    thread cannot be interrupted, so when the deadline then fires with the
-    subprocess already started, the overlap guards clear while it runs on and the
-    next wake duplicates its side effects.  That is the hazard
-    :data:`_SUBPROC_CLEANUP_ALLOWANCE_SECS` exists for; the queue wait was a
-    second term it did not account for, the gate bound a third, and this a
-    fourth.
-
-    Sized from :func:`_gate_budget_allowance` rather than from a second copy of
-    its expression: it is the same work under the same bound, and two copies
-    would drift.  The direction of drift matters -- an allowance SMALLER than the
-    bound the vet is actually held to is exactly the unaccounted margin this
-    closes.
-
-    Scoped to command/script for the reason the other two are: only those
-    dispatch through the pool to EXECUTE, so only they carry the claimed-worker
-    hazard.  A message job never reaches ``_vet_at_claim_then`` at all.
-    """
-    return _gate_budget_allowance(job)
-
-
-def effective_wake_budget(job: CronJob) -> int:
-    """Seconds :meth:`CronService._execute_with_timeout` will allow this run.
-
-    Extracted so the fire-time gate can cap its own bound against the same
-    number rather than re-deriving the rule.  A second copy would drift, and the
-    direction it drifts matters: a gate bound that exceeded the real wake budget
-    would let the wake deadline fire first, which is the state where starvation
-    is indistinguishable from an overrun and a one-shot gets consumed by a run
-    that never dispatched.
-
-    Returns an int: the value reaches the operator through
-    ``last_error = f"Timed out after {deadline}s"``, and a float would render
-    there as ``2.0s``.
-
-    A non-numeric ``timeout_secs`` falls back to the default rather than raising.
-    ``_execute_with_timeout`` was the only caller when this rule lived inline, so
-    a duck-typed job never reached the comparison; the fire-time gate now derives
-    its own bound from this and runs on every job kind, so the rule has to
-    tolerate a store entry (or a test double) whose field is not a number.
-    """
-    raw = getattr(job, "timeout_secs", None)
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return _JOB_TIMEOUT_SECS
-    return int(raw) if 1 <= raw <= 86400 else _JOB_TIMEOUT_SECS
-
-
-# Bound skip_date advancement by a WALL-CLOCK horizon rather than an iteration
-# count. An iteration cap couples the bound to schedule granularity: sized for a
-# weekly cron (old 52) it broke daily crons; re-sized for daily it would then
-# break sub-daily (e.g. a */5 cron does 288 fires/day and would exhaust a
-# daily-sized cap within days). Bounding by wall-clock time removes the coupling
-# entirely — a daily cron and a */5 cron both simply look ~2 years ahead for the
-# next non-skipped fire. A large absolute iteration ceiling remains ONLY as an
-# anti-infinite-loop safety net for a pathological all-skipped sub-minute
-# schedule; realistic skip_dates lists are short (hand-entered) and exit far
-# sooner, so the horizon is the binding constraint in every practical case.
-_MAX_SKIP_DATE_HORIZON_SECS = 2 * 365 * 24 * 3600  # ~2 years of look-ahead
-_MAX_SKIP_DATE_LOOKAHEAD = 500_000  # absolute safety ceiling (anti-infinite-loop)
-
-# Bounded non-blocking acquire for the cron-store advisory lock (see
-# CronService._file_lock). The spin never parks the event loop in an
-# uninterruptible kernel wait; it fails fast after the timeout instead.
-_FILE_LOCK_TIMEOUT_SECS = 10.0  # max wall-time to wait for the store lock
-_FILE_LOCK_POLL_SECS = 0.02  # sleep between non-blocking acquire attempts
-
-
-class CronPendingMismatch(RuntimeError):
-    """The job's pending secret request changed after the caller read it.
-
-    Raised inside the locked update when an ``expect_secret_env_pending``
-    precondition does not match the freshly reloaded record — the
-    compare-and-swap that keeps an approval or denial from acting on a request
-    the decider never saw (the agent can replace a pending request at any
-    moment). Callers surface it as HTTP 409 ``stale_request``.
-    """
+    return session_key.split(":")[1] if len(session_key.split(":")) > 1 else ""
 
 
 def cron_owner_matches(job_owner: str, target: str) -> bool:
@@ -667,1051 +247,21 @@ def cron_owner_matches(job_owner: str, target: str) -> bool:
     return bool(owner_principal) and owner_principal == cron_job_id_from_session_key(target)
 
 
-class CronStoreBusy(TimeoutError):
-    """Raised when a cron-store mutator cannot acquire the store lock in time.
+# Resolved per call, never captured at import: an import-time binding freezes
+# the data home and defeats pod isolation, the lazy legacy-home migration and
+# test isolation. The name below is an opt-in override (None = live home) so
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
+_DEFAULT_DIR: Path | None = None
 
-    This is the DEFINED failure contract of the store mutators (:meth:`add_job`,
-    :meth:`update_job`, :meth:`remove_job`, :meth:`enable_job`, :meth:`ack_job`,
-    :meth:`unack_job` and their ``*_async`` variants): under sustained lock
-    contention they raise this instead of blocking forever. It subclasses
-    :class:`TimeoutError` so the existing ``except TimeoutError`` guards (the
-    reaper sweep, the timer tick, the read-path degrade) keep catching it, while
-    giving the public scheduling boundaries a named, greppable type to translate
-    into a clean *retryable* error — HTTP 409 at the dashboard handlers, a
-    structured ``Error:`` string at the MCP tools, a "store busy, try again"
-    reply at the Slack surfaces — rather than surfacing an opaque 500 / tool
-    crash. Contention is transient (a large atomic save on network storage, the
-    CLI process, or the off-loop batch-remove worker holding the lock), so the
-    correct caller response is to retry, not to fail permanently.
-    """
 
+def _default_dir() -> Path:
+    """Cron data directory, resolved against the live data home."""
+    return _DEFAULT_DIR if _DEFAULT_DIR is not None else data_home()
 
-@contextmanager
-def cron_store_lock(
-    store_dir: Path, *, timeout: float = _FILE_LOCK_TIMEOUT_SECS, poll: float = _FILE_LOCK_POLL_SECS
-) -> Iterator[None]:
-    """The cron store's cross-process advisory lock, for a caller with no service.
 
-    ONE implementation of the store lock: :meth:`CronService._file_lock` (every
-    store mutator, loop-safety guard included) delegates here, and the Agent
-    templates delete guard takes it directly around its reference check and the
-    file rename, so a schedule cannot be written between "nothing dispatches this
-    template" and the template going -- the two writers exclude each other on
-    the same ``.crons.lock`` file the mutators use. The reader side mirrors
-    :func:`dispatched_agents_from_disk`: a walk over the store file, so holding
-    the store lock across walk + rename is exactly what makes the pair atomic.
-
-    Off the event loop ONLY (the guard runs on a worker thread; the mutators go
-    through their ``*_async`` variants): the spin sleeps. Bounded -- raises
-    :class:`CronStoreBusy` after *timeout* rather than parking the caller on a
-    slow holder. Non-truncating create-or-open (GH-9248): a contending opener on
-    Windows must not crash at open() before the spin starts.
-    """
-    store_dir.mkdir(parents=True, exist_ok=True)
-    lock = store_dir / ".crons.lock"
-    deadline = time.monotonic() + timeout
-    with platform_compat.open_lock_file(lock) as lock_fd:
-        while not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
-            if time.monotonic() >= deadline:
-                raise CronStoreBusy(f"Could not acquire cron store lock within {timeout:g}s")
-            time.sleep(poll)
-        try:
-            yield
-        finally:
-            platform_compat.release_lock(lock_fd)
-
-
-# ── Loop-safety guard ───────────────────────────────────────────────────────
-# The store lock (``CronService._file_lock``) must NEVER be acquired on a thread
-# that has a running asyncio event loop: the bounded ``time.sleep`` spin would
-# park that loop under contention. The invariant is upheld structurally —
-# loop-resident callers use the ``*_async`` mutators (which ``asyncio.to_thread``
-# the lock+save) and the synchronous ``CronSDK`` facade offloads to a worker
-# thread when a loop is running — but conventions drift as new writers are
-# added. ``_file_lock`` therefore MACHINE-ENFORCES the rule: on entry it detects
-# a running loop on the current thread and, when strict mode is enabled, RAISES
-# so a regression is caught in CI rather than silently re-freezing the loop.
-#
-# Gating mirrors the repo's other strict rails (e.g. KIROCREW_STRICT_ON_LOOP_
-# PERSIST): OFF by default it degrades to a throttled warning (so no production
-# path is broken by an unforeseen legitimate on-loop caller, and existing tests
-# that seed jobs via the sync mutators from an async body keep passing); the CI
-# loop-safety regression test flips it ON to prove the guard fires and that the
-# sanctioned async / offloaded-sync paths do NOT trip it. Operators can export
-# KIROCREW_STRICT_LOOP_SAFETY=1 to escalate the warning to a hard failure fleet-
-# wide.
-_STRICT_LOOP_SAFETY_ENV = "KIROCREW_STRICT_LOOP_SAFETY"
-_loop_safety_warned = False
-
-
-class CronLoopSafetyError(RuntimeError):
-    """Raised when the cron store lock is acquired on a running event loop.
-
-    Signals a loop-park hazard: a synchronous ``_file_lock`` acquisition on a
-    thread with a live asyncio loop would block that loop in the bounded lock
-    spin under contention (the ``no-blocking-call-on-event-loop`` class this
-    module exists to eliminate). The fix is to use the ``*_async`` mutator
-    variant (``add_job_async`` et al.), or — from the synchronous ``CronSDK``
-    facade — to let it offload to a worker thread. Only raised under strict
-    mode (``KIROCREW_STRICT_LOOP_SAFETY``); otherwise the guard warns.
-    """
-
-
-# Jitter bounds (seconds) to spread job execution and avoid traffic spikes
-_JITTER_HOURLY_MAX = 5 * 60  # 0–5 minutes for hourly jobs
-_JITTER_DAILY_MAX = 59 * 60  # 0–59 minutes for daily jobs
-
-
-# ── Types ──
-
-
-@dataclass
-class CronSchedule:
-    """Schedule definition — ``every``, ``at``, or ``cron``."""
-
-    kind: str  # "every" | "at" | "cron"
-    every_secs: int | None = None
-    at_ts: float | None = None
-    cron_expr: str | None = None  # "min hour dom month dow"
-
-
-@dataclass
-class CronJob:
-    """A scheduled job."""
-
-    id: str
-    name: str
-    message: str
-    schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
-    channel: str | None = None
-    thread_ts: str | None = None
-    enabled: bool = True
-    user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
-    auto_paused: bool = (
-        False  # True when paused by execution after repeated failures; cleared on re-enable/success
-    )
-    last_run_ts: float | None = None
-    last_status: str | None = None  # "ok" | "error"
-    last_error: str | None = None
-    created_ts: float = 0.0
-    delete_after_run: bool = False
-    # Runtime-only (never serialized): set by the gateway when THIS run was
-    # refused by the fire-time governance gate. A denied run is a policy
-    # state, not a completed run: a one-shot delete_after_run job is RETAINED
-    # instead of deleted, and a denied "at" job is parked DISABLED (a past-due
-    # at-job left enabled would be due again on every timer tick — a
-    # zero-delay refire loop) so an operator can re-enable it after a policy
-    # loosening. Recurring jobs need neither: they wait for their next slot.
-    # Reset at the start of every run.
-    fire_time_denied: bool = False
-    # Runtime-only (never serialized): set by the gateway when THIS run never
-    # started because every pool worker was busy for the whole queue budget.
-    # Deliberately NOT fire_time_denied, even though both must retain a one-shot:
-    # that flag ALSO forces an "at" job disabled and is documented as a *policy*
-    # refusal, so reusing it would park a starved job needing an operator to
-    # re-enable it and would mislabel pool saturation as a governance denial in
-    # history. Starvation clears on its own, so this field is retention-only --
-    # read solely where a one-shot would otherwise be consumed by a run it never
-    # had. Reset at the start of every run.
-    run_never_started: bool = False
-    last_result: str | None = None
-    # Epoch at which ``last_result`` was produced, written by
-    # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
-    # history attribution.
-    last_result_ts: float = 0.0
-    # The run stamp as ALREADY RENDERED text, written once by
-    # :meth:`set_run_result` and PERSISTED. This is what the dashboard header
-    # displays, and it is a snapshot on purpose.
-    #
-    # The header is also the row's dedup key: ``ConversationLog.append_if_absent``
-    # judges "already persisted" by ``(role, content)``, so any injection site
-    # that RE-RENDERED the stamp would have to reproduce it byte for byte
-    # forever. Rendering reads the job's ``timezone``, which a user can edit
-    # after the run, so a re-render would silently mint a second, differently
-    # spelled copy of a row already on disk -- a duplicated run in the tab and
-    # in the replay a follow-up turn reads. Rendering once, here, is what makes
-    # every later injection (the three executor delivery paths and a later
-    # ``/to-chat`` re-surfacing) byte-identical no matter what the job's
-    # configuration has become since.
-    #
-    # DISPLAY ONLY. Row identity is ``cron_inject.run_marker``, which carries
-    # ``last_result_ts`` at full precision, so this stamp's resolution does not
-    # decide whether two runs collapse -- it is rendered for a person to read.
-    #
-    # ``""`` (a legacy job, or a store written by an older build) means
-    # "unknown" and renders the pre-stamp header unchanged, so rows already on
-    # disk keep deduping against their historical spelling.
-    last_result_stamp: str = ""
-    # Runtime-only (never serialized): True once THIS run produced a result
-    # via set_run_result(). For AGENT jobs ``last_result`` is a cross-run
-    # context-carry field that result-less runs deliberately leave in place
-    # for the next run's prompt dedup, so the history recorder needs this
-    # marker — not the value — to decide attribution. Command and script
-    # jobs instead clear it on every result-less exit: the prompt built for
-    # them is discarded (the command branch never reads it, the script
-    # branch reassigns the variable), so a carried-over value could only
-    # ever misreport a finished run's result. Identity/equality checks on
-    # the string cannot do that job: CPython interns equal literals and caches
-    # single-character latin-1 strings, so a run re-producing the same text
-    # is indistinguishable from a run that produced nothing. Reset at the
-    # start of every run by _run_job_isolated.
-    result_produced: bool = False
-    # Runtime-only, reset by _execute_with_timeout at the start of every run:
-    # True once THIS run's failure has been counted via record_failure(). The
-    # timeout handler consults it so a run that already recorded its failure
-    # (e.g. a delivery-path exception) and then overran its deadline during
-    # cleanup is counted once, not twice.
-    failure_recorded: bool = False
-    context_enabled: bool = False
-    agent_id: str = ""
-    # Member identity is distinct from the provider template in agent_id.
-    # These fields survive reload; omitted legacy records remain on V1.
-    member_id: str = ""
-    memory_store: str = ""
-    execution_context: dict[str, Any] | None = None
-    approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
-    acked_items: list[str] = field(default_factory=list)
-    created_by: str = ""  # Slack user ID of the creator (for DM fallback)
-    # Provenance of a job seeded from a Schedule-page template. Curated
-    # template prompts are COPIED into the job at save time (the user owns and
-    # edits their prompt), so a later fix to a template is unreachable for jobs
-    # already saved. Two create-only fields, written together by the dashboard
-    # create path ONLY (MCP / CLI / apps SDK / onboarding import never involve a
-    # template and leave both ""):
-    #
-    #   source_preset          -- the template preset id (e.g. "error-digest").
-    #   source_template_prompt -- the template's prompt text AS IT WAS at save
-    #                             time (a snapshot, written once, never updated).
-    #
-    # The snapshot is what makes "the template changed" an ATTRIBUTABLE claim.
-    # Comparing the job's live message against the template's CURRENT prompt is
-    # symmetric: it cannot tell a template that moved from a user who edited
-    # their own copy. The snapshot fixes one operand at save time, so the
-    # Schedule page can ask the two questions separately -- did the TEMPLATE
-    # move (snapshot != live preset prompt), which is the only thing that shows
-    # a "template updated" hint, versus did the USER edit their copy
-    # (message != snapshot), which shows nothing. It is a text snapshot, not a
-    # maintained revision integer, so it cannot drift out of date.
-    #
-    # "" for both means "unknown" -- a blank/non-dashboard create, or a job
-    # saved before these fields existed (_job_from_record defaults both to "").
-    # Such a job simply never shows the hint.
-    source_preset: str = ""
-    source_template_prompt: str = ""
-    silent: bool = False  # suppress auto-delivery; agent sends via send_message
-    session_key: str = ""  # session that created this job (for scoped removal)
-    last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
-    consecutive_dupes: int = 0  # count of suppressed duplicate results
-    last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
-    last_failure_hash: str = ""  # hash of last failure notification (dedup crashes)
-    last_failure_at: float = 0.0  # epoch of last failure Slack alert (dedup reminder)
-    consecutive_failures: int = 0  # consecutive failed runs (any error); drives auto-pause
-    skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["2026-04-06"]
-    timezone: str = ""  # IANA timezone for skip evaluation
-    persistent_session: bool = True  # False → fresh ephemeral session per run
-    minimal_context: bool = False  # True → skip memory/lessons/skills/history
-    hide_in_chat: bool = (
-        False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
-    )
-    # Cron folder grouping; "" = unfiled. CONTRACT for all consumers
-    # (Schedule UI, calendar, CLI, MCP): an id that does not match a folder
-    # in cron_folders.json MUST be treated as ungrouped — folder deletion
-    # clears assignments only best-effort, so dangling ids are expected and
-    # benign (they self-heal on the job's next folder move).
-    folder_id: str = ""
-    model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
-    # The CHAT (sidebar) folder the job's ``cron-{id}`` tab is filed into; "" =
-    # not filed, which is what every job predating the field keeps doing. Its
-    # run stamps and markers already make that one tab the job's timeline.
-    #
-    # Distinct from ``folder_id`` above, and the two are never interchangeable:
-    # ``folder_id`` groups the job's ROW on the Schedule page
-    # (``cron_folders.json``), while this names a folder in the chat sidebar's
-    # own tree (``folders.json``) and decides where the job's TAB lands. A job
-    # may carry either, both or neither, and one is never derived from the other.
-    #
-    # PERSISTENT jobs only: a stateless job (``persistent_session=False``) has
-    # no job-wide tab to file, so the store refuses the pair at save time rather
-    # than accepting a setting with no observable effect.
-    #
-    # Filing SUPPLEMENTS delivery, never replaces it: a run with a chat folder
-    # still reaches its Slack DM, its dashboard notification and its origin
-    # session exactly as it did before.
-    #
-    # CONTRACT for consumers, matching ``folder_id``'s: an id that does not
-    # match a folder in ``folders.json`` MUST be treated as "not filed". A chat
-    # folder can be deleted while a job still names it, and a dangling id must
-    # cost the tab its place in the sidebar and nothing else -- the run still
-    # delivers, and the skip is recorded once (see
-    # ``cron_inject.chat_folder_for_minted_tab``). A RENAME is a no-op: ids
-    # are stable, so the job follows the folder under its new name.
-    chat_folder_id: str = ""
-    # Transient-retry telemetry for the LAST completed run. Both fields are
-    # written in ONE place, `CronService._execute`, right after it stamps
-    # `last_run_ts`: it reads the in-flight `_transient_attempts` counter the
-    # gateway callback leaves on the live job object (a runtime attribute that
-    # never reaches disk) and clears it. 0 means the last run needed no retry,
-    # or this is a legacy record with neither key.
-    last_retry_count: int = 0
-    #: The ``last_run_ts`` the count above describes -- the same `time.time()`
-    #: value, assigned in the same place. A cancelled run advances
-    #: ``last_run_ts`` on its own path (the ``every`` scheduler needs it to, or
-    #: the schedule drifts) and never reaches the stamp, so the two disagree and
-    #: the Schedule page shows no count for it rather than the previous run's.
-    last_retry_run_ts: float = 0.0
-    #: The run GENERATION the store holds: a per-job counter, one above the
-    #: previous run's, allocated to a run at its first step -- or to the
-    #: ``cancel()`` / reap that takes its claim before that -- by
-    #: ``CronService._next_run_generation`` and written to the record by the
-    #: two terminal merges only (``_merge_job_result`` for a completed run,
-    #: ``_merge_terminal_state_locked`` for a cancelled or reaped one). Both
-    #: merges run in a worker thread behind the release of the run's claim,
-    #: under a store lock other writers contend for, so a replacement run
-    #: accepted in that window can complete and merge FIRST; the older run's
-    #: record is then discarded rather than applied over it (status, error,
-    #: result and the failure counter would all revert until some later run
-    #: merged again). An integer, not a timestamp: Windows' ``time.time()``
-    #: ticks every ~15.6 ms, so two runs of one job can claim with EQUAL
-    #: timestamps, which no "newer wins" rule can order. 0 is a legacy record
-    #: or a job that never ran.
-    run_generation: int = 0
-
-    # A sequence of MORE THAN ONE agent takes precedence over agent_id: the
-    # gateway runs those agents in order, each on its own session key. A
-    # one-element sequence does NOT, and falls through to agent_id.
-    agent_sequence: list[str] = field(default_factory=list)
-    env: dict[str, str] = field(default_factory=dict)  # per-job environment variables
-    timeout_secs: int = _JOB_TIMEOUT_SECS
-    strict_schedule: bool = False  # when True, skip jitter and fire exactly on schedule
-    script: str = ""  # Script file "<config_dir>/crons/x.py:func"; bypasses LLM dispatch
-    command: str = ""  # Shell command for direct execution; bypasses LLM dispatch
-    timeout: int = (
-        0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
-    )
-    # Operator-approved vault secrets for SCRIPT jobs: env-var name ->
-    # vault secret NAME (kiro_crew.secrets.SecretVault; plaintext never touches
-    # this store). Minted ONLY by the owner approving an agent request on the
-    # Schedule page — no surface writes an active grant directly, so an agent
-    # cannot grant itself vault access. secret_env_pin (keyed, epoch-bound
-    # HMAC over the script spec + message + body bytes, see
-    # cron_script.compute_secret_env_pin) binds the grant to the code the
-    # operator approved: the crons/ scripts stay agent-writeable by design, so
-    # a body rewritten after approval fails closed at fire time instead of
-    # running with the secrets.
-    secret_env: dict[str, str] = field(default_factory=dict)
-    secret_env_pin: str = ""
-    # Agent-REQUESTED grant awaiting operator approval. The MCP
-    # ``cron_secret_request`` tool may write ONLY these fields — never the
-    # active pair above — so the agent-first flow is "agent proposes, human
-    # disposes": the dashboard approve endpoint re-verifies the pending pin
-    # against the job's CURRENT code before promoting pending -> active, so an
-    # approval never blesses code that changed after the request.
-    secret_env_pending: dict[str, str] = field(default_factory=dict)
-    secret_env_pending_pin: str = ""
-    secret_env_pending_ts: float = 0.0
-
-    def set_run_result(self, value: str) -> None:
-        """Record a result produced by the CURRENT run.
-
-        Sole write path for executor callbacks: pairs the ``last_result``
-        assignment with the runtime-only ``result_produced`` marker so the
-        history recorder can attribute the value to this run. Direct
-        ``last_result`` assignment stays reserved for store merge and
-        deserialization paths, which restore prior state rather than
-        produce a new result.
-        """
-        self.last_result = value
-        self.result_produced = True
-        # Stamped and RENDERED here rather than at injection time so all of a
-        # run's injection sites emit one identical header -- see
-        # ``last_result_stamp`` for why re-rendering duplicates rows.
-        self.last_result_ts = time.time()
-        self.last_result_stamp = self._render_run_stamp(self.last_result_ts)
-
-    def _render_run_stamp(self, when_ts: float) -> str:
-        """Render *when_ts* as the header suffix, in the job's own timezone.
-
-        Display-only: a bad timezone or a bad epoch must never fail the run
-        that produced the result, so any error degrades to the UNSTAMPED header
-        -- the same spelling a legacy row carries, which keeps the dedup
-        coherent -- rather than to a half-rendered third variant.
-        """
-        if not when_ts:
-            return ""
-        try:
-            when = datetime.fromtimestamp(when_ts, tz=_job_tz(self))
-            return f" | {when:%Y-%m-%d %H:%M:%S %Z}"
-        except Exception:
-            logger.debug("Cron run stamp render failed for job %s", self.id, exc_info=True)
-            return ""
-
-    def clear_carried_result(self) -> None:
-        """Drop a PREVIOUS run's result when this run produced none.
-
-        Result-less command/script exits must not display the last run's
-        output beside this run's status. Guarded on ``result_produced`` so a
-        run that produced and delivered a result and then failed during
-        cleanup keeps it. Assigns directly rather than via set_run_result()
-        so a cleared field is never marked as produced by this run.
-        """
-        if not self.result_produced:
-            self.last_result = ""
-
-    def _audit_pause_change(self, outcome: str) -> None:
-        """Emit a SEL audit event for an auto-pause permission transition.
-
-        Auto-pausing revokes a job's ability to execute (and clearing it restores
-        that ability), so the transition is a permission decision that must be
-        auditable per the security-controls guideline. Best-effort — an audit
-        write failure must never mask the failure/success bookkeeping that drives
-        the pause itself; the tool-invocation error paths already log the run
-        outcome separately."""
-        try:
-            sel.sel().log_tool_invocation(
-                session_key=f"cron:{self.id}",
-                tool_name=self.script or self.command or "cron_job",
-                tool_kind="cron_auto_pause",
-                outcome=outcome,
-                metadata={"job_id": self.id, "consecutive_failures": self.consecutive_failures},
-            )
-        except Exception:
-            logger.debug("SEL logging failed in cron auto-pause transition", exc_info=True)
-
-    def record_failure(self) -> None:
-        """Count one consecutive failure and auto-pause once the threshold is hit.
-
-        Auto-pause is execution-owned: it sets both `enabled` (so the in-memory
-        scheduler stops firing immediately) and `auto_paused` (the durable reason,
-        distinct from a user pause), so the pause survives a reload. Single-sourced
-        here so the many script/command failure branches can't drift on how a pause
-        is recorded — mirroring how the effective-enabled derivation reads it back.
-        """
-        self.consecutive_failures += 1
-        self.failure_recorded = True
-        if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
-            self.enabled = False
-            self.auto_paused = True
-            self._audit_pause_change("auto_paused")
-
-    def record_success(self) -> None:
-        """Reset the failure counter and lift any execution auto-pause.
-
-        Clearing an auto-pause also re-enables the job, because ``enabled`` is
-        not independent state: :func:`_job_enabled` reconstructs it on load as
-        ``not user_paused and not auto_paused``. Leaving ``enabled`` False after
-        clearing ``auto_paused`` therefore produces a job that is paused in
-        memory and enabled on disk — it stays stopped until the next restart
-        silently resumes it, which is the surprise a manual "Run Now" on an
-        auto-paused job would otherwise spring.
-
-        A job the user paused stays paused: ``user_paused`` is never mutated by
-        execution, so it is the discriminator here, and re-enabling THAT is the
-        user's action (``enable_job``).
-
-        Also clears the failure-alert dedup fields, and is the ONE owner of that
-        reset. A success means the job recovered, so the next failure must alert
-        fresh rather than be suppressed as a duplicate of the pre-recovery one --
-        and every success path (gate verdict, script, command, the scheduler
-        backstop) routes through here, so putting the reset at any single call
-        site would silence a relapse on the others for up to
-        ``_FAILURE_REMINDER_SECS``.
-        """
-        self.consecutive_failures = 0
-        self.last_failure_hash = ""
-        self.last_failure_at = 0.0
-        if self.auto_paused:
-            self.auto_paused = False
-            if not self.user_paused:
-                self.enabled = True
-            self._audit_pause_change("auto_pause_cleared")
-
-
-# ── Session-context helper ──
-
-
-def build_cron_session_context(job: CronJob) -> tuple[str, str]:
-    """Compute (session_key, prompt) for one cron run.
-
-    When ``job.persistent_session`` is True (default, legacy behaviour):
-      - session_key is stable across runs: ``cron:{job.id}``
-      - prompt prepends ``job.last_result`` so the agent has recent context
-
-    When ``job.persistent_session`` is False:
-      - session_key is unique per call: ``cron:{job.id}:{uuid}``
-        → each run opens a fresh agent session; no context accumulation
-      - prompt is the bare ``job.message`` — no last_result injection
-        (accumulated state is the other half of the bug)
-
-    The key prefix ``cron:{job.id}`` is preserved in both modes so the
-    reaper's existing session-matching logic continues to work.
-
-    This is a pure function — all side effects (session creation, Slack
-    delivery, acked_items handling) happen in the caller. Keep it that way
-    so it stays trivially unit-testable.
-    """
-    if job.persistent_session:
-        msg = job.message
-        if job.last_result:
-            last = job.last_result
-            if job.minimal_context and len(last) > 2000:
-                last = "[truncated]…" + last[-2000:]
-            msg = (
-                "[Previous run result — do NOT repeat the same content]\n"
-                f"{last}\n"
-                "[End of previous run result]\n\n"
-                f"{msg}"
-            )
-        return f"cron:{job.id}", msg
-
-    # Stateless: fresh key, bare message.
-    run_id = uuid.uuid4().hex[:8]
-    return f"cron:{job.id}:{run_id}", job.message
-
-
-def cron_job_id_from_session_key(session_key: object) -> str:
-    """The job id inside a ``cron:`` session key, or ``""`` for any other value.
-
-    Every shape this repository mints is ``cron:<job_id>`` with an OPTIONAL third
-    segment, and a job id is ``uuid4().hex[:8]`` so it never contains a colon --
-    which is what makes taking the second segment exact rather than a guess.
-
-    A FALSY key (``None`` or ``""``) is one of the "any other key" cases, not an
-    input error: ``session_key`` is an optional caller-supplied field, so the
-    falsy-skip at creation persists ``None`` on the row, and an ownerless row is
-    the documented state the CLI and the Schedule page manage. A non-string JSON
-    value is malformed persisted data, but it gets the same non-cron answer here:
-    this parser is shared by removal cleanup, where calling ``.startswith`` on a
-    list or mapping would abort after the target row was filtered from memory and
-    let a later save silently commit a removal the caller saw fail. Answering
-    ``""`` here is what every consumer already expects of a non-cron owner -- the
-    same reading ``_owned_by`` gives an empty key (reaches nothing) and the release
-    paths give one (``if not job.session_key: continue``). Guarding at this one
-    boundary rather than at each call site keeps the "ONE key parser" invariant
-    that :func:`cron_owner_matches` and the liveness checks depend on.
-    """
-    if not isinstance(session_key, str) or not session_key.startswith("cron:"):
-        return ""
-    return session_key.split(":")[1] if len(session_key.split(":")) > 1 else ""
-
-
-def cron_session_key_is_stable(job: CronJob) -> bool:
-    """Whether every run of *job* presents the SAME session key.
-
-    Lives beside :func:`build_cron_session_context` because it is the inverse of
-    that function's branch, and a predicate that can silently disagree with the
-    code that mints the key is worse than no predicate: it fails QUIET, as a
-    warning that stops firing or one that fires on the wrong job.
-
-    Two minting paths feed this, which is the whole reason callers must not infer
-    the answer from the key's shape:
-
-    * :func:`build_cron_session_context` -- ``cron:<job_id>`` when
-      ``persistent_session``, else ``cron:<job_id>:<run_id>`` with a fresh
-      ``uuid4`` per fire, so the three-segment form there is EPHEMERAL.
-    * the sequential-agent path in the Slack gateway -- ``cron:<job_id>:<agent>``
-      whenever ``agent_sequence`` holds more than one agent. It builds the key
-      directly rather than calling the function above, and an agent NAME is
-      stable, so the three-segment form there is DURABLE.
-
-    So the two forms are indistinguishable by separator count, and only the job
-    record separates them. The sequential path ignores ``persistent_session``
-    entirely, which is why it is checked second rather than combined.
-    """
-    if agent_sequence_dispatches(job.agent_sequence):
-        return True
-    return job.persistent_session
-
-
-# ── Cron expression matching (via croniter) ──
-
-
-def cron_expr_matches(expr: str, dt: datetime) -> bool:
-    """Check if ``dt`` matches a 5-field cron expression (min hour dom month dow)."""
-    try:
-        return croniter.match(expr, dt)
-    except (ValueError, KeyError):
-        return False
-
-
-def validate_cron_expr(expr: str) -> bool:
-    """Return True if ``expr`` is a syntactically valid 5-field cron expression."""
-    return croniter.is_valid(expr)
-
-
-# ── Service ──
-
-
-def _humanize_cron(expr: str, tz_name: str = "") -> str:
-    """Convert a 5-field cron expression to human-readable string with timezone."""
-    if get_description is None:
-        return expr
-    opts = Options()
-    opts.use_24hour_time_format = False
-    try:
-        desc = get_description(expr, opts)
-    except Exception:
-        return expr
-
-    # Timezone-aware display: evaluate the cron expression in the job's
-    # timezone (matching compute_next_run_ts) and display the local time.
-    parts = expr.split()
-    if tz_name and len(parts) == 5 and parts[0].isdigit() and parts[1].isdigit():
-        try:
-            tz = ZoneInfo(tz_name)
-            # Evaluate in job timezone, same as the scheduler does
-            base = datetime.now(tz)
-            next_local = croniter(expr, base).get_next(datetime).astimezone(tz)
-            local_time = platform_compat.strftime(next_local, "%-I:%M %p %Z")
-            # cron_descriptor produces UTC-based text; replace the time portion
-            utc_base = datetime.now(timezone.utc)
-            next_as_utc = croniter(expr, utc_base).get_next(datetime)
-            utc_time = platform_compat.strftime(next_as_utc, "%-I:%M %p")
-            utc_time_padded = next_as_utc.strftime("%I:%M %p")
-            result = desc.replace(f"At {utc_time}", f"At {local_time}")
-            if result == desc:
-                result = desc.replace(f"At {utc_time_padded}", f"At {local_time}")
-            if result == desc:
-                # Fallback: prepend local time if replacement failed
-                result = f"At {local_time}, {desc.removeprefix('At ')}"
-            return result
-        except Exception:
-            pass
-
-    return desc
-
-
-def format_schedule(schedule: CronSchedule, tz_name: str = "") -> str:
-    """Human-readable schedule description."""
-    # Fallback: the published config default. Reading the snapshot rather than
-    # loading config.json is what lets a loop-side caller omit tz_name safely.
-    if not tz_name:
-        tz_name = published_config_timezone()
-    if schedule.kind == "cron" and schedule.cron_expr:
-        return _humanize_cron(schedule.cron_expr, tz_name)
-    if schedule.kind == "every" and schedule.every_secs:
-        secs = schedule.every_secs
-        if secs % 3600 == 0:
-            return f"every {secs // 3600}h"
-        if secs % 60 == 0:
-            return f"every {secs // 60}m"
-        return f"every {secs}s"
-    if schedule.kind == "at" and schedule.at_ts:
-        # Tolerance lives HERE, at the render site, not in the deserializer: a
-        # stored at_ts that datetime.fromtimestamp cannot represent (NaN or
-        # Infinity from bare json.loads, epoch milliseconds, a beyond-year-9999
-        # stamp, a pre-epoch value on Windows) must degrade to a fallback
-        # string instead of raising inside the comprehension that serializes
-        # EVERY job on GET /api/crons -- and the record itself is preserved for
-        # the operator to repair. Same degrade-on-render posture as
-        # CronJob._render_run_stamp.
-        try:
-            tz = ZoneInfo(tz_name) if tz_name else None
-            if tz:
-                now = datetime.now(tz)
-                dt = datetime.fromtimestamp(schedule.at_ts, tz)
-            else:
-                now = datetime.now().astimezone()
-                dt = datetime.fromtimestamp(schedule.at_ts).astimezone()
-            if dt.date() == now.date():
-                return f"at {dt:%I:%M %p %Z}"
-            return f"at {dt:%I:%M %p %Z}, {platform_compat.strftime(dt, '%b %-d')}"
-        except Exception:
-            logger.debug("format_schedule: unrenderable at_ts %r", schedule.at_ts, exc_info=True)
-            return "at an invalid stored time"
-    return schedule.kind
-
-
-def is_valid_timezone(tz_name: str) -> bool:
-    """Return True if ``tz_name`` is a resolvable IANA timezone key.
-
-    Validates via the ``ZoneInfo`` constructor -- a single targeted, cached
-    lookup -- rather than ``available_timezones()``, which recursively walks
-    the entire tzdata tree and opens many files on every call. Because this
-    runs on callers reachable from the async event loop (dashboard cron PATCH
-    -> CronService.update_job), the cheap constructor path avoids blocking the
-    gateway (see ``no-blocking-call-on-event-loop``). ``ZoneInfo`` raises
-    ``ZoneInfoNotFoundError`` for unknown keys and ``ValueError`` for malformed
-    ones (e.g. absolute paths, ``..``); both are treated as invalid.
-    """
-    if not tz_name:
-        return False
-    try:
-        ZoneInfo(tz_name)
-    except Exception:
-        return False
-    return True
-
-
-def is_valid_skip_date(value: object) -> bool:
-    """Return True iff ``value`` is a strict, zero-padded ``YYYY-MM-DD`` date.
-
-    ``datetime.strptime(s, "%Y-%m-%d")`` accepts non-padded inputs such as
-    ``"2026-1-1"``: they parse fine, but fire-time skip matching compares
-    against a zero-padded rendering (``"2026-01-01"``), so the intended skip
-    silently never matches and the job runs on a date the user told it to
-    skip -- with no error anywhere. Requiring the parsed value to round-trip
-    exactly back to ``%Y-%m-%d`` rejects non-padded (and calendar-invalid)
-    inputs at every persistence path, independent of the running Python
-    version's ``date.fromisoformat`` leniency.
-    """
-    s = str(value)
-    try:
-        return datetime.strptime(s, "%Y-%m-%d").strftime("%Y-%m-%d") == s
-    except (ValueError, TypeError):
-        return False
-
-
-_CRON_FOLDERS_FILE = "cron_folders.json"
-
-
-def _read_cron_folders() -> tuple[list[dict[str, Any]], bool]:
-    """Read ``cron_folders.json``, reporting whether the STORE was readable.
-
-    Returns ``(folders, readable)``. ``readable=False`` means the file exists
-    but could not be read or is not a JSON list — the folder set is UNKNOWN,
-    not empty. A caller that can create a folder must tell those apart: acting
-    on an unknown set as if it were empty creates a folder the store may
-    already hold, and the dashboard's next wholesale save of its own list
-    decides which version survives. A file that does not exist is readable and
-    genuinely empty; malformed ENTRIES inside a valid list are filtered out and
-    leave the store readable, because the list itself was intelligible.
-    """
-    path = config_dir() / _CRON_FOLDERS_FILE
-    try:
-        if not path.exists():
-            return [], True
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.warning("Failed to read %s", _CRON_FOLDERS_FILE, exc_info=True)
-        return [], False
-    if not isinstance(loaded, list):
-        logger.warning("%s is not a JSON list", _CRON_FOLDERS_FILE)
-        return [], False
-    return [
-        f
-        for f in loaded
-        if isinstance(f, dict)
-        and isinstance(f.get("id"), str)
-        and f.get("id")
-        and isinstance(f.get("name"), str)
-        and f.get("name")
-    ], True
-
-
-def load_cron_folders() -> list[dict[str, Any]]:
-    """Read the cron folder definitions from disk (read-only).
-
-    Returns the usable entries of ``cron_folders.json`` — dicts with a
-    non-empty string ``id`` and ``name``. The file is OWNED by the dashboard
-    (its Schedule page creates, renames and deletes folders); this helper never
-    writes, so a non-dashboard caller can resolve a folder reference without
-    racing the dashboard's wholesale rewrites of the file. Malformed entries
-    and unreadable files degrade to "no folders" rather than raising: a folder
-    lookup is always best-effort decoration on top of the job itself. A caller
-    that CREATES folders must use ``_read_cron_folders`` instead, whose second
-    element separates an unreadable store from a genuinely empty one.
-    """
-    return _read_cron_folders()[0]
-
-
-class CronFolderLookup(NamedTuple):
-    """Outcome of resolving a cron-folder reference against existing folders.
-
-    ``missing`` distinguishes the three outcomes a caller must treat
-    differently. A reference that matched nothing in a READABLE store
-    (``missing=True``) may legitimately be turned into a create by a caller
-    that owns a create path. Every other error is a refusal no caller may paper
-    over: an ambiguous name, and — the case that is easy to miss — a store that
-    could not be read at all, where the folder set is unknown rather than
-    empty. Without that flag the only signal is the message text, and matching
-    on prose is how a create leg silently starts firing on an ambiguity or on a
-    corrupt file.
-    """
-
-    folder_id: str
-    error: str | None
-    missing: bool = False
-
-
-def lookup_cron_folder_id(ref: str) -> CronFolderLookup:
-    """Resolve an EXISTING cron folder reference (id or name) to its id.
-
-    An empty ``ref`` resolves to ``""`` (ungrouped) with no error. Matching
-    order: exact id first, then case-insensitive name. A name shared by several
-    folders is refused rather than resolved to an arbitrary one, and an unknown
-    reference is an error with ``missing=True`` — creating folders is the
-    dashboard's job (its state holds the canonical in-memory list and rewrites
-    the file wholesale, so an out-of-band append here could be silently
-    clobbered by the next UI folder operation). A caller that DOES own a
-    server-side create path (the MCP tool, via the dashboard's own endpoint)
-    keys off ``missing`` to take it.
-
-    An UNREADABLE store is an error with ``missing=False``: the folder set is
-    unknown, so the reference may well exist, and creating it would add a
-    duplicate whose survival is decided by the dashboard's next save.
-    """
-    ref = str(ref or "").strip()
-    if not ref:
-        return CronFolderLookup("", None)
-    folders, readable = _read_cron_folders()
-    if not readable:
-        return CronFolderLookup(
-            "",
-            f"cron folder store is unreadable, cannot resolve {ref!r} — "
-            f"repair or remove {_CRON_FOLDERS_FILE}",
-        )
-    if any(f["id"] == ref for f in folders):
-        return CronFolderLookup(ref, None)
-    matches = [f for f in folders if f["name"].strip().lower() == ref.lower()]
-    if len(matches) > 1:
-        ids = ", ".join(f["id"] for f in matches)
-        return CronFolderLookup(
-            "", f"{len(matches)} cron folders are named {ref!r} ({ids}) — pass the folder id"
-        )
-    if matches:
-        return CronFolderLookup(matches[0]["id"], None)
-    return CronFolderLookup(
-        "",
-        f"cron folder not found: {ref!r} — create it first in the dashboard's Schedule page",
-        missing=True,
-    )
-
-
-def get_local_tz() -> tuple[str, ZoneInfo]:
-    """Return (tz_name, ZoneInfo) from the published config default, or UTC.
-
-    Reads :func:`published_config_timezone` rather than loading ``config.json``:
-    prompt assembly (``context.py``), the dashboard cron handler and the
-    messaging commands all reach this from the event loop, where a
-    stat/read/validate would be a per-call stall
-    (``no-blocking-call-on-event-loop``). The snapshot is refreshed by every
-    successful config load, so a settings change still reaches a running gateway.
-    """
-    try:
-        tz_name = published_config_timezone() or "UTC"
-        return tz_name, ZoneInfo(tz_name)
-    except Exception:
-        logger.warning(
-            "Failed to load timezone from config, falling back to UTC",
-            exc_info=True,
-        )
-        return "UTC", ZoneInfo("UTC")
-
-
-# Patterns for parse_time_string
-_RE_IN_DURATION = re.compile(
-    r"^in\s+(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours)$", re.I
-)
-_UNIT_SECS = {
-    "s": 1,
-    "sec": 1,
-    "second": 1,
-    "seconds": 1,
-    "m": 60,
-    "min": 60,
-    "minute": 60,
-    "minutes": 60,
-    "h": 3600,
-    "hr": 3600,
-    "hour": 3600,
-    "hours": 3600,
-}
-
-
-def parse_time_string(s: str) -> float | str:
-    """Parse a human time string into a Unix timestamp. Returns error string on failure.
-
-    Lives here, next to :func:`get_local_tz`, because BOTH one-shot entry points
-    need it: the ``cron_add`` MCP tool and ``POST /api/crons``. A second copy
-    would let the two drift, and "5pm" resolving to different instants depending
-    on which door the request came through is exactly the class of bug a shared
-    parser prevents. Relative forms ("in 30 minutes") are absolute already;
-    everything else is interpreted in the CONFIGURED timezone, never the
-    process's, so a gateway running in UTC still honours the user's setting.
-    """
-    s = s.strip()
-    _, tz = get_local_tz()
-    now = datetime.now(tz)
-
-    # "in 5 minutes", "in 2 hours"
-    m = _RE_IN_DURATION.match(s)
-    if m:
-        secs = int(m.group(1)) * _UNIT_SECS[m.group(2).lower()]
-        return time.time() + secs
-
-    # Try common formats with optional "tomorrow"
-    tomorrow = False
-    text = s
-    if text.lower().startswith("tomorrow"):
-        tomorrow = True
-        text = re.sub(r"^at\b\s*", "", text[8:].strip())
-
-    # "5pm", "5:30pm", "17:00", "9:30am"
-    for fmt in ("%I%p", "%I:%M%p", "%H:%M", "%I %p", "%I:%M %p"):
-        try:
-            parsed = datetime.strptime(text, fmt)
-            result = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
-            if tomorrow:
-                result += timedelta(days=1)
-            elif result <= now:
-                result += timedelta(days=1)  # "5pm" when it's already 6pm → tomorrow
-            return result.timestamp()
-        except ValueError:
-            continue
-
-    # ISO-ish: "YYYY-MM-DD HH:MM", space or "T" separator, seconds optional
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            parsed = datetime.strptime(text, fmt).replace(tzinfo=now.tzinfo)
-            return parsed.timestamp()
-        except ValueError:
-            continue
-
-    return f"Error: could not parse time '{s}'. Examples: '5pm', 'in 30 minutes', 'tomorrow 9am'"
-
-
-def _job_tz(job: CronJob) -> ZoneInfo:
-    """Return the job's timezone, falling back to the published default then UTC.
-
-    Reads :func:`published_config_timezone` rather than loading ``config.json``.
-    Both callers reach this from the event loop: :meth:`CronService._on_timer`
-    scans EVERY cron-expression job through :meth:`_is_due` on every tick, and
-    :meth:`CronJob.set_run_result` renders a completed run's stamp, so a config
-    stat/read/validate here was a recurring gateway stall
-    (``no-blocking-call-on-event-loop``). The snapshot is refreshed by every
-    successful config load, so a timezone change still reaches a running
-    gateway on the following tick.
-    """
-    try:
-        tz_name = job.timezone or published_config_timezone() or "UTC"
-        return ZoneInfo(tz_name)
-    except Exception:
-        logger.warning("Failed to resolve timezone for job %s, using UTC", job.id, exc_info=True)
-        return ZoneInfo("UTC")
-
-
-def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
-    """Return the next fire time as a UTC epoch, or ``None`` if unknown.
-
-    Never returns a non-finite float: the result feeds ``next_run_ts`` on the
-    ``GET /api/crons`` payload, and ``json.dumps`` (``allow_nan=True`` by
-    default) would emit the bare token ``Infinity`` -- invalid JSON that makes
-    the client reject the WHOLE listing. Finite extremes a hand-edited store
-    can carry still overflow here through arithmetic (``last + every_secs``
-    with ``every_secs=1e308`` sums to ``inf``), so the guard sits on the
-    RESULT, covering every arithmetic route at the serialize site.
-    """
-    result = _compute_next_run_ts_raw(job, now)
-    # Float-gated like every non-finite check in this module: a bignum int
-    # result serializes as digits (valid JSON) and math.isfinite(huge_int)
-    # raises OverflowError -- the exact escape this guard exists to prevent.
-    if isinstance(result, float) and not math.isfinite(result):
-        return None
-    return result
-
-
-def _next_cron_boundary_ts(job: CronJob, now: float) -> float | None:
-    """Return the immediate next cron boundary as a UTC epoch, ignoring skip_dates.
-
-    For TIMER ARMING only. It answers "when is the next minute this expression
-    matches" with a single ``croniter.get_next`` -- O(1), no ``skip_dates``
-    traversal -- so a job with many ``skip_dates`` cannot make the on-loop
-    re-arm walk up to ``_MAX_SKIP_DATE_LOOKAHEAD`` occurrences. ``skip_dates`` is
-    still enforced at fire time by :meth:`CronService._is_due`, so a wake that
-    lands on a skipped boundary is a cheap no-op that re-arms to the following
-    boundary. Returns ``None`` for a non-cron or invalid expression, or when the
-    boundary is non-finite, so the caller falls back to the poll interval.
-    """
-    sched = job.schedule
-    if sched.kind != "cron" or sched.cron_expr is None:
-        return None
-    try:
-        tz = _job_tz(job)
-        base = datetime.fromtimestamp(now, tz=tz)
-        nxt = croniter(sched.cron_expr, base).get_next(float)
-    except Exception:
-        logger.warning("Failed to compute next cron boundary for job %s", job.id, exc_info=True)
-        return None
-    if isinstance(nxt, float) and not math.isfinite(nxt):
-        return None
-    return nxt
-
-
-def _compute_next_run_ts_raw(job: CronJob, now: float | None = None) -> float | None:
-    """Unchecked next-fire-time computation; see :func:`compute_next_run_ts`."""
-    try:
-        if not job.enabled:
-            return None
-        sched = job.schedule
-        now = now if now is not None else time.time()
-        if sched.kind == "every" and sched.every_secs is not None:
-            last = job.last_run_ts if job.last_run_ts is not None else job.created_ts
-            if last is None:
-                return None
-            nxt = last + sched.every_secs
-            return nxt if nxt > now else now
-        if sched.kind == "at" and sched.at_ts is not None:
-            return sched.at_ts if sched.at_ts > now else None
-        if sched.kind == "cron" and sched.cron_expr is not None:
-            # croniter interprets cron_expr in base's timezone; get_next(float) returns UTC epoch
-            tz = _job_tz(job)
-            base = datetime.fromtimestamp(now, tz=tz)
-            cron = croniter(sched.cron_expr, base)
-            # Advance past any skip_dates, bounded by a wall-clock horizon so the
-            # bound does not depend on schedule granularity (a daily and a */5
-            # cron both look ~2 years ahead). The iteration count is only a hard
-            # safety ceiling against a pathological all-skipped sub-minute config.
-            horizon = now + _MAX_SKIP_DATE_HORIZON_SECS
-            for _ in range(_MAX_SKIP_DATE_LOOKAHEAD):
-                nxt = cron.get_next(float)
-                if not job.skip_dates:
-                    return nxt
-                if nxt > horizon:
-                    logger.warning(
-                        "No valid next run within ~2y horizon for job %s (all dates skipped)",
-                        job.id,
-                    )
-                    return None
-                local_date = datetime.fromtimestamp(nxt, tz=tz).strftime("%Y-%m-%d")
-                if local_date not in job.skip_dates:
-                    return nxt
-            logger.warning(
-                "No valid next run within %d-iteration safety cap for job %s (all dates skipped)",
-                _MAX_SKIP_DATE_LOOKAHEAD,
-                job.id,
-            )
-            return None
-    except Exception:
-        logger.warning("Failed to compute next run for job %s", job.id, exc_info=True)
-        return None
-    return None
-
-
-def _record_user_paused(j: dict[str, Any]) -> bool:
-    """Single owner for the user-pause predicate of a serialized job.
-
-    The legacy ``!enabled`` fallback covers stores written before ``user_paused``
-    existed, where the only record of a pause was the ``enabled`` flag. Every
-    reader routes through here for the same reason :func:`_record_is_enabled`
-    exists: a future pause-state change must not land in one spelling of this
-    derivation and miss another.
-    """
-    return bool(j.get("user_paused", not j.get("enabled", True)))
-
-
-def _record_is_enabled(j: dict[str, Any]) -> bool:
-    """Single owner for the effective-enabled predicate of a serialized job.
-
-    A job is enabled when it is neither user-paused nor auto-paused, with the
-    legacy ``!enabled`` fallback for stores written before those fields existed.
-    Both ``_load`` (the scheduler deserialization path) and
-    ``count_enabled_from_disk`` (the off-thread dashboard count) MUST route
-    through here so the semantics have exactly one implementation and cannot
-    drift when a future pause-state change lands in only one reader.
-    """
-    return not _record_user_paused(j) and not j.get("auto_paused", False)
-
-
+# The doctor's two store readers stay defined here: `kirocrew doctor`'s facade
+# test pins `kiro_crew.cron` as the module that defines them.
 def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, str]], bool]:
     """Return ``(auto_paused, errored, loadable)`` for the doctor's cron check.
 
@@ -1803,453 +353,64 @@ def job_pause_state_from_disk(job_id: str) -> str | None:
     return None
 
 
-def enabled_count_from_disk(path: Path) -> tuple[int, bool]:
-    """Return ``(enabled count, loadable)`` for the store at *path*.
-
-    A sibling of :func:`unhealthy_jobs_from_disk`: read-only, non-raising, needs
-    no running scheduler, and carries ``loadable`` on the SAME read for the same
-    reason — a store the scheduler cannot load counts 0, which is
-    indistinguishable from a healthy empty store in the number alone.
-
-    Single owner of the enabled-count reduction. Two callers need it and want
-    different halves: :meth:`CronService.count_enabled_from_disk` takes the count
-    and degrades a fault to 0 (its caller is a status pusher that must keep
-    running), while the telemetry probe needs ``loadable`` to report a fault as a
-    fault rather than as a plausible number. One loop serves both, so the two
-    readers cannot drift apart on which records count; sharing only the
-    ``_is_loadable_record`` / ``_record_is_enabled`` predicates would cap that
-    drift without removing it.
-    """
-    count = 0
-    records, loadable = _read_job_records(path)
-    for j in records:
-        # Same skip decision as _load: a record _job_from_record rejects is not
-        # a schedulable job, so it must not be counted.
-        if not _is_loadable_record(j):
-            continue
-        if _record_is_enabled(j):
-            count += 1
-    return (count, loadable)
+_REAPER_INTERVAL = 60  # seconds between reaper sweeps
+_REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
+#: How many ROUNDS of key-ending a reap or cancel runs over a run
+#: (``_end_run_sessions``): the first ends every key the run had registered,
+#: each with ONE reset-then-kill pass (``_end_run_processes``) under the key's
+#: ENDING FENCE (``SessionManager.ending_key``), held from before the pass until
+#: the run's terminal record and audit are written -- a claim or cold start under
+#: a fenced key is HELD at the door (it lands once the fence lifts, under the
+#: recorded key), one already in flight is refused at registration with its
+#: provider hard-killed there, so no session lands under a fenced key after the
+#: pass and the pass is never repeated for a key. What CAN land is a NEW key: a
+#: sequential run whose hung agent's session was reset moves on and registers
+#: its next agent's key while the round runs (the run's task is cancelled only
+#: after the passes), so after each round the run's keys are read again and a
+#: key no round has ended gets the next round, fenced too. Bounded so a run that
+#: keeps registering cannot hold the reaper: a key registered after the last
+#: round is a named kill failure, audited ``failed``, never ``reaped``. Each
+#: round spends at most ``_REAPER_RESET_TIMEOUT`` plus the kill's own bounds.
+_ENDING_ROUNDS = 2
 
 
-def _is_representable_number(value: Any) -> bool:
-    """True when *value* is a real number every consumer can hold.
-
-    The numeric half of the load-time type-shape contract: ``bool`` is
-    rejected (a stored ``true`` is not a count), non-``(int, float)`` is
-    rejected, a non-finite float is rejected (``json.loads`` parses
-    ``NaN``/``Infinity`` by default; NaN breaks comparison ordering and the
-    pair emits invalid JSON tokens), and an int too large to convert to a
-    float is rejected via ``try/except OverflowError`` -- the same predicate
-    shape as ``monitoring.models.is_finite_non_negative_number``, minus its
-    sign bound (a value bound has no place at load; see ``_job_from_record``).
-    Raises nothing, so nothing can leak outside ``_load``'s
-    ``(KeyError, TypeError)`` per-entry isolation.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
-
-
-def resolve_cron_memory(job: CronJob, *, validate_memory_files: bool = True) -> tuple[str, str]:
-    """Dispatch the job's captured execution, never its current display alias."""
-    from kiro_crew.execution_context import execution_from_record, validate_execution
-    from kiro_crew.memory_stores import memory_store_version, require_memory_store
-
-    if job.execution_context is not None:
-        execution = execution_from_record({"execution_context": job.execution_context})
-        if validate_memory_files:
-            validate_execution(execution)
-        return execution.store.legacy_name, execution.template_id
-    if not isinstance(job.member_id, str) or not isinstance(job.memory_store, str):
-        raise ValueError("memory_unavailable: malformed schedule identity")
-    # A V2 schedule must carry the captured execution record: its member ID is
-    # an immutable database identity and cannot be reconstructed from a name.
-    # Older V1 schedules may still carry the historical member selector beside
-    # their explicit legacy store; keep dispatching that store instead of
-    # silently auto-pausing it after an upgrade.
-    if memory_store_version(job.memory_store) == 2 or (job.member_id and not job.memory_store):
-        raise ValueError("memory_unavailable: schedule has no canonical execution context")
-    store = (
-        require_memory_store(job.memory_store, require_directory=validate_memory_files)
-        if job.memory_store
-        else ""
-    )
-    return store, job.agent_id
+# ── Loop-safety guard ───────────────────────────────────────────────────────
+# The store lock (``CronService._file_lock``) must NEVER be acquired on a thread
+# that has a running asyncio event loop: the bounded ``time.sleep`` spin would
+# park that loop under contention. The invariant is upheld structurally —
+# loop-resident callers use the ``*_async`` mutators (which ``asyncio.to_thread``
+# the lock+save) and the synchronous ``CronSDK`` facade offloads to a worker
+# thread when a loop is running — but conventions drift as new writers are
+# added. ``_file_lock`` therefore MACHINE-ENFORCES the rule: on entry it detects
+# a running loop on the current thread and, when strict mode is enabled, RAISES
+# so a regression is caught in CI rather than silently re-freezing the loop.
+#
+# Gating mirrors the repo's other strict rails (e.g. KIROCREW_STRICT_ON_LOOP_
+# PERSIST): OFF by default it degrades to a throttled warning (so no production
+# path is broken by an unforeseen legitimate on-loop caller, and existing tests
+# that seed jobs via the sync mutators from an async body keep passing); the CI
+# loop-safety regression test flips it ON to prove the guard fires and that the
+# sanctioned async / offloaded-sync paths do NOT trip it. Operators can export
+# KIROCREW_STRICT_LOOP_SAFETY=1 to escalate the warning to a hard failure fleet-
+# wide.
+_STRICT_LOOP_SAFETY_ENV = "KIROCREW_STRICT_LOOP_SAFETY"
+_loop_safety_warned = False
 
 
-def bind_cron_memory(job: CronJob) -> None:
-    """Capture existing member or creator once inside the new job record."""
-    from dataclasses import replace
+class CronLoopSafetyError(RuntimeError):
+    """Raised when the cron store lock is acquired on a running event loop.
 
-    from kiro_crew.execution_context import (
-        derive_execution,
-        execution_for_store,
-        read_session_execution,
-    )
-
-    if job.execution_context is not None:
-        resolve_cron_memory(job, validate_memory_files=False)
-        return
-    creator = read_session_execution(job.session_key) if job.session_key else None
-    execution = creator or execution_for_store(
-        job.memory_store, template_id=job.agent_id or "kirocrew"
-    )
-    if job.member_id:
-        execution = derive_execution(execution, target_member=job.member_id)
-    if execution.memory_mode != "persistent":
-        raise ValueError("Restricted sessions cannot create persistent schedules")
-    if job.agent_id:
-        execution = replace(execution, template_id=job.agent_id)
-    job.execution_context = execution.to_record()
-    job.member_id = execution.member_id or ""
-    job.memory_store = execution.store.legacy_name
-
-
-def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
-    """Build one :class:`CronJob` from its serialized record.
-
-    Raises ``KeyError``/``TypeError`` when the record is malformed (missing
-    required keys, not shaped like a job object at all, or carrying a
-    non-string where the field decides WHAT the job executes). The caller
-    (:meth:`CronService._load`) isolates that failure to THIS entry — one bad
-    record must never discard the rest of the store.
-
-    Field-type handling splits by what a wrong type would cost:
-
-    - **Required identity/payload** (``id``, ``name``, ``message``,
-      ``schedule.kind``) and **execution selectors** (``script``, ``command``,
-      ``agent_id``, plus the ``agent_sequence`` / ``skip_dates`` lists) raise
-      ``TypeError`` on a non-string value, so the record is skipped whole.
-      Coercing a selector instead would fail OPEN: a script job whose
-      ``script`` degraded to ``""`` silently becomes an LLM agent job
-      (``_cron_callback`` picks the mode from which selector is non-empty),
-      executing the job's message through the default agent — worse than not
-      loading the record at all.
-    - **Everything else string-typed** coerces to the field's own unset value
-      (``""``, or ``None`` for ``Optional[str]`` fields), and every field
-      whose stored value was destroyed by that coercion is named in one
-      WARNING, because ``_save`` rewrites ``jobs[]`` wholesale and the coerced
-      value replaces the operator's stored one on the next write — the log
-      line is the recovery window, exactly like the skip warning in ``_load``.
-
-    It does NOT raise ``AttributeError`` for any record ``json.loads`` can
-    produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
-    same object, and only a ``dict`` survives a string subscript. An
-    ``AttributeError`` from this function therefore signals a defect in this
-    code, not bad data, so :meth:`CronService._load` deliberately lets it
-    propagate rather than catching it: catching it there would reclassify a
-    valid job as malformed, and because ``_save`` rewrites ``jobs[]`` from
-    ``self._jobs`` the next write would erase that job from disk permanently —
-    turning a code defect into silent, unrecoverable data loss. Letting it
-    propagate trades a loud failure at load for that silent loss.
-    """
-    coerced: list[str] = []
-
-    def _required_str(container: dict[str, Any], field: str) -> str:
-        value = container[field]  # KeyError for a missing required key
-        if not isinstance(value, str):
-            raise TypeError(
-                f"cron record field {field!r} must be a string, got {type(value).__name__}"
-            )
-        return value
-
-    def _selector_str(field: str) -> str:
-        # Absent key = legacy record, defaults to "". A PRESENT non-string
-        # (null included) is malformed: an execution selector has no safe
-        # fallback value — see the docstring.
-        if field not in j:
-            return ""
-        value = j[field]
-        if not isinstance(value, str):
-            raise TypeError(
-                f"cron record execution selector {field!r} must be a string, got {type(value).__name__}"
-            )
-        return value
-
-    def _str_list(field: str) -> list[str]:
-        # Absent field: a legacy record predating the field -- default empty.
-        # Explicit null is NOT the same thing: no writer produces it, and
-        # treating it as empty flips a multi-agent job onto the single-agent
-        # fallback -- an execution-path change, so the record skips whole.
-        if field not in j:
-            return []
-        value = j[field]
-        if not isinstance(value, list) or any(not isinstance(m, str) for m in value):
-            raise TypeError(f"cron record field {field!r} must be a list of strings")
-        return value
-
-    def _guard_str(field: str) -> str:
-        # Non-string (incl. null) degrades to "" -- the field's unset value --
-        # so it can never reach a consumer that calls string methods on it
-        # (the GET /api/crons redacting serializer would 500 the listing).
-        value = j.get(field)
-        if value is not None and not isinstance(value, str):
-            coerced.append(field)
-        return value if isinstance(value, str) else ""
-
-    def _guard_opt_str(field: str) -> str | None:
-        # Optional[str] sibling: None means "never set" and is semantically
-        # distinct from "" (e.g. last_status gates rendering on `is None`),
-        # so a non-string degrades to None, never to an invented "".
-        value = j.get(field)
-        if value is not None and not isinstance(value, str):
-            coerced.append(field)
-        return value if isinstance(value, str) else None
-
-    def _guard_num(field: str, default: Any) -> Any:
-        # The numeric half of split-by-cost: telemetry numerics COERCE to
-        # their declared unset value (never skip -- coercion drops no record,
-        # satisfying the data-loss rule unconditionally), joining the same
-        # coerced list and single WARNING as the string fields. This is what
-        # keeps a NaN/bignum in a telemetry field out of every consumer at
-        # once: the JSON envelope (bare NaN/Infinity tokens), timer and
-        # due-decision arithmetic (OverflowError / due-every-tick), delivery
-        # dedup arithmetic, subprocess budgets, and the secret-grant CAS
-        # (NaN != NaN is always true, permanently blocking approval).
-        # Absent field: a legacy record -- the declared default, silently.
-        # Explicit null is a present value: where the declared unset IS None
-        # (last_run_ts) it is the writer's own serialization of "never ran"
-        # and passes through; everywhere else it is malformed like any other
-        # non-number and joins the coerced list so the load names it.
-        if field not in j:
-            return default
-        value = j[field]
-        if value is None:
-            if default is None:
-                return default
-            coerced.append(field)
-            return default
-        if not _is_representable_number(value):
-            coerced.append(field)
-            return default
-        return value
-
-    # Schedule sub-fields decide WHEN the job fires and feed format_schedule
-    # on the listing path unguarded, so like the execution selectors they fail
-    # CLOSED: a mistyped value skips the record whole. The kind subscript runs
-    # first — only a dict survives a string subscript, so the .get() calls
-    # below can never raise AttributeError (see the docstring).
-    sched = j["schedule"]
-    sched_kind = _required_str(sched, "kind")
-    for _numeric_field in ("every_secs", "at_ts"):
-        _numeric_value = sched.get(_numeric_field)
-        if _numeric_value is not None and not _is_representable_number(_numeric_value):
-            # Representability is TYPE SHAPE for a schedule numeric: NaN and
-            # Infinity break comparison ordering (a NaN at_ts is due every
-            # tick) and emit invalid JSON tokens, and a bignum int crashes
-            # int-float arithmetic on the timer-arming path (`at_ts - now` ->
-            # OverflowError, aborting gateway startup). No write path can
-            # persist any of these -- _build_job and _update_job_locked refuse
-            # them at the persistence chokepoints, so this reader-side skip
-            # provably drops no writer-producible record. Deliberately no
-            # FINITE value bound: extreme representable values load intact
-            # and are tolerated at their consumers.
-            raise TypeError(
-                f"cron record schedule field {_numeric_field!r} must be a representable finite number"
-            )
-    _cron_expr = sched.get("cron_expr")
-    if _cron_expr is not None and not isinstance(_cron_expr, str):
-        raise TypeError("cron record schedule field 'cron_expr' must be a string")
-
-    job = CronJob(
-        id=_required_str(j, "id"),
-        name=_required_str(j, "name"),
-        message=_required_str(j, "message"),
-        schedule=CronSchedule(
-            kind=sched_kind,
-            every_secs=sched.get("every_secs"),
-            at_ts=sched.get("at_ts"),
-            cron_expr=_cron_expr,
-        ),
-        channel=_guard_opt_str("channel"),
-        thread_ts=_guard_opt_str("thread_ts"),
-        # Effective enabled is derived from the two "reasons a job is
-        # off": an explicit user pause and an execution auto-pause
-        # (repeated failures). Deriving it — rather than trusting the
-        # stored `enabled` — is what makes an auto-pause survive a
-        # restart: the failing run sets auto_paused=True, and a
-        # recurring job's `enabled` is otherwise never persisted, so a
-        # naive `enabled` read would resurrect the job on reload.
-        # The predicate (incl. the legacy !enabled fallback) has one
-        # owner, `_record_is_enabled`, shared with
-        # count_enabled_from_disk so the two readers cannot drift.
-        enabled=_record_is_enabled(j),
-        user_paused=_record_user_paused(j),
-        auto_paused=j.get("auto_paused", False),
-        last_run_ts=_guard_num("last_run_ts", None),
-        last_status=_guard_opt_str("last_status"),
-        last_error=_guard_opt_str("last_error"),
-        created_ts=_guard_num("created_ts", 0.0),
-        delete_after_run=j.get("delete_after_run", False),
-        last_result=_guard_opt_str("last_result"),
-        last_result_ts=_guard_num("last_result_ts", 0.0),
-        last_result_stamp=_guard_str("last_result_stamp"),
-        context_enabled=j.get("context_enabled", False),
-        agent_id=_selector_str("agent_id"),
-        # member_id / memory_store are memory-identity selectors: they decide
-        # WHOSE memory and protected runtime identity the job runs with, and
-        # resolve_cron_memory raises on a malformed binding rather than
-        # falling back -- so a present non-string skips the record whole,
-        # exactly like the execution selectors. Coercing to "" would silently
-        # strip a member binding and run the job unbound.
-        member_id=_selector_str("member_id"),
-        memory_store=_selector_str("memory_store"),
-        execution_context=j.get("execution_context"),
-        approval_mode=_guard_str("approval_mode"),
-        acked_items=j.get("acked_items", []),
-        created_by=_guard_str("created_by"),
-        source_preset=_guard_str("source_preset"),
-        source_template_prompt=_guard_str("source_template_prompt"),
-        silent=j.get("silent", False),
-        session_key=_guard_str("session_key"),
-        last_posted_hash=_guard_str("last_posted_hash"),
-        consecutive_dupes=_guard_num("consecutive_dupes", 0),
-        last_posted_at=_guard_num("last_posted_at", 0.0),
-        last_failure_hash=_guard_str("last_failure_hash"),
-        last_failure_at=_guard_num("last_failure_at", 0.0),
-        consecutive_failures=_guard_num("consecutive_failures", 0),
-        skip_dates=_str_list("skip_dates"),
-        timezone=_guard_str("timezone"),
-        persistent_session=j.get("persistent_session", True),
-        minimal_context=j.get("minimal_context", False),
-        hide_in_chat=j.get("hide_in_chat", False),
-        folder_id=_guard_str("folder_id"),
-        chat_folder_id=_guard_str("chat_folder_id"),
-        model=_guard_str("model"),
-        last_retry_count=_guard_num("last_retry_count", 0),
-        last_retry_run_ts=_guard_num("last_retry_run_ts", 0.0),
-        run_generation=_guard_num("run_generation", 0),
-        agent_sequence=_str_list("agent_sequence"),
-        env=j.get("env", {}),
-        timeout_secs=_guard_num("timeout_secs", _JOB_TIMEOUT_SECS),
-        strict_schedule=j.get("strict_schedule", False),
-        script=_selector_str("script"),
-        command=_selector_str("command"),
-        timeout=_guard_num("timeout", 0),
-        secret_env=j.get("secret_env", {}),
-        secret_env_pin=_guard_str("secret_env_pin"),
-        secret_env_pending=j.get("secret_env_pending", {}),
-        secret_env_pending_pin=_guard_str("secret_env_pending_pin"),
-        secret_env_pending_ts=_guard_num("secret_env_pending_ts", 0.0),
-    )
-    if coerced and warn_on_coercion:
-        logger.warning(
-            "Coercing non-string value(s) in cron job entry (id=%r) field(s) %s to unset; "
-            "the stored values will be replaced on the next write",
-            job.id,
-            ", ".join(coerced),
-        )
-    return job
-
-
-async def _manual_run_refused() -> bool:
-    """The coroutine :meth:`CronService.run_job` hands back without a claim.
-
-    ``run_job`` decides synchronously whether the job is already executing; a
-    refused trigger still has to return something the caller can ``await`` or
-    wrap in a task, so it gets this instead of the claimed body.
-    """
-    return False
-
-
-@dataclass(eq=False)
-class _RunClaim:
-    """One run's claim on its job: every piece of per-run state, in one object.
-
-    Created when the job is claimed (:meth:`CronService._claim_run`) and stored
-    as the job's single entry in ``CronService._claims``; the claim IS the run's
-    identity. ``eq=False`` keeps dataclass identity semantics: two claims are the
-    same run only when they are the same object, so a copied or reconstructed
-    claim can never pass a fence -- the property the ``(started, trigger)`` meta
-    tuple this replaces had only by accident of construction, and every fence
-    in :class:`CronService` (``_holds_claim``) relies on.
-
-    A claim's life: ``trigger``, ``claimed_at`` and ``marker_run`` are fixed at
-    claim time. ``task`` is the handle the dispatcher tracks (the manual route's
-    wrapper, then the run task that replaces it). ``generation``,
-    ``started_monotonic`` and ``jitter`` are stamped by ``_run_job_isolated`` as
-    the run body reaches them. ``taken`` is set by ``cancel()`` / ``_force_reap``
-    when they take over the run's terminal write: from then on the run's own
-    fences fail, the reaper skips it and ``running_since`` is silent, while the
-    claim stays stored so the job keeps reading as occupied until the teardown
-    pops it after its kill awaits. Releasing a claim is popping it -- one
-    operation for every field, so a field added here inherits every fence
-    instead of needing its own pop at every release site.
+    Signals a loop-park hazard: a synchronous ``_file_lock`` acquisition on a
+    thread with a live asyncio loop would block that loop in the bounded lock
+    spin under contention (the ``no-blocking-call-on-event-loop`` class this
+    module exists to eliminate). The fix is to use the ``*_async`` mutator
+    variant (``add_job_async`` et al.), or — from the synchronous ``CronSDK``
+    facade — to let it offload to a worker thread. Only raised under strict
+    mode (``KIROCREW_STRICT_LOOP_SAFETY``); otherwise the guard warns.
     """
 
-    #: ``"manual"`` (``run_job``) or ``"scheduled"`` (the due-scan).
-    trigger: str
-    #: Epoch time the claim was taken -- the run's ``started_at`` for its
-    #: history row and ``running_since``.
-    claimed_at: float
-    #: Per-run token in the on-disk in-flight marker's file name, so the
-    #: finalizer clears only its own run's marker (see ``cron_inflight``).
-    marker_run: str = field(default_factory=lambda: uuid.uuid4().hex)
-    #: The run generation drawn at the run's first step (``_next_run_generation``),
-    #: stamped on the record the finalizer merges. None until drawn.
-    generation: int | None = None
-    #: ``time.monotonic()`` when the run body started; the reaper's deadline clock.
-    #: None while a manual claim is still parked in its store refresh (the
-    #: reaper then measures on the wall clock from ``claimed_at``).
-    started_monotonic: float | None = None
-    #: Jitter seconds the run slept before executing; the reaper's allowance.
-    jitter: float | None = None
-    #: The task the dispatcher tracks for this run, for cancel / reap / stop.
-    task: asyncio.Task[Any] | None = None
-    #: Set by ``cancel()`` / ``_force_reap`` once they own the run's terminal
-    #: write. The claim stays stored (the job is still occupied) but is no
-    #: longer the run's to release, and the reaper leaves it alone. A lock
-    #: with one release: the taker finishes it in a ``finally`` around its
-    #: kill awaits, so a teardown that fails still pops the claim it took.
-    taken: bool = False
 
-
-class _RunMarkers:
-    """Cancel / reap markers keyed by job id AND the run they were set for.
-
-    ``cancel()`` and the reaper mark the run whose claim they took, and a
-    finalizer consumes only a marker set for its own claim (identity, like
-    every claim fence in :class:`CronService`). Keyed by job id alone, a marker
-    is shared by every run of the job: a finalizer stalled in its executor
-    round trip consumes a replacement run's marker, that run's finalizer then
-    finds none and appends a failure row after the cancelled row ``cancel()``
-    already wrote for it -- and two cancellations landing before either is
-    consumed collapse into one marker, so one of the two runs finalizes as if
-    it had completed. Every question asked of a marker names the run: there is
-    no by-job-id membership, because no product path has a job-id-only question
-    to ask.
-    """
-
-    __slots__ = ("_marks",)
-
-    def __init__(self) -> None:
-        self._marks: dict[str, list[_RunClaim]] = {}
-
-    def mark(self, job_id: str, run: _RunClaim) -> None:
-        """Set the marker for ``run``; a run already marked is not marked twice."""
-        if not self.has(job_id, run):
-            self._marks.setdefault(job_id, []).append(run)
-
-    def has(self, job_id: str, run: _RunClaim | None) -> bool:
-        """Whether ``run`` -- this claim, not an equal one -- is marked."""
-        return any(mark is run for mark in self._marks.get(job_id, ()))
-
-    def consume(self, job_id: str, run: _RunClaim | None) -> bool:
-        """Remove ``run``'s marker, leaving every other run's in place."""
-        marks = self._marks.get(job_id)
-        if not marks:
-            return False
-        for index, mark in enumerate(marks):
-            if mark is run:
-                del marks[index]
-                if not marks:
-                    del self._marks[job_id]
-                return True
-        return False
+# ── Service ──
 
 
 class CronService:
@@ -2309,25 +470,13 @@ class CronService:
         # _save consults it so a degraded-to-empty job list is never persisted
         # over a store that still holds records — see _save's refusal.
         self._load_failed: bool = False
-        # job id → the claim of the run that occupies the job (see _RunClaim):
-        # its trigger and start stamp, the tracked task, the in-flight marker
-        # token, the generation, the monotonic start the reaper measures on and
-        # the jitter it allows for. Membership is "the job is running" for the
-        # due-scan, _next_wake_secs, run_job and the manual-run route; a claim
-        # is released by popping it, one operation for every field. Loop-owned:
-        # every claim, fence and release happens on the event loop, await-free.
-        self._claims: dict[str, _RunClaim] = {}
-        # Runs killed by the reaper / cancelled by the user, keyed by job id AND
-        # the run's claim: the run's own finalizer consumes its marker and
-        # skips the merge + history row its cancel() / reap already wrote.
-        self._reaped_jobs = _RunMarkers()
-        self._cancelled_jobs = _RunMarkers()
-        # job_id → the highest run generation this process has allocated for
-        # the job (see _next_run_generation). Service state, not job state:
-        # every _sync() reload replaces the CronJob objects, and a counter kept
-        # on one of them would be lost with it before the run's merge persisted
-        # it, handing the next run the same number.
-        self._run_generations: dict[str, int] = {}
+        # Every job's run claim (its trigger and start stamp, the tracked task,
+        # the in-flight marker token, the generation, the monotonic start the
+        # reaper measures on and the jitter it allows for), the reaper's and
+        # cancel()'s markers keyed to it, and the run generations handed out:
+        # see RunClaims. Loop-owned: every claim, fence and release happens on
+        # the event loop, await-free.
+        self._runs = RunClaims()
         # Where the loop-stall breaker looks for crash dumps. None = the data
         # home's dump directory; tests point it at a temp dir.
         self._dumps_dir: Path | None = None
@@ -2586,7 +735,7 @@ class CronService:
                 )
                 try:
                     # Named for the claim measured above: the reap takes that
-                    # claim or nothing (``_take_claim``'s ``expected``), so a
+                    # claim or nothing (``RunClaims.take``'s ``expected``), so a
                     # claim that changed under this sweep is never killed on
                     # the snapshot's stamps.
                     await self._force_reap(job_id, elapsed_mono, deadline, claim=claim)
@@ -2613,7 +762,7 @@ class CronService:
         job id alone: a kill needs a run to answer for, and the run is the
         claim.
         """
-        taken = self._take_claim(job_id, expected=claim)
+        taken = self._runs.take(job_id, expected=claim)
         if taken is None:
             # Either the stored claim is taken -- cancel() or an earlier reap
             # owns this run's teardown and is inside its kill awaits; its
@@ -2626,7 +775,7 @@ class CronService:
             return
         # Mark the run this reap took: its finalizer consumes only its own
         # marker.
-        self._reaped_jobs.mark(job_id, taken)
+        self._runs.reaped.mark(job_id, taken)
         reap_started_at = taken.claimed_at
         reap_trigger = taken.trigger
         # The kill, then the finish -- in a ``finally``, so the claim this reap
@@ -2689,7 +838,7 @@ class CronService:
                 # Cancel the asyncio task and release the claim directly. Don't rely on
                 # _run_job_isolated's finally — the reaper exists for cases where the
                 # normal path is stuck (idempotent with finally).
-                self._finish_taken_claim(job_id)
+                self._runs.finish_taken(job_id)
             # One name for the record and the audit: a failure that escaped the
             # kill (re-raised below) or one the SIGKILL reported.
             kill_failed = (
@@ -2715,7 +864,7 @@ class CronService:
                 # Drawn here, in the same loop step as the release above (no await
                 # between them), so a replacement claim always draws a higher one
                 # and this record can never land over that run's.
-                generation = self._next_run_generation(job)
+                generation = self._runs.next_generation(job)
                 # Reflect into the in-memory snapshot for the history record below
                 # and any immediate reader; the authoritative persist is the locked
                 # merge, which re-derives the disk copy after _sync().
@@ -3122,7 +1271,7 @@ class CronService:
         handle killed; a completed one -- True, or False for a key a concurrent
         reset had already popped (the common False is the run's OWN teardown
         reset, popped before the caller looked and hung since; the caller's
-        ``_finish_taken_claim`` cancel is what ends it) -- is not proof the
+        ``RunClaims.finish_taken`` cancel is what ends it) -- is not proof the
         process is gone (its own shutdown can fail without raising out of it; a
         False one stopped nothing), so every handle is asked (pid + recorded
         start id, then the tree it led: ``process_survived``) and a process still
@@ -3309,14 +1458,14 @@ class CronService:
         # A finished task is not a running execution, whatever the claim says.
         # Trusting the claim here would kill nothing, answer True, record a
         # "Cancelled by user after Ns" row for a run that ended long ago, and
-        # add the job to _cancelled_jobs for a finally that never runs (the
+        # mark the run in self._runs.cancelled for a finally that never runs (the
         # task is done) -- so the job's NEXT real run would be treated as
         # cancelled and drop its result. Release the leftovers and answer
         # "not running" instead; a live task is untouched and cancels below.
         self.discard_finished_run(job_id)
         if job_id not in self._claims:
             return False
-        claim = self._take_claim(job_id)
+        claim = self._runs.take(job_id)
         if claim is None:
             # The stored claim is already taken: another cancel() (a
             # double-clicked Cancel) or the reaper is inside its kill awaits
@@ -3330,7 +1479,7 @@ class CronService:
         # Mark the run this cancel took (see _RunMarkers): a marker keyed by
         # job id alone would be consumed by whichever finalizer of this job
         # reads it first.
-        self._cancelled_jobs.mark(job_id, claim)
+        self._runs.cancelled.mark(job_id, claim)
         started_at = claim.claimed_at
         trigger = claim.trigger
         elapsed = time.time() - started_at
@@ -3402,7 +1551,7 @@ class CronService:
             finally:
                 # 3. Cancel the asyncio task and release the claim directly
                 # (idempotent with _run_job_isolated's finally).
-                self._finish_taken_claim(job_id)
+                self._runs.finish_taken(job_id)
             # One name for the record and the audit: a failure that escaped the
             # kill (re-raised below) or one the SIGKILL reported.
             kill_failed = (
@@ -3423,7 +1572,7 @@ class CronService:
                 # Drawn here, in the same loop step as the release in step 3 (no
                 # await between them), so a replacement claim always draws a higher
                 # one and this record can never land over that run's.
-                generation = self._next_run_generation(job)
+                generation = self._runs.next_generation(job)
                 # In-memory snapshot for the history record / immediate readers;
                 # the locked merge is authoritative.
                 job.last_status = "error"
@@ -3686,165 +1835,10 @@ class CronService:
         )
         job.session_key = ""
 
-    def _build_job(
-        self,
-        name: str,
-        message: str,
-        every_secs: int | None = None,
-        at_ts: float | None = None,
-        cron_expr: str | None = None,
-        channel: str | None = None,
-        thread_ts: str | None = None,
-        delete_after_run: bool = False,
-        created_by: str = "",
-        approval_mode: str = "",
-        enabled: bool = True,
-        agent_id: str = "",
-        member_id: str = "",
-        model: str = "",
-        silent: bool = False,
-        timezone: str = "",
-        skip_dates: list[str] | None = None,
-        strict_schedule: bool = False,
-        hide_in_chat: bool = False,
-        folder_id: str = "",
-        chat_folder_id: str = "",
-        command: str = "",
-        script: str = "",
-        agent_sequence: list[str] | None = None,
-        env: dict[str, str] | None = None,
-        persistent_session: bool = True,
-        session_key: str = "",
-        minimal_context: bool = False,
-        timeout: int = 0,
-        timeout_secs: int = 0,
-    ) -> CronJob:
-        """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
-
-        Shared by :meth:`add_job` and :meth:`add_job_async` so both perform
-        identical validation on the event loop before any disk work. Raises
-        ``ValueError`` on an invalid schedule or approval mode.
-
-        ``timeout_secs`` is the per-wake execution budget (the
-        ``asyncio.wait_for`` deadline in ``_execute_with_timeout``); ``0`` means
-        the ``_JOB_TIMEOUT_SECS`` default. Distinct from ``timeout``, which
-        bounds only script/command subprocesses.
-
-        The optional presentation/routing fields (``agent_id``, ``model``,
-        ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
-        here so the job is persisted **fully-formed** in the single locked
-        transaction. This closes a create-then-mutate-then-unlocked-``_save``
-        window (two concurrent creates could otherwise interleave at the
-        ``await`` and the unlocked save could clobber the other request's job).
-        """
-        valid_approval_modes = ("", "auto")
-        if approval_mode not in valid_approval_modes:
-            raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
-        # Writer mirror of _job_from_record's representable-number type-shape
-        # check: the reader may skip a record with a non-representable
-        # schedule numeric (NaN/Infinity/bignum) precisely BECAUSE no write
-        # path can persist one -- this chokepoint covers every create surface
-        # (CLI, MCP cron_add, dashboard POST, apps SDK, and both
-        # onboarding-import branches, which route here via add_job /
-        # add_job_if_absent), so reader and writer stay exactly aligned and
-        # the reader-side skip provably drops no writer-produced record.
-        for _numeric_label, _numeric_arg in (("every_secs", every_secs), ("at_ts", at_ts)):
-            if _numeric_arg is not None and not _is_representable_number(_numeric_arg):
-                raise ValueError(f"{_numeric_label} must be a representable finite number")
-        # Table-driven type+length gate for every persisted string field.
-        # Runs at the persistence owner so EVERY create path (MCP, apps SDK,
-        # dashboard, CLI) shares one check. name and message are required
-        # (validated even when empty); all other fields use the falsy-skip
-        # pattern (None/"" = "not set").
-        _validate_cron_string_fields(
-            {
-                "name": name,
-                "message": message,
-                "channel": channel,
-                "thread_ts": thread_ts,
-                "agent_id": agent_id,
-                "member_id": member_id,
-                "created_by": created_by,
-                "folder_id": folder_id,
-                "chat_folder_id": chat_folder_id,
-                "session_key": session_key,
-                "model": model,
-                "command": command,
-                "script": script,
-                "timezone": timezone,
-            },
-            required=frozenset({"name", "message"}),
-        )
-        if chat_folder_id and not persistent_session:
-            raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
-        if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
-            raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
-        if timeout_secs and (command or script):
-            if timeout:
-                _eff_sub = int(timeout)
-            elif script:
-                _eff_sub = 30
-            else:
-                _eff_sub = 300
-            if int(timeout_secs) < _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS:
-                raise ValueError(
-                    "timeout_secs (wake budget) must cover the command/script "
-                    f"subprocess timeout plus cleanup: need >= "
-                    f"{_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, got {timeout_secs}. "
-                    "A shorter wake budget cancels only the executor future — "
-                    "the subprocess keeps running while the next wake launches "
-                    "a duplicate."
-                )
-        if timezone and not is_valid_timezone(timezone):
-            raise ValueError(f"Invalid timezone: {timezone!r}")
-        skip_dates = skip_dates or []
-        for _d in skip_dates:
-            if not is_valid_skip_date(_d):
-                raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
-        if cron_expr:
-            if not validate_cron_expr(cron_expr):
-                raise ValueError(f"Invalid cron expression: {cron_expr}")
-            schedule = CronSchedule(kind="cron", cron_expr=cron_expr)
-        elif every_secs:
-            schedule = CronSchedule(kind="every", every_secs=max(every_secs, _MIN_INTERVAL_SECS))
-        elif at_ts:
-            schedule = CronSchedule(kind="at", at_ts=at_ts)
-        else:
-            raise ValueError("Must provide every_secs, at_ts, or cron_expr")
-
-        return CronJob(
-            id=uuid.uuid4().hex[:8],
-            name=name,
-            message=message,
-            schedule=schedule,
-            channel=channel,
-            thread_ts=thread_ts,
-            enabled=enabled,
-            user_paused=not enabled,
-            created_ts=time.time(),
-            delete_after_run=delete_after_run,
-            created_by=created_by,
-            approval_mode=approval_mode,
-            agent_id=agent_id,
-            member_id=member_id,
-            model=str(model or "").strip(),
-            silent=silent,
-            timezone=timezone,
-            skip_dates=skip_dates,
-            strict_schedule=strict_schedule,
-            hide_in_chat=hide_in_chat,
-            folder_id=folder_id,
-            chat_folder_id=chat_folder_id,
-            command=command,
-            script=script,
-            agent_sequence=list(agent_sequence) if agent_sequence else [],
-            env=dict(env) if env else {},
-            persistent_session=persistent_session,
-            session_key=session_key,
-            minimal_context=minimal_context,
-            timeout=timeout,
-            timeout_secs=int(timeout_secs) if timeout_secs else _JOB_TIMEOUT_SECS,
-        )
+    #: Validate the inputs and construct the job, no I/O and no lock
+    #: (:func:`~kiro_crew.cron_service.fields.build_job`). Every add path builds
+    #: through it, so each create surface validates identically before disk work.
+    _build_job = staticmethod(build_job)
 
     def _persist_add_locked(self, job: CronJob) -> None:
         """Lock/reload/append/save for a new job — the thread-safe disk core.
@@ -4047,261 +2041,7 @@ class CronService:
                     raise CronPendingMismatch("active grant changed concurrently")
                 if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
                     raise CronPendingMismatch("active grant pin changed concurrently")
-                # Validate approval_mode if provided
-                if "approval_mode" in kwargs:
-                    valid_approval_modes = ("", "auto")
-                    if kwargs["approval_mode"] not in valid_approval_modes:
-                        raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
-                # Validate before any mutations
-                # Table-driven type+length gate for every updatable string
-                # field. Falsy values are intentional no-ops (the assignment
-                # section below skips them too).
-                _validate_cron_string_fields(
-                    {f: kwargs[f] for f, _ in _CRON_STRING_FIELD_CAPS if f in kwargs},
-                )
-                # Cross-field: only a persistent job has a job-wide tab to file,
-                # so a request that itself names a folder for a job this update
-                # leaves stateless is refused. Turning persistence off on a filed
-                # job is NOT refused: MCP/CLI ``cron_update`` exposes
-                # ``persistent_session`` without ``chat_folder_id``, so a refusal
-                # there would be a dead end; the assignment below clears the
-                # folder instead and reports it through the transition sink.
-                # Read the flag through the same coercion the assignment below
-                # applies, so the guard judges the value that gets stored.
-                if (kwargs.get("chat_folder_id") or "") and not bool(
-                    kwargs.get("persistent_session", job.persistent_session)
-                ):
-                    raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
-                if (
-                    "cron_expr" in kwargs
-                    and kwargs["cron_expr"]
-                    and "every_secs" in kwargs
-                    and kwargs["every_secs"]
-                ):
-                    raise ValueError("Cannot specify both cron_expr and every_secs")
-                if "cron_expr" in kwargs and kwargs["cron_expr"]:
-                    if not validate_cron_expr(kwargs["cron_expr"]):
-                        raise ValueError(f"Invalid cron expression: {kwargs['cron_expr']}")
-                if "every_secs" in kwargs and kwargs["every_secs"]:
-                    try:
-                        # OverflowError: int(float("inf")) -- not a ValueError,
-                        # so it must be caught here or it escapes the update.
-                        val = int(kwargs["every_secs"])
-                    except (ValueError, TypeError, OverflowError) as e:
-                        raise ValueError(f"Invalid interval: {kwargs['every_secs']}") from e
-                    if not _is_representable_number(val):
-                        # int() accepts a bignum that no consumer can hold
-                        # (int-float arithmetic raises OverflowError on the
-                        # timer-arming path) -- same writer mirror as
-                        # _build_job, one predicate.
-                        raise ValueError(f"Invalid interval: {kwargs['every_secs']}")
-                    if val < _MIN_INTERVAL_SECS:
-                        raise ValueError(f"Interval must be >= {_MIN_INTERVAL_SECS}s, got {val}")
-                # Calendar-validity of timezone / skip_dates, validated at the
-                # persistence owner so EVERY caller (MCP cron_add/cron_update,
-                # dashboard, CLI) is covered by one check rather than each
-                # write path re-implementing it. The schema regex only checks
-                # the YYYY-MM-DD shape, not that the date exists -- so
-                # skip_dates=["2026-02-30"] would otherwise persist silently
-                # and the skip would never match at fire time.
-                if "timezone" in kwargs and kwargs["timezone"]:
-                    if not is_valid_timezone(kwargs["timezone"]):
-                        raise ValueError(f"Invalid timezone: {kwargs['timezone']!r}")
-                if "skip_dates" in kwargs and kwargs["skip_dates"]:
-                    for _d in kwargs["skip_dates"]:
-                        if not is_valid_skip_date(_d):
-                            raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
-                # Per-wake budget and subprocess timeout: validated HERE, in
-                # the pre-mutation section with every other check, so a
-                # rejected update cannot leave earlier field mutations (name,
-                # message, ...) stranded on the in-memory job for a later
-                # save to persist. Assignments happen below with the rest.
-                _tsecs: int | None = None
-                if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
-                    try:
-                        _tsecs = int(kwargs["timeout_secs"])
-                    except (ValueError, TypeError) as e:
-                        raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
-                    if not 1 <= _tsecs <= 86400:
-                        raise ValueError(f"timeout_secs must be within 1..86400, got {_tsecs}")
-                # Script/command subprocess timeout. MCP cron_update passes this
-                # field, so a branch has to consume it here — otherwise the
-                # update is accepted and silently dropped.
-                _tsub: int | None = None
-                if "timeout" in kwargs and kwargs["timeout"] is not None:
-                    try:
-                        _tsub = int(kwargs["timeout"])
-                    except (ValueError, TypeError) as e:
-                        raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
-                    if not 0 <= _tsub <= 86400:
-                        raise ValueError(f"timeout must be within 0..86400, got {_tsub}")
-                # Vault secret grant: validated with the other pre-mutation
-                # checks so a rejected grant cannot strand earlier field
-                # mutations. An empty dict revokes (clears the pin too); a
-                # non-empty grant requires a script job and the code
-                # pin computed by the grant endpoint. This kwarg is reachable
-                # only from operator surfaces — mcp_cron never passes it.
-                if "secret_env" in kwargs and kwargs["secret_env"] is not None:
-                    _se = kwargs["secret_env"]
-                    if not isinstance(_se, dict) or not all(
-                        isinstance(k, str) and isinstance(v, str) for k, v in _se.items()
-                    ):
-                        raise ValueError("secret_env must be a str->str mapping")
-                    if _se:
-                        cron_script.validate_secret_env_grant(_se)
-                        if not job.script:
-                            raise ValueError(
-                                "secret_env grants apply only to SCRIPT jobs. "
-                                "An agent job's session would expose the plaintext "
-                                "to the model; a command job's pin can cover only "
-                                "the command TEXT — a command invoking an "
-                                "agent-writable helper file would run changed "
-                                "bytes under a still-valid pin."
-                            )
-                        if not kwargs.get("secret_env_pin"):
-                            raise ValueError("a non-empty secret_env requires secret_env_pin")
-                # Pending grant REQUEST (agent-reachable via the MCP
-                # cron_secret_request tool). Same validation as the active
-                # grant — a request the operator could never approve is
-                # refused at write time, not at approval time. Writing this
-                # field never touches the active pair.
-                if "secret_env_pending" in kwargs and kwargs["secret_env_pending"] is not None:
-                    _sp = kwargs["secret_env_pending"]
-                    if not isinstance(_sp, dict) or not all(
-                        isinstance(k, str) and isinstance(v, str) for k, v in _sp.items()
-                    ):
-                        raise ValueError("secret_env_pending must be a str->str mapping")
-                    if _sp:
-                        cron_script.validate_secret_env_grant(_sp)
-                        if not job.script:
-                            raise ValueError("secret grants apply only to script jobs")
-                        if not kwargs.get("secret_env_pending_pin"):
-                            raise ValueError(
-                                "a non-empty secret_env_pending requires " "secret_env_pending_pin"
-                            )
-                # Cross-field: the wake budget must cover the subprocess bound
-                # plus cleanup, evaluated on the POST-update effective values —
-                # the wake deadline cancels only the executor future, so a
-                # shorter budget leaves the subprocess running while later
-                # wakes launch duplicates.
-                if job.command or job.script:
-                    _eff_secs = _tsecs if _tsecs is not None else job.timeout_secs
-                    _eff_sub_new = _tsub if _tsub is not None else job.timeout
-                    if _eff_sub_new:
-                        _eff_sub = int(_eff_sub_new)
-                    elif job.script:
-                        _eff_sub = 30
-                    else:
-                        _eff_sub = 300
-                    if (_tsecs is not None or _tsub is not None) and _eff_secs < (
-                        _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS
-                    ):
-                        raise ValueError(
-                            "timeout_secs (wake budget) must cover the "
-                            "command/script subprocess timeout plus cleanup: "
-                            f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
-                            f"got {_eff_secs}"
-                        )
-                if "name" in kwargs and kwargs["name"]:
-                    job.name = kwargs["name"]
-                if "message" in kwargs and kwargs["message"]:
-                    job.message = kwargs["message"]
-                if "agent_id" in kwargs:
-                    job.agent_id = kwargs["agent_id"] or ""
-                if "channel" in kwargs:
-                    job.channel = kwargs["channel"] or None
-                if "thread_ts" in kwargs:
-                    # Paired with ``channel``: together they decide WHERE a run's
-                    # output lands, and ``add_job`` has always accepted both. With
-                    # no branch here the field was validated (see the caps table)
-                    # and then dropped, so the caller was told "Updated" while the
-                    # cron kept replying in the old thread. Falsy clears, mirroring
-                    # ``channel`` and how mcp_cron normalizes blank to None.
-                    #
-                    # A granted script job re-threaded this way fails its NEXT run
-                    # closed: thread_ts is bound into the grant's delivery
-                    # fingerprint (cron_script.delivery_fingerprint), so the pin
-                    # stops verifying until the operator re-approves. That is the
-                    # intended fail-closed path, not a regression.
-                    job.thread_ts = kwargs["thread_ts"] or None
-                if "approval_mode" in kwargs:
-                    job.approval_mode = kwargs["approval_mode"] or ""
-                if "silent" in kwargs:
-                    job.silent = bool(kwargs["silent"])
-                if "skip_dates" in kwargs:
-                    job.skip_dates = kwargs["skip_dates"] or []
-                if "timezone" in kwargs:
-                    job.timezone = kwargs["timezone"] or ""
-                if "strict_schedule" in kwargs:
-                    job.strict_schedule = bool(kwargs["strict_schedule"])
-                if "persistent_session" in kwargs:
-                    job.persistent_session = bool(kwargs["persistent_session"])
-                if "minimal_context" in kwargs:
-                    job.minimal_context = bool(kwargs["minimal_context"])
-                if "hide_in_chat" in kwargs:
-                    job.hide_in_chat = bool(kwargs["hide_in_chat"])
-                if "folder_id" in kwargs:
-                    job.folder_id = kwargs["folder_id"] or ""
-                if "chat_folder_id" in kwargs:
-                    # Reported only on a REAL change: the caller moves a chat tab on
-                    # the strength of this, and the dashboard form submits the field
-                    # on every save, so "unchanged" must not read as "cleared".
-                    #
-                    # An empty prior value IS reported: filing a job that was unfiled
-                    # is the transition that puts an existing tab into its folder,
-                    # and the save is the one moment where that placement is asked
-                    # for explicitly (the mint files only a tab that did not exist).
-                    _chat_folder_next = kwargs["chat_folder_id"] or ""
-                    if chat_folder_out is not None and job.chat_folder_id != _chat_folder_next:
-                        chat_folder_out["chat_folder_was"] = job.chat_folder_id
-                    job.chat_folder_id = _chat_folder_next
-                elif (
-                    "persistent_session" in kwargs
-                    and not job.persistent_session
-                    and job.chat_folder_id
-                ):
-                    # Un-persisting takes the job-wide tab away, so the folder goes
-                    # with it: cleared here and reported exactly as an explicit
-                    # clear is, so the caller moves the tab the same way.
-                    if chat_folder_out is not None:
-                        chat_folder_out["chat_folder_was"] = job.chat_folder_id
-                    job.chat_folder_id = ""
-                if "model" in kwargs:
-                    job.model = str(kwargs["model"] or "").strip()
-                if "secret_env" in kwargs and kwargs["secret_env"] is not None:
-                    job.secret_env = dict(kwargs["secret_env"])
-                    # Pin travels with the grant; a revoke (empty map) clears it.
-                    job.secret_env_pin = (
-                        str(kwargs.get("secret_env_pin") or "") if job.secret_env else ""
-                    )
-                if "secret_env_pending" in kwargs and kwargs["secret_env_pending"] is not None:
-                    job.secret_env_pending = dict(kwargs["secret_env_pending"])
-                    if job.secret_env_pending:
-                        job.secret_env_pending_pin = str(kwargs.get("secret_env_pending_pin") or "")
-                        job.secret_env_pending_ts = float(
-                            kwargs.get("secret_env_pending_ts") or 0.0
-                        )
-                    else:
-                        # Withdraw/deny clears the whole request record.
-                        job.secret_env_pending_pin = ""
-                        job.secret_env_pending_ts = 0.0
-                # Per-wake budget (the asyncio.wait_for deadline in
-                # _execute_with_timeout). Distinct from ``timeout``, which
-                # bounds only script/command subprocesses. This is the only
-                # writer that changes the field after creation: with no branch
-                # here an existing job is stuck on its creation-time value, and
-                # raising its budget means editing the store under _file_lock
-                # by hand.
-                if _tsecs is not None:
-                    job.timeout_secs = _tsecs
-                if _tsub is not None:
-                    job.timeout = _tsub
-
-                # Schedule changes (already validated above)
-                if "cron_expr" in kwargs and kwargs["cron_expr"]:
-                    job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
-                elif "every_secs" in kwargs and kwargs["every_secs"]:
-                    job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+                apply_job_update(job, kwargs, chat_folder_out)
                 self._save()
                 logger.info("Updated cron job %s", job_id)
                 return job
@@ -5346,90 +3086,40 @@ class CronService:
 
     # ── Run claims ──
     #
-    # A run's whole per-run state is one _RunClaim in self._claims (see that
-    # class). The helpers below are the only places that store, fence, take
-    # and release a claim, so a field added to _RunClaim inherits every fence.
+    # A run's whole per-run state is one _RunClaim, stored, fenced, taken and
+    # released by self._runs (RunClaims), so a field added to _RunClaim
+    # inherits every fence; stop() alone drops them all, at shutdown.
+
+    @property
+    def _claims(self) -> dict[str, _RunClaim]:
+        """Job id -> the claim of the run that occupies it (:attr:`RunClaims.claims`).
+
+        Membership is "the job is running" for the due-scan, the next-wake
+        computation, :meth:`run_job` and the manual-run route.
+        """
+        return self._runs.claims
+
+    @_claims.setter
+    def _claims(self, claims: dict[str, _RunClaim]) -> None:
+        self._runs.claims = claims
+
+    @property
+    def _reaped_jobs(self) -> _RunMarkers:
+        """Runs the reaper killed, keyed by their claim (:attr:`RunClaims.reaped`)."""
+        return self._runs.reaped
+
+    @property
+    def _cancelled_jobs(self) -> _RunMarkers:
+        """Runs ``cancel()`` took, keyed by their claim (:attr:`RunClaims.cancelled`)."""
+        return self._runs.cancelled
 
     def _claim_run(self, job_id: str, trigger: str) -> _RunClaim:
-        """Claim ``job_id`` for a new run and return the claim. Loop-side, await-free.
+        """Claim ``job_id`` for a new run and return the claim (:meth:`RunClaims.claim`).
 
-        The caller has just established that the job is idle in this same loop
-        step (``run_job``'s guard, the due-scan's ``not in self._claims`` filter),
-        so the claim is stored unconditionally and becomes the job's occupancy at
-        once. The claim is handed to the run task rather than read back by it.
+        The dispatchers' one door: :meth:`run_job` and the due-scan call it in
+        the loop step that found the job idle.
         """
-        claim = _RunClaim(trigger=trigger, claimed_at=time.time())
-        self._claims[job_id] = claim
-        return claim
-
-    def _holds_claim(self, job_id: str, claim: _RunClaim | None) -> bool:
-        """Whether ``claim`` still owns ``job_id``'s run: the stored object, not taken.
-
-        Identity, not equality: ``cancel()`` and the reaper take the stored claim
-        when they tear a run down, and any later manual or scheduled claim stores
-        a NEW object, so a claim that is not the stored one belongs to someone
-        else and is left alone. Every site that releases a job's run state --
-        ``_release_claim`` and the fences in ``_run_job_isolated`` and
-        ``_run_claimed_manual`` -- asks this same question, so a newer claim is
-        never released by an older run, and a run that ``cancel()`` or the
-        reaper has taken releases nothing: they finish it after their kill
-        awaits, while its claim still keeps every other claimant out. The cancel
-        and reap markers are keyed by the same object (:class:`_RunMarkers`), so
-        a finalizer consumes only the marker set for its own run.
-        """
-        stored = self._claims.get(job_id)
-        return stored is not None and stored is claim and not stored.taken
-
-    def _release_claim(self, job_id: str, claim: _RunClaim | None) -> bool:
-        """Release ``claim`` -- every field at once -- if it still owns the job."""
-        if not self._holds_claim(job_id, claim):
-            return False
-        del self._claims[job_id]
-        return True
-
-    def _take_claim(self, job_id: str, expected: _RunClaim | None = None) -> _RunClaim | None:
-        """Take over the stored claim for a teardown (``cancel()`` / ``_force_reap``).
-
-        Returns the claim if this caller is the one taking it, None when there
-        is none or another teardown already took it. A taken claim stays stored
-        so the job keeps reading as occupied through the kill awaits, but the
-        run's own fences fail from here on and the reaper skips it;
-        ``_finish_taken_claim`` pops it once the teardown is done killing.
-        Only the taker finishes: a caller handed None owns nothing of the run
-        and stops there, because pressing on would pop the taker's claim out
-        from under its kill awaits and write a second terminal row.
-
-        With ``expected``, only THAT object is taken (identity, like every
-        claim fence). A caller that decided on a teardown from a claim it read
-        before an await -- the reaper sweep, measuring a snapshot of the claims
-        -- names the run it measured; a stored claim that is a different object
-        is a replacement run it never measured, and is left untaken. Without
-        it -- ``cancel()``, keyed by job like its route, guarding and taking
-        in one loop step -- the job's current run is taken, whichever it is.
-        """
-        claim = self._claims.get(job_id)
-        if claim is None or claim.taken:
-            return None
-        if expected is not None and claim is not expected:
-            return None
-        claim.taken = True
-        return claim
-
-    def _finish_taken_claim(self, job_id: str) -> None:
-        """Pop the taken claim and cancel its task: the last step of a teardown.
-
-        Only a TAKEN claim is popped. A claim that is not taken belongs to a
-        replacement run accepted after this teardown's own claim left the
-        store some other way, and is never this teardown's to release.
-        Idempotent with ``_run_job_isolated``'s finally.
-        """
-        stored = self._claims.get(job_id)
-        if stored is None or not stored.taken:
-            return
-        del self._claims[job_id]
-        task = stored.task
-        if task is not None and not task.done():
-            task.cancel()
+        return self._runs.claim(job_id, trigger)
 
     def attach_run_task(self, job_id: str, task: asyncio.Task[Any]) -> None:
         """Track ``task`` as the run that :meth:`run_job` just claimed ``job_id`` for.
@@ -5437,55 +3127,23 @@ class CronService:
         The manual-run route wraps the coroutine ``run_job`` returns in a task
         on the same line and hands it in here, still await-free, so ``cancel()``
         can reach a run parked in its store refresh and ``stop()`` can await it.
-        The run task ``_run_claimed_manual`` spawns later replaces it. A claim
-        that already tracks a task, or no claim at all, is left alone.
+        See :meth:`RunClaims.attach_task`.
         """
-        claim = self._claims.get(job_id)
-        if claim is not None and claim.task is None:
-            claim.task = task
+        self._runs.attach_task(job_id, task)
 
     def discard_finished_run(self, job_id: str) -> bool:
-        """Drop the claim of a run whose task has already finished.
+        """Drop the claim of a run whose task has already finished (:meth:`RunClaims.discard_finished`).
 
-        A claim is released by ``_run_job_isolated``'s ``finally``. A task that
-        ends without reaching it leaves the claim stored with nothing left to
-        clear it, so the job reads as running for the life of the gateway:
-        every manual run of it is refused, and the due-scan, ``_next_wake_secs``
-        and ``run_job`` -- which all skip a claimed job -- pass over every
-        scheduled fire. The three consumers that gate on "is a run in flight?"
-        ask here first: the manual-run route before its 409, the reaper sweep
-        before its deadline math, and ``cancel()`` before its guard, so a
-        finished task is never mistaken for a live one. A task still running,
-        or no tracked task at all, is left untouched -- and so is a claim
-        ``cancel()`` or the reaper has taken, whatever its task's state: its
-        task ending is the expected effect of that teardown's kill, not an
-        orphan, and the teardown pops the claim itself once its kill awaits
-        return (``_finish_taken_claim``). Dropping it here would read the job
-        idle mid-teardown, admit a replacement run, and let the teardown's
-        terminal row outrank that run's generation. Returns True when a stale
-        claim was dropped.
+        Asked first by the three consumers that gate on "is a run in flight?" --
+        the manual-run route before its 409, the reaper sweep before its
+        deadline math, and :meth:`cancel` before its guard. Returns True when a
+        stale claim was dropped.
         """
-        claim = self._claims.get(job_id)
-        if claim is None or claim.taken or claim.task is None or not claim.task.done():
-            return False
-        del self._claims[job_id]
-        logger.warning(
-            "Cron: dropped stale running markers for job %s -- its task had already finished",
-            job_id,
-        )
-        return True
+        return self._runs.discard_finished(job_id)
 
     def running_since(self, job_id: str) -> float | None:
-        """Return the epoch start time of a running job, or None.
-
-        Silent for a run ``cancel()`` or the reaper has taken: its terminal row
-        is being written and the badge clears, as it did when they popped the
-        run's start stamp ahead of their kill awaits.
-        """
-        claim = self._claims.get(job_id)
-        if claim is None or claim.taken:
-            return None
-        return claim.claimed_at
+        """Return the epoch start time of a running job, or None (:meth:`RunClaims.running_since`)."""
+        return self._runs.running_since(job_id)
 
     def set_refresh_callback(self, cb: Any) -> None:
         """Set the dashboard refresh callback."""
@@ -5516,28 +3174,6 @@ class CronService:
         claim = self._claim_run(job_id, "manual")
         return self._run_claimed_manual(job_id, claim)
 
-    def _next_run_generation(self, job: CronJob) -> int:
-        """Allocate the next run generation of ``job``. Loop-side, no store I/O.
-
-        One above both the generation the store holds for the job
-        (``job.run_generation``: the last record merged, as of the object's
-        last sync) and the highest this process has handed out for it, so two
-        runs of one job never share a number -- whatever the clock says
-        (Windows' ``time.time()`` ticks every ~15.6 ms, so two claims in one
-        tick carry equal timestamps), across the reloads that replace the job
-        object before a run's merge lands, and across restarts, which resume
-        above the persisted value. Called once per run at its first step (and
-        kept on its claim), and by ``cancel()`` / ``_force_reap`` for the
-        terminal record they write, each BEFORE the run's claim is released
-        and without an ``await`` in between, so a replacement claim always
-        draws a higher number. Not a locked store write: the claim sites are
-        loop-resident and never take the store lock, and the merge that carries
-        the number persists it under the lock anyway.
-        """
-        generation = max(job.run_generation, self._run_generations.get(job.id, 0)) + 1
-        self._run_generations[job.id] = generation
-        return generation
-
     async def _run_claimed_manual(self, job_id: str, claim: _RunClaim) -> bool:
         """Body of :meth:`run_job`, entered with the claim already taken."""
         # Refresh the store off the loop, then resolve + spawn on the loop.
@@ -5562,13 +3198,13 @@ class CronService:
             # No run will consume the claim: release it unless cancel() already
             # took it (the fence fails) or a newer claim has replaced it. A
             # cancel() that reached us here also marked this claim in
-            # _cancelled_jobs for _run_job_isolated's finally to consume -- a
+            # self._runs.cancelled for _run_job_isolated's finally to consume -- a
             # finally this run never spawns -- so consume it here, or the
             # marker would outlive its run.
-            self._release_claim(job_id, claim)
-            self._cancelled_jobs.consume(job_id, claim)
+            self._runs.release(job_id, claim)
+            self._runs.cancelled.consume(job_id, claim)
             raise
-        if not self._holds_claim(job_id, claim):
+        if not self._runs.holds(job_id, claim):
             # cancel() took the claim while the refresh was in flight and is
             # still tearing down: it takes the claim first and cancels the
             # tracked task only after its process-kill / session-reset awaits,
@@ -5576,11 +3212,11 @@ class CronService:
             # would start the very run cancel() is about to report cancelled.
             # The marker cancel() left is keyed to this claim, for a
             # _run_job_isolated finally that never runs; consume it here.
-            self._cancelled_jobs.consume(job_id, claim)
+            self._runs.cancelled.consume(job_id, claim)
             return False
         job = next((j for j in snapshot if j.id == job_id), None)
         if not job:
-            self._release_claim(job_id, claim)
+            self._runs.release(job_id, claim)
             return False
         task = asyncio.create_task(self._run_job_isolated(job, claim))
         claim.task = task
@@ -5595,7 +3231,7 @@ class CronService:
             # iteration after the run ends, and a claim that is not this
             # wrapper's by then belongs to a replacement run.
             if task.done():
-                self._release_claim(job.id, claim)
+                self._runs.release(job.id, claim)
         return True
 
     def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
@@ -5725,36 +3361,8 @@ class CronService:
     # ── Timer ──
 
     def _next_wake_secs(self) -> float | None:
-        """Compute seconds until the next job should fire."""
-        now = time.time()
-        delays: list[float] = []
-        for job in self._jobs:
-            if not job.enabled or job.id in self._claims:
-                continue
-            if job.schedule.kind == "every" and job.schedule.every_secs:
-                last = job.last_run_ts or job.created_ts
-                next_run = last + job.schedule.every_secs
-                delays.append(max(0.0, next_run - now))
-            elif job.schedule.kind == "at" and job.schedule.at_ts:
-                delays.append(max(0.0, job.schedule.at_ts - now))
-            elif job.schedule.kind == "cron":
-                # Wake ON the next cron boundary (as `at`/`every` do), not on a
-                # flat poll whose phase is unrelated to the schedule -- a phase
-                # gap can straddle a cron's single matching minute and drop the
-                # occurrence, most visibly on low-frequency crons. Use the
-                # skip-free boundary helper: it is O(1), so a job with many
-                # skip_dates cannot make this on-loop re-arm traverse up to
-                # _MAX_SKIP_DATE_LOOKAHEAD occurrences. skip_dates is enforced at
-                # fire time by _is_due; a wake on a skipped boundary is a no-op
-                # that re-arms to the next one. _effective_delay() still caps the
-                # armed delay at _TIMER_POLL_SECS so an externally-added job is
-                # picked up within one poll.
-                cron_next = _next_cron_boundary_ts(job, now)
-                if cron_next is not None:
-                    delays.append(max(0.0, cron_next - now))
-                else:
-                    delays.append(_TIMER_POLL_SECS)
-        return min(delays) if delays else None
+        """Compute seconds until the next job should fire (:func:`~kiro_crew.cron_service.schedule.next_wake_secs`)."""
+        return next_wake_secs(self._jobs, self._claims, time.time())
 
     def _effective_delay(self) -> float:
         """Compute the actual timer delay, capped at poll interval.
@@ -6020,19 +3628,19 @@ class CronService:
         and the run would be filed as a failure beside the cancelled row
         ``cancel()`` writes.
         """
-        if not self._holds_claim(job.id, claim):
+        if not self._runs.holds(job.id, claim):
             # Taken before this run's first step: cancel() took the claim,
             # wrote the run's terminal row and is about to cancel this task.
             # Run nothing -- a stamp set now would sit on a claim that is no
             # longer this run's to release, and that finally would double the
             # row already written. The markers cancel() and the reaper key to
             # this claim are consumed here, the one place left that can.
-            self._cancelled_jobs.consume(job.id, claim)
-            self._reaped_jobs.consume(job.id, claim)
+            self._runs.cancelled.consume(job.id, claim)
+            self._runs.reaped.consume(job.id, claim)
             return
         # This run's generation, drawn while it verifiably holds the claim;
         # the finally stamps it on the record it merges (see CronJob).
-        claim.generation = self._next_run_generation(job)
+        claim.generation = self._runs.next_generation(job)
         started_at = claim.claimed_at
         trigger = claim.trigger
         # Provisional; refined once the jitter sleep completes. Only read on
@@ -6089,7 +3697,7 @@ class CronService:
             # sleep up to 59 min here, and a user cancel() during that window
             # raises CancelledError at the sleep — if that happened BEFORE the
             # try, the finally below would never run, leaking this run's
-            # _cancelled_jobs marker (and the rest of the bookkeeping): the
+            # self._runs.cancelled marker (and the rest of the bookkeeping): the
             # run-keyed marker stays inert for later runs, but nothing else
             # would ever consume it.
             if jitter > 0:
@@ -6131,7 +3739,7 @@ class CronService:
                 logger.debug("push_refresh failed on job start", exc_info=True)
             await self._execute_with_timeout(job, claim)
         except asyncio.CancelledError:
-            # stop() cancels this task WITHOUT marking _cancelled_jobs, so the
+            # stop() cancels this task WITHOUT marking self._runs.cancelled, so the
             # finally must know not to clear the last completed run's result.
             being_cancelled = True
             raise
@@ -6164,8 +3772,8 @@ class CronService:
             # above while a replacement run was accepted and cancelled, eat
             # that run's marker -- its finalizer then finds none and appends a
             # failure row after the cancelled row cancel() already wrote.
-            reaped = self._reaped_jobs.consume(job.id, claim)
-            cancelled = self._cancelled_jobs.consume(job.id, claim)
+            reaped = self._runs.reaped.consume(job.id, claim)
+            cancelled = self._runs.cancelled.consume(job.id, claim)
             # This run's terminal record, taken BEFORE the release below. The
             # job object is shared by every run of the job, and the release
             # lets a replacement start while the merge and history append are
@@ -6179,41 +3787,14 @@ class CronService:
             status = ""
             run_result: str | None = None
             if not reaped and not cancelled:
-                # For 'every' jobs, use started_at to prevent cumulative drift.
-                # `_execute` bound this run's retry count to the `last_run_ts` it
-                # stamped; moving that stamp has to move the binding with it, or
-                # the pair disagrees for every completed `every` run and the
-                # Schedule page never shows a count. Only a bound pair moves: a
-                # run that timed out never reached `_execute`'s stamp, so its
-                # pair is (previous run, this run) and stays mismatched.
-                if job.schedule.kind == "every":
-                    if job.last_retry_run_ts == job.last_run_ts:
-                        job.last_retry_run_ts = started_at
-                    job.last_run_ts = started_at
-                # One clear per result-less run. Scattering it over exit sites is
-                # what let the fire-time deny and script Skip paths keep a result.
-                if (job.command or job.script) and not being_cancelled:
-                    job.clear_carried_result()
-                status = "success" if job.last_status == "ok" else "failure"
-                # Attribute last_result to this run only if the run actually
-                # produced it (set_run_result sets the marker). Reading it
-                # unconditionally recorded the PREVIOUS run's result as this
-                # run's summary/trace whenever the run ended without producing
-                # one (observed in the wild: a timed-out run's history row
-                # carried the prior success's summary verbatim -- fabricated
-                # history on a status=failure record).
-                run_result = job.last_result if job.result_produced else None
-                # The merge copies this run's fields to the disk copy field by
-                # field; a shallow copy freezes them as this run left them.
-                terminal = copy.copy(job)
-                # The record's generation, which the merge compares against the
-                # one the store holds and stamps on it. Set on the copy, not
-                # the shared job -- only a merge moves the store's generation,
-                # so a run that has merely STARTED behind this one does not
-                # discard this record; a run whose record already landed does.
-                terminal.run_generation = claim.generation
+                terminal, status, run_result = close_run(
+                    job,
+                    started_at=started_at,
+                    generation=claim.generation,
+                    being_cancelled=being_cancelled,
+                )
             # Release the claim only while it is still THIS run's (identity,
-            # see _holds_claim). cancel() and the reaper take the run they
+            # see RunClaims.holds). cancel() and the reaper take the run they
             # found before anything else can claim the job, and the marker
             # clear above is a full executor round trip: a manual Run accepted
             # in that gap holds a claim of its own that is not this run's to
@@ -6223,7 +3804,7 @@ class CronService:
             # beside it. A run that is still the claim holder (a normal
             # completion, or stop()'s cancel, which takes nothing) releases
             # everything here -- the one pop covers every field.
-            self._release_claim(job.id, claim)
+            self._runs.release(job.id, claim)
             # Notify dashboard that the job has finished (clears the badge).
             try:
                 if self._push_refresh:
@@ -6285,77 +3866,11 @@ class CronService:
             if self._running:
                 self._arm_timer()
 
-    @staticmethod
-    def _compute_jitter(job: CronJob) -> float:
-        """Return random jitter seconds based on schedule frequency.
-
-        - strict_schedule=True or one-shot 'at' jobs: no jitter
-        - Sub-hourly (every < 3600s or cron whose parsed minute field fires
-          more than once per hour): no jitter
-        - Hourly (every 3600–86399s or cron firing hourly): 0–5 min
-        - Daily (every >= 86400s or cron firing daily): 0–59 min
-        - Unrecognized cron patterns (fallback): 0–5 min
-        """
-        if job.strict_schedule:
-            return 0.0
-        sched = job.schedule
-        if sched.kind == "at":
-            return 0.0  # one-shot jobs fire at exact time
-        if sched.kind == "every" and sched.every_secs:
-            if sched.every_secs >= 86400:
-                return random.uniform(0, _JITTER_DAILY_MAX)
-            elif sched.every_secs >= 3600:
-                return random.uniform(0, _JITTER_HOURLY_MAX)
-            else:
-                return 0.0  # sub-hourly jobs shouldn't be jittered
-        if sched.kind == "cron" and sched.cron_expr:
-            # Ask croniter for the normalized minute set. Wildcard collapses
-            # to ["*"]; lists, ranges, steps, and their combinations expand
-            # and deduplicate, so cardinality reflects actual fires per hour.
-            try:
-                expanded, _ = croniter.expand(sched.cron_expr)
-                minute_values = expanded[0]
-            except (KeyError, TypeError, ValueError):
-                minute_values = []
-            if minute_values == ["*"] or len(minute_values) > 1:
-                return 0.0
-
-            parts = sched.cron_expr.split()
-            if len(parts) == 5:
-                # Single literal hour (e.g., "0 3 * * *") = truly daily/weekly
-                if parts[1].isdigit():
-                    return random.uniform(0, _JITTER_DAILY_MAX)
-                # Multi-hour patterns (*/2, 1,13) or wildcard = hourly jitter
-                if parts[1] != "*":
-                    return random.uniform(0, _JITTER_HOURLY_MAX)
-            return random.uniform(0, _JITTER_HOURLY_MAX)
-        return 0.0
-
-    @staticmethod
-    def _is_due(job: CronJob, now: float) -> bool:
-        if job.schedule.kind == "every" and job.schedule.every_secs:
-            last = job.last_run_ts or job.created_ts
-            if now < last + job.schedule.every_secs:
-                return False
-        elif job.schedule.kind == "at" and job.schedule.at_ts:
-            if now < job.schedule.at_ts:
-                return False
-        elif job.schedule.kind == "cron" and job.schedule.cron_expr:
-            tz = _job_tz(job)
-            dt = datetime.fromtimestamp(now, tz=tz)
-            if not cron_expr_matches(job.schedule.cron_expr, dt):
-                return False
-            # Don't re-fire within the same UTC minute (immune to DST ambiguity)
-            if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
-                return False
-        else:
-            return False
-        # Skip dates check (evaluated in job's local timezone, applies to all schedule types)
-        if job.skip_dates:
-            local_date = datetime.fromtimestamp(now, _job_tz(job)).strftime("%Y-%m-%d")
-            if local_date in job.skip_dates:
-                return False
-        return True
+    #: Random jitter seconds for a scheduled run of a job
+    #: (:func:`~kiro_crew.cron_service.schedule.compute_jitter`).
+    _compute_jitter = staticmethod(compute_jitter)
+    #: Whether a job is due at an epoch (:func:`~kiro_crew.cron_service.schedule.is_due`).
+    _is_due = staticmethod(is_due)
 
     async def _execute_with_timeout(self, job: CronJob, claim: _RunClaim | None = None) -> None:
         """Execute a job with a timeout guard.
@@ -6478,7 +3993,7 @@ class CronService:
                 # "error" without counting a failure) stay neutral: a policy
                 # denial neither spends nor refills the budget. Callback
                 # paths that already called record_success() are unaffected
-                # (resetting 0 to 0 is idempotent). The _cancelled_jobs
+                # (resetting 0 to 0 is idempotent). The self._runs.cancelled
                 # check closes a cancel race: cancel() kills the sandboxed
                 # subprocess BEFORE task.cancel(), and the gateway's
                 # cancelled branch returns None without setting last_status,
@@ -6487,7 +4002,7 @@ class CronService:
                 # consecutive_failures untouched. Asked for THIS run's claim:
                 # cancel() has taken the stored claim by now, and a marker
                 # left by another run of the job is not this run's.
-                if not self._cancelled_jobs.has(job.id, claim):
+                if not self._runs.cancelled.has(job.id, claim):
                     job.record_success()
         except Exception as exc:
             job.last_status = "error"
@@ -6554,50 +4069,7 @@ class CronService:
                     by_id[job.id].run_generation,
                 )
             elif job.id in by_id:
-                by_id[job.id].run_generation = job.run_generation
-                by_id[job.id].last_run_ts = job.last_run_ts
-                by_id[job.id].last_status = job.last_status
-                by_id[job.id].last_error = job.last_error
-                # Only propagate enabled=False for one-shot at-jobs that fired.
-                # Never overwrite enabled for recurring jobs — user_paused is the
-                # sole authority for user-controlled pause/resume state.
-                # Propagate the fired/parked disable for at-jobs — including a
-                # fire-time-DENIED one (parked disabled instead of deleted so
-                # it cannot refire every tick yet stays re-enableable).
-                if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
-                    by_id[job.id].enabled = job.enabled
-                    by_id[job.id].user_paused = not job.enabled
-                # auto_paused is execution-owned (repeated-failure auto-pause and
-                # its reset on success), so propagate it for every job — unlike
-                # `enabled`, which must not be clobbered for recurring jobs. Also
-                # reflect it into the disk copy's derived `enabled` so the next
-                # reader sees the pause before a reload re-derives it.
-                by_id[job.id].auto_paused = job.auto_paused
-                if job.auto_paused and not by_id[job.id].user_paused:
-                    by_id[job.id].enabled = False
-                by_id[job.id].last_result = job.last_result
-                # Both stamp fields travel WITH last_result. _sync() above
-                # replaced this list with the disk copies, so by_id[job.id] is
-                # a different object than `job` and every field a run produces
-                # has to be copied explicitly. Omitting these persisted the new
-                # result under the PREVIOUS run's stamp, so after a reload
-                # /to-chat rendered a header the executor never wrote and
-                # append_if_absent duplicated the row instead of collapsing it.
-                by_id[job.id].last_result_ts = job.last_result_ts
-                by_id[job.id].last_result_stamp = job.last_result_stamp
-                by_id[job.id].last_posted_hash = job.last_posted_hash
-                by_id[job.id].consecutive_dupes = job.consecutive_dupes
-                by_id[job.id].last_posted_at = job.last_posted_at
-                by_id[job.id].last_failure_hash = job.last_failure_hash
-                by_id[job.id].last_failure_at = job.last_failure_at
-                by_id[job.id].consecutive_failures = job.consecutive_failures
-                # Same shape as the other runtime->disk copies on this call: a
-                # field `_execute` sets on the in-memory `job` is invisible after
-                # reload unless copied here explicitly. A cancelled run never
-                # reached the stamp in `_execute`, so on it these still hold the
-                # last completed run's values and the copy changes nothing.
-                by_id[job.id].last_retry_count = job.last_retry_count
-                by_id[job.id].last_retry_run_ts = job.last_retry_run_ts
+                apply_run_record(by_id[job.id], job)
             # A fire-time-DENIED run is a policy refusal, not a completed run:
             # deleting the one-shot here would make the documented
             # resume-on-policy-loosening semantic impossible for at-jobs.
@@ -7022,7 +4494,7 @@ class CronService:
         self._last_mtime = st.st_mtime
         self._last_mtime_ns = st.st_mtime_ns
         self._last_size = st.st_size
-        self._last_digest = hashlib.blake2b(raw, digest_size=16).digest()
+        self._last_digest = store_digest(raw)
 
     def _reset_fingerprint(self) -> None:
         """Clear the fingerprint so the next :meth:`_sync` forces a reload."""
@@ -7152,7 +4624,7 @@ class CronService:
             self._reset_fingerprint()
             self._load_failed = True
             return
-        if hashlib.blake2b(raw, digest_size=16).digest() != self._last_digest:
+        if store_digest(raw) != self._last_digest:
             logger.info("Cron file changed externally, reloading")
             self._load(_preread=raw)
 
@@ -7175,15 +4647,14 @@ class CronService:
         try:
             st = self._path.stat()
             raw = _preread if _preread is not None else self._path.read_bytes()
-            data = json.loads(raw)
-            records = data.get("jobs", []) if isinstance(data, dict) else None
-            if not isinstance(records, list):
+            jobs = decode_jobs(raw)
+            if jobs is None:
                 # A document that parses but is not an object holding a jobs
                 # LIST (top-level [], a scalar, {"jobs": null}) cannot yield
                 # any job — same salvage story as unparseable JSON (there is
-                # nothing to keep), and without this guard data.get() / the
-                # loop below would raise an uncaught AttributeError/TypeError
-                # into _sync and gateway startup.
+                # nothing to keep), and without this guard the per-entry build
+                # would raise an uncaught AttributeError/TypeError into _sync
+                # and gateway startup.
                 logger.warning(
                     "Failed to load cron store: document is not an object with a jobs list"
                 )
@@ -7191,32 +4662,10 @@ class CronService:
                 self._reset_fingerprint()
                 self._load_failed = True
                 return
-            # Per-entry isolation: one malformed or legacy record must not
-            # discard the whole registry. Each record is built in its own
-            # try block; a bad one is warned about and skipped, and every
-            # well-formed job survives. The whole-store reset below is reserved
-            # for a file that yields nothing parseable at all, where there is
-            # nothing to salvage.
-            #
-            # The caught tuple is deliberately NARROWER than the exceptions
-            # _job_from_record can raise: KeyError and TypeError are its two
-            # bad-data signals, and AttributeError is not reachable from JSON.
-            # See _job_from_record's docstring for why, and for what catching it
-            # would cost.
-            jobs: list[CronJob] = []
-            for j in records:
-                try:
-                    jobs.append(_job_from_record(j))
-                except (KeyError, TypeError) as entry_exc:
-                    entry_id = (
-                        j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
-                    )
-                    logger.warning(
-                        "Skipping malformed cron job entry (id=%r): %r; "
-                        "the entry will be dropped from the store on the next write",
-                        entry_id,
-                        entry_exc,
-                    )
+            # One malformed or legacy record is warned about and skipped by
+            # decode_jobs; every well-formed job survives, and the whole-store
+            # reset below is reserved for a file that yields nothing parseable
+            # at all, where there is nothing to salvage.
             self._jobs = jobs
             # Fingerprint from the stat taken BEFORE the read: if a writer
             # replaced the file between our stat and read we may have loaded the
@@ -7227,7 +4676,7 @@ class CronService:
             self._last_mtime = st.st_mtime
             self._last_mtime_ns = st.st_mtime_ns
             self._last_size = st.st_size
-            self._last_digest = hashlib.blake2b(raw, digest_size=16).digest()
+            self._last_digest = store_digest(raw)
         except (OSError, ValueError, TypeError, RecursionError) as exc:
             # Same class set as _read_job_records' json.loads guard, kept
             # spelled identically so the two cannot drift. A decode-error-only
@@ -7378,77 +4827,12 @@ class CronService:
         if self._load_failed:
             raise self._unreadable_error()
         self._dir.mkdir(parents=True, exist_ok=True)
-        data = {
-            "version": _STORE_VERSION,
-            "jobs": [
-                {
-                    "id": j.id,
-                    "name": j.name,
-                    "message": j.message,
-                    "schedule": asdict(j.schedule),
-                    "channel": j.channel,
-                    "thread_ts": j.thread_ts,
-                    "enabled": j.enabled,
-                    "user_paused": j.user_paused,
-                    "auto_paused": j.auto_paused,
-                    "last_run_ts": j.last_run_ts,
-                    "last_status": j.last_status,
-                    "last_error": j.last_error,
-                    "created_ts": j.created_ts,
-                    "delete_after_run": j.delete_after_run,
-                    "last_result": j.last_result,
-                    "last_result_ts": j.last_result_ts,
-                    "last_result_stamp": j.last_result_stamp,
-                    "context_enabled": j.context_enabled,
-                    "agent_id": j.agent_id,
-                    "member_id": j.member_id,
-                    "memory_store": j.memory_store,
-                    "execution_context": j.execution_context,
-                    "approval_mode": j.approval_mode,
-                    "acked_items": j.acked_items,
-                    "created_by": j.created_by,
-                    "source_preset": j.source_preset,
-                    "source_template_prompt": j.source_template_prompt,
-                    "silent": j.silent,
-                    "session_key": j.session_key,
-                    "last_posted_hash": j.last_posted_hash,
-                    "consecutive_dupes": j.consecutive_dupes,
-                    "last_posted_at": j.last_posted_at,
-                    "last_failure_hash": j.last_failure_hash,
-                    "last_failure_at": j.last_failure_at,
-                    "consecutive_failures": j.consecutive_failures,
-                    "skip_dates": j.skip_dates,
-                    "timezone": j.timezone,
-                    "persistent_session": j.persistent_session,
-                    "minimal_context": j.minimal_context,
-                    "hide_in_chat": j.hide_in_chat,
-                    "folder_id": j.folder_id,
-                    "chat_folder_id": j.chat_folder_id,
-                    "model": j.model,
-                    "last_retry_count": j.last_retry_count,
-                    "last_retry_run_ts": j.last_retry_run_ts,
-                    "run_generation": j.run_generation,
-                    "agent_sequence": j.agent_sequence,
-                    "env": j.env,
-                    "timeout_secs": j.timeout_secs,
-                    "strict_schedule": j.strict_schedule,
-                    "script": j.script,
-                    "command": j.command,
-                    "timeout": j.timeout,
-                    "secret_env": j.secret_env,
-                    "secret_env_pin": j.secret_env_pin,
-                    "secret_env_pending": j.secret_env_pending,
-                    "secret_env_pending_pin": j.secret_env_pending_pin,
-                    "secret_env_pending_ts": j.secret_env_pending_ts,
-                }
-                for j in self._jobs
-            ],
-        }
+        document = encode_store(self._jobs)
         # Atomic write: unique tmp → rename
         # Deferred import to avoid circular dependency (pre-existing)
         from kiro_crew.atomic_write import atomic_write
 
-        atomic_write(self._path, json.dumps(data, indent=2))
+        atomic_write(self._path, document)
         # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
         # our own write and does not reload it back over the in-memory state.
         self._record_fingerprint()
