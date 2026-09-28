@@ -21748,8 +21748,9 @@ class TestRunChatTransientRetry:
         self, tmp_path, monkeypatch
     ):
         """A Stop after dequeue but before the guarded task consumes the replay
-        must still veto the recovery. The queue no longer exists at this seam,
-        so the runner must use the identity and snapshots passed by the drain."""
+        must still veto the recovery. The queue entry is already consumed at
+        this seam, so the runner must use the identity and snapshots passed by
+        the drain."""
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.dashboard.chat_utils import effective_session_key
         from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
