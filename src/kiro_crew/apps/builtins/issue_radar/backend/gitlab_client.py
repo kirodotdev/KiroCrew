@@ -97,10 +97,8 @@ _PAGE_SIZE = 100
 # arbitrary API paths, so pagination is explicit here).
 _MAX_PAGES = 40
 
-_SEGMENT_RE = _transport.SEGMENT_RE
 # A GitLab username is used in search filters that ride in a query string.
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
-_GITLAB_RESERVED_SEGMENTS = _transport.GITLAB_RESERVED_SEGMENTS
 
 
 def parse_gitlab_repo_url(link: str, *, allowed_hosts: frozenset[str] = frozenset()) -> tuple[str, str, str]:
