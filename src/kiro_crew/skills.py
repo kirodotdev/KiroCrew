@@ -288,6 +288,124 @@ _PROJECT_SKILL_MAX_DEPTH = 64
 # skipped rather than loaded whole.
 PROJECT_SKILL_BODY_CAP = 24_750
 PINNED_SKILL_BODIES_CAP = 99_000
+# What one exact-key read may deliver, in UTF-8 bytes. A tool response is cut at
+# ``validation.MAX_RESPONSE_LEN`` characters and the cut takes the TAIL, so a body
+# that does not fit under that ceiling with its framing would lose its closing
+# instructions silently. A larger body is therefore refused whole and served in
+# whole-line pages that each fit; the bound is a context budget, not a file limit,
+# so it neither grows for a large skill nor shrinks what is on disk. The pinning
+# path's ``PINNED_SKILL_BODIES_CAP`` above is the same number; if this capacity
+# is ever revisited, the two move together.
+SKILL_READ_CAPACITY = 99_000
+
+# Why an exact-key read delivered no body. Three values because the caller acts
+# differently on each: a key outside the scope is a lookup to correct, an
+# unreadable file is the operator's to repair, and a body over the capacity is
+# read again in pages. One sentence naming all three sends the reader after the
+# wrong one.
+SKILL_READ_OUTSIDE_SCOPE = "outside_scope"
+SKILL_READ_UNREADABLE = "unreadable"
+SKILL_READ_OVER_CAPACITY = "over_capacity"
+
+
+class SkillBodyPage(NamedTuple):
+    """Whole lines of one skill body, never more than the read's capacity in UTF-8 bytes."""
+
+    content: str
+    line_offset: int
+    line_count: int
+    total_lines: int
+    total_bytes: int
+    next_offset: int | None
+
+
+class SkillReadRefusal(NamedTuple):
+    """Why an exact-key read delivered nothing, with the numbers its message needs."""
+
+    reason: str
+    capacity: int
+    size_bytes: int | None = None  # the whole body, when the read measured it
+    confined: bool = False  # ``capacity`` is the confined project body cap
+    line: int | None = None  # over_capacity: the one line that fits no page
+
+
+class _ExactRead(NamedTuple):
+    """One pass of the exact-key resolution chain, with its refusal classified.
+
+    ``refusal`` is one of the three read reasons when ``content`` is ``None`` and
+    empty when a body was delivered.
+    """
+
+    content: str | None
+    refusal: str
+    confined: bool
+
+
+def _page_skill_body(
+    body: str, *, offset: int | None, limit: int | None, capacity: int
+) -> SkillBodyPage | SkillReadRefusal:
+    """Deliver ``body`` whole, or the whole lines from ``offset`` that fit ``capacity``.
+
+    Lines rather than bytes: a byte window can split a multi-byte character or a
+    sentence, and the file and transcript readers this tool sits beside already
+    page in lines, so an agent carries one unit across them. Every returned line
+    is complete; the page stops at the last line that still fits. Only ``"\\n"``
+    separates lines, because the decoder has already folded every newline form
+    to it, so the count matches what a file reader shows for the same file.
+    Every size here is of the body AS DELIVERED -- UTF-8 bytes of that decoded
+    text -- never of the file on disk: the capacity is a budget on what one
+    response carries, and a CRLF checkout is larger on disk than what is sent.
+
+    The body may be as large as the shared file safety cap, so nothing here
+    materializes it line by line: the count is a scan, the page start is a walk
+    of newline positions, and only the lines of the page itself are copied out.
+    """
+    total_bytes = len(body.encode("utf-8"))
+    if offset is None and limit is None:
+        if total_bytes > capacity:
+            return SkillReadRefusal(SKILL_READ_OVER_CAPACITY, capacity, size_bytes=total_bytes)
+        total_lines = _skill_body_line_count(body)
+        return SkillBodyPage(body, 0, total_lines, total_lines, total_bytes, None)
+    total_lines = _skill_body_line_count(body)
+    start = max(0, offset or 0)
+    if start >= total_lines:
+        # Past the last line: an empty page that still names the count, which is
+        # what the renderer prints for any page with no lines.
+        return SkillBodyPage("", start, 0, total_lines, total_bytes, None)
+    position = 0
+    for _ in range(start):
+        position = body.find("\n", position) + 1
+    taken: list[str] = []
+    spent = 0
+    most = None if limit is None else max(1, limit)
+    while position < len(body) and (most is None or len(taken) < most):
+        newline = body.find("\n", position)
+        end = len(body) if newline < 0 else newline + 1
+        line = body[position:end]
+        size = len(line.encode("utf-8"))
+        if spent + size > capacity:
+            if not taken:
+                return SkillReadRefusal(
+                    SKILL_READ_OVER_CAPACITY, capacity, size_bytes=size, line=start
+                )
+            break
+        taken.append(line)
+        spent += size
+        position = end
+    end_line = start + len(taken)
+    return SkillBodyPage(
+        "".join(taken),
+        start,
+        len(taken),
+        total_lines,
+        total_bytes,
+        end_line if end_line < total_lines else None,
+    )
+
+
+def _skill_body_line_count(body: str) -> int:
+    """Lines in ``body`` as a file reader counts them: a final unterminated line counts."""
+    return body.count("\n") + (1 if body and not body.endswith("\n") else 0)
 
 
 class SkillContextCapacityError(ValueError):
@@ -2987,6 +3105,7 @@ class SkillsLoader:
         project_dir: str | Path | None = None,
         *,
         max_bytes: int | None = None,
+        refusal_reasons: list[str] | None = None,
     ) -> str | None:
         """Load a single skill's content by name (supports nested paths).
 
@@ -2994,13 +3113,19 @@ class SkillsLoader:
         trusted ``<project>/.kiro/skills``. It is probed LAST so precedence
         matches enumeration: a repository cannot serve the body for a name the
         operator already installed globally.
+
+        *refusal_reasons*, when given, receives why a candidate that was found
+        could not be served (``size_cap``, or a reader's refusal); a ``None``
+        with nothing appended means no tier holds the name at all.
         """
         if not self._safe_name(name):
             return None
         _t0 = time.monotonic()
         skill_file = self._dir / name / "SKILL.md"
         if skill_file.exists():
-            content = self._read_global_skill_text(skill_file, max_bytes)
+            content = self._read_global_skill_text(
+                skill_file, max_bytes, refusal_reasons=refusal_reasons
+            )
             if content is None:
                 return None
             self._emit_lazy_load_metric(_t0, hit=True)
@@ -3012,8 +3137,12 @@ class SkillsLoader:
                 resolved = validate_file_path(str(skill_file))
                 if resolved is None:
                     logger.warning("Refusing to load skill from sensitive path: %s", skill_file)
+                    if refusal_reasons is not None:
+                        refusal_reasons.append("sensitive_path")
                     continue
-                content = self._read_global_skill_text(Path(resolved), max_bytes)
+                content = self._read_global_skill_text(
+                    Path(resolved), max_bytes, refusal_reasons=refusal_reasons
+                )
                 if content is None:
                     return None
                 self._emit_lazy_load_metric(_t0, hit=True)
@@ -3046,7 +3175,8 @@ class SkillsLoader:
                 # drift apart again -- the previous round hardened this site
                 # alone and left its sibling reading the same cached paths
                 # unchecked.
-                refusal_reasons: list[str] = []
+                if refusal_reasons is None:
+                    refusal_reasons = []
                 confined_max = (
                     PROJECT_SKILL_BODY_CAP
                     if max_bytes is None
@@ -3075,7 +3205,12 @@ class SkillsLoader:
         return None
 
     def _read_global_skill_text(
-        self, path: Path, max_bytes: int | None, *, canonical_root: str | None = None
+        self,
+        path: Path,
+        max_bytes: int | None,
+        *,
+        canonical_root: str | None = None,
+        refusal_reasons: list[str] | None = None,
     ) -> str | None:
         """A global skill body, bounded by *max_bytes* and decode-safe.
 
@@ -3089,7 +3224,16 @@ class SkillsLoader:
         most N bytes is deciding whether the body FITS, and half a skill is not
         a smaller skill: it is a body whose instructions stop mid-sentence.
         ``None`` says "this one cannot be delivered", which the caller reports
-        instead of silently dropping.
+        instead of silently dropping. *refusal_reasons* records which it was:
+        ``size_cap`` when the body is over the bound, ``reader_refused`` when the
+        validated reader declined the file itself.
+
+        A page is the one sanctioned partial read, and it is partial only because
+        the caller asked for one: :meth:`read_scoped_skill_page` reads the body
+        whole under the file safety cap and hands back the whole lines that fit
+        one response together with what remains and where the next page starts,
+        so the reader is told there is more. A read that asked for no page is
+        still refused whole. This function itself never returns part of a body.
         """
         try:
             raw = safe_read_file_bytes_nolink(
@@ -3105,8 +3249,12 @@ class SkillsLoader:
                 logger.debug(
                     "skill body at %s exceeds the %d byte bound; refusing", path, max_bytes
                 )
+            if refusal_reasons is not None:
+                refusal_reasons.append("size_cap")
             return None
         if raw is None:
+            if refusal_reasons is not None:
+                refusal_reasons.append("reader_refused")
             return None
         text = _decode_skill_text(raw, strict=max_bytes is None)
         return None if _html_skill_refused(self._parse_frontmatter_text(text), path) else text
@@ -5221,28 +5369,112 @@ class SkillsLoader:
         *,
         only: list[str] | None = None,
         project_dir: str | Path | None = None,
-        max_bytes: int = 99_000,
+        max_bytes: int = SKILL_READ_CAPACITY,
     ) -> str | None:
-        """Read an exact catalog key, never an ambiguous leaf or caller path."""
+        """Read an exact catalog key, never an ambiguous leaf or caller path.
+
+        The whole body when it fits *max_bytes*, else ``None``: the contract the
+        required-skill and ``$key`` activation paths rely on, where a body that does
+        not fit is a body to refuse. :meth:`read_scoped_skill_page` is the face that
+        also says WHY, and that serves a larger body in pages.
+        """
+        return self._read_exact_key(
+            key, only=only, project_dir=project_dir, max_bytes=max_bytes
+        ).content
+
+    def read_scoped_skill_page(
+        self,
+        key: str,
+        *,
+        only: list[str] | None = None,
+        project_dir: str | Path | None = None,
+        offset: int | None = None,
+        limit: int | None = None,
+        capacity: int = SKILL_READ_CAPACITY,
+    ) -> SkillBodyPage | SkillReadRefusal:
+        """An exact-key read for the search tool: the whole body, or one page of it.
+
+        *offset* and *limit* are LINES (0-based first line, most lines), the unit
+        the file and transcript readers already page in. With neither given the
+        body is delivered whole when it fits *capacity* and refused with its size
+        when it does not; with either given, as many whole lines from *offset* as
+        fit *capacity* (at most *limit*) are delivered with the offset of the next
+        page. A refusal says which of three things stopped the read instead of
+        naming all three, because the caller acts differently on each.
+
+        The capacity bounds one DELIVERY, not the file. A body over it is read
+        again under the bound the whole file has anyway -- the shared file safety
+        cap for a global body, ``PROJECT_SKILL_BODY_CAP`` for a confined one --
+        so that its size can be reported and its pages served. A confined body is
+        never read past the project cap: paging never reads a checkout's file
+        past what one read may, so a body over that cap is refused naming the
+        project bound, whatever capacity the caller asked for, and offers no page.
+        """
+        read = self._read_exact_key(key, only=only, project_dir=project_dir, max_bytes=capacity)
+        bound = capacity
+        if read.refusal == SKILL_READ_OVER_CAPACITY:
+            bound = PROJECT_SKILL_BODY_CAP if read.confined else hooks_module.MAX_FILE_BYTES
+            if bound > capacity:
+                read = self._read_exact_key(
+                    key, only=only, project_dir=project_dir, max_bytes=bound
+                )
+        if read.content is None:
+            if read.confined and read.refusal == SKILL_READ_OVER_CAPACITY:
+                return SkillReadRefusal(read.refusal, PROJECT_SKILL_BODY_CAP, confined=True)
+            return SkillReadRefusal(read.refusal, bound)
+        return _page_skill_body(read.content, offset=offset, limit=limit, capacity=capacity)
+
+    def _read_exact_key(
+        self,
+        key: str,
+        *,
+        only: list[str] | None,
+        project_dir: str | Path | None,
+        max_bytes: int,
+    ) -> _ExactRead:
+        """Resolve an exact key through the scope and classify why it was refused.
+
+        A key the scoped enumeration does not hold, and that the building-time
+        resolver does not admit, is outside the scope; so is a body whose
+        ``repo_scope`` this project does not satisfy, because the catalog never
+        listed it here. Once the scope holds the key, every failure to deliver its
+        bytes is either the size bound (``size_cap``) or the fenced reader's own
+        refusal, and never a missing key.
+        """
         entry = next(
             (entry for entry in self._scoped_entries(project_dir, only) if entry[0] == key), None
         )
+        confined = entry is not None and entry.project_root is not None
+        reasons: list[str] = []
         if entry is None:
-            content = self._exact_read_while_building(key, only, project_dir, max_bytes)
+            content = self._exact_read_while_building(
+                key, only, project_dir, max_bytes, refusal_reasons=reasons
+            )
         elif entry.mapping_root is not None:
             content = self._read_global_skill_text(
-                entry.path, max_bytes, canonical_root=entry.mapping_root
+                entry.path,
+                max_bytes,
+                canonical_root=entry.mapping_root,
+                refusal_reasons=reasons,
             )
         else:
-            content = self.load_skill(key, project_dir, max_bytes=max_bytes)
+            content = self.load_skill(
+                key, project_dir, max_bytes=max_bytes, refusal_reasons=reasons
+            )
         if content is None:
-            return None
+            if "size_cap" in reasons:
+                refusal = SKILL_READ_OVER_CAPACITY
+            elif entry is not None or reasons:
+                refusal = SKILL_READ_UNREADABLE
+            else:
+                refusal = SKILL_READ_OUTSIDE_SCOPE
+            return _ExactRead(None, refusal, confined)
         meta = self._parse_frontmatter_text(content)
         if meta.get("repo_scope") and not self._repo_scope_satisfied(
             meta["repo_scope"], project_dir
         ):
-            return None
-        return content
+            return _ExactRead(None, SKILL_READ_OUTSIDE_SCOPE, confined)
+        return _ExactRead(content, "", confined)
 
     def _exact_read_while_building(
         self,
@@ -5250,9 +5482,12 @@ class SkillsLoader:
         only: list[str] | None,
         project_dir: str | Path | None,
         max_bytes: int,
+        refusal_reasons: list[str] | None = None,
     ) -> str | None:
         """Serve a COMPLETE key during an unfinished first walk, or ``None``."""
-        return _search._exact_read_while_building(self, key, only, project_dir, max_bytes)
+        return _search._exact_read_while_building(
+            self, key, only, project_dir, max_bytes, refusal_reasons=refusal_reasons
+        )
 
     def search_skills(
         self,

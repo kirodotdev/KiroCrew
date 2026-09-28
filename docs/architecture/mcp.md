@@ -2617,6 +2617,12 @@ CJK-pair tokenizer. Native tool schemas and Tool Search thresholds are unchanged
 gateway resolves scope from the signed session, never a model-supplied agent name.
 Without signed identity it uses the global installed catalog. Incremental indexing
 reports incomplete recall explicitly; list/read remain available during refresh.
+A read delivers at most one response's worth of body; a larger body is refused
+with its size and read in whole-line pages through the same `offset`/`limit`
+parameters, each page stateless and sized by the gateway to the capacity the
+tool derives from its own response framing, and a refused read names which of
+three reasons stopped it (outside the scope, unreadable, over the capacity).
+See [memory, skills and hooks](../system-specs/modules/memory-skills-hooks.md).
 
 ### Codex session-control delivery
 

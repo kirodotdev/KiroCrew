@@ -3603,6 +3603,41 @@ term frequency, metadata coverage, usage and stable full key. This prevents comm
 metadata words from burying a result carrying multiple query words in its body.
 Search/list have stable-key results and offset pagination; search does not record
 usage. Exact reads share the resolved mapping and the bounded file reader.
+One exact read delivers at most `SKILL_READ_CAPACITY` (99,000 UTF-8 bytes): a tool
+response is cut at `MAX_RESPONSE_LEN` characters and the cut takes the tail, so a
+body that does not fit under that ceiling with its framing would lose its closing
+instructions silently. A call naming neither `offset` nor `limit` delivers a body
+whole when it fits and refuses it when it does not, naming the body's size, the
+capacity and the paging parameters. A call naming either pages in LINES, the unit
+the file and transcript readers already page in: `offset` is the 0-based first
+line, `limit` the most lines, and the answer holds as many whole lines as fit the
+capacity with the next offset in its header, ahead of the body, where tail
+truncation cannot reach it. The tool sizes the page for the WRAPPED response: it
+renders its own framing (header, page line, reference-data markers, the key
+repeated) with an empty body and the widest numbers a page can carry, takes
+that length off the ceiling, and passes the remainder as the read's `capacity`;
+the gateway accepts a smaller capacity and never a larger one. Without that, a
+page sized to the bare ceiling would lose its last lines to the response cut
+while the next offset already counted them as delivered. A single line wider
+than the capacity is refused by line number. The pager never materializes a body
+line by line: the line count is a scan, the page start a walk of newline
+positions, and only the page's lines are copied out, so a newline-dense body at
+the file safety cap costs the body and the page, not one object per line. The
+capacity bounds one delivery, not the file: a body over it is read again under
+the bound the whole file has anyway -- the shared file safety cap for a global
+body, `PROJECT_SKILL_BODY_CAP` for a confined one -- so its size can be reported
+and its pages served. A confined project body is never read past the project
+cap; paging never reads a checkout's file past what one read may, so a body over
+that cap is refused naming the project bound, whatever capacity the caller asked
+for, and offers no page.
+`read_scoped_skill_page` classifies a refused read as one of three reasons and
+the tool renders one message per reason, never a sentence naming all three: a
+key the scope does not hold (including a body whose `repo_scope` this project
+does not satisfy, which the catalog never listed here) is outside the scope; a
+key the scope holds whose bytes the fenced reader declined is unreadable; a body
+over its bound is over capacity. A page asked for past the last line is an empty
+last page that still names the line count, not a refusal. `read_scoped_skill` keeps its
+whole-or-`None` contract for the required-skill and `$key` activation paths.
 An external mapping rooted above a catalog prunes that catalog before descent.
 Its entries come only from normal discovery, retaining project consent, no-link
 confinement, disabled-app filtering and first-wins precedence.
@@ -3700,7 +3735,14 @@ own admitted roots; external mappings retain the global body allowance rather
 than the smaller project-body allowance.
 
 Installed exact reads also accept POST `/api/skills/-/discover` JSON with
-`scope="installed"`, `action="read"` and `key`. MCP uses this transport so URL
+`scope="installed"`, `action="read"` and `key`, plus optional `offset` and
+`limit` line-paging fields that the MCP tool forwards exactly when its caller
+gave them, and an optional `capacity` the gateway clamps to the ceiling (a
+caller shrinks the page to its own framing; it cannot widen it). A page answer
+carries a `page` block (`line_offset`, `line_count`,
+`total_lines`, `total_bytes`, `next_offset`) beside the content; a
+refused read answers HTTP 200 with an empty match list and a `refusal` block
+naming the reason and the bound. MCP uses this transport so URL
 escaping and HTTP request-line limits do not truncate nested keys. GET remains
 compatible. Both gateway and MCP accept up to 32,768 key characters; the POST
 request envelope is bounded at 512 KiB, and existing body-response limits remain.

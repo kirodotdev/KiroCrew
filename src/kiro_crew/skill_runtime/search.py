@@ -148,6 +148,7 @@ def _exact_read_while_building(
     only: list[str] | None,
     project_dir: str | Path | None,
     max_bytes: int,
+    refusal_reasons: list[str] | None = None,
 ) -> str | None:
     """Serve a COMPLETE key during an unfinished first walk, or ``None``.
 
@@ -185,7 +186,9 @@ def _exact_read_while_building(
             return None
         if disabled_apps and loader._owning_app(key, candidate) in disabled_apps:
             return None
-        return loader.load_skill(key, project_dir, max_bytes=max_bytes)
+        return loader.load_skill(
+            key, project_dir, max_bytes=max_bytes, refusal_reasons=refusal_reasons
+        )
     return None
 
 

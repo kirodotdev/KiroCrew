@@ -45,7 +45,12 @@ from kiro_crew.skill_trust import (
     list_trusted_projects,
     revoke_project_trust,
 )
-from kiro_crew.skills import PROJECT_SKILL_BODY_CAP, PendingApprovalRefused
+from kiro_crew.skills import (
+    PROJECT_SKILL_BODY_CAP,
+    SKILL_READ_CAPACITY,
+    PendingApprovalRefused,
+    SkillReadRefusal,
+)
 from kiro_crew.validation import MAX_SKILL_KEY_CHARS
 
 from ._shared import (
@@ -2279,8 +2284,18 @@ async def api_skills(request: web.Request) -> web.Response:
                 status=400,
             )
         try:
-            limit = max(1, min(50, int(params.get("limit", "20"))))
             offset = max(0, int(params.get("offset", "0")))
+            # A read pages in LINES and only when asked: the whole-or-refuse contract
+            # holds for a call that names neither parameter, and ``limit`` here is
+            # lines rather than the result count search and list bound at 50.
+            paging = action == "read" and ("offset" in params or "limit" in params)
+            page_limit = max(1, int(params["limit"])) if paging and "limit" in params else None
+            # The caller may SHRINK the capacity to what its own response framing
+            # leaves for the body; the ceiling itself is not the caller's to move.
+            capacity = max(
+                1, min(SKILL_READ_CAPACITY, int(params.get("capacity", SKILL_READ_CAPACITY)))
+            )
+            limit = 1 if action == "read" else max(1, min(50, int(params.get("limit", "20"))))
         except (ValueError, TypeError, OverflowError):
             return web.json_response(
                 {"error": "Invalid search limit.", "code": "invalid_limit"}, status=400
@@ -2296,15 +2311,29 @@ async def api_skills(request: web.Request) -> web.Response:
                     agent = active
             only = session_skill_globs(session_key, agent, project_dir=project_dir)
             if action == "read":
-                body = skills.read_scoped_skill(key, only=only, project_dir=project_dir)
-                return {
-                    "matches": (
-                        [{"key": key, "name": key, "description": "", "content": body}]
-                        if body is not None
-                        else []
-                    ),
-                    "next_offset": None,
+                outcome = skills.read_scoped_skill_page(
+                    key,
+                    only=only,
+                    project_dir=project_dir,
+                    offset=offset if paging else None,
+                    limit=page_limit,
+                    capacity=capacity,
+                )
+                if isinstance(outcome, SkillReadRefusal):
+                    return {"matches": [], "next_offset": None, "refusal": outcome._asdict()}
+                match: dict[str, Any] = {
+                    "key": key,
+                    "name": key,
+                    "description": "",
+                    "content": outcome.content,
                 }
+                if paging:
+                    match["page"] = {
+                        field: value
+                        for field, value in outcome._asdict().items()
+                        if field != "content"
+                    }
+                return {"matches": [match], "next_offset": None}
             report = skills.search_skills_report(
                 query,
                 limit=limit + 1,

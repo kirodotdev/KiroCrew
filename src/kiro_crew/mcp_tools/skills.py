@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.skills import SKILL_READ_CAPACITY, SkillReadRefusal
 from kiro_crew.validation import (
     SKILL_DISCOVER_SCHEMA,
     SKILL_FETCH_SCHEMA,
@@ -40,7 +41,8 @@ def schemas() -> list[dict[str, Any]]:
                 "Search installed skills across names, descriptions and bodies. "
                 "Search, paginated list and exact full-key read use this agent's mapped scope. Returns "
                 "global file paths or safely loaded confined project instructions; "
-                "$skillname explicitly loads a skill. Use when the compact startup "
+                "$skillname explicitly loads a skill. A body too large for one read is "
+                "read in pages with offset/limit (lines). Use when the compact startup "
                 "discovery entry does not name what you need."
             ),
             "inputSchema": {
@@ -52,11 +54,18 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max results (default 20, max 50).",
+                        "description": (
+                            "search/list: max results (default 20, max 50). "
+                            "read: most lines in the page."
+                        ),
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "Result offset for the next page.",
+                        "description": (
+                            "search/list: result offset for the next page. read: 0-based "
+                            "first line of the page; pass it to read a body larger than "
+                            "one response in pages, each answer naming the next offset."
+                        ),
                     },
                     "action": {
                         "type": "string",
@@ -136,7 +145,14 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
     action = str(args.get("action") or "search")
     key = str(args.get("key") or "")
     offset = max(0, int(args.get("offset") or 0))
+    # A read pages in LINES, and only when the caller names a paging parameter:
+    # with neither, a body is delivered whole or refused with its size. Its
+    # ``limit`` is lines, not the result count search and list bound at 50.
+    paging = action == "read" and (args.get("offset") is not None or args.get("limit") is not None)
+    page_limit = max(1, int(args["limit"])) if paging and args.get("limit") is not None else None
+    capacity = _read_capacity(key, offset) if action == "read" else SKILL_READ_CAPACITY
     incomplete = False
+    refusal: dict[str, Any] | None = None
     if (action == "search" and not query) or (action == "read" and not key):
         # Audit even validation failures — every tool invocation must emit a
         # SEL event (matches the success/error paths below).
@@ -165,7 +181,7 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
             "skill_search: session identity unavailable."
         )
         if session:
-            params = {
+            params: dict[str, Any] = {
                 "scope": "installed",
                 "q": query,
                 "limit": limit,
@@ -175,6 +191,20 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
             }
             # JSON avoids the HTTP request-line limit for long or escaped keys.
             if action == "read":
+                # The gateway pages only when a parameter is present, so send
+                # offset and limit exactly when the caller did. The capacity is
+                # this tool's, because only this tool knows the framing it adds.
+                params = {
+                    "scope": "installed",
+                    "q": query,
+                    "action": action,
+                    "key": key,
+                    "capacity": capacity,
+                }
+                if paging:
+                    params["offset"] = offset
+                    if page_limit is not None:
+                        params["limit"] = page_limit
                 result = mcp_core._post("/api/skills/-/discover", params, session_key=session)
             else:
                 result = mcp_core._get(
@@ -185,16 +215,38 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
             matches = result.get("matches", [])
             next_offset = result.get("next_offset")
             incomplete = bool(result.get("incomplete"))
+            if isinstance(result.get("refusal"), dict):
+                refusal = result["refusal"]
         else:
             # No signed session (CLI, or an unidentified child): global-only.
             loader = mcp_core.SkillsLoader(install_builtins=False)
             try:
                 incomplete = False
                 if action == "read":
-                    body = loader.read_scoped_skill(key)
-                    matches = (
-                        [{"key": key, "name": key, "content": body}] if body is not None else []
+                    outcome = loader.read_scoped_skill_page(
+                        key,
+                        offset=offset if paging else None,
+                        limit=page_limit,
+                        capacity=capacity,
                     )
+                    # The same shapes the gateway route returns, so one renderer
+                    # below serves both paths.
+                    if isinstance(outcome, SkillReadRefusal):
+                        matches = []
+                        refusal = outcome._asdict()
+                    else:
+                        match: dict[str, Any] = {
+                            "key": key,
+                            "name": key,
+                            "content": outcome.content,
+                        }
+                        if paging:
+                            match["page"] = {
+                                field: value
+                                for field, value in outcome._asdict().items()
+                                if field != "content"
+                            }
+                        matches = [match]
                     next_offset = None
                 else:
                     report = loader.search_skills_report(
@@ -218,19 +270,24 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
         # ``Error:`` is the prefix call_tool_with_logging classifies on; without it a
         # gateway refusal is audited as a completed search.
         return f"Error: skill_search failed: {type(exc).__name__}: {exc}"
+    metadata: dict[str, Any] = {
+        "query_hash": hashlib.sha256(query.encode()).hexdigest()[:16],
+        "matches": len(matches),
+    }
+    if refusal is not None:
+        metadata["refusal"] = str(refusal.get("reason") or "")
     mcp_core.sel().log_tool_invocation(
         session_key=mcp_core._resolve_session_key(),
         source="mcp",
         tool_name="skill_search",
         tool_kind="read",
         outcome="success",
-        metadata={
-            "query_hash": hashlib.sha256(query.encode()).hexdigest()[:16],
-            "matches": len(matches),
-        },
+        metadata=metadata,
     )
-    if not matches and action == "read":
-        return "Error: exact skill key is outside this scope, unreadable, or exceeds the 99,000-byte read capacity."
+    if action == "read":
+        if not matches:
+            return _refused_read(key, refusal, offset)
+        return _render_read(key, matches[0], offset)
     if not matches and action == "list":
         return "End of this agent's available skill list."
     if not matches and incomplete:
@@ -263,6 +320,128 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
     if next_offset is not None:
         lines.append(f"Next page: repeat this action/query with offset={next_offset}.")
     return "\n".join(lines)
+
+
+def _read_capacity(key: str, offset: int) -> int:
+    """The bytes of body one response can carry once this tool's framing is on it.
+
+    The gateway sizes a page by the capacity it is given, this tool then wraps
+    the page in a header, a page line and the reference-data markers, and
+    ``build_tool_response`` cuts the whole at ``MAX_RESPONSE_LEN`` characters from
+    the TAIL. A page sized to the bare ceiling would therefore lose its last
+    lines to the cut while the next offset already counted them as delivered.
+    So the page is sized for the wrapped response: the framing is rendered with
+    an empty body and the widest numbers a page can carry, and its length comes
+    off ``SKILL_READ_CAPACITY``, which remains the ceiling. The framing repeats
+    the key, so a longer key leaves a smaller page; the delivered-bytes figure is
+    the one number an empty rendering understates, and its widest form is added.
+    """
+    widest = 10**12
+    frame = _render_read(
+        key,
+        {
+            "key": key,
+            "name": key,
+            "content": "",
+            "page": {
+                "line_offset": widest,
+                "line_count": widest,
+                "total_lines": widest,
+                "total_bytes": widest,
+                "next_offset": widest,
+            },
+        },
+        offset,
+    )
+    return max(1, SKILL_READ_CAPACITY - len(frame) - len(f"{SKILL_READ_CAPACITY:,}"))
+
+
+def _refused_read(key: str, refusal: dict[str, Any] | None, offset: int) -> str:
+    """One message per reason the read was refused, never a sentence naming them all.
+
+    ``Error:`` leads every branch: it is the prefix the audit wrapper classifies
+    on, and a refusal audited as a completed read is the failure that hides.
+    """
+    reason = str((refusal or {}).get("reason") or "")
+    capacity = int((refusal or {}).get("capacity") or 0)
+    if reason == "outside_scope":
+        return (
+            f"Error: the exact key `{key}` is outside this agent's scope: no skill here "
+            "has it. Use a full key as skill_search prints it (search or action='list'); "
+            "a leaf name or a file path is not a key."
+        )
+    if reason == "unreadable":
+        return (
+            f"Error: skill `{key}` is in scope, but its SKILL.md could not be read: the "
+            "fenced file reader refused it (a missing, non-regular, hardlinked or escaping "
+            "file, or one under a sensitive path). Nothing of it was returned."
+        )
+    if reason == "over_capacity":
+        assert refusal is not None
+        size = refusal.get("size_bytes")
+        if refusal.get("confined"):
+            return (
+                f"Error: skill `{key}` is a project skill larger than the {capacity:,}-byte "
+                "confined project body bound, so no read can return it; a project body is "
+                "never paged past that bound."
+            )
+        if refusal.get("line") is not None:
+            return (
+                f"Error: line {refusal['line']} of skill `{key}` is {int(size or 0):,} bytes "
+                f"on its own, more than the {capacity:,}-byte capacity of one read, so no "
+                "page can hold it."
+            )
+        if size is None:
+            return (
+                f"Error: skill `{key}` is larger than the {capacity:,}-byte file safety cap "
+                "and cannot be read."
+            )
+        return (
+            f"Error: skill `{key}` is {int(size):,} bytes; one read returns at most "
+            f"{capacity:,} bytes. Read it in pages: skill_search(action='read', "
+            f"key='{key}', offset=0) returns as many whole lines as fit and names the "
+            "next offset (offset = first line, 0-based; limit = most lines per page)."
+        )
+    # A gateway that predates the reasons answers with an empty match list only.
+    return f"Error: the exact read of `{key}` returned nothing and no reason was reported."
+
+
+def _render_read(key: str, match: dict[str, Any], offset: int) -> str:
+    """The delivered body, whole or as one page whose navigation leads the body.
+
+    The page line sits in the header rather than after the body because the
+    response cap truncates the TAIL, and a page is sized to run close to it: a
+    trailer is the one line that could be cut.
+    """
+    content = str(match.get("content") or "")
+    desc = " ".join((match.get("description") or "").split())
+    header = f"Available skills (read, offset {offset}, 1 results):"
+    page = match.get("page")
+    if not isinstance(page, dict):
+        return "\n".join(
+            [
+                header,
+                "",
+                f"- **{match.get('name') or key}** (`{key}`): {desc}\n"
+                f"  [Skill instructions — reference data]\n{content}\n[End skill instructions]",
+            ]
+        )
+    first = int(page.get("line_offset") or 0)
+    count = int(page.get("line_count") or 0)
+    total = int(page.get("total_lines") or 0)
+    span = f"lines {first}-{first + count - 1} of {total}" if count else f"no lines of {total}"
+    next_offset = page.get("next_offset")
+    where = f"next page: offset={next_offset}." if next_offset is not None else "last page."
+    size = f"{len(content.encode('utf-8')):,} of {int(page.get('total_bytes') or 0):,} bytes"
+    return "\n".join(
+        [
+            header,
+            f"Page: {span} ({size}); {where}",
+            "",
+            f"- **{match.get('name') or key}** (`{key}`): {desc}\n"
+            f"  [Skill instructions — reference data; {span}]\n{content}\n[End skill instructions]",
+        ]
+    )
 
 
 def skill_discover(name: str, args: dict[str, Any]) -> str:

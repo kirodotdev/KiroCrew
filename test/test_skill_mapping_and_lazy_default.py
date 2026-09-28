@@ -10,6 +10,7 @@ import pytest
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.skills import (
     _FAMILY_LINE_MAX_LABELS,
+    SkillBodyPage,
     SkillContextCapacityError,
     SkillsLoader,
     _family_line,
@@ -490,11 +491,11 @@ async def test_installed_post_exact_read_long_keys_and_scope_errors(tmp_path, mo
     monkeypatch.setattr(prompts, "session_skill_globs", lambda *args, **kw: scope)
     monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
 
-    def read(key, *, only, project_dir):
+    def read(key, *, only, project_dir, offset, limit, capacity):
         seen.append((key, only, project_dir))
-        return "reference body"
+        return SkillBodyPage("reference body", 0, 1, 1, 14, None)
 
-    monkeypatch.setattr(loader, "read_scoped_skill", read)
+    monkeypatch.setattr(loader, "read_scoped_skill_page", read)
     app = web.Application(
         middlewares=[
             _make_csrf_middleware("mcp_tool"),
@@ -638,7 +639,7 @@ def test_catalog_name_does_not_change_admitted_project_provenance(
 
 
 def test_regular_global_mapped_namespace_keeps_normal_reader(tmp_path, monkeypatch, opened):
-    from unittest.mock import Mock
+    from unittest.mock import ANY, Mock
 
     key = "mapped/foo"
     _skill(tmp_path / "skills", key)
@@ -649,7 +650,7 @@ def test_regular_global_mapped_namespace_keeps_normal_reader(tmp_path, monkeypat
         row = loader.scoped_skills()[0]
         assert row["confine_root"] is None and row["mapping_root"] is None
         assert _BODY_MARKER in loader.read_scoped_skill(key)
-        reader.assert_called_once_with(key, None, max_bytes=99_000)
+        reader.assert_called_once_with(key, None, max_bytes=99_000, refusal_reasons=ANY)
         loader._search_index.close()
         loader._search_index = None
         reader.reset_mock()

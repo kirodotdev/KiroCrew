@@ -124,7 +124,8 @@ _LOADER_MEMBERS = {
         _iter_uncached _iter_visible _legacy_context _load_catalog_snapshot
         _max_triggered_now _on_config_change _owned_hint _owning_app _pending_root
         _pending_scripts_verdict _pending_scripts_verdict_at _prune_versions _rank_key
-        _read_candidate_pinned _read_enumerated_skill_bytes _read_global_skill_text
+        _read_candidate_pinned _read_enumerated_skill_bytes _read_exact_key
+        _read_global_skill_text
         _read_pending_meta _readable_frontmatter _recency_boost _record_use _redact_deep
         _redact_file_in_place
         _redact_validation_report _request_catalog_refresh _resolve_path
@@ -139,7 +140,8 @@ _LOADER_MEMBERS = {
         get_pending_skill get_triggered_skills is_auto_generated
         list_archived_auto_skills list_auto_skills list_pending_skills list_skills
         load_skill pending_candidate_is_staged preview_pending_update prune_pending
-        read_auto_skill_body read_scoped_skill reconfigure resolve_dollar_skills
+        read_auto_skill_body read_scoped_skill read_scoped_skill_page reconfigure
+        resolve_dollar_skills
         resolve_ledger_aliases resolve_tool_read_keys restore_auto_skill
         run_skill_lifecycle scoped_skills search_skills search_skills_report
         set_inject_on_trigger set_pinned split_triggered stage_skill_candidate sync_builtins trigger_hint
@@ -187,7 +189,7 @@ _LOADER_SIGNATURES = {
     "_cron_referenced_skills": "() -> 'set[str]'",
     "_delivery_count": "(self, key: 'str') -> 'int | None'",
     "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool') -> 'None'",
-    "_exact_read_while_building": "(self, key: 'str', only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int') -> 'str | None'",
+    "_exact_read_while_building": "(self, key: 'str', only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int', refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_get_disabled_app_names": "(self) -> 'frozenset[str]'",
     "_invalidate_iter_cache": "(self) -> 'None'",
     "_is_pending_slug_safe": "(slug: 'str') -> 'bool'",
@@ -210,7 +212,8 @@ _LOADER_SIGNATURES = {
     "_rank_key": "(self, s: 'dict') -> 'tuple[float, float]'",
     "_read_candidate_pinned": "(self, pdir: 'Path') -> 'tuple[str, dict, list[dict]] | None'",
     "_read_enumerated_skill_bytes": "(self, path: 'Path', within: 'str | None', *, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None, canonical_root: 'str | None' = None) -> 'bytes | None'",
-    "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None) -> 'str | None'",
+    "_read_exact_key": "(self, key: 'str', *, only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int') -> '_ExactRead'",
+    "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
     "_read_pending_meta": "(self, slug: 'str') -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
@@ -263,12 +266,13 @@ _LOADER_SIGNATURES = {
     "list_auto_skills": "(self) -> 'list[dict]'",
     "list_pending_skills": "(self) -> 'list[dict]'",
     "list_skills": "(self, project_dir: 'str | Path | None' = None, *, _entries: 'list[_ScopedSkillEntry] | None' = None) -> 'list[dict]'",
-    "load_skill": "(self, name: 'str', project_dir: 'str | Path | None' = None, *, max_bytes: 'int | None' = None) -> 'str | None'",
+    "load_skill": "(self, name: 'str', project_dir: 'str | Path | None' = None, *, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "pending_candidate_is_staged": "(self, slug: 'str') -> 'bool'",
     "preview_pending_update": "(self, slug: 'str') -> 'dict | None'",
     "prune_pending": "(self, ttl_days: 'int', *, now: 'float | None' = None) -> 'int'",
     "read_auto_skill_body": "(self, name: 'str') -> 'str | None'",
     "read_scoped_skill": "(self, key: 'str', *, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, max_bytes: 'int' = 99000) -> 'str | None'",
+    "read_scoped_skill_page": "(self, key: 'str', *, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, offset: 'int | None' = None, limit: 'int | None' = None, capacity: 'int' = 99000) -> 'SkillBodyPage | SkillReadRefusal'",
     "reconfigure": "(self, cfg: 'KiroCrewConfig') -> 'None'",
     "resolve_dollar_skills": "(self, text: 'str', project_dir: 'str | Path | None' = None, *, only: 'list[str] | None' = None) -> 'list[tuple[str, str, str]]'",
     "resolve_ledger_aliases": "(self) -> 'dict[str, list[str]]'",
