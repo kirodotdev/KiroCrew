@@ -51,7 +51,8 @@ _stub_activation = warm_suite._stub_activation
 
 
 def _pin_start_ids(monkeypatch: pytest.MonkeyPatch, current: str | None) -> None:
-    monkeypatch.setattr(_PC, "IS_WINDOWS", False)
+    """Pin both start-id reads, so no verdict depends on ``IS_WINDOWS`` -- which stays real:
+    the marker and spec writes read it too, in ``replace_with_retry``'s Windows retry."""
     monkeypatch.setattr(_PC, "get_process_start_id", lambda pid: current)
     monkeypatch.setattr(_PC, "process_start_time", lambda pid: current)
 
@@ -136,6 +137,17 @@ def test_a_raising_filetime_read_is_unknown_rather_than_fatal(monkeypatch: pytes
     monkeypatch.setattr(_PC, "get_process_start_id", lambda pid: None)
     monkeypatch.setattr(_PC, "process_start_time", _boom)
     assert warm._marker_process_start_id(77) is None
+
+
+@pytest.mark.parametrize("is_windows", [False, True])
+def test_pinning_the_start_ids_leaves_the_platform_flag_alone(
+    monkeypatch: pytest.MonkeyPatch, is_windows: bool
+):
+    """A pinned ``IS_WINDOWS`` would switch off the sharing-violation retry on the generation
+    writes this helper's callers make, a Windows-only flake. Both values, so any host sees it."""
+    monkeypatch.setattr(_PC, "IS_WINDOWS", is_windows)
+    _pin_start_ids(monkeypatch, "1")
+    assert _PC.IS_WINDOWS is is_windows
 
 
 # ── generation ownership: markers, links, and the release/scavenge verdicts ──
@@ -884,6 +896,17 @@ def test_every_owner_name_is_re_exported_by_the_facade_as_the_same_object(owner:
         assert getattr(warm, name) is getattr(module, name), f"warm.{name} is not {owner}.{name}"
     defined = _defined_names(_owner_trees()[owner]) - {"_warm_facade", "logger"}
     assert defined == set(_OWNERS[owner]), "every owner definition is re-exported, and only those"
+
+
+def test_the_facade_keeps_binding_the_helpers_its_moved_rules_import():
+    """``warm.<name>`` and ``from ... warm import *`` resolved these before the rules that call
+    them moved into ``spec_plan``; they stay bound to the same objects."""
+    from kiro_crew import mcp_utils
+    from kiro_crew.connections import registry
+
+    assert warm.is_preregistered is registry.is_preregistered
+    for name in ("kiro_entry_client_id", "kiro_entry_scopes", "kiro_oauth_wire_entry"):
+        assert getattr(warm, name) is getattr(mcp_utils, name), name
 
 
 def test_the_owners_and_the_facade_read_one_mint_table():

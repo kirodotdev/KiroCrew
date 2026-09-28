@@ -155,6 +155,7 @@ from kiro_crew.connections.mint import (
     _mints_lock,
     _new_mint_token,
 )
+from kiro_crew.connections.registry import is_preregistered  # noqa: F401
 from kiro_crew.connections.registry import Provider, get_visible_providers
 from kiro_crew.connections.tool_aliases import declared_tool_aliases, resolve_tool_aliases
 from kiro_crew.connections.warm_runtime.shared_rows import _mint_is_adopted  # noqa: F401
@@ -188,6 +189,9 @@ from kiro_crew.connections.warm_runtime.start_identity import (
 )
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.mcp_grant import grant_presence as grant_present
+from kiro_crew.mcp_utils import kiro_entry_client_id  # noqa: F401
+from kiro_crew.mcp_utils import kiro_entry_scopes  # noqa: F401
+from kiro_crew.mcp_utils import kiro_oauth_wire_entry  # noqa: F401
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import oauth_url_contains_credential
 from kiro_crew.sel import sel
