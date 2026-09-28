@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import importlib
+import importlib.util
 import inspect
 import logging
 import sys
 import typing
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 import pytest
 
@@ -27,8 +28,8 @@ from kiro_crew.dashboard.handlers import source_providers as sp
 from kiro_crew.dashboard.source_providers import LOGGER_NAME
 
 #: Every module-level name the handler bound before its owners moved out of it,
-#: except the standard-library and typing helpers it only used internally. A name
-#: dropped here is a caller or a patch that reaches nothing.
+#: its standard-library and typing imports included. A name dropped here is a
+#: caller, a patch or a star import that reaches nothing.
 _HISTORICAL_SURFACE = frozenset("""
     CHECK_STATUS_PENDING_MAX CHECK_STATUS_TTL_SECS CRED_JIRA_API_TOKEN ConfirmationRequired
     KiroCrewConfig LoopBoundLock RepoRef STALE_OWNER_SESSION_CODE STATUS_URLS_MAX SecretVault
@@ -139,6 +140,9 @@ _HISTORICAL_SURFACE = frozenset("""
     source_search_ref stale_owner_session_response status_from_full_payload
     submit_pull_request_review time unregister_status_delta_sink unresolve_pull_request_thread
     web
+    Any Awaitable Callable Iterable Iterator Protocol PurePosixPath Sequence TypeVar TypedDict
+    annotations base64 contextlib dataclass fields fnmatch hashlib itertools logging os quote
+    re replace urlparse urlunparse
     """.split())
 
 
@@ -188,13 +192,14 @@ def test_every_forwarded_value_has_exactly_one_binding_in_the_owners() -> None:
     assert shared == {}
 
 
-def test_a_write_through_the_handler_reaches_the_owner(monkeypatch) -> None:
+def test_a_write_through_the_handler_reaches_the_owner() -> None:
     sentinel = object()
-    for name in sorted(sp._EXPORTS):
-        monkeypatch.setattr(sp, name, sentinel)
-        assert vars(_owner(name))[name] is sentinel, name
-        assert name not in vars(sp), name
-    monkeypatch.undo()
+    # A private MonkeyPatch, so restoring these writes cannot unwind any fixture's.
+    with pytest.MonkeyPatch.context() as patch:
+        for name in sorted(sp._EXPORTS):
+            patch.setattr(sp, name, sentinel)
+            assert vars(_owner(name))[name] is sentinel, name
+            assert name not in vars(sp), name
     for name in sorted(sp._EXPORTS):
         assert vars(_owner(name))[name] is not sentinel, name
 
@@ -304,12 +309,128 @@ def test_the_module_lists_its_moved_names() -> None:
     assert "_run_json" not in sp.__all__
 
 
-def test_a_delete_through_the_handler_reaches_the_owner(monkeypatch) -> None:
-    owner = vars(importlib.import_module(sp._EXPORTS["_as_list"]))
-    original = owner["_as_list"]
-    monkeypatch.delattr(sp, "_as_list")
+def _binding(name: str) -> object:
+    return vars(_owner(name))[name]
 
-    assert "_as_list" not in owner
-    assert not hasattr(sp, "_as_list")
-    monkeypatch.undo()
+
+def test_a_delete_through_the_handler_reaches_the_owner() -> None:
+    owner = vars(_owner("_as_list"))
+    original = owner["_as_list"]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delattr(sp, "_as_list")
+
+        assert "_as_list" not in owner
+        assert not hasattr(sp, "_as_list")
     assert owner["_as_list"] is original
+
+
+def test_mock_patch_through_the_handler_puts_the_owners_binding_back() -> None:
+    """``mock.patch`` exits by deleting the name, then writes its original back."""
+    original = _binding("_run_json")
+
+    with mock.patch.object(sp, "_run_json") as by_object:
+        assert _binding("_run_json") is by_object
+    assert _binding("_run_json") is original
+
+    with mock.patch(f"{sp.__name__}._run_json") as by_name:
+        assert _binding("_run_json") is by_name
+    assert _binding("_run_json") is original
+
+
+def test_monkeypatch_undo_puts_the_owners_binding_back() -> None:
+    original = _binding("_run_json")
+    patch = pytest.MonkeyPatch()
+    patch.setattr(sp, "_run_json", object())
+    patch.setattr(sp, "_run_json", object())
+
+    patch.undo()
+
+    assert _binding("_run_json") is original
+
+
+def test_nested_patches_through_the_handler_unwind_in_order() -> None:
+    """A fixture's patch survives a test's own patch of the same name."""
+    original = _binding("_run_json")
+    fixture_fake = object()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sp, "_run_json", fixture_fake)
+        with mock.patch.object(sp, "_run_json") as outer:
+            with mock.patch.object(sp, "_run_json"):
+                pass
+            assert _binding("_run_json") is outer
+        assert _binding("_run_json") is fixture_fake
+        with mock.patch.object(sp, "_run_json") as around:
+            with pytest.MonkeyPatch.context() as inner:
+                inner.setattr(sp, "_run_json", object())
+            assert _binding("_run_json") is around
+        assert _binding("_run_json") is fixture_fake
+    assert _binding("_run_json") is original
+
+
+@pytest.mark.parametrize("nested", ["monkeypatch", "assignment"])
+def test_a_patch_is_undone_after_the_owner_rebinds_the_name_under_it(nested: str) -> None:
+    """Code under test rebinding the patched name, then another write inside the patch."""
+    name = "_gitlab_hosts_generation"
+    owner = _owner(name)
+    original = _binding(name)
+    try:
+        with mock.patch.object(sp, name, object()):
+            setattr(owner, name, object())
+            if nested == "monkeypatch":
+                with pytest.MonkeyPatch.context() as patch:
+                    patch.setattr(sp, name, object())
+            else:
+                setattr(sp, name, object())
+
+        assert _binding(name) is original
+    finally:
+        setattr(owner, name, original)
+
+
+def test_a_star_import_binds_every_public_name_the_handler_always_bound(tmp_path) -> None:
+    public = {name for name in _HISTORICAL_SURFACE if not name.startswith("_")}
+    probe = tmp_path / "star_import_probe.py"
+    probe.write_text(f"from {sp.__name__} import *  # noqa: F403\n", encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("star_import_probe", probe)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+
+    spec.loader.exec_module(module)
+
+    bound = {name for name in vars(module) if not name.startswith("__")}
+    assert sorted(sp.__all__) == sorted(public)
+    assert bound == public
+    assert [name for name in sorted(public) if vars(module)[name] is not getattr(sp, name)] == []
+
+
+def test_type_checkers_resolve_what_production_imports_without_the_forwarding_hook() -> None:
+    """A visible ``__getattr__`` would let mypy accept any name read through the handler."""
+    tree = ast.parse(Path(inspect.getfile(sp)).read_text(encoding="utf-8"))
+    hooks = [
+        (ast.unparse(node.test) if isinstance(node, ast.If) else "", statement.name)
+        for node in tree.body
+        for statement in (node.body if isinstance(node, ast.If) else [node])
+        if isinstance(statement, ast.FunctionDef) and statement.name == "__getattr__"
+    ]
+    assert hooks == [("not TYPE_CHECKING", "__getattr__")]
+
+    typed = {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "TYPE_CHECKING"
+        for statement in node.body
+        if isinstance(statement, ast.ImportFrom)
+        for alias in statement.names
+    }
+    package = Path(inspect.getfile(sp)).parents[2]
+    imported: set[str] = set()
+    for path in package.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if sp.__name__ not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, ast.ImportFrom) and node.module == sp.__name__:
+                imported.update(alias.name for alias in node.names)
+    assert imported, "the scan found no production importer, so it measured nothing"
+    assert sorted(imported - typed - set(vars(sp))) == []

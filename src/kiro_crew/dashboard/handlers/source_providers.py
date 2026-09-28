@@ -17,14 +17,36 @@ still resolves here, read from and written to the one module that holds it.
 from __future__ import annotations
 
 import asyncio
+import base64  # noqa: F401
+import contextlib  # noqa: F401
+import fnmatch  # noqa: F401
+import hashlib  # noqa: F401
 import importlib
-import json  # noqa: F401 - read here by callers; several owners import their own
+import itertools  # noqa: F401
+import json  # noqa: F401
 import logging
+import os  # noqa: F401
+import re  # noqa: F401
 import sys
-import time  # noqa: F401 - read here by callers; several owners import their own
-from collections.abc import Awaitable, Callable
+import time  # noqa: F401
+from collections.abc import (  # noqa: F401
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    Sequence,
+)
+from dataclasses import dataclass, fields, replace  # noqa: F401
+from pathlib import PurePosixPath  # noqa: F401
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import (  # noqa: F401
+    TYPE_CHECKING,
+    Any,
+    Protocol,
+    TypedDict,
+    TypeVar,
+)
+from urllib.parse import quote, urlparse, urlunparse  # noqa: F401
 
 from aiohttp import web
 
@@ -57,8 +79,9 @@ _PACKAGE = "kiro_crew.dashboard.source_providers"
 #: imports callers reach through this module (a type, which is never rebound, is
 #: listed under the first owner that imports it). In dependency order: each owner
 #: imports only owners listed above it. The three errors the handlers catch, and
-#: the ``json``/``time`` modules several owners import for themselves, are
-#: imported above instead, so they are ordinary attributes of this module.
+#: the standard-library modules and helpers this module has always bound (``json``,
+#: ``re``, ``dataclass``, ...), which the owners import for themselves, are imported
+#: above instead, so they are ordinary attributes of this module.
 _OWNED_NAMES: dict[str, tuple[str, ...]] = {
     "contract": (
         "_MAX_URL_LENGTH",
@@ -505,11 +528,15 @@ def _submodule(leaf: str) -> ModuleType:
     return _module(f"{_PACKAGE}.{leaf}")
 
 
-def __getattr__(name: str) -> Any:
-    """Read a re-exported name from the module that owns it (:pep:`562`)."""
-    if name not in _EXPORTS:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(_module(_EXPORTS[name]), name)
+# Hidden from type checkers, which then resolve each name a caller reads from the
+# typed imports at the end of this module instead of accepting any name at all.
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> Any:
+        """Read a re-exported name from the module that owns it (:pep:`562`)."""
+        if name not in _EXPORTS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(_module(_EXPORTS[name]), name)
 
 
 def __dir__() -> list[str]:
@@ -1109,12 +1136,16 @@ async def api_pull_request_submit_review(request: web.Request) -> web.Response:
 
 
 class _ReExportModule(ModuleType):
-    """Send a write to a re-exported name to the module that owns it.
+    """Send a write or a delete of a re-exported name to the module that owns it.
 
     Binding the name here instead would shadow the owner permanently, since
     ``__getattr__`` runs only for a name this module does not hold, and a test
     harness restoring the value it read would install it here for the life of the
-    process. Forwarding leaves one value to patch and one to put back.
+    process. Forwarding leaves one value to patch and one to put back, so
+    ``monkeypatch`` and ``mock.patch`` restore exactly, nested in either order:
+    ``mock.patch`` exits by deleting the name and then, finding it gone, writing its
+    original back. With ``create=True`` it skips that write, so the owner would lose
+    the name; ``test_source_providers_refactor_create_guard`` refuses such a patch.
     """
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -1141,10 +1172,17 @@ for _leaf in _OWNED_NAMES:
     _submodule(_leaf)
 del _leaf
 
+#: Imported only to run the re-export machinery, so a star import leaves them out.
+_MACHINERY = frozenset({"ModuleType", "TYPE_CHECKING", "importlib", "sys"})
+
 # A star import reads this list and never reaches ``__getattr__``. Derived from
 # the two authorities -- what this module binds and the export table -- so it is
 # not a third list to keep in step.
-__all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
+__all__ = sorted(
+    name
+    for name in set(globals()) | set(_EXPORTS)
+    if not name.startswith("_") and name not in _MACHINERY
+)
 
 
 if TYPE_CHECKING:  # the public surface and what production imports, for type checkers

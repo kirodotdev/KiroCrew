@@ -9,6 +9,7 @@ plugin's own label.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -714,6 +715,10 @@ def test_core_bounds_the_spellings_one_provider_can_contribute(plugin, monkeypat
     assert normalized is not None
     assert len(normalized[1]) == history_search._MAX_SEARCH_REF_SPELLINGS
     assert not hasattr(source, "_MAX_SEARCH_SPELLINGS_PER_PROVIDER")
+    # The handler answers only its exported names, so also ask the module that
+    # defines the collector.
+    collector = inspect.getmodule(source.source_search_ref)
+    assert not hasattr(collector, "_MAX_SEARCH_SPELLINGS_PER_PROVIDER")
 
 
 def test_the_seam_finds_a_transcript_that_cited_the_item_only_by_url(plugin, tmp_path) -> None:
