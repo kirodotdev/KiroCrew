@@ -102,7 +102,6 @@ UNAVAILABLE_ON_A_FRESH_HOME: dict[str, str] = {
     "/api/capability/mcp/registry": "capability manager not available",
     "/api/capability/plugins": "capability manager not available",
     "/api/capability/skills": "capability manager not available",
-    "/api/models": "model list returned empty output",
 }
 
 #: Substituted for every ``{token}`` in a parameterized path. Chosen so it
