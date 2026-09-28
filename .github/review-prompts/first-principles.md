@@ -251,6 +251,11 @@ rather than inventing a justification for it.
    as shipped` with a `Subtraction:` line that removes it and
    `Clears when: the mechanism is removed, or a human amends the Goal.`
    It reaches CONCERNS as a smaller alternative never considered.
+   Then ask whether the cost is WORTH it: is the size of this change
+   worth what the Goal asks for? A mechanism can be inside the Goal
+   and still cost far more than the Goal is worth. An unjustified
+   cost is reported the same way as an out-of-goal mechanism: tagged
+   `oversized`, with a `Subtraction:` line that shrinks or removes it.
 
 8. HONESTY OF FRAMING, AND COST OF EXISTENCE: A DELETED OR REWRITTEN
    PIN IS A PRIOR DECISION. When the diff deletes or rewrites a test,

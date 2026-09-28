@@ -48,6 +48,39 @@ DISPOSITION_WORD_RE = re.compile(r"^\*\*([a-z-]+)\*\*", re.MULTILINE)
 # at open. Every retrospective is measured against it, so the view prints it.
 GOAL_LINE_RE = re.compile(r"^ {0,3}\*\*Goal:\*\*[ \t]*(\S.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
 
+COMPARE_FILE_CAP = 300
+SIZE_JQ = ".files[] | [.filename, .additions, .deletions] | @tsv"
+PR_VIEW_FIELDS = "number,url,headRefOid,additions,deletions,body,baseRefName"
+
+
+def _size_label(files):
+    """`code N, test M lines` changed, or `unknown` when the diff is unreadable."""
+    if files is None:
+        return "unknown"
+    is_test_path = _load_sibling("prove.py").is_test_path
+    code = test = 0
+    for path, adds, dels in files:
+        if is_test_path(path):
+            test += adds + dels
+        else:
+            code += adds + dels
+    return "code {}, test {} lines".format(code, test)
+
+
+def head_diff_files(repo, base, sha):
+    """[(path, adds, dels)] of base...sha on GitHub, or None when unreadable (info only)."""
+    if not (repo and base and sha):
+        return None
+    url = "repos/{}/compare/{}...{}".format(repo, base, sha)
+    rc, out, _ = run(["gh", "api", url, "--jq", SIZE_JQ])
+    rows = [line.split("\t") for line in out.splitlines() if line]
+    if rc != 0 or len(rows) >= COMPARE_FILE_CAP:  # GitHub truncates .files at the cap
+        return None
+    try:
+        return [(r[0], int(r[1]), int(r[2])) for r in rows]
+    except (IndexError, ValueError):
+        return None
+
 
 def rounds_view(repo, number, head_sha, pr_json):
     """The loop's cross-round memory, read from the PR itself.
@@ -73,6 +106,7 @@ def rounds_view(repo, number, head_sha, pr_json):
     bodies = {c.get("id"): (c.get("body") or "") for c in comments}
     by_head: dict = {}
     order: list = []
+    first_full = ""
     for rec in records:
         if rec.get("malformed") or not rec.get("head"):
             continue
@@ -80,6 +114,7 @@ def rounds_view(repo, number, head_sha, pr_json):
         h = rec["head"][:12]
         if h not in by_head:
             by_head[h] = {"target": {}, "spans": [], "self_added": 0, "mechanisms": [], "n": 0}
+            first_full = first_full or rec["head"]
             order.append(h)
         body = comment.get("body") or ""
         r = by_head[h]
@@ -131,6 +166,10 @@ def rounds_view(repo, number, head_sha, pr_json):
     dels = pr_json.get("deletions")
     if adds is not None:
         print("size now: +{}/-{}".format(adds, dels))
+    base = pr_json.get("baseRefName")
+    first = head_diff_files(repo, base, first_full)
+    now = head_diff_files(repo, base, head_sha)
+    print("size at first judged head: {}   now: {}".format(_size_label(first), _size_label(now)))
     print("next round: {}".format(next_round))
     total_self = sum(by_head[h]["self_added"] for h in order)
     total_mech = sum(len(by_head[h]["mechanisms"]) for h in order)
@@ -149,20 +188,20 @@ def rounds_view(repo, number, head_sha, pr_json):
     return 0
 
 
-def _load_review_contract():
-    """Load the sibling contract without cwd, sys.path, or bytecode side effects."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_review_contract.py")
-    name = "_prepare_pr_review_contract"
+def _load_sibling(filename):
+    """Load a sibling script without cwd, sys.path, or bytecode side effects."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    name = "_prepare_pr_" + filename[:-3].lstrip("_")
     loader = _NoBytecodeSourceLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:  # pragma: no cover - defensive
-        raise RuntimeError("cannot import prepare-pr review contract: " + path)
+        raise RuntimeError("cannot import prepare-pr sibling: " + path)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
 
 
-_review_contract = _load_review_contract()
+_review_contract = _load_sibling("_review_contract.py")
 REVIEWED_STAMP_RE = _review_contract.REVIEWED_STAMP_RE
 BLOCK_MERGE_RE = _review_contract.BLOCK_MERGE_RE
 DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
@@ -509,9 +548,7 @@ def main(argv):
         err("ERROR: no PR number given and none found for the current branch.")
         return 2
 
-    rc, out, _ = run(
-        ["gh", "pr", "view", pr, "--json", "number,url,headRefOid,additions,deletions,body"]
-    )
+    rc, out, _ = run(["gh", "pr", "view", pr, "--json", PR_VIEW_FIELDS])
     if rc != 0 or not out.strip():
         err("ERROR: could not read PR #" + str(pr))
         return 2

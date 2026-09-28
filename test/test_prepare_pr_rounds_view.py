@@ -124,6 +124,33 @@ def test_exit_30_on_third_round_and_on_a_span_at_three(monkeypatch, capsys):
     assert "  aaaaaaaaaaa1 ×3" in capsys.readouterr().out
 
 
+def test_size_line_splits_code_and_test_and_never_moves_the_exit(monkeypatch, capsys):
+    mod = _load()
+    first, now = "a" * 40, "c" * 40
+    diffs = {
+        first: "src/x.py\t10\t2\ntest/test_x.py\t5\t0\n",
+        now: "src/x.py\t40\t5\ntest/test_x.py\t20\t1\nwebsite/electron/mochi/test/machineStore.test.js\t3\t0\n",
+    }
+
+    def fake_run(args):
+        sha = args[2].rsplit("...", 1)[1]
+        return (0, diffs[sha], "") if sha in diffs else (1, "", "No commit found")
+
+    monkeypatch.setattr(mod, "run", fake_run)
+    _wire(mod, monkeypatch, [_disp(1, "gpt", first, "aaaaaaaaaaa1")])
+    assert mod.rounds_view("o/r", 7, now, {"baseRefName": "main"}) == 0
+    out = capsys.readouterr().out
+    assert "size at first judged head: code 12, test 5 lines   now: code 45, test 24 lines" in out
+    # a first head GitHub cannot read (force-pushed away) reads as unknown
+    _wire(mod, monkeypatch, [_disp(1, "gpt", "d" * 40, "aaaaaaaaaaa1")])
+    assert mod.rounds_view("o/r", 7, now, {"baseRefName": "main"}) == 0
+    assert "size at first judged head: unknown   now: code 45" in capsys.readouterr().out
+    # a compare GitHub truncated at its file cap is not a size
+    diffs[now] = "src/x.py\t1\t0\n" * mod.COMPARE_FILE_CAP
+    assert mod.rounds_view("o/r", 7, now, {"baseRefName": "main"}) == 0
+    assert "now: unknown" in capsys.readouterr().out
+
+
 def test_rounds_view_fails_closed_when_comments_are_unreadable(monkeypatch, capsys):
     mod = _load()
     monkeypatch.setattr(mod, "fetch_disposition_comments", lambda repo, number: None)
