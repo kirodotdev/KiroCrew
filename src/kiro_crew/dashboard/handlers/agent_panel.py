@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from aiohttp import web
@@ -664,6 +665,86 @@ def _read_and_compose(
         return record, None, True
 
 
+# The keys ``projection._panel_owner_record`` puts on a record, split into the two
+# disjoint sets the drawer read makes of each: SERVED reaches the client, WITHHELD
+# is for the server's own use and stays server-side. Every key the record carries
+# is in exactly one of these, and ``_panel_meta`` reddens on a key in neither, so a
+# field added to ``_panel_owner_record`` and classified in neither set fails loud --
+# ``test_the_drawer_serializer_classifies_every_record_key`` reds -- rather than
+# being silently served or silently dropped. An allow-list keyed on the record's OWN
+# keys is what keeps the fold's shape and the drawer's shape from diverging silently.
+_PANEL_SERVED_KEYS = frozenset(
+    {
+        "template",
+        "title",
+        "crew",
+        "data",
+        "published_at",
+        # The fold computes and bounds these on every publish, so serving them costs
+        # nothing and gives the drawer the crew's publish history the server keeps.
+        "history",
+        "publishes",
+        "history_omitted",
+    }
+)
+# WITHHELD, each for its own reason:
+#  * ``crew_key`` is a digest of the exact crew name, which may itself be
+#    credential-shaped; a sibling route test pins that it never reaches a client.
+#  * ``schema`` is the record's internal version tag, meaningful only to the fold.
+_PANEL_WITHHELD_KEYS = frozenset({"crew_key", "schema"})
+
+
+def _panel_meta(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The drawer's metadata, as an allow-list over the record's own keys.
+
+    Iterates the keys the record carries and serves exactly those in
+    ``_PANEL_SERVED_KEYS``, so a key the fold does not produce is simply not served
+    and a served key tracks the field rather than a hand-listed name. A key in
+    NEITHER set is a programming error -- a field on ``_panel_owner_record`` whose
+    drawer stance no one has decided -- and raises rather than defaulting either way,
+    which keeps a computed-but-unserved field from slipping through.
+
+    ``data`` is coerced to a dict because the store refuses a record whose data is
+    not an object, so this handles only the rejected case, not a shape the store
+    allows.
+    """
+    served: dict[str, Any] = {}
+    for key in record:
+        if key in _PANEL_WITHHELD_KEYS:
+            continue
+        if key not in _PANEL_SERVED_KEYS:
+            raise KeyError(
+                f"panel record key {key!r} is classified neither served nor withheld; "
+                "add it to _PANEL_SERVED_KEYS or _PANEL_WITHHELD_KEYS in agent_panel.py"
+            )
+        served[key] = record[key]
+    # Coerced to the exact shapes the drawer's client type promises, so the served
+    # payload does not depend on which record form (fold, file, or the merge of the
+    # two) reached us. The four text fields carry the ``str(... or "")``
+    # normalisation; ``publishes``/``history_omitted`` are counts and ``history`` is
+    # a list of ``{at,title,template}`` rows.
+    out: dict[str, Any] = {
+        "template": str(served.get("template") or ""),
+        "title": str(served.get("title") or ""),
+        "crew": str(served.get("crew") or ""),
+        "published_at": str(served.get("published_at") or ""),
+        # ``read`` already refuses a record whose data is not an object, so this is a
+        # dict or the record was rejected; the guard is for the rejected case rather
+        # than for a shape the store allows.
+        "data": served["data"] if isinstance(served.get("data"), dict) else {},
+    }
+    # A raw legacy FILE record carries none of these three, so they are served only
+    # when the record has them: a file-only panel reads without empty history keys.
+    if "history" in served:
+        rows = served["history"]
+        out["history"] = [dict(r) for r in rows] if isinstance(rows, list) else []
+    if "publishes" in served:
+        out["publishes"] = projection._as_int(served["publishes"])
+    if "history_omitted" in served:
+        out["history_omitted"] = projection._as_int(served["history_omitted"])
+    return out
+
+
 async def api_member_panel(request: web.Request) -> web.Response:
     """GET /api/members/{slug}/panel — the crew's composed webview document.
 
@@ -778,23 +859,26 @@ async def api_member_panel(request: web.Request) -> web.Response:
         # Only a record the store treats as absent reaches this empty state. A
         # readable published record with a broken template returns the error above.
         return web.json_response({"panel": None, "html": None})
-    data = (record or {}).get("data")
+    try:
+        panel = _panel_meta(record) if record is not None else None
+    except KeyError:
+        # A record carrying a key the serializer classifies as neither served nor
+        # withheld is a programming error the test suite is meant to catch, but a
+        # live drawer must not 500 on somebody's panel: log it for the operator and
+        # show the empty state, the same failure mode every other read defect here
+        # degrades to.
+        logger.warning("panel record has an unclassified key for slug %s", slug, exc_info=True)
+        return web.json_response({"panel": None, "html": None})
+    if panel is not None:
+        # The template's own opt-in to render in the docked card, read from the
+        # document served beside it. It is derived from ``html`` at response time,
+        # not a record field, so it rides on the served panel rather than through
+        # the record-keyed allow-list. ``None`` keeps the native summary, which
+        # costs the drawer no mint.
+        panel["docked_height"] = agent_panel.docked_height(html)
     return web.json_response(
         {
-            "panel": {
-                "template": str((record or {}).get("template") or ""),
-                "title": str((record or {}).get("title") or ""),
-                "crew": str((record or {}).get("crew") or ""),
-                "published_at": str((record or {}).get("published_at") or ""),
-                # ``read`` already refuses a record whose data is not an object,
-                # so this is a dict or the record was rejected; the guard is for
-                # the rejected case rather than for a shape the store allows.
-                "data": data if isinstance(data, dict) else {},
-                # The template's own opt-in to render in the docked card, read
-                # from the document served beside it. ``None`` keeps the native
-                # summary, which costs the drawer no mint.
-                "docked_height": agent_panel.docked_height(html),
-            },
+            "panel": panel,
             "html": html,
         }
     )

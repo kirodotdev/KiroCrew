@@ -596,6 +596,82 @@ async def test_the_drawer_read_returns_the_composed_document(vetted):
         assert agent_panel.DATA_MARKER not in body["html"], "the marker must have been filled"
 
 
+async def test_the_drawer_read_serves_the_publish_history_the_fold_records(vetted):
+    """The fold computes ``history``/``publishes``/``history_omitted`` on every
+
+    publish, and the widened serializer serves all three to the drawer. A
+    multi-cycle history is published so the three are non-trivial, and the round
+    trip asserts they arrive.
+    """
+    async with _client() as c:
+        for i in range(3):
+            await c.post(
+                "/api/agent-panel/publish",
+                json={"data": {"cycle": i}},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+        body = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
+        panel = body["panel"]
+        # publishes counts every publish on this owner's slot.
+        assert panel["publishes"] == 3
+        # history holds the superseded panels (publishes minus the current one),
+        # each an {at,title,template} row.
+        assert isinstance(panel["history"], list)
+        assert len(panel["history"]) == 2
+        for row in panel["history"]:
+            assert set(row) == {"at", "title", "template"}
+        # history_omitted is the bound speaking; nothing aged out under the cap here.
+        assert panel["history_omitted"] == 0
+
+
+async def test_the_widened_serializer_still_withholds_the_ownership_digest(vetted):
+    """The allow-list serves only classified keys, so it never leaks ``crew_key``.
+
+    ``_panel_owner_record`` carries the digest, and an allow-list classifies it
+    WITHHELD -- a deny-list serving "everything but a few" is what a leak would need.
+    This is the sibling of the route's own crew_key-never-served pin, asserted on a
+    record that also carries history so the served set stays free of the digest even
+    for a rich record.
+    """
+    async with _client() as c:
+        for i in range(2):
+            await c.post(
+                "/api/agent-panel/publish",
+                json={"data": {"cycle": i}},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
+        body = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
+        assert "crew_key" not in json.dumps(body)
+        assert agent_panel.crew_key(CREW) not in json.dumps(body)
+        # schema is the record's internal version tag and is withheld too.
+        assert "schema" not in body["panel"]
+
+
+def test_the_drawer_serializer_classifies_every_record_key():
+    """The red-on-unclassified contract: every key ``_panel_owner_record`` produces
+
+    is classified served-or-withheld, and a key in NEITHER set reddens rather than
+    being silently served or silently dropped. Keying the test on the record's OWN
+    keys is what keeps the fold's shape and the drawer's shape from diverging
+    silently: add a field to ``_panel_owner_record`` without classifying it in
+    ``agent_panel.py`` and this fails.
+    """
+    from kiro_crew.crew_log import projection
+
+    record = projection._panel_owner_record(projection._panel_owner_start())
+    classified = routes._PANEL_SERVED_KEYS | routes._PANEL_WITHHELD_KEYS
+    unclassified = set(record) - classified
+    assert not unclassified, (
+        f"_panel_owner_record produces {sorted(unclassified)}, classified neither "
+        "served nor withheld; add them to _PANEL_SERVED_KEYS or _PANEL_WITHHELD_KEYS"
+    )
+    # The sets are disjoint -- a key cannot be both served and withheld.
+    assert not (routes._PANEL_SERVED_KEYS & routes._PANEL_WITHHELD_KEYS)
+    # And the serializer raises, not defaults, on a genuinely unclassified key.
+    with pytest.raises(KeyError):
+        routes._panel_meta({**record, "a_brand_new_unclassified_field": 1})
+
+
 async def test_the_drawer_read_carries_the_raw_data_in_published_order(vetted):
     """The docked summary is rendered natively from this, not from the document.
 

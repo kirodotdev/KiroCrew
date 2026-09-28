@@ -93,6 +93,24 @@ export interface CrewPanelMeta {
    *  height of that compact frame, or null for a template that did not opt in
    *  (the drawer then keeps its native, zero-mint summary). */
   docked_height?: number | null
+  /** The crew's superseded panels, newest last, one row per replaced publish.
+   *  Bounded server-side; a file-only legacy record (published before the fold
+   *  recorded history) omits this rather than sending an empty array. */
+  history?: CrewPanelHistoryRow[]
+  /** How many times this crew has published on this slot. Absent on a file-only
+   *  legacy record for the same reason `history` is. */
+  publishes?: number
+  /** How many history rows aged out past the server's per-owner cap: the bound
+   *  speaking, so a reader tells a history trimmed at its cap from a complete
+   *  one. Absent on a file-only legacy record. */
+  history_omitted?: number
+}
+
+/** One superseded panel in a crew's `CrewPanelMeta.history`. */
+export interface CrewPanelHistoryRow {
+  at: string
+  title: string
+  template: string
 }
 
 export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk }: ClientTransport) {
