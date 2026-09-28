@@ -2124,8 +2124,10 @@ def restore_download(
 # One consequence of (1) is visible to a patch harness. ``mock.patch`` undoes a name
 # this module does not bind by deleting it and then writing the original back -- and
 # under ``create=True`` it only deletes -- and the delete reaches every holder. So a
-# patch of such a name never passes ``create=True``, and a thread started inside it is
-# joined before the patch ends.
+# patch of such a name never passes ``create=True`` (the composition-contract test fails
+# on any test module that patches a forwarded name with ``create=True``, apart from its
+# one allowlisted premise case), and a thread started inside it is joined before the
+# patch ends.
 #
 # The machinery below holds dotted module NAMES, never module objects, and reads
 # ``sys``, ``importlib`` and ``builtins`` through private aliases a patch of
