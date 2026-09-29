@@ -2710,12 +2710,14 @@ for older approval surfaces. These selectors narrow resolution, not authorizatio
 or permission mode; the existing caller gates still run first.
 
 The host approval card displays the redacted `tool_purpose` from that exact
-native permission event or coordinator inventory record, never a reason inferred
+native permission event (read from the params the preceding `tool_call` cached,
+else the permission frame's own `rawInput`) or coordinator inventory record, never a reason inferred
 from the command, title, or session task. An absent reason is explicitly missing.
-Coordinator slot projections redact the full purpose before applying the existing
-8,000-byte UTF-8 display cap, with a visible truncation notice. Native purposes
-retain their upstream cap and notice without being capped again. The display cap
-does not change the coordinator's stored request or its approval authority.
+The coordinator redacts a purpose and bounds it to the same 8,000-byte UTF-8 cap,
+with a visible truncation notice, when it records the request, so an oversized
+purpose is never retained or broadcast; its slot projections apply the cap again.
+Native purposes retain their upstream cap and notice without being capped again.
+The cap changes no approval authority.
 Native `rejected_once` skips that request without rejecting the remaining tool
 batch; a coordinator refusal resolves its boolean future to false. Neither
 changes permission mode or promises that the agent continues. Copies in other

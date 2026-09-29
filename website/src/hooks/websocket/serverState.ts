@@ -122,6 +122,8 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // and cancel old reads before refetching observed cards.
   queryClient.resetQueries({ queryKey: ['dashboard-card'] })
   queryClient.invalidateQueries({ queryKey: ['command-center'] })
+  // The command center shares the app shell's approvals cache.
+  queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
   // Same one-shot problem for the artifact library: `artifact_update`
   // frames pushed while the socket was down were never delivered, and a
   // list query that ERRORED during the gap (gateway restart 403s /

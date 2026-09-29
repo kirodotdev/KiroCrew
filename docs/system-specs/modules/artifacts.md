@@ -60,7 +60,8 @@ single **Dashboard** tab select
 only artifacts whose recorded originating slot is the current slot or a durable
 `created_by` descendant. A presentation-only child session can therefore publish
 without impersonating its conductor. The same slug is updated at milestones;
-visible hosts poll the artifact inventory every ten seconds and load new revisions.
+visible hosts re-read the artifact inventory on each `artifact_update` frame and
+load new revisions.
 Session matching strips the dashboard scope and normalizes registered channel
 keys with the history safe-key rules, retaining the channel namespace. Unknown
 prefixes are not folded; missing task roots remain fail-closed.
@@ -141,7 +142,24 @@ for questions, `artifact_update` for a task dashboard, the crew log's
 `slot_projection` for the work board of a team holding that slot, and workflow
 events into the store, with a finished, failed or cancelled run also re-reading
 the workflow snapshot the store's live runs are laid over, and the store's own
-workflow heal read replacing that snapshot; a reconnect re-reads all of them. The work board is the one host source the crew log
+workflow heal read replacing that snapshot; a reconnect re-reads all of them.
+Window focus re-reads a command-center source only while it has failed, since the frame
+that would refresh it may never come; a healthy source is left to its frames. The dock, mounted in every chat, reads the work
+board only for a team (a slot with sessions created under it); the panel always
+does. Only questions and approvals decide the stale notice and the "updated"
+clock, so an optional source that fails (workflows answer 503 while their service
+starts) cannot hide a fresh decision; the dock, panel and all-session view show
+one notice listing every failed source (workflow runs, the work items under Live
+activity, published views) beside those decisions, with the reassurance said once,
+so a missing source is never read as an empty one. A work board the dock does not read contributes nothing, even when an
+open panel cached one. Approvals share the app shell's
+`global-approvals` cache, which keeps its own 30-second refresh and is re-read on
+reconnect. A `slot_projection` frame never cancels a work read in flight; one
+more read follows it once it settles. The all-session view takes its sort order
+when the set of sessions, what needs attention, the filter or the page changes,
+not on activity, since moving a card reloads its iframes and their single-use
+documents; a card shows the published views of its whole
+`created_by` team, as the task panel does. The work board is the one host source the crew log
 owns, a checkpointed slot fold. Pending approvals and questions stay on the live
 host inventory rather than a crew-log projection: a card needs the request's tool
 input, which the crew log only digests, and a decision needs the live future the

@@ -982,8 +982,8 @@ measurement but an OWNER: both helpers knew what the call cost and neither knew 
 for. Both now take a kind and an owning session key, and write nothing unless given both -- because
 a background call is shared infrastructure by default. Titling is charged to the session it titles;
 a tip, a folder icon or a cron label is charged to nobody, and picking a session for one of those
-would put someone else's cost in a user's log. Three kinds are emitted today: `title`, `summary`,
-`memory_consolidation`.
+would put someone else's cost in a user's log. Four kinds are emitted today: `title`, `summary`,
+`memory_consolidation`, and `dynamic_card` for an automatic Dynamic Dashboard card.
 
 `background/completed` names no turn. The call runs after a turn ends, on a separate session, and
 naming the turn that happened to be last would attribute the cost to work that did not cause it.

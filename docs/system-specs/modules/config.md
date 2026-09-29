@@ -1879,8 +1879,9 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
 live in `server.py::_register_config_watch` — `agent.provider`,
-`agent.model`, `agent.role_models.background`, and `agent.log_level`
-(→ `handlers/updates.py::apply_log_level_from_config`). The log-level applier
+`agent.model`, `agent.role_models.background`, `agent.log_level`
+(→ `handlers/updates.py::apply_log_level_from_config`), and
+`dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`). The log-level applier
 shares `apply_log_level` with the Logs page's `POST /api/logs/level`, and that
 one function moves the `kiro_crew` logger only — which is the ONLY level gate
 on the way to `gateway.log`: the file handler and the queue handler

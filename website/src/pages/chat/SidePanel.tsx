@@ -1279,9 +1279,12 @@ export default function SidePanel({
           // is not one of ActivityViewer's multiplexed session views.
           if (t.kind === 'files') {
             if (!isActive) return null
+            // A panel kept mounted but hidden (a Dynamic Dashboard or app tab holds
+            // it) keeps the tree's scroll and expansion, with its polling paused.
             return (
               <div key={t.id} className="absolute inset-0">
                 <FilesHomePanel
+                  active={!panelHidden}
                   projectDir={projectDir ?? ''}
                   onFileOpen={(abs, diff, opts) => onFileOpen?.(abs, { diffMode: diff, line: opts?.line })}
                   onAddToContext={onAddToContext}
@@ -1296,7 +1299,9 @@ export default function SidePanel({
             )
           }
           if (VIEW_KINDS.has(t.kind)) {
-            if (!isActive) return null
+            // A panel kept mounted but hidden (a Dynamic Dashboard or app tab holds it)
+            // must not keep these bodies polling: they unmount as a closed panel's did.
+            if (!isActive || panelHidden) return null
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer

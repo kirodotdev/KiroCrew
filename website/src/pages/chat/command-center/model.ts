@@ -1,4 +1,5 @@
 import type { ChatSlot, SubagentActivity } from '../../../types'
+import { slotApprovalMode } from '../../../utils/slotApprovalMode'
 import type { ApprovalModeKey } from '../../../components/ApprovalModePicker'
 import { i18nT } from '../../../i18n/t'
 import { fmtNumber } from '../../../i18n/format'
@@ -9,8 +10,10 @@ export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
   normal: 'components.approvalModePicker.normal_label', trust_reads: 'components.approvalModePicker.reads_label',
   trust: 'components.approvalModePicker.trust_label', yolo: 'components.approvalModePicker.yolo_label',
 }
+/** The chat header's own mode rule, so the two never disagree: a live
+ * app-armed scoped grant auto-approves too, and reads as trust. */
 export function effectiveApprovalMode(globalMode: string, slot?: ChatSlot): ApprovalModeKey {
-  return globalMode === 'yolo' ? 'yolo' : slot?.trust ? 'trust' : slot?.trust_reads ? 'trust_reads' : 'normal'
+  return slotApprovalMode(globalMode, slot)
 }
 export interface RunNode {
   id: string

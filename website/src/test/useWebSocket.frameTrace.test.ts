@@ -977,7 +977,6 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action notifications/clearAllNotifications undefined',
   ],
   "approval in the owning slot": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
     "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\\n\\nList files\",\"ts\":\"1790000000\",\"approval_id\":\"ap-1\",\"slot\":\"slot-a\"}",
@@ -986,7 +985,6 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval","text":"shell","approval_id":"ap-1","approval_type":"chat"}',
   ],
   "approval for a spawn": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
     'action notifications/addNotification {"kind":"approval","title":"Tool approval: spawn_run(write docs)","body":"**Source:** agent","ts":"1790000004","approval_id":"spawn:agent-1","slot":"slot-a"}',
@@ -995,7 +993,6 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseSubagentPending {"slot":"slot-a","id":"agent-1","task":"write docs","approval_id":"spawn:agent-1"}',
   ],
   "approval from a subagent": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
     'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** subagent","ts":"1790000005","approval_id":"ap-sub","slot":"slot-a"}',
@@ -1003,21 +1000,18 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[subagent] shell","ts":"1790000005","meta":{"tool_input":"","approval_id":"ap-sub","source":"subagent","registry":"coordinator"}}',
   ],
   "approval with no slot": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
     'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free"}',
     'event mc-live-notification {"note":{"kind":"approval","title":"Tool approval: shell","body":"**Source:** cron","ts":"1790000006","approval_id":"ap-free"}}',
   ],
   "approval_resolved for a coordinator approval": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'action notifications/removeNotificationByTs "1790000000"',
     'action chat/resolveByApprovalId {"id":"ap-1","slot":"slot-a","decision":"approved","registry":"coordinator"}',
     'action chat/sseActivityEvent {"slot":"slot-a","kind":"approval_resolved","text":"","approval_id":"ap-1","approval_type":"chat"}',
   ],
   "approval_resolved expired spawn": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'action notifications/removeNotificationByTs "1790000007"',
     'action chat/resolveByApprovalId {"id":"spawn:agent-2","slot":"slot-a","decision":"stale","registry":"coordinator"}',
@@ -1025,7 +1019,6 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/sseSubagentDone {"slot":"slot-a","id":"agent-2","elapsed":0,"error":"The approval wait expired, so the request was denied."}',
   ],
   "approval_resolved without a slot": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'action notifications/removeNotificationByTs "1790000000"',
     'action chat/resolveByApprovalId {"id":"ap-1","slot":"slot-a","decision":"rejected","registry":"coordinator"}',
@@ -1372,7 +1365,6 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'event kirocrew-tool-call',
   ],
   "approval without an id": [
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     'event mc-notification {"kind":"approval"}',
     'action notifications/addNotification {"kind":"approval","title":"Tool approval: shell","body":"**Source:** agent","ts":"1790000008","slot":"slot-a"}',
@@ -1412,6 +1404,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["session-summary"]',
     'query resetQueries ["dashboard-card"]',
     'query invalidateQueries ["command-center"]',
+    'query invalidateQueries ["global-approvals"]',
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
@@ -1457,6 +1450,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["session-summary"]',
     'query resetQueries ["dashboard-card"]',
     'query invalidateQueries ["command-center"]',
+    'query invalidateQueries ["global-approvals"]',
     'query invalidateQueries ["artifacts"]',
     'query invalidateQueries ["artifact-folders"]',
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
@@ -1531,7 +1525,6 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   "frames inside the reconnect catch-up window": [
     'action notifications/addNotification {"kind":"info","title":"Replayed","ts":"1790000009"}',
     'event mc-notification {"kind":"info"}',
-    'query invalidateQueries ["command-center","approvals"]',
     'query invalidateQueries ["global-approvals"]',
     "action notifications/addNotification {\"kind\":\"approval\",\"title\":\"Tool approval: shell\",\"body\":\"**Source:** agent\\n\\n```approval-command\\nls\\n```\",\"ts\":\"1790000000\",\"approval_id\":\"ap-replay\",\"slot\":\"slot-a\"}",
     'action chat/sseChatMessage {"slot":"slot-a","role":"permission","content":"[agent] shell","ts":"1790000000","meta":{"tool_input":"ls","approval_id":"ap-replay","source":"agent","registry":"coordinator"}}',

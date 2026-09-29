@@ -12,7 +12,7 @@ import QuestionCard from '../../../components/QuestionCard'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { APPROVAL_MODE_KEYS, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
-import { isTerminalApprovalRefusal } from '../../../api/apiError'
+import { ApiError, isTerminalApprovalRefusal } from '../../../api/apiError'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
 
 /** Kept mounted while other inbox items are selected, preserving each answer draft. */
@@ -45,7 +45,13 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
           // visual card fails. The next inventory read reconciles server state.
           setDelivered(true)
           if (q.card_id) {
-            await api.dismissQuestionCard(item.slot, q.card_id)
+            try {
+              await api.dismissQuestionCard(item.slot, q.card_id)
+            } catch (err) {
+              // The answer's own user row retires a stateless card server-side,
+              // often before this dismiss lands: a 404 means it is already gone.
+              if (!(err instanceof ApiError && err.status === 404)) throw err
+            }
             dispatch(clearQuestionCard({ slot: item.slot, card_id: q.card_id }))
           }
         }
@@ -54,7 +60,10 @@ export default function AttentionCard({ item, title, context, onDraftChange }: {
     },
     onSettled: () => {
       locked.current = false
-      void queryClient.invalidateQueries({ queryKey: ['command-center'] })
+      // Only the inventories a decision changes; artifact bodies and the work
+      // board are unaffected, and their own frames refresh them.
+      void queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
+      void queryClient.invalidateQueries({ queryKey: ['command-center', 'questions'] })
     },
   })
   const expired = !!item.approval && isTerminalApprovalRefusal(mutation.error)

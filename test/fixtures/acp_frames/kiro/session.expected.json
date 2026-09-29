@@ -89,7 +89,8 @@
         "title": "Running: echo hello-from-corpus",
         "tool_call_id": "toolu_bdrk_01K2gMtk8bxngM8Cw1FAFNTV",
         "tool_input": "{\n  \"__tool_use_purpose\": \"Run the requested echo command exactly as specified\",\n  \"command\": \"echo hello-from-corpus\"\n}",
-        "tool_name": "shell"
+        "tool_name": "shell",
+        "tool_purpose": "Run the requested echo command exactly as specified"
       }
     ],
     "frame": "session/request_permission",

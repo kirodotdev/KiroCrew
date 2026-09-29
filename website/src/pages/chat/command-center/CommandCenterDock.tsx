@@ -6,7 +6,7 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtNumber } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
-import { useCommandCenter } from './useCommandCenter'
+import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
 import { PANEL_HEADING_ATTR } from './CommandCenterPanel'
 import { safeSetItem } from '../../../utils/safeStorage'
 
@@ -43,7 +43,7 @@ function CommandCenterDock({ slot, onOpen }: { slot: string | null; onOpen: () =
   const dismissed = (slot !== null && slot === dismissedHere) || isDismissed(slot)
   // A dismissed session's card renders nothing, so it must not keep reading the
   // command-center sources either: disabled, the hook issues no requests.
-  const data = useCommandCenter(slot, !dismissed)
+  const data = useCommandCenter(slot, !dismissed, 'task', { dock: true })
   const reducedMotion = useReducedMotion()
   const hintId = useId()
   const open = () => {
@@ -70,9 +70,13 @@ function CommandCenterDock({ slot, onOpen }: { slot: string | null; onOpen: () =
       {data.stale ? <div className="px-3 pb-2">
         {/* No hand-off: the adjacent chat composer and panel can hold unsent answer drafts. */}
         <ErrorNotice message={i18nT('commandCenter.stale')} />
-      </div> : <p className="px-3 pb-2 text-[12px] text-muted" aria-live="polite">
-        {i18nT('commandCenter.summary', { running: fmtNumber(data.running), blocked: fmtNumber(data.blocked), approvals: fmtNumber(data.approvalCount) })}
-      </p>}
+      </div> : <>
+        <p className="px-3 pb-2 text-[12px] text-muted" aria-live="polite">
+          {i18nT('commandCenter.summary', { running: fmtNumber(data.running), blocked: fmtNumber(data.blocked), approvals: fmtNumber(data.approvalCount) })}
+        </p>
+        {/* No hand-off: the adjacent chat composer and panel can hold unsent answer drafts. */}
+        {data.missing.length > 0 && <div className="px-3 pb-2"><ErrorNotice message={missingSourcesNotice(data.missing)} /></div>}
+      </>}
       {/* Names the click's outcome: the card is a one-time hint, not a persistent control. */}
       <p id={hintId} className="px-3 pb-2 text-[12px] text-muted">{i18nT('commandCenter.hint_once')}</p>
     </motion.div>}

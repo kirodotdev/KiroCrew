@@ -10,8 +10,8 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import SimpleSelect from '../../../components/SimpleSelect'
 import { fmtDateTime, fmtNumber } from '../../../i18n/format'
 import { lastActivityEpoch } from '../sessionOrder'
-import { useCommandCenter, type CommandCenterData } from './useCommandCenter'
-import { runTitle, slotKey, type RunNode } from './model'
+import { missingSourcesNotice, useCommandCenter, type CommandCenterData } from './useCommandCenter'
+import { runTitle, scopedSlots, slotKey, type RunNode } from './model'
 import AttentionCard from './AttentionCard'
 import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
@@ -42,12 +42,14 @@ function SavedSummary({ slot, active }: { slot: string; active: boolean }) {
   </section>
 }
 
-function SessionDashboardCard({ node, data, active }: { node: RunNode; data: CommandCenterData; active: boolean }) {
+function SessionDashboardCard({ node, data, active, team }: { node: RunNode; data: CommandCenterData; active: boolean; team: Set<string> }) {
   const { t } = useTranslation()
   const attention = data.attention.filter(item => item.slot === node.slot)
   const runs = data.nodes.filter(n => n.slot === node.slot && n.kind !== 'session')
   const blocked = runs.some(n => n.state === 'blocked')
-  const dashboards = data.dashboards.filter(a => slotKey(a.session_key || '') === node.slot)
+  // A conductor's view is usually published by a builder it created, the same
+  // team the task panel reads; showing only this slot's own said "no view".
+  const dashboards = data.dashboards.filter(a => team.has(slotKey(a.session_key || '')))
   const [view, setView] = useState('')
   const selectedView = dashboards.find(a => a.slug === view) ?? dashboards[0]
   return <Card hidden={!active} data-testid="session-dashboard-card" data-slot={node.slot} className="min-w-0 self-start space-y-4">
@@ -87,7 +89,17 @@ export default function SessionDashboardsPage() {
   const blocked = new Set(data.nodes.filter(n => n.state === 'blocked').map(n => n.slot))
   const recency = new Map(slots.map(slot => [slot.key, lastActivityEpoch(slot)]))
   const priority = (node: RunNode) => attention.has(node.slot) ? 0 : blocked.has(node.slot) ? 1 : node.state === 'running' ? 2 : 3
-  const nodes = data.nodes.filter(n => n.kind === 'session').sort((a, b) => priority(a) - priority(b) || (recency.get(b.slot) || 0) - (recency.get(a.slot) || 0))
+  const sessionNodes = data.nodes.filter(n => n.kind === 'session')
+  const sorted = [...sessionNodes].sort((a, b) => priority(a) - priority(b) || (recency.get(b.slot) || 0) - (recency.get(a.slot) || 0))
+  // Order is taken when the set, what needs attention, the filter or the page
+  // changes, not on every activity update: moving a card's DOM node reloads its
+  // iframes, and their single-use documents then 404. DOM order stays reading order.
+  const orderKey = JSON.stringify([sessionNodes.map(n => n.slot).sort(), [...attention].sort(), [...blocked].sort(), query, attentionOnly, limit])
+  const [frozen, setFrozen] = useState<{ key: string; order: string[] }>({ key: '', order: [] })
+  if (frozen.key !== orderKey) setFrozen({ key: orderKey, order: sorted.map(n => n.slot) })
+  const order = frozen.key === orderKey ? frozen.order : sorted.map(n => n.slot)
+  const bySlot = new Map(sessionNodes.map(n => [n.slot, n]))
+  const nodes = order.map(slot => bySlot.get(slot)).filter((n): n is RunNode => !!n)
   const matching = nodes.filter(n => (!attentionOnly || attention.has(n.slot)) && `${runTitle(n)} ${n.slot}`.toLowerCase().includes(query.trim().toLowerCase()))
   const pageEnd = Math.min(limit, Math.max(12, Math.ceil(matching.length / 12) * 12))
   const visible = new Set(matching.slice(pageEnd - 12, pageEnd).map(n => n.slot))
@@ -103,6 +115,8 @@ export default function SessionDashboardsPage() {
       </div>
       {/* No hand-off: filtered-out inbox items retain their QuestionCard answer drafts. */}
       {data.stale && <ErrorNotice message={t('commandCenter.stale')} />}
+      {/* No hand-off: the attention cards here can hold unsent QuestionCard answer drafts. */}
+      <ErrorNotice message={missingSourcesNotice(data.missing)} />
       {(!slotsLoaded || data.loading) && <p role="status" className="text-sm text-muted">{t('commandCenter.loading')}</p>}
       <section aria-label={t('commandCenter.attention_filter')} className="space-y-3">
         <PanelSectionHeader label={t('commandCenter.attention_filter')} count={pending.length} />
@@ -122,7 +136,7 @@ export default function SessionDashboardsPage() {
       <PanelSectionHeader label={t('pages.sessionsPage.page_title')} count={matching.length} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
         {/* Preserve selection, but unmount inactive iframe documents to cap resources. */}
-        {nodes.map(node => <SessionDashboardCard key={node.slot} node={node} data={data} active={visible.has(node.slot)} />)}
+        {nodes.map(node => <SessionDashboardCard key={node.slot} node={node} data={data} active={visible.has(node.slot)} team={new Set(scopedSlots(slots, node.slot).map(s => s.key))} />)}
       </div>
       {slotsLoaded && !data.loading && !matching.length && <EmptyState icon={<LayoutDashboard size={24} />} title={t(nodes.length ? 'commandCenter.no_matches' : 'pages.sessionsPage.empty_title')} />}
       <div className="flex flex-wrap gap-2">

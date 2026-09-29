@@ -20,6 +20,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: The reason a seeded (restored or newly enabled) session is queued with.
+RESTORED = "restored"
+_HOUR = 3600.0
+
 MAX_HTML_BYTES = 8192
 MAX_DATA_BYTES = 4096
 MAX_OUTPUT_BYTES = 16384
@@ -126,12 +130,15 @@ class CardPublisher:
             entry.reason = reason
             entry.event_at = self.wall_clock()
             entry.revision += 1
+            self.entries.move_to_end(key)
+            if entry.pending:
+                # Already queued and already stale: what a reader sees has not
+                # changed, so there is nothing to tell the watching tabs.
+                return
             # Fixed first-event deadline: a noisy producer cannot starve itself
             # by continuously extending a sliding debounce window.
-            if not entry.pending:
-                entry.due = now + self.budget.debounce
+            entry.due = now + self.budget.debounce
             entry.pending = True
-            self.entries.move_to_end(key)
         self.changed(key)
 
     def forget(self, key: str) -> None:
@@ -139,7 +146,7 @@ class CardPublisher:
             self.changed(key)
 
     def _prune_attempts(self) -> None:
-        cutoff = self.clock() - 3600
+        cutoff = self.clock() - _HOUR
         while self.attempts and self.attempts[0] <= cutoff:
             self.attempts.popleft()
         session_cutoff = self.clock() - self.budget.per_session
@@ -156,7 +163,7 @@ class CardPublisher:
         pending = [entry for entry in self.entries.values() if entry.pending]
         if not pending:
             return None
-        global_due = self.attempts[0] + 3600 if len(self.attempts) >= self.budget.per_hour else 0
+        global_due = self.attempts[0] + _HOUR if len(self.attempts) >= self.budget.per_hour else 0
         due = min(max(entry.due, global_due, self._session_due(entry)) for entry in pending)
         return max(0, due - self.clock())
 
@@ -188,14 +195,16 @@ class CardPublisher:
         if len(self.attempts) >= self.budget.per_hour:
             return 0
         now = self.clock()
-        entry = next(
-            (
-                item
-                for item in self.entries.values()
-                if item.pending and item.due <= now and self._session_due(item) <= now
-            ),
-            None,
-        )
+        # The entries dict is also the eviction order, and a new event moves its
+        # entry to the end, so serving in dict order put the session a person is
+        # using behind every idle one. Serve a live event before a restore seed,
+        # and the longest-waiting first within each.
+        ready = [
+            item
+            for item in self.entries.values()
+            if item.pending and item.due <= now and self._session_due(item) <= now
+        ]
+        entry = min(ready, key=lambda item: (item.reason == RESTORED, item.due), default=None)
         if entry is None:
             return 0
         if not self.valid(entry):

@@ -55,6 +55,15 @@ describe('task dashboard host controls', () => {
     vi.spyOn(api, 'artifacts').mockResolvedValue({ artifacts: [] })
   })
 
+  it('says a part is missing, not that fresh decisions are stale, when an optional source fails', async () => {
+    vi.mocked(api.workflowRuns).mockRejectedValue(new Error('workflows not available'))
+    renderWithProviders(<><CommandCenterPanel slot="root" active /><CommandCenterDock slot="root" onOpen={() => {}} /></>, { store: taskStore() })
+    expect(await screen.findAllByText('Some sources could not be loaded: workflow runs under “Live activity”. Anything that needs you is still current, and this notice clears once they load.')).toHaveLength(2)
+    // The exact text above names only the failed source; the others are not listed.
+    expect(screen.queryByText(/The last known state may be out of date/)).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Running/).length).toBeGreaterThan(0)
+  })
+
   it('shows accepted progress and requests an authored dashboard only after a click', async () => {
     const send = vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'queued', body: {} })
     renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })

@@ -8,7 +8,7 @@ import SegmentedControl from '../../../components/SegmentedControl'
 import SimpleSelect from '../../../components/SimpleSelect'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDateTime, fmtNumber } from '../../../i18n/format'
-import { useCommandCenter } from './useCommandCenter'
+import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
 import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
 import AutomaticCardSetting from './AutomaticCardSetting'
@@ -82,6 +82,8 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
       ]} />
       {/* No hand-off: pending QuestionCard answer drafts remain mounted below. */}
       {data.stale && <ErrorNotice message={t('commandCenter.stale')} />}
+      {/* No hand-off: the attention cards here can hold unsent QuestionCard answer drafts. */}
+      <ErrorNotice message={missingSourcesNotice(data.missing)} />
       </div>
     </header>
     <div className="flex-1 min-h-0 overflow-y-auto">

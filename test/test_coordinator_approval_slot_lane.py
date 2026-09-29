@@ -392,17 +392,21 @@ async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_pat
     wait's exit removes only its own record and future: the replacement keeps
     both, stays in the lane, and its buttons still resolve it. Nothing is
     broadcast for the earlier wait, whose card the replacement's frame already
-    took over. Negative control: a wait that is not replaced retires and clears
-    the lane on expiry as before."""
+    took over, but its undecided end is still audited. Negative control: a wait
+    that is not replaced retires and clears the lane on expiry as before.
+
+    The earlier wait ends by cancellation, a named point, not by racing a short
+    real timeout against the replacement's."""
     state = _make_state(tmp_path)
     parent = state.get_or_create_slot("parent")
-    monkeypatch.setattr(state, "_APPROVAL_TIMEOUT", 0.2)
+    monkeypatch.setattr(state, "_APPROVAL_TIMEOUT", 3600)
     resolved = []
+    audited = []
     monkeypatch.setattr(state, "_audit_and_broadcast_approval", lambda *a, **k: resolved.append(a))
+    monkeypatch.setattr(state, "_audit_approval", lambda *a, **k: audited.append(a))
 
     older = await _register(state, "same", parent.key)
     older_instance = state._pending_approvals["same"]["instance"]
-    await asyncio.sleep(0.05)
     # _register returns once the id has a record, which the older wait's already
     # is; wait for the replacement to have written its own.
     replacement = await _register(state, "same", parent.key)
@@ -413,20 +417,23 @@ async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_pat
     live = state._approval_futures["same"]
     state.push_slots_update.reset_mock()
 
-    assert await older is False
+    older.cancel()
+    assert await asyncio.wait_for(older, _WAIT_SECS) is False
     assert state._approval_futures["same"] is live
     assert state._pending_approvals["same"]["instance"] != older_instance
     assert state.serialize_slot(parent)["pending_approval"] is True
     assert resolved == []
+    assert audited == [(parent.key, "same", False, "superseded")]
     assert state.push_slots_update.call_count == 0
 
     assert state.resolve_state_approval("same", True) is True
-    assert await replacement is True
+    assert await asyncio.wait_for(replacement, _WAIT_SECS) is True
     assert "same" not in state._pending_approvals
     assert state.serialize_slot(parent)["pending_approval"] is False
 
     lone = await _register(state, "lone", parent.key)
-    assert await lone is False
+    lone.cancel()
+    assert await asyncio.wait_for(lone, _WAIT_SECS) is False
     assert "lone" not in state._approval_futures
     assert any(a[1] == "lone" for a in resolved)
     assert state.serialize_slot(parent)["pending_approval"] is False
@@ -454,3 +461,25 @@ async def test_push_failure_never_breaks_the_approval(tmp_path):
     assert state.serialize_slot(parent)["pending_approval"] is True
     assert ApprovalCoordinator.resolve_state(state, "spawn:a3", True) is True
     assert await task is True
+
+
+@pytest.mark.asyncio
+async def test_a_huge_coordinator_purpose_is_bounded_before_it_is_retained(tmp_path):
+    from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE
+
+    state = _make_state(tmp_path)
+    parent = state.get_or_create_slot("parent")
+    task = asyncio.get_running_loop().create_task(
+        state.request_approval(
+            "big", "subagent", "shell", slot=parent.key, tool_purpose="p" * (4 * 1024 * 1024)
+        )
+    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _WAIT_SECS
+    while "big" not in state._pending_approvals:
+        assert loop.time() < deadline, "approval never registered"
+        await asyncio.sleep(_POLL_SECS)
+    retained = state._pending_approvals["big"]["tool_purpose"]
+    assert len(retained.encode("utf-8")) <= _MAX_TOOL_PURPOSE + 200
+    task.cancel()
+    assert await asyncio.wait_for(task, _WAIT_SECS) is False

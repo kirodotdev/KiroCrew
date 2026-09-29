@@ -190,3 +190,15 @@ describe('command center projection', () => {
     expect(model.attention.map(a => a.id)).toEqual(['question:root:card', 'question:child:card'])
   })
 })
+
+
+describe('effectiveApprovalMode', () => {
+  it('reads a live app-armed scoped grant as trust, like the chat header', async () => {
+    const { effectiveApprovalMode } = await import('../pages/chat/command-center/model')
+    const { slotApprovalMode } = await import('../utils/slotApprovalMode')
+    const slot = { key: 'crew', messages: 0, running: false, trust: false, trust_scope: 'app:issue-radar' }
+    expect(effectiveApprovalMode('normal', slot)).toBe('trust')
+    expect(effectiveApprovalMode('normal', slot)).toBe(slotApprovalMode('normal', slot))
+    expect(effectiveApprovalMode('normal', { ...slot, trust_scope: '' })).toBe('normal')
+  })
+})

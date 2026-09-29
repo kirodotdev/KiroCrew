@@ -3569,6 +3569,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Refs so the "run in terminal" listener (registered once) always sees the
   // live panel controller + this chat's working directory.
   const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
+  // Stable, so the memoized dock does not re-render on every streamed chunk.
+  // Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
+  // handleOpenDiff do: the find pane owns the right-hand dock exclusively
+  // (shouldMountSidePanel returns false while it is open), and the card persists
+  // its one-time dismissal before calling this -- so without the close the card
+  // would be gone for good while the dashboard opened behind a pane the user
+  // cannot see past. `close()` is safe with nothing open.
+  const openCommandCenter = useCallback(() => {
+    search.close(); dispatch(openActivityPanel()); tabsCtlRef.current.openView('command-center')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render
+  }, [dispatch, search.close])
 
   /** Bring an app's panel tab back — focusing it if open, re-creating it if the
    *  user closed it (`openApp` upserts).
@@ -8652,14 +8663,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   calls and goes stale when the user clicks a tab in the panel. */}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
-              {/* Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
-                  handleOpenDiff do: the find pane owns the right-hand dock
-                  exclusively (shouldMountSidePanel returns false while it is
-                  open), and the card persists its one-time dismissal before
-                  calling this -- so without the close the card would be gone
-                  for good while the dashboard opened behind a pane the user
-                  cannot see past. `close()` is safe with nothing open. */}
-              <CommandCenterDock slot={activeSlot} onOpen={() => { search.close(); dispatch(openActivityPanel()); tabsCtl.openView('command-center') }} />
+              <CommandCenterDock slot={activeSlot} onOpen={openCommandCenter} />
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>

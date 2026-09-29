@@ -533,6 +533,8 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
         slot_name = f"oai-{completion_id}"
         slot = state.get_or_create_slot(slot_name)
+        # One request's slot, popped when it returns: nobody views its card.
+        slot._dashboard_card_exempt = True
 
     # App-Kit ownership enforcement — mirror chat_handlers.api_chat
     # Non-app callers (dashboard, CLI) have no app identity and legitimately

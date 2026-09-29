@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, waitFor } from '@testing-library/react'
-import { useQueryClient } from '@tanstack/react-query'
+import { focusManager, useQueryClient } from '@tanstack/react-query'
 import { createTestStore, renderHookWithProviders, renderWithProviders } from './helpers'
 import { api } from '../api/client'
-import { useCommandCenter } from '../pages/chat/command-center/useCommandCenter'
+import { missingSourcesNotice, useCommandCenter } from '../pages/chat/command-center/useCommandCenter'
+import { fmtList } from '../i18n/format'
+import { i18nT } from '../i18n/t'
 import { teamRoots } from '../pages/chat/command-center/model'
 import TaskDashboardFrame, { TASK_DASHBOARD_SANDBOX } from '../pages/chat/command-center/TaskDashboardFrame'
 import type { Artifact } from '../types'
@@ -116,6 +118,80 @@ describe('task dashboard sources and containment', () => {
     expect(teamRoots(slots, 'root')).toEqual(['root'])
     expect(teamRoots(slots, 'unknown')).toEqual(['unknown'])
     expect(teamRoots(slots, 'a')).toEqual(['a', 'b'])
+  })
+
+  it('reads the work board from the dock only for a team, and never refetches on focus', async () => {
+    const initial = store().getState()
+    const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
+    const dock = renderHookWithProviders(() => ({ ...useCommandCenter('root', true, 'task', { dock: true }), queryClient: useQueryClient() }), { store: solo })
+    await waitFor(() => expect(dock.result.current.loading).toBe(false))
+    expect(api.sessionWorkProjection).not.toHaveBeenCalled()
+    const own = (key: readonly unknown[]) => key[0] === 'command-center' || key[0] === 'global-approvals'
+    const observers = dock.result.current.queryClient.getQueryCache().getAll().filter(q => own(q.queryKey)).flatMap(q => q.observers)
+    expect(observers.length).toBeGreaterThan(0)
+    // A healthy source is left to its frames; only a failed one re-reads on focus.
+    const onFocus = (o: (typeof observers)[number]) => {
+      const option = o.options.refetchOnWindowFocus
+      return typeof option === 'function' ? option(o.getCurrentQuery()) : option
+    }
+    expect(observers.every(o => onFocus(o) === false)).toBe(true)
+    dock.unmount()
+    const team = renderHookWithProviders(() => useCommandCenter('root', true, 'task', { dock: true }), { store: store() })
+    await waitFor(() => expect(team.result.current.loading).toBe(false))
+    expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
+    team.unmount()
+    vi.mocked(api.sessionWorkProjection).mockClear()
+    const panel = renderHookWithProviders(() => useCommandCenter('root'), { store: solo })
+    await waitFor(() => expect(panel.result.current.loading).toBe(false))
+    expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
+  })
+
+  it('never shows a board the panel cached once the dock stops reading it', async () => {
+    const initial = store().getState()
+    const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [{ item_id: 'one', title: 'Old item', state: 'accepted' }] } })
+    const both = renderHookWithProviders(() => ({ panel: useCommandCenter('root'), dock: useCommandCenter('root', true, 'task', { dock: true }) }), { store: solo })
+    await waitFor(() => expect(both.result.current.panel.workItems).toHaveLength(1))
+    expect(both.result.current.dock.workItems).toEqual([])
+  })
+
+  it('keeps decisions fresh when an optional source fails, and shares the app approvals cache', async () => {
+    vi.mocked(api.workflowRuns).mockRejectedValue(new Error('workflows not available'))
+    const { result } = renderHookWithProviders(() => ({ ...useCommandCenter('root'), queryClient: useQueryClient() }), { store: store() })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    await waitFor(() => expect(result.current.queryClient.getQueryState(['command-center', 'workflows'])?.status).toBe('error'))
+    expect(result.current.stale).toBe(false)
+    // The missing source is still reported, not passed off as "no runs".
+    expect(result.current.missing).toEqual(['runs'])
+    expect(result.current.updatedAt).toBeGreaterThan(0)
+    expect(result.current.queryClient.getQueryState(['global-approvals'])?.status).toBe('success')
+    // No workflow frame may ever come, so the failed source re-reads on focus.
+    vi.mocked(api.workflowRuns).mockResolvedValue({ runs: [] })
+    vi.mocked(api.pendingQuestions).mockClear()
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true) })
+    await waitFor(() => expect(result.current.missing).toEqual([]))
+    expect(api.pendingQuestions).not.toHaveBeenCalled()
+    vi.mocked(api.pendingQuestions).mockRejectedValue(new Error('offline'))
+    await act(async () => { await result.current.queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    await waitFor(() => expect(result.current.stale).toBe(true))
+    expect(result.current.missing).toEqual([])
+  })
+
+  it('names no missing source until the decision reads have answered', async () => {
+    vi.mocked(api.workflowRuns).mockRejectedValue(new Error('workflows not available'))
+    vi.mocked(api.pendingQuestions).mockReturnValue(new Promise(() => {}))
+    const { result } = renderHookWithProviders(() => ({ ...useCommandCenter('root'), queryClient: useQueryClient() }), { store: store() })
+    await waitFor(() => expect(result.current.queryClient.getQueryState(['command-center', 'workflows'])?.status).toBe('error'))
+    expect(result.current.missing).toEqual([])
+  })
+
+  it('names every failed optional source in one notice, saying the reassurance once', () => {
+    expect(missingSourcesNotice([])).toBeNull()
+    const both = missingSourcesNotice(['runs', 'views'])!
+    expect(both).toBe(i18nT('commandCenter.partial_sources', { sources: fmtList([i18nT('commandCenter.source_runs'), i18nT('commandCenter.source_views')]) }))
+    expect(both).toContain(i18nT('commandCenter.source_runs'))
+    expect(both).toContain(i18nT('commandCenter.source_views'))
+    expect(both).not.toContain(i18nT('commandCenter.source_work'))
   })
 
   it('retains only stateless drafts by exact normalized slot and card, clearing on scope changes', async () => {

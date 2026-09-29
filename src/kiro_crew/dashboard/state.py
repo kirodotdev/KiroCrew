@@ -2727,6 +2727,7 @@ class _ChatSlot:
         "_on_message",
         "_on_card_event",
         "_dashboard_card_identity",
+        "_dashboard_card_exempt",
         "_on_question_retired",
         "_coordinator_approvals",
         "_has_reader_flag",
@@ -3325,6 +3326,9 @@ class _ChatSlot:
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
         self._on_card_event: object | None = None
         self._dashboard_card_identity = uuid.uuid4().hex
+        #: Set on a throwaway API slot that no person follows, so automatic
+        #: cards never spend the shared budget on it.
+        self._dashboard_card_exempt = False
         # Announce stateless question cards this slot retires, so every client
         # drops them: Callable[[str, list[str]], None] | None, wired by
         # DashboardState like _on_message. A retirement that only mutates state
@@ -7144,6 +7148,14 @@ class DashboardState:
             approved,
             decision,
             audit_provider=sel,
+        )
+
+    def _audit_approval(
+        self, session_key: str, approval_id: str, approved: bool, decision: str = ""
+    ) -> None:
+        """Audit one approval outcome with no broadcast."""
+        _approvals_for(self).audit(
+            self, session_key, approval_id, approved, decision, audit_provider=sel
         )
 
     def resolve_state_approval(self, approval_id: str, approved: bool) -> bool:

@@ -277,7 +277,8 @@ export function useWebSocket() {
             dispatch(clearAllNotifications())
             break
           case 'approval': {
-            queryClient.invalidateQueries({ queryKey: ['command-center', 'approvals'] })
+            // The approvals module refreshes the shared `global-approvals` cache,
+            // which the command center reads too.
             // The registry, the chime, the feed note and the live banner; the
             // owning slot comes back ('' for an unowned approval).
             const targetSlot = approvals.onApprovalFrame(data, reconnectingRef.current)
@@ -314,7 +315,8 @@ export function useWebSocket() {
             break
           }
           case 'approval_resolved':
-            queryClient.invalidateQueries({ queryKey: ['command-center', 'approvals'] })
+            // The approvals module refreshes the shared `global-approvals` cache,
+            // which the command center reads too.
             approvals.onApprovalResolved(data)
             break
           case 'refresh': {
@@ -553,11 +555,17 @@ export function useWebSocket() {
           case 'slot_projection': {
             // A slot's crew log grew. A work board folds its conductor's units
             // with its bound workers', so the boards that move are this slot's
-            // and every ancestor's. A read already in flight absorbs a burst of
-            // frames instead of being cancelled and restarted.
+            // and every ancestor's. A read in flight is never cancelled -- a
+            // steady stream of frames would restart a whole-log fold forever --
+            // but it may have folded before this growth, so one more read
+            // follows it once it settles.
             if (typeof data.slot !== 'string') break
             for (const root of teamRoots(store.getState().dashboard.slots, data.slot)) {
-              queryClient.invalidateQueries({ queryKey: ['command-center', root, 'work'], exact: true }, { cancelRefetch: false })
+              const key = ['command-center', root, 'work']
+              const inFlight = queryClient.getQueryCache().find({ queryKey: key, exact: true })
+              if (inFlight?.state.fetchStatus === 'fetching' && inFlight.promise) {
+                void inFlight.promise.catch(() => undefined).finally(() => { void queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false }) })
+              } else queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
             }
             break
           }

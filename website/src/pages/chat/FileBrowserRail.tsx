@@ -330,7 +330,7 @@ function ContentResults({ query, projectDir, onOpen }: {
  * Both tree modes render the SAME Pierre tree; Changed feeds it the git-status
  * path set and its opens land in diff mode (`onFileOpen`'s second argument).
  */
-export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath }: {
+export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true }: {
   projectDir: string
   /** `opts.line` opens the file scrolled to that line — a content-search hit. */
   onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
@@ -339,6 +339,9 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   /** Currently-open file, echoed as the tree selection. */
   selectedPath?: string | null
+  /** False while the rail is kept mounted but hidden: its tree state survives
+   *  and the git-status poll pauses. */
+  active?: boolean
 }) {
   const { t } = useTranslation()
   const [changedMode, _setChangedMode] = useState(() => sessionChangedMode)
@@ -371,8 +374,8 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
     enabled: !!projectDir,
-    refetchInterval: 5_000,
-    refetchOnWindowFocus: true,
+    refetchInterval: active ? 5_000 : false,
+    refetchOnWindowFocus: active,
   })
   const changedCount = status?.files?.length ?? 0
   // The server caps the listing at 500 and says so. Unless the badge reads that
