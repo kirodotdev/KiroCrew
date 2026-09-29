@@ -89,7 +89,8 @@ fill whether the pane is focused or not), the top/bottom light bands, the side-l
 in-pane-divider hairline, the stronger side line a focused pane swaps in, and
 the half-pixel dark sliver outside each lit band that
 the Liquid Glass surfaces (the composer dock and everything in it, the mobile
-Settings search capsule) lay over their blurred backdrop (the pane draws no ring:
+Settings search capsule, the session list's and the crew roster's search field)
+lay over their blurred backdrop (the pane draws no ring:
 lit top and bottom, a line down each side). `--glass-tint-accent`, `-warn` and
 `-hover` are derived from `--glass-tint` on `:root` (the picked chip, the
 incognito chip and a hovered pane swap them in via `glass-accent` / `glass-warn`

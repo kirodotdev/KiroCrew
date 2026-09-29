@@ -30,19 +30,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
  * observed. That degrades to a stale value, never to a wrong constant, and the
  * common case — a strip appearing or disappearing — is a mount/unmount that the
  * ref callback catches regardless.
+ *
+ * The unmount effect must not be the only thing that disconnects: under
+ * StrictMode (dev) React runs every effect's cleanup and then the effect again
+ * on mount, while the ref callback runs once — so a cleanup-only effect left
+ * the observer dead after the first render and the height frozen at its mount
+ * value (the list dock stayed at its search-row height while an error notice
+ * grew it). The effect therefore re-attaches to the node it still holds.
  */
 export function useMeasuredHeight<T extends HTMLElement>(): [(node: T | null) => void, number] {
   const [height, setHeight] = useState(0)
+  const nodeRef = useRef<T | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
 
-  const measuredRef = useCallback((node: T | null) => {
-    observerRef.current?.disconnect()
-    observerRef.current = null
-    if (!node) {
-      setHeight(0)
-      return
-    }
-    setHeight(node.getBoundingClientRect().height)
+  const observe = useCallback((node: T) => {
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
@@ -53,7 +54,25 @@ export function useMeasuredHeight<T extends HTMLElement>(): [(node: T | null) =>
     observerRef.current = observer
   }, [])
 
-  useEffect(() => () => observerRef.current?.disconnect(), [])
+  const measuredRef = useCallback((node: T | null) => {
+    observerRef.current?.disconnect()
+    observerRef.current = null
+    nodeRef.current = node
+    if (!node) {
+      setHeight(0)
+      return
+    }
+    setHeight(node.getBoundingClientRect().height)
+    observe(node)
+  }, [observe])
+
+  useEffect(() => {
+    if (nodeRef.current && !observerRef.current) observe(nodeRef.current)
+    return () => {
+      observerRef.current?.disconnect()
+      observerRef.current = null
+    }
+  }, [observe])
 
   return [measuredRef, height]
 }

@@ -113,6 +113,7 @@ import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import ResizeHandle from '../../components/ResizeHandle'
 import { cn } from '../../lib/utils'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../../components/listShell'
+import { ListDock } from '../../components/ListDock'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
@@ -2551,12 +2552,15 @@ export default function MembersPage() {
             />
           </div>
         )}
-        {/* The Sessions sidebar's search row (components/SearchFilterBar): the
-            same field, clear button and inline sort/filter menu. The menu holds
-            what the sidebar's holds for sessions, in the roster's terms — a
-            star toggle, the member's live state, its origin, and the sort.
-            Menu rows keep the menu open (preventDefault) so several can be
-            toggled in one visit, as the sidebar's do. */}
+        {/* The floating dock (components/ListDock): the glass search capsule and
+            the filter chip hover over the roster, which scrolls under them. */}
+        <ListDock field={(
+          // The Sessions sidebar's search row (components/SearchFilterBar): the
+          // same field, clear button and inline sort/filter menu. The menu holds
+          // what the sidebar's holds for sessions, in the roster's terms — a
+          // star toggle, the member's live state, its origin, and the sort.
+          // Menu rows keep the menu open (preventDefault) so several can be
+          // toggled in one visit, as the sidebar's do.
         <SearchFilterBar
           className="px-2 pb-1"
           placeholder={t('pages.membersPage.search_members')}
@@ -2649,6 +2653,8 @@ export default function MembersPage() {
             </DropdownMenu>
           )}
         />
+        )} shelf={(
+          <>
         {/* The at-rest marker that the list is narrowed: ONE aggregate chip in
             the sidebar's chip recipe (components/SearchFilterBar), naming every
             active filter, so a returning user sees WHY the roster is short and
@@ -2684,6 +2690,7 @@ export default function MembersPage() {
             title={t('pages.membersPage.star_failed_title')}
             onDismiss={() => setStarError(null)}
             askAgent
+            actionPlacement="below"
             testId="member-star-error"
           />
         </div>
@@ -2698,6 +2705,8 @@ export default function MembersPage() {
             {t('pages.membersPage.member_gone_roster', { name: gone.name })}
           </div>
         )}
+          </>
+        )}>
         <ul
           className={`${LIST_BODY_CLS} list-none m-0`}
           style={{ scrollbarWidth: 'none' }}
@@ -2812,6 +2821,7 @@ export default function MembersPage() {
             )
           })}
         </ul>
+        </ListDock>
         {/* Window-splitter between roster and thread: the same component as the
             Sessions sidebar's grip, sitting on the card's right border the same
             way (absolute, 12px rounded-xl corner inset), so the two pages' edges
@@ -2826,7 +2836,9 @@ export default function MembersPage() {
             min={ROSTER_MIN}
             max={ROSTER_MAX}
             inset={12}
-            className="absolute top-0 -right-[3px] h-full z-10"
+            // z-40: above the floating search dock (ListDock, z-30), whose
+            // opaque shelf would otherwise take the inner half of the grip.
+            className="absolute top-0 -right-[3px] h-full z-40"
           />
         </div>
       </aside>

@@ -80,6 +80,13 @@ export function focusSiblingSessionRow(row: HTMLElement, step: number): boolean 
  * `block: 'start'` does honour the margin, so re-align with it only when the
  * row actually sits inside the margin band. Rows with no margin (unfiled rows,
  * board columns) are left exactly where `nearest` put them.
+ *
+ * The band starts at the scroller's `scroll-padding-top`, not at its edge:
+ * under the floating search dock (components/ListDock) the lane pads and
+ * scroll-pads its top by the dock's height and the pinned headers sit exactly
+ * on that padding edge (the dock's bottom), so a row is covered while it lies
+ * within `padding + margin` of the edge. With no dock the padding is 0 and
+ * the test is the plain margin band.
  */
 function clearPinnedHeaders(row: HTMLElement): void {
   const view = row.ownerDocument.defaultView
@@ -89,5 +96,6 @@ function clearPinnedHeaders(row: HTMLElement): void {
   let port = row.parentElement
   while (port && !/(auto|scroll)/.test(view.getComputedStyle(port).overflowY)) port = port.parentElement
   if (!port) return
-  if (row.getBoundingClientRect().top - port.getBoundingClientRect().top < margin) row.scrollIntoView({ block: 'start' })
+  const padding = parseFloat(view.getComputedStyle(port).scrollPaddingTop) || 0
+  if (row.getBoundingClientRect().top - port.getBoundingClientRect().top < padding + margin) row.scrollIntoView({ block: 'start' })
 }

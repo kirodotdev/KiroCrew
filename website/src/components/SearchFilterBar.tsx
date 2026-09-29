@@ -1,7 +1,7 @@
 import { forwardRef, type ComponentProps, type ReactNode } from 'react'
-import { ListFilter, X } from 'lucide-react'
+import { ListFilter, Search, X } from 'lucide-react'
 
-import { SearchInput } from './ui'
+import { Glass } from './Glass'
 import { DropdownMenuContent, DropdownMenuLabel } from './ui/dropdown-menu'
 import { cn } from '../lib/utils'
 
@@ -13,6 +13,14 @@ import { cn } from '../lib/utils'
  * roster so both lists carry the same field; `src/test/searchFilterBar.parity.test.tsx`
  * pins both pages to it.
  *
+ * The field is a Liquid Glass pane (components/Glass.tsx, the chip recipe at a
+ * 10px radius) and floats over the list inside a `ListDock`,
+ * so the rows scroll under it the way the transcript scrolls under the
+ * composer. The `<input>` inside is transparent: the pane IS the field's
+ * surface, and `.glass-shadow:focus-within` (index.css) is its focus cue —
+ * the tint steps opaque and the side lines darken, the same cue the composer
+ * and the mobile Settings capsule give, so the input carries no ring of its own.
+ *
  * Trailing controls are 24px (`w-6`) buttons in a `gap-0.5` row 4px from the
  * field's right edge. The input's right padding and the clear button's
  * offset step with how many there are — these are the sidebar's own values,
@@ -23,6 +31,9 @@ import { cn } from '../lib/utils'
 const INPUT_PAD_RIGHT = [12, 36, 56] as const
 const CLEAR_RIGHT = [8, 32, 56] as const
 const CLEAR_WIDTH = 20
+/** Rounded, not a capsule: the list rows under it are `rounded-md` boxes, and a
+ *  32px field at the composer's 16px would read as a pill among rectangles. */
+const FIELD_RADIUS = 10
 
 export function SearchFilterBar({
   value, onChange, placeholder, clearLabel, trailing, trailingCount, className, inputTestId, ...inputProps
@@ -44,9 +55,11 @@ export function SearchFilterBar({
   const padRight = INPUT_PAD_RIGHT[n] + (value ? CLEAR_WIDTH : 0)
   return (
     <div className={cn('px-2 pt-2 pb-1', className)}>
-      <div className="relative">
-        <SearchInput
-          className="w-full"
+      <Glass variant="chip" radius={FIELD_RADIUS} className="glass-shadow w-full" data-testid="search-field-glass">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden="true" />
+        <input
+          /* focus-cue-ok: the cue is the Glass host's `.glass-shadow:focus-within` (index.css) — the tint steps opaque and the side lines darken, the composer's and the Settings capsule's cue; a ring on the input would double-paint one control. */
+          className="w-full bg-transparent border-none rounded-full pl-8 py-1.5 text-text text-[13px] font-body outline-hidden placeholder:text-muted/70"
           placeholder={placeholder}
           value={value}
           onChange={e => onChange(e.target.value)}
@@ -71,7 +84,7 @@ export function SearchFilterBar({
             {trailing}
           </div>
         )}
-      </div>
+      </Glass>
     </div>
   )
 }
