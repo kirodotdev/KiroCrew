@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -2617,7 +2617,8 @@ function ChatSidebar({
   const flatView = lane === 'flat'
   const conductorView = lane === 'conductor'
   const {
-    activeFilters, setActiveFilters, filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter,
+    activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
+    filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
   } = useSessionFilterState()
@@ -2625,7 +2626,7 @@ function ChatSidebar({
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
     commitRecentAmount, changeRecentUnit, runningSet, _derivedLookup, filterCounts,
-  } = useSessionStatusFilters({ unreadSlots, activeFilters, enableFilter, localSlots, allRows, disableFilter })
+  } = useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, allRows, disableFilter })
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
   const {
@@ -2970,7 +2971,9 @@ function ChatSidebar({
    * memos already depend on that state themselves.
    */
   const filterDimensions = useMemo<FilterDimension[]>(() => {
-    const activeFilterDefs = SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
+    // A paused filter keeps its chip but narrows nothing, so the whole status
+    // dimension goes inert while the pause is on.
+    const activeFilterDefs = filtersPaused ? [] : SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
     return [
       {
         // Tags. Unlike the folder filter this does NOT go inert while
@@ -3018,18 +3021,15 @@ function ChatSidebar({
       },
       {
         // Status chips (SESSION_FILTERS). Active chips OR together: a row
-        // passes when any active chip's predicate matches it.
+        // passes when any active chip's predicate matches it. `activeFilterDefs`
+        // is empty while the filters are paused, so every row passes and the
+        // dimension neither narrows nor hides.
         filtersRow: slot => activeFilterDefs.length === 0 || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
-        narrows: () => activeFilters.size > 0,
-        hides: (slot, excluded) => activeFilters.size > 0 && excluded(slot),
-        clear: () => {
-          // Persisted like toggleFilter: remount re-reads the stored '1' and
-          // would silently restore the filter that hides this row.
-          for (const filterDef of SESSION_FILTERS) {
-            if (activeFilters.has(filterDef.key)) safeSetItem(filterDef.storageKey, '0')
-          }
-          setActiveFilters(new Set())
-        },
+        narrows: () => activeFilterDefs.length > 0,
+        hides: (slot, excluded) => activeFilterDefs.length > 0 && excluded(slot),
+        // Persisted inside the hook: a remount re-reads the stored '1' (or '2')
+        // and would silently restore the filter that hides this row.
+        clear: () => clearAllFilters(),
       },
       {
         // Folder filter. It filters no rows and never narrows (see the memo
@@ -3061,7 +3061,7 @@ function ChatSidebar({
         },
       },
     ]
-  }, [activeFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, setActiveFilters, setFilterHiddenFolders])
+  }, [activeFilters, filtersPaused, activeTagIds, filterTagIds, clearTagFilter, slotFilter, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, clearAllFilters, setFilterHiddenFolders])
 
   // State and in the memo deps on purpose, not a ref: a frozen run caches its
   // stale list against new deps, so clearing a ref would invalidate nothing.
@@ -5125,6 +5125,23 @@ function ChatSidebar({
                     </DropdownMenuItem>
                   )
                 })}
+                {/* Lift every active status filter at once, for a look at the
+                    whole list without losing the filter setup, then put them
+                    back. A menu row, not a third control in the chip row:
+                    AUTOSDE max-two-buttons-per-row grandfathers that row but
+                    forbids growing it, and the chip click keeps its one meaning
+                    (clear this filter). Hidden with no active filter, when
+                    there is nothing to pause. */}
+                {activeFilters.size > 0 && (
+                  <DropdownMenuItem
+                    data-testid="filter-pause-all"
+                    aria-pressed={filtersPaused}
+                    onSelect={e => { e.preventDefault(); setAllFiltersPaused(!filtersPaused) }}
+                  >
+                    {filtersPaused ? <Play size={12} className="text-muted" aria-hidden="true" /> : <Pause size={12} className="text-muted" aria-hidden="true" />}
+                    <span className="flex-1 truncate">{filtersPaused ? i18nT('pages.chatSidebar.resume_all_filters') : i18nT('pages.chatSidebar.pause_all_filters')}</span>
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 {/* Names its object: this menu also carries "Folder order" two
                     sections down, and a bare "Sort by" over one list beside an
@@ -5466,8 +5483,10 @@ function ChatSidebar({
             return (
               <FilterChip
                 key={filterDef.key}
+                testId={`filter-chip-${filterDef.key}`}
                 label={`${filterLabel}${filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}${slotCount > 0 ? ` (${slotCount})` : ''}`}
                 color={filterDef.color}
+                paused={filtersPaused}
                 clearLabel={clearLabel}
                 onClear={() => toggleFilter(filterDef.key)}
               />

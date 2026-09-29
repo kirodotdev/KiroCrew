@@ -11359,6 +11359,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "बंद सत्र साफ़ करें? सक्रिय टैब और पिन किए गए सत्र रखे जाएँगे।",
       "clear_filter": "फ़िल्टर साफ़ करें",
       "clear_named_filter": "{{filter}} फ़िल्टर साफ़ करें",
+      "pause_all_filters": "सभी फ़िल्टर रोको",
+      "resume_all_filters": "सभी फ़िल्टर फिर से चलाओ",
       "clear_search": "खोज साफ़ करें",
       "close": "बंद करें",
       "close_session": "सत्र बंद करें",

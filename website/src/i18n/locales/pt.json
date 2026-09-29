@@ -11517,6 +11517,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "Limpar as sessões fechadas? As abas ativas e as sessões fixadas serão mantidas.",
       "clear_filter": "Limpar filtro",
       "clear_named_filter": "Limpar filtro {{filter}}",
+      "pause_all_filters": "Pausar todos os filtros",
+      "resume_all_filters": "Retomar todos os filtros",
       "clear_search": "Limpar pesquisa",
       "close": "Fechar",
       "close_session": "Fechar sessão",

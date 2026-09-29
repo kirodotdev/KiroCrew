@@ -11359,6 +11359,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "বন্ধ সেশনগুলো মুছে ফেলবেন? সক্রিয় ট্যাব ও পিন করা সেশন রেখে দেওয়া হবে।",
       "clear_filter": "ফিল্টার সাফ করুন",
       "clear_named_filter": "{{filter}} ফিল্টার সাফ করুন",
+      "pause_all_filters": "সব ফিল্টার থামাও",
+      "resume_all_filters": "সব ফিল্টার আবার চালাও",
       "clear_search": "সার্চ সাফ করুন",
       "close": "বন্ধ করুন",
       "close_session": "সেশন বন্ধ করুন",

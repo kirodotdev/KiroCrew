@@ -1,5 +1,5 @@
 import { forwardRef, type ComponentProps, type ReactNode } from 'react'
-import { ListFilter, Search, X } from 'lucide-react'
+import { ListFilter, Pause, Search, X } from 'lucide-react'
 
 import { Glass } from './Glass'
 import { DropdownMenuContent, DropdownMenuLabel } from './ui/dropdown-menu'
@@ -153,12 +153,16 @@ export const FILTER_CHIP_ROW_CLS = 'px-3 pb-1 flex items-center gap-1.5 flex-wra
  *  `label` is the caller's — the sidebar appends its window and count, the
  *  roster its counts — so one recipe carries whatever a list has to say about
  *  the filter without knowing what it is. */
-export function FilterChip({ label, color, aggregate, clearLabel, onClear, testId }: {
+export function FilterChip({ label, color, aggregate, paused, clearLabel, onClear, testId }: {
   label: string
   /** The filter's colour token, e.g. `var(--accent)` or `var(--warn)`; omit for an aggregate chip. */
   color?: string
   /** Neutral clear-all pill (see above). */
   aggregate?: boolean
+  /** The filter is still set but lifted, so it is not narrowing the list right
+   *  now (the sidebar's menu can pause every status filter at once). A mark on
+   *  the chip, never a second meaning for the click: the click still clears. */
+  paused?: boolean
   /** Accessible name and tooltip: what the click does ("Clear Starred filter"). */
   clearLabel: string
   onClear: () => void
@@ -170,6 +174,10 @@ export function FilterChip({ label, color, aggregate, clearLabel, onClear, testI
       className={cn(
         'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors',
         aggregate && 'max-w-full bg-bg-elevated/60 border border-border text-muted hover:text-text',
+        // Same colour token paused or not, so the chip still reads as ITS
+        // filter; the glyph and the dashed border say "not narrowing right
+        // now" without leaning on contrast alone.
+        paused && 'border-dashed',
       )}
       style={aggregate || !color ? undefined : { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` }}
       onClick={onClear}
@@ -177,6 +185,7 @@ export function FilterChip({ label, color, aggregate, clearLabel, onClear, testI
       aria-label={clearLabel}
       data-testid={testId}
     >
+      {paused && <Pause size={11} className="shrink-0" aria-hidden="true" />}
       {aggregate ? <span className="truncate">{label}</span> : label}
       <X size={11} className="shrink-0" />
     </button>

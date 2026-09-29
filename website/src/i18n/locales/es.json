@@ -11517,6 +11517,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "¿Borrar las sesiones cerradas? Se conservarán las pestañas activas y las sesiones fijadas.",
       "clear_filter": "Borrar el filtro",
       "clear_named_filter": "Borrar el filtro {{filter}}",
+      "pause_all_filters": "Pausar todos los filtros",
+      "resume_all_filters": "Reanudar todos los filtros",
       "clear_search": "Borrar la búsqueda",
       "close": "Cerrar",
       "close_session": "Cerrar la sesión",

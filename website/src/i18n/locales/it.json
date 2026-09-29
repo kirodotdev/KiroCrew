@@ -11517,6 +11517,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "Cancellare le sessioni chiuse? Le schede attive e le sessioni fissate verranno mantenute.",
       "clear_filter": "Cancella filtro",
       "clear_named_filter": "Cancella il filtro {{filter}}",
+      "pause_all_filters": "Sospendi tutti i filtri",
+      "resume_all_filters": "Riattiva tutti i filtri",
       "clear_search": "Cancella ricerca",
       "close": "Chiudi",
       "close_session": "Chiudi la sessione",
