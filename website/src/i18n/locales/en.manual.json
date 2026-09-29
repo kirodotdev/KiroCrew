@@ -3189,14 +3189,14 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Active in this session",
-      "could_not_change_the_default_agent": "Could not change the default agent",
+      "could_not_change_the_default_agent": "Could not change the default crewmate",
       "default": "Default",
-      "default_agent_for_new_sessions": "Default agent for new sessions",
+      "default_agent_for_new_sessions": "Default for new sessions",
       "group_members": "Crewmates",
       "group_templates": "Custom agents",
-      "manage_agents": "Manage agents…",
-      "new_sessions_start_with_this_agent": "New sessions start with this agent",
-      "set_default_agent": "Set <agent/> as default agent for new sessions",
+      "manage_agents": "Manage crewmates…",
+      "new_sessions_start_with_this_agent": "New sessions start with this crewmate",
+      "set_default_agent": "Set <agent/> as the default for new sessions",
       "group_templates_hint": "Runs on your default crewmate's workspace and memory — nothing new is created."
     },
     "agentSkillsEditor": {
@@ -4548,7 +4548,7 @@
         "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again.",
         "session_start_repeat_hint": "The agent session has failed to start more than once in a row, so resuming would only run the same start again. Restart the gateway from a terminal with {{command}}, then send your message again.",
         "capabilities_changed": "This crewmate's custom agent file changed outside Customize, so new chats cannot start. Open Customize, review and save the change, then start a new chat.",
-        "open_capabilities": "Open Capabilities"
+        "open_capabilities": "Open Customize"
       },
       "crewLog": {
         "section_status": "Status",

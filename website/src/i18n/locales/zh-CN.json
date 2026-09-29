@@ -5614,15 +5614,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "在此会话中使用",
-      "could_not_change_the_default_agent": "无法更改默认代理",
+      "could_not_change_the_default_agent": "无法更改默认队友",
       "default": "默认",
-      "default_agent_for_new_sessions": "新会话的默认代理",
+      "default_agent_for_new_sessions": "新会话的默认选择",
       "group_members": "队友（Crewmates）",
       "group_templates": "自定义代理",
-      "manage_agents": "管理代理…",
-      "new_sessions_start_with_this_agent": "新会话将使用该代理",
+      "manage_agents": "管理队友…",
+      "new_sessions_start_with_this_agent": "新会话将使用该队友",
       "no_matches": "无匹配项",
-      "set_default_agent": "将 <agent/> 设为新会话的默认代理",
+      "set_default_agent": "将 <agent/> 设为新会话的默认选择",
       "group_templates_hint": "在默认队友的工作区和记忆上运行，不会新建任何内容。"
     },
     "agentImportFlow": {
@@ -10229,7 +10229,7 @@
         "feature_request_form_hint": "本月用量已用完 — 可以改为通过此表单在 GitHub 上提交请求。此表单不经过代理：它会打开 GitHub 的 Issue 表单，由你自行填写，不消耗本月用量。",
         "session_start_repeat_hint": "代理会话已连续多次启动失败，继续只会再次执行同一次启动。请在终端运行 {{command}} 重启 gateway，然后重新发送消息。",
         "capabilities_changed": "该队友的自定义代理文件在 Customize 之外发生了变化，因此无法启动新对话。打开 Customize，查看并保存更改，然后启动新对话。",
-        "open_capabilities": "打开 Capabilities"
+        "open_capabilities": "打开 Customize"
       },
       "folderPanel": {
         "clear_search": "清除搜索",

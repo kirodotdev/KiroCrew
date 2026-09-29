@@ -418,7 +418,10 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
 
   it('reports a refused default-crewmate change beside the row', async () => {
     const m = seed()
-    m.setDefaultAgent = vi.fn().mockRejectedValue(new Error("agent 'crew-beta' is not a configured agent alias"))
+    m.setDefaultAgent = vi.fn().mockRejectedValue(Object.assign(
+      new Error("agent 'crew-beta' is not a configured agent alias"),
+      { status: 400, body: JSON.stringify({ error: "agent 'crew-beta' is not a configured agent alias", code: 'default_agent_not_alias' }) },
+    ))
 
     await renderTab()
     fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
@@ -473,14 +476,37 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     expect(optionIn('Default crewmate', 'crew-beta')).toBe(beta)
   })
 
-  it('maps every rejected default-crewmate request to friendly copy', async () => {
+  it('maps the unknown-alias refusal to friendly copy', async () => {
     const m = seed()
-    m.setDefaultAgent = vi.fn().mockRejectedValue(new Error('config is read-only'))
+    // The endpoint's own shape for a name that is not a configured alias.
+    m.setDefaultAgent = vi.fn().mockRejectedValue(Object.assign(
+      new Error("agent 'crew-beta' is not a configured agent alias"),
+      { status: 400, body: JSON.stringify({ error: "agent 'crew-beta' is not a configured agent alias", code: 'default_agent_not_alias' }) },
+    ))
 
     await renderTab()
     fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
 
-    expect(await screen.findByTestId('cfg-default-crewmate-error')).toHaveTextContent('Could not set crew-beta as the default crewmate — crew-beta is no longer in the crewmate list')
+    const err = await screen.findByTestId('cfg-default-crewmate-error')
+    expect(err).toHaveTextContent('Could not set crew-beta as the default crewmate — crew-beta is no longer in the crewmate list')
+    expect(err).not.toHaveTextContent('configured agent alias')
+  })
+
+  it('keeps every other refusal reason instead of blaming a deleted crewmate', async () => {
+    const m = seed()
+    // A read-only config is not an unknown name: "reload and pick again" would
+    // be wrong advice, so the server's own reason must survive.
+    m.setDefaultAgent = vi.fn().mockRejectedValue(Object.assign(
+      new Error('failed to read config file'),
+      { status: 500, body: JSON.stringify({ error: 'failed to read config file', code: 'config_unreadable' }) },
+    ))
+
+    await renderTab()
+    fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
+
+    const err = await screen.findByTestId('cfg-default-crewmate-error')
+    expect(err).toHaveTextContent('Could not set crew-beta as the default crewmate — failed to read config file')
+    expect(err).not.toHaveTextContent('no longer in the crewmate list')
   })
 
   it('anchors the default-crewmate row for the roster badge deep link', async () => {

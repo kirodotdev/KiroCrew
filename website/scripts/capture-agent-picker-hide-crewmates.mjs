@@ -96,7 +96,7 @@ for (const theme of ['light', 'dark']) {
   }
   if (await picker.getByText('Custom agents', { exact: true }).count()) throw new Error('group header still rendered')
   if (await picker.getByText('Crewmates', { exact: true }).count()) throw new Error('crewmates header still rendered')
-  if (await picker.getByText(/runs the shared custom agent on shared memory/i).count()) throw new Error('templates hint still rendered')
+  if (await picker.getByText(/nothing new is created/i).count()) throw new Error('templates hint still rendered')
   if (await picker.locator('img').count()) throw new Error('a crewmate avatar is rendered, so a member row leaked')
 
   const out = join(OUT, `picker-templates-only-${theme}.png`)

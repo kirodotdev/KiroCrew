@@ -5794,15 +5794,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Ativo nesta sessão",
-      "could_not_change_the_default_agent": "Não foi possível alterar o agente padrão",
+      "could_not_change_the_default_agent": "Não foi possível alterar o colega padrão",
       "default": "Padrão",
-      "default_agent_for_new_sessions": "Agente padrão para novas sessões",
+      "default_agent_for_new_sessions": "Padrão para novas sessões",
       "group_members": "Colegas de tripulação",
       "group_templates": "Agentes personalizados",
-      "manage_agents": "Gerenciar agentes…",
-      "new_sessions_start_with_this_agent": "As novas sessões começam com este agente",
+      "manage_agents": "Gerenciar colegas…",
+      "new_sessions_start_with_this_agent": "As novas sessões começam com este colega",
       "no_matches": "Nenhum resultado",
-      "set_default_agent": "Definir <agent/> como agente padrão para novas sessões",
+      "set_default_agent": "Definir <agent/> como padrão para novas sessões",
       "group_templates_hint": "Executa no espaço de trabalho e na memória do colega padrão; nada novo é criado."
     },
     "agentImportFlow": {
@@ -10519,7 +10519,7 @@
         "feature_request_form_hint": "Seu uso mensal acabou — envie sua sugestão no GitHub por este formulário em vez disso. Este formulário dispensa o agente: ele abre o formulário de issue do GitHub para você preencher e não consome nada do seu uso mensal.",
         "session_start_repeat_hint": "A sessão do agente falhou ao iniciar mais de uma vez seguida, então retomar apenas repetiria o mesmo início. Reinicie o gateway em um terminal com {{command}} e reenvie sua mensagem.",
         "capabilities_changed": "O arquivo do agente personalizado deste companheiro mudou fora do Customize, então novos chats não podem começar. Abre o Customize, revê e guarda a alteração; depois inicia um novo chat.",
-        "open_capabilities": "Abrir Capabilities"
+        "open_capabilities": "Abrir Customize"
       },
       "folderPanel": {
         "clear_search": "Limpar pesquisa",

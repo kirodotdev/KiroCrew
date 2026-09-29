@@ -5794,15 +5794,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Attivo in questa sessione",
-      "could_not_change_the_default_agent": "Non è stato possibile cambiare l’agente predefinito",
+      "could_not_change_the_default_agent": "Non è stato possibile cambiare il compagno predefinito",
       "default": "Predefinito",
-      "default_agent_for_new_sessions": "Agente predefinito per le nuove sessioni",
+      "default_agent_for_new_sessions": "Predefinito per le nuove sessioni",
       "group_members": "Compagni di equipaggio",
       "group_templates": "Agenti personalizzati",
-      "manage_agents": "Gestisci gli agenti…",
-      "new_sessions_start_with_this_agent": "Le nuove sessioni iniziano con questo agente",
+      "manage_agents": "Gestisci i compagni…",
+      "new_sessions_start_with_this_agent": "Le nuove sessioni iniziano con questo compagno",
       "no_matches": "Nessuna corrispondenza",
-      "set_default_agent": "Imposta <agent/> come agente predefinito per le nuove sessioni",
+      "set_default_agent": "Imposta <agent/> come predefinito per le nuove sessioni",
       "group_templates_hint": "Viene eseguito nello spazio di lavoro e nella memoria del compagno predefinito; non viene creato nulla di nuovo."
     },
     "agentImportFlow": {
@@ -10519,7 +10519,7 @@
         "feature_request_form_hint": "Il tuo utilizzo mensile è esaurito — invia invece la richiesta su GitHub con questo modulo. Questo modulo salta l’agente: apre il modulo delle issue di GitHub che compili tu e non consuma nulla del tuo utilizzo mensile.",
         "session_start_repeat_hint": "La sessione dell’agente non è riuscita ad avviarsi più volte di seguito, quindi riprendere ripeterebbe solo lo stesso avvio. Riavvia il gateway da un terminale con {{command}} e reinvia il messaggio.",
         "capabilities_changed": "Il file dell’agente personalizzato di questo compagno è cambiato fuori da Customize, quindi le nuove chat non possono avviarsi. Apri Customize, controlla e salva la modifica, poi avvia una nuova chat.",
-        "open_capabilities": "Apri Capabilities"
+        "open_capabilities": "Apri Customize"
       },
       "folderPanel": {
         "clear_search": "Cancella ricerca",

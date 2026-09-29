@@ -5704,15 +5704,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "এই সেশনে সক্রিয়",
-      "could_not_change_the_default_agent": "ডিফল্ট এজেন্ট বদলানো গেল না",
+      "could_not_change_the_default_agent": "ডিফল্ট ক্রুমেট বদলানো গেল না",
       "default": "ডিফল্ট",
-      "default_agent_for_new_sessions": "নতুন সেশনের ডিফল্ট এজেন্ট",
+      "default_agent_for_new_sessions": "নতুন সেশনের ডিফল্ট",
       "group_members": "ক্রুমেট",
       "group_templates": "কাস্টম এজেন্ট",
-      "manage_agents": "এজেন্ট পরিচালনা করুন…",
-      "new_sessions_start_with_this_agent": "নতুন সেশন এই এজেন্ট দিয়ে শুরু হয়",
+      "manage_agents": "ক্রুমেট পরিচালনা করো…",
+      "new_sessions_start_with_this_agent": "নতুন সেশন এই ক্রুমেট দিয়ে শুরু হয়",
       "no_matches": "কোনো মিল নেই",
-      "set_default_agent": "<agent/>-কে নতুন সেশনের ডিফল্ট এজেন্ট করো",
+      "set_default_agent": "<agent/>-কে নতুন সেশনের ডিফল্ট করো",
       "group_templates_hint": "ডিফল্ট ক্রুমেটের ওয়ার্কস্পেস ও মেমোরিতে চলে; নতুন কিছু তৈরি হয় না।"
     },
     "agentImportFlow": {
@@ -10374,7 +10374,7 @@
         "feature_request_form_hint": "তোমার মাসিক ব্যবহার শেষ হয়ে গেছে — বরং এই ফর্ম দিয়ে GitHub-এ অনুরোধটি জমা দাও। এই ফর্ম এজেন্টকে এড়িয়ে যায়: এটি GitHub-এর ইস্যু ফর্ম খোলে, যা তুমি নিজেই পূরণ করো, আর তোমার মাসিক ব্যবহারের কিছুই খরচ হয় না।",
         "session_start_repeat_hint": "এজেন্ট সেশন পরপর একাধিকবার শুরু হতে ব্যর্থ হয়েছে, তাই আবার চালু করলে একই স্টার্ট আবার চলবে। টার্মিনালে {{command}} চালিয়ে গেটওয়ে পুনরায় চালু করো, তারপর তোমার বার্তা আবার পাঠাও।",
         "capabilities_changed": "Customize-এর বাইরে এই ক্রুমেটের কাস্টম এজেন্ট ফাইল বদলেছে, তাই নতুন চ্যাট শুরু করা যায় না। Customize খোলো, পরিবর্তনটি দেখে সংরক্ষণ করো, তারপর নতুন চ্যাট শুরু করো।",
-        "open_capabilities": "Capabilities খোলো"
+        "open_capabilities": "Customize খোলো"
       },
       "folderPanel": {
         "clear_search": "অনুসন্ধান মুছুন",

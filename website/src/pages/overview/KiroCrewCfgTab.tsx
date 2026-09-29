@@ -19,6 +19,22 @@ import type { KiroCrewAgent } from '../../components/AgentSelector'
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { usePersistedString } from '../../hooks/usePersistedString'
+
+/** `PUT /api/config/default-agent` answering that the name is not a configured
+ *  alias: a 400 whose body carries `code: "default_agent_not_alias"`. Duck-typed
+ *  on `status`/`body` like `isNotFoundError`, so a mocked client that rejects
+ *  with `Object.assign(new Error(), { status, body })` counts too. */
+export const isUnknownAliasRefusal = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) return false
+  const r = e as { status?: unknown; body?: unknown }
+  if (r.status !== 400 || typeof r.body !== 'string') return false
+  try {
+    return (JSON.parse(r.body) as { code?: unknown }).code === 'default_agent_not_alias'
+  } catch {
+    return false
+  }
+}
+
 type KiroCrewAgentCfg = Omit<KiroCrewAgent, 'name'>
 interface WorkspaceCfg { dir: string }
 interface MemoryStoreCfg { description: string; embedding_provider: string }
@@ -294,11 +310,16 @@ export default function KiroCrewCfgTab() {
       dispatch(triggerRefresh())
     },
     onError: (e: Error, name: string) => {
-      // The endpoint has returned several unknown-name phrasings over time.
-      // Keep all of them behind one stable, friendly sentence instead of
-      // leaking an operator-level backend string into the settings page.
-      const reason = i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_unknown_reason', { name })
-      setDefaultErr(e.message
+      // Only the endpoint's own "not a configured alias" refusal (400 with code
+      // `default_agent_not_alias`) means the crewmate is gone; that one gets the
+      // stable friendly sentence, since its phrasing has changed over time. Every
+      // other failure -- owner denial, an unreadable config, a dropped connection
+      // -- keeps its own reason, because "reload and pick again" is wrong advice
+      // for those and the real cause would otherwise be discarded.
+      const reason = isUnknownAliasRefusal(e)
+        ? i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_unknown_reason', { name })
+        : e.message
+      setDefaultErr(reason
         ? i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_refused_because', { name, reason })
         : i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_failed'))
       // On a failure the select must show what the config SAYS, not what was

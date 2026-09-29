@@ -5884,15 +5884,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Активен в этой сессии",
-      "could_not_change_the_default_agent": "Не удалось изменить агента по умолчанию",
+      "could_not_change_the_default_agent": "Не удалось изменить товарища по команде по умолчанию",
       "default": "По умолчанию",
-      "default_agent_for_new_sessions": "Агент по умолчанию для новых сессий",
+      "default_agent_for_new_sessions": "По умолчанию для новых сессий",
       "group_members": "Товарищи по команде",
       "group_templates": "Пользовательские агенты",
-      "manage_agents": "Управление агентами…",
-      "new_sessions_start_with_this_agent": "Новые сессии начинаются с этим агентом",
+      "manage_agents": "Управление товарищами по команде…",
+      "new_sessions_start_with_this_agent": "Новые сессии начинаются с этим товарищем по команде",
       "no_matches": "Нет совпадений",
-      "set_default_agent": "Сделать <agent/> агентом по умолчанию для новых сессий",
+      "set_default_agent": "Сделать <agent/> выбором по умолчанию для новых сессий",
       "group_templates_hint": "Запускается в рабочем пространстве и памяти товарища по умолчанию — ничего нового не создаётся."
     },
     "agentImportFlow": {
@@ -10664,7 +10664,7 @@
         "feature_request_form_hint": "Месячный лимит использования исчерпан — вместо этого отправь запрос на GitHub через эту форму. Эта форма обходит агента: она открывает форму issue на GitHub, которую ты заполняешь сам, и не расходует месячный лимит.",
         "session_start_repeat_hint": "Сеанс агента не удалось запустить несколько раз подряд, поэтому возобновление лишь повторит тот же запуск. Перезапусти gateway из терминала командой {{command}} и отправь сообщение ещё раз.",
         "capabilities_changed": "Файл пользовательского агента этого товарища изменён вне Customize, поэтому новые чаты не запускаются. Открой Customize, проверь и сохрани изменение, затем начни новый чат.",
-        "open_capabilities": "Открыть Capabilities"
+        "open_capabilities": "Открыть Customize"
       },
       "folderPanel": {
         "clear_search": "Очистить поиск",

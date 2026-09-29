@@ -233,6 +233,7 @@ class TestShippedScenarios:
             "capabilities": [
                 "capabilities-agents-list-and-open-editor",
                 "capabilities-skills-filter-and-open-builtin",
+                "customize-tabs",
             ],
             "connections": ["connections-services-search-and-mcp-list"],
             "memory": ["memory-open-browser-from-overview"],

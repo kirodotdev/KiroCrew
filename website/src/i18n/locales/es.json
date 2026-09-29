@@ -5794,15 +5794,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Activo en esta sesión",
-      "could_not_change_the_default_agent": "No se pudo cambiar el agente predeterminado",
+      "could_not_change_the_default_agent": "No se pudo cambiar el compañero predeterminado",
       "default": "Predeterminado",
-      "default_agent_for_new_sessions": "Agente predeterminado para las nuevas sesiones",
+      "default_agent_for_new_sessions": "Predeterminado para las nuevas sesiones",
       "group_members": "Compañeros de tripulación",
       "group_templates": "Agentes personalizados",
-      "manage_agents": "Gestionar agentes…",
-      "new_sessions_start_with_this_agent": "Las nuevas sesiones comienzan con este agente",
+      "manage_agents": "Gestionar compañeros…",
+      "new_sessions_start_with_this_agent": "Las nuevas sesiones comienzan con este compañero",
       "no_matches": "Sin coincidencias",
-      "set_default_agent": "Establecer <agent/> como agente predeterminado para las nuevas sesiones",
+      "set_default_agent": "Establecer <agent/> como predeterminado para las nuevas sesiones",
       "group_templates_hint": "Se ejecuta en el espacio de trabajo y la memoria del compañero predeterminado; no se crea nada nuevo."
     },
     "agentImportFlow": {
@@ -10519,7 +10519,7 @@
         "feature_request_form_hint": "Tu uso mensual está agotado — envía tu solicitud en GitHub con este formulario en su lugar. Este formulario omite al agente: abre el formulario de incidencias de GitHub para que lo rellenes tú y no consume nada de tu uso mensual.",
         "session_start_repeat_hint": "La sesión del agente no ha podido iniciarse varias veces seguidas, así que reanudar solo repetiría el mismo inicio. Reinicia el gateway desde un terminal con {{command}} y envía tu mensaje de nuevo.",
         "capabilities_changed": "El archivo del agente personalizado de este compañero cambió fuera de Customize, así que no se pueden iniciar chats nuevos. Abre Customize, revisa y guarda el cambio; luego inicia un chat nuevo.",
-        "open_capabilities": "Abrir Capabilities"
+        "open_capabilities": "Abrir Customize"
       },
       "folderPanel": {
         "clear_search": "Borrar búsqueda",

@@ -202,7 +202,7 @@ describe('ErrorCard — member agent file changed', () => {
   const content = 'materialization_changed: This crew member\'s agent file changed outside the Capabilities page.'
   const meta = { code: 'materialization_changed', member: 'reviewer' }
 
-  it('offers Open Capabilities and NO Resume, with plain copy instead of the code', () => {
+  it('offers Open Customize and NO Resume, with plain copy instead of the code', () => {
     const onOpenCapabilities = vi.fn()
     render(<ErrorCard content={content} meta={meta} onContinue={() => {}} onOpenCapabilities={onOpenCapabilities} />)
     expect(screen.queryByTestId('error-card-continue')).toBeNull()

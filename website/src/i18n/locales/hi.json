@@ -5704,15 +5704,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "इस सत्र में सक्रिय",
-      "could_not_change_the_default_agent": "डिफ़ॉल्ट एजेंट बदला नहीं जा सका",
+      "could_not_change_the_default_agent": "डिफ़ॉल्ट क्रूमेट बदला नहीं जा सका",
       "default": "डिफ़ॉल्ट",
-      "default_agent_for_new_sessions": "नए सत्रों का डिफ़ॉल्ट एजेंट",
+      "default_agent_for_new_sessions": "नए सत्रों के लिए डिफ़ॉल्ट",
       "group_members": "क्रूमेट",
       "group_templates": "कस्टम एजेंट",
-      "manage_agents": "एजेंट प्रबंधित करें…",
-      "new_sessions_start_with_this_agent": "नए सत्र इस एजेंट के साथ शुरू होते हैं",
+      "manage_agents": "क्रूमेट प्रबंधित करो…",
+      "new_sessions_start_with_this_agent": "नए सत्र इस क्रूमेट के साथ शुरू होते हैं",
       "no_matches": "कोई मेल नहीं",
-      "set_default_agent": "<agent/> को नए सत्रों का डिफ़ॉल्ट एजेंट बनाओ",
+      "set_default_agent": "<agent/> को नए सत्रों के लिए डिफ़ॉल्ट बनाओ",
       "group_templates_hint": "डिफ़ॉल्ट क्रूमेट के वर्कस्पेस और मेमोरी पर चलता है; कुछ नया नहीं बनता।"
     },
     "agentImportFlow": {
@@ -10374,7 +10374,7 @@
         "feature_request_form_hint": "तुम्हारा मासिक उपयोग खत्म हो गया है — इसके बजाय इस फ़ॉर्म से GitHub पर अपना अनुरोध दर्ज करो। यह फ़ॉर्म एजेंट को छोड़ देता है: यह GitHub का इशू फ़ॉर्म खोलता है, जिसे तुम खुद भरते हो, और इसमें तुम्हारे मासिक उपयोग का कुछ भी खर्च नहीं होता।",
         "session_start_repeat_hint": "एजेंट सत्र लगातार एक से अधिक बार शुरू होने में विफल रहा है, इसलिए फिर से शुरू करने पर वही स्टार्ट दोबारा चलेगा। टर्मिनल में {{command}} चलाकर गेटवे को फिर से शुरू करो, फिर अपना संदेश दोबारा भेजो।",
         "capabilities_changed": "इस क्रूमेट की कस्टम एजेंट फ़ाइल Customize के बाहर बदली है, इसलिए नई चैट शुरू नहीं हो सकती। Customize खोलो, बदलाव देखो और सहेजो, फिर नई चैट शुरू करो।",
-        "open_capabilities": "Capabilities खोलो"
+        "open_capabilities": "Customize खोलो"
       },
       "folderPanel": {
         "clear_search": "खोज साफ़ करें",

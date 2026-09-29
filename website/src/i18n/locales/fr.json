@@ -5794,15 +5794,15 @@
     },
     "agentDropdownList": {
       "active_in_this_session": "Actif dans cette session",
-      "could_not_change_the_default_agent": "Impossible de changer l’agent par défaut",
+      "could_not_change_the_default_agent": "Impossible de changer le coéquipier par défaut",
       "default": "Par défaut",
-      "default_agent_for_new_sessions": "Agent par défaut pour les nouvelles sessions",
+      "default_agent_for_new_sessions": "Par défaut pour les nouvelles sessions",
       "group_members": "Coéquipiers",
       "group_templates": "Agents personnalisés",
-      "manage_agents": "Gérer les agents…",
-      "new_sessions_start_with_this_agent": "Les nouvelles sessions démarrent avec cet agent",
+      "manage_agents": "Gérer les coéquipiers…",
+      "new_sessions_start_with_this_agent": "Les nouvelles sessions démarrent avec ce coéquipier",
       "no_matches": "Aucun résultat",
-      "set_default_agent": "Définir <agent/> comme agent par défaut pour les nouvelles sessions",
+      "set_default_agent": "Définir <agent/> par défaut pour les nouvelles sessions",
       "group_templates_hint": "S'exécute dans l'espace de travail et la mémoire du coéquipier par défaut – rien de nouveau n'est créé."
     },
     "agentImportFlow": {
@@ -10519,7 +10519,7 @@
         "feature_request_form_hint": "Ton quota mensuel est épuisé — dépose plutôt ta demande sur GitHub avec ce formulaire. Ce formulaire contourne l’agent : il ouvre le formulaire d’issue GitHub que tu remplis toi-même et ne consomme rien de ton quota mensuel.",
         "session_start_repeat_hint": "La session de l’agent n’a pas pu démarrer plusieurs fois de suite ; reprendre ne ferait que relancer le même démarrage. Redémarre le gateway depuis un terminal avec {{command}}, puis renvoie ton message.",
         "capabilities_changed": "Le fichier d’agent personnalisé de ce coéquipier a changé en dehors de Customize, donc les nouvelles discussions ne peuvent pas démarrer. Ouvre Customize, vérifie et enregistre la modification, puis démarre une nouvelle discussion.",
-        "open_capabilities": "Ouvrir Capabilities"
+        "open_capabilities": "Ouvrir Customize"
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",

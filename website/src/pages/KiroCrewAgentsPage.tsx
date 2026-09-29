@@ -715,8 +715,11 @@ function BindingFields({
 function DefaultBadge() {
   const label = i18nT('pages.kiroCrewAgentsPage.default_2')
   return (
-    <Badge variant="ok" className="min-w-0 max-w-[45%] shrink truncate" title={label}>
-      {label}
+    // `Badge` is an inline-flex box, and `text-overflow` never draws an ellipsis
+    // on a flex container -- the text was clipped mid-glyph ("По умолч") on the
+    // 290px card. The truncation lives on an inner inline span, where it works.
+    <Badge variant="ok" className="min-w-0 max-w-[45%] shrink" title={label}>
+      <span className="min-w-0 truncate">{label}</span>
     </Badge>
   )
 }
