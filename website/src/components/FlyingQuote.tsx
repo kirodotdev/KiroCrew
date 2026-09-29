@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { animate, motion, useMotionValue } from 'framer-motion'
+import { Glass } from './Glass'
 
 interface FlyingQuoteProps {
   /** Bounding rect of the selected text (source) */
@@ -181,12 +182,18 @@ export default function FlyingQuote({ from, targetRef, text, onComplete }: Flyin
       }}
       className="fixed z-[99999] pointer-events-none max-w-[280px]"
     >
-      <div className="px-3 py-2 rounded-lg bg-accent/15 border border-accent/30 backdrop-blur-xs shadow-lg">
+      {/* The bubble is a piece of the composer dock's glass in flight
+          (components/Glass.tsx, accent tint step): it lands ON that glass, so
+          it should arrive looking like what it becomes. While the flight fades
+          the box (opacity < 1 makes it a backdrop root) the blur has nothing to
+          sample and the pane reads as its tint alone -- the same as the old
+          `backdrop-blur-xs` did, and gone in 300ms. */}
+      <Glass variant="chip" radius={8} className="px-3 py-2 glass-accent shadow-lg">
         <div className="flex items-start gap-2">
           <div className="w-0.5 h-full min-h-[16px] bg-accent rounded-full shrink-0" />
           <span className="text-[12px] text-text font-mono leading-snug line-clamp-2">{truncated}</span>
         </div>
-      </div>
+      </Glass>
     </motion.div>,
     document.body
   )

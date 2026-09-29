@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { LayoutDashboard } from 'lucide-react'
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Glass } from '../../../components/Glass'
 import { fmtNumber } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
@@ -58,9 +59,17 @@ function CommandCenterDock({ slot, onOpen }: { slot: string | null; onOpen: () =
   // the card lines up with the transcript and composer instead of the pane edge.
   // The column stays mounted so AnimatePresence can play the clicked card out
   // instead of cutting it; the card itself is the only thing that comes and goes.
+  // The motion box only places and fades the card; the visible pane inside it
+  // is the composer dock's glass (components/Glass.tsx), neutral tint like the
+  // composer itself, so the card no longer sits as one solid box among glass.
+  // The clip lives one level inside the pane: its hairlines sit half a pixel
+  // OUTSIDE its top and bottom edges, and `overflow: hidden` on the pane itself
+  // would cut them (see QuestionCard).
   return <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
   <AnimatePresence initial={false}>
-    {data.relevant && !dismissed && <motion.div key="card" animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={{ duration: reducedMotion ? 0 : 0.2 }} className="mb-2 rounded-lg border border-border bg-card overflow-hidden" data-testid="command-center-dock">
+    {data.relevant && !dismissed && <motion.div key="card" animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }} transition={{ duration: reducedMotion ? 0 : 0.2 }} className="mb-2" data-testid="command-center-dock">
+    <Glass radius={10}>
+    <div className="overflow-hidden rounded-[inherit]">
       <div className="p-2">
         <Btn className="w-full justify-start border-0 min-w-0" onClick={open} aria-describedby={hintId}>
           <LayoutDashboard size={15} className="text-accent shrink-0" /><span className="truncate">{i18nT('commandCenter.title')}</span>
@@ -75,6 +84,8 @@ function CommandCenterDock({ slot, onOpen }: { slot: string | null; onOpen: () =
       </p>}
       {/* Names the click's outcome: the card is a one-time hint, not a persistent control. */}
       <p id={hintId} className="px-3 pb-2 text-[12px] text-muted">{i18nT('commandCenter.hint_once')}</p>
+    </div>
+    </Glass>
     </motion.div>}
   </AnimatePresence>
   </div>

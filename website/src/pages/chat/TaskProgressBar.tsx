@@ -8,6 +8,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { TodoList } from '../../types'
 import { useRowDisclosure } from './rowDisclosure'
+import { Glass } from '../../components/Glass'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -195,12 +196,21 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
     <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       {/* Collapsed = a small pill that hugs its content; expanded = a full-width
           panel. Keeping the collapsed state inline stops it reading as another
-          full-width bar competing with the composer below it. */}
-      <div
-        className={`mb-1 animate-slide-up overflow-hidden border border-accent/20 bg-accent/10 ${
-          expanded ? 'rounded-md' : 'rounded-full inline-flex max-w-full'
+          full-width bar competing with the composer below it. Both states are
+          the dock's glass (components/Glass.tsx) on the accent tint step; the
+          pill takes the follow-up chips' radius, the panel the bars' radius. */}
+      <Glass
+        variant="chip"
+        radius={expanded ? 8 : 16}
+        className={`mb-1 animate-slide-up glass-accent ${
+          expanded ? '' : 'inline-flex max-w-full'
         }`}
       >
+        {/* The clip lives one level in, not on the pane: the pane's hairlines sit
+            half a pixel OUTSIDE its top and bottom edges, and `overflow: hidden`
+            on the pane itself would cut them (see QuestionCard). The inner box
+            inherits the radius so the row hover fills still stop at the arc. */}
+        <div className="min-w-0 overflow-hidden rounded-[inherit]">
         <button
           type="button"
           data-testid="todo-pill"
@@ -346,7 +356,8 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
             />
           </div>
         )}
-      </div>
+        </div>
+      </Glass>
     </div>
   )
 })

@@ -3,8 +3,10 @@
  *
  * Every surface that floats over the transcript in the composer dock (the
  * composer itself, an approval bar, the follow-up chips, a tip or suggestion
- * card, the queue, the memory chip, the jump-to-bottom button), the mobile
- * Settings search capsule, the notification panes (the in-app banner, the
+ * card, the queue cards, the memory chip, the jump-to-bottom button, and the
+ * status stack above the box: the task, sub-agent and workflow progress bars,
+ * the Command Center card, the held-delivery line, the quote bubble in flight),
+ * the mobile Settings search capsule, the notification panes (the in-app banner, the
  * bell popover's rows and controls card), the list panels' search field
  * (Sessions sidebar, Crew Members roster; components/SearchFilterBar.tsx) and
  * the crewmate DM header's centred identity pill (face + name, itself the

@@ -9,6 +9,7 @@ import WorkflowSourcePanel from '../../apps/workflows/WorkflowSourcePanel'
 import { useRunSnapshot } from '../../apps/workflows/useRunSnapshot'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Glass } from '../../components/Glass'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -93,21 +94,30 @@ const WorkflowProgressBar = memo(function WorkflowProgressBar({ slot }: { slot: 
     // is empty. Whenever this bar is the topmost thing in that stack, an auto
     // z-index let the mask's opaque tail shave its top border and corners.
     <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <div
-        data-testid="workflow-progress-bar"
-        className={`mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up ${
-          anyExpanded ? 'max-h-[45vh] overflow-y-auto overflow-x-hidden overscroll-contain' : 'overflow-hidden'
-        }`}
-      >
-        {visible.map(r => (
-          <ExpandableRunRow
-            key={r.run_id}
-            run={r}
-            expanded={!!expanded[r.run_id]}
-            onToggle={() => toggle(r.run_id)}
-          />
-        ))}
-      </div>
+      {/* The pane is the dock's glass (components/Glass.tsx, accent tint step)
+          and the scroll box is a child of it, not the pane itself: the glass
+          layers are absolutely positioned inside their host, so a host that
+          scrolls would carry its own blur and light bands away with the rows.
+          The clip lives on that child too: the pane's hairlines sit half a
+          pixel OUTSIDE its top and bottom edges, and `overflow: hidden` on the
+          pane itself would cut them (see QuestionCard). */}
+      <Glass variant="chip" radius={8} className="mb-1 glass-accent animate-slide-up">
+        <div
+          data-testid="workflow-progress-bar"
+          className={`rounded-[inherit] ${
+            anyExpanded ? 'max-h-[45vh] overflow-y-auto overflow-x-hidden overscroll-contain' : 'overflow-hidden'
+          }`}
+        >
+          {visible.map(r => (
+            <ExpandableRunRow
+              key={r.run_id}
+              run={r}
+              expanded={!!expanded[r.run_id]}
+              onToggle={() => toggle(r.run_id)}
+            />
+          ))}
+        </div>
+      </Glass>
     </div>
   )
 })

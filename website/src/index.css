@@ -1723,9 +1723,10 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 /* Kiro dark: panel resize-handle highlight is a thin line, so match it to the brightened thin-accent
    (#B07FFF) rather than the #8E48FF fill it inherits from bg-accent. Only applies while dragging-hover. */
 [data-theme="kiro-dark"] .group\/drag:hover .resize-accent{background-color:#b07fff}
-/* Kiro dark: queued-message bar matches the Figma "Waiting for input" snackbar (1793:25695) —
-   semi-transparent olive bg + Yellow/800 border + Yellow/100 text. */
-[data-theme="kiro-dark"] .queue-card{background-color:#2a2810;border-color:#5c5500;color:#fff7cc}
+/* Kiro dark: the queued-message card used to take the Figma "Waiting for input"
+   snackbar's olive here. It is a Glass pane on the warn tint step now
+   (components/QueueStack.tsx, `glass-warn`), and a background on the host
+   would paint UNDER the glass layers and solidify them, so no theme override. */
 /* Kiro theme: the session agent-label is intentionally NOT tinted — it is metadata, not a link, and
    the purple tint made every row's agent name compete with the session title for attention. It keeps
    the row's neutral grey (`text-muted`), leaving purple to carry meaning: the running-state accent on
@@ -3006,11 +3007,13 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 
 /* Tint steps for a Liquid Glass pane (components/Glass.tsx). Every surface in
  * the composer dock — the composer, the follow-up chips, the tip / suggestion /
- * question cards, the memory chip, the jump-to-bottom button — is the SAME
- * primitive rendered as its own element, so there is no CSS copy of the
+ * question cards, the memory chip, the jump-to-bottom button, the status bars
+ * and queue cards above the box — is the SAME primitive rendered as its own
+ * element, so there is no CSS copy of the
  * material. What a call site says is only WHICH tint step its pane is on:
- * `glass-accent` (a picked chip, an attached card) and `glass-warn` (the
- * incognito chip) mix a hue INTO the glass tint so the pane stays a glass, and
+ * `glass-accent` (a picked chip, an attached card, a progress bar) and
+ * `glass-warn` (the incognito chip, a queued message) mix a hue INTO the glass
+ * tint so the pane stays a glass, and
  * `glass-hover` brightens an interactive pane a step on hover, as the old chip
  * border-color change did, and `glass-faded` thins the tint to 55% for a pane
  * that recedes (a silenced notification row, the edges of a collapsed stack,
