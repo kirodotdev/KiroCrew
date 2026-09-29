@@ -12329,6 +12329,9 @@ class GatewayOrchestrator:
         self.dashboard_state._mcp_gateway_apply = self._apply_mcp_gateway_enabled
         self.dashboard_state._mcp_gateway_apply_stub = self._apply_mcp_stub
         self.dashboard_state._mcp_resolve_refresh = self._refresh_mcp_resolutions
+        # Read by the dashboard restart handler, which execs without running
+        # ``_shutdown``: the broker this process owns must still die with it.
+        self.dashboard_state._mcp_gateway_stop = self._stop_mcp_broker
 
     # ------------------------------------------------------------------
     # Shutdown
@@ -12806,6 +12809,19 @@ class GatewayOrchestrator:
                 logger.warning("Update restart fence lost to real shutdown; deferring restart")
                 return
             await sessions.close_all()
+
+        # The broker this gateway spawned dies with it, the same as ``_shutdown``
+        # does on a clean exit; an adopted daemon belongs to its own owner and is
+        # left alone, as ``GatewayManager.shutdown`` already does. The exec below
+        # skips that shutdown, and the successor can only replace a survivor whose
+        # owner pid is its own (an exec that kept the pid) or gone. Through a
+        # launcher that runs the new gateway as a child, this pid lives on as its
+        # supervisor: the daemon's owner-liveness check keeps passing, and the
+        # successor refuses a broker "owned by another live gateway" for its whole
+        # lifetime. Sessions are closed, so nothing is mid-call. The stop never
+        # raises and is bounded: the daemon's own drain budget on SIGTERM, then a
+        # SIGKILL and a reap of its pooled backends if the drain does not finish.
+        await self._stop_mcp_broker()
 
         # Any callback that ran while close_all awaited used the synchronous
         # fenced refusal path. Drain pre-fence workers and registered handlers

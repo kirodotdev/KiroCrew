@@ -1546,6 +1546,26 @@ async def _restart_gateway(
             await state.sessions.close_all()
         except Exception:
             logger.debug("Session cleanup before restart failed", exc_info=True)
+        # The broker this gateway spawned dies with it, the same as on a clean
+        # shutdown; an adopted daemon belongs to its own owner and is left alone,
+        # as ``GatewayManager.shutdown`` already does. The exec below does not run
+        # that shutdown, and the successor can only replace a survivor whose owner
+        # pid is its own (an exec that kept the pid) or gone. Through a launcher
+        # that runs the new gateway as a child, this pid lives on as its
+        # supervisor: the daemon's owner-liveness check keeps passing, and the
+        # successor refuses a broker "owned by another live gateway" for its whole
+        # lifetime. Sessions are closed, so nothing is mid-call. The stop is
+        # bounded: the daemon's own drain budget on SIGTERM, then a SIGKILL and
+        # a reap of its pooled backends if the drain does not finish.
+        # Wired by the orchestrator after dashboard init; absent means no broker.
+        stop_broker = getattr(state, "_mcp_gateway_stop", None)
+        if stop_broker is not None:
+            try:
+                await stop_broker()
+            except Exception:
+                # Past the point of no return: a broker that will not stop must
+                # not strand a gateway whose sessions are already closed.
+                logger.debug("MCP broker stop before restart failed", exc_info=True)
         sys.stdout.flush()
         sys.stderr.flush()
         # The safety-override record publishes on a worker thread (its callers sit

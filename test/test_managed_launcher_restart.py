@@ -247,7 +247,8 @@ if os.environ.pop("PROBE_FIRST", ""):
             await apply()
             orch = SimpleNamespace(_pending_update_respawn=None, dashboard_state=None,
                 sessions=None, _UPDATE_DRAIN_TIMEOUT_SECS=1,
-                _drain_update_callback_work=AsyncMock(return_value=True))
+                _drain_update_callback_work=AsyncMock(return_value=True),
+                _stop_mcp_broker=AsyncMock())
             await gateway.GatewayOrchestrator._restart_after_update(orch, lambda: sys.executable)
         else:
             await apply()

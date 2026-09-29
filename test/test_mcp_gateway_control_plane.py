@@ -54,7 +54,7 @@ def _make_request(state: object, body: dict) -> web.Request:
 
 
 def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
-    """The wiring must land all three attrs on the DashboardState the handlers
+    """The wiring must land all four attrs on the DashboardState the handlers
     read from — not leave the manager on the orchestrator."""
     ds = SimpleNamespace()
     orch = SimpleNamespace(
@@ -63,6 +63,7 @@ def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
         _apply_mcp_gateway_enabled="ENABLE_CB",
         _apply_mcp_stub="POOLABLE_CB",
         _refresh_mcp_resolutions="RESOLVE_CB",
+        _stop_mcp_broker="STOP_CB",
     )
     GatewayOrchestrator._wire_mcp_gateway_dashboard(orch)  # type: ignore[arg-type]
     assert ds._mcp_gateway_manager == "MGR"
@@ -71,6 +72,9 @@ def test_wire_publishes_manager_and_callbacks_onto_dashboard_state() -> None:
     # The pre-resolve refresh is wired the same way: the handler reads it off
     # DashboardState, so leaving it on the orchestrator makes the endpoint 503.
     assert ds._mcp_resolve_refresh == "RESOLVE_CB"
+    # The restart handler stops the broker through this seam before its exec;
+    # unwired, a restart leaves a daemon this pid owns for the successor to meet.
+    assert ds._mcp_gateway_stop == "STOP_CB"
 
 
 def test_wire_is_noop_when_dashboard_absent() -> None:
