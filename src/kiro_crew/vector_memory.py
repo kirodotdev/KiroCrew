@@ -4708,12 +4708,27 @@ class VectorMemoryStore:
             now = datetime.now(tz=timezone.utc)
             candidates: list[dict] = []
             with self._db_lock:
-                # Keep native work bounded independently of lifetime tombstones.
-                # If invalid/missing/tag-filtered hits starve this window, the
-                # SQLite tier below supplies the complete active population.
-                k = min(
-                    max(limit * 2, 16),
-                    self._faiss_index.ntotal,  # type: ignore[attr-defined]
+                # MMR reranks from the FULL candidate pool (see the _mmr_rerank pool
+                # comment: truncating toward `limit` silently drops the
+                # relevant-but-diverse tail pick that is the whole point of MMR). The
+                # sqlite tiers already hand the rerank their entire embedded
+                # population, bounded only by _MMR_MAX_POOL inside _mmr_rerank -- so
+                # the FAISS tier must match that recall contract when no tag filter
+                # narrows recall. Without MMR the result is candidates[:limit].
+                # A tag_filter is the exception: _matches_tags screens candidates
+                # AFTER this window, so a wide MMR pool would satisfy the
+                # expected = min(limit, k) starvation probe below with tagged hits
+                # inside the top _MMR_MAX_POOL and never fall through to
+                # _sqlite_vector_search, the only tier that masks tags over the
+                # complete active population. Keep the narrow max(limit * 2, 16)
+                # window for a tag-filtered query so the probe still routes it to
+                # the full-population tier; that window is also correct and cheaper
+                # whenever native work must stay bounded independently of lifetime
+                # tombstones.
+                k = (
+                    min(_MMR_MAX_POOL, self._faiss_index.ntotal)  # type: ignore[attr-defined]
+                    if mmr and not tag_filter
+                    else min(max(limit * 2, 16), self._faiss_index.ntotal)  # type: ignore[attr-defined]
                 )
                 distances, indices = self._faiss_index.search(vec.reshape(1, -1), k)  # type: ignore[attr-defined]
                 # FAISS returns ids and distances only. Every hit is resolved in
