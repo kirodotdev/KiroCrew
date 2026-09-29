@@ -2,6 +2,10 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.7.2] - 2026-09-28
+
+A small fix.
+
 ## [0.7.1] - 2026-09-24
 
 A hot patch for two ways the dashboard had become slow: slow to start a chat, and slow to
