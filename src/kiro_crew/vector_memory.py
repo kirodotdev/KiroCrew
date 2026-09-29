@@ -4045,6 +4045,10 @@ class VectorMemoryStore:
             render_lesson=render_lesson,
         )
 
+    def startup_lesson_query(self, query_text: str) -> _RecallQuery:
+        """Embed a first message once for ranking its startup lessons."""
+        return _lessons.startup_lesson_query(self, query_text)
+
     def _rank_lessons(
         self,
         entries: list[tuple[dict, str]],

@@ -74,6 +74,7 @@ def test_v1_new_session_reads_activity_once_and_follow_ups_never(tmp_path):
         get_preferences_context=preferences,
         has_any_lesson=lambda: True,
         get_lessons_context=lessons,
+        startup_lesson_query=lambda query_text: None,
     )
     builder = ContextBuilder(
         memory=memory,

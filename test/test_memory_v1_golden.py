@@ -764,15 +764,16 @@ def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
 
 
 def test_startup_embeds_the_request_once_and_explicit_readers_share_it(seeded: Seeded) -> None:
-    """The activity block ranks facts and episodes against the request: two embed
-    calls, ONE inference. Explicit activity and lesson readers reuse that inference
-    through the shared cache rather than paying it again."""
+    """The activity block ranks facts and episodes against the request, and the
+    lessons block ranks with the same vector: three embed calls, ONE inference.
+    Explicit activity and lesson readers reuse that inference through the shared
+    cache rather than paying it again."""
     _session_context(seeded)
-    assert seeded.embed_fn_calls == [QUERY, QUERY]
+    assert seeded.embed_fn_calls == [QUERY] * 3
     assert seeded.inference_calls == [QUERY]
     seeded.memory.get_context(query=QUERY, include_activity=True)
     seeded.vectors.get_lessons_context(QUERY)
-    assert seeded.embed_fn_calls == [QUERY] * 5
+    assert seeded.embed_fn_calls == [QUERY] * 6
     assert seeded.inference_calls == [QUERY]
 
 
@@ -780,7 +781,7 @@ def test_a_second_build_shares_the_first_builds_inference(seeded: Seeded) -> Non
     """Repeated startup on the same request never re-runs the encoder."""
     _session_context(seeded)
     _session_context(seeded)
-    assert seeded.embed_fn_calls == [QUERY] * 4
+    assert seeded.embed_fn_calls == [QUERY] * 6
     assert seeded.inference_calls == [QUERY]
 
 
