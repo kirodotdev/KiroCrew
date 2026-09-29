@@ -271,6 +271,22 @@ class TerminalCoordinator(ManagerComponent):
         # the paths that reach a terminal without the run loop.
         self._record_crew_log_terminal(info)
         info.done = True
+        # The flip above hides this child from ``running_agents_for`` (it has
+        # left ``_agents``), but its terminal report and result delivery still
+        # depend on the parent session below. The delivery-side bump in the
+        # gateway only lands after ``_fire_event`` and ``_on_done`` have awaited,
+        # so a ``remove_if_unclaimed`` resolving in the window between this flip
+        # and that bump would pass the attachment fence, reap the parent, and
+        # suppress this result. Bump the attachment generation here, before the
+        # first await, to fence a removal whose probe await STRADDLES this point.
+        # The STANDING half of the fence (``_begin_terminal_delivery``) is raised
+        # earlier, at report-SPAWN time (``_spawn_terminal_report_impl``): on the
+        # run path ``info.done`` is already set by the run loop well before this
+        # method runs, so raising the standing fence here would leave the span
+        # from that earlier flip through the report's own ``teardown_done`` wait
+        # unfenced. Loop-safe in-memory dict op; a no-op key is ignored.
+        if info.parent_session_key:
+            self._manager.bump_attachment(info.parent_session_key)
         await self._manager._fire_event(
             "subagent_done",
             info,
@@ -476,6 +492,32 @@ class TerminalCoordinator(ManagerComponent):
         lets a caller spawn before its record is final and release the report,
         or dismiss it, once it knows.
         """
+        # Raise the active-delivery fence HERE, synchronously, before the task
+        # is even created — this is the true "before the first await" point on
+        # the run path. By the time a terminal report is spawned, the run loop
+        # has ALREADY set ``info.done`` (``run._run``), which hides the child
+        # from ``running_agents_for`` and zeroes both probe terms; raising the
+        # fence only once the report body reaches its own done-flip would leave
+        # that whole span (through the report's bounded ``teardown_done`` wait)
+        # unfenced, so a prefetch-TTL ``remove_if_unclaimed`` landing in it would
+        # reap the parent and suppress the delivery with no in-process recovery.
+        # Released in ``_forget`` below on every terminal exit (incl. cancel and
+        # a lost ``gate``), so a spawn that never delivers still balances. A
+        # no-op key is ignored. Loop-safe in-memory dict op.
+        #
+        # The fence is a per-parent COUNT, and EVERY spawned report increments
+        # it (there is no per-``info`` gate): a single child can have two live
+        # report tasks racing — the reap path spawns a gated report before its
+        # teardown, and the run path spawns the live report on winning the claim
+        # — and both must hold the fence up until each has finished delivering.
+        # A per-``info`` boolean would let the second spawn add nothing and let
+        # whichever callback ran first drop the shared fence while the other was
+        # still mid-``_on_done``, reopening the very silent-loss race this
+        # fences. ``raised_fence`` is captured per-TASK in the ``_forget``
+        # closure below so each report decrements exactly the increment it made.
+        raised_fence = bool(info.parent_session_key)
+        if raised_fence:
+            self._manager._begin_terminal_delivery(info.parent_session_key)
         task = asyncio.create_task(
             self._manager._report_terminal(
                 info,
@@ -497,6 +539,18 @@ class TerminalCoordinator(ManagerComponent):
         def _forget(t: "asyncio.Task") -> None:  # type: ignore[type-arg]
             self._manager._report_tasks.discard(t)
             owner = self._manager._report_owners.pop(t, None)
+            # Drop the active-delivery fence THIS report raised at SPAWN time
+            # (above): the completion has now finished reaching the parent,
+            # whatever the outcome, so this report's hold on the parent ends.
+            # Runs here rather than in a ``try/finally`` so a cancelled report —
+            # or one that lost its ``gate`` and returned before delivering —
+            # releases its own increment too. Keyed on ``raised_fence``, a
+            # per-TASK closure flag set only when THIS task incremented, so
+            # concurrent reports for the same child each decrement exactly once
+            # and the last one to finish is the one that drops the count to zero
+            # (a spawn with no parent key raised nothing and drops nothing).
+            if raised_fence:
+                self._manager._end_terminal_delivery(info.parent_session_key)
             self._manager._run_events._forget_finished_live_state(info)
             if owner is None:
                 return

@@ -1054,11 +1054,580 @@ class TestRemoveIfUnclaimed:
         mgr.release(key)
 
     @pytest.mark.asyncio
+    async def test_noops_with_attached_subagents(self, cfg):
+        """The parent may be idle while shared-runtime children still work."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-children"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        probe = MagicMock(return_value=True)
+        mgr.set_subagent_probe(probe)
+
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        probe.assert_called_once_with(key)
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_noops_when_subagent_probe_fails(self, cfg):
+        """An unreadable child registry must not terminate a parent runtime."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-probe-error"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        mgr.set_subagent_probe(MagicMock(side_effect=RuntimeError("registry unavailable")))
+
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("attached", [True, False])
+    async def test_async_subagent_probe(self, cfg, attached):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-async-children"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        calls = []
+
+        async def probe(session_key):
+            await asyncio.sleep(0)
+            calls.append(session_key)
+            return attached
+
+        mgr.set_subagent_probe(probe)
+        assert await mgr.remove_if_unclaimed(key) is (not attached)
+        assert (key in mgr._sessions) is attached
+        assert calls == [key]
+        if attached:
+            provider.shutdown.assert_not_awaited()
+        else:
+            provider.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("claim", ["held", "finished", "replacement", "child", "injection"])
+    async def test_session_survives_work_arriving_during_probe(self, cfg, claim):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-probe-race"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        entered = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def probe(session_key):
+            entered.set()
+            await asyncio.wait_for(resume.wait(), timeout=2)
+            return False
+
+        mgr.set_subagent_probe(probe)
+        removal = asyncio.create_task(mgr.remove_if_unclaimed(key))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            async with asyncio.timeout(2):
+                async with mgr._lock:
+                    if claim == "replacement":
+                        mgr._sessions[key] = MagicMock()
+                    elif claim == "child":
+                        handler = MagicMock()
+                        handler.running_agents_for.return_value = [{"id": "new-child"}]
+                        mgr.set_child_teardown_handler(handler)
+                    elif claim == "injection":
+                        mgr.set_injection_probe(lambda _: True)
+                if claim in {"held", "finished"}:
+                    assert await mgr.try_acquire(key)
+                    if claim == "finished":
+                        mgr._sessions[key].first_turn = FirstTurnState.NOTHING_ARMED
+                        mgr.release(key)
+            resume.set()
+            assert await asyncio.wait_for(removal, timeout=2) is False
+            assert key in mgr._sessions
+            provider.shutdown.assert_not_awaited()
+            if claim == "child":
+                handler.snapshot_teardown_children.assert_not_called()
+        finally:
+            resume.set()
+            if not removal.done():
+                removal.cancel()
+            await asyncio.gather(removal, return_exceptions=True)
+            if claim == "held":
+                mgr.release(key)
+
+    class _FenceHandler:
+        """Minimal teardown handler with an attachment-generation fence.
+
+        Stands in for ``SubagentManager``: the running set and the per-parent
+        attachment generation are plain attributes the test mutates mid-probe.
+        """
+
+        def __init__(self) -> None:
+            self.generation = 0
+            self.running: list[dict] = []
+
+        def running_agents_for(self, session_key: str) -> list[dict]:
+            return list(self.running)
+
+        def attachment_generation(self, session_key: str) -> int:
+            return self.generation
+
+        def snapshot_teardown_children(self, session_key: str) -> tuple[str, ...]:
+            return ()
+
+        async def cancel_for_teardown(self, agent_ids, *, parent_session_key, verb=""):
+            return 0
+
+    @pytest.mark.asyncio
+    async def test_fence_keeps_session_when_child_attaches_during_probe(self, cfg):
+        """A child accepted while the awaited probe runs bumps the attachment
+        generation; the post-await recheck must keep the parent even though
+        neither the probe's answer nor ``running_agents_for`` can see it (a
+        queued spawn is deliberately absent from ``_agents``)."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-fence"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        handler = self._FenceHandler()
+        mgr.set_child_teardown_handler(handler)
+        entered = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def probe(session_key):
+            entered.set()
+            await asyncio.wait_for(resume.wait(), timeout=2)
+            return False
+
+        mgr.set_subagent_probe(probe)
+        removal = asyncio.create_task(mgr.remove_if_unclaimed(key))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            handler.generation += 1  # the bump a queued acceptance makes
+            resume.set()
+            assert await asyncio.wait_for(removal, timeout=2) is False
+            assert key in mgr._sessions
+            provider.shutdown.assert_not_awaited()
+        finally:
+            resume.set()
+            if not removal.done():
+                removal.cancel()
+            await asyncio.gather(removal, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_fence_with_stable_generation_allows_removal(self, cfg):
+        """The fence is a compare, not a veto: with no attachment landing
+        during the awaited probe, an armed idle parent is still removed."""
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-fence-stable"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        mgr.set_child_teardown_handler(self._FenceHandler())
+
+        async def probe(session_key):
+            await asyncio.sleep(0)
+            return False
+
+        mgr.set_subagent_probe(probe)
+        assert await mgr.remove_if_unclaimed(key) is True
+        assert key not in mgr._sessions
+        provider.shutdown.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_async_subagent_probe_failure_keeps_session(self, cfg):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-async-error"
+        provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+
+        async def probe(session_key):
+            await asyncio.sleep(0)
+            raise RuntimeError("registry unavailable")
+
+        mgr.set_subagent_probe(probe)
+        assert await mgr.remove_if_unclaimed(key) is False
+        assert key in mgr._sessions
+        provider.shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_noops_on_missing_key(self, cfg):
         from kiro_crew.session import SessionManager
 
         mgr = SessionManager(cfg, provider_factory=_stub_factory())
         assert await mgr.remove_if_unclaimed("dashboard:absent") is False
+
+    @pytest.mark.asyncio
+    async def test_removal_forgets_attachment_generation(self, cfg):
+        """The removal drops the parent's generation entry, so the fence table
+        stays bounded by live parents rather than by every session the gateway
+        has ever created."""
+        from kiro_crew.session import SessionManager
+
+        class ForgettingHandler(self._FenceHandler):
+            def __init__(self) -> None:
+                super().__init__()
+                self.forgotten: list[str] = []
+
+            def forget_attachment_generation(self, session_key: str) -> None:
+                self.forgotten.append(session_key)
+
+        mgr = SessionManager(cfg, provider_factory=_stub_factory())
+        key = "dashboard:ttl-fence-forget"
+        _provider, _, _ = await mgr.get_or_create(key, speculative=True)
+        mgr.release(key)
+        handler = ForgettingHandler()
+        mgr.set_child_teardown_handler(handler)
+        mgr.set_subagent_probe(lambda session_key: None)
+
+        assert await mgr.remove_if_unclaimed(key) is True
+        assert handler.forgotten == [key]
+
+    def test_attachment_generation_lives_on_the_session_entry(self):
+        """The generation is stored on the parent's own session entry, not a
+        side table: bump increments the live entry, the reader reflects it, and
+        a key with no live session records and reads nothing — so there is no
+        table to grow and no ceiling to police."""
+        from kiro_crew.subagent import SubagentManager
+
+        class _Entry:
+            attachment_generation = 0
+
+        class _Sessions:
+            def __init__(self):
+                self._live = {"live": _Entry()}
+
+            def bump_attachment_generation(self, key):
+                entry = self._live.get(key)
+                if entry is None:
+                    return False
+                entry.attachment_generation += 1
+                return True
+
+            def attachment_generation(self, key):
+                entry = self._live.get(key)
+                return entry.attachment_generation if entry else 0
+
+        mgr = SubagentManager.__new__(SubagentManager)
+        mgr._sessions = _Sessions()
+
+        mgr.bump_attachment("live")
+        mgr.bump_attachment("live")
+        assert mgr.attachment_generation("live") == 2
+
+        # A key with no live session records nothing and reads 0 — there is no
+        # side entry to leak.
+        mgr.bump_attachment("no-such-session")
+        assert mgr.attachment_generation("no-such-session") == 0
+
+    def test_a_torn_down_session_leaves_no_attachment_generation_behind(self):
+        """Reclaim is automatic: once the session entry is removed, its
+        generation is gone with it and the reader falls back to 0. There is no
+        parallel table that could retain a dropped parent's count."""
+        from kiro_crew.subagent import SubagentManager
+
+        class _Entry:
+            attachment_generation = 0
+
+        class _Sessions:
+            def __init__(self):
+                self._live = {"live": _Entry()}
+
+            def bump_attachment_generation(self, key):
+                entry = self._live.get(key)
+                if entry is None:
+                    return False
+                entry.attachment_generation += 1
+                return True
+
+            def attachment_generation(self, key):
+                entry = self._live.get(key)
+                return entry.attachment_generation if entry else 0
+
+            def remove(self, key):  # session teardown drops the entry entirely
+                self._live.pop(key, None)
+
+        mgr = SubagentManager.__new__(SubagentManager)
+        sessions = _Sessions()
+        mgr._sessions = sessions
+
+        mgr.bump_attachment("live")
+        assert mgr.attachment_generation("live") == 1
+
+        # forget is a no-op now (the count lives on the entry) ...
+        mgr.forget_attachment_generation("live")
+        assert mgr.attachment_generation("live") == 1
+
+        # ... and tearing the session down reclaims the count with the entry,
+        # leaving nothing behind.
+        sessions.remove("live")
+        assert mgr.attachment_generation("live") == 0
+
+    def test_forget_attachment_generation_is_a_noop(self):
+        """forget is retained for the remove_if_unclaimed contract but does
+        nothing: the count is released with the session entry, not here."""
+        from kiro_crew.subagent import SubagentManager
+
+        mgr = SubagentManager.__new__(SubagentManager)
+        # No _sessions and no side table — a pure no-op must not touch anything.
+        mgr.forget_attachment_generation("k")
+        mgr.forget_attachment_generation("k")
+
+    @pytest.mark.asyncio
+    async def test_terminal_report_bumps_fence_before_first_await(self):
+        """The terminal report flips ``info.done`` (hiding the child from
+        ``running_agents_for``) then awaits ``_fire_event`` / ``_on_done``
+        before the gateway's delivery-side bump lands. A ``remove_if_unclaimed``
+        resolving in that window would pass the fence and reap the parent,
+        suppressing the result. So the report must bump the attachment
+        generation SYNCHRONOUSLY at the flip, before any await."""
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        parent = "dashboard:terminal-fence"
+        bumped_before_await: list[bool] = []
+
+        class _Entry:
+            attachment_generation = 0
+
+        class _Sessions:
+            def __init__(self):
+                self._live = {parent: _Entry()}
+
+            def bump_attachment_generation(self, key):
+                entry = self._live.get(key)
+                if entry is None:
+                    return False
+                entry.attachment_generation += 1
+                return True
+
+            def attachment_generation(self, key):
+                entry = self._live.get(key)
+                return entry.attachment_generation if entry else 0
+
+        mgr = SubagentManager.__new__(SubagentManager)
+        mgr._sessions = _Sessions()
+        mgr._active_terminal_deliveries = {}
+        mgr._on_done = None  # return right after _fire_event, before delivery
+        mgr._teardown_cancelled_ids = ()
+
+        async def _fire_event(*_a, **_k):
+            # By the time the first await runs, the generation bump must show.
+            bumped_before_await.append(mgr.attachment_generation(parent) >= 1)
+
+        mgr._fire_event = _fire_event
+
+        coordinator = TerminalCoordinator(mgr)
+
+        info = SubagentInfo(id="child-1", task="t", parent_session_key=parent)
+        info.done = False
+
+        result = await coordinator._report_terminal_impl(
+            info,
+            source="test",
+            injection_timeout_reason="test",
+            mark_delivered_on_success=False,
+        )
+
+        assert result is True
+        assert info.done is True
+        assert mgr.attachment_generation(parent) == 1
+        assert bumped_before_await == [True]
+
+    @pytest.mark.asyncio
+    async def test_spawn_raises_active_delivery_fence_before_any_await(self):
+        """On the run path ``info.done`` is set by the run loop BEFORE the
+        terminal report is spawned, so the standing active-delivery fence must
+        be raised synchronously at report-SPAWN time — before the task exists
+        and before the report's own ``teardown_done`` await — or a prefetch reap
+        in that window suppresses the delivery. ``_forget`` releases it when the
+        report task finishes."""
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        parent = "dashboard:spawn-fence"
+        mgr = SubagentManager.__new__(SubagentManager)
+        mgr._active_terminal_deliveries = {}
+        mgr._report_tasks = set()
+        mgr._report_owners = {}
+
+        async def _never(*_a, **_k):
+            # Would block forever; the point is the fence is up BEFORE this runs.
+            await asyncio.Event().wait()
+            return True
+
+        mgr._report_terminal = _never
+
+        coordinator = TerminalCoordinator(mgr)
+        info = SubagentInfo(id="child-9", task="t", parent_session_key=parent)
+        info.done = True  # already flipped by the run loop, as on the run path
+
+        task = coordinator._spawn_terminal_report_impl(
+            info,
+            source="test",
+            injection_timeout_reason="test",
+            mark_delivered_on_success=False,
+        )
+        # Synchronously after spawn, before the task's coroutine has run at all:
+        assert mgr.has_active_terminal_delivery(parent) is True
+        assert mgr._active_terminal_deliveries.get(parent) == 1
+
+        # _forget releases it exactly once when the task ends (here: cancelled).
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        assert mgr.has_active_terminal_delivery(parent) is False
+        assert mgr._active_terminal_deliveries.get(parent) is None
+
+    def test_active_terminal_delivery_counter_is_balanced(self):
+        """begin raises, end drops, and the entry is removed at zero so the
+        table cannot grow; a no-op key is ignored."""
+        from kiro_crew.subagent import SubagentManager
+
+        mgr = SubagentManager.__new__(SubagentManager)
+        mgr._active_terminal_deliveries = {}
+        key = "dashboard:balance"
+
+        assert mgr.has_active_terminal_delivery(key) is False
+        mgr._begin_terminal_delivery(key)
+        mgr._begin_terminal_delivery(key)
+        assert mgr.has_active_terminal_delivery(key) is True
+        assert mgr._active_terminal_deliveries[key] == 2
+        mgr._end_terminal_delivery(key)
+        assert mgr.has_active_terminal_delivery(key) is True
+        mgr._end_terminal_delivery(key)
+        assert mgr.has_active_terminal_delivery(key) is False
+        assert key not in mgr._active_terminal_deliveries
+        # Idempotent below zero and a no-op key is ignored.
+        mgr._end_terminal_delivery(key)
+        mgr._begin_terminal_delivery("")
+        assert mgr._active_terminal_deliveries == {}
+
+    @pytest.mark.asyncio
+    async def test_two_concurrent_reports_for_one_child_hold_the_fence(self):
+        """A single child can have TWO live terminal-report tasks racing — the
+        reap path spawns a gated report before its teardown, and the run path
+        spawns the live report on winning the claim. Each spawn increments the
+        per-parent active-delivery count, and each task's own ``_forget``
+        decrements exactly its own increment, so the FIRST report to finish must
+        NOT drop the fence while the SECOND is still delivering. A per-``info``
+        boolean regressed this: the second spawn added nothing and the first
+        callback cleared the shared flag, reopening the silent-loss race."""
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        parent = "dashboard:concurrent-reports"
+        mgr = SubagentManager.__new__(SubagentManager)
+        mgr._active_terminal_deliveries = {}
+        mgr._report_tasks = set()
+        mgr._report_owners = {}
+
+        # Two independent report coroutines for the SAME child, each gated on its
+        # own event so the test controls which finishes first.
+        release_first = asyncio.Event()
+        release_second = asyncio.Event()
+
+        async def _first(*_a, **_k):
+            await release_first.wait()
+            return True
+
+        async def _second(*_a, **_k):
+            await release_second.wait()
+            return True
+
+        # Same child (same parent_session_key); the run/ reap paths each spawn a
+        # report for it. Distinct SubagentInfo objects, as in production.
+        info_a = SubagentInfo(id="child-r", task="t", parent_session_key=parent)
+        info_a.done = True
+        info_b = SubagentInfo(id="child-r", task="t", parent_session_key=parent)
+        info_b.done = True
+
+        coordinator = TerminalCoordinator(mgr)
+
+        mgr._report_terminal = _first
+        task_a = coordinator._spawn_terminal_report_impl(
+            info_a,
+            source="reap",
+            injection_timeout_reason="test",
+            mark_delivered_on_success=False,
+        )
+        mgr._report_terminal = _second
+        task_b = coordinator._spawn_terminal_report_impl(
+            info_b,
+            source="run",
+            injection_timeout_reason="test",
+            mark_delivered_on_success=False,
+        )
+
+        # Both spawns raised the fence: count is 2, not 1.
+        assert mgr._active_terminal_deliveries.get(parent) == 2
+        assert mgr.has_active_terminal_delivery(parent) is True
+
+        # First report finishes. The fence MUST stay up for the second.
+        release_first.set()
+        await task_a
+        assert mgr.has_active_terminal_delivery(parent) is True
+        assert mgr._active_terminal_deliveries.get(parent) == 1
+
+        # Second report finishes; only now does the fence drop.
+        release_second.set()
+        await task_b
+        assert mgr.has_active_terminal_delivery(parent) is False
+        assert parent not in mgr._active_terminal_deliveries
+
+    @pytest.mark.asyncio
+    async def test_recheck_keeps_parent_while_terminal_delivery_in_flight(self):
+        """A generation snapshot taken AFTER the terminal bump reads stable
+        across the probe await, so the generation check cannot catch an owed
+        delivery — the standing active-delivery fence must keep the parent."""
+        from types import SimpleNamespace
+
+        from kiro_crew.session_lifecycle import SessionLifecycleService
+
+        key = "dashboard:in-flight-delivery"
+        lifecycle = SessionLifecycleService.__new__(SessionLifecycleService)
+        lifecycle.state = SimpleNamespace(child_teardown=None)
+
+        # Handler whose generation is already stable (its bump landed before the
+        # recheck's snapshot) but which reports an active terminal delivery.
+        class _Handler:
+            def attachment_generation(self, k):
+                return 7  # unchanged across the await
+
+            def running_agents_for(self, k):
+                return []  # child already left _agents
+
+            def has_active_terminal_delivery(self, k):
+                return True
+
+        lifecycle._child_teardown = _Handler()
+        # The standing-state reader catches the owed delivery the generation
+        # check cannot, so the recheck keeps the parent.
+        assert lifecycle._has_active_terminal_delivery(key) is True
+
+        # No handler -> no fence (older registry / uninstalled): False, so the
+        # synchronous rechecks decide on their own exactly as before.
+        lifecycle._child_teardown = None
+        assert lifecycle._has_active_terminal_delivery(key) is False
+
+        # A handler without the reader (older registry) also reports False
+        # rather than raising, and cannot conjure a fence via the instance.
+        class _OldHandler:
+            pass
+
+        lifecycle._child_teardown = _OldHandler()
+        assert lifecycle._has_active_terminal_delivery(key) is False
 
 
 class TestResumePrefetchWiring:

@@ -1009,6 +1009,14 @@ class _Session:
     # Set by a lifecycle holder for the whole of its turn, INCLUDING the setup before the
     # provider registers one. ``has_active_turn`` cannot see that window.
     lifecycle_turn_active: bool = False
+    # Monotonic counter bumped every time subagent work attaches to THIS session
+    # as a parent (see SubagentManager.bump_attachment). session_lifecycle's
+    # ``remove_if_unclaimed`` snapshots it, awaits an attachment probe, and keeps
+    # the parent if it changed across the await — catching a queued spawn or a
+    # store-accepted row that is not yet in any in-memory registry. Living on the
+    # session entry means it is reclaimed exactly when the session is torn down,
+    # so it needs no side table and no size ceiling to police.
+    attachment_generation: int = 0
     prompt_count: int = 0
     consecutive_failures: int = 0
     # Bounded rather than plain: a release() call that lands on this object
@@ -1780,6 +1788,29 @@ class SessionManager:
             return False
         session.lifecycle_lease = True
         return True
+
+    def bump_attachment_generation(self, key: str) -> bool:
+        """Bump the attachment generation on THIS session's entry.
+
+        Records that subagent work just attached to *key* as a parent. Lives on
+        the session entry, so it is reclaimed when the session is torn down —
+        there is no side table to bound. A key with no live session records
+        nothing (the counter's only reader, ``remove_if_unclaimed``, runs during
+        that parent's own teardown, so a generation for an absent session could
+        never be read). Returns whether a live session was bumped.
+        """
+        session = self._allocation_boundary()._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.attachment_generation += 1
+        return True
+
+    def attachment_generation(self, key: str) -> int:
+        """Read *key*'s attachment generation, or 0 when no live session holds one."""
+        session = self._allocation_boundary()._sessions.get(self._fold_key(key))
+        if session is None:
+            return 0
+        return session.attachment_generation
 
     def has_session(self, key: str) -> bool:
         """Return whether a live session exists for the folded key."""

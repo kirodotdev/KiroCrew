@@ -3219,6 +3219,23 @@ class SubagentManager:
         #: dropped by :meth:`release_completion_event`, so the only entries are
         #: the ones a waiter asked for (today: the autopilot stage loop).
         self._completion_waiters: dict[str, asyncio.Event] = {}
+        #: parent session key -> count of terminal deliveries in flight for it.
+        #: A generation bump is a one-shot pulse: it only fences a removal whose
+        #: probe await straddles it, so a terminal bump that lands BEFORE the
+        #: removal snapshots the generation leaves the reading stable across the
+        #: await and the fence misses the still-owed delivery. This counter is
+        #: STANDING state instead: EVERY spawned terminal report increments it at
+        #: report-SPAWN time (before the first await, once the run loop has set
+        #: ``info.done`` and the child has left ``_agents``) and each report's
+        #: own done-callback decrements exactly its own increment once delivery
+        #: has resolved. Because it counts rather than latches a boolean, two
+        #: reports racing for one child (a reap's gated report and the run path's
+        #: live report) both hold it up, and the first to finish cannot drop it
+        #: out from under the second. Any removal that runs while a completion is
+        #: on its way to the parent sees a positive count regardless of ordering.
+        #: Read via :meth:`has_active_terminal_delivery`; both directions are
+        #: loop-safe in-memory dict ops by contract.
+        self._active_terminal_deliveries: dict[str, int] = {}
         # Queued spawns store the FULL spawn() kwarg set (not just a 5-tuple), so a
         # drained spawn preserves approval_mode / silent / model / allowed_tools / bare —
         # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
@@ -4666,6 +4683,86 @@ class SubagentManager:
     def running_agents_for(self, parent_key: str) -> list[dict]:
         return self._run_events.running_agents_for_impl(parent_key)
 
+    def bump_attachment(self, parent_session_key: str) -> None:
+        """Record that work just attached to *parent_session_key*.
+
+        Loop-safe and synchronous: ``session_lifecycle.remove_if_unclaimed``
+        fences its awaited attachment probe with this counter, and its recheck
+        runs under the session lock, so it may never touch the task store (see
+        ``dashboard.chat_utils.subagents_attached_async``). A queued spawn is
+        deliberately absent from ``_agents`` and a store-accepted row is not yet
+        in any in-memory registry, so the count is what makes both visible to
+        that recheck.
+
+        The count lives on the parent's own session entry
+        (``SessionStore.bump_attachment_generation``), so it is reclaimed when
+        the session is torn down and there is no side table to bound. A key with
+        no live session records nothing: the counter's only reader runs during
+        that parent's teardown, so a generation for an absent session could
+        never be read.
+        """
+        if not parent_session_key:
+            return
+        self._sessions.bump_attachment_generation(parent_session_key)
+
+    def forget_attachment_generation(self, parent_session_key: str) -> None:
+        """No-op reclaim hook kept for the ``remove_if_unclaimed`` contract.
+
+        The attachment generation lives on the session entry itself, so it is
+        released atomically when the session is removed — there is nothing to
+        drop here. Retained so the lifecycle caller's reclaim step still
+        resolves and so the handler protocol is unchanged.
+        """
+        return
+
+    def _begin_terminal_delivery(self, parent_session_key: str) -> None:
+        """Record that a terminal delivery to *parent_session_key* is in flight.
+
+        Called at the terminal done-flip, before the first await, in the same
+        loop step the child leaves ``_agents``. Paired with
+        :meth:`_end_terminal_delivery` once ``_on_done`` has resolved. A no-op
+        key is ignored. Loop-safe in-memory dict op by contract.
+        """
+        if not parent_session_key:
+            return
+        self._active_terminal_deliveries[parent_session_key] = (
+            self._active_terminal_deliveries.get(parent_session_key, 0) + 1
+        )
+
+    def _end_terminal_delivery(self, parent_session_key: str) -> None:
+        """Drop one in-flight terminal delivery for *parent_session_key*.
+
+        Idempotent below zero: the entry is removed once the count reaches zero
+        so the table cannot grow. Loop-safe in-memory dict op by contract.
+        """
+        if not parent_session_key:
+            return
+        remaining = self._active_terminal_deliveries.get(parent_session_key, 0) - 1
+        if remaining > 0:
+            self._active_terminal_deliveries[parent_session_key] = remaining
+        else:
+            self._active_terminal_deliveries.pop(parent_session_key, None)
+
+    def has_active_terminal_delivery(self, parent_session_key: str) -> bool:
+        """Whether a terminal delivery to *parent_session_key* is still in flight.
+
+        The standing-state half of the completion fence:
+        ``session_lifecycle.remove_if_unclaimed`` consults this in its
+        post-probe recheck so a delivery on its way to the parent keeps the
+        parent regardless of whether the generation bump straddled the probe
+        await. Loop-safe in-memory read by contract.
+        """
+        return self._active_terminal_deliveries.get(parent_session_key, 0) > 0
+
+    def attachment_generation(self, parent_session_key: str) -> int:
+        """How many attachments *parent_session_key* has accepted so far.
+
+        Reads the counter off the parent's live session entry; 0 when no live
+        session holds one (the entry, and its count, are gone once the session
+        is torn down).
+        """
+        return self._sessions.attachment_generation(parent_session_key)
+
     def completion_event(self, parent_key: str) -> "asyncio.Event":
         """Event pulsed each time a run belonging to *parent_key* finishes.
 
@@ -4948,6 +5045,13 @@ class SubagentManager:
     ) -> SubagentInfo | None:
         store = self._admission.taskq_store()
         assert store is not None
+        # Attachment fence: acceptance is write-before-ack, and the awaited probe
+        # in ``remove_if_unclaimed`` can answer False before the row exists while
+        # its recheck runs before the re-entry below registers it. Bump FIRST, on
+        # the loop, so a removal racing this acceptance keeps the parent whether
+        # the row lands, is queued, or starts. Over-approximation on a refused
+        # write is the safe direction and self-heals on the next sweep.
+        self.bump_attachment(str(kwargs.get("parent_session_key") or ""))
         store_err = await store.run(self._admission.taskq_accept_record, prepared.record)
         if store_err:
             sel().log_tool_invocation(
