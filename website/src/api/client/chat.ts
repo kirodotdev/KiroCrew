@@ -150,7 +150,7 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
     resolveNavLinks: (links: { url: string; context: string }[]) => post('/api/chat/nav/resolve-links', { links }).then(j) as Promise<{ summaries: string[] }>,
     renameSlot: (slot: string, title: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/title', { title }).then(j),
     /** Tick or untick one row of the agent's checklist pill. Writes the dashboard's copy; the agent re-syncs on its next fresh session. */
-    setTodoTask: (slot: string, id: string, completed: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/todo', { id, completed }).then(j),
+    setTodoTask: (slot: string, id: string, text: string, completed: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/todo', { id, text, completed }).then(j),
     regenerateSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/regenerate').then(j),
     /** Pick an interrupted turn back up. NOT `/resume` — that path opens a history session into a tab. */
     continueSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/continue').then(j),

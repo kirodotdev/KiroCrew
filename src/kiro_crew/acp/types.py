@@ -214,6 +214,10 @@ KIRO_TOOL_TODO_LIST = "todo_list"
 TODO_TASKS_MAX = 200
 # Per-task text cap — keeps one pathological entry from bloating every payload.
 TODO_TEXT_MAX = 500
+# Per-task id cap. kiro-cli numbers its tasks ("1", "2", ...), but the id is
+# provider-authored and is retained per row (in the snapshot, in a person's
+# override, in a cold-start pin), so it is bounded like the text.
+TODO_ID_MAX = 64
 
 # Capabilities we advertise during `initialize`.
 #

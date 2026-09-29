@@ -10781,8 +10781,18 @@
         "more": "mais…",
         "of": "de",
         "task_completion": "Conclusão das tarefas",
-        "aria_mark_done": "Marcar tarefa como concluída: {{task}}",
-        "aria_mark_not_done": "Marcar tarefa como não concluída: {{task}}"
+        "aria_mark_done": "Marcar como concluída: {{task}}. O agente não a refará. Clique de novo para desfazer.",
+        "aria_mark_not_done": "Marcar como não concluída: {{task}}. O agente a trata como pendente. Clique de novo para desfazer.",
+        "click_to_toggle_hint": "Clique em uma linha para marcá-la como feita ou não feita. Nada muda para o agente até o próximo turno dele, e até lá você pode clicar de novo para desfazer. Linhas feitas o agente não refaz; as não feitas ele trata como ainda abertas. Linhas que você marcou mostram um símbolo de pessoa até o agente confirmar.",
+        "tick_failed_lead": "“{{task}}” não foi atualizada; a linha mantém o estado anterior. Clicar de novo é seguro: a linha só muda quando a lista mostrar.",
+        "read_only_hint": "Somente leitura: gerenciada pela máquina remota que executa esta sessão.",
+        "fail_task_stale": "A lista mudou enquanto você clicava, então esta linha agora é outra tarefa. Olhe a linha de novo antes de clicar.",
+        "fail_task_gone": "Essa linha não está mais na lista. O agente substituiu a lista dele.",
+        "fail_session_gone": "Sua sessão do painel expirou. Recarregue a página e clique de novo — nada mais é perdido.",
+        "fail_remote": "Esta lista é gerenciada pela máquina remota desta sessão, então não pode ser alterada aqui.",
+        "set_by_you_done": "Você marcou isto como feito; o agente ainda não confirmou.",
+        "set_by_you_open": "Você marcou isto como não feito; o agente ainda não confirmou.",
+        "sending": "Enviando"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Recolher o raciocínio do modelo",

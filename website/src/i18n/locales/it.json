@@ -10781,8 +10781,18 @@
         "more": "altri…",
         "of": "di",
         "task_completion": "Completamento dell'attività",
-        "aria_mark_done": "Segna attività come completata: {{task}}",
-        "aria_mark_not_done": "Segna attività come non completata: {{task}}"
+        "aria_mark_done": "Segna come completata: {{task}}. L'agente non la rifarà. Clicca di nuovo per annullare.",
+        "aria_mark_not_done": "Segna come non completata: {{task}}. L'agente la considera ancora aperta. Clicca di nuovo per annullare.",
+        "click_to_toggle_hint": "Clicca una riga per segnarla come fatta o non fatta. Nulla cambia per l'agente fino al suo prossimo turno, e fino ad allora puoi ricliccare per annullare. Le righe fatte l'agente non le rifà; quelle non fatte le tratta come ancora aperte. Le righe che hai impostato tu mostrano un simbolo di persona finché l'agente non le conferma.",
+        "tick_failed_lead": "«{{task}}» non è stata aggiornata; la riga mantiene il suo stato. Cliccare di nuovo è sicuro: una riga cambia solo quando la lista lo mostra.",
+        "read_only_hint": "Sola lettura: gestita dalla macchina remota che esegue questa sessione.",
+        "fail_task_stale": "La lista è cambiata mentre cliccavi, quindi questa riga ora è un'altra attività. Guarda di nuovo la riga prima di cliccare.",
+        "fail_task_gone": "Quella riga non è più nella lista. L'agente ha sostituito la sua lista.",
+        "fail_session_gone": "La tua sessione della dashboard è scaduta. Ricarica la pagina e riclicca: non si perde altro.",
+        "fail_remote": "Questa lista è gestita dalla macchina remota di questa sessione, quindi non può essere modificata qui.",
+        "set_by_you_done": "Hai segnato questa riga come fatta; l'agente non l'ha ancora confermato.",
+        "set_by_you_open": "Hai segnato questa riga come non fatta; l'agente non l'ha ancora confermato.",
+        "sending": "Invio in corso"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Comprimi il ragionamento del modello",

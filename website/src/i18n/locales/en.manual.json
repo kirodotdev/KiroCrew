@@ -4307,8 +4307,18 @@
         "current_task": "Current task",
         "aria_collapse_task_list": "{{done}} of {{total}} tasks complete. Collapse task list",
         "aria_expand_task_list": "{{done}} of {{total}} tasks complete. Expand task list",
-        "aria_mark_done": "Mark task done: {{task}}",
-        "aria_mark_not_done": "Mark task not done: {{task}}"
+        "aria_mark_done": "Mark done: {{task}}. The agent will not redo it. Click again to undo.",
+        "aria_mark_not_done": "Mark not done: {{task}}. The agent treats it as still open. Click again to undo.",
+        "click_to_toggle_hint": "Click a row to mark it done or not done. Nothing changes for the agent until its next turn, and you can click again to undo until then. Done rows the agent will not redo; not-done rows it treats as still open. Rows you set show a person mark until the agent confirms them.",
+        "tick_failed_lead": "\"{{task}}\" did not update; the row keeps its old state. Clicking again is safe: a row only changes when the list shows it.",
+        "read_only_hint": "Read-only: managed by the remote machine running this session.",
+        "fail_task_stale": "The list changed while you were clicking, so this row is a different task now. Look at the row again before you click.",
+        "fail_task_gone": "That row is not in the list any more. The agent replaced its list.",
+        "fail_session_gone": "Your dashboard session expired. Reload the page and click again — nothing else is lost.",
+        "fail_remote": "This checklist is managed by the remote machine running this session, so it cannot be changed here.",
+        "set_by_you_done": "You marked this done; the agent has not confirmed it yet.",
+        "set_by_you_open": "You marked this not done; the agent has not confirmed it yet.",
+        "sending": "Sending"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Collapse model reasoning",

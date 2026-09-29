@@ -10477,8 +10477,18 @@
         "more": "更多…",
         "of": "/",
         "task_completion": "任务完成度",
-        "aria_mark_done": "标记任务已完成：{{task}}",
-        "aria_mark_not_done": "标记任务未完成：{{task}}"
+        "aria_mark_done": "标记完成：{{task}}。agent 不会重做。再点一次可撤销。",
+        "aria_mark_not_done": "标记未完成：{{task}}。agent 会当作还没做。再点一次可撤销。",
+        "click_to_toggle_hint": "点击一行把它标为完成或未完成。在 agent 的下一轮之前不会有任何变化，在那之前可以再次点击撤销。完成的行 agent 不会重做，未完成的行它当作仍未完成。你自己标的行会带一个人形标记，直到 agent 确认。",
+        "tick_failed_lead": "“{{task}}”没有更新，该行保持原状。可以放心再点：只有清单显示变了，行才算变了。",
+        "read_only_hint": "只读：由运行该 session 的远程机器管理。",
+        "fail_task_stale": "你点的时候清单变了，这一行现在是另一个任务。点之前再看一眼这一行。",
+        "fail_task_gone": "这一行已经不在清单里了。agent 换掉了它的清单。",
+        "fail_session_gone": "你的仪表板 session 已过期。刷新页面后再点击一次，不会丢失其它内容。",
+        "fail_remote": "这份清单由该 session 的远程机器管理，无法在这里修改。",
+        "set_by_you_done": "你标成了完成，agent 还没确认。",
+        "set_by_you_open": "你标成了未完成，agent 还没确认。",
+        "sending": "发送中"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "收起模型推理",

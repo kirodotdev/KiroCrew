@@ -563,18 +563,30 @@ UNTRUSTED_CALENDAR_FENCE_CLOSE = ">>>END_UNTRUSTED_CALENDAR_EVENT"
 _CALENDAR_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_CALENDAR_FENCE_OPEN)
 _CALENDAR_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_CALENDAR_FENCE_CLOSE)
 
+# Delimiters that wrap the agent's own checklist task texts when the dashboard
+# re-states them to a fresh or live session (``_ChatSlot.todo_recovery_prompt``
+# / ``todo_sync_prompt``). A task text is whatever the agent typed into its
+# todo_list tool, which can have been copied from a file or a page, so it is
+# re-sent as data inside this fence, never as an instruction.
+UNTRUSTED_TODO_FENCE_OPEN = "<<<UNTRUSTED_TODO_TEXT"
+UNTRUSTED_TODO_FENCE_CLOSE = ">>>END_UNTRUSTED_TODO_TEXT"
+_TODO_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_TODO_FENCE_OPEN)
+_TODO_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_TODO_FENCE_CLOSE)
+
 _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
     _THREAD_FENCE_CLOSE_RE,
     _THREAD_FENCE_OPEN_RE,
     _CALENDAR_FENCE_CLOSE_RE,
     _CALENDAR_FENCE_OPEN_RE,
+    _TODO_FENCE_CLOSE_RE,
+    _TODO_FENCE_OPEN_RE,
 )
 
 
 def _neutralize_fence_markers(text: str) -> str:
     """Replace Unicode-normalized variants of every untrusted fence in *text*.
 
-    Covers the thread-parent and calendar-event fences, open and close. The
+    Covers the thread-parent, calendar-event and todo-text fences, open and close. The
     shared marker matcher supplies NFKC, default-ignorable removal, and
     original-coordinate spans; the replacement remains fence-specific.
     """
@@ -648,6 +660,13 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     # required hyphen separator, per the variable-tail convention above.
     re.compile(r"\[\s*FOLDER\s*STEERING\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*END\s*FOLDER\s*STEERING\s*\]", re.IGNORECASE),
+    # The checklist blocks the runner prepends for a fresh or live session
+    # (``_ChatSlot.todo_recovery_prompt`` / ``todo_sync_prompt``). Minted AFTER
+    # the egress scrub, like folder steering, so a copy in a fetched page or a
+    # tool result is neutralized and only the gateway's own block carries the
+    # frame. The em dash the block uses folds to ``-`` before matching.
+    re.compile(r"\[\s*TASK\s*CHECKLIST\s*[-]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*TASK\s*CHECKLIST\s*\]", re.IGNORECASE),
 )
 _STRUCTURAL_MARKER_NEUTRALIZED = "[marker-removed]"
 

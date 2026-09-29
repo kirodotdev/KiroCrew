@@ -10781,8 +10781,18 @@
         "more": "de plus…",
         "of": "sur",
         "task_completion": "Progression des tâches",
-        "aria_mark_done": "Marquer la tâche comme terminée : {{task}}",
-        "aria_mark_not_done": "Marquer la tâche comme non terminée : {{task}}"
+        "aria_mark_done": "Marquer terminée : {{task}}. L'agent ne la refera pas. Clique à nouveau pour annuler.",
+        "aria_mark_not_done": "Marquer non terminée : {{task}}. L'agent la considère comme encore ouverte. Clique à nouveau pour annuler.",
+        "click_to_toggle_hint": "Clique sur une ligne pour la marquer terminée ou non. Rien ne change pour l'agent avant son prochain tour, et d'ici là tu peux recliquer pour annuler. L'agent ne refait pas les lignes terminées et considère les autres comme ouvertes. Les lignes que tu as marquées portent un symbole de personne jusqu'à ce que l'agent les confirme.",
+        "tick_failed_lead": "« {{task}} » n'a pas été mise à jour ; la ligne garde son état. Recliquer est sans risque : une ligne ne change que quand la liste l'affiche.",
+        "read_only_hint": "Lecture seule : gérée par la machine distante qui exécute cette session.",
+        "fail_task_stale": "La liste a changé pendant le clic, cette ligne est donc une autre tâche maintenant. Relis la ligne avant de cliquer.",
+        "fail_task_gone": "Cette ligne n'est plus dans la liste. L'agent a remplacé sa liste.",
+        "fail_session_gone": "Ta session du tableau de bord a expiré. Recharge la page et reclique ; rien d'autre n'est perdu.",
+        "fail_remote": "Cette liste est gérée par la machine distante de cette session, elle ne peut donc pas être modifiée ici.",
+        "set_by_you_done": "Tu as marqué cette ligne terminée ; l'agent ne l'a pas encore confirmé.",
+        "set_by_you_open": "Tu as marqué cette ligne non terminée ; l'agent ne l'a pas encore confirmé.",
+        "sending": "Envoi en cours"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Réduire le raisonnement du modèle",

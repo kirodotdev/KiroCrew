@@ -10781,8 +10781,18 @@
         "more": "más…",
         "of": "de",
         "task_completion": "Progreso de tareas",
-        "aria_mark_done": "Marcar tarea como hecha: {{task}}",
-        "aria_mark_not_done": "Marcar tarea como no hecha: {{task}}"
+        "aria_mark_done": "Marcar como hecha: {{task}}. El agente no la repetirá. Haz clic otra vez para deshacer.",
+        "aria_mark_not_done": "Marcar como no hecha: {{task}}. El agente la tratará como pendiente. Haz clic otra vez para deshacer.",
+        "click_to_toggle_hint": "Haz clic en una fila para marcarla como hecha o no hecha. Nada cambia para el agente hasta su próximo turno, y hasta entonces puedes volver a hacer clic para deshacer. Las filas hechas el agente no las repite; las no hechas las trata como aún abiertas. Las filas que tú marcaste llevan un símbolo de persona hasta que el agente las confirme.",
+        "tick_failed_lead": "«{{task}}» no se actualizó; la fila conserva su estado. Volver a hacer clic es seguro: la fila solo cambia cuando la lista lo muestra.",
+        "read_only_hint": "Solo lectura: gestionada por la máquina remota que ejecuta esta sesión.",
+        "fail_task_stale": "La lista cambió mientras hacías clic, así que esta fila ahora es otra tarea. Mira la fila otra vez antes de hacer clic.",
+        "fail_task_gone": "Esa fila ya no está en la lista. El agente reemplazó su lista.",
+        "fail_session_gone": "Tu sesión del panel caducó. Recarga la página y vuelve a hacer clic: no se pierde nada más.",
+        "fail_remote": "Esta lista la gestiona la máquina remota de esta sesión, así que no se puede cambiar aquí.",
+        "set_by_you_done": "Marcaste esto como hecho; el agente aún no lo ha confirmado.",
+        "set_by_you_open": "Marcaste esto como no hecho; el agente aún no lo ha confirmado.",
+        "sending": "Enviando"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Contraer el razonamiento del modelo",

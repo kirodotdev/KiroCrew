@@ -9750,6 +9750,18 @@ def _gateway_shutdown_requested() -> bool:
     return shutdown_event.is_set()
 
 
+# Event kinds that prove the model READ this turn's prompt: it produced text or
+# reasoning, or asked for a tool or a permission. The checklist blocks (a sync
+# block or a cold-start recovery block) are settled on the first such event
+# and on nothing else. A terminal frame alone -- the transport's own
+# `complete(timeout)`, a compaction failure, an un-acked cancel -- is not
+# evidence the prompt was read, so a turn that yields only that keeps the
+# debt and the block is said again next turn.
+_TODO_BLOCK_READ_EVENT_KINDS = frozenset(
+    {EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK, EVENT_TOOL_CALL, EVENT_PERMISSION_REQUEST}
+)
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -11051,6 +11063,7 @@ async def _run_chat(
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.
     is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
+    _this_turn_is_clear = is_slash and first_word.lower() == "/clear"
 
     # Block dangerous/local-only commands before acquiring a session. The
     # kiro-only members are skipped where the harness implements them itself.
@@ -12403,6 +12416,14 @@ async def _run_chat(
         # are added. Final prefix scrubbing can then preserve this trusted tail
         # (including its sole minted reply-format marker) byte-for-byte.
         _trusted_prompt_tail: str | None = None
+        # The (id, text, completed) rows of the checklist sync block this turn's
+        # prompt carries, to be marked stated once the provider starts
+        # answering. Empty = none.
+        _todo_sync_rendered: tuple[tuple[str, str, bool], ...] = ()
+        # True when THIS turn's prompt carries the cold-start recovery block, so
+        # the debt is settled only by the turn that delivers it. A slash command
+        # or a warm turn never carries it and must not clear it.
+        _todo_recovery_carried = False
         _provider_has_history = resumed
         if not _provider_has_history:
             # An ACP provider exposes its native client; ``resumed`` is True only
@@ -12747,18 +12768,6 @@ async def _run_chat(
         if regenerate_hint:
             full_message = f"[System: {regenerate_hint}]\n\n{full_message}"
 
-        # Checklist resync. The pill's snapshot outlives the native conversation
-        # that produced it (agent switch, failed session/load, poisoned discard,
-        # /clear all cold-start a fresh one), and kiro-cli's todo_list state lives
-        # in that conversation. Same gate as the transcript replay above — a
-        # cold start the provider did not resume itself — because that is
-        # exactly when the agent's own list is empty while the pill is not. A
-        # pure PREPEND, so the trusted-tail scrub below covers it.
-        if not is_slash and _context_is_new and not _provider_has_history:
-            _todo_resync = slot.todo_recovery_prompt()
-            if _todo_resync:
-                full_message = f"{_todo_resync}\n\n{full_message}"
-
         # Enforce every structural boundary once more at provider egress.
         # ContextBuilder owns its trusted tail; everything added here is a pure
         # PREPEND. Scrub that complete dashboard-only prefix in one off-loop
@@ -12794,6 +12803,45 @@ async def _run_chat(
                     _neutralize_structural_markers,
                     full_message,
                 )
+
+        # Checklist resync. The pill's snapshot outlives the native conversation
+        # that produced it (agent switch, failed session/load, poisoned discard,
+        # /clear all cold-start a fresh one), and kiro-cli's todo_list state lives
+        # in that conversation. Same gate as the transcript replay above — a
+        # cold start the provider did not resume itself — because that is
+        # exactly when the agent's own list is empty while the pill is not.
+        #
+        # On a warm turn the agent still holds its list, so it gets only the rows
+        # the person ticked in the pill since its last snapshot (todo_sync_prompt),
+        # which is how a click reaches a live agent instead of being reverted by
+        # its next full snapshot.
+        if not is_slash:
+            # The cold-start `is_new` observation is a one-shot the session claim
+            # consumes, so a turn that builds the recovery block but dies before
+            # the provider's first event (a pre-dispatch Stop, an expired
+            # non-persistent session) would never deliver it and later turns,
+            # seeing is_new=False, would omit it — leaving the agent's empty list
+            # diverged for good. `slot.todo_recovery_pending` keeps the trigger
+            # armed across such an abort; it is cleared on the first provider
+            # event below, once delivery is confirmed.
+            if (_context_is_new and not _provider_has_history) or slot.todo_recovery_pending:
+                # The rebuild's `create` echoes an all-open list; pin the rows
+                # already done so that echo cannot erase them if the turn dies
+                # before the agent's `complete` calls.
+                slot.pin_completed_todo_rows()
+                _todo_resync = slot.todo_recovery_prompt()
+                if _todo_resync:
+                    # Owed until the provider accepts it (first event), not here:
+                    # the gates below can still abort before the prompt is sent.
+                    slot.mark_todo_recovery_pending()
+                    _todo_recovery_carried = True
+            else:
+                _todo_resync = slot.todo_sync_prompt()
+                # Marked stated on the provider's first event, not here: the
+                # gates below can still abort before the prompt is sent.
+                _todo_sync_rendered = slot.todo_sync_rendered if _todo_resync else ()
+            if _todo_resync:
+                full_message = f"{_todo_resync}\n\n{full_message}"
 
         # Slash commands use _kiro.dev/commands/execute for full native output;
         # regular messages use session/prompt.
@@ -13332,6 +13380,25 @@ async def _run_chat(
         _crew_log_step_t0 = time.monotonic()
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
+            if (_todo_sync_rendered or _todo_recovery_carried) and (
+                event.kind in _TODO_BLOCK_READ_EVENT_KINDS
+            ):
+                # The model has started answering THIS prompt, so the checklist
+                # block in it was read. A terminal-only stream (the transport's
+                # synthetic timeout, a compaction failure) never reaches here and
+                # leaves both debts owed for the next turn.
+                if _todo_sync_rendered:
+                    # Exactly the edits the block carried are now said; one
+                    # ticked since assembly is said next turn.
+                    slot.mark_todo_edits_stated(_todo_sync_rendered)
+                    _todo_sync_rendered = ()
+                if _todo_recovery_carried:
+                    # The cold-start recovery block THIS turn carried is
+                    # delivered: clear the debt so later turns stop re-sending
+                    # it. A turn that did not carry it (a slash command, a warm
+                    # turn) leaves the debt for the next non-slash turn to pay.
+                    slot.clear_todo_recovery_pending()
+                    _todo_recovery_carried = False
             # Async-generator creation is not prompt acceptance. The first
             # provider event is the earliest evidence that the replay-bearing
             # prompt entered the turn; pre-output errors and empty streams never
@@ -16332,6 +16399,18 @@ async def _run_chat(
                 # (append's own broadcast and the reader-suppressed frame alike)
                 # or the wipe erases the confirmation it announces.
                 state.broadcast_ws("slot_clear", {"slot": slot.key})
+                # /clear abandons the plan too. Keeping the pill would make the
+                # next cold start rebuild the cleared checklist into the fresh
+                # conversation (todo_recovery_prompt), so the person could never
+                # shed it.
+                # Not on an ownerless frame: a shared runtime fans those out to
+                # every peer runner, and a peer's checklist is not what this
+                # session's /clear cleared.
+                # Gated on THIS turn being the /clear, not on frame ownership: a
+                # shared runtime marks the frame ownerless whenever a subagent is
+                # registered, which is also true for the session that typed it.
+                if _this_turn_is_clear and slot.set_todo(None):
+                    state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
                 append_and_surface(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )

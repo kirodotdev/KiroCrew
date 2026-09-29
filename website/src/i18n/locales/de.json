@@ -10629,8 +10629,18 @@
         "more": "mehr…",
         "of": "von",
         "task_completion": "Aufgabenabschluss",
-        "aria_mark_done": "Aufgabe als erledigt markieren: {{task}}",
-        "aria_mark_not_done": "Aufgabe als nicht erledigt markieren: {{task}}"
+        "aria_mark_done": "Als erledigt markieren: {{task}}. Der Agent macht sie nicht noch einmal. Nochmal klicken macht es rückgängig.",
+        "aria_mark_not_done": "Als offen markieren: {{task}}. Der Agent behandelt sie als noch offen. Nochmal klicken macht es rückgängig.",
+        "click_to_toggle_hint": "Klicke auf eine Zeile, um sie als erledigt oder nicht erledigt zu markieren. Für den Agenten ändert sich nichts bis zu seinem nächsten Zug, und bis dahin kannst du durch erneutes Klicken rückgängig machen. Erledigte Zeilen macht der Agent nicht noch einmal; nicht erledigte behandelt er als weiter offen. Zeilen, die du gesetzt hast, tragen ein Personen-Symbol, bis der Agent sie bestätigt.",
+        "tick_failed_lead": "„{{task}}“ wurde nicht aktualisiert; die Zeile behält ihren Zustand. Nochmal klicken ist sicher: eine Zeile ändert sich nur, wenn die Liste es zeigt.",
+        "read_only_hint": "Nur lesen: verwaltet von der entfernten Maschine, auf der diese Sitzung läuft.",
+        "fail_task_stale": "Die Liste hat sich während des Klicks geändert; diese Zeile ist jetzt eine andere Aufgabe. Sieh die Zeile noch einmal an, bevor du klickst.",
+        "fail_task_gone": "Diese Zeile ist nicht mehr in der Liste. Der Agent hat seine Liste ersetzt.",
+        "fail_session_gone": "Deine Dashboard-Sitzung ist abgelaufen. Lade die Seite neu und klicke erneut – sonst geht nichts verloren.",
+        "fail_remote": "Diese Liste wird von der entfernten Maschine dieser Sitzung verwaltet und kann hier nicht geändert werden.",
+        "set_by_you_done": "Du hast das als erledigt markiert; der Agent hat es noch nicht bestätigt.",
+        "set_by_you_open": "Du hast das als offen markiert; der Agent hat es noch nicht bestätigt.",
+        "sending": "Wird gesendet"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Denkprozess des Modells einklappen",

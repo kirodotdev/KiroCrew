@@ -50,6 +50,7 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     STOP_REASON_CONTENT_FILTERED_WIRE,
     TERMINAL_TOOL_STATUSES,
+    TODO_ID_MAX,
     TODO_TASKS_MAX,
     TODO_TEXT_MAX,
     TOOL_PURPOSE_KEYS,
@@ -2572,7 +2573,9 @@ def parse_todo_snapshot(
         task_id = raw.get("id")
         tasks.append(
             {
-                "id": str(task_id) if task_id is not None else str(idx + 1),
+                # Provider-authored like the text: redacted BEFORE the bound, so
+                # the cut cannot sever a secret and leak its head.
+                "id": _redact(str(task_id) if task_id is not None else str(idx + 1))[:TODO_ID_MAX],
                 "text": text,
                 # `completed` is a plain bool in kiro-cli 2.14.0 — there is no
                 # in-progress state. bool() keeps a stray truthy string from

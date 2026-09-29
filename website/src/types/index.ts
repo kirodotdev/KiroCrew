@@ -908,6 +908,9 @@ export interface TodoTask {
   text: string
   /** kiro-cli's todo model is a plain boolean — there is no in-progress state. */
   completed: boolean
+  /** True while a person's click holds this row's state and the agent has not
+   * yet confirmed it in its own list. Absent on rows the agent itself set. */
+  person?: boolean
 }
 
 /**
