@@ -10614,7 +10614,7 @@
         "this_app_render_is_no_longer_available": "यह ऐप रेंडर अब उपलब्ध नहीं है। इसे देखने के लिए टूल फिर से चलाएँ।",
         "turn_diff": "टर्न डिफ़",
         "menu_crewlog": "सत्र लॉग",
-        "menu_crewlog_desc": "इस सत्र ने क्या किया और कितना खर्च हुआ: स्थिति, उपयोग, समयरेखा, टूल, अनुमोदन"
+        "menu_crewlog_desc": "इस सत्र ने क्या किया और कितना खर्च हुआ: स्थिति, उपयोग, समयरेखा, टूल, अनुमोदन, सबएजेंट"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "रोकना विफल, सत्र रीसेट",
@@ -11009,6 +11009,7 @@
         "col_model": "मॉडल",
         "col_turns": "चरण",
         "col_credits": "क्रेडिट",
+        "col_credits_subagent_hint": "इस सत्र के कुल क्रेडिट में पहले से शामिल, अतिरिक्त शुल्क नहीं। जो सबएजेंट विफल हुआ या रोक दिया गया, वह भी अपने इस्तेमाल का शुल्क लेता है।",
         "col_tool": "टूल",
         "col_calls": "कॉल",
         "col_errors": "त्रुटियाँ",
@@ -11062,7 +11063,27 @@
         "moment_model_selected": "मॉडल चुना गया",
         "moment_write_dropped": "प्रविष्टियाँ खो गईं",
         "moment_approval_requested": "अनुमोदन मांगा गया",
-        "moment_approval_decided": "अनुमोदन का उत्तर दिया"
+        "moment_approval_decided": "अनुमोदन का उत्तर दिया",
+        "section_subagents": "सबएजेंट",
+        "summary_subagents": "भेजे गए: {{spawned}} · चल रहे: {{open}}",
+        "summary_subagents_atleast": "भेजे गए: {{spawned}} · चल रहे: कम से कम {{open}}",
+        "subagents_empty": "कोई सबएजेंट नहीं भेजा गया।",
+        "stat_spawned": "भेजे गए सबएजेंट",
+        "col_agent": "सबएजेंट",
+        "col_outcome": "परिणाम",
+        "outcome_completed": "पूरा हुआ",
+        "outcome_failed": "विफल",
+        "outcome_stopped": "रोका गया",
+        "outcome_unknown": "अज्ञात",
+        "outcome_running": "चल रहा है",
+        "credits_not_reported": "रिपोर्ट नहीं किया",
+        "subagents_undetailed": "ऊपर {{count}} और गिने गए हैं, यहाँ सूचीबद्ध नहीं। पूरी सूची के लिए एजेंट से पूछो।",
+        "subagents_undetailed_gone": "ऊपर {{count}} और गिने गए हैं, यहाँ सूचीबद्ध नहीं। रिकॉर्ड ने इनके लिए कोई पंक्ति नहीं रखी।",
+        "subagents_undetailed_dropped": "ऊपर {{count}} और गिने गए हैं, यहाँ सूचीबद्ध नहीं। इनमें से {{askable}} के लिए एजेंट से पूछो। बाकी {{dropped}} के लिए रिकॉर्ड ने कोई पंक्ति नहीं रखी।",
+        "subagents_undetailed_running": "इनमें से {{running}} अभी भी चल रहे हैं।",
+        "subagents_undetailed_running_atleast": "इनमें से कम से कम {{running}} अभी भी चल रहे हैं।",
+        "subagents_unmatched_one": "{{count}} सबएजेंट पूरा हुआ जिसकी शुरुआत रिकॉर्ड में नहीं है, इसलिए यहाँ इसकी कोई पंक्ति नहीं है। इसके क्रेडिट इस सत्र के कुल में शामिल हैं।",
+        "subagents_unmatched_other": "{{count}} सबएजेंट पूरे हुए जिनकी शुरुआत रिकॉर्ड में नहीं है, इसलिए यहाँ इनकी कोई पंक्ति नहीं है। इनके क्रेडिट इस सत्र के कुल में शामिल हैं।"
       },
       "decisionStrip": {
         "steer_confidence": "भरोसा {{p}}",

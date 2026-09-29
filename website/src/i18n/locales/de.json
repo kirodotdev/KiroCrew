@@ -10614,7 +10614,7 @@
         "this_app_render_is_no_longer_available": "Diese App-Darstellung ist nicht mehr verfügbar. Führen Sie das Tool erneut aus, um sie anzuzeigen.",
         "turn_diff": "Zug-Diff",
         "menu_crewlog": "Sitzungsprotokoll",
-        "menu_crewlog_desc": "Was diese Sitzung getan und gekostet hat: Status, Verbrauch, Verlauf, Tools, Freigaben"
+        "menu_crewlog_desc": "Was diese Sitzung getan und gekostet hat: Status, Verbrauch, Verlauf, Tools, Freigaben, Subagenten"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Stoppen fehlgeschlagen, Sitzung zurückgesetzt",
@@ -11009,6 +11009,7 @@
         "col_model": "Modell",
         "col_turns": "Runden",
         "col_credits": "Guthaben",
+        "col_credits_subagent_hint": "Bereits im Guthaben-Gesamtwert dieser Sitzung enthalten, keine zusätzliche Belastung. Ein Subagent, der fehlgeschlagen ist oder gestoppt wurde, wird trotzdem für seinen Verbrauch berechnet.",
         "col_tool": "Werkzeug",
         "col_calls": "Aufrufe",
         "col_errors": "Fehler",
@@ -11062,7 +11063,27 @@
         "moment_model_selected": "Modell gewählt",
         "moment_write_dropped": "Einträge verloren",
         "moment_approval_requested": "Freigabe angefragt",
-        "moment_approval_decided": "Freigabe beantwortet"
+        "moment_approval_decided": "Freigabe beantwortet",
+        "section_subagents": "Subagenten",
+        "summary_subagents": "gestartet: {{spawned}} · laufend: {{open}}",
+        "summary_subagents_atleast": "gestartet: {{spawned}} · laufend: mindestens {{open}}",
+        "subagents_empty": "Keine Subagenten gestartet.",
+        "stat_spawned": "gestartete Subagenten",
+        "col_agent": "Subagent",
+        "col_outcome": "Ergebnis",
+        "outcome_completed": "fertig",
+        "outcome_failed": "fehlgeschlagen",
+        "outcome_stopped": "gestoppt",
+        "outcome_unknown": "unbekannt",
+        "outcome_running": "läuft",
+        "credits_not_reported": "nicht gemeldet",
+        "subagents_undetailed": "{{count}} weitere sind oben gezählt, hier nicht aufgeführt. Frage den Agenten nach der vollständigen Liste.",
+        "subagents_undetailed_gone": "{{count}} weitere sind oben gezählt, hier nicht aufgeführt. Das Protokoll behält keine Zeile für sie.",
+        "subagents_undetailed_dropped": "{{count}} weitere sind oben gezählt, hier nicht aufgeführt. Frage den Agenten nach {{askable}} davon. Das Protokoll behält keine Zeile für die übrigen {{dropped}}.",
+        "subagents_undetailed_running": "{{running}} davon laufen noch.",
+        "subagents_undetailed_running_atleast": "Mindestens {{running}} davon laufen noch.",
+        "subagents_unmatched_one": "{{count}} Subagent wurde beendet, ohne dass ein Start im Protokoll steht, daher hat er hier keine Zeile. Sein Guthaben ist im Gesamtwert dieser Sitzung enthalten.",
+        "subagents_unmatched_other": "{{count}} Subagenten wurden beendet, ohne dass ein Start im Protokoll steht, daher haben sie hier keine Zeilen. Ihr Guthaben ist im Gesamtwert dieser Sitzung enthalten."
       },
       "decisionStrip": {
         "steer_confidence": "Zuversicht {{p}}",

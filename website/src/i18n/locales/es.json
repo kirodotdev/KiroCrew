@@ -10760,7 +10760,7 @@
         "this_app_render_is_no_longer_available": "Esta representación de la app ya no está disponible. Ejecuta la herramienta de nuevo para verla.",
         "turn_diff": "Diff del turno",
         "menu_crewlog": "Registro de sesión",
-        "menu_crewlog_desc": "Qué hizo esta sesión y cuánto costó: estado, consumo, cronología, herramientas, aprobaciones"
+        "menu_crewlog_desc": "Qué hizo esta sesión y cuánto costó: estado, consumo, cronología, herramientas, aprobaciones, subagentes"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "No se pudo detener, sesión restablecida",
@@ -11164,6 +11164,7 @@
         "col_model": "modelo",
         "col_turns": "turnos",
         "col_credits": "créditos",
+        "col_credits_subagent_hint": "Ya incluidos en el total de créditos de esta sesión, no es un cargo adicional. Un subagente que falló o se detuvo igual cobra por lo que usó.",
         "col_tool": "herramienta",
         "col_calls": "llamadas",
         "col_errors": "errores",
@@ -11217,7 +11218,28 @@
         "moment_model_selected": "modelo elegido",
         "moment_write_dropped": "entradas perdidas",
         "moment_approval_requested": "aprobación solicitada",
-        "moment_approval_decided": "aprobación respondida"
+        "moment_approval_decided": "aprobación respondida",
+        "section_subagents": "Subagentes",
+        "summary_subagents": "lanzados: {{spawned}} · en curso: {{open}}",
+        "summary_subagents_atleast": "lanzados: {{spawned}} · en ejecución: al menos {{open}}",
+        "subagents_empty": "No se lanzaron subagentes.",
+        "stat_spawned": "subagentes lanzados",
+        "col_agent": "subagente",
+        "col_outcome": "resultado",
+        "outcome_completed": "terminado",
+        "outcome_failed": "falló",
+        "outcome_stopped": "detenido",
+        "outcome_unknown": "desconocido",
+        "outcome_running": "en curso",
+        "credits_not_reported": "sin informar",
+        "subagents_undetailed": "{{count}} más contados arriba, no listados aquí. Pregunta al agente por la lista completa.",
+        "subagents_undetailed_gone": "{{count}} más contados arriba, no listados aquí. El registro no guardó ninguna fila para ellos.",
+        "subagents_undetailed_dropped": "{{count}} más contados arriba, no listados aquí. Pregunta al agente por {{askable}} de ellos. El registro no guardó ninguna fila para los otros {{dropped}}.",
+        "subagents_undetailed_running": "{{running}} de ellos siguen en ejecución.",
+        "subagents_undetailed_running_atleast": "Al menos {{running}} de ellos siguen en ejecución.",
+        "subagents_unmatched_many": "{{count}} subagentes terminaron sin inicio en el registro, así que no tienen filas aquí. Sus créditos están en el total de esta sesión.",
+        "subagents_unmatched_one": "{{count}} subagente terminó sin inicio en el registro, así que no tiene fila aquí. Sus créditos están en el total de esta sesión.",
+        "subagents_unmatched_other": "{{count}} subagentes terminaron sin inicio en el registro, así que no tienen filas aquí. Sus créditos están en el total de esta sesión."
       },
       "decisionStrip": {
         "steer_confidence": "confianza {{p}}",

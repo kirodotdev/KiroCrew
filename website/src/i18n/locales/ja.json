@@ -10468,7 +10468,7 @@
         "this_app_render_is_no_longer_available": "このアプリの表示は利用できなくなりました。もう一度ツールを実行して表示してください。",
         "turn_diff": "ターンの差分",
         "menu_crewlog": "セッション記録",
-        "menu_crewlog_desc": "このセッションの作業と消費: 状態、使用量、時系列、ツール、承認"
+        "menu_crewlog_desc": "このセッションの作業と消費: 状態、使用量、時系列、ツール、承認、サブエージェント"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止に失敗したため、セッションをリセットしました",
@@ -10854,6 +10854,7 @@
         "col_model": "モデル",
         "col_turns": "ターン",
         "col_credits": "クレジット",
+        "col_credits_subagent_hint": "このセッションのクレジット合計にすでに含まれており、追加の請求ではありません。失敗または停止したサブエージェントも、使用した分の請求が発生します。",
         "col_tool": "ツール",
         "col_calls": "呼び出し",
         "col_errors": "エラー",
@@ -10907,7 +10908,26 @@
         "moment_model_selected": "モデルを選択",
         "moment_write_dropped": "エントリが失われた",
         "moment_approval_requested": "承認を要求",
-        "moment_approval_decided": "承認に回答"
+        "moment_approval_decided": "承認に回答",
+        "section_subagents": "サブエージェント",
+        "summary_subagents": "起動: {{spawned}} · 実行中: {{open}}",
+        "summary_subagents_atleast": "起動: {{spawned}} · 実行中: 少なくとも {{open}}",
+        "subagents_empty": "サブエージェントは起動していません。",
+        "stat_spawned": "起動したサブエージェント",
+        "col_agent": "サブエージェント",
+        "col_outcome": "結果",
+        "outcome_completed": "完了",
+        "outcome_failed": "失敗",
+        "outcome_stopped": "停止",
+        "outcome_unknown": "不明",
+        "outcome_running": "実行中",
+        "credits_not_reported": "報告なし",
+        "subagents_undetailed": "上記に{{count}}件が計上されていますが、ここには表示されていません。完全な一覧はエージェントに質問してください。",
+        "subagents_undetailed_gone": "上記に{{count}}件が計上されていますが、ここには表示されていません。これらは記録に行が残っていません。",
+        "subagents_undetailed_dropped": "上記に{{count}}件が計上されていますが、ここには表示されていません。このうち{{askable}}件はエージェントに質問してください。残りの{{dropped}}件は記録に行が残っていません。",
+        "subagents_undetailed_running": "このうち{{running}}件がまだ実行中です。",
+        "subagents_undetailed_running_atleast": "このうち少なくとも{{running}}件がまだ実行中です。",
+        "subagents_unmatched_other": "{{count}}件のサブエージェントは記録に開始がないまま終了したため、ここには行がありません。これらのクレジットはこのセッションの合計に含まれています。"
       },
       "decisionStrip": {
         "steer_confidence": "確信度 {{p}}",

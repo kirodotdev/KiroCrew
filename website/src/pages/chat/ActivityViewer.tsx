@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
@@ -20,13 +20,19 @@ import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
-import { PanelSectionHeader } from '../../components/ui'
+import { PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
-import { CrewLogTab } from './CrewLogPanel'
+import ErrorBoundary from '../../components/ErrorBoundary'
+
+// The crew log is a drill-in: six fold sections, their own i18n copy and the table
+// that draws each one, on a tab most sessions never open. Fetched on first open
+// rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
+// for its templates tab and `DeveloperPage` for the memory graph.
+const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import { queuedWaitText } from './subagentQueuedReason'
@@ -1252,7 +1258,16 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           beside Logs and Context for the same reason they sit together: all
           three answer "what actually happened in THIS session", this one from
           the record the gateway wrote rather than from live client state. */}
-      {effectiveTab === 'crewlog' && <CrewLogTab key={slot} slot={slot} />}
+      {/* ErrorBoundary around the lazy chunk, matching CapabilitiesPage: a stale chunk
+          request after a deploy rejects, and without a local boundary that rejection
+          would replace the whole dashboard with the app-shell error screen. */}
+      {effectiveTab === 'crewlog' && (
+        <ErrorBoundary>
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <CrewLogTab key={slot} slot={slot} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
 
       {/* Session summary — the goal-level view of this session, so returning to
           it does not mean re-reading the transcript. */}

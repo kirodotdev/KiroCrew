@@ -4359,7 +4359,7 @@
         "switch_to_split_view": "Switch to split view",
         "switch_to_unified_view": "Switch to unified view",
         "menu_crewlog": "Crew log",
-        "menu_crewlog_desc": "What this session did and what it cost: status, usage, timeline, tools, approvals"
+        "menu_crewlog_desc": "What this session did and what it cost: status, usage, timeline, tools, approvals, subagents"
       },
       "subagentCompletionCard": {
         "agent_id": "Agent {{id}}",
@@ -4673,6 +4673,7 @@
         "col_model": "model",
         "col_turns": "turns",
         "col_credits": "credits",
+        "col_credits_subagent_hint": "Already counted in this session’s credits total, not a charge on top of it. A child that failed or was stopped still bills for what it used.",
         "col_tool": "tool",
         "col_calls": "calls",
         "col_errors": "errors",
@@ -4726,7 +4727,27 @@
         "moment_model_selected": "model chosen",
         "moment_write_dropped": "entries lost",
         "moment_approval_requested": "approval asked",
-        "moment_approval_decided": "approval answered"
+        "moment_approval_decided": "approval answered",
+        "section_subagents": "Subagents",
+        "summary_subagents": "dispatched: {{spawned}} · running: {{open}}",
+        "summary_subagents_atleast": "dispatched: {{spawned}} · running: at least {{open}}",
+        "subagents_empty": "No subagents dispatched.",
+        "stat_spawned": "subagents dispatched",
+        "col_agent": "subagent",
+        "col_outcome": "outcome",
+        "outcome_completed": "finished",
+        "outcome_failed": "failed",
+        "outcome_stopped": "stopped",
+        "outcome_unknown": "unknown",
+        "outcome_running": "running",
+        "credits_not_reported": "not reported",
+        "subagents_undetailed": "{{count}} more counted above, not listed here. Ask the agent for the full list.",
+        "subagents_undetailed_gone": "{{count}} more counted above, not listed here. The record kept no row for them.",
+        "subagents_undetailed_dropped": "{{count}} more counted above, not listed here. Ask the agent for {{askable}} of them. The record kept no row for the other {{dropped}}.",
+        "subagents_undetailed_running": "{{running}} of them are still running.",
+        "subagents_undetailed_running_atleast": "At least {{running}} of them are still running.",
+        "subagents_unmatched_one": "{{count}} subagent finished with no start in the record, so it has no row here. Its credits are in this session’s total.",
+        "subagents_unmatched_other": "{{count}} subagents finished with no start in the record, so they have no rows here. Their credits are in this session’s total."
       },
       "decisionStrip": {
         "steer_confidence": "confidence {{p}}",

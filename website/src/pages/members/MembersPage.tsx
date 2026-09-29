@@ -44,11 +44,11 @@
  * it shows the New crewmate hero instead. Below md nothing auto-opens (the
  * phone's two-level list rule).
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { AlarmClock, ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
-import { Btn } from '../../components/ui'
+import { Btn, ContentSkeleton } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
 import NewCrewmateDialog, { type CreatedCrewmate } from './NewCrewmateDialog'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
@@ -97,7 +97,9 @@ import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../../
 import { hasNoCrewmates } from '../../hooks/useMeetCrewmatesGate'
 import { useGuardedLeave, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
 import CrewNotesTab from './CrewNotesTab'
-import { CrewLogTab } from '../chat/CrewLogPanel'
+// Same lazy boundary the chat route's activity sidebar uses: this panel is a drill-in
+// and its chunk is fetched when a reader opens it.
+const CrewLogTab = lazy(() => import('../chat/CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
@@ -4017,7 +4019,11 @@ export default function MembersPage() {
               <div className="px-3 pt-2.5 text-[11px] font-semibold tracking-wide text-muted">
                 {t('pages.membersPage.session_record')}
               </div>
-              <CrewLogTab slot={confirmedSlot} />
+              <ErrorBoundary>
+                <Suspense fallback={<ContentSkeleton rows={6} />}>
+                  <CrewLogTab slot={confirmedSlot} />
+                </Suspense>
+              </ErrorBoundary>
             </div>
           ) : null}
             </div>

@@ -10614,7 +10614,7 @@
         "this_app_render_is_no_longer_available": "এই অ্যাপ রেন্ডার আর উপলব্ধ নেই। এটি দেখতে টুলটি আবার চালান।",
         "turn_diff": "টার্ন ডিফ",
         "menu_crewlog": "সেশন লগ",
-        "menu_crewlog_desc": "এই সেশন কী করেছে এবং কত খরচ হয়েছে: স্টেটাস, ব্যবহার, টাইমলাইন, টুল, অনুমোদন"
+        "menu_crewlog_desc": "এই সেশন কী করেছে এবং কত খরচ হয়েছে: স্টেটাস, ব্যবহার, টাইমলাইন, টুল, অনুমোদন, সাবএজেন্ট"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "থামানো ব্যর্থ, সেশন রিসেট হয়েছে",
@@ -11009,6 +11009,7 @@
         "col_model": "মডেল",
         "col_turns": "পর্ব",
         "col_credits": "ক্রেডিট",
+        "col_credits_subagent_hint": "এই সেশনের মোট ক্রেডিটে ইতিমধ্যেই ধরা আছে, বাড়তি চার্জ নয়। যে সাবএজেন্ট ব্যর্থ হয়েছে বা থামিয়ে দেওয়া হয়েছে, সেটিও যা ব্যবহার করেছে তার জন্য চার্জ হয়।",
         "col_tool": "টুল",
         "col_calls": "কল",
         "col_errors": "ত্রুটি",
@@ -11062,7 +11063,27 @@
         "moment_model_selected": "মডেল নির্বাচিত",
         "moment_write_dropped": "এন্ট্রি হারিয়েছে",
         "moment_approval_requested": "অনুমোদন চাওয়া হয়েছে",
-        "moment_approval_decided": "অনুমোদনের উত্তর দেওয়া হয়েছে"
+        "moment_approval_decided": "অনুমোদনের উত্তর দেওয়া হয়েছে",
+        "section_subagents": "সাবএজেন্ট",
+        "summary_subagents": "পাঠানো: {{spawned}} · চলছে: {{open}}",
+        "summary_subagents_atleast": "পাঠানো: {{spawned}} · চলছে: অন্তত {{open}}",
+        "subagents_empty": "কোনো সাবএজেন্ট পাঠানো হয়নি।",
+        "stat_spawned": "পাঠানো সাবএজেন্ট",
+        "col_agent": "সাবএজেন্ট",
+        "col_outcome": "ফলাফল",
+        "outcome_completed": "শেষ হয়েছে",
+        "outcome_failed": "ব্যর্থ",
+        "outcome_stopped": "থামানো",
+        "outcome_unknown": "অজানা",
+        "outcome_running": "চলছে",
+        "credits_not_reported": "জানানো হয়নি",
+        "subagents_undetailed": "উপরে আরও {{count}}টি গোনা আছে, এখানে দেখানো হয়নি। সম্পূর্ণ তালিকার জন্য এজেন্টকে জিজ্ঞাসা করো।",
+        "subagents_undetailed_gone": "উপরে আরও {{count}}টি গোনা আছে, এখানে দেখানো হয়নি। রেকর্ড এদের জন্য কোনো সারি রাখেনি।",
+        "subagents_undetailed_dropped": "উপরে আরও {{count}}টি গোনা আছে, এখানে দেখানো হয়নি। এর মধ্যে {{askable}}টির জন্য এজেন্টকে জিজ্ঞাসা করো। রেকর্ড বাকি {{dropped}}টির জন্য কোনো সারি রাখেনি।",
+        "subagents_undetailed_running": "এর মধ্যে {{running}}টি এখনো চলছে।",
+        "subagents_undetailed_running_atleast": "এর মধ্যে অন্তত {{running}}টি এখনও চলছে।",
+        "subagents_unmatched_one": "{{count}}টি সাবএজেন্ট শেষ হয়েছে কিন্তু রেকর্ডে এর কোনো শুরু নেই, তাই এখানে এর কোনো সারি নেই। এর ক্রেডিট এই সেশনের মোটে আছে।",
+        "subagents_unmatched_other": "{{count}}টি সাবএজেন্ট শেষ হয়েছে কিন্তু রেকর্ডে এদের কোনো শুরু নেই, তাই এখানে এদের কোনো সারি নেই। এদের ক্রেডিট এই সেশনের মোটে আছে।"
       },
       "decisionStrip": {
         "steer_confidence": "আত্মবিশ্বাস {{p}}",

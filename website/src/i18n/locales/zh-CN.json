@@ -10468,7 +10468,7 @@
         "this_app_render_is_no_longer_available": "此应用渲染已不可用。请重新运行工具以查看。",
         "turn_diff": "本轮差异",
         "menu_crewlog": "会话记录",
-        "menu_crewlog_desc": "本会话做了什么、花了多少：状态、用量、时间线、工具、审批"
+        "menu_crewlog_desc": "本会话做了什么、花了多少：状态、用量、时间线、工具、审批、子代理"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止失败，会话已重置",
@@ -10854,6 +10854,7 @@
         "col_model": "模型",
         "col_turns": "轮次",
         "col_credits": "积分",
+        "col_credits_subagent_hint": "已计入本会话的积分总额，不是额外扣费。失败或已停止的子代理，仍会按其用量计费。",
         "col_tool": "工具",
         "col_calls": "调用",
         "col_errors": "错误",
@@ -10907,7 +10908,26 @@
         "moment_model_selected": "已选择模型",
         "moment_write_dropped": "条目丢失",
         "moment_approval_requested": "请求审批",
-        "moment_approval_decided": "审批已回复"
+        "moment_approval_decided": "审批已回复",
+        "section_subagents": "子代理",
+        "summary_subagents": "已派发：{{spawned}} · 进行中：{{open}}",
+        "summary_subagents_atleast": "已派发：{{spawned}} · 运行中：至少 {{open}}",
+        "subagents_empty": "没有派发过子代理。",
+        "stat_spawned": "已派发子代理",
+        "col_agent": "子代理",
+        "col_outcome": "结果",
+        "outcome_completed": "已完成",
+        "outcome_failed": "失败",
+        "outcome_stopped": "已停止",
+        "outcome_unknown": "未知",
+        "outcome_running": "进行中",
+        "credits_not_reported": "未报告",
+        "subagents_undetailed": "上面还计入 {{count}} 个，此处未列出。询问代理获取完整列表。",
+        "subagents_undetailed_gone": "上面还计入 {{count}} 个，此处未列出。记录没有为它们保留行。",
+        "subagents_undetailed_dropped": "上面还计入 {{count}} 个，此处未列出。询问代理获取其中 {{askable}} 个。记录没有为其余 {{dropped}} 个保留行。",
+        "subagents_undetailed_running": "其中 {{running}} 个仍在运行。",
+        "subagents_undetailed_running_atleast": "其中至少 {{running}} 个仍在运行。",
+        "subagents_unmatched_other": "有 {{count}} 个子代理已完成，但记录中没有它们的启动，因此此处没有对应行。其积分已计入本会话总额。"
       },
       "decisionStrip": {
         "steer_confidence": "置信度 {{p}}",

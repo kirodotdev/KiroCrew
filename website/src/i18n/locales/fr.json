@@ -10760,7 +10760,7 @@
         "this_app_render_is_no_longer_available": "Ce rendu d'application n'est plus disponible. Exécutez à nouveau l'outil pour l'afficher.",
         "turn_diff": "Diff du tour",
         "menu_crewlog": "Journal de session",
-        "menu_crewlog_desc": "Ce que cette session a fait et ce qu'elle a coûté : état, consommation, chronologie, outils, validations"
+        "menu_crewlog_desc": "Ce que cette session a fait et ce qu'elle a coûté : état, consommation, chronologie, outils, validations, sous-agents"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Échec de l'arrêt, session réinitialisée",
@@ -11164,6 +11164,7 @@
         "col_model": "modèle",
         "col_turns": "tours",
         "col_credits": "crédits",
+        "col_credits_subagent_hint": "Déjà comptés dans le total de crédits de cette session, pas un frais supplémentaire. Un sous-agent en échec ou arrêté facture quand même ce qu’il a utilisé.",
         "col_tool": "outil",
         "col_calls": "appels",
         "col_errors": "erreurs",
@@ -11217,7 +11218,28 @@
         "moment_model_selected": "modèle choisi",
         "moment_write_dropped": "entrées perdues",
         "moment_approval_requested": "validation demandée",
-        "moment_approval_decided": "validation tranchée"
+        "moment_approval_decided": "validation tranchée",
+        "section_subagents": "Sous-agents",
+        "summary_subagents": "lancés : {{spawned}} · en cours : {{open}}",
+        "summary_subagents_atleast": "lancés : {{spawned}} · en cours : au moins {{open}}",
+        "subagents_empty": "Aucun sous-agent lancé.",
+        "stat_spawned": "sous-agents lancés",
+        "col_agent": "sous-agent",
+        "col_outcome": "résultat",
+        "outcome_completed": "terminé",
+        "outcome_failed": "échec",
+        "outcome_stopped": "arrêté",
+        "outcome_unknown": "inconnu",
+        "outcome_running": "en cours",
+        "credits_not_reported": "non signalé",
+        "subagents_undetailed": "{{count}} de plus comptés ci-dessus, non listés ici. Demande à l’agent la liste complète.",
+        "subagents_undetailed_gone": "{{count}} de plus comptés ci-dessus, non listés ici. Le journal n’a gardé aucune ligne pour eux.",
+        "subagents_undetailed_dropped": "{{count}} de plus comptés ci-dessus, non listés ici. Demande à l’agent {{askable}} d’entre eux. Le journal n’a gardé aucune ligne pour les {{dropped}} autres.",
+        "subagents_undetailed_running": "{{running}} d’entre eux sont encore en cours.",
+        "subagents_undetailed_running_atleast": "Au moins {{running}} d’entre eux sont encore en cours.",
+        "subagents_unmatched_many": "{{count}} sous-agents se sont terminés sans début dans le journal, ils n’ont donc aucune ligne ici. Leurs crédits sont dans le total de cette session.",
+        "subagents_unmatched_one": "{{count}} sous-agent s’est terminé sans début dans le journal, il n’a donc aucune ligne ici. Ses crédits sont dans le total de cette session.",
+        "subagents_unmatched_other": "{{count}} sous-agents se sont terminés sans début dans le journal, ils n’ont donc aucune ligne ici. Leurs crédits sont dans le total de cette session."
       },
       "decisionStrip": {
         "steer_confidence": "confiance {{p}}",

@@ -199,13 +199,16 @@ def _state_digest(state: dict[str, Any]) -> str:
 #: credit bucket per source, so a savepoint written at 3 describes different meaning, and
 #: ``status``, ``timeline`` and ``class`` moved with it because the script above grew the
 #: entries that reach those buckets and a fold retaining a seq or a moment sees them. From
-#: here a bump is one fold's own, which is the whole point of the pair.
+#: here a bump is one fold's own, which is the whole point of the pair. ``subagents`` is the
+#: first fold to exercise that: it stands one past the base, and every sibling stays at 4,
+#: so retiring its savepoints costs a cold fold to that fold alone.
 _FOLD_STATE_PINS: dict[str, tuple[str, int]] = {
     "status": ("929af8634f6d6a5f", 4),
     "usage": ("fca1ed719ebf34fc", 4),
     "timeline": ("72b9531063943783", 4),
     "tools": ("008b36fed498d32b", 4),
     "approvals": ("c9db629215cc2620", 4),
+    "subagents": ("c4930a44d9ee6cc6", 6),
     "class": ("1eb292eff34fd7d9", 4),
 }
 
