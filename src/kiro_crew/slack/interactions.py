@@ -91,7 +91,7 @@ from kiro_crew.slack.renderer import (
     SlackApprovalDecider,
     split_approval_token,
 )
-from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
+from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -217,6 +217,7 @@ def _probe_tracked_channel_scope(channel_ids: set[str]) -> None:
     )
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
+    t.add_done_callback(log_probe_failure)
 
 
 # ---------------------------------------------------------------------------

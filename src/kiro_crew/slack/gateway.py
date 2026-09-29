@@ -354,7 +354,7 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
-from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
+from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
 from kiro_crew.slack.transport import SlackTransport
 from kiro_crew.subagent import (
     _TRANSIENT_CONTINUE_MSG,
@@ -14678,6 +14678,7 @@ class GatewayOrchestrator:
             )
             self._background_tasks.add(_scope_task)
             _scope_task.add_done_callback(self._background_tasks.discard)
+            _scope_task.add_done_callback(log_probe_failure)
 
         # Block until shutdown
         await shutdown_event.wait()
