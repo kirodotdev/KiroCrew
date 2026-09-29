@@ -698,8 +698,20 @@ Wired sites:
   module-load time (only at call time). v1 method addition to the existing
   `CredentialPolicy` Protocol; no `CONTRACT_VERSION` bump; `DefaultCredentialPolicy`
   returns `frozenset()` so standalone redaction is byte-identical.
-- `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
-  additively (`setdefault`) into the agent config build + dynamic refresh.
+- `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged into
+  the agent config. The invocation (`command`/`args`) is host-owned, every
+  other field is the user's: the fresh build seeds additively (`setdefault`),
+  so an override-file value is kept for that build only; the dynamic refresh
+  seeds a new entry whole and re-pins `command`/`args` on an existing entry
+  from the contributed spec (other fields preserved, except `autoApprove`,
+  which is reset to what the spec declares when the invocation now names a
+  different program, i.e. another executable name or argv or another
+  transport: a local pre-approval skips the PreToolUse hook and must not carry
+  over to a different program; the same program at a moved path keeps its
+  grants), so a launcher path that
+  moves between installs is followed and an override-file pin on the
+  invocation lasts until the next refresh. On both paths a name colliding
+  with a managed server is ignored.
 - `slack/events.py` / `slack/handler.py` / `dashboard/handlers_system.py` —
   Slack enterprise gate + SSO status route through `slack_gate` / `identity`.
 - `mcp_gateway/manager.py` — `GatewayManager._spawn_once` resolves
@@ -1414,7 +1426,7 @@ Current reserved surface:
 | `embeddings` (whole slot) | the public embedding runtime is the bundled in-process llama.cpp model — there is no HTTP embed path to source a model/endpoint/signature from | `embeddings.register_embedding_backend()` |
 | `package_manager` (whole slot) | external-tool install hints (ffmpeg, faiss, the `voice-aws` extra) are inline brew/winget/pip text in `doctor_checks/features.py`, not a single plan-resolution point | `CapabilityManager` for registry-backed MCP/skill/agent installs |
 | `feature_apps` (whole slot) | bundled apps are discovered via `AppsLoader` and registered by `apps/manager.py`; the tuple is a provenance record only | `AppsLoader.manifest_sources()` / `bundled_app_names()` |
-| `AgentRuntime.managed_mcp_servers` | the agent config is built from the `agent._MANAGED_MCP_SERVERS` global directly | `McpToolingProvider.extra_mcp_servers()` (wired, ADD-only) |
+| `AgentRuntime.managed_mcp_servers` | the agent config is built from the `agent._MANAGED_MCP_SERVERS` global directly | `McpToolingProvider.extra_mcp_servers()` (wired; build path add-only, dynamic refresh re-pins `command`/`args`) |
 | `IdentityProvider.whoami` / `.issuer` | nothing in the core displays the principal or branches on the issuer | return them in the wired `status()` payload |
 
 `FeatureApp` is deliberately the ONE Protocol with no `Default*` adapter: it

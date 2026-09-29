@@ -152,9 +152,13 @@ RESERVED_METHODS: "dict[str, dict[str, str]]" = {
         "managed_mcp_servers": (
             "no core call site: the agent config is built from the "
             "agent._MANAGED_MCP_SERVERS module global directly. Contribute extra "
-            "servers via McpToolingProvider.extra_mcp_servers(), which IS wired "
-            "and merges ADD-only into the same map. (The sibling "
-            "run_first_run_setup IS wired — see slack/gateway.py.)"
+            "servers via McpToolingProvider.extra_mcp_servers(), which IS wired: "
+            "the fresh build seeds them additively, the dynamic refresh re-pins an "
+            "existing entry's command/args from the contributed spec (other fields "
+            "preserved, except autoApprove, which is reset to the spec's list when "
+            "the invocation names a different program rather than the same one at a "
+            "moved path) and ignores a name a managed server owns. (The "
+            "sibling run_first_run_setup IS wired — see slack/gateway.py.)"
         ),
     },
     "identity": {

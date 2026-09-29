@@ -168,8 +168,17 @@ class AgentRuntime(Protocol):
 
         The agent config is built from the ``agent._MANAGED_MCP_SERVERS`` module
         global directly. Contribute extra servers through the WIRED
-        ``McpToolingProvider.extra_mcp_servers()``, which merges ADD-only into
-        the same map. Declared in ``context.RESERVED_METHODS`` and asserted by
+        ``McpToolingProvider.extra_mcp_servers()``. The invocation
+        (``command``/``args``) is host-owned and every other field is the
+        user's: the fresh build seeds them additively into the same map, the
+        dynamic refresh seeds a new entry whole and re-pins an existing
+        entry's ``command``/``args`` from the contributed spec with every
+        other field preserved (except ``autoApprove``, which is reset to what
+        the spec declares when the invocation now names a DIFFERENT program --
+        another executable name or argv, or another transport -- so grants made
+        against one program never transfer to another; the same program at a
+        moved path keeps them), and on both paths a name that collides with a
+        managed server is ignored. Declared in ``context.RESERVED_METHODS`` and asserted by
         ``test_platform_cpp_seam_coverage.py``, which fails if this gains a
         caller without the reservation being removed.
         """
