@@ -24,6 +24,7 @@ from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
     MembershipHarness,
+    apply_client_application_env,
     pin_mandatory_mcps_env,
 )
 from kiro_crew.acp.harness.base import (
@@ -147,6 +148,7 @@ class KiroHarness(MembershipHarness):
 
         inject_kiro_cli_api_key(env)
         pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        apply_client_application_env(env)
 
     @property
     def verifies_agent_activation(self) -> bool:

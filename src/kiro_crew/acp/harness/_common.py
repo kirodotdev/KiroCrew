@@ -36,6 +36,8 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_POD_HOME_REMAP,
+    KIRO_CLI_CLIENT_APPLICATION,
+    KIRO_CLI_CLIENT_APPLICATION_ENV,
     METHOD_KIRO_SESSION_UPDATE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
@@ -48,12 +50,27 @@ __all__ = [
     "KIRO_FAMILY_ALIASES",
     "MANDATORY_MCPS_ENV",
     "MembershipHarness",
+    "apply_client_application_env",
     "pin_mandatory_mcps_env",
 ]
 
 #: kiro-cli keeps every server named here out of Tool Search deferral. It reads
 #: the variable from the process environment once, at spawn.
 MANDATORY_MCPS_ENV = "ASBX_KIRO_MANDATORY_MCPS"
+
+
+def apply_client_application_env(env: dict[str, str]) -> None:
+    """Name Crew as the application driving this kiro-cli process.
+
+    Called by the kiro harness and by ``AcpClient._spawn`` for a kiro backend. The
+    KAS harness does not call it: its model requests come from the v3 engine,
+    which builds its own user-agent, so the tag would reach no backend record.
+
+    Overwritten rather than defaulted. Crew is the driving application of the child
+    it spawns whatever the gateway inherited, and a value carried in from an outer
+    host would file every Crew request under that host instead.
+    """
+    env[KIRO_CLI_CLIENT_APPLICATION_ENV] = KIRO_CLI_CLIENT_APPLICATION
 
 
 def pin_mandatory_mcps_env(env: dict[str, str], *, spawned_binary: str | None = None) -> None:

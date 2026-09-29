@@ -191,6 +191,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    KIRO_CLI_CLIENT_APPLICATION,
     KNOWN_SESSION_UPDATES,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_AGENT_SWITCHED,
@@ -323,7 +324,9 @@ from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
-CLIENT_NAME = "kirocrew"
+#: The name sent as ``clientInfo.name``. It IS the kiro-cli client-application
+#: tag, so one filter string finds Crew on both channels and the two cannot drift.
+CLIENT_NAME = KIRO_CLI_CLIENT_APPLICATION
 #: The version reported to the agent host in ``initialize``'s ``clientInfo``, and
 #: from there into the host's own telemetry (``acp_client_version``). It is the
 #: PACKAGE version, never a literal of its own: a hand-maintained literal is a
@@ -8599,6 +8602,12 @@ class AcpClient:
         # ``extra_env`` so agent configuration cannot redirect the trusted read
         # gate to a foreign interpreter.
         env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
+        # The auxiliary kiro-cli children never reach a harness's apply_spawn_env,
+        # so they are named here.
+        if self._is_kiro:
+            from kiro_crew.acp.harness._common import apply_client_application_env
+
+            apply_client_application_env(env)
         # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
         # confined to the pod's tree instead of the real host's -- see
         # _apply_pod_home_remap's docstring. No-op outside a pod
