@@ -3,10 +3,19 @@
 > Status: implemented and wired to the KAS relay. The auth subsystem lives under
 > `src/kiro_crew/auth/` with unit tests. Its runtime consumer is
 > `src/kiro_crew/acp/kas_host_auth.py`: when the vault holds an identity, the KAS
-> backend spawns `kiro-cli acp --agent-engine v3` WITHOUT `--auth-method cli`, so the
-> engine's `_kiro/auth/getAccessToken` request reaches Kiro Crew, and `AcpRuntime`
-> answers it from `KasAuthProvider.get_access_token_callback()`. With no identity
-> stored the spawn keeps `--auth-method cli` and kiro-cli owns login exactly as
+> backend spawns the relay in `acp --agent-engine v3` mode WITHOUT `--auth-method
+> cli`, so the engine's `_kiro/auth/getAccessToken` request reaches Kiro Crew, and
+> `AcpRuntime` answers it from `KasAuthProvider.get_access_token_callback()`. That
+> spawn enters through `kiro-cli-chat` when one sits beside the resolved `kiro-cli`
+> (`kiro_cli.chat_sibling`, consulted by `acp/harness/kas.py` on the Crew-owned
+> branch only, never for an explicit `KIROCREW_KIRO_BIN`, never on Windows whose one
+> `kiro-cli.exe` is the chat-cli crate itself): the POSIX `kiro-cli` is the q_cli launcher, and it checks its OWN
+> sign-in before exec'ing `kiro-cli-chat` for `acp` regardless of `--auth-method`, so
+> through it a Crew-owned spawn on a host where kiro-cli is signed out -- the host
+> this mode exists for -- exits `You are not logged in` before the engine ever asks
+> Crew (measured on kiro-cli 2.25.0; `kiro-cli-chat acp --agent-engine v3` starts KAS
+> in `--auth=acp-callback` and the turn completes). With no identity stored the spawn
+> keeps `--auth-method cli` through the launcher and kiro-cli owns login exactly as
 > before. kiro-cli remains the ACP service either way; Crew never spawns the KAS
 > bundle itself.
 

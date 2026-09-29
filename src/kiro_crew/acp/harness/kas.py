@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
 from kiro_crew.config import paths as paths_mod
+from kiro_crew.kiro_cli import chat_sibling
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,17 @@ __all__ = ["PROTOCOL_VERSION_KAS", "KasHarness"]
 #: KAS numbers ACP revisions. It rejects the date-string spelling kiro-cli takes,
 #: so the TYPE here is part of the contract, not an encoding detail.
 PROTOCOL_VERSION_KAS = 1
+
+
+def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
+    """Is *binary* the operator's own ``KIROCREW_KIRO_BIN`` choice?
+
+    Compared as absolute paths, the way the resolver hands the override
+    through (``snapshot_trusted_acp_executable`` returns ``abspath`` of the
+    candidate). No ``realpath``: the operator named THIS path.
+    """
+    override = (environ.get("KIROCREW_KIRO_BIN") or "").strip()
+    return bool(override) and os.path.abspath(binary) == os.path.abspath(override)
 
 
 class KasHarness(MembershipHarness):
@@ -94,9 +108,26 @@ class KasHarness(MembershipHarness):
         # Reads the vault off the loop and never raises.
         host_auth = await vault_holds_identity_off_loop()
         if host_auth:
+            # Enter through the chat binary, not the launcher. The `kiro-cli`
+            # launcher checks its OWN sign-in before it execs `kiro-cli-chat`
+            # for `acp`, so a Crew-owned spawn -- which exists precisely for the
+            # host where kiro-cli is signed out -- dies at the launcher with
+            # "You are not logged in" and never asks Crew for the credential.
+            # `kiro-cli-chat acp --agent-engine v3` skips that gate and starts
+            # KAS in `--auth=acp-callback`. Off the loop: a stat on the install
+            # directory. The cli-owned spawn keeps the launcher untouched: it
+            # needs kiro-cli signed in anyway, so the gate costs it nothing.
+            # An operator's KIROCREW_KIRO_BIN is exactly what they asked for --
+            # a wrapper of theirs named `kiro-cli` is never swapped out from
+            # under them.
+            if not _is_operator_override(kas_bin, ctx.environ):
+                chat_bin = await asyncio.to_thread(chat_sibling, kas_bin)
+                if chat_bin:
+                    kas_bin = chat_bin
             logger.info(
                 "KAS auth owner=crew — Crew vault holds an identity; relay spawned "
-                "without --auth-method cli (agent=%s)",
+                "without --auth-method cli via %s (agent=%s)",
+                os.path.basename(kas_bin),
                 ctx.agent or "<none>",
             )
         return SpawnPlan(argv=build_kas_argv(kas_bin, host_auth=host_auth), host_auth=host_auth)
