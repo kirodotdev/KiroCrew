@@ -51,7 +51,7 @@ import { FileCard } from '../../components/FileCard'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
 import { crewmateBubbleClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
-import { formatTs, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
+import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
@@ -594,6 +594,7 @@ export function createTranscriptRenderers(
                 })}
                 hideSteerBadge
                 onReplyInThread={replyInThreadFor(m, ctx)}
+                onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
               />
               {threadFooterFor(m, ctx, 'end')}
             </>,

@@ -10240,7 +10240,7 @@
         "fork_conversation_from_here": "ここから会話をフォーク",
         "next_version": "次のバージョン",
         "previous_version": "前のバージョン",
-        "raw_markdown": "生 Markdown",
+        "raw_markdown": "生 Markdown を表示",
         "regenerate": "再生成",
         "regenerate_response": "レスポンスを再生成",
         "rendered_view": "レンダリング済みビュー",
@@ -10263,7 +10263,8 @@
         "needs_active_chat": "このチャットを開き終えると利用できます",
         "needs_earlier_history_count_other": "選択すると以前の履歴を読み込みます（残り{{count}}件）",
         "share_message": "画像として共有",
-        "copy_failed": "コピーに失敗しました"
+        "copy_failed": "コピーに失敗しました",
+        "quote_message": "メッセージを引用"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -10708,7 +10709,9 @@
         "steering": "追加しています…",
         "delivery_pending": "送信確認待ち…",
         "redirecting_the_running_turn_not_yet_confirmed": "実行中のターンをリダイレクトしています — まだ確認されていません。",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "適用される前にターンが終了したため、別のメッセージとして実行されます。"
+        "turn_ended_before_this_applied_runs_as_its_own_message": "適用される前にターンが終了したため、別のメッセージとして実行されます。",
+        "quote_message": "メッセージを引用",
+        "more_actions": "その他の操作"
       },
       "workflowCompletionCard": {
         "hide_result": "結果を非表示",
@@ -11088,6 +11091,14 @@
         "rate_right": "Jev の判断は正しい",
         "rate_wrong": "Jev の判断は誤り",
         "not_scored": "（+{{count}} 件は未評価）"
+      },
+      "quoteCard": {
+        "you": "あなた",
+        "assistant": "{{productName}}",
+        "quoting_author": "{{author}}を引用中",
+        "remove_quote": "引用を削除",
+        "jump_to_quoted_message": "引用元のメッセージへ移動",
+        "message_unavailable": "移動できません — 元のメッセージはこの会話にありません。"
       }
     },
     "chatPage": {

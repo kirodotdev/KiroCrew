@@ -4,7 +4,8 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
-import { isUnsafeKey, queueEntryAttachments, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { quoteBlock } from '../../chat-core/composer/messageQuote'
+import { isUnsafeKey, queueEntryAttachments, queueEntryQuote, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 
 /** SINGLE hydration path for the slot-detail `queue` field — the one place that
  *  turns backend queue entries into `queued` message bubbles. Every reducer that
@@ -24,11 +25,11 @@ export function hydrateQueuedBubbles(
   queue: SlotQueueItem[] | undefined,
 ): ChatMessage[] {
   const base = list.filter((m) => m.role !== 'queued')
-  for (const { content, queueId, ts, kind, appLabel, ...attachments } of queue ?? []) {
+  for (const { content, queueId, ts, kind, appLabel, quote, ...attachments } of queue ?? []) {
     // The lists ride the row's meta under the same keys a user row carries
     // them, so a cancel on THIS tab restores a spaced path exactly even
     // though the send happened on another tab or before a reload.
-    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...attachments } })
+    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(quote ? { quote } : {}), ...attachments } })
   }
   return base
 }
@@ -98,6 +99,14 @@ export const queueReducers = {
       const { files: _f, dirs: _d, ...rest } = msgs[idx].meta ?? {}
       msgs[idx].meta = { ...rest, ...attachments }
     }
+    // The server drops the entry's `meta.quote` when the edit takes its block
+    // off the head of the text (`prune_quote_meta`); the same test here keeps
+    // the row's record in step, so a later cancel restages no deleted quote.
+    const { quote } = queueEntryQuote(msgs[idx].meta)
+    if (msgs[idx].meta?.quote !== undefined && (!quote || !content.startsWith(quoteBlock(quote)))) {
+      const { quote: _q, ...rest } = msgs[idx].meta ?? {}
+      msgs[idx].meta = rest
+    }
   },
   /** Reorder queued messages to match the given queue-id sequence (from the
    *  backend queue_reorder WS event or an optimistic local update). Queued
@@ -131,7 +140,7 @@ export const queueReducers = {
       if (msgs.some(m => m.role === 'queued' && (m.meta?.queueId as string) === queueId)) return
       // Same row shape as `hydrateQueuedBubbles`: the frame's attachment
       // lists ride the row so a cancel restores from them.
-      msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...queueEntryAttachments(meta) } })
+      msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...queueEntryAttachments(meta), ...queueEntryQuote(meta) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

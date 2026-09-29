@@ -10240,7 +10240,7 @@
         "fork_conversation_from_here": "从此处分叉对话",
         "next_version": "下一个版本",
         "previous_version": "上一个版本",
-        "raw_markdown": "原始 Markdown",
+        "raw_markdown": "显示原始 Markdown",
         "regenerate": "重新生成",
         "regenerate_response": "重新生成回复",
         "rendered_view": "渲染视图",
@@ -10263,7 +10263,8 @@
         "needs_active_chat": "此对话完成打开后可用",
         "needs_earlier_history_count_other": "选择以加载更早的历史记录 — 还剩 {{count}} 条更早的消息",
         "share_message": "分享为图片",
-        "copy_failed": "复制失败"
+        "copy_failed": "复制失败",
+        "quote_message": "引用消息"
       },
       "chatFooter": {
         "compacting": "压缩中…",
@@ -10708,7 +10709,9 @@
         "steering": "正在引导…",
         "delivery_pending": "正在等待送达…",
         "redirecting_the_running_turn_not_yet_confirmed": "正在重定向正在运行的这一轮——尚未确认。",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "这一轮在此生效前已结束，此消息作为独立消息运行。"
+        "turn_ended_before_this_applied_runs_as_its_own_message": "这一轮在此生效前已结束，此消息作为独立消息运行。",
+        "quote_message": "引用消息",
+        "more_actions": "更多操作"
       },
       "workflowCompletionCard": {
         "hide_result": "隐藏结果",
@@ -11088,6 +11091,14 @@
         "rate_right": "Jev 判断正确",
         "rate_wrong": "Jev 判断错误",
         "not_scored": "（另有 {{count}} 次未评分）"
+      },
+      "quoteCard": {
+        "you": "你",
+        "assistant": "{{productName}}",
+        "quoting_author": "引用 {{author}}",
+        "remove_quote": "移除引用",
+        "jump_to_quoted_message": "跳转到被引用的消息",
+        "message_unavailable": "无法跳转 — 原消息已不在此对话中。"
       }
     },
     "chatPage": {

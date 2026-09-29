@@ -582,7 +582,7 @@ describe('AssistantMessage', () => {
     // 4. Raw-view remains a row button while Speak joins the existing menu.
     const d = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} onFork={vi.fn()} variants={variants} />)
     expect(screen.getAllByTitle('More actions')).toHaveLength(1)
-    expect(screen.getByTitle('Raw markdown')).toBeTruthy()
+    expect(screen.getByTitle('Show raw markdown')).toBeTruthy()
     expect(screen.getByTitle('Copy')).toBeTruthy()
     openOverflow()
     expect(screen.getByTestId('speak-message')).toHaveTextContent('Read aloud')
@@ -926,7 +926,7 @@ describe('raw/rendered toggle is icon-only', () => {
     expect(toggle.textContent).toBe('')
     expect(toggle.querySelector('svg')).not.toBeNull()
     expect(toggle).toHaveAttribute('aria-pressed', 'false')
-    expect(toggle).toHaveAttribute('title', 'Raw markdown')
+    expect(toggle).toHaveAttribute('title', 'Show raw markdown')
     expect(toggle).toHaveAttribute('aria-label', 'Switch to raw markdown view')
     const renderedGlyph = toggle.querySelector('svg')!.getAttribute('class')
     fireEvent.click(toggle)
