@@ -184,6 +184,9 @@ export interface SidebarScope {
   newChatMenuOpen: boolean
   setNewChatMenuOpen: SetState<boolean>
   slotFilter: string
+  /** `slotFilter` holds a query: the browsing filters are paused and the dock draws
+   *  their chips so (the one trim; see `ChatSidebar`). */
+  slotSearchActive: boolean
   setSlotFilter: SetState<string>
   historyFilter: string
   setHistoryFilter: SetState<string>
