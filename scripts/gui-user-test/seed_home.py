@@ -6,6 +6,8 @@ Copies a named fixture (``kiro_crew.seed``, the same code path as
 renders as a fully onboarded install with a crew roster:
 
 * ``dashboard.onboarded`` / ``import_onboarded`` -> true (no setup wizard);
+* ``dashboard.crewmates_onboarded`` -> true (the Meet CrewMates chapter
+  would otherwise open over the first Crewmates page visit);
 * ``agents.default`` first, then ``agents.<slug>`` for every ``--member`` (the
   Crew Members page reads the roster from ``config.agents``; the fixtures ship
   none). ``default`` is written explicitly because the fixtures' seeded sessions
@@ -79,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     dashboard = cfg.setdefault("dashboard", {})
     dashboard["onboarded"] = True
+    dashboard["crewmates_onboarded"] = True
     cfg["import_onboarded"] = True
     agents = cfg.setdefault("agents", {})
     default_kiro_agent = cfg.get("agent", {}).get("default_agent", "kirocrew")
