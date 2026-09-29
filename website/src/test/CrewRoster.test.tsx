@@ -72,6 +72,11 @@ const mockApi = vi.hoisted(() => ({
   createKirocrewAgent: vi.fn(),
   updateKirocrewAgent: vi.fn(),
   deleteKirocrewAgent: vi.fn(),
+  // NewCrewmateDialog (the create door on this page) reads the execution
+  // catalog for its "Built from" list and the roster for its post-failure
+  // reconcile.
+  agentCatalog: vi.fn(),
+  members: vi.fn(),
   uploadCrewAvatar: vi.fn(),
   agentResolvedModel: vi.fn(),
   setDefaultAgent: vi.fn(),
@@ -171,6 +176,15 @@ beforeEach(() => {
   mockApi.createKirocrewAgent.mockResolvedValue({})
   mockApi.updateKirocrewAgent.mockResolvedValue({})
   mockApi.deleteKirocrewAgent.mockResolvedValue({})
+  // The create dialog's "Built from" list comes from the catalog's template
+  // rows; the built-in kirocrew agent leads it regardless.
+  mockApi.agentCatalog.mockResolvedValue({
+    agents: [
+      { name: 'kirocrew', selection_kind: 'template' },
+      { name: 'oncall-agent', selection_kind: 'template' },
+    ],
+  })
+  mockApi.members.mockResolvedValue({ members: [] })
   mockApi.setDefaultAgent.mockResolvedValue({})
   mockApi.createWorkspace.mockResolvedValue({ name: 'staging' })
 })
@@ -206,10 +220,12 @@ async function openEditor(name: string): Promise<HTMLElement> {
   return await screen.findByRole('dialog', { name: `Edit crewmate ${name}` })
 }
 
-/** Open the editor dialog in create mode and return the dialog element. */
+/** Open the create dialog (`NewCrewmateDialog`) and return its element. The
+ *  create door on this page opens that same simple dialog the Crewmates page
+ *  uses — not the full editor sheet — so it is titled "New crewmate". */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Add crewmate' })
+  return await screen.findByRole('dialog', { name: 'New crewmate' })
 }
 
 /**
@@ -548,76 +564,16 @@ describe('crew editor — opening', () => {
     expect(within(sheet).getByRole('combobox', { name: 'Edit default model' })).toHaveTextContent('claude-opus-5')
   })
 
-  it('opens the create dialog from "Add crewmate"', async () => {
+  it('opens the simple New crewmate dialog from "New crewmate"', async () => {
     await renderRoster()
     const sheet = await openCreate()
-    // Create mode has no crew to edit yet, so the bindings start on the defaults.
-    expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('default')
-    expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
-    expect(within(sheet).getByText(/empty member memory/i)).toBeInTheDocument()
-    // Built from is the exception: it has NO safe default, because
-    // pre-filling the built-in made a new crew an alias for the default agent.
-    expect(within(sheet).getByRole('combobox', { name: 'Built from' }))
-      .toHaveTextContent('Select a custom agent…')
-  })
-})
-
-describe('crew editor — create', () => {
-  it('refuses an empty name without calling the api', async () => {
-    await renderRoster()
-    const sheet = await openCreate()
-
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create' }))
-
-    expect(await within(sheet).findByText('Name is required')).toBeInTheDocument()
-    expect(mockApi.createKirocrewAgent).not.toHaveBeenCalled()
-    // The dialog stays open so the user can fix it in place.
-    expect(screen.getByRole('dialog', { name: 'Add crewmate' })).toBeInTheDocument()
-  })
-
-  it('refuses a crew with no custom agent chosen, without calling the api', async () => {
-    await renderRoster()
-    const sheet = await openCreate()
-
-    const user = userEvent.setup()
-    await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'staging')
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create' }))
-
-    // The template used to be pre-filled with 'kirocrew', so a crew created
-    // this way became an alias for the DEFAULT agent and the chat picker
-    // appeared to "fall back to default" (#1684). It is now an explicit choice.
-    expect(await within(sheet).findByText('Choose a custom agent to build from')).toBeInTheDocument()
-    expect(mockApi.createKirocrewAgent).not.toHaveBeenCalled()
-  })
-
-  it('creates the crew with the chosen bindings', async () => {
-    await renderRoster()
-    const sheet = await openCreate()
-
-    const user = userEvent.setup()
-    await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'staging')
-    // The template must be picked deliberately — nothing pre-fills it.
-    // Keyboard-driven: a POINTER click on the Radix select inside this dialog
-    // recurses in happy-dom's blur handling (RangeError: Maximum call stack size
-    // exceeded), which then wedges React's act queue for every later test here.
-    const template = within(sheet).getByRole('combobox', { name: 'Built from' })
-    fireEvent.keyDown(template, { key: 'ArrowDown' })
-    // The row now carries a source suffix ("oncall-agent — Custom"), so anchor on
-    // the name rather than matching the whole accessible name exactly.
-    fireEvent.click(await screen.findByRole('option', { name: /^oncall-agent/ }))
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create' }))
-
-    await waitFor(() =>
-      expect(mockApi.createKirocrewAgent).toHaveBeenCalledWith({
-        name: 'staging',
-        display_name: '',
-        kiro_agent: 'oncall-agent',
-        workspace: 'default',
-        memory_store: 'default',
-        triggers: '',
-        session_color: '',
-      }),
-    )
+    // The create door opens the Crewmates page's own dialog, not the full
+    // editor sheet: it asks for a Name, a "Built from" template and "what it
+    // looks after", with everything else behind an Advanced fold.
+    expect(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot')).toBeInTheDocument()
+    expect(within(sheet).getByRole('button', { name: 'Create crewmate' })).toBeInTheDocument()
+    // Advanced is folded, so the workspace/model bindings are not shown up front.
+    expect(within(sheet).queryByRole('combobox', { name: 'Workspace' })).not.toBeInTheDocument()
   })
 })
 
@@ -1354,10 +1310,10 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('deep link ?new=1 opens the create form directly, then strips the param', async () => {
+  it('deep link ?new=1 opens the create dialog directly, then strips the param', async () => {
     renderPage('/capabilities?tab=crews&new=1')
-    // A "New crew" deep link with no origin is this page's own form.
-    await screen.findByRole('dialog', { name: 'Add crewmate' })
+    // A "New crew" deep link with no origin opens this page's create dialog.
+    await screen.findByRole('dialog', { name: 'New crewmate' })
     // Consumed: closing the form must not re-open it on the next render, and
     // Back must not land on a form the user already left.
     await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))
@@ -1367,13 +1323,12 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     await renderRoster()
     const sheet = await openCreate()
     const user = userEvent.setup()
-    await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'staging')
-    const template = within(sheet).getByRole('combobox', { name: 'Built from' })
-    fireEvent.keyDown(template, { key: 'ArrowDown' })
-    fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create' }))
+    await user.type(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot'), 'staging')
+    // "Built from" defaults to the built-in kirocrew template; no pick needed.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Create crewmate' }))
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    // Config mode: no navigation to the Crewmates page or anywhere else.
     expect(screen.getByTestId('location-pathname')).not.toHaveTextContent('/members')
   })
 })

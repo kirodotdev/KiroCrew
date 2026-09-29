@@ -19,6 +19,9 @@ const mockApi = vi.hoisted(() => ({
   createKirocrewAgent: vi.fn(),
   updateKirocrewAgent: vi.fn(),
   deleteKirocrewAgent: vi.fn(),
+  agentCatalog: vi.fn(),
+  members: vi.fn(),
+  models: vi.fn(),
   agentResolvedModel: vi.fn(),
   setDefaultAgent: vi.fn(),
   createChatSlot: vi.fn(),
@@ -104,13 +107,20 @@ beforeEach(() => {
   mockApi.workspaces.mockResolvedValue(WORKSPACES_RESPONSE)
   mockApi.kirocrewConfig.mockResolvedValue(CONFIG_RESPONSE)
   mockApi.agentResolvedModel.mockResolvedValue({ model: '', pinned: false, kiro_agent: 'kirocrew' })
+  mockApi.agentCatalog.mockResolvedValue({ agents: [{ name: 'kirocrew', selection_kind: 'template' }] })
+  mockApi.members.mockResolvedValue({ members: [] })
+  mockApi.models.mockResolvedValue([])
 })
 
-/** Open the crew editor panel. The workspace picker lives inside it now, so
- *  every workspace-modal path goes through here first. */
+/** Open the create dialog. The workspace picker lives inside its Advanced
+ *  fold now, so every workspace-modal path goes through here first. */
 async function openCrewSheet(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Add crewmate' })
+  const dlg = await screen.findByRole('dialog', { name: 'New crewmate' })
+  // Workspace and the other bindings sit behind the Advanced disclosure.
+  fireEvent.click(within(dlg).getByTestId('crewmate-create-advanced-toggle'))
+  await within(dlg).findByRole('combobox', { name: 'Workspace' })
+  return dlg
 }
 
 /** Open the workspace select inside the editor panel and click the

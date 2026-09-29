@@ -4405,6 +4405,34 @@ describe('New crewmate dialog', () => {
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
 
+  // Pins the retirement of the #1684 "must pick a template" guard. Before the
+  // create doors converged on this dialog, create started with no template
+  // selected and refused to submit until one was picked. The accepted
+  // rfc-crewmates-launch.md rules the New crewmate dialog's "Built from" field
+  // is "the default agent or a custom agent" — a default, not a required pick —
+  // so submitting the untouched field posts `kiro_agent: 'kirocrew'` and there
+  // is no template-required refusal. If someone restores the old guard, this
+  // fails on the missing request.
+  it('a create that never touches "Built from" defaults to the built-in agent, with no template-required refusal (RFC-ruled retirement of #1684)', async () => {
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
+    membersMock.mockResolvedValueOnce({
+      members: [row(), row({ name: 'radar', slug: 'radar', slot_key: 'member-radar' })],
+      default_agent: 'kirocrew',
+    })
+    // Submit without ever interacting with the "Built from" select.
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
+    // No refusal hint was raised — the untouched field is a valid default,
+    // not an unsatisfied requirement.
+    expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
+    // The request carries the built-in agent as the built-from value.
+    expect(api.createKirocrewAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'radar', kiro_agent: 'kirocrew' }))
+  })
+
   it('a free-form name already on the roster is refused as taken before any request, by exact display name', async () => {
     await renderPage([row({ name: 'Dr. Eggbot', slug: 'dr-eggbot', slot_key: 'member-dr-eggbot' })])
     await waitFor(() => expect(screen.getByTestId('member-roster')).toHaveTextContent('Dr. Eggbot'))

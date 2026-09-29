@@ -748,16 +748,34 @@ when navigation permits. The cached conversation and its drafts remain available
 The Crewmates page (`/members`, titled "Crewmates") creates a crewmate in place.
 Its "New crewmate" dialog — name, Built from (the default agent or an installed
 custom agent), "What it looks after", and an Advanced fold with workspace, model,
-triggers and session colour — posts to the same `POST /api/agents` the crew
-manager's create form uses: one write path, two front doors. "What it looks
-after" is stored as the crew record's `description`. After the create the page
+triggers and session colour — is the ONE create form
+(`website/src/pages/members/NewCrewmateDialog.tsx`), mounted from every create
+door: the Crewmates page's header "+" and its empty-state hero, AND the crew
+manager's "Add crew member" tile / header button and its dashed roster card
+(`website/src/pages/KiroCrewAgentsPage.tsx`, the Crews tab of Agent
+Capabilities). The crew manager has no separate create sheet; clicking
+"Add crew member" there opens this same dialog, so a create is one form however
+it is reached. It posts to the same `POST /api/agents`: one write path, several
+front doors. "What it looks
+after" is stored as the crew record's `description`. What happens AFTER the
+create depends on the door. From the Crewmates page the page
 re-reads the roster, opens the new crewmate's chat through the verified
 thread-opening endpoint, and seeds one first user turn into that chat over the
 composer's own send path, so the chat opens with the crewmate's greeting; the
 seed names the job when one was given. If that chat open fails, the greeting is
 parked in page memory and seeds the crewmate's next successful open in this
 visit, once; leaving or reloading the page drops it, and nothing is persisted.
-Landing rule: with no crewmates the page
+From the crew manager the door is CONFIG mode: the dialog closes and the crew
+manager re-reads its roster so the new card appears in place; it does NOT
+navigate to the crewmate's chat and seeds no greeting, because the user is
+configuring crews, not opening a conversation. The dialog's own success path
+(cache invalidation, the post-failure reconcile, "what it looks after" stored as
+`description`) is identical on both doors; only the caller's `onCreated`
+differs. `NewCrewmateDialog` imports its field frame and field components from
+`KiroCrewAgentsPage`, so the two pages cannot drift; the resulting call-time
+import cycle is resolved because both reference the other's bindings only inside
+component bodies.
+Landing rule (Crewmates page): with no crewmates the page
 shows a single empty-state hero (ghost avatar, "No crewmates yet", one line,
 "New crewmate") in place of a roster call to action and a "pick a member" pane;
 with crewmates and no `?member=`, the remembered crewmate opens, else the most

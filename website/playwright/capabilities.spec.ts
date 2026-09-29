@@ -60,8 +60,8 @@ test.describe('Capabilities Page — /capabilities', () => {
     }
 
     // The trailing dashed tile is the roster's second entry point into the
-    // create sheet, so it is part of the contract rather than decoration.
-    await expect(page.getByLabel('Add crewmate', { exact: true })).toBeVisible()
+    // create dialog, so it is part of the contract rather than decoration.
+    await expect(page.getByLabel('New crewmate', { exact: true })).toBeVisible()
   })
 
   test('switching to Skills tab renders skills content', async ({ page }) => {
@@ -81,29 +81,27 @@ test.describe('Capabilities Page — /capabilities', () => {
   })
 
   test('create and delete crew round-trip via the editor panel', async ({ page, request }) => {
-    // Both mutations now live in the side sheet: creation is New crew → dialog →
-    // Create, deletion is card → dialog → Delete crewmate. Driving them through the
-    // UI is the round-trip now, since neither control exists on the page itself.
+    // Creation now opens the simple New crewmate dialog (the same one the
+    // Crewmates page uses); deletion is still card → editor → Delete crewmate.
+    // Config mode: a create stays on this roster, it does not navigate away.
     const agentName = `pw-cap-${Date.now()}`
     const card = page.getByRole('button', { name: `Edit crewmate ${agentName}`, exact: true })
 
     try {
       await page.getByTestId('new-crew').click()
-      const createSheet = page.getByRole('dialog', { name: 'Add crewmate' })
+      const createSheet = page.getByRole('dialog', { name: 'New crewmate' })
       await expect(createSheet).toBeVisible({ timeout: 5000 })
 
-      // The Name field's label is a <span>, not a <label for>, so the input has
-      // no accessible name — the placeholder is its stable handle. Workspace and
-      // memory store keep their defaults; the Built from field does NOT have one and
-      // must be chosen, because pre-filling it made a new crew a silent alias for
-      // the default agent, so Create now refuses until it is set.
-      await createSheet.getByPlaceholder('e.g. oncall').fill(agentName)
-      await createSheet.getByRole('combobox', { name: 'Built from' }).click()
-      await page.getByRole('option', { name: 'kirocrew', exact: true }).click()
-      await createSheet.getByRole('button', { name: 'Create', exact: true }).click()
+      // Name by placeholder (its label is a <span>, not a <label for>). "Built
+      // from" defaults to the built-in kirocrew template, so no pick is needed;
+      // everything else sits behind the Advanced fold and keeps its defaults.
+      await createSheet.getByPlaceholder('e.g. Radar or Dr. Eggbot').fill(agentName)
+      await createSheet.getByRole('button', { name: 'Create crewmate', exact: true }).click()
 
-      // A successful create closes the sheet and refetches the roster.
+      // A successful create closes the dialog and refetches the roster; the page
+      // stays on /capabilities (config mode: no navigation).
       await expect(createSheet).toBeHidden({ timeout: 10000 })
+      await expect(page).toHaveURL(/\/capabilities/, { timeout: 5000 })
       await expect(card).toBeVisible({ timeout: 10000 })
 
       // Delete through the same panel — the danger zone only renders for a crew

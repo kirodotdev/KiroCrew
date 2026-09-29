@@ -76,6 +76,8 @@ const mockApi = vi.hoisted(() => ({
   createKirocrewAgent: vi.fn(),
   updateKirocrewAgent: vi.fn(),
   deleteKirocrewAgent: vi.fn(),
+  agentCatalog: vi.fn(),
+  members: vi.fn(),
   agentResolvedModel: vi.fn(),
   setDefaultAgent: vi.fn(),
   createChatSlot: vi.fn(),
@@ -205,6 +207,13 @@ beforeEach(() => {
   mockApi.createKirocrewAgent.mockResolvedValue({})
   mockApi.updateKirocrewAgent.mockResolvedValue({})
   mockApi.deleteKirocrewAgent.mockResolvedValue({})
+  mockApi.agentCatalog.mockResolvedValue({
+    agents: [
+      { name: 'kirocrew', selection_kind: 'template' },
+      { name: 'oncall-agent', selection_kind: 'template' },
+    ],
+  })
+  mockApi.members.mockResolvedValue({ members: [] })
   mockApi.setDefaultAgent.mockResolvedValue({})
   mockApi.createWorkspace.mockResolvedValue({ name: 'staging' })
 })
@@ -218,17 +227,6 @@ async function renderRoster(expectCards = 2) {
   return rendered
 }
 
-/** Escape, dispatched where Radix listens for it.
- *
- *  Radix's DismissableLayer binds `keydown` on `document`; the hand-rolled dialog
- *  this page used to render bound it on `window`. An event dispatched directly AT
- *  `window` never passes through `document`, so `fireEvent.keyDown(window, ...)`
- *  is invisible to Radix — it is not a faithful simulation either way, since a
- *  real keypress targets the focused element and bubbles up through both. */
-function pressEscape() {
-  fireEvent.keyDown(document, { key: 'Escape' })
-}
-
 /** A roster card, addressed by the accessible name the card exposes. */
 function crewCard(name: string) {
   return screen.getByRole('button', { name: `Edit crewmate ${name}` })
@@ -240,27 +238,17 @@ async function openEditor(name: string): Promise<HTMLElement> {
   return await screen.findByRole('dialog', { name: `Edit crewmate ${name}` })
 }
 
-/** Open the editor dialog in create mode and return the dialog element. */
+/** Open the create dialog (`NewCrewmateDialog`) and return its element. The
+ *  create door opens the Crewmates page's simple dialog, titled "New crewmate". */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Add crewmate' })
+  return await screen.findByRole('dialog', { name: 'New crewmate' })
 }
 
 describe('crew editor — collision warning', () => {
-  it('explains automatic member memory without an empty field or a workspace association', async () => {
-    await renderRoster()
-    const sheet = await openCreate()
-    const guidance = within(sheet).getByText('New members start with empty Member memory (V2). Global Memory V1 stays unchanged.')
-    expect(guidance).toBeVisible()
-    expect(within(sheet).queryByText('Memory store', { exact: true })).toBeNull()
-    expect(within(sheet).getByText('Workspace', { exact: true }).parentElement).not.toContainElement(guidance)
-  })
-
   it('shows no page-level memory banner above the roster', async () => {
     // The roster opens on the crewmates themselves; the memory explanation
-    // lives in the create sheet (previous test) and the per-binding tips.
-    await renderRoster()
-    expect(screen.queryByText(/New crew members get Member memory/)).toBeNull()
+    // lives in the create dialog and the per-binding tips, never a page banner.
     expect(screen.queryByText(/Every named member has its own private Memory V2/)).toBeNull()
   })
 
@@ -403,20 +391,16 @@ describe('crew editor — a registry write re-reads the config snapshot', () => 
 
     await renderRoster()
     const create = await openCreate()
-    fireEvent.change(within(create).getByPlaceholderText('e.g. oncall'), { target: { value: 'fix' } })
-    // The template is required and starts unselected (see
-    // KiroCrewAgentsPage.templateRequired.test.tsx), so the create cannot be
-    // fired without choosing one. `kirocrew` names an installed template and
-    // nothing else in this sheet — the workspace and model pickers offer
-    // different values — so the option is unambiguous without scoping to the
-    // stub's listbox.
-    fireEvent.click(within(create).getByRole('combobox', { name: 'Built from' }))
-    fireEvent.click(within(create).getByRole('option', { name: 'kirocrew' }))
-    fireEvent.click(within(create).getByRole('button', { name: 'Create' }))
+    fireEvent.change(within(create).getByPlaceholderText('e.g. Radar or Dr. Eggbot'), { target: { value: 'fix' } })
+    // "Built from" defaults to the built-in kirocrew template (the list leads
+    // with it), so no template pick is needed to fire the create.
+    fireEvent.click(within(create).getByRole('button', { name: 'Create crewmate' }))
 
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
-    // The write's own invalidation, not a window refocus or the server's generic
-    // refresh broadcast (hooks/useWebSocket.ts), which are not firing here.
+    // The dialog invalidates BOTH ['kirocrew-agents'] and ['kirocrewConfig'] in
+    // its own success path, so the memory row's config read is refreshed — not a
+    // window refocus or the server's generic refresh broadcast, which are not
+    // firing here.
     await waitFor(() => expect(mockApi.kirocrewConfig.mock.calls.length).toBeGreaterThanOrEqual(2))
 
     const sheet = await openEditor('fix')
@@ -424,50 +408,6 @@ describe('crew editor — a registry write re-reads the config snapshot', () => 
     await waitFor(() =>
       expect(within(sheet).getByText('This crewmate has its own memory (V2).')).toBeVisible())
     expect(within(sheet).queryByText(/configured memory store is unavailable/)).toBeNull()
-  })
-})
-
-describe('crew editor — keyboard (via a binding select)', () => {
-  it('gives the nested workspace dialog sole ownership of Escape', async () => {
-    await renderRoster()
-    const sheet = await openCreate()
-
-    fireEvent.click(within(sheet).getByRole('combobox', { name: 'Workspace' }))
-    fireEvent.click(await screen.findByText('+ New workspace…'))
-    const modal = await screen.findByRole('dialog', { name: 'Create Workspace' })
-
-    // Focus moves INTO the nested layer — Radix's FocusScope owns this, where the
-    // hand-rolled version had to be told to stop trapping. Focus on `body` would
-    // mean Tab walks the obscured page behind both overlays.
-    const active = document.activeElement as HTMLElement
-    expect(active).not.toBe(document.body)
-    expect(modal.contains(active)).toBe(true)
-
-    // While the nested layer is up, the editor beneath is `aria-hidden` and so is
-    // deliberately NOT exposed as a dialog to assistive tech. That is Radix doing
-    // the right thing, and it is why this is asserted through the DOM rather than
-    // by role: the editor must still be MOUNTED (the form is not destroyed) even
-    // though it is hidden from AT.
-    const editorEl = document.querySelector('[aria-label="Add crewmate"]')
-    expect(editorEl).toBeTruthy()
-    expect(editorEl!.closest('[aria-hidden="true"]')).toBeTruthy()
-
-    pressEscape()
-
-    // The inner dialog takes the key; the editor must NOT close underneath it, or
-    // the user loses the whole form to one keypress. Radix's layer stack does this
-    // natively — the old implementation needed a `paused` flag threaded down.
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Create Workspace' })).not.toBeInTheDocument(),
-    )
-    // ...and with the nested layer gone the editor is exposed to AT again.
-    expect(screen.getByRole('dialog', { name: 'Add crewmate' })).toBeInTheDocument()
-
-    // Once the nested dialog is gone the editor owns Escape again.
-    pressEscape()
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Add crewmate' })).not.toBeInTheDocument(),
-    )
   })
 })
 

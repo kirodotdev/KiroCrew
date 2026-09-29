@@ -104,6 +104,48 @@ describe('capability pane inside the crew dialog', () => {
     expect(screen.getByRole('dialog', { name: 'Edit crewmate oncall' })).toBe(sheet)
   })
 
+  it('keeps the open create dialog and its typed name when the bare capabilities route becomes mobile', async () => {
+    // Regression: the resize guard used to key only on the editor `sheet`, so
+    // opening the create dialog, typing a draft, and narrowing past the
+    // breakpoint unmounted this page + the dialog and discarded the draft with
+    // no confirm. The guard now also pins the pane route while `createOpen`.
+    const tree = <SidePanelLayout title="Capabilities" tabs={[{ key: 'crews', label: 'Crews', icon: null }]} rememberKey="capabilities">
+      {() => <KiroCrewAgentsPage embedded />}
+    </SidePanelLayout>
+    const result = renderWithProviders(tree, { route: '/capabilities' })
+    fireEvent.click(await screen.findByTestId('new-crew'))
+    const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
+    const name = within(dialog).getByRole('textbox', { name: 'Name' })
+    fireEvent.change(name, { target: { value: 'my-draft-crew' } })
+    viewport.mobile = true
+    result.rerender(cloneElement(tree))
+    expect(screen.getByRole('dialog', { name: 'New crewmate' })).toBe(dialog)
+    expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue('my-draft-crew')
+  })
+
+  it('suppresses the roster-load error hand-off while the create dialog holds a typed draft', async () => {
+    // Regression: the roster / editor-options ErrorNotice offered "Ask the
+    // agent", which navigates to chat and unmounts this page. Its `askAgent`
+    // guard keyed only on the editor `sheet`, so with the create dialog open
+    // (its draft in `createOpen`, not `sheet`) the hand-off stayed live and one
+    // click discarded the typed draft with no confirm. The guard now also
+    // suppresses the hand-off while `createOpen`.
+    mocks.api.kirocrewAgents.mockRejectedValue(new Error('connection failed'))
+    renderWithProviders(<KiroCrewAgentsPage />)
+    // The roster failed to load, so the notice shows and — with nothing else
+    // open — offers the hand-off.
+    const notice = await screen.findByTestId('crews-roster-load-error')
+    expect(within(notice).getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+    // Open the create dialog and type a draft; the hand-off must disappear so a
+    // click cannot unmount the dialog and lose the draft.
+    fireEvent.click(await screen.findByTestId('new-crew'))
+    const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'my-draft-crew' } })
+    await waitFor(() =>
+      expect(within(screen.getByTestId('crews-roster-load-error')).queryByRole('button', { name: 'Ask the agent' })).toBeNull(),
+    )
+  })
+
   it('gives member identity its own full-width row before narrow header actions', async () => {
     const sheet = await open()
     expect(within(sheet).getByTestId('crew-editor-identity')).toHaveClass('w-full')

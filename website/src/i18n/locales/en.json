@@ -7096,7 +7096,7 @@
       "user": "user"
     },
     "kiroCrewAgentsPage": {
-      "add_crew_member": "Add crewmate",
+      "add_crew_member": "New crewmate",
       "agents": "Agents",
       "also_used_by_these_crews": "Also used by {{crews}}. Agents that share a store can read each other’s files and memory.",
       "bindings_preview_info": "Memory V2 follows the member through private chats, Crew delegation, scheduled work and restart. Starting knowledge is copied only when you select it.",
@@ -7132,7 +7132,6 @@
       "effort_unavailable_on_this_model": "{{model}} takes no reasoning effort, so there is none to set.",
       "filter_agents": "Filter crewmates…",
       "finish_the_new_schedule_first": "Finish or cancel the new schedule first",
-      "identity": "Basics",
       "inherited": "Inherited",
       "inherited_from_the_agent_template": "taken from the custom agent it is built from.",
       "isolated_memory_and_files_for_this_crew": "The folder this crewmate reads and writes. Switch it and new chats start fresh in the new folder; the old one is kept.",
@@ -7154,7 +7153,6 @@
       "reasoning_effort_hint": "How long this agent's sessions think before answering. Higher is slower and costs more. Inherited takes your default setting, and a per-chat pick still wins over both.",
       "resolves_to": "Using {{model}}",
       "routing": "Routing",
-      "runtime_binding": "What this crewmate uses",
       "save_changes": "Save changes",
       "session_color_hint_member": "Sessions this crewmate starts use this color unless the session has a color of its own. Leave empty for no crewmate color.",
       "shared_lower": "shared",
