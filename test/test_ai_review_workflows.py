@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -102,6 +103,33 @@ def _bash() -> str | None:
                     return str(candidate)
         return None
     return shutil.which("bash")
+
+
+@functools.lru_cache(maxsize=None)
+def _bash_has_jq(bash: str) -> bool:
+    """Whether *bash* resolves a ``jq`` -- asked of the bash the step runs under.
+
+    ``pr-body-snapshot.sh`` fails closed without ``jq`` ("::error::jq is not
+    available ..."), so a host without one reddens every evidence-step case
+    unless the harness stands one in (``_jq_stub``); this answer is what decides
+    that. The probe goes through the SAME bash the step will run under, not
+    ``shutil.which`` from this process: Git for Windows' ``bin\\bash.exe``
+    prepends its own ``/usr/bin`` to ``PATH``, so the two can disagree on what
+    ``jq`` means. Cached per bash, since the answer is a host fact that does not
+    change within a run.
+    """
+    try:
+        probe = subprocess.run(
+            [bash, "-c", "command -v jq"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
 
 
 def _prompt(name: str) -> str:
@@ -2483,6 +2511,51 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
             "}\n"
         )
 
+    # The three jq invocations the evidence step and the gh stub above make,
+    # and nothing else: `jq -Rs .` (JSON-encode stdin as one string) in the gh
+    # stub, `jq -r '.title'` and `jq -r '.body // ""'` in pr-body-snapshot.sh.
+    # Bytes in and out, never text mode: the snapshot files are read back with
+    # `$(cat ...)`, so a "\r\n" from a Windows text-mode stdout would land in
+    # the title and change every digest the consumers compute over it.
+    _JQ_STUB_PY = (
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "raw = sys.stdin.buffer.read().decode('utf-8')\n"
+        "if args == ['-Rs', '.']:\n"
+        "    out = json.dumps(raw, ensure_ascii=False)\n"
+        "elif args == ['-r', '.title']:\n"
+        "    value = json.loads(raw)['title']\n"
+        "    out = 'null' if value is None else str(value)\n"
+        "elif args == ['-r', '.body // \"\"']:\n"
+        "    value = json.loads(raw).get('body')\n"
+        "    out = '' if value in (None, False) else str(value)\n"
+        "else:\n"
+        "    sys.stderr.write('jq stub: unsupported invocation: %r\\n' % (args,))\n"
+        "    sys.exit(2)\n"
+        "sys.stdout.buffer.write((out + '\\n').encode('utf-8'))\n"
+    )
+
+    def _jq_stub(self, tmp_path: Path, env: dict[str, str]) -> str:
+        """A `jq` for a bash that has none, so the evidence step is exercised
+        rather than skipped where the host lacks the binary.
+
+        `pr-body-snapshot.sh` fails closed without `jq` ("::error::jq is not
+        available ..."), which on a Git Bash without one made every evidence-step
+        case red instead of measuring the script; and a `pytest.skip` here is a
+        loosened ratchet (`a-ratchet-may-only-tighten`). The stand-in is the
+        smallest thing that is honest: it implements the three invocations the
+        step and the gh stub make, byte-exact, and exits 2 on any other filter,
+        so a step that grew a fourth jq call is caught here rather than passed.
+        It is only defined when the bash the step runs under resolves no `jq`
+        (`_bash_has_jq`): where the host has the real binary, the real binary
+        runs, as with `_bash()` preferring the host's Git Bash.
+        """
+        script = tmp_path / "jq_stub.py"
+        script.write_text(self._JQ_STUB_PY, encoding="utf-8", newline="\n")
+        env["JQ_STUB_PYTHON"] = Path(sys.executable).as_posix()
+        env["JQ_STUB_SCRIPT"] = script.as_posix()
+        return 'jq() { "$JQ_STUB_PYTHON" -I "$JQ_STUB_SCRIPT" "$@"; }\n'
+
     def _curl_stub(self, tmp_path: Path, fixtures: dict[str, bytes | str]) -> str:
         """A `curl` that records its argv and serves the fixture the URL names.
 
@@ -2581,9 +2654,14 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         # bash -c is a non-interactive shell, so it sources $BASH_ENV before
         # the script: the functions defined there shadow every gh and curl on
         # PATH, wherever the platform's bash put them. gh() serves the body
-        # the step asks the API for; curl() serves the fixtures.
+        # the step asks the API for; curl() serves the fixtures. jq() stands in
+        # for the binary only where this bash resolves none -- the step fails
+        # closed without one, and a host's real jq is the truer instrument.
         stub = tmp_path / "stubs.sh"
-        stub.write_text(self._gh_stub(), encoding="utf-8", newline="\n")
+        stub_text = self._gh_stub()
+        if not _bash_has_jq(bash):
+            stub_text = self._jq_stub(tmp_path, env) + stub_text
+        stub.write_text(stub_text, encoding="utf-8", newline="\n")
         env["BASH_ENV"] = stub.as_posix()
         env["GH_STUB_BODY"] = body
         env["GH_STUB_CALLS"] = (tmp_path / "gh-calls").as_posix()

@@ -1602,6 +1602,7 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 
         with (
             patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
             patch("kiro_crew.subagent.sel") as mock_sel,
             children,
             alive,
@@ -1669,6 +1670,7 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 
         with (
             patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
             patch("kiro_crew.subagent.sel") as mock_sel,
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.acp.client._kill_escaped_children"),
@@ -1732,6 +1734,7 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 
         with (
             patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
             patch("kiro_crew.subagent.sel") as mock_sel,
             children,
             alive,
@@ -1778,6 +1781,7 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 
         with (
             patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
             patch("kiro_crew.subagent.sel") as mock_sel,
             children,
             alive,
@@ -1857,6 +1861,7 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 
         with (
             patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
             patch("kiro_crew.subagent.sel") as mock_sel,
             children,
             alive,

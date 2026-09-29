@@ -27,6 +27,7 @@ from conftest import requires_symlinks
 from kiro_crew import hooks, mcp_grant
 from kiro_crew.connections import mint
 from kiro_crew.dashboard.handlers import connections
+from kiro_crew.runtime_ownership import RUNTIME_TENANCY, release_runtime_tenancy
 
 _URL = "https://mcp.example.com/mcp"
 _AUTHORIZE = (
@@ -1296,7 +1297,14 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: _SlowReady)
 
     async def _fake_dispose(holdings):
-        return None
+        # The real dispose is the ONLY thing that releases the tenancy the pid
+        # claim above took on the process-global ``RUNTIME_TENANCY`` table, and
+        # ``_SlowReady`` answers neither ``is_alive`` nor ``is_process_alive``, so
+        # the table would hold pid 4242 "alive" for the rest of the worker: every
+        # later test on it that asks the kill gate about 4242 (``test_cron_reaper``
+        # fabricates that pid) is then refused with "runtime still leased by
+        # another tenant". Stubbing the releaser means owing the release.
+        release_runtime_tenancy(holdings.pop("tenancy", "") or None)
 
     monkeypatch.setattr(mint, "_dispose_mint", _fake_dispose)
     flow = asyncio.get_running_loop().create_task(mint.start_oauth_mint("notion", _URL))
@@ -1307,6 +1315,7 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
         ready.set()
         await asyncio.wait_for(flow, timeout=5)
         mint._mints.pop("notion", None)
+    assert RUNTIME_TENANCY.claims_on_pid(4242) == 0, "the mint's tenancy outlived the mint"
 
 
 async def _until(predicate, interval: float = 0.01) -> None:

@@ -1246,15 +1246,25 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
 
 @pytest.mark.asyncio
 async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(monkeypatch):
-    """The converse: a report cancelled AFTER `_on_done` returned is delivered.
+    """The converse: a report whose `_on_done` has returned is never re-admitted.
 
     Re-admitting it would make the next start inject the same completion a
     second time — the duplicate delivery this PR exists to remove. Only
     `_reported_to_parent == False` may be re-admitted.
+
+    The teardown gate handed to the report never opens. The report waits for it
+    BEFORE it publishes (the payload names the teardown's kill verdict), for
+    `_RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE`, then publishes with the kill
+    named undecided and delivers. Both constants are pinned small here for the
+    same reason the sibling tests pin `_REPORT_DRAIN_TIMEOUT`: at their shipped
+    values (30 s + 30 s) this test spent 60 s in that wait every run, to reach
+    an assertion that does not depend on the length of the wait.
     """
     import kiro_crew.subagent as mod
 
     monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 0.05)
+    monkeypatch.setattr(mod, "_RESET_TIMEOUT", 0.05)
+    monkeypatch.setattr(mod, "_TEARDOWN_REPORT_GRACE", 0.05)
     mgr = _make_manager()
     info = _info()
     cleared: list[str] = []
@@ -1266,8 +1276,9 @@ async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(mon
         delivered.set()
 
     mgr._on_done = AsyncMock(side_effect=_on_done)
-    # A teardown gate that never opens, so the report is cancelled in the wait
-    # that follows a SUCCESSFUL delivery.
+    # A teardown gate that never opens: the report's pre-publish wait for it runs
+    # out (see the docstring) and the delivery goes ahead with the kill named
+    # undecided. `cancel_all` then meets a report whose delivery already happened.
     never = asyncio.Event()
     assert mgr._claim_finalize(info) is True
     mgr._spawn_terminal_report(

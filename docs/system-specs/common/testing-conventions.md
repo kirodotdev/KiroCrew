@@ -3343,6 +3343,120 @@ probes and the data-home floor -- nothing touched the live data home or the chec
 round during which eight extra workers were reproducing the fourth mechanism on the same
 host (6-11 s in every other round): the operator's load, not the suite's.
 
+### What a fourteenth pass found (Windows host, eight workers, three rounds of 148,466 tests)
+
+Native Windows (Server 2025, 16 cores), the backend suite under the sweep skill's per-test
+probe on a test-only worktree off one commit, `-n 8 --timeout 120`, the results directory
+outside the checkout and outside the session scratch: three comparable rounds of 148,466
+tests each (141,113 to 141,114 passed, 5 to 6 failed, 3 errors, 7,182 skipped; 41 to 43
+minutes; residue 0; minimum available memory 19.4 GiB). Rounds four and five were LOST, not
+red: the gateway hosting the operator's session restarted at 67 percent of round four and
+the pytest tree died with it, although the driver had been launched through WMI outside
+that session's Job object -- an unknown outcome under the skill's rule, discarded, and the
+flake and repeatability classes below are judged over three rounds rather than five. The
+two permanent host reds (no `bash`, no `pwsh` on `PATH`) were present in every round, as in
+every Windows pass. Everything else red was reproduced at `-n0` as a polluter-plus-victim
+pair before it was touched and sorted into five mechanisms, all of them in tests, none of
+them visible to CI -- plus one cost that IS paid on CI: 210 s of deliberate waiting per
+round in six tests that pass. The first cut of one fix (a `pytest.skip`) was itself a
+review finding; the version below is what the lane accepted.
+
+- **`pytest.raises(...) as exc` keeps the subject alive through the test's own frame.**
+  `test_crew_log_edge_exhaustion.py`'s teardown pin (`lease._held` empty) read a lease from
+  `test_crew_log_core.py::test_an_entry_over_the_size_ceiling_is_refused_whole` in all three
+  rounds, the first three tests on that worker erroring until the cyclic collector got round
+  to it. The `as exc` binds an `ExceptionInfo` in the test frame; it holds the exception,
+  whose traceback holds the test frame (a cycle) and `CrewLog.append`'s frame, whose `self`
+  is the handle, whose `weakref.finalize` is the lease release. Twenty-five tests in that
+  file had the shape -- every refusal asserted after a successful append -- and each held
+  its lease until GC. Traced with `gc.get_referrers` from the handle. The first cut, a
+  `@contextlib.contextmanager` that caught the exception in an `except ... as exc` clause
+  (which Python unbinds), still left 26 tests holding: an exception THROWN into a generator
+  grows its traceback by the generator's frame, whose `f_back` is `__exit__`'s frame, whose
+  `value` is the exception -- the same cycle one layer down. The fix is a CLASS whose
+  `__exit__` copies `code`/`field`/`message`/`written` into a plain record and returns; its
+  frame is the only thing that ever named the exception. The pin moved to the creator:
+  `test_crew_log_core.py`'s autouse fixture asserts `lease._held` empty after every test,
+  WITHOUT `gc.collect()` (release rides the refcount; a lease held there is a retention).
+  39 errors under the old helper, none under the new. The old `_raises(code)` also never
+  compared its argument, and one site had said `bad_src` for a refusal the product spells
+  `event_type_not_owned` (a crew type in a session log); the helper compares now, and the
+  site says what it means.
+- **A stubbed releaser leaves a process-global tenancy alive for the worker.**
+  `test_cron_reaper.py::test_a_refused_pid_is_audited_as_a_failed_kill_not_reaped` read
+  `kill failed: runtime still leased by another tenant` for its fabricated pid 4242 in one
+  round of three -- the round xdist placed it after
+  `test_connections_mint.py::test_the_mint_pid_is_protected_while_readiness_is_still_stalled`
+  on one worker. That test replaced `_dispose_mint`, the only path that releases the
+  `RUNTIME_TENANCY` claim the pid shield takes, with a no-op; and its client stand-in
+  answers neither `is_alive` nor `is_process_alive`, which the table reads as alive for
+  ever. Found by diffing the files that preceded the red victim on its worker against the
+  files that preceded the green ones, then reproducing polluter plus victim at `-n0` (two
+  tests, one red). Fix: the fake dispose releases what the flow claimed
+  (`release_runtime_tenancy(holdings.pop("tenancy"))`), and the test pins
+  `RUNTIME_TENANCY.claims_on_pid(4242) == 0`; with the release removed the pin reddens. The
+  rule is the fourth pass's -- stub the only thing that releases a resource and the fixture
+  owes the release -- met on a liveness-judged table, where a stand-in with no probe cannot
+  expire on its own.
+- **A tool the script under test requires, supplied by the harness rather than skipped.**
+  `.github/scripts/pr-body-snapshot.sh` fails closed without `jq`, and three
+  `TestUxReviewReadsTheScreenshotsBlindFirst` evidence-step cases in
+  `test_ai_review_workflows.py` were red every round on a host whose Git Bash has none.
+  The first cut gated them (`pytest.skip` when the bash resolves no `jq`), and the GPT
+  lane blocked it under `a-ratchet-may-only-tighten`: a newly added `skip` in a file the
+  diff otherwise only extends is a loosened ratchet, whatever the spec's capability-gate
+  rule says about a test that ASSERTS a host fact. The remedy is the one the harness
+  already uses for `gh` and `curl`: a shell FUNCTION in the `BASH_ENV` stub file. `jq()`
+  hands its arguments to a twelve-line Python stand-in that implements the three
+  invocations the step and the gh stub make (`-Rs .`, `-r '.title'`, `-r '.body // ""'`),
+  byte-exact through `sys.stdin.buffer` / `sys.stdout.buffer` (a text-mode stdout on
+  Windows would put `\r\n` into the title file and change every digest computed over
+  it), and exits 2 on any other filter, so a step that grew a fourth jq call is caught.
+  Defined only where `command -v jq` fails in the bash the step runs under
+  (`_bash_has_jq`, probed through that bash rather than `shutil.which`, since Git for
+  Windows' launcher prepends its own `/usr/bin`); a host with the real binary runs the
+  real binary. 21 cases pass on the jq-less host that reddened three and skipped none
+  of them before -- which also closes the thirteenth pass's "needs a host with `jq`"
+  follow-up.
+- **A hung reset the test does not bound waits the shipped `_RESET_TIMEOUT`.** Five
+  `TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle` cases in
+  `test_subagent_force_stop_audit.py` hand the reaper `_hanging_reset` (a reset that sleeps
+  999 s) without the `patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05)` every sibling class
+  in the file carries: 30.04 s each, 150 s of worker time per round, on CI exactly as here.
+  `test_subagent_reap_race.py::test_cancel_all_keeps_the_tombstone_when_delivery_already_happened`
+  spent 60 s the same way: its docstring described a report "cancelled in the wait that
+  FOLLOWS a successful delivery", but the report now waits for its teardown gate BEFORE it
+  publishes (`_RESET_TIMEOUT + _TEARDOWN_REPORT_GRACE`), so the test reached delivery only
+  when that grace ran out, and its assertion -- a delivered report is not re-admitted --
+  never depended on the wait's length. Both constants are pinned small and the docstring
+  says what is measured. All six were named by `classify.py`'s TIMEOUT-SHAPED list: a wall
+  time landing exactly on a product constant with the CPU idle.
+- **`delenv` of an absent key records nothing to undo.**
+  `test_macos_x86_64_cpu_guard.py::test_load_llama_proceeds_past_guard_when_macos_x86_64_capable`
+  called `monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)` and then let the loader
+  `os.environ.setdefault` the key to a fake `tmp_path` libs directory; `delenv` on a key
+  that is not there registers no undo, so the path outlived the test on every worker that
+  ran it (`env_leak`, three of three). Invisible from a shell whose gateway already exports
+  the key -- the gateway's own loader set it, which is why the probe read clean under the
+  operator's shell and red under the sweep's -- and reproduced by unsetting it first. Fix:
+  `setenv` the key before the `delenv`, so the undo entry removes whatever the loader leaves.
+
+What was flagged and read before being left alone. `host_write` was 923 of 948 events in
+the bytecode mirror and the hypothesis database; the rest were
+`test_computer_use_launch.py`'s deliberate real-install-directory probes, the
+`kc-pytest-*-home` data-home floor under the system temp, and `\\?\`-prefixed
+`basetemp` paths the probe's classifier does not fold back onto the run root
+(`test_crew_teams.py`, `test_work_ledger.py`: an instrument gap, not a test). `leaked_child`
+was 55 of 57 rows the two children of the process-wide `path_resolve_executor` pool,
+created on first use and shut down at exit, attributed to whichever test first resolved a
+sensitive path on each worker; the other two were `test_subprocess_pool.py`'s deliberately
+wedged children under `shutdown(wait=False)`, which the reaper collects by design.
+`thread_leak` was named pools only (`mc-embed`, `mc-recall`, `mc-mcpprobe`, `mc-subproc`,
+`mc-pathres-reaper`). `env_leak` was otherwise 22 x `GIT_CEILING_DIRECTORIES`, the
+session-scoped conftest pin read at each worker's first test. `under_measured` was the
+probe's own event budget on tests that spawn real children. Nothing touched the live data
+home or the checkout.
+
 ## Running the suite: the defaults, and how to narrow safely
 
 The checkpoint run before a commit is the change-related set on both surfaces,
