@@ -912,13 +912,28 @@ not that the server crashed, and no exec is run. The `stats` frame carries an
 
 ### Windows target command spelling
 
-Before writing `--target-command`, the rewriter restores the on-disk basename
-of a bare Windows command resolved through `shutil.which`. `which` can append
-uppercase `.EXE` from `PATHEXT` even when the file is named `demo-mcp.exe`.
-Windows can open that path, but a launcher that dispatches by its own basename
-with a case-sensitive lookup can reject it. The rewriter scans the resolved
-path's parent directory and substitutes the unique case-insensitive basename
-match instead of canonicalizing the full path.
+A bare Windows command resolved through `shutil.which` has its on-disk basename
+restored before it is spawned or persisted. `which` can append uppercase `.EXE`
+from `PATHEXT` even when the file is named `demo-mcp.exe`. Windows can open
+that path, but a launcher that dispatches by its own basename with a
+case-sensitive lookup can reject it. The repair
+(`kiro_crew.env.resolved_command_casing`) scans the resolved path's parent
+directory and substitutes the unique case-insensitive basename match instead of
+canonicalizing the full path.
+
+The three MCP server command resolvers share it, next to the `mcp_search_path`
+they already share: the agent-config resolver (`agent._resolve_command`), the
+dashboard probe (`mcp_discovery`) and the rewriter. Resolvers of Kiro Crew's own
+binaries stay outside it: the `kirocrew` lookup in
+`agent._resolve_kirocrew_bin`, and the kiro-cli launch path in
+`acp/client.py`, which keeps its own
+`_normalize_exe_casing`. The agent-config resolver is the one that
+matters most: its result is written as the spec's absolute `command`, and an
+absolute command is accepted verbatim on every later pass, so an uppercase
+spelling persisted once would look operator-authored to the rewriter forever.
+Repairing at the resolver rather than at the write site also keeps the
+provenance record's `emitted` value repaired, so `command_is_ours` still
+recognises the entry and re-derivation stays enabled.
 
 That narrow lookup preserves the lexical parent route (including a directory
 junction) and a file symlink's own name. Explicit absolute commands did not pass

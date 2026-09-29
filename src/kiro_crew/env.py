@@ -6,6 +6,7 @@ import functools
 import getpass
 import json
 import logging
+import ntpath
 import os
 import shutil
 import stat
@@ -926,6 +927,55 @@ def mcp_search_path(env_path: str) -> str:
         augmented_path(os.environ.get("PATH", "")),
     ]
     return dedup_path(os.pathsep.join(filter(None, parts)))
+
+
+def resolved_command_casing(path: str | None) -> str:
+    """Restore a PATH-resolved Windows basename without resolving aliases.
+
+    ``shutil.which`` spells the extension it appends exactly as ``PATHEXT``
+    spells it, upper case on a stock install, so a bare ``demo-mcp`` resolves
+    to ``...\\demo-mcp.EXE`` while the file on disk is ``demo-mcp.exe``. A
+    launcher that dispatches on its own ``argv[0]`` basename case-sensitively
+    (a tool manager's multiplexer shim) then refuses to run under the
+    synthesized spelling. The three MCP server command resolvers -- the
+    agent-config resolver, the dashboard probe and gatewayd's rewriter -- route
+    their ``shutil.which`` result through this one helper, next to
+    :func:`mcp_search_path`, so they agree on WHAT they emit as well as on where
+    they look. Resolvers of Kiro Crew's own binaries are not MCP server
+    commands and stay outside it: the ``kirocrew`` lookup in
+    ``agent._resolve_kirocrew_bin``, and the kiro-cli launch path in
+    ``acp.client``, which keeps its own ``_normalize_exe_casing``.
+
+    Looking up the matching parent-directory entry repairs the spelling while
+    retaining the lexical parent route and a file symlink's own name;
+    ``os.path.realpath`` would follow the alias to its target instead, which is
+    why it is not used here. ``None`` becomes ``""``. POSIX paths stay
+    untouched: the filesystem is case-sensitive there and the extension is
+    part of the name.
+    """
+    if not path:
+        return ""
+    if not platform_compat.IS_WINDOWS:
+        return path
+    parent, name = os.path.split(path)
+    if not name:
+        return path
+    folded = ntpath.normcase(name)
+    matches: list[str] = []
+    try:
+        with os.scandir(parent or os.curdir) as entries:
+            for entry in entries:
+                if entry.name == name:
+                    return path
+                if ntpath.normcase(entry.name) == folded:
+                    matches.append(entry.name)
+    except OSError:
+        return path
+    # A case-sensitive Windows directory may legally contain ambiguous names.
+    # Never turn the requested launcher into a different directory entry.
+    if len(matches) != 1:
+        return path
+    return path[: -len(name)] + matches[0]
 
 
 def mcp_runtime_path(base_path: str = "") -> str:
