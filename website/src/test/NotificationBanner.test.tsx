@@ -46,6 +46,7 @@ let isMobileMock = false
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => isMobileMock }))
 
 let reducedMotionMock = false
+let presenceModeMock: string | undefined
 vi.mock('framer-motion', async () => {
   const React = await import('react')
   const FRAMER_PROPS = new Set(['layout', 'layoutId', 'initial', 'animate', 'exit', 'transition', 'variants', 'custom'])
@@ -60,7 +61,10 @@ vi.mock('framer-motion', async () => {
     })
   return {
     motion: { div: make('div') },
-    AnimatePresence: ({ children }: { children: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children, mode }: { children: React.ReactNode; mode?: string }) => {
+      presenceModeMock = mode
+      return React.createElement(React.Fragment, null, children)
+    },
     useReducedMotion: () => reducedMotionMock,
   }
 })
@@ -467,6 +471,37 @@ describe('NotificationBanner: stack and interaction', () => {
     expect(x.className).toContain('group-hover:opacity-50')
   })
 
+  it('pops a dismissed card out of flow and out of hit-testing so the next close lands under the pointer', () => {
+    renderBanner()
+    arrive(mkN({ priority: 'critical', title: 'First' }))
+    arrive(mkN({ priority: 'critical', title: 'Second' }))
+    // popLayout: the leaving card stops occupying its slot at once, so the
+    // card behind it takes that slot instead of waiting out the exit.
+    expect(presenceModeMock).toBe('popLayout')
+    const leaving = cards()[0]
+    // The top card must be positioned, or its zIndex is ignored and the
+    // absolute deck shells paint over it and take its close click.
+    expect(leaving.style.position).toBe('relative')
+    fireEvent.click(screen.getByTestId('notification-banner-dismiss'))
+    expect(cards()).toHaveLength(1)
+    expect(cards()[0].textContent).toContain('First')
+    expect(screen.getByTestId('notification-banner-dismiss')).toBeTruthy()
+    expect(exitTarget({ dx: 24, dy: -38 }, false).pointerEvents).toBe('none')
+    expect(exitTarget({ dx: 24, dy: -38 }, true).pointerEvents).toBe('none')
+  })
+
+  it('lets a note that re-arrives with the same timestamp be dismissed again', () => {
+    renderBanner()
+    const note = mkN({ priority: 'critical', title: 'Same note' })
+    arrive(note)
+    fireEvent.click(screen.getByTestId('notification-banner-dismiss'))
+    expect(cards()).toHaveLength(0)
+    arrive(note)
+    expect(cards()).toHaveLength(1)
+    fireEvent.click(screen.getByTestId('notification-banner-dismiss'))
+    expect(cards()).toHaveLength(0)
+  })
+
   it('Escape dismisses the topmost card only', () => {
     renderBanner()
     arrive(mkN({ title: 'First' }))
@@ -557,9 +592,9 @@ describe('exit geometry', () => {
     expect(full).toMatchObject({ x: 24, y: -38, opacity: 0 })
     expect(full.scale).toBeLessThan(1)
     const reduced = exitTarget({ dx: 24, dy: -38 }, true)
-    expect(reduced).toEqual({ opacity: 0, transition: { duration: 0.18 } })
+    expect(reduced).toEqual({ opacity: 0, pointerEvents: 'none', transition: { duration: 0.18 } })
     expect(Object.keys(reduced)).not.toContain('x')
     expect(Object.keys(reduced)).not.toContain('scale')
-    expect(exitTarget(undefined, false)).toEqual({ opacity: 0, transition: { duration: 0.18 } })
+    expect(exitTarget(undefined, false)).toEqual({ opacity: 0, pointerEvents: 'none', transition: { duration: 0.18 } })
   })
 })

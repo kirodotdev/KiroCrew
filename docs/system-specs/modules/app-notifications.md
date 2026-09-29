@@ -363,7 +363,10 @@ retires every pending card.
 Newest on top. Beyond the top card, up to `BANNER_DECK_DEPTH` (2) older cards
 peek as a deck of BLANK shells (the card's glass only, no text, icon or time;
 4/8 px offset, .98/.96 scale, the `glass-faded` tint step), so nothing prints through the
-translucent top card. Each shell and the "Show N more" pill on the top card's
+translucent top card. The shells are absolutely positioned over the top card's
+box, so the top card is `position: relative` and its higher `zIndex` paints it
+above them — unpositioned, it sat under the shells, which blurred it and took
+its close click. Each shell and the "Show N more" pill on the top card's
 corner are the same control (`Show N more notifications`) that expands to a
 vertical list of at most `BANNER_EXPANDED_MAX` (4) cards plus a "+N more in your
 inbox" line that goes to `/notifications` (through the navigation leave guard) —
@@ -372,13 +375,26 @@ full width, with its close visible at rest (no hover on touch).
 
 ### Motion
 
-Enter: slide in from the right with a fade (~220 ms). Exit, for auto-hide and
+Enter: slide in from the right with a fade (~220 ms, ease-out; the deck offsets
+move on the same curve). Exit, for auto-hide and
 dismiss alike: the card shrinks about its top-right corner and travels to the
 bell (`computeExitDelta` measures the vector from the card's own rect to
 `bellRef`'s) while fading (~260 ms) — the relocation animates the same element
-into its new home rather than swapping it out. Under `prefers-reduced-motion`
-(`useReducedMotion`) enter and exit are plain fades and the deck/list switch
-does no layout animation. Escape dismisses the topmost card; arrival never moves
+into its new home rather than swapping it out. The presence is
+`mode="popLayout"`: a leaving card is taken out of flow the instant it is
+dismissed or auto-hidden, so the card behind it moves into the vacated slot
+straight away rather than after the exit finishes. That slide is its own
+layout transition, 160 ms on an ease-out-expo curve (`[0.16, 1, 0.3, 1]`), short
+and front-loaded because it is the one motion a user chases with a second
+click: every card's close sits at the same offset from its top-right corner, so
+the next close is under a stationary pointer within a few frames and repeated
+clicks clear the stack. For the whole of its exit a leaving card takes no
+pointer events (`pointerEvents: 'none'` in the exit target, `'auto'` in the
+live one), so a click during the overlap reaches the card sliding in, never
+the one flying out. Under `prefers-reduced-motion`
+(`useReducedMotion`) enter and exit are plain fades (the exit still drops
+pointer events) and neither the slot fill nor the deck/list switch does any
+layout animation. Escape dismisses the topmost card; arrival never moves
 focus.
 
 ### Setting
