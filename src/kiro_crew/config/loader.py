@@ -2514,6 +2514,11 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
         CHAT_ENTRY_CACHE_BYTES_MAX,
     ),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
+    # A kill budget belongs in this sweep for the reason the sweep exists: the
+    # value authorizes signals, and a hand-edited config.json never passes the
+    # dashboard's write gate. The floor is 0 because 0 is this field's OFF value, so
+    # a negative clamps toward observe-only rather than toward killing.
+    ("session", "reconcile_max_kills", 0, _sections.RECONCILE_MAX_KILLS_MAX),
 )
 
 
@@ -2977,6 +2982,15 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         watchdog_rss_max_mb=_safe_int(
             session_data.get("watchdog_rss_max_mb", _sections.DEFAULT_WATCHDOG_RSS_MAX_MB),
             _sections.DEFAULT_WATCHDOG_RSS_MAX_MB,
+        ),
+        # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
+        # reason `_safe_int` states: that sweep runs over the raw dict and skips
+        # non-int values, so a numeric STRING passes it and coerces here.
+        reconcile_max_kills=_safe_int(
+            session_data.get("reconcile_max_kills", _sections.DEFAULT_RECONCILE_MAX_KILLS),
+            _sections.DEFAULT_RECONCILE_MAX_KILLS,
+            0,
+            _sections.RECONCILE_MAX_KILLS_MAX,
         ),
     )
 

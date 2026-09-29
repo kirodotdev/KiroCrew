@@ -1160,6 +1160,14 @@ against sweep completeness, and are torn down at `close_all`.
   `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
   sandbox-artifact, session-pid-mapping, bytecode-cache, periodic tracked-PID,
   and untracked-MCP sweeps.
+- **Runtime reconciler** (`runtime_reconcile.py`): its kill arm is bounded by
+  `session.reconcile_max_kills`, re-read from the live config on every tick. The
+  field's ceiling equals its default, so it can only lower the shipped budget and
+  never raise it; at `0` the arm observes, publishing the same `unowned_alive` /
+  `owned_dead` reading and auditing each candidate it would have signalled without
+  sending a signal. The arm's own contract — both directions, the conjunction of
+  conditions, and the published counters — is specified in
+  [runtime-ownership.md](runtime-ownership.md), not here.
 - **Reaping abandoned agent scopes** (`session_scope_reap.py`,
   Linux/systemd only): each agent session runs inside a transient
   `systemd-run --user --scope` under a per-instance child of

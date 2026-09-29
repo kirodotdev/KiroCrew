@@ -458,6 +458,26 @@ class SessionCleanup:
                 continue
         return keys
 
+    def _reconcile_kill_budget(self) -> int:
+        """``session.reconcile_max_kills`` as this tick should act on it.
+
+        The field can only LOWER the arm's shipped budget, never raise it, and at 0
+        it leaves the kill arm observing: the arm still publishes the leak reading
+        and audits the processes it would have signalled. Read from the owner's
+        CURRENT config on every tick, so turning the budget down on a host that
+        shares its data home with another install, or putting it back, takes effect
+        on the next pass instead of at the next restart.
+
+        Defensive about the type for the reason ``_adopt_idle_policy`` is about the
+        RSS ceiling: ``config.json`` is agent-writable, and the value authorizes
+        signals. Anything that is not a plain non-negative int reads as zero, which
+        is the answer that does not kill.
+        """
+        raw = getattr(self._owner._cfg.session, "reconcile_max_kills", 0)
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            return 0
+        return max(0, raw)
+
     async def _reconcile_runtimes_hook(self) -> None:
         """Compare the kernel's process list with this gateway's records.
 
@@ -513,6 +533,12 @@ class SessionCleanup:
                     notify_dead=lambda pid: self._note_dead_runtime(pid, loop),
                 )
                 self.state.runtime_reconciler = reconciler
+            # Adopted before every pass, not frozen into the instance that is
+            # retained for the gateway's life: the two-pass confirmation is that
+            # instance's state, so it cannot be rebuilt to pick up a config write,
+            # and arming or disarming the kill arm must not need a restart. Same
+            # schedule and same live-config source as ``_adopt_idle_policy``.
+            reconciler.set_max_kills(self._reconcile_kill_budget())
             reading = await loop.run_in_executor(
                 self._deps.get_maintenance_executor(),
                 reconciler.run_once,
@@ -527,12 +553,18 @@ class SessionCleanup:
                 reading.as_counter_fields(),
             )
             if reading.unowned_alive or reading.owned_dead:
+                # ``would_kill`` belongs beside the other four: it is the number an
+                # operator reads to decide whether to change the budget, and a
+                # summary that published the whole unclaimed population without it
+                # cannot tell "nothing to reclaim" from "candidates are sitting
+                # here and the budget is withholding them".
                 self._deps.logger.warning(
                     "Runtime reconcile: unowned_alive=%d owned_dead=%d "
-                    "(killed %d, retracted %d)",
+                    "(killed %d, would_kill %d, retracted %d)",
                     reading.unowned_alive,
                     reading.owned_dead,
                     reading.killed,
+                    reading.would_kill,
                     reading.forgotten,
                 )
         except Exception:

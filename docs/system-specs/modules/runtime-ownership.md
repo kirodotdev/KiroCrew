@@ -317,22 +317,41 @@ fixed. Measured at rest on a live instance: 20 such processes; under load, 57 to
 So a kill needs all of these, and any one missing leaves the process alone and
 merely counted (`RuntimeReconciler._why_not_yet`, `_reconcile_unowned`):
 
-1. the per-pass kill budget is not spent — see `runtime_reconcile.DEFAULT_MAX_KILLS`
-   and the reconcile configuration for the value, so a reconciler that is wrong
-   about a whole population is wrong slowly enough to be noticed;
+1. the per-pass kill budget is not spent — `runtime_reconcile.DEFAULT_MAX_KILLS` is
+   the shipped value and `session.reconcile_max_kills` bounds it, with a ceiling
+   equal to that default so the setting can only lower the budget and never raise
+   it; the budget is re-read on every cleanup tick, and at `0` the arm evaluates
+   every condition, counts each full candidate in `would_kill`, and signals
+   nothing. A reconciler that is wrong about a whole population is wrong slowly
+   enough to be noticed;
 2. it was unowned on the PREVIOUS pass too, keyed on pid **and** process identity
    so a recycled pid cannot inherit the confirmation;
-3. it carries this install's own spawn marker (`KIROCREW_SPAWNED`, via
+3. its argv names a harness this gateway manages
+   (`runtime_reconcile.process_is_a_managed_agent`, the kill seam's own recycle
+   guard asked here at the decision point). Most of the unowned population carries
+   the inherited spawn marker and is not a harness — a Playwright chromium tree, an
+   `mcp start-server` broker, a sandbox shim, another install's interpreter — and
+   the seam declines every one. Asked here they are withheld by name; asked only
+   inside the seam, each first collects a gate allow and the attribution that allow
+   writes. The seam still re-applies it last, because a pid can change hands
+   between the two answers;
+4. it carries this install's own spawn marker (`KIROCREW_SPAWNED`, via
    `runtime_reconcile.process_is_ours`), so it is ours to end;
-4. it is older than `runtime_reconcile.DEFAULT_MIN_AGE_SECS` — the same
+5. it is older than `runtime_reconcile.DEFAULT_MIN_AGE_SECS` — the same
    registration window seen from the other side;
-5. neither table claims the pid, and an unreadable table counts as claimed;
-6. its process identity has not changed since classification, re-read in the
+6. neither table claims the pid, and an unreadable table counts as claimed;
+7. its process identity has not changed since classification, re-read in the
    instant before the signal;
-7. the gate allows it — asked LAST, because the allow path writes the kill
-   attribution, so asking earlier would record a kill that never happened;
-8. the teardown barrier commits, so a tenancy claimed after the verdict abandons
+8. the gate allows it — asked LAST among the authorities, because the allow path
+   writes the kill attribution, so asking earlier would record a kill that never
+   happened;
+9. the teardown barrier commits, so a tenancy claimed after the verdict abandons
    the kill.
+
+What the kill line records is the seam's own COUNT over the tree it walked, not a
+verdict about the root: the seam signals every managed descendant it discovered and
+can still withhold the root's signal afterwards, so the log and audit name the
+count and the tree rather than claiming the root was killed.
 
 Two counting rules keep the SLI honest. A call the kill seam answers by signalling
 NOTHING (its own managed-agent check refused) is not a kill: counting it would
@@ -516,11 +535,12 @@ recover.
 - **`cap` is not open.** Raising `CHAT_RUNTIME_CAP` needs eligibility rules that
   decide which sessions may share a process, and a flag to stage it. Neither
   exists, so every runtime serves one session.
-- **The gate's allow line names a pid the seam may never signal.** The
-  managed-argv check lives inside the kill seam, after the verdict, so a
-  reconciler pass records an allow for a process it then leaves alone. The reading
-  is conservative in the safe direction but makes the allow lines a poor census of
-  real kills.
+- **Membership is narrower than the slice it is compared against.** An app
+  backend's pid record (`app_backends.pids.json`) and a long-lived sandboxed
+  subprocess are in none of the sources `recorded()` reads, so both are unowned by
+  construction on every pass, and what keeps them unsignalled is the argv
+  condition rather than an ownership record. Issue #15019 carries the membership
+  source that would close it.
 - **[session.md](session.md)'s sweep contract does not describe the gate**
   (issue #14726). The reconciler is specified here; the sentences in that spec that
   still describe an ungated sweep are corrected by the change that owns it.

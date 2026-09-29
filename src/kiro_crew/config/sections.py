@@ -164,6 +164,25 @@ DEFAULT_POOL_SIZE = 0
 # (typically 300-600 MiB) a wide margin while still catching a leak before
 # it takes the host with it. 0 disables.
 DEFAULT_WATCHDOG_RSS_MAX_MB = 1536
+# session.reconcile_max_kills — root candidates the runtime reconciler may signal
+# the tree of in one pass. Defaults to the budget the arm already ships with, so an
+# unconfigured host behaves exactly as before; the field's ceiling equals that same
+# value, which makes the knob purely SUBTRACTIVE -- it can withhold signals and
+# cannot authorize any the product does not already authorize.
+#
+# Subtractive on purpose, because the value governs host-side signals and
+# ``config.json`` is agent-writable and never passes the dashboard's write gate. A
+# knob whose reachable range sat above the shipped default would let a write turn
+# killing up; this one cannot.
+#
+# An operator needs to turn it DOWN because the arm's evidence of abandonment is
+# "no record on this data home claims this pid", and that evidence is only as wide
+# as the records one process can read. The agent slice is named from a hash of the
+# config directory, so every install sharing a data home shares the slice, and a
+# runtime whose owner is a different process is claimed only by records that
+# process holds. Measured on such a host: 250-504 unowned pids per pass against 4
+# genuine strays in 6.5 hours. Setting 0 takes the reading without the signal.
+DEFAULT_RECONCILE_MAX_KILLS = 5
 
 
 def normalize_agent_model(model: object) -> str:
@@ -1823,6 +1842,18 @@ class SessionConfig:
             "Recycle a session when its process tree resident memory exceeds "
             "this many MiB (default 1536). 0 disables. Busy sessions (turn in "
             "flight) are never recycled.",
+        ),
+    )
+    reconcile_max_kills: int = field(
+        default=DEFAULT_RECONCILE_MAX_KILLS,
+        metadata=_meta(
+            "Reconciler Kill Budget (per pass)",
+            "Unowned root candidates the runtime reconciler may signal the process "
+            "tree of in one pass, at most 5 -- one candidate can signal several "
+            "processes. Lower it where more than one install shares this data "
+            "home, since a runtime owned by another install has no record here and "
+            "reads as unowned. 0 makes the arm observe-only: it still publishes the "
+            "leak reading and audits each candidate it would have signalled.",
         ),
     )
 
@@ -3523,6 +3554,16 @@ EXTRACTION_POOL_SIZE_MAX = 10
 # "every bound is shared with the write gate" claim stays true.
 EMPTY_RESPONSE_MAX_CONTINUES_MIN = 1
 EMPTY_RESPONSE_MAX_CONTINUES_MAX = 10
+# Ceiling on ``session.reconcile_max_kills``, equal to the arm's own shipped budget
+# (``runtime_reconcile.DEFAULT_MAX_KILLS``, pinned equal by
+# ``test_the_configured_ceiling_cannot_exceed_the_shipped_budget``). Equal rather
+# than higher is what makes the field subtractive: every reachable value is at or
+# below what the product already does, so a write to this agent-writable file can
+# withhold signals and cannot authorize one the arm would not already send.
+#
+# 0 is meaningful (observe-only) and is the floor, so a negative clamps DOWN to it
+# and disables the arm rather than enabling it.
+RECONCILE_MAX_KILLS_MAX = 5
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
 # of them (a zero budget disables that sweep), so the floor is deliberately not
 # enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which

@@ -1457,7 +1457,8 @@
         "pool_ttl_secs": 1800,
         "eager_spawn": true,
         "archive_retention_days": 30,
-        "watchdog_rss_max_mb": 1536
+        "watchdog_rss_max_mb": 1536,
+        "reconcile_max_kills": 5
       }
     },
     {
@@ -1600,6 +1601,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1536
+    },
+    {
+      "path": "session.reconcile_max_kills",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Reconciler Kill Budget (per pass)",
+      "help": "Unowned root candidates the runtime reconciler may signal the process tree of in one pass, at most 5 -- one candidate can signal several processes. Lower it where more than one install shares this data home, since a runtime owned by another install has no record here and reads as unowned. 0 makes the arm observe-only: it still publishes the leak reading and audits each candidate it would have signalled.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5
     },
     {
       "path": "taskrunner",

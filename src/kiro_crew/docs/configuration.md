@@ -263,6 +263,7 @@ Set a registered value with, for example,
 | `session.eager_spawn` | Create a chat session when its slot is created, switched, or retargeted instead of waiting for the first message | `true` |
 | `session.archive_retention_days` | Days to keep compacted/rotated session archives before auto-cleanup. `-1` disables cleanup | `30` |
 | `session.watchdog_rss_max_mb` | Recycle an idle session when its process tree resident memory exceeds this many MiB, so a runaway session tree is bounded by default. 0 disables. A session with a turn in flight is never recycled. `kirocrew status` and `kirocrew doctor` show the ceiling next to the gateway's own resident memory | `1536` |
+| `session.reconcile_max_kills` | Unowned root candidates the runtime reconciler may signal the process tree of in one pass — one candidate can signal several processes. The ceiling equals the default, so this setting can only lower the budget, never raise it. Lower it where more than one install shares this data home: the agent slice is keyed on the data home, so a runtime owned by another install has no record here and reads as unowned. `0` leaves the kill arm observing — it still publishes the `unowned_alive` / `owned_dead` leak reading and audits each candidate it would have signalled as `would_kill`, and signals nothing. Re-read every cleanup tick, so a change needs no restart | `5` |
 
 ### Dashboard
 
