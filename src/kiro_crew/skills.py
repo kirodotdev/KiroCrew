@@ -4197,6 +4197,63 @@ class SkillsLoader:
         skill_dir = self._dir / name
         if skill_dir.exists():
             return False
+        # A nested name has intermediates the create below makes with
+        # ``parents=True``. If the LEAF then fails -- the host refusing the joined
+        # path for its length is the reachable case -- those intermediates would
+        # stay, and the next create of the parent name would meet the exists()
+        # guard above and be refused as a duplicate of a skill that has no
+        # SKILL.md. Remember where the tree stopped existing before anything is
+        # made, so a failed create can give back exactly what it made.
+        made_from = self._first_missing_ancestor(skill_dir)
+        try:
+            return self._create_skill_tree(name, content, skill_dir)
+        except OSError:
+            self._unwind_made_dirs(skill_dir, made_from)
+            raise
+
+    def _first_missing_ancestor(self, path: Path) -> Path | None:
+        """The shallowest directory on *path*, below the skills root, that does not
+        exist yet -- the first one a ``parents=True`` create would bring into being
+        -- or ``None`` when every ancestor is already there.
+
+        ``exists()`` is asked defensively: on a host that refuses the path for its
+        length the probe itself can raise, and a directory that cannot even be
+        probed is one the create is about to fail on, so it counts as missing.
+        """
+        missing: Path | None = None
+        p = path
+        while p != self._dir and p.parent != p:
+            try:
+                if p.exists():
+                    break
+            except OSError:
+                pass
+            missing = p
+            p = p.parent
+        return missing
+
+    @staticmethod
+    def _unwind_made_dirs(skill_dir: Path, made_from: Path | None) -> None:
+        """Remove the directories a failed create made, deepest first.
+
+        Walks from *skill_dir* up to *made_from* inclusive -- the span that did
+        not exist before the create -- and ``rmdir``s each, which only ever removes
+        an EMPTY directory, so a directory another writer has since put something
+        in stays, and nothing that pre-existed the create is ever addressed.
+        Best effort: the create's own error is what the caller reports.
+        """
+        if made_from is None:
+            return
+        p = skill_dir
+        while True:
+            with suppress(OSError):
+                os.rmdir(p)
+            if p == made_from or p.parent == p:
+                break
+            p = p.parent
+
+    def _create_skill_tree(self, name: str, content: str, skill_dir: Path) -> bool:
+        """Make *skill_dir* and its SKILL.md on whichever branch this platform has."""
         if not _DIR_FD_SUPPORTED:
             # exist_ok=False so a skill directory that appeared between the
             # exists() check above and here is REFUSED rather than written

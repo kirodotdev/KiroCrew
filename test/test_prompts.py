@@ -2715,6 +2715,81 @@ class TestPromptWriteHardening:
         not _prompts_mod._DIR_FD_SUPPORTED,
         reason="the by-name fallback writes through Path.open, not os.write",
     )
+    def test_create_maps_a_too_long_joined_path_to_the_coded_400(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """The name fits its budget, but the joined path did not fit this host.
+        No pre-flight length can know that (a long-path-enabled Windows host takes
+        what another refuses), so the create's own refusal is what is classified."""
+
+        def _boom(*a, **kw):
+            raise OSError(errno.ENAMETOOLONG, "File name too long")
+
+        monkeypatch.setattr(os, "write", _boom)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": "p", "content": "x"})))
+        assert resp.status == 400 and json.loads(resp.body)["code"] == "name_too_long"
+        assert _outcomes(mock_sel)[-1] == "bad_request"
+        assert not (tmp_path / ".kiro" / "prompts" / "p.md").exists()
+
+    def test_create_maps_the_windows_too_long_error_on_the_by_name_branch(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """The branch a Windows host takes (no dir_fd), raising what Windows raises:
+        ``ERROR_FILENAME_EXCED_RANGE`` filed under ``ENOENT``, so ``errno`` alone
+        would misread it as a missing parent."""
+        monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
+
+        def _boom(self, *a, **kw):
+            exc = OSError(errno.ENOENT, "The filename or extension is too long")
+            exc.winerror = _prompts_mod._WINERROR_FILENAME_EXCED_RANGE
+            raise exc
+
+        monkeypatch.setattr(Path, "open", _boom)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": "p", "content": "x"})))
+        assert resp.status == 400 and json.loads(resp.body)["code"] == "name_too_long"
+        assert _outcomes(mock_sel)[-1] == "bad_request"
+        assert not (tmp_path / ".kiro" / "prompts" / "p.md").exists()
+
+    def test_create_leaves_an_ambiguous_windows_error_as_write_failed(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """``ERROR_PATH_NOT_FOUND`` also names a missing parent, so it is not re-read
+        as the length; it keeps the ordinary ``write_failed`` handling."""
+        monkeypatch.setattr(_prompts_mod, "_DIR_FD_SUPPORTED", False)
+
+        def _boom(self, *a, **kw):
+            exc = OSError(errno.ENOENT, "The system cannot find the path specified")
+            exc.winerror = 3
+            raise exc
+
+        monkeypatch.setattr(Path, "open", _boom)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": "p", "content": "x"})))
+        assert resp.status == 500 and json.loads(resp.body)["code"] == "write_failed"
+        assert _outcomes(mock_sel)[-1] == "error"
+
+    def test_create_writes_a_long_joined_path_the_host_accepts(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """No pre-flight guess: a joined path past Windows's ``MAX_PATH`` is still
+        written wherever the filesystem takes it, so a long-path host loses nothing.
+        Whether this host takes it is probed, not assumed: a stock Windows shell
+        refuses it, and that arm is what the refusal tests above cover."""
+        name = "p" * 40
+        home = tmp_path / ("h" * 200)
+        try:
+            (home / ".kiro" / "prompts").mkdir(parents=True)
+        except OSError:
+            pytest.skip("this host refuses the joined path; the refusal arm is covered above")
+        assert len(str(home / ".kiro" / "prompts" / f"{name}.md")) > 260
+        monkeypatch.setattr(Path, "home", lambda: home)
+        resp = asyncio.run(api_prompts_create(_create_request({"name": name, "content": "x"})))
+        assert resp.status == 201
+        assert (home / ".kiro" / "prompts" / f"{name}.md").read_text() == "x"
+
+    @pytest.mark.skipif(
+        not _prompts_mod._DIR_FD_SUPPORTED,
+        reason="the by-name fallback writes through Path.open, not os.write",
+    )
     def test_create_audits_a_filesystem_failure(self, tmp_path, mock_sel, monkeypatch):
         def _boom(*a, **kw):
             raise OSError(28, "No space left on device")
