@@ -11,7 +11,8 @@
  * is safe.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
+import { composerRoot, composerValue, setComposerValue, composerPlaceholder, awaitComposer } from './helpers'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -96,7 +97,7 @@ async function renderWithState(opts: { slotRunning: boolean; slotStopping: boole
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
   return store
 }
 
@@ -109,28 +110,27 @@ describe('ChatPage — input while stopping', { timeout: 15_000 }, () => {
   it('keeps the textarea interactive while slotStopping is true', async () => {
     await renderWithState({ slotRunning: true, slotStopping: true, slotState: 'stopping' })
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const input = composerRoot()
     // pointer-events-none is applied via the `disabled` class branch in ChatInput
     expect(input.className).not.toMatch(/pointer-events-none/)
     // "Stopping…" is the disabled placeholder; while stopping we want the
     // normal placeholder so the user knows they can still type.
-    expect(input.placeholder).not.toBe('Stopping…')
+    expect(composerPlaceholder()).not.toBe('Stopping…')
   })
 
   it('accepts typing while stopping (messages can be queued by send())', async () => {
     await renderWithState({ slotRunning: true, slotStopping: true, slotState: 'stopping' })
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(input, { target: { value: 'queued while stopping' } })
-    expect(input.value).toBe('queued while stopping')
+    await setComposerValue('queued while stopping')
+    expect(composerValue()).toBe('queued while stopping')
   })
 
   it('keeps the textarea interactive during a soft_pending cooperative stop', async () => {
     await renderWithState({ slotRunning: true, slotStopping: true, slotState: 'stopping', stopState: 'soft_pending' })
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const input = composerRoot()
     expect(input.className).not.toMatch(/pointer-events-none/)
-    expect(input.placeholder).not.toBe('Stopping…')
+    expect(composerPlaceholder()).not.toBe('Stopping…')
     // The force-stop affordance must still be present — unblocking the input
     // must not remove the user's ability to escalate the stop.
     expect(screen.getByTestId('stop-button-pulsing')).toBeInTheDocument()

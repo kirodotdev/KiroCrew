@@ -11,10 +11,10 @@
  * there is nothing left to recover.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { fireEvent, waitFor, act } from '@testing-library/react'
 import reducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders, createTestStore, composerRoot, composerValue, setComposerValue, pressInComposer } from './helpers'
 
 // The composer blocks sends while the gateway reads as offline, so every
 // scene runs against a connected dashboard unless it tests the offline path.
@@ -47,11 +47,15 @@ const SLOT = 'ime-slot'
 describe('SideChat Enter key', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
 
-  const render = () => {
+  const render = async () => {
     const store = createTestStore({ dashboard: dashInitial, chat: { ...initial, activeSlot: SLOT } })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
-    const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
-    fireEvent.change(box, { target: { value: 'a question' } })
+    await waitFor(() =>
+      expect(document.querySelector('[data-side-chat-input] [data-composer-input]')).not.toBeNull(),
+    )
+    await act(async () => {})
+    const box = composerRoot(document.querySelector('[data-side-chat-input]') as HTMLElement)
+    await setComposerValue('a question', box)
     return box
   }
 
@@ -74,31 +78,31 @@ describe('SideChat Enter key', () => {
   })
 
   it('sends on a plain Enter', async () => {
-    const box = render()
-    fireEvent.keyDown(box, { key: 'Enter' })
+    const box = await render()
+    pressInComposer('Enter', {}, box)
     await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
     expect(sideTurn.mock.calls[0][1]).toBe('a question')
   })
 
   it('does not send on Shift+Enter', async () => {
-    const box = render()
-    fireEvent.keyDown(box, { key: 'Enter', shiftKey: true })
+    const box = await render()
+    pressInComposer('Enter', { shiftKey: true }, box)
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
   })
 
   it('does not send the Enter that commits an IME candidate', async () => {
-    const box = render()
-    fireEvent.keyDown(box, { key: 'Enter', isComposing: true })
+    const box = await render()
+    pressInComposer('Enter', { isComposing: true }, box)
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
     // The half-written text is still there, which is the whole point.
-    expect(box.value).toBe('a question')
+    expect(composerValue(box)).toBe('a question')
   })
 
   it('does not send while the browser reports the IME-processing keyCode', async () => {
-    const box = render()
-    fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 })
+    const box = await render()
+    pressInComposer('Enter', { keyCode: 229 }, box)
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
   })
@@ -106,9 +110,9 @@ describe('SideChat Enter key', () => {
   it('does not send between compositionStart and the commit', async () => {
     // Neither browser signal is set here — only the tracked composition state knows,
     // and it only knows because the component spreads the guard's handlers onto the box.
-    const box = render()
+    const box = await render()
     fireEvent.compositionStart(box)
-    fireEvent.keyDown(box, { key: 'Enter' })
+    pressInComposer('Enter', {}, box)
     await settle()
     expect(sideTurn).not.toHaveBeenCalled()
   })
@@ -119,26 +123,29 @@ describe('SideChat Enter key', () => {
    * wiring, this panel could never send again until it remounted — the guard that
    * exists to save one message ate all of them.
    */
-  it('sends again after a composition abandoned by blur', async () => {
-    const box = render()
+  it('sends again after a composition abandoned by focus leaving', async () => {
+    const box = await render()
     fireEvent.compositionStart(box)
-    // No compositionEnd — focus just leaves the box mid-composition.
-    fireEvent.blur(box)
-    fireEvent.keyDown(box, { key: 'Enter' })
+    // No compositionEnd — focus just leaves the box mid-composition. The shared
+    // IME latch resets on the root's focusout, the bubbling event a real browser
+    // fires when focus leaves (the composer root listens for focusout/focusin,
+    // not the non-bubbling blur/focus the old textarea binding used).
+    fireEvent.focusOut(box)
+    pressInComposer('Enter', {}, box)
     await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
     expect(sideTurn.mock.calls[0][1]).toBe('a question')
   })
 
   it('sends again after a composition abandoned by Escape', async () => {
-    const box = render()
+    const box = await render()
     fireEvent.compositionStart(box)
-    fireEvent.keyDown(box, { key: 'Escape' })
+    pressInComposer('Escape', {}, box)
     // A real browser fires compositionend when Escape cancels the candidate;
     // the guard then holds Enter for a further 50ms (the commit-Enter window)
     // before a genuinely separate Enter may submit again.
     fireEvent.compositionEnd(box)
     await new Promise(r => setTimeout(r, 60))
-    fireEvent.keyDown(box, { key: 'Enter' })
+    pressInComposer('Enter', {}, box)
     await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
     expect(sideTurn.mock.calls[0][1]).toBe('a question')
   })

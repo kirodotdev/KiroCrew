@@ -7729,8 +7729,6 @@
     "pastedChip": {
       "collapse_paste": "Réduire le contenu collé",
       "expand_paste": "Développer le contenu collé",
-      "hide_paste_preview": "Masquer l'aperçu du collage",
-      "show_paste_preview": "Afficher l'aperçu du collage",
       "paste_lines_many": "[ Collage n°{{seq}} · {{count}} lignes ]",
       "paste_lines_one": "[ Collage n°{{seq}} · {{count}} ligne ]",
       "paste_lines_other": "[ Collage n°{{seq}} · {{count}} lignes ]",
@@ -9364,6 +9362,27 @@
       "over_tokens": "Le prompt dépasse de ~{{over}} la limite de {{limit}} tokens de ce modèle. Raccourcis-le avant de l’envoyer.",
       "sr_near": "Le prompt approche de sa limite de longueur.",
       "sr_over": "Le prompt dépasse sa limite de longueur."
+    },
+    "pasteBlockChip": {
+      "count_many": "{{count}} lignes",
+      "count_one": "{{count}} ligne",
+      "count_other": "{{count}} lignes",
+      "label_many": "Texte collé · {{count}} lignes",
+      "label_one": "Texte collé · {{count}} ligne",
+      "label_other": "Texte collé · {{count}} lignes",
+      "remove": "Supprimer le texte collé",
+      "seq": "#{{seq}} · {{lines}}",
+      "actions": "Cliquer pour modifier · glisser pour réorganiser · Retour arrière supprime"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Annuler",
+      "editor_aria": "Modifier le texte collé",
+      "save": "Enregistrer",
+      "lines_many": "{{count}} lignes",
+      "lines_one": "{{count}} ligne",
+      "lines_other": "{{count}} lignes",
+      "resize_aria": "Redimensionner l’aperçu",
+      "unsaved_hint": "Modifications non enregistrées : appuie de nouveau sur Échap pour les abandonner, ou clique à côté pour les conserver"
     }
   },
   "hooks": {

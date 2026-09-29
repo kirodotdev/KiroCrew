@@ -7618,8 +7618,6 @@
     "pastedChip": {
       "collapse_paste": "Einfügung einklappen",
       "expand_paste": "Einfügung aufklappen",
-      "hide_paste_preview": "Einfügungsvorschau ausblenden",
-      "show_paste_preview": "Einfügungsvorschau anzeigen",
       "paste_lines_one": "[ Einfügen #{{seq}} · {{count}} Zeile ]",
       "paste_lines_other": "[ Einfügen #{{seq}} · {{count}} Zeilen ]",
       "preview_more_lines_one": "… {{count}} weitere Zeile",
@@ -9238,6 +9236,24 @@
       "over_tokens": "Der Prompt liegt ~{{over}} über dem Limit dieses Modells von {{limit}} Tokens. Kürze ihn vor dem Senden.",
       "sr_near": "Der Prompt ist nahe an seinem Längenlimit.",
       "sr_over": "Der Prompt überschreitet sein Längenlimit."
+    },
+    "pasteBlockChip": {
+      "count_one": "{{count}} Zeile",
+      "count_other": "{{count}} Zeilen",
+      "label_one": "Eingefügter Text · {{count}} Zeile",
+      "label_other": "Eingefügter Text · {{count}} Zeilen",
+      "remove": "Eingefügten Text entfernen",
+      "seq": "#{{seq}} · {{lines}}",
+      "actions": "Klicken zum Bearbeiten · Ziehen zum Umsortieren · Rücktaste entfernt"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Abbrechen",
+      "editor_aria": "Eingefügten Text bearbeiten",
+      "save": "Speichern",
+      "lines_one": "{{count}} Zeile",
+      "lines_other": "{{count}} Zeilen",
+      "resize_aria": "Vorschau in der Größe ändern",
+      "unsaved_hint": "Ungespeicherte Änderungen – zum Verwerfen erneut Esc drücken, zum Behalten daneben klicken"
     }
   },
   "hooks": {

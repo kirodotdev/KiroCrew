@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import chatReducer from '../store/chatSlice'
 import SideChat from '../pages/chat/SideChat'
+import { composerValue, setComposerValue, pressInComposer, awaitComposer } from './helpers'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -120,9 +121,9 @@ describe('SideChat stale-context banner', () => {
       [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }],
     )
     renderWithStore(store)
-    const textarea = screen.getByPlaceholderText(/Ask a side question/i)
-    fireEvent.change(textarea, { target: { value: 'doomed q' } })
-    fireEvent.keyDown(textarea, { key: 'Enter' })
+    const root = await awaitComposer(document.querySelector('[data-side-chat-input]') as HTMLElement)
+    await setComposerValue('doomed q', root)
+    pressInComposer('Enter', {}, root)
     await waitFor(() => {
       expect(store.getState().chat.slotSide['slot-1']?.messages).toHaveLength(1)
     })
@@ -131,6 +132,6 @@ describe('SideChat stale-context banner', () => {
     await waitFor(() => {
       expect(store.getState().chat.slotSide['slot-1']?.messages ?? []).toHaveLength(0)
     })
-    expect(textarea).toHaveValue('doomed q')
+    expect(composerValue(root)).toBe('doomed q')
   })
 })

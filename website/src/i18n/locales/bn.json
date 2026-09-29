@@ -7618,8 +7618,6 @@
     "pastedChip": {
       "collapse_paste": "পেস্ট সংকুচিত করো",
       "expand_paste": "পেস্ট প্রসারিত করো",
-      "hide_paste_preview": "পেস্টের প্রিভিউ লুকাও",
-      "show_paste_preview": "পেস্টের প্রিভিউ দেখাও",
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "preview_more_lines_one": "… আরও {{count}} লাইন",
@@ -9238,6 +9236,24 @@
       "over_tokens": "প্রম্পটটি এই মডেলের {{limit}} টোকেন সীমার চেয়ে ~{{over}} বেশি। পাঠানোর আগে এটি ছোট করো।",
       "sr_near": "প্রম্পটটি দৈর্ঘ্যের সীমার কাছাকাছি।",
       "sr_over": "প্রম্পটটি দৈর্ঘ্যের সীমা ছাড়িয়ে গেছে।"
+    },
+    "pasteBlockChip": {
+      "count_one": "{{count}} লাইন",
+      "count_other": "{{count}} লাইন",
+      "label_one": "পেস্ট করা টেক্সট · {{count}} লাইন",
+      "label_other": "পেস্ট করা টেক্সট · {{count}} লাইন",
+      "remove": "পেস্ট করা টেক্সট সরাও",
+      "seq": "#{{seq}} · {{lines}}",
+      "actions": "সম্পাদনা করতে ক্লিক করো · পুনর্বিন্যাস করতে টানো · Backspace সরায়"
+    },
+    "pastePreviewEditor": {
+      "cancel": "বাতিল",
+      "editor_aria": "পেস্ট করা টেক্সট সম্পাদনা করো",
+      "save": "সংরক্ষণ",
+      "lines_one": "{{count}} লাইন",
+      "lines_other": "{{count}} লাইন",
+      "resize_aria": "প্রিভিউর আকার পরিবর্তন করো",
+      "unsaved_hint": "পরিবর্তন সংরক্ষিত হয়নি — বাতিল করতে আবার Esc চাপো, রাখতে বাইরে ক্লিক করো"
     }
   },
   "hooks": {

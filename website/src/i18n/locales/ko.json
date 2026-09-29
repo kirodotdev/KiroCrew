@@ -7507,8 +7507,6 @@
     "pastedChip": {
       "collapse_paste": "붙여넣기 접기",
       "expand_paste": "붙여넣기 펼치기",
-      "hide_paste_preview": "붙여넣기 미리보기 숨기기",
-      "show_paste_preview": "붙여넣기 미리보기 표시",
       "paste_lines_other": "[ 붙여넣기 #{{seq}} · {{count}}줄 ]",
       "preview_more_lines_other": "… {{count}}줄 더"
     },
@@ -9112,6 +9110,21 @@
       "over_tokens": "프롬프트가 이 모델의 {{limit}} 토큰 한도를 약 {{over}} 초과합니다. 보내기 전에 줄이세요.",
       "sr_near": "프롬프트가 길이 한도에 가깝습니다.",
       "sr_over": "프롬프트가 길이 한도를 초과했습니다."
+    },
+    "pasteBlockChip": {
+      "count_other": "{{count}}줄",
+      "label_other": "붙여넣은 텍스트 · {{count}}줄",
+      "remove": "붙여넣은 텍스트 제거",
+      "seq": "#{{seq}} · {{lines}}",
+      "actions": "클릭하여 편집 · 드래그하여 순서 변경 · Backspace로 제거"
+    },
+    "pastePreviewEditor": {
+      "cancel": "취소",
+      "editor_aria": "붙여넣은 텍스트 편집",
+      "save": "저장",
+      "lines_other": "{{count}}줄",
+      "resize_aria": "미리보기 크기 조절",
+      "unsaved_hint": "저장되지 않은 변경 사항이 있습니다 — 버리려면 Esc를 다시 누르고, 유지하려면 바깥을 클릭하세요"
     }
   },
   "hooks": {

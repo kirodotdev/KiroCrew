@@ -127,6 +127,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
+import { composerValue, setComposerValue, setComposerSelection, pasteIntoComposer, getComposer, awaitComposer } from './helpers'
 
 function makeStore(activeSlot: string, slots: { key: string; project?: string }[]) {
   return configureStore({
@@ -166,20 +167,20 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
   return result
 }
 
-/** Type an @-token, wait for the picker's folder row, click it. Returns the textarea. */
+/** Type an @-token, wait for the picker's folder row, click it. Returns the composer root. */
 async function stageFolder() {
-  const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-  fireEvent.change(ta, { target: { value: '@wid' } })
+  const el = getComposer()
+  await setComposerValue('@wid')
   // 200ms debounce before the search fires; findByText waits it out.
   const row = await screen.findByText('widgets/', undefined, { timeout: 3000 })
   fireEvent.mouseDown(row)
   // Chip render is the staging signal (remove control carries the aria-label).
   await screen.findByLabelText('Remove folder')
-  return ta
+  return el
 }
 
 beforeEach(() => {
@@ -204,8 +205,8 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     // reappears with its one-click remove (the restore-path divergence fix).
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
     await screen.findByLabelText('Remove folder')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/widgets/')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/widgets/')
   })
 
   it('removing the folder chip also strips its @-token from the composer', async () => {
@@ -213,13 +214,13 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     await renderPage(store)
 
     const ta = await stageFolder()
-    expect(ta.value).toContain('@src/widgets/')
+    expect(composerValue(ta)).toContain('@src/widgets/')
 
     fireEvent.click(screen.getByLabelText('Remove folder'))
 
     await waitFor(() => expect(screen.queryByLabelText('Remove folder')).not.toBeInTheDocument())
     // The remove control's promise: the agent no longer receives the folder.
-    expect(ta.value).not.toContain('@src/widgets/')
+    expect(composerValue(ta)).not.toContain('@src/widgets/')
   })
 
   it('token strip is exact: a longer sibling token survives the remove', async () => {
@@ -230,15 +231,15 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     // User keeps typing after the pick, including a hand-typed longer token
     // that shares the staged token as a prefix. Both are folder references
     // now (chips derive from tokens), so two chips render.
-    fireEvent.change(ta, { target: { value: ta.value + 'and @src/widgets/sub/ please' } })
+    await setComposerValue(composerValue(ta) + 'and @src/widgets/sub/ please', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove folder')).toHaveLength(2))
 
     // Remove the SHORTER one; the boundary-checked strip must not eat the
     // longer sibling that contains it as a prefix.
     fireEvent.click(screen.getAllByLabelText('Remove folder')[0])
 
-    await waitFor(() => expect(ta.value).not.toMatch(/(^|\s)@src\/widgets\/(\s|$)/))
-    expect(ta.value).toContain('@src/widgets/sub/')
+    await waitFor(() => expect(composerValue(ta)).not.toMatch(/(^|\s)@src\/widgets\/(\s|$)/))
+    expect(composerValue(ta)).toContain('@src/widgets/sub/')
     expect(screen.getAllByLabelText('Remove folder')).toHaveLength(1)
   })
 
@@ -247,11 +248,11 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     await renderPage(store)
 
     const ta = await stageFolder()
-    expect(ta.value).toContain('@src/widgets/')
+    expect(composerValue(ta)).toContain('@src/widgets/')
 
     // The composer token is the only payload the agent receives, so a chip
     // whose token was deleted by hand must not keep claiming the folder.
-    fireEvent.change(ta, { target: { value: 'no folder here anymore' } })
+    await setComposerValue('no folder here anymore', ta)
 
     await waitFor(() => expect(screen.queryByLabelText('Remove folder')).not.toBeInTheDocument())
   })
@@ -266,11 +267,11 @@ describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
     // the chip set from the text: the picked chip dies with its token, and
     // the typed token — which WILL serialize on send exactly like a picked
     // one — gets a chip with a working remove control.
-    fireEvent.change(ta, { target: { value: 'look at @src/widgets/sub/ instead' } })
+    await setComposerValue('look at @src/widgets/sub/ instead', ta)
 
     await waitFor(() => expect(screen.getAllByLabelText('Remove folder')).toHaveLength(1))
     fireEvent.click(screen.getByLabelText('Remove folder'))
-    await waitFor(() => expect(ta.value).not.toContain('@src/widgets/sub/'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/widgets/sub/'))
   })
 })
 
@@ -280,7 +281,7 @@ describe('ChatPage folder serialization on send', { timeout: 15_000 }, () => {
     await renderPage(store)
 
     const ta = await stageFolder()
-    fireEvent.change(ta, { target: { value: ta.value + 'summarize it' } })
+    await setComposerValue(composerValue(ta) + 'summarize it', ta)
 
     await act(async () => { fireEvent.keyDown(ta, { key: 'Enter' }) })
 
@@ -301,30 +302,30 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
 
     // The pick inserted the token and staged the file chip.
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     const removeBtn = await screen.findByLabelText('Remove')
 
     // Removing the chip strips the token too — the same contract folder
     // chips have, so "remove" cannot mean different things per chip kind.
     fireEvent.click(removeBtn)
-    await waitFor(() => expect(ta.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).not.toContain('@src/main.ts'))
   })
 
   it('token strip survives a remount: the restored draft has no pick-time ref', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     const first = await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     // Reload: text + file drafts restore from storage, but the in-memory
@@ -333,30 +334,29 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     first.unmount()
     const store2 = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store2)
-    const ta2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await waitFor(() => expect(ta2.value).toContain('@src/main.ts'))
+    const ta2 = getComposer()
+    await waitFor(() => expect(composerValue(ta2)).toContain('@src/main.ts'))
     const removeBtn2 = await screen.findByLabelText('Remove')
 
     fireEvent.click(removeBtn2)
-    await waitFor(() => expect(ta2.value).not.toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta2)).not.toContain('@src/main.ts'))
   })
 
   it('hand-editing a picked file token out of the composer drops the orphaned chip', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     // Deleting the token by hand (no chip-remove click) must unstage the
     // file too -- the same "text is the source of truth" contract a folder
     // token already gets for free (see the orphaned-folder-chip test above).
-    fireEvent.change(ta, { target: { value: 'no file here anymore' } })
-
+    await setComposerValue('no file here anymore', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
   })
 
@@ -364,21 +364,21 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     // Cut the token out -- same as the orphan test, the chip unstages.
-    fireEvent.change(ta, { target: { value: 'move it down here: ' } })
+    await setComposerValue('move it down here: ', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
     // Paste the SAME token back elsewhere in the text (or an undo restoring
     // it) -- the file was never really un-referenced, so its chip must come
     // back too, the same way a folder chip already survives this round trip.
-    fireEvent.change(ta, { target: { value: 'move it down here: @src/main.ts' } })
+    await setComposerValue('move it down here: @src/main.ts', ta)
     await screen.findByLabelText('Remove')
   })
 
@@ -396,18 +396,18 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     ])
     await renderPage(store)
 
-    const taA = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(taA, { target: { value: '@mai' } })
+    const taA = getComposer()
+    await setComposerValue('@mai', taA)
     const rowA = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(rowA)
-    await waitFor(() => expect(taA.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(taA)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
-    const taB = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(taB, { target: { value: '@mai' } })
+    const taB = getComposer()
+    await setComposerValue('@mai', taB)
     // The picker's `placeholderData` keeps slot-a's LAST resolved results on
     // screen while slot-b's own (differently-rooted) query is in flight, so
     // "main.ts" can satisfy findByText from the stale placeholder alone.
@@ -419,14 +419,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.mouseDown(rowB)
     // Under slot-b's project the SAME absolute file relativizes to a bare
     // `@main.ts`, overwriting pickedFileTokens' shared entry for this path.
-    await waitFor(() => expect(taB.value).toContain('@main.ts'))
+    await waitFor(() => expect(composerValue(taB)).toContain('@main.ts'))
     await screen.findByLabelText('Remove')
 
     // Back to slot-a: its own text/chip must survive the foreign overwrite.
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
     await screen.findByLabelText('Remove')
-    const taA2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(taA2.value).toContain('@src/main.ts')
+    const taA2 = getComposer()
+    expect(composerValue(taA2)).toContain('@src/main.ts')
   })
 
   it('sending in one slot does not blank another slot\'s recorded file token (pickedFileTokens is not wiped wholesale)', async () => {
@@ -443,18 +443,18 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     ])
     await renderPage(store)
 
-    const taA = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(taA, { target: { value: '@mai' } })
+    const taA = getComposer()
+    await setComposerValue('@mai', taA)
     const rowA = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(rowA)
-    await waitFor(() => expect(taA.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(taA)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
-    const taB = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(taB, { target: { value: 'unrelated message' } })
+    const taB = getComposer()
+    await setComposerValue('unrelated message', taB)
     await act(async () => { fireEvent.keyDown(taB, { key: 'Enter' }) })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
 
@@ -464,10 +464,10 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // reconcile against (the orphaned-chip bug, reintroduced via a side door).
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
     await screen.findByLabelText('Remove')
-    const taA2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(taA2.value).toContain('@src/main.ts')
+    const taA2 = getComposer()
+    expect(composerValue(taA2)).toContain('@src/main.ts')
 
-    fireEvent.change(taA2, { target: { value: 'no file here anymore' } })
+    await setComposerValue('no file here anymore', taA2)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
   })
 
@@ -485,21 +485,21 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     ])
     await renderPage(store)
 
-    const taA = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(taA, { target: { value: '@mai' } })
+    const taA = getComposer()
+    await setComposerValue('@mai', taA)
     const rowA = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(rowA)
-    await waitFor(() => expect(taA.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(taA)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
-    const taB = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(taB, { target: { value: '@mai' } })
+    const taB = getComposer()
+    await setComposerValue('@mai', taB)
     const rowB = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(rowB)
-    await waitFor(() => expect(taB.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(taB)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     // Slot-b sends its own copy of the same file.
@@ -512,10 +512,10 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // under it.
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
     await screen.findByLabelText('Remove')
-    const taA2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(taA2.value).toContain('@src/main.ts')
+    const taA2 = getComposer()
+    expect(composerValue(taA2)).toContain('@src/main.ts')
 
-    fireEvent.change(taA2, { target: { value: 'no file here anymore' } })
+    await setComposerValue('no file here anymore', taA2)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
   })
 
@@ -529,11 +529,11 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     // Change the slot's project WITHOUT switching slots -- e.g. the user
@@ -542,9 +542,9 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
 
     // An unrelated composer edit re-runs the reconciliation effect; it must
     // not touch the still-valid, untouched file token.
-    fireEvent.change(ta, { target: { value: ta.value + ' please' } })
+    await setComposerValue(composerValue(ta) + ' please', ta)
     await screen.findByLabelText('Remove')
-    expect(ta.value).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain('@src/main.ts')
   })
 
   it('"Add to chat" on an already-mentioned file still records its token, so a later hand-edit unstages it', async () => {
@@ -559,15 +559,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'please check @src/main.ts' } })
-
+    const ta = getComposer()
+    await setComposerValue('please check @src/main.ts', ta)
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check @src/main.ts')
+    expect(composerValue(ta)).toBe('please check @src/main.ts')
 
-    fireEvent.change(ta, { target: { value: 'no file here anymore' } })
+    await setComposerValue('no file here anymore', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
   })
 
@@ -580,19 +579,19 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
-    fireEvent.change(ta, { target: { value: 'no file here anymore' } })
+    await setComposerValue('no file here anymore', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
 
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: '/elsewhere' })) })
 
-    fireEvent.change(ta, { target: { value: 'now referencing @src/main.ts' } })
+    await setComposerValue('now referencing @src/main.ts', ta)
     // Give the reconciliation effect a beat to (not) act, then assert no
     // chip was resurrected for the stale, wrong-project absolute path.
     await new Promise(r => setTimeout(r, 50))
@@ -610,15 +609,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: 'C:\\repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'please check @src\\main.ts' } })
-
+    const ta = getComposer()
+    await setComposerValue('please check @src\\main.ts', ta)
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts (win project)'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check @src\\main.ts')
+    expect(composerValue(ta)).toBe('please check @src\\main.ts')
 
-    fireEvent.change(ta, { target: { value: 'no file here anymore' } })
+    await setComposerValue('no file here anymore', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
   })
 
@@ -626,13 +624,12 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'please check @src\\main.ts' } })
-
+    const ta = getComposer()
+    await setComposerValue('please check @src\\main.ts', ta)
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check @src\\main.ts @src/main.ts ')
+    expect(composerValue(ta)).toBe('please check @src\\main.ts @src/main.ts ')
   })
 
   it('a second alias for the same file (after a project change) survives deleting the other one', async () => {
@@ -645,17 +642,17 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: '@mai' } })
+    const ta = getComposer()
+    await setComposerValue('@mai', ta)
     const row = await screen.findByText('main.ts', undefined, { timeout: 3000 })
     fireEvent.mouseDown(row)
-    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    await waitFor(() => expect(composerValue(ta)).toContain('@src/main.ts'))
     await screen.findByLabelText('Remove')
 
     // Same file, now relative to a project one level down -- a fresh pick
     // computes a DIFFERENT rel for the identical absolute path.
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: '/repo/src' })) })
-    fireEvent.change(ta, { target: { value: ta.value + ' and @mai' } })
+    await setComposerValue(composerValue(ta) + ' and @mai', ta)
     // As in the cross-slot test above: the picker's placeholderData keeps
     // the FIRST query's (project '/repo') results on screen while the
     // second, differently-rooted query is in flight. Waiting merely for the
@@ -676,13 +673,13 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
       if (!opt) throw new Error('main.ts option row not found yet')
       fireEvent.mouseDown(opt)
     }, { timeout: 3000 })
-    await waitFor(() => expect(ta.value).toContain('@main.ts'))
-    expect(ta.value).toContain('@src/main.ts')
+    await waitFor(() => expect(composerValue(ta)).toContain('@main.ts'))
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
     // Delete only the SECOND alias -- the first is still right there.
-    fireEvent.change(ta, { target: { value: 'please check @src/main.ts and ' } })
+    await setComposerValue('please check @src/main.ts and ', ta)
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check @src/main.ts and ')
+    expect(composerValue(ta)).toBe('please check @src/main.ts and ')
   })
 
   it('deleting one staged file\'s mention does not keep it staged just because a DIFFERENT staged file shares a path suffix', async () => {
@@ -700,15 +697,15 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     fireEvent.click(await screen.findByText('Add to chat: other/src/main.ts'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
-    expect(ta.value).toContain('@other/src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain('@other/src/main.ts')
 
     // Delete ONLY the second file's mention -- the first's own `@src/main.ts`
     // remains, and happens to be a trailing suffix of the second file's path.
-    fireEvent.change(ta, { target: { value: 'please check @src/main.ts ' } })
+    await setComposerValue('please check @src/main.ts ', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-    expect(ta.value).toBe('please check @src/main.ts ')
+    expect(composerValue(ta)).toBe('please check @src/main.ts ')
   })
 
   it('deleting a staged file\'s mention does not survive via an unrelated literal-backslash mention on a POSIX project', async () => {
@@ -724,14 +721,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
     // Delete the file's own mention, replacing it with an unrelated literal
     // backslash mention that merely happens to fold to the same string.
-    fireEvent.change(ta, { target: { value: 'please check @src\\main.ts ' } })
+    await setComposerValue('please check @src\\main.ts ', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).toBe('please check @src\\main.ts ')
+    expect(composerValue(ta)).toBe('please check @src\\main.ts ')
   })
 
   it('removing one file does not unstage a DIFFERENT file that shares its exact alias after a project change (fork GPT review)', async () => {
@@ -748,8 +745,8 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
     // A DIFFERENT absolute file that relativizes to the SAME rel once the
     // project moves to its parent directory.
@@ -758,14 +755,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
     // Still only ONE literal occurrence of the shared alias -- the second
     // pick found it already mentioned and inserted no new text.
-    expect((ta.value.match(/@src\/main\.ts/g) ?? []).length).toBe(1)
+    expect((composerValue(ta).match(/@src\/main\.ts/g) ?? []).length).toBe(1)
 
     // Remove one of the two chips.
     fireEvent.click(screen.getAllByLabelText('Remove')[0])
     // Exactly one chip must survive -- the shared alias text must not have
     // been stripped out from under it.
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-    expect(ta.value).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain('@src/main.ts')
   })
 
   it('a forward-slash-spelled Windows project still folds separators (fork GPT review)', async () => {
@@ -780,19 +777,18 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: 'C:/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'please check @src\\main.ts' } })
-
+    const ta = getComposer()
+    await setComposerValue('please check @src\\main.ts', ta)
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts (win project)'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check @src\\main.ts')
+    expect(composerValue(ta)).toBe('please check @src\\main.ts')
 
     // Hand-edit the backslash mention to its forward-slash equivalent --
     // same file, same project, different spelling. The chip must survive.
-    fireEvent.change(ta, { target: { value: 'please check @src/main.ts' } })
+    await setComposerValue('please check @src/main.ts', ta)
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check @src/main.ts')
+    expect(composerValue(ta)).toBe('please check @src/main.ts')
   })
 
   it('a forward-slash UNC project folds separators too: a separator edit keeps the chip staged (fork GPT review)', async () => {
@@ -806,14 +802,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts (unc project)'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
-    fireEvent.change(ta, { target: { value: 'please check @src\\main.ts' } })
+    await setComposerValue('please check @src\\main.ts', ta)
     // Give the reconciliation effect a render to act; the chip must remain.
     await act(async () => { await new Promise(r => setTimeout(r, 50)) })
     expect(screen.getByLabelText('Remove')).toBeTruthy()
-    expect(ta.value).toBe('please check @src\\main.ts')
+    expect(composerValue(ta)).toBe('please check @src\\main.ts')
   })
 
   it('removing a chip strips its mention even after a separator-only hand-edit on a Windows project (fork GPT review)', async () => {
@@ -826,22 +822,21 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: 'C:/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'please check @src\\main.ts' } })
-
+    const ta = getComposer()
+    await setComposerValue('please check @src\\main.ts', ta)
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts (win project)'))
     await screen.findByLabelText('Remove')
 
     // Hand-edit to the forward-slash spelling -- the chip survives this
     // (round 12), but its recorded alias is still the backslash form.
-    fireEvent.change(ta, { target: { value: 'please check @src/main.ts' } })
+    await setComposerValue('please check @src/main.ts', ta)
     await screen.findByLabelText('Remove')
 
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
     // No stale, unattached mention left behind.
-    expect(ta.value).toBe('please check ')
+    expect(composerValue(ta)).toBe('please check ')
   })
 
   describe('mixed separator spellings on a Windows project (fork GPT review)', () => {
@@ -852,14 +847,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
       act(() => { store.dispatch(openActivityPanel()) })
       fireEvent.click(await screen.findByText('Add to chat: other/src/main.ts (win project)'))
       await screen.findByLabelText('Remove')
-      return screen.getByLabelText('Message input') as HTMLTextAreaElement
+      return getComposer()
     }
 
     it('a mixed-separator edit keeps the chip staged', async () => {
       const store = makeStore('slot-a', [{ key: 'slot-a', project: 'C:/repo' }])
       await renderPage(store)
       const ta = await stageOther(store)
-      fireEvent.change(ta, { target: { value: 'see @other\\src/main.ts now' } })
+      await setComposerValue('see @other\\src/main.ts now', ta)
       await act(async () => { await new Promise(r => setTimeout(r, 50)) })
       expect(screen.getByLabelText('Remove')).toBeTruthy()
     })
@@ -872,22 +867,22 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
       const store = makeStore('slot-a', [{ key: 'slot-a', project: 'C:/repo' }])
       await renderPage(store)
       const ta = await stageOther(store)
-      fireEvent.change(ta, { target: { value: edited } })
+      await setComposerValue(edited, ta)
       await screen.findByLabelText('Remove')
       fireEvent.click(screen.getByLabelText('Remove'))
       await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-      expect(ta.value).toBe(expected)
+      expect(composerValue(ta)).toBe(expected)
     })
 
     it('"Add to chat" on an existing mixed mention inserts no duplicate and records that spelling', async () => {
       const store = makeStore('slot-a', [{ key: 'slot-a', project: 'C:/repo' }])
       await renderPage(store)
-      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-      fireEvent.change(ta, { target: { value: 'see @other\\src/main.ts now' } })
+      const ta = getComposer()
+      await setComposerValue('see @other\\src/main.ts now', ta)
       await stageOther(store)
-      expect(ta.value).toBe('see @other\\src/main.ts now')
+      expect(composerValue(ta)).toBe('see @other\\src/main.ts now')
       // The recorded alias is what lets a later hand-delete unstage the chip.
-      fireEvent.change(ta, { target: { value: 'see now' } })
+      await setComposerValue('see now', ta)
       await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
     })
 
@@ -897,10 +892,10 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
       act(() => { store.dispatch(openActivityPanel()) })
       fireEvent.click(await screen.findByText('Add to chat: other/src/main.ts'))
       await screen.findByLabelText('Remove')
-      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-      fireEvent.change(ta, { target: { value: 'see @other\\src/main.ts now' } })
+      const ta = getComposer()
+      await setComposerValue('see @other\\src/main.ts now', ta)
       await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-      expect(ta.value).toBe('see @other\\src/main.ts now')
+      expect(composerValue(ta)).toBe('see @other\\src/main.ts now')
     })
   })
 
@@ -916,9 +911,8 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: 'C:/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'please check @src\\main.ts' } })
-
+    const ta = getComposer()
+    await setComposerValue('please check @src\\main.ts', ta)
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts (win project)'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
@@ -928,17 +922,17 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: 'C:/repo/other' })) })
     fireEvent.click(await screen.findByText('Add to chat: other/src/main.ts (win project)'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    expect(ta.value).toBe('please check @src\\main.ts')
+    expect(composerValue(ta)).toBe('please check @src\\main.ts')
 
     // Hand-edit the shared mention to its forward-slash equivalent.
-    fireEvent.change(ta, { target: { value: 'please check @src/main.ts' } })
+    await setComposerValue('please check @src/main.ts', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
 
     // Remove one of the two chips.
     fireEvent.click(screen.getAllByLabelText('Remove')[0])
     // Exactly one chip must survive, with the shared mention still intact.
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-    expect(ta.value).toBe('please check @src/main.ts')
+    expect(composerValue(ta)).toBe('please check @src/main.ts')
   })
 
   it('typing punctuation directly after a mention does not unstage it (fork GPT review)', async () => {
@@ -952,14 +946,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
     // Append a comma directly after the mention, no space in between.
-    fireEvent.change(ta, { target: { value: ta.value.trimEnd() + ', thanks' } })
+    await setComposerValue(composerValue(ta).trimEnd() + ', thanks', ta)
     // The chip must survive -- the file is still clearly referenced.
     await screen.findByLabelText('Remove')
-    expect(ta.value).toContain('@src/main.ts,')
+    expect(composerValue(ta)).toContain('@src/main.ts,')
   })
 
   it('removing a chip strips a mention followed directly by punctuation (fork GPT review)', async () => {
@@ -975,15 +969,15 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: ta.value.trimEnd() + ', thanks' } })
+    await setComposerValue(composerValue(ta).trimEnd() + ', thanks', ta)
     await screen.findByLabelText('Remove')
 
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
     // No stale, unattached mention left behind.
-    expect(ta.value).not.toContain('@src/main.ts')
+    expect(composerValue(ta)).not.toContain('@src/main.ts')
   })
 
   it('a punctuation boundary does not match a mention that is a PREFIX of a longer, different token (fork GPT review)', async () => {
@@ -998,17 +992,17 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
     // Extend the mention directly into a DIFFERENT, longer filename, no
     // space in between.
-    fireEvent.change(ta, { target: { value: ta.value.trimEnd() + '.bak' } })
+    await setComposerValue(composerValue(ta).trimEnd() + '.bak', ta)
     // The original file is no longer genuinely referenced -- the chip
     // must unstage instead of surviving via the prefix collision.
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
     // The now-unrelated `@src/main.ts.bak` text must be left untouched.
-    expect(ta.value).toContain('@src/main.ts.bak')
+    expect(composerValue(ta)).toContain('@src/main.ts.bak')
   })
 
   it('removing a file does not corrupt a DIFFERENT staged file whose own mention is a longer, punctuated prefix match (fork GPT review)', async () => {
@@ -1028,20 +1022,19 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: report,'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
     // Collapse the text to ONLY the longer file's own mention, as if the
     // user had already hand-deleted the shorter file's separate `@report`.
     // Without the fix, the shorter file's chip wrongly stays staged --
     // its punctuation-boundary check reads the longer file's OWN trailing
     // comma as "just punctuation" closing `@report`.
-    fireEvent.change(ta, { target: { value: 'please check @report,' } })
-
+    await setComposerValue('please check @report,', ta)
     // Exactly one chip must survive -- the longer file, genuinely
     // mentioned -- and its own comma-terminated mention must be intact,
     // not corrupted down to a stray comma by a later remove.
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-    expect(ta.value).toBe('please check @report,')
+    expect(composerValue(ta)).toBe('please check @report,')
   })
 
   it('removing a restored alias-less file does not corrupt its restored sibling\'s punctuated mention (fork GPT review)', async () => {
@@ -1062,11 +1055,11 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
     fireEvent.click(await screen.findByText('Add to chat: report'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
     // The second pick found `report` already "mentioned" inside `@report,`
     // and inserted nothing -- give each file its own distinct mention by
     // hand, the shape a real draft has.
-    fireEvent.change(ta, { target: { value: 'see @report, and @report here' } })
+    await setComposerValue('see @report, and @report here', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
 
     // Reload: drafts restore, pickedFileTokens (in-memory) is gone --
@@ -1074,8 +1067,8 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     first.unmount()
     const store2 = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store2)
-    const ta2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await waitFor(() => expect(ta2.value).toBe('see @report, and @report here'))
+    const ta2 = getComposer()
+    await waitFor(() => expect(composerValue(ta2)).toBe('see @report, and @report here'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
 
     // Remove the SHORTER file (staged second, chip index 1).
@@ -1083,7 +1076,7 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
     // The sibling's own comma-terminated mention survives intact; the
     // shorter file's standalone mention is the one that went.
-    expect(ta2.value).toBe('see @report, and here')
+    expect(composerValue(ta2)).toBe('see @report, and here')
   })
 
   it('a mention wrapped in parens stays staged and strips cleanly on remove (fork GPT review)', async () => {
@@ -1099,14 +1092,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
     // Wrap the mention in parens by hand.
-    fireEvent.change(ta, { target: { value: 'please check (@src/main.ts) for bugs' } })
+    await setComposerValue('please check (@src/main.ts) for bugs', ta)
     // The chip must survive -- the file is still clearly referenced.
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check (@src/main.ts) for bugs')
+    expect(composerValue(ta)).toBe('please check (@src/main.ts) for bugs')
 
     // Remove the chip -- the mention AND its wrapping parens must be
     // stripped cleanly, not left behind as a stray, empty `()` (fork
@@ -1114,7 +1107,7 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // does not catch that regression).
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).toBe('please check for bugs')
+    expect(composerValue(ta)).toBe('please check for bugs')
   })
 
   it('a stale, no-longer-staged historical alias does not force a strict boundary onto a currently staged file (fork GPT review)', async () => {
@@ -1133,18 +1126,18 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: report,'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
     // Hand-delete the mention entirely -- an AUTOMATIC (reconciliation)
     // unstage, not a click on the chip's own remove control, so its
     // alias stays recorded in `known` for revival purposes.
-    fireEvent.change(ta, { target: { value: '' } })
+    await setComposerValue('', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
 
     // Stage a DIFFERENT, currently-active file.
     fireEvent.click(await screen.findByText('Add to chat: report'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toContain('@report')
+    expect(composerValue(ta)).toContain('@report')
 
     // Type an entirely ordinary sentence with punctuation directly after
     // the mention -- a DIFFERENT punctuation mark than the stale
@@ -1152,10 +1145,10 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // (`report,`'s own literal text is never re-typed here; only its
     // REL is a prefix of this file's, which is all the round-18 guard
     // keys on).
-    fireEvent.change(ta, { target: { value: 'please check @report! thanks' } })
+    await setComposerValue('please check @report! thanks', ta)
     // The chip must survive.
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('please check @report! thanks')
+    expect(composerValue(ta)).toBe('please check @report! thanks')
   })
 
   it('multi-character punctuation clusters and a file:line suffix still count as a mention boundary (fork Opus review)', async () => {
@@ -1172,14 +1165,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: 'is this the right file @src/main.ts?!' } })
+    await setComposerValue('is this the right file @src/main.ts?!', ta)
     await screen.findByLabelText('Remove')
 
-    fireEvent.change(ta, { target: { value: 'see @src/main.ts:42 for the bug' } })
+    await setComposerValue('see @src/main.ts:42 for the bug', ta)
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('see @src/main.ts:42 for the bug')
+    expect(composerValue(ta)).toBe('see @src/main.ts:42 for the bug')
   })
 
   it('shortening a mention unstages the chip: a picked mention is exact-or-nothing', async () => {
@@ -1193,13 +1186,13 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
-    fireEvent.change(ta, { target: { value: 'please check @main.ts ' } })
+    await setComposerValue('please check @main.ts ', ta)
     // Unstaged: the shortened spelling matches no recorded alias.
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).toBe('please check @main.ts ')
+    expect(composerValue(ta)).toBe('please check @main.ts ')
   })
 
   it('an ambiguous shortened form never keeps a file staged: only the untouched exact mention survives', async () => {
@@ -1215,14 +1208,14 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     fireEvent.click(await screen.findByText('Add to chat: other/src/main.ts'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
     // Rewrite the FIRST file's own mention to the ambiguous short form,
     // leaving the second file's full mention intact.
-    fireEvent.change(ta, { target: { value: 'please check @main.ts and @other/src/main.ts ' } })
+    await setComposerValue('please check @main.ts and @other/src/main.ts ', ta)
     // The edited file unstages (ambiguous); the untouched one stays.
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-    expect(ta.value).toBe('please check @main.ts and @other/src/main.ts ')
+    expect(composerValue(ta)).toBe('please check @main.ts and @other/src/main.ts ')
   })
 
   it('removing a chip whose mention was edited to a file:line form consumes the :line suffix too (fork GPT review)', async () => {
@@ -1236,17 +1229,17 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: 'see @src/main.ts:42 for the bug' } })
+    await setComposerValue('see @src/main.ts:42 for the bug', ta)
     await screen.findByLabelText('Remove')
 
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
     // The whole file:line mention is gone -- no stray `:42` fragment.
-    expect(ta.value).not.toContain('@src/main.ts')
-    expect(ta.value).not.toContain(':42')
-    expect(ta.value).toBe('see for the bug')
+    expect(composerValue(ta)).not.toContain('@src/main.ts')
+    expect(composerValue(ta)).not.toContain(':42')
+    expect(composerValue(ta)).toBe('see for the bug')
   })
 
   it('a code-formatted or quoted mention stays staged and its wrapper pair strips with the chip (fork GPT review)', async () => {
@@ -1260,20 +1253,20 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: 'see `@src/main.ts` here' } })
+    await setComposerValue('see `@src/main.ts` here', ta)
     await screen.findByLabelText('Remove')
 
-    fireEvent.change(ta, { target: { value: 'see "@src/main.ts" here' } })
+    await setComposerValue('see "@src/main.ts" here', ta)
     await screen.findByLabelText('Remove')
 
     // Removing the chip strips the wrapping pair as a unit, not just the
     // token -- no stray empty quotes left as real message text.
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).not.toContain('@src/main.ts')
-    expect(ta.value).toBe('see here')
+    expect(composerValue(ta)).not.toContain('@src/main.ts')
+    expect(composerValue(ta)).toBe('see here')
   })
 
   it('deleting one sibling mention does not force the strict boundary onto a survivor punctuated in the same edit (fork GPT review)', async () => {
@@ -1290,12 +1283,12 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: report'))
     fireEvent.click(await screen.findByText('Add to chat: report,'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: 'keep @report! only' } })
+    await setComposerValue('keep @report! only', ta)
     // The survivor stays staged; only the deleted sibling unstages.
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
-    expect(ta.value).toBe('keep @report! only')
+    expect(composerValue(ta)).toBe('keep @report! only')
   })
 
   it('a mention rewritten to the CURRENT project\'s rel form after re-rooting unstages: no re-derived form is accepted', async () => {
@@ -1312,30 +1305,30 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(ta.value).toContain('@src/main.ts')
+    const ta = getComposer()
+    expect(composerValue(ta)).toContain('@src/main.ts')
 
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: '/' })) })
-    fireEvent.change(ta, { target: { value: 'check @repo/src/main.ts ' } })
+    await setComposerValue('check @repo/src/main.ts ', ta)
     // Unstaged: `@repo/src/main.ts` matches no recorded alias.
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).toBe('check @repo/src/main.ts ')
+    expect(composerValue(ta)).toBe('check @repo/src/main.ts ')
   })
 
   it('inserts a file at the caret without doubling existing leading whitespace', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'before after' } })
-    await waitFor(() => expect(ta.value).toBe('before after'))
-    ta.setSelectionRange('before '.length, 'before '.length)
+    const ta = getComposer()
+    await setComposerValue('before after', ta)
+    await waitFor(() => expect(composerValue(ta)).toBe('before after'))
+    await setComposerSelection('before '.length, 'before '.length, ta)
     fireEvent.mouseUp(ta)
 
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('before @src/main.ts after')
+    expect(composerValue(ta)).toBe('before @src/main.ts after')
   })
 
   it('a mention wrapped WITH a :line suffix stays staged and strips cleanly on remove (fork GPT review)', async () => {
@@ -1349,15 +1342,15 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: 'see (@src/main.ts:42) here' } })
+    await setComposerValue('see (@src/main.ts:42) here', ta)
     await new Promise(r => setTimeout(r, 50))
     expect(screen.getByLabelText('Remove')).toBeTruthy()
 
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).toBe('see here')
+    expect(composerValue(ta)).toBe('see here')
   })
 
   it('removing a chip never eats a wrapped sibling mention whose own name supplies the :line shape (fork Opus review)', async () => {
@@ -1375,9 +1368,9 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: a.ts'))
     fireEvent.click(await screen.findByText('Add to chat: a.ts:42'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: 'keep (@a.ts:42) and @a.ts done' } })
+    await setComposerValue('keep (@a.ts:42) and @a.ts done', ta)
     await new Promise(r => setTimeout(r, 50))
     expect(screen.getAllByLabelText('Remove')).toHaveLength(2)
 
@@ -1385,7 +1378,7 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(screen.getAllByLabelText('Remove')[0])
     // Its own bare mention is stripped; the sibling's wrapped mention -- and
     // therefore the sibling's chip -- survive untouched.
-    await waitFor(() => expect(ta.value).toBe('keep (@a.ts:42) and done'))
+    await waitFor(() => expect(composerValue(ta)).toBe('keep (@a.ts:42) and done'))
     expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
   })
 
@@ -1396,15 +1389,15 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'check @src/main.ts.' } })
-    await waitFor(() => expect(ta.value).toBe('check @src/main.ts.'))
+    const ta = getComposer()
+    await setComposerValue('check @src/main.ts.', ta)
+    await waitFor(() => expect(composerValue(ta)).toBe('check @src/main.ts.'))
 
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toBe('check @src/main.ts.')
-    expect((ta.value.match(/@src\/main\.ts/g) || []).length).toBe(1)
+    expect(composerValue(ta)).toBe('check @src/main.ts.')
+    expect((composerValue(ta).match(/@src\/main\.ts/g) || []).length).toBe(1)
   })
 
   it('"Add to chat" with the caret parked inside a paste token does not tear the token (fork Opus review)', async () => {
@@ -1417,22 +1410,22 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
 
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.paste(ta, { clipboardData: { types: ['text/plain'], items: [], getData: () => 'line one\nline two\nline three\nline four\nline five\nline six' } })
-    await waitFor(() => expect(ta.value).toMatch(/\[ Paste #1 · \d+ lines \]/))
-    const token = ta.value.match(/\[ Paste #1 · \d+ lines \]/)![0]
+    const ta = getComposer()
+    await pasteIntoComposer('line one\nline two\nline three\nline four\nline five\nline six', ta)
+    await waitFor(() => expect(composerValue(ta)).toMatch(/\[ Paste #1 · \d+ lines \]/))
+    const token = composerValue(ta).match(/\[ Paste #1 · \d+ lines \]/)![0]
 
     // Park the caret INSIDE the token (preview position) and record it.
-    const inside = ta.value.indexOf(token) + 4
-    ta.setSelectionRange(inside, inside)
+    const inside = composerValue(ta).indexOf(token) + 4
+    await setComposerSelection(inside, inside, ta)
     fireEvent.mouseUp(ta)
 
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
     // The token literal survives intact and the mention landed beside it.
-    expect(ta.value).toContain(token)
-    expect(ta.value).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain(token)
+    expect(composerValue(ta)).toContain('@src/main.ts')
   })
 
   it('a file-tree drop inserts at the drop offset, not at the caret', async () => {
@@ -1483,17 +1476,16 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'see @src/main.ts here' } })
-
-    const inside = ta.value.indexOf('@src/main.ts') + 6
-    ta.setSelectionRange(inside, inside)
+    const ta = getComposer()
+    await setComposerValue('see @src/main.ts here', ta)
+    const inside = composerValue(ta).indexOf('@src/main.ts') + 6
+    await setComposerSelection(inside, inside, ta)
     fireEvent.mouseUp(ta)
 
     fireEvent.click(await screen.findByText('Add to chat: other/src/main.ts'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    expect(ta.value).toContain('@src/main.ts')
-    expect(ta.value).toContain('@other/src/main.ts')
+    expect(composerValue(ta)).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain('@other/src/main.ts')
   })
 
   it('"Add to chat" on a file whose staged sibling extends its name inserts its own mention and keeps both staged (fork Opus review)', async () => {
@@ -1507,14 +1499,13 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: report,'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'see @report, thanks' } })
-
+    const ta = getComposer()
+    await setComposerValue('see @report, thanks', ta)
     fireEvent.click(await screen.findByText('Add to chat: report'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    expect(ta.value).toMatch(/@report(\s|$)/)
+    expect(composerValue(ta)).toMatch(/@report(\s|$)/)
     // Survives the next edit: both files still mentioned under the shared rule.
-    fireEvent.change(ta, { target: { value: ta.value + ' ok' } })
+    await setComposerValue(composerValue(ta) + ' ok', ta)
     await act(async () => { await new Promise(r => setTimeout(r, 50)) })
     expect(screen.getAllByLabelText('Remove')).toHaveLength(2)
   })
@@ -1526,18 +1517,17 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: My Report.pdf'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'see @My Report.pdf here' } })
-
+    const ta = getComposer()
+    await setComposerValue('see @My Report.pdf here', ta)
     // Inside `Report.pdf`: the run around the caret does not start with `@`.
-    const inside = ta.value.indexOf('Report.pdf') + 3
-    ta.setSelectionRange(inside, inside)
+    const inside = composerValue(ta).indexOf('Report.pdf') + 3
+    await setComposerSelection(inside, inside, ta)
     fireEvent.mouseUp(ta)
 
     fireEvent.click(await screen.findByText('Add to chat: other/src/main.ts'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    expect(ta.value).toContain('@My Report.pdf')
-    expect(ta.value).toContain('@other/src/main.ts')
+    expect(composerValue(ta)).toContain('@My Report.pdf')
+    expect(composerValue(ta)).toContain('@other/src/main.ts')
   })
 
   it('"Add to chat" with the caret inside a separator-edited spaced mention on a Windows project does not split it (fork GPT review)', async () => {
@@ -1550,18 +1540,18 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: docs/My Report.pdf (win project)'))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'see @docs\\My Report.pdf here' } })
+    const ta = getComposer()
+    await setComposerValue('see @docs\\My Report.pdf here', ta)
     await screen.findByLabelText('Remove')
 
-    const inside = ta.value.indexOf('Report.pdf') + 3
-    ta.setSelectionRange(inside, inside)
+    const inside = composerValue(ta).indexOf('Report.pdf') + 3
+    await setComposerSelection(inside, inside, ta)
     fireEvent.mouseUp(ta)
 
     fireEvent.click(await screen.findByText('Add to chat: main.ts (win project)'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    expect(ta.value).toContain('@docs\\My Report.pdf')
-    expect(ta.value).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain('@docs\\My Report.pdf')
+    expect(composerValue(ta)).toContain('@src/main.ts')
   })
 
   it('"Add to chat" with the caret inside a folder token keeps the folder staged (fork Opus review)', async () => {
@@ -1571,37 +1561,36 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
     const ta = await stageFolder()
-    const folderToken = ta.value.trim()
-    fireEvent.change(ta, { target: { value: `look at ${folderToken} please` } })
+    const folderToken = composerValue(ta).trim()
+    await setComposerValue(`look at ${folderToken} please`, ta)
     await screen.findByLabelText('Remove folder')
 
-    const inside = ta.value.indexOf(folderToken) + 3
-    ta.setSelectionRange(inside, inside)
+    const inside = composerValue(ta).indexOf(folderToken) + 3
+    await setComposerSelection(inside, inside, ta)
     fireEvent.mouseUp(ta)
 
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toContain(folderToken)
-    expect(ta.value).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain(folderToken)
+    expect(composerValue(ta)).toContain('@src/main.ts')
     expect(screen.getByLabelText('Remove folder')).toBeTruthy()
   })
 
   it('"Add to chat" with the caret inside a hand-typed mention (no recorded alias) does not split it', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
     await renderPage(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    fireEvent.change(ta, { target: { value: 'compare (@notes/plan.md) with it' } })
-
-    const inside = ta.value.indexOf('@notes/plan.md') + 5
-    ta.setSelectionRange(inside, inside)
+    const ta = getComposer()
+    await setComposerValue('compare (@notes/plan.md) with it', ta)
+    const inside = composerValue(ta).indexOf('@notes/plan.md') + 5
+    await setComposerSelection(inside, inside, ta)
     fireEvent.mouseUp(ta)
 
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
     await screen.findByLabelText('Remove')
-    expect(ta.value).toContain('(@notes/plan.md)')
-    expect(ta.value).toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain('(@notes/plan.md)')
+    expect(composerValue(ta)).toContain('@src/main.ts')
   })
 
   it('a flipped-separator pasted mention still respects the prefix-sibling rule on a Windows project (fork GPT review)', async () => {
@@ -1620,16 +1609,16 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: win/report (win project)'))
     fireEvent.click(await screen.findByText('Add to chat: win/report, (win project)'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: '' } })
+    await setComposerValue('', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
 
     // Paste the LONGER sibling's own mention back, flipped: exactly one revives.
-    fireEvent.change(ta, { target: { value: 'check @win\\report, please' } })
+    await setComposerValue('check @win\\report, please', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
     // Stable across a further keystroke.
-    fireEvent.change(ta, { target: { value: 'check @win\\report, please!' } })
+    await setComposerValue('check @win\\report, please!', ta)
     await new Promise(r => setTimeout(r, 50))
     expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
   })
@@ -1650,19 +1639,19 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: report'))
     fireEvent.click(await screen.findByText('Add to chat: report,'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
     // Hand-delete the longer sibling's mention: its chip unstages, history stays.
-    fireEvent.change(ta, { target: { value: 'see @report and more' } })
+    await setComposerValue('see @report and more', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
 
     // Type a comma right after the staged mention -- must NOT revive `report,`.
-    fireEvent.change(ta, { target: { value: 'see @report, and more' } })
+    await setComposerValue('see @report, and more', ta)
     await new Promise(r => setTimeout(r, 50))
     expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
 
     // A further keystroke must not swap the attachment either.
-    fireEvent.change(ta, { target: { value: 'see @report, and more!' } })
+    await setComposerValue('see @report, and more!', ta)
     await new Promise(r => setTimeout(r, 50))
     expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
 
@@ -1673,7 +1662,7 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // surviving chip was `report`, not `report,`.
     fireEvent.click(screen.getByLabelText('Remove'))
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).toBe('see , and more!')
+    expect(composerValue(ta)).toBe('see , and more!')
   })
 
   it('reviving a pasted mention binds only the file whose OWN alias it is, not a prefix sibling (fork GPT review)', async () => {
@@ -1691,15 +1680,15 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(await screen.findByText('Add to chat: report'))
     fireEvent.click(await screen.findByText('Add to chat: report,'))
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(2))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: '' } })
+    await setComposerValue('', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
 
-    fireEvent.change(ta, { target: { value: 'please check @report, ' } })
+    await setComposerValue('please check @report, ', ta)
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
     // Still exactly one after a further keystroke (the effect re-runs).
-    fireEvent.change(ta, { target: { value: 'please check @report, now' } })
+    await setComposerValue('please check @report, now', ta)
     await new Promise(r => setTimeout(r, 50))
     expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
   })
@@ -1713,16 +1702,16 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
 
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByText('Add to chat: main.ts'))
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
     await screen.findByLabelText('Remove')
 
-    fireEvent.change(ta, { target: { value: `${ta.value.trim()} plus @main.ts ` } })
+    await setComposerValue(`${composerValue(ta).trim()} plus @main.ts `, ta)
     await new Promise(r => setTimeout(r, 50))
     fireEvent.click(screen.getByLabelText('Remove'))
 
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
-    expect(ta.value).not.toContain('@src/main.ts')
-    expect(ta.value).toContain('@main.ts')
+    expect(composerValue(ta)).not.toContain('@src/main.ts')
+    expect(composerValue(ta)).toContain('@main.ts')
   })
 
   it('a POSIX literal-backslash file is not kept by a basename suffix mention', async () => {
@@ -1732,9 +1721,9 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(openActivityPanel()) })
     fireEvent.click(await screen.findByRole('button', { name: /literal POSIX/ }))
     await screen.findByLabelText('Remove')
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = getComposer()
 
-    fireEvent.change(ta, { target: { value: 'please check @main.ts ' } })
+    await setComposerValue('please check @main.ts ', ta)
     await waitFor(() => expect(screen.queryByLabelText('Remove')).toBeNull())
   })
 })

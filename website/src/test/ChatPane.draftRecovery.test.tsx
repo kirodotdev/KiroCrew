@@ -13,6 +13,7 @@ import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { composerRoot, composerValue, setComposerValue } from './helpers'
 
 /* Draft / recovery hardening for ChatPane, surfaced by review of the
  * steer-only DM composer (#8852). A pane can be rebound to another slot
@@ -136,7 +137,12 @@ function renderPane(slotKey: string, opts: { running: boolean; busyMode?: BusyMo
   return Object.assign(r, { store, rebind })
 }
 
-const composer = async () => (await screen.findAllByRole('textbox'))[0]
+/** Wait for the lazy Lexical composer to mount + attach its handle, return its root. */
+const composer = async () => {
+  await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+  await act(async () => {})
+  return composerRoot()
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -163,7 +169,7 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, queued: true, queue_id: 'q-demoted' }) } as unknown as Response)
     const { store } = renderPane('member-demoted', { running: true, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'park me if you must' } })
+    await setComposerValue('park me if you must', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(queuedSendStash.get('q-demoted')).toEqual({ raw: 'park me if you must', files: [], sent: 'park me if you must' }))
     await waitFor(() => expect(selectSlotMessages(store.getState() as RootState, 'member-demoted').some(m => m.role === 'user' && m.meta?.steer)).toBe(false))
@@ -178,11 +184,11 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     forcedReceipt = { status: 'response-late', body: {} }
     const { store } = renderPane('member-subagents', { running: false, busyMode: 'steer-only', subagentsOnly: true })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'while you wait, look at #77' } })
+    await setComposerValue('while you wait, look at #77', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
     expect(lastSendTurnOpts?.steer).toBe(true)
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('while you wait, look at #77'))
+    await waitFor(() => expect(composerValue(box)).toBe('while you wait, look at #77'))
     const rows = selectSlotMessages(store.getState() as RootState, 'member-subagents')
     expect(rows.some(m => m.role === 'notice')).toBe(true)
     expect(rows.some(m => m.role === 'user')).toBe(false)
@@ -203,7 +209,7 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     Object.defineProperty(fileInput, 'files', { value: [new File(['x'], 'report.pdf', { type: 'application/pdf' })] })
     fireEvent.change(fileInput)
     expect(await screen.findByText('report.pdf')).toBeInTheDocument()
-    fireEvent.change(box, { target: { value: 'read this' } })
+    await setComposerValue('read this', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
     expect(lastSendTurnOpts!.steer).toBe(true)
@@ -227,10 +233,10 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     const { store } = renderPane('member-dup-queue', { running: false, busyMode: 'steer-only', subagentsOnly: true })
     const box = await composer()
     await screen.findByRole('button', { name: 'Cancel queued message' })
-    fireEvent.change(box, { target: { value: 'ok' } })
+    await setComposerValue('ok', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('ok'))
+    await waitFor(() => expect(composerValue(box)).toBe('ok'))
     const rows = selectSlotMessages(store.getState() as RootState, 'member-dup-queue')
     expect(rows.some(m => m.role === 'notice')).toBe(true)
     // The pre-existing card is untouched.
@@ -240,14 +246,14 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
   it('rebinding the pane to another member parks the draft — it does not ride into the other composer', async () => {
     const { rebind } = renderPane('member-a', { running: false, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'half-typed note for A' } })
+    await setComposerValue('half-typed note for A', box)
     rebind('member-b')
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''))
-    fireEvent.change(box, { target: { value: 'something for B' } })
+    await waitFor(() => expect(composerValue(box)).toBe(''))
+    await setComposerValue('something for B', box)
     rebind('member-a')
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('half-typed note for A'))
+    await waitFor(() => expect(composerValue(box)).toBe('half-typed note for A'))
     rebind('member-b')
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('something for B'))
+    await waitFor(() => expect(composerValue(box)).toBe('something for B'))
   })
 
   it('a refusal that lands after the user switched members restores into the SENDING member, not the one on screen', async () => {
@@ -257,21 +263,21 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     }) as ReturnType<typeof api.sendChat>)
     const { store, rebind } = renderPane('member-a', { running: true, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'meant for A' } })
+    await setComposerValue('meant for A', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     // The user moves on to B while A's steer is still in flight...
     rebind('member-b')
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(''))
+    await waitFor(() => expect(composerValue(box)).toBe(''))
     // ...and A's send is refused now.
     await act(async () => { refuse() })
     await waitFor(() => expect(selectSlotMessages(store.getState() as RootState, 'member-a').some(m => m.role === 'error')).toBe(true))
     // B's composer is untouched; the error row went to A's transcript.
-    expect((box as HTMLTextAreaElement).value).toBe('')
+    expect(composerValue(box)).toBe('')
     expect(selectSlotMessages(store.getState() as RootState, 'member-b').some(m => m.role === 'error')).toBe(false)
     // Back on A, the text is waiting.
     rebind('member-a')
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('meant for A'))
+    await waitFor(() => expect(composerValue(box)).toBe('meant for A'))
   })
 
   it('an upload that finishes after the user switched members is staged for the member it was picked in', async () => {
@@ -352,22 +358,22 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     }) as ReturnType<typeof api.sendChat>)
     const first = renderPane('member-a', { running: true, busyMode: 'steer-only' })
     const box1 = await composer()
-    fireEvent.change(box1, { target: { value: 'sent from the first pane' } })
+    await setComposerValue('sent from the first pane', box1)
     fireEvent.keyDown(box1, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     first.unmount()
     // Reopen the member: a NEW pane shows A before the old send has resolved.
     const second = renderPane('member-a', { running: false, busyMode: 'steer-only' })
     const box2 = await composer()
-    expect((box2 as HTMLTextAreaElement).value).toBe('')
+    expect(composerValue(box2)).toBe('')
     await act(async () => { refuse() })
     // The late recovery reaches the pane that is showing A right now…
-    await waitFor(() => expect((box2 as HTMLTextAreaElement).value).toBe('sent from the first pane'))
+    await waitFor(() => expect(composerValue(box2)).toBe('sent from the first pane'))
     // …and is not lost when that pane parks and a third one comes back.
     second.rebind('member-b')
-    await waitFor(() => expect((box2 as HTMLTextAreaElement).value).toBe(''))
+    await waitFor(() => expect(composerValue(box2)).toBe(''))
     second.rebind('member-a')
-    await waitFor(() => expect((box2 as HTMLTextAreaElement).value).toBe('sent from the first pane'))
+    await waitFor(() => expect(composerValue(box2)).toBe('sent from the first pane'))
   })
 
   it('a draft survives the pane unmounting (leaving the page) and a refusal that lands while it is gone', async () => {
@@ -377,10 +383,10 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     }) as ReturnType<typeof api.sendChat>)
     const first = renderPane('member-a', { running: true, busyMode: 'steer-only' })
     const box = await composer()
-    fireEvent.change(box, { target: { value: 'sent, then I left' } })
+    await setComposerValue('sent, then I left', box)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
-    fireEvent.change(box, { target: { value: 'still typing' } })
+    await setComposerValue('still typing', box)
     // Leave the Members page: the pane unmounts with the send in flight…
     first.unmount()
     // …and the send is refused with nobody on screen to hand the text to.
@@ -388,7 +394,7 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     // Coming back, both the unsent typing and the refused text are waiting.
     renderPane('member-a', { running: false, busyMode: 'steer-only' })
     const again = await composer()
-    await waitFor(() => expect((again as HTMLTextAreaElement).value).toContain('still typing'))
-    expect((again as HTMLTextAreaElement).value).toContain('sent, then I left')
+    await waitFor(() => expect(composerValue(again)).toContain('still typing'))
+    expect(composerValue(again)).toContain('sent, then I left')
   })
 })

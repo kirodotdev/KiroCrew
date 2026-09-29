@@ -64,6 +64,7 @@ import ChatPage from '../pages/ChatPage'
 // same reason the app does. (The miss degrades safely to the surface-free
 // sentence, which is what the unregistered-surface case below asserts.)
 import '../surfaces/builtins'
+import { awaitComposer } from './helpers'
 
 type Slot = { messages: Msg[]; mode?: string; slotKeys?: string[] }
 
@@ -116,7 +117,7 @@ describe('memory chip above the composer', () => {
     await renderWith({ messages: [] })
     const chip = screen.getByTestId('composer-memory-chip')
     expect(chip.textContent).toContain('Choose memory mode')
-    const composer = screen.getAllByRole('textbox').at(-1)!
+    const composer = await awaitComposer()
     // DOCUMENT_POSITION_FOLLOWING: the composer comes after the chip.
     expect(chip.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })

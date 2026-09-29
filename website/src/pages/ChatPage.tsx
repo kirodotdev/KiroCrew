@@ -14,6 +14,7 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { useTouchDeviceAtMount } from '../hooks/useIsTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
@@ -589,6 +590,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const titleInTopbar = topbarSlot !== null
   // The memoized composer props below hold i18nT labels; their memo re-keys on a catalog load.
   const langGen = useLanguageGeneration()
+  // Touch devices keep the classic textarea composer until a device pass records
+  // that soft-keyboard typing (composition events on the IME latch, Enter-to-send)
+  // and the pointer-only pill reorder hold up there — see `useIsTouchDevice`.
+  const touchDevice = useTouchDeviceAtMount()
   // The mobile sessions drawer and its scrim are `fixed` overlays that autofocus
   // a search input, so a software keyboard is open whenever they are. iOS Safari
   // shrinks only the VISUAL viewport for the keyboard (`interactive-widget`
@@ -1913,6 +1918,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (carry && activation) createCarryRef.current.delete(activation.requestId)
     while (createCarryRef.current.size > 8) createCarryRef.current.delete(createCarryRef.current.keys().next().value as string)
     let carried: string | null = null
+    // The two candidate destinations this carried payload may be merged into are
+    // both chosen below (a launcher prefill `prompt`, or the stored draft), so
+    // hoist their reads above the carry: `carryPastes` must reserve the carried
+    // block's seq against every marker in its final destination text, or a
+    // marker-shaped literal there captures the block on send. Over-reserving is
+    // harmless (a carried block just takes a higher fresh seq), so the prefill
+    // is peeked WITHOUT its expiry/slot gate — that gate stays exactly as below.
+    const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
+    const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
+    let prefillPrompt = ''
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (typeof parsed?.prompt === 'string') prefillPrompt = parsed.prompt
+      } catch { /* not JSON — no prefill destination to reserve against */ }
+    }
     // Carry only a text-only draft: nothing staged when the create started and
     // nothing staged now. A file or session ref staged at either end belongs
     // with the caption, so the whole draft stays in the old session instead.
@@ -1925,7 +1946,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // together, renumbered against the new slot's own blocks, or the send
         // would carry the bare token and the content would belong to no draft.
         const blocks = stagedNow.pastes
-        const moved = carryPastes(typed, pruneBlocksUtil(typed, blocks), pasteDrafts.current[activeSlot] ?? [])
+        const moved = carryPastes(typed, pruneBlocksUtil(typed, blocks), pasteDrafts.current[activeSlot] ?? [], `${storedDraft}\n${prefillPrompt}`)
         carried = moved.text
         setPasteDraft(pasteDrafts.current, activeSlot, moved.pastes)
         if (prevSlotVal) {
@@ -1934,8 +1955,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         }
       }
     }
-    const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
-    const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
     const draftFallback = carried !== null ? appendTypedText(storedDraft, carried) : storedDraft
     // What this switch put in the composer, for the create-carry re-arm below.
     let restoredInput: string | null = null
@@ -2907,10 +2926,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // silently swapping the user's content on retry. `carryPastes` owns the
         // rule: re-sequence the carried blocks past the kept ones and rewrite
         // their markers in the payload text.
-        const carried = carryPastes(raw, activePastes, keepPastes)
+        const keepText = onScreen ? inputRef.current : (uiSlot ? drafts.current[uiSlot] ?? '' : '')
+        // `keepText` goes in too: a marker typed there while the send was in flight
+        // is a seq no carried block may come back under.
+        const carried = carryPastes(raw, activePastes, keepPastes, keepText)
         // `full` keeps every token: it is the payload a retry re-sends whole.
         const { full: payload, pastes: restoredPastes } = carried
-        const keepText = onScreen ? inputRef.current : (uiSlot ? drafts.current[uiSlot] ?? '' : '')
         // Keep whatever the user typed while the create was in flight and append
         // the payload after it, without duplicating one the composer already
         // holds — a synchronously rejected create can land before React flushes
@@ -2918,6 +2939,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // site, including the send-failure path further down.
         const restoredText = mergeCarriedDraft(keepText, carried)
         if (onScreen && uiSlot) {
+          // Advance the refs with the state (as `inputRef.current = next` does
+          // elsewhere): a second recovery landing in the same batch reads them for
+          // its own `carryPastes` reservation, and the render-time snapshot would
+          // still lack this payload's markers and blocks.
+          inputRef.current = restoredText; pasteBlocksRef.current = restoredPastes
           setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
           // clearPending() above already consumed the knowledge selection, so a
           // retry would otherwise go out WITHOUT the context the user picked. Slot-
@@ -3096,7 +3122,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // blocks cannot claim one `[ Paste #N ]` marker.
       const keepText = onScreenNow ? inputRef.current : (drafts.current[slot] ?? '')
       const keepPastes = onScreenNow ? pasteBlocksRef.current : (pasteDrafts.current[slot] ?? [])
-      const carried = carryPastes(typedTxt, activePastes, keepPastes)
+      const carried = carryPastes(typedTxt, activePastes, keepPastes, keepText)
       const pastesBack = carried.pastes
       // Same merge rule as the create-failure path above, and the separator lives
       // in `mergeRecoveredDraft` rather than in a template literal here: the blank
@@ -3109,6 +3135,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
       saveDrafts()
       if (onScreenNow) {
+        // Refs advanced with the state — see the create-failure path above.
+        inputRef.current = textBack; pasteBlocksRef.current = pastesBack
         setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
       }
       // Aliases come back with the text they describe -- MERGE, never
@@ -8784,6 +8812,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 voice={composerVoiceOptions}
               >
               <StableChatInput
+                lexicalComposer={!touchDevice}
               aboveComposer={composerAbove}
               // No `value`: ChatInput reads the text from the root's `draft` store.
               // `composerUserEdit` is what ChatInput calls for the user's own edits

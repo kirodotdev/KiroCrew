@@ -23,7 +23,8 @@
      [data-role="assistant"]           — AssistantMessage root (added by us)
      .msg-content                      — message text container (already in tree)
      [data-testid="input-wrapper"]     — chat-input rounded card wrapper
-     textarea[data-composer-input]      — chat input
+     [data-composer-input]             — chat input (contenteditable div or textarea)
+     [data-composer-placeholder]       — chat input placeholder overlay
      [style*="--mc-content-width"]     — chat pane root (scope anchor)
      [style*="var(--mc-content-width"] — per-message row wrappers
    ───────────────────────────────────────────────────────────────────────── */
@@ -195,8 +196,16 @@
   user-select: none;
 }
 
-[data-ui="cli"] [style*="--mc-content-width"] textarea[data-composer-input] {
+/* The 24px indent must reach BOTH the input and its placeholder overlay: the
+   Lexical composer is a contenteditable `div[data-composer-input]` (the
+   textarea is the touch-device fallback), so the hook is element-agnostic,
+   and `[data-composer-placeholder]` carries its own `px-4` (16px) that would
+   otherwise leave the placeholder text under the `>` glyph. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-composer-input],
+[data-ui="cli"] [style*="--mc-content-width"] [data-composer-placeholder] {
   padding-left: 24px !important;
+}
+[data-ui="cli"] [style*="--mc-content-width"] [data-composer-input] {
   caret-color: var(--accent);
   /* font-family + font-size inherit from body; useZoom auto-resolves
      --font-body to mono in CLI mode by default. */

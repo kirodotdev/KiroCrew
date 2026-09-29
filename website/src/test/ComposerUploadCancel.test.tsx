@@ -24,6 +24,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { awaitComposer } from './helpers'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -236,7 +237,11 @@ describe('ChatPage composer: what the cancel control speaks for (#5744)', () => 
 
     await act(async () => { pickFile(container) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(1))
-    await act(async () => { pasteImage(screen.getByLabelText('Message input')) })
+    // The rich composer is lazy-loaded behind a fallback that carries the same
+    // aria-label, so `getByLabelText('Message input')` can resolve on the
+    // spinner; `awaitComposer` returns the real editable root.
+    const composer = await awaitComposer(container)
+    await act(async () => { pasteImage(composer) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(2))
     expect(signals).toHaveLength(2)
 

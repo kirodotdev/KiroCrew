@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { composer as composerLocator, composerText, expectComposerText } from './helpers/composer'
 import type { Page } from '@playwright/test'
 
 /**
@@ -33,14 +34,14 @@ async function openSeededSession(page: Page): Promise<string> {
   const origin = await (await page.request.post('/api/chat/slots', { data: { agent: 'default' } })).json() as { key: string }
   await page.goto(`/chat?sid=${encodeURIComponent(origin.key)}`, { waitUntil: 'domcontentloaded' })
   await expect(page).toHaveURL(url => url.searchParams.get('sid') === origin.key)
-  await expect(page.locator('textarea[data-composer-input]')).toBeVisible({ timeout: 10000 })
+  await expect(composerLocator(page)).toBeVisible({ timeout: 10000 })
   return origin.key
 }
 
 test.describe('New session keeps text typed while it is being created', () => {
   test('keyboard shortcut: typing during the create lands in the new session', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await delaySlotCreate(page)
 
     await composer.click()
@@ -52,17 +53,17 @@ test.describe('New session keeps text typed while it is being created', () => {
     expect(key).not.toBe(originKey)
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
 
-    await expect(composer).toHaveValue('typed while creating')
+    await expectComposerText(composer, 'typed while creating')
     // Nothing leaks back into the session the user left.
     await page.goto(`/chat?sid=${encodeURIComponent(originKey)}`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     await expect(composer).toBeVisible({ timeout: 10000 })
-    await expect(composer).toHaveValue('')
+    await expectComposerText(composer, '')
   })
 
   test('new-chat button: clicking into the composer and typing during the create', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await delaySlotCreate(page)
 
     const created = waitForCreate(page)
@@ -73,12 +74,12 @@ test.describe('New session keeps text typed while it is being created', () => {
     expect(key).not.toBe(originKey)
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
 
-    await expect(composer).toHaveValue('hello new session')
+    await expectComposerText(composer, 'hello new session')
   })
 
   test('a background create in flight does not make text typed before the shortcut move', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await delaySlotCreate(page)
 
     // Middle-click New: a BACKGROUND create, which keeps focus on this session.
@@ -97,16 +98,16 @@ test.describe('New session keeps text typed while it is being created', () => {
     const fgKey = createdKeys[1]
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === fgKey)
 
-    await expect(composer).toHaveValue('after')
+    await expectComposerText(composer, 'after')
     await page.goto(`/chat?sid=${encodeURIComponent(originKey)}`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     await expect(composer).toBeVisible({ timeout: 10000 })
-    await expect(composer).toHaveValue('typed before the shortcut')
+    await expectComposerText(composer, 'typed before the shortcut')
   })
 
   test('two quick shortcut presses: the text lands in the session that opened', async ({ page }) => {
     await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await delaySlotCreate(page)
 
     const createdKeys: string[] = []
@@ -121,12 +122,12 @@ test.describe('New session keeps text typed while it is being created', () => {
     await expect.poll(() => createdKeys.length, { timeout: 10000 }).toBe(2)
     // The first create to resolve activates; the second stays in the background.
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === createdKeys[0])
-    await expect(composer).toHaveValue('typed after two presses')
+    await expectComposerText(composer, 'typed after two presses')
   })
 
   test('a file attached during the create keeps the whole draft together in the old session', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await delaySlotCreate(page)
 
     await composer.click()
@@ -138,19 +139,19 @@ test.describe('New session keeps text typed while it is being created', () => {
     const { key } = await (await created).json() as { key: string }
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
     // Moving the text without its file would split the draft; nothing moves.
-    await expect(composer).toHaveValue('')
+    await expectComposerText(composer, '')
 
     await page.goto(`/chat?sid=${encodeURIComponent(originKey)}`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     await expect(composer).toBeVisible({ timeout: 10000 })
-    await expect(composer).toHaveValue('caption for the file')
+    await expectComposerText(composer, 'caption for the file')
     await expect(page.getByText('carry-note.txt').first()).toBeVisible()
   })
 
   test('switching away and back while the create is pending still carries the typed text', async ({ page }) => {
     const other = await (await page.request.post('/api/chat/slots', { data: { agent: 'default' } })).json() as { key: string }
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     const row = (key: string) => page.locator(`[data-slot-key="${key}"]`).first()
     await expect(row(other.key)).toBeVisible({ timeout: 10000 })
     await delaySlotCreate(page, 5000)
@@ -165,12 +166,12 @@ test.describe('New session keeps text typed while it is being created', () => {
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     const { key } = await (await created).json() as { key: string }
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
-    await expect(composer).toHaveValue('typed then switched')
+    await expectComposerText(composer, 'typed then switched')
   })
 
   test('a file staged before the create keeps its caption with it in the old session', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await page.locator('input[type="file"][multiple]').first().setInputFiles({ name: 'staged-note.txt', mimeType: 'text/plain', buffer: Buffer.from('one') })
     await expect(page.getByText('staged-note.txt').first()).toBeVisible()
     await delaySlotCreate(page)
@@ -181,18 +182,18 @@ test.describe('New session keeps text typed while it is being created', () => {
     await page.keyboard.type('caption for the staged file')
     const { key } = await (await created).json() as { key: string }
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
-    await expect(composer).toHaveValue('')
+    await expectComposerText(composer, '')
 
     await page.goto(`/chat?sid=${encodeURIComponent(originKey)}`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     await expect(composer).toBeVisible({ timeout: 10000 })
-    await expect(composer).toHaveValue('caption for the staged file')
+    await expectComposerText(composer, 'caption for the staged file')
     await expect(page.getByText('staged-note.txt').first()).toBeVisible()
   })
 
   test('an attachment swapped for another during the create keeps the draft together', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     const fileInput = page.locator('input[type="file"][multiple]').first()
     await fileInput.setInputFiles({ name: 'first-note.txt', mimeType: 'text/plain', buffer: Buffer.from('one') })
     await expect(page.getByText('first-note.txt').first()).toBeVisible()
@@ -208,18 +209,18 @@ test.describe('New session keeps text typed while it is being created', () => {
     await expect(page.getByText('second-note.txt').first()).toBeVisible()
     const { key } = await (await created).json() as { key: string }
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
-    await expect(composer).toHaveValue('')
+    await expectComposerText(composer, '')
 
     await page.goto(`/chat?sid=${encodeURIComponent(originKey)}`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     await expect(composer).toBeVisible({ timeout: 10000 })
-    await expect(composer).toHaveValue('caption')
+    await expectComposerText(composer, 'caption')
     await expect(page.getByText('second-note.txt').first()).toBeVisible()
   })
 
   test('an existing draft in the old session stays there; only the new text moves', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await composer.fill('old draft')
     await delaySlotCreate(page)
 
@@ -230,17 +231,17 @@ test.describe('New session keeps text typed while it is being created', () => {
     await page.keyboard.type('fresh text')
     const { key } = await (await created).json() as { key: string }
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
-    await expect(composer).toHaveValue('fresh text')
+    await expectComposerText(composer, 'fresh text')
 
     await page.goto(`/chat?sid=${encodeURIComponent(originKey)}`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === originKey)
     await expect(composer).toBeVisible({ timeout: 10000 })
-    await expect(composer).toHaveValue('old draft')
+    await expectComposerText(composer, 'old draft')
   })
 
   test('a large paste during the create moves with its content, not as a bare token', async ({ page }) => {
     const originKey = await openSeededSession(page)
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await delaySlotCreate(page)
 
     await composer.click()
@@ -252,12 +253,12 @@ test.describe('New session keeps text typed while it is being created', () => {
       data.setData('text/plain', text)
       el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
     }, pasted)
-    await expect(composer).toHaveValue(/\[ Paste #\d+/)
+    await expect.poll(() => composerText(composer)).toMatch(/\[ Paste #\d+/)
     const { key } = await (await created).json() as { key: string }
     expect(key).not.toBe(originKey)
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
 
-    await expect(composer).toHaveValue(/\[ Paste #\d+/)
+    await expect.poll(() => composerText(composer)).toMatch(/\[ Paste #\d+/)
     // The block came along: the new session's stored paste list holds the
     // content, so the send expands the token instead of sending it literally.
     // Drafts persist on a debounce, so poll the store rather than read it once.
@@ -270,11 +271,11 @@ test.describe('New session keeps text typed while it is being created', () => {
     await delaySlotCreate(page)
     const created = waitForCreate(page)
     await page.goto('/chat?new=1', { waitUntil: 'domcontentloaded' })
-    const composer = page.locator('textarea[data-composer-input]')
+    const composer = composerLocator(page)
     await composer.click({ timeout: 10000 })
     await page.keyboard.type('first words')
     const { key } = await (await created).json() as { key: string }
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
-    await expect(composer).toHaveValue('first words')
+    await expectComposerText(composer, 'first words')
   })
 })
