@@ -1468,6 +1468,33 @@ def _walk_chat_folder_segments(
             {"name": seg, "parent_id": parent},
             session_key=session_key,
         )
+        if made.get("code") == "folder_name_exists":
+            # The endpoint refuses an agent a same-name sibling under its lock.
+            # Either a concurrent walk created this segment after our read, or
+            # the folder exists but this caller's view of the tree omits it (a
+            # crew member reads only its own folders). Re-read once: the first
+            # case resolves to the winner's folder, the second is refused
+            # rather than forked into a duplicate beside the one it cannot see.
+            fresh, fresh_err = _get_rows("/api/chat/folders")
+            if fresh_err:
+                return "", created, redact(str(fresh_err))
+            folders[:] = fresh
+            matches = _chat_folder_children(folders, parent, seg)
+            if len(matches) > 1:
+                return "", created, _ambiguous_segment_error(seg, matches)
+            if matches:
+                walked = str(matches[0].get("id") or "")
+                parent = walked
+                continue
+            return (
+                "",
+                created,
+                (
+                    f"a folder named `{seg}` already exists there and is not one "
+                    "this session can file into, so no duplicate was created — "
+                    "use a path under a folder you created, or a different name"
+                ),
+            )
         if made.get("error"):
             return "", created, str(made["error"])
         folders.append(made)
@@ -1475,6 +1502,33 @@ def _walk_chat_folder_segments(
         walked = str(made.get("id") or "")
         parent = walked
     return walked, created, None
+
+
+def _chat_folder_path_to_create(ref: str, folders: list[dict]) -> tuple[bool, str]:
+    """``(needs_creation, deepest_existing_id)`` for a mkdir -p reference. Read-only.
+
+    Answers whether resolving ``ref`` with ``create_missing`` would CREATE a
+    folder, and names the deepest segment that already exists (``""`` = top
+    level). A reference the resolver would settle without creating — empty,
+    ``root``, an id, an exact rendered path — or one it would refuse as
+    ambiguous reports ``False``: nothing would be made, so there is nothing to
+    check first. Segments are matched exactly as the walk matches them
+    (redacted, trimmed, case-insensitive), so the two cannot disagree.
+    """
+    ref = str(ref or "").strip()
+    if not ref or ref.lower() == "root":
+        return False, ""
+    if any(str(f.get("id") or "") == ref for f in folders) or _CHAT_FOLDER_ID_RE.fullmatch(ref):
+        return False, ""
+    if any(p.strip().lower() == ref.lower() for p in _chat_folder_paths(folders).values()):
+        return False, ""
+    parent = ""
+    for raw in [s.strip() for s in ref.split("/") if s.strip()]:
+        matches = _chat_folder_children(folders, parent, redact(raw))
+        if len(matches) != 1:
+            return (not matches), parent
+        parent = str(matches[0].get("id") or "")
+    return False, parent
 
 
 def _resolve_chat_folder_id(ref: str, folders: list[dict]) -> tuple[str, str | None]:
@@ -1871,7 +1925,9 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str, str | Non
     return caller_key, scope, None
 
 
-def _resolve_folder_for_new_session(folder_ref: str, verb: str) -> tuple[str, str, str, str | None]:
+def _resolve_folder_for_new_session(
+    folder_ref: str, verb: str, preflight: Callable[[str], str | None] | None = None
+) -> tuple[str, str, str, str | None]:
     """``(folder_id, folder_label, made_note, error)`` for filing a NEW session.
 
     Shared by ``session_create`` and ``session_fork``, which file a child the same
@@ -1888,6 +1944,13 @@ def _resolve_folder_for_new_session(folder_ref: str, verb: str) -> tuple[str, st
     itself is then refused, the same partial-report posture chat_folder_create
     takes, since folder deletion is deliberately not a capability this server
     has.
+
+    ``preflight`` closes that gap for the common case. When the path still has
+    segments to create, it is called with the deepest folder that already
+    exists and returns an error string when the session create itself would
+    be refused. That refusal is returned BEFORE the walk runs, so a create that
+    cannot succeed leaves no empty folder behind. Only a refusal that appears
+    between the preflight and the create (a race) can still strand segments.
     """
     if not folder_ref:
         return "", "", "", None
@@ -1917,6 +1980,12 @@ def _resolve_folder_for_new_session(folder_ref: str, verb: str) -> tuple[str, st
     chat_folders, folders_err = _get_rows("/api/chat/folders")
     if folders_err:
         return "", "", "", redact(f"Error: {folders_err}")
+    if preflight is not None:
+        needs_creation, deepest_id = _chat_folder_path_to_create(folder_ref, chat_folders)
+        if needs_creation:
+            refused = preflight(deepest_id)
+            if refused:
+                return "", "", "", refused
     fld_id, created_segments, fld_err = _ensure_chat_folder_path(
         folder_ref, chat_folders, session_key=gate_key
     )
@@ -1960,15 +2029,32 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name == "session_create":
         args = validate_tool_args(args, SESSION_CREATE_SCHEMA)
         payload: dict[str, Any] = {"title": args.get("title", ""), "agent": args.get("agent", "")}
+        if args.get("model"):
+            payload["model"] = args["model"]
+
+        def _preflight_create(deepest_id: str) -> str | None:
+            # The same create, as a dry run, against the folder the new path
+            # segments would hang from. Its refusal is the real create's.
+            probe = {**payload, "dry_run": True}
+            if deepest_id:
+                probe["folder_id"] = deepest_id
+            checked = _post("/api/session-control/create", probe, session_key=caller_key)
+            if checked.get("error"):
+                return redact(
+                    f"Error: could not create a session: {checked['error']} "
+                    "(no folder was created)"
+                )
+            return None
+
         fld_id, folder_label, made_note, fld_err = _resolve_folder_for_new_session(
-            str(args.get("folder") or ""), "filing a new session at creation"
+            str(args.get("folder") or ""),
+            "filing a new session at creation",
+            preflight=_preflight_create,
         )
         if fld_err:
             return fld_err
         if fld_id:
             payload["folder_id"] = fld_id
-        if args.get("model"):
-            payload["model"] = args["model"]
         resp = _post(
             "/api/session-control/create",
             payload,

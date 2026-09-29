@@ -1051,6 +1051,23 @@ class FolderOwnershipError(FolderCreateError):
         )
 
 
+class FolderNameExistsError(FolderCreateError):
+    """Refused because the parent already holds a folder of this name.
+
+    Raised only for callers that opt in with ``refuse_duplicate_name`` (an
+    agent writing through the internal transport). Split out because the
+    folder API answers it with 409, which the MCP path walk reads as "someone
+    else made this segment first" and resolves by re-reading the tree, rather
+    than as a plain validation 400.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "a folder with this name already exists under that parent",
+            "folder_name_exists",
+        )
+
+
 class FolderCapError(FolderCreateError):
     """Refused because the folder store is at its ceiling.
 
@@ -1081,6 +1098,7 @@ async def create_folder_record(
     steering_dirs: list[str] | None = None,
     unique_project_dir: bool = False,
     require_resolved_project_dir: bool = False,
+    refuse_duplicate_name: bool = False,
 ) -> dict[str, Any]:
     """Validate one folder and append it to the store under the folders lock.
 
@@ -1139,12 +1157,23 @@ async def create_folder_record(
     ``~`` and symlinked paths from a person by design; resolution moving those
     is the feature, not an attack.
 
+    ``refuse_duplicate_name`` makes "one folder of this name per parent" atomic
+    the same way: the sibling test runs inside the locked append, against EVERY
+    sibling whoever owns it, and a collision raises
+    :class:`FolderNameExistsError`. Names compare trimmed and case-folded, the
+    rule the MCP path walk matches segments by. Off by default because the
+    sidebar lets a person hold two folders of one name; the folder API turns it
+    on for agent callers, whose mkdir -p would otherwise fork a duplicate when
+    two walks race or when the caller cannot see the existing folder.
+
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
             parent, unusable ``project_dir``, unknown color, non-emoji
             ``icon``, or a ``unique_project_dir`` collision).
         FolderOwnershipError: if an app tried to nest under a folder it does
             not own.
+        FolderNameExistsError: if ``refuse_duplicate_name`` is set and the
+            parent already holds a folder of this name.
     """
 
     name = name.strip()[:100]
@@ -1248,6 +1277,17 @@ async def create_folder_record(
             and any(str(f.get("project_dir") or "") == project_dir for f in folders)
         ):
             return False, "project_dir_exists"
+        # Under the lock for the same check-then-act reason: two agents walking
+        # the same path each read a tree without the segment, and only this
+        # test, taken while the store is held, sees the other's append.
+        if refuse_duplicate_name:
+            folded = name.casefold()
+            if any(
+                str(f.get("parent_id") or "") == parent_id
+                and str(f.get("name") or "").strip().casefold() == folded
+                for f in folders
+            ):
+                return False, "name_exists"
         folder["order"] = len(folders)  # recount under the lock
         folders.append(folder)
         return True, ""
@@ -1271,6 +1311,8 @@ async def create_folder_record(
         raise FolderCreateError(
             "a folder for this directory already exists", "folder_project_dir_exists"
         )
+    if create_err == "name_exists":
+        raise FolderNameExistsError()
     return folder
 
 
@@ -1376,7 +1418,14 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             request_app=request_app,
             tags=folder_tags,
             steering_dirs=steering_dirs,
+            # An agent (internal transport) never mints a same-name sibling: its
+            # path walk reuses what exists, so a collision here is a race it lost
+            # or a folder it cannot see, and a duplicate is wrong in both cases.
+            # The browser keeps a person's freedom to name two folders alike.
+            refuse_duplicate_name=rl_source != "dashboard",
         )
+    except FolderNameExistsError as exc:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=409)
     except FolderOwnershipError as exc:
         sel().log_api_access(
             caller=request_app,

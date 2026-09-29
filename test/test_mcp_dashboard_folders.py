@@ -1860,8 +1860,9 @@ class TestSessionCreateFolder:
             patch("kiro_crew.mcp_dashboard._post", side_effect=_post_route) as post,
         ):
             _call_tool_inner("session_create", {"title": "worker", "folder": "kirocrew/fresh"})
-        folder_call = post.call_args_list[0]
-        assert folder_call.args[0] == "/api/chat/folders"
+        # The create's dry run comes first (it refuses before any folder
+        # exists); the folder write is the first call to the folder route.
+        folder_call = next(c for c in post.call_args_list if c.args[0] == "/api/chat/folders")
         assert folder_call.kwargs["session_key"] == "dashboard:gate-key"
 
 

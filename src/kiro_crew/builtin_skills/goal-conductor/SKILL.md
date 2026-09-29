@@ -118,7 +118,12 @@ agent kind holding that agent's sessions:
 ```
 
 A conductor that floats at the top level while its workers sit in a folder is
-the failure this step exists to remove. **Running as a crew member is the one
+the failure this step exists to remove. **If you already sit in a folder, stay
+there.** When your `[FOLDER]` line names a folder the person put you in (say
+`Ops`, and not a parent conductor's `kirocrew-conductor` subfolder, covered
+below), that folder IS your goal's folder: skip `chat_folder_file_self` and
+create your workers under `Ops/<agent>`. Never create a second folder with the
+same name as one that exists; the tools refuse it. **Running as a crew member is the one
 exception**: your session is then the member's pinned DM thread on the Crew
 page, one thread across every goal, and it is not filed — the tool refuses
 and says so. Skip this step and create your workers under `<goal>/<agent>`

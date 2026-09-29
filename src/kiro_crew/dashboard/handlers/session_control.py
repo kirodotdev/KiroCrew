@@ -238,6 +238,11 @@ async def api_session_control_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        # Strictly typed, never truthiness: the string "false" is truthy, and a
+        # caller asking for a real create must never get a silent preview.
+        dry_run = body.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise sc.SessionControlError("dry_run must be a boolean", code="invalid_field_type")
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -250,6 +255,7 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             agent=str(body.get("agent") or ""),
             folder_id=str(body.get("folder_id") or ""),
             model=str(body.get("model") or ""),
+            dry_run=dry_run,
             # The fence verdict this request's admission already settled, for the
             # same reason every other route forwards it as
             # `precomputed_ownership_fenced`: `create_session` consults it after

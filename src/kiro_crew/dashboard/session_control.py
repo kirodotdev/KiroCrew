@@ -1712,6 +1712,7 @@ async def create_session(
     folder_id: str = "",
     model: str = "",
     caller_fenced: bool | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Open a new session in the caller's workspace, persisted at birth.
 
@@ -1764,6 +1765,15 @@ async def create_session(
     coroutine suspends many times before it is consulted. ``None`` means "not
     settled", and the fence is then evaluated inline. It is read by the
     private-store authorization below and nothing else.
+
+    ``dry_run`` runs every gate up to the allocation, including the two slot
+    ceilings, and returns ``{"dry_run": True}`` instead of minting a slot. It
+    spends no rate-limit token and writes nothing. The MCP ``session_create``
+    asks it first when its ``folder`` path still has segments to create, so a
+    create that would be refused is refused BEFORE any folder exists: without
+    it the path walk's folders outlive the refusal as empty sidebar rows.
+    ``folder_id`` is then the deepest folder that already exists, which is the
+    one the new segments would inherit a project directory from.
     """
     caller_key = caller_slot_key(state, caller_session_key)
     if not caller_key:
@@ -2286,6 +2296,23 @@ async def create_session(
         if _cron_caller(caller_key) or getattr(live_caller, "_origin", "") == SlotOrigin.CRON
         else SlotOrigin.USER
     )
+    if dry_run:
+        # The ceilings read the slot table and change nothing, so a dry run tests
+        # them too. The rate guard is left alone: it spends a token on every
+        # call, and a preview must not use up the create it previews.
+        if state.live_slot_count() >= MAX_LIVE_SLOTS:
+            raise SessionControlError(
+                f"slot cap reached ({MAX_LIVE_SLOTS})",
+                code="slot_cap_reached",
+                status=429,
+            )
+        if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
+            raise SessionControlError(
+                f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
+                code="creator_slot_cap_reached",
+                status=429,
+            )
+        return {"dry_run": True}
     # The RATE guard, ahead of the capacity ceilings below. Those bound how many
     # sessions can exist; this bounds how fast one caller may open them, which is
     # the property an auto-approved verb loses -- a waived prompt leaves a loop
