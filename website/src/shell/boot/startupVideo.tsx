@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAppSelector } from '../../store'
-import { api } from '../../api/client'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import {
   canShowStartupVideo,
@@ -55,7 +55,7 @@ export function useStartupVideo({
   // mid-session swap invalidates both at once. No new scope, no new flag.
   const { data: startupShareCfg } = useQuery<{ social_share_enabled?: boolean }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   const socialShareOn = startupShareCfg?.social_share_enabled === true

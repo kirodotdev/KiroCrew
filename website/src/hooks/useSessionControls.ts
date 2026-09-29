@@ -18,6 +18,7 @@
  */
 import { useRef } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
+import { shallowEqual } from 'react-redux'
 import { api } from '../api/client'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
 
@@ -364,12 +365,6 @@ export function useSessionControlStatuses(
   // chip list) from ever holding. Each entry is react-query data, which keeps
   // its identity until the probe's answer changes.
   const stableRef = useRef(statuses)
-  if (!sameEntries(stableRef.current, statuses)) stableRef.current = statuses
+  if (!shallowEqual(stableRef.current, statuses)) stableRef.current = statuses
   return { statuses: stableRef.current, error: (failed?.error as Error | undefined) ?? null }
-}
-
-function sameEntries(a: Record<string, SessionControlStatus>, b: Record<string, SessionControlStatus>): boolean {
-  const ka = Object.keys(a)
-  if (ka.length !== Object.keys(b).length) return false
-  return ka.every(k => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k])
 }

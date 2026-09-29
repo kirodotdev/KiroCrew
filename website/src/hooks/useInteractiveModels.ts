@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { api } from '../api/client'
+import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 import type { ModelInfo } from '../providers/types'
 
 const EFFORT_SUFFIX = /^(.*)\[(low|medium|high|xhigh|max)\]$/
@@ -158,7 +158,7 @@ export function filterInteractiveModels(
 export function useModelPickerHiddenModelsQuery() {
   const query = useQuery({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
   })
   return {
     ...query,
@@ -175,7 +175,7 @@ export function useModelPickerHiddenModels(): string[] {
 export function useModelPickerConfigured(): boolean {
   const { data } = useQuery({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
   })
   return data?.model_picker_configured !== false
 }

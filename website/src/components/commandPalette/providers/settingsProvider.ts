@@ -19,6 +19,7 @@ import {
 import { settingsRoute } from '../settingsRoute'
 import { settingsTabLabel } from '../settingsTabLabel'
 import type { SettingEntry } from '../settingsTypes'
+import { fetchDashboardConfig } from '../../../api/dashboardConfigQuery'
 
 /**
  * Settings provider for the Search Everywhere command palette.
@@ -246,7 +247,7 @@ export function useSettingsProvider(): ResourceProvider {
   const navigate = useNavigate()
   const dashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   // Offer unless the read SUCCEEDED and said otherwise: a failed or in-flight read

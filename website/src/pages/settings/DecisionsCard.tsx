@@ -30,6 +30,7 @@ import {
 import { fmtPercent } from '../../i18n/format'
 import { DECISIONS_PROVIDER_QUERY_KEY } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
 /**
  * One point's own settings, on a lazy boundary.
@@ -187,7 +188,7 @@ export function DecisionsCard() {
   // an egress switch.
   const dashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   const governancePermits = dashCfgQ.data?.decisions_enabled === true

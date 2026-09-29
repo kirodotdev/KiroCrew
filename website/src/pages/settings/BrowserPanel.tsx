@@ -25,6 +25,7 @@ import {
   type InstallBlock,
   type PendingRequest,
 } from './browserInstallState'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
 const INSTALL_KEY = ['browserInstall'] as const
 
@@ -166,7 +167,7 @@ export function BrowserPanel() {
   // dashboard settings.
   const dashQ = useQuery<DashboardConfig>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
   })
   const dashMut = useMutation({
     // Send ONLY the changed key: the config handler applies keys present in the

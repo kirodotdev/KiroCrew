@@ -34,6 +34,7 @@ import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import { type KiroCrewAgent } from '../../components/AgentSelector'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
  *
@@ -495,7 +496,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // ── Dashboard config (server-side) ──
   const dashQ = useQuery<DashboardConfig>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
   })
   // Shown config: the in-flight save when one is pending, else the server's.
   // Toggles both render this and BUILD THEIR PAYLOAD from it (setDash), so a

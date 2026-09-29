@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../api/client'
+import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 import { setConfigAutolinkRules } from '../utils/autolinkRules'
 
 /**
@@ -20,7 +20,7 @@ import { setConfigAutolinkRules } from '../utils/autolinkRules'
 export function useConfigAutolinkRules(): void {
   const { data } = useQuery<{ link_patterns?: Array<{ pattern: string; url: string }> }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   const linkPatternRules = data?.link_patterns

@@ -23,11 +23,12 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from '../../api/client'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
 export function useJevAutoSend(): boolean {
   const dashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   const consentQ = useQuery({

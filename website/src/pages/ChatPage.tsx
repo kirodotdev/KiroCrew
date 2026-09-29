@@ -324,6 +324,7 @@ import { errMessage } from '../utils/thunkError'
 import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
 import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
+import { fetchDashboardConfig } from '../api/dashboardConfigQuery'
 
 /**
  * Horizontal room the chat pane reclaims (negative margin) while the desktop
@@ -570,7 +571,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // render opens the panel to its own `app` tab instead of drawing inline in the
   // bubble — same auto-open path the web-preview marker uses.
   const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean }>({
-    queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000,
+    queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000,
   })
   const mcpAppPanel = appPanelCfg?.mcp_app_panel === true
   // Opt-in: expand the side panel to the Git tab on sight of a git project
@@ -858,7 +859,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // already makes for other reasons, so the row costs no new request.
   const jevDashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   const jevConsentQ = useQuery({
@@ -1538,7 +1539,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     [sessionTitleSig],
   )
 
-  const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
+  const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const handleFork = useCallback(async (visibleIndex: number, messageId?: string) => {
     if (!activeSlot) return
     try {
@@ -1689,7 +1690,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useFollowUpChips({
     messages, isStreaming, pendingQuestion, activeSlot, inputRef, setInput, prefillEdited, setPrefillEdited,
   })
-  const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean; social_share_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
+  const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean; social_share_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   // Session grid (split view) is an opt-in feature flag (Settings › Chat › Split View). Gates ⌘D, the Columns2 button, and the grid render.
   const splitFeatureEnabled = dashCfg?.session_grid === true
   // Link previews are opt-in too (Settings › Chat › Link Previews): enabling them

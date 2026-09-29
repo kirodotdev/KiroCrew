@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Activity, Goal, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
-import { useIsFetching, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, type MonitorWrite } from '../api/client'
 import {
   deriveAutomationStatus,
@@ -20,6 +20,7 @@ import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { i18nT } from '../i18n/t'
 import MonitorRadar from './MonitorRadar'
 import ErrorNotice from './ErrorNotice'
+import { useQueryIsFetching } from '../hooks/useQueryIsFetching'
 
 interface Props {
   slotKey: string
@@ -213,7 +214,7 @@ export default function SessionAutomationPopover({
   const [confirmClear, setConfirmClear] = useState(false)
   const id = useId()
   const queryClient = useQueryClient()
-  const snapshotFetching = useIsFetching({ queryKey: ['session-automation', slotKey], exact: true }) > 0
+  const snapshotFetching = useQueryIsFetching(['session-automation', slotKey])
   const automationRef = useRef(automation)
   automationRef.current = automation
   const slotKeyRef = useRef(slotKey)

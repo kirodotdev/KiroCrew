@@ -51,6 +51,7 @@ import type { ResizeInfo } from '../../utils/resizeImage'
 import { errMessage } from '../../utils/thunkError'
 import { fileLandingSlot } from '../../utils/uploadRouting'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
 type MutableRef<T> = { current: T }
 
@@ -162,7 +163,7 @@ export function useChatPageResourcesController({
   // actually changes — an edit on disk still propagates, without the churn.
   const { data: sourceHostCfg } = useQuery<{ gitlab_hosts?: string[]; jira_hosts?: string[] }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   const sourceHosts = sourceHostCfg?.gitlab_hosts ?? []

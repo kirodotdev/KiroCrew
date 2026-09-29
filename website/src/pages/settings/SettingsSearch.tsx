@@ -17,6 +17,7 @@ import { SidePanelDockContext } from '../../components/SidePanelLayout'
 import { SearchInput } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 import { api } from '../../api/client'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
 /**
  * SettingsSearch — in-page search over SETTINGS_REGISTRY. On desktop it is the
@@ -83,7 +84,7 @@ export default function SettingsSearch() {
   // rather than a hidden card and a live search entry pointing at it.
   const dashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
     queryKey: ['dashboardConfig'],
-    queryFn: () => api.dashboardConfig(),
+    queryFn: fetchDashboardConfig,
     staleTime: 30_000,
   })
   // Offer unless the read SUCCEEDED and said otherwise: a failed or in-flight read is
