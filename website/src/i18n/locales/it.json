@@ -5075,7 +5075,18 @@
       "copied": "Copiato",
       "copy_failed": "Copia non riuscita: il browser ha bloccato l’accesso agli appunti. Seleziona il testo e copialo manualmente.",
       "copy_nothing": "Niente da copiare qui.",
-      "copy_hint": "Copia link"
+      "copy_hint": "Copia link",
+      "cmd_search_mates": "Cerca compagni",
+      "cmd_search_mates_sub": "Trova un compagno per nome e apri la sua chat.",
+      "placeholder_mates": "Cerca in tutti i compagni…",
+      "action_search_mates": "Cerca compagni",
+      "action_open_mate": "Apri chat",
+      "action_show_all_mates": "Mostra tutti i compagni",
+      "fallback_mates": "Cerca «{{query}}» nei compagni",
+      "no_match_show_all_mates": "Nessun compagno corrisponde a «{{query}}» — mostra tutti",
+      "mate_also_called": "chiamato anche {{identity}}",
+      "no_mates_yet_open": "Ancora nessun compagno — apri la pagina dei compagni",
+      "action_open_crewmates": "Apri compagni"
     },
     "awsControl": {
       "manifest": {

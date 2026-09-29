@@ -5154,7 +5154,18 @@
       "copied": "Скопировано",
       "copy_failed": "Не удалось скопировать — браузер заблокировал доступ к буферу обмена. Выделите текст и скопируйте его вручную.",
       "copy_nothing": "Здесь нечего копировать.",
-      "copy_hint": "Скопировать ссылку"
+      "copy_hint": "Скопировать ссылку",
+      "cmd_search_mates": "Поиск товарищей по команде",
+      "cmd_search_mates_sub": "Найди товарища по имени и открой его чат.",
+      "placeholder_mates": "Поиск по всем товарищам…",
+      "action_search_mates": "Поиск товарищей",
+      "action_open_mate": "Открыть чат",
+      "action_show_all_mates": "Показать всех товарищей",
+      "fallback_mates": "Найти «{{query}}» среди товарищей",
+      "no_match_show_all_mates": "Нет товарищей по запросу «{{query}}» — показать всех",
+      "mate_also_called": "также известен как {{identity}}",
+      "no_mates_yet_open": "Товарищей пока нет — открой страницу команды",
+      "action_open_crewmates": "Открыть команду"
     },
     "awsControl": {
       "manifest": {

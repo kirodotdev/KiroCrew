@@ -4996,7 +4996,18 @@
       "copied": "কপি হয়েছে",
       "copy_failed": "কপি ব্যর্থ হয়েছে — তোমার ব্রাউজার ক্লিপবোর্ড অ্যাক্সেস আটকে দিয়েছে। টেক্সট নির্বাচন করে নিজে কপি করো।",
       "copy_nothing": "এখানে কপি করার কিছু নেই।",
-      "copy_hint": "লিংক কপি করো"
+      "copy_hint": "লিংক কপি করো",
+      "cmd_search_mates": "ক্রুমেট খুঁজুন",
+      "cmd_search_mates_sub": "নাম দিয়ে ক্রুমেট খুঁজে নাও আর তার চ্যাট খোলো।",
+      "placeholder_mates": "সব ক্রুমেট খুঁজুন…",
+      "action_search_mates": "ক্রুমেট খুঁজুন",
+      "action_open_mate": "চ্যাট খোলো",
+      "action_show_all_mates": "সব ক্রুমেট দেখাও",
+      "fallback_mates": "ক্রুমেটে “{{query}}” খুঁজুন",
+      "no_match_show_all_mates": "“{{query}}” এর সাথে কোনো ক্রুমেট মেলে না — সব দেখাও",
+      "mate_also_called": "{{identity}} নামেও ডাকা হয়",
+      "no_mates_yet_open": "এখনো কোনো ক্রুমেট নেই — ক্রুমেট পেজ খোলো",
+      "action_open_crewmates": "ক্রুমেট খোলো"
     },
     "awsControl": {
       "manifest": {

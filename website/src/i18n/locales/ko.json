@@ -1206,7 +1206,18 @@
       "copied": "복사됨",
       "copy_failed": "복사 실패 — 브라우저가 클립보드 접근을 차단했습니다. 텍스트를 선택해 직접 복사하세요.",
       "copy_nothing": "복사할 것이 없습니다.",
-      "copy_hint": "링크 복사"
+      "copy_hint": "링크 복사",
+      "cmd_search_mates": "크루메이트 검색",
+      "cmd_search_mates_sub": "이름으로 크루메이트를 찾아 채팅을 엽니다.",
+      "placeholder_mates": "모든 크루메이트 검색…",
+      "action_search_mates": "크루메이트 검색",
+      "action_open_mate": "채팅 열기",
+      "action_show_all_mates": "모든 크루메이트 표시",
+      "fallback_mates": "크루메이트에서 {{query}} 검색",
+      "no_match_show_all_mates": "‘{{query}}’와 일치하는 크루메이트가 없습니다 — 전체 표시",
+      "mate_also_called": "다른 이름 {{identity}}",
+      "no_mates_yet_open": "아직 크루메이트가 없습니다 — 크루메이트 페이지 열기",
+      "action_open_crewmates": "크루메이트 열기"
     },
     "crewCompanion": {
       "accessory": {

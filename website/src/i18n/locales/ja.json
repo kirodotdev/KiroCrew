@@ -1206,7 +1206,18 @@
       "copied": "コピーしました",
       "copy_failed": "コピーに失敗しました — ブラウザーがクリップボードへのアクセスをブロックしました。テキストを選択して手動でコピーしてください。",
       "copy_nothing": "コピーできるものがありません。",
-      "copy_hint": "リンクをコピー"
+      "copy_hint": "リンクをコピー",
+      "cmd_search_mates": "クルーメイトを検索",
+      "cmd_search_mates_sub": "名前でクルーメイトを探して、そのチャットを開きます。",
+      "placeholder_mates": "すべてのクルーメイトを検索…",
+      "action_search_mates": "クルーメイトを検索",
+      "action_open_mate": "チャットを開く",
+      "action_show_all_mates": "すべてのクルーメイトを表示",
+      "fallback_mates": "クルーメイトを「{{query}}」で検索",
+      "no_match_show_all_mates": "「{{query}}」に一致するクルーメイトはありません — すべて表示",
+      "mate_also_called": "別名 {{identity}}",
+      "no_mates_yet_open": "クルーメイトはまだいません — クルーメイトのページを開く",
+      "action_open_crewmates": "クルーメイトを開く"
     },
     "crewCompanion": {
       "accessory": {

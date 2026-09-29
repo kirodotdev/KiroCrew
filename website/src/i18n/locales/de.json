@@ -1239,7 +1239,18 @@
       "copied": "Kopiert",
       "copy_failed": "Kopieren fehlgeschlagen – dein Browser hat den Zugriff auf die Zwischenablage blockiert. Markiere den Text und kopiere ihn selbst.",
       "copy_nothing": "Hier gibt es nichts zu kopieren.",
-      "copy_hint": "Link kopieren"
+      "copy_hint": "Link kopieren",
+      "cmd_search_mates": "Crew-Kameraden durchsuchen",
+      "cmd_search_mates_sub": "Einen Crew-Kameraden über seinen Namen finden und seinen Chat öffnen.",
+      "placeholder_mates": "Alle Crew-Kameraden durchsuchen…",
+      "action_search_mates": "Crew-Kameraden durchsuchen",
+      "action_open_mate": "Chat öffnen",
+      "action_show_all_mates": "Alle Crew-Kameraden anzeigen",
+      "fallback_mates": "Crew-Kameraden nach „{{query}}“ durchsuchen",
+      "no_match_show_all_mates": "Keine Crew-Kameraden passen zu „{{query}}“ — alle anzeigen",
+      "mate_also_called": "auch {{identity}} genannt",
+      "no_mates_yet_open": "Noch keine Crew-Kameraden — Crew-Seite öffnen",
+      "action_open_crewmates": "Crew-Seite öffnen"
     },
     "crewCompanion": {
       "accessory": {

@@ -1272,7 +1272,18 @@
       "copied": "Copié",
       "copy_failed": "Échec de la copie : le navigateur a bloqué l’accès au presse-papiers. Sélectionne le texte et copie-le toi-même.",
       "copy_nothing": "Rien à copier ici.",
-      "copy_hint": "Copier le lien"
+      "copy_hint": "Copier le lien",
+      "cmd_search_mates": "Rechercher des coéquipiers",
+      "cmd_search_mates_sub": "Trouve un coéquipier par son nom et ouvre sa conversation.",
+      "placeholder_mates": "Rechercher dans tous les coéquipiers…",
+      "action_search_mates": "Rechercher des coéquipiers",
+      "action_open_mate": "Ouvrir la conversation",
+      "action_show_all_mates": "Afficher tous les coéquipiers",
+      "fallback_mates": "Rechercher « {{query}} » dans les coéquipiers",
+      "no_match_show_all_mates": "Aucun coéquipier ne correspond à « {{query}} » — afficher tous",
+      "mate_also_called": "aussi appelé {{identity}}",
+      "no_mates_yet_open": "Pas encore de coéquipiers — ouvre la page des coéquipiers",
+      "action_open_crewmates": "Ouvrir les coéquipiers"
     },
     "crewCompanion": {
       "accessory": {

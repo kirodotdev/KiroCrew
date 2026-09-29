@@ -4917,7 +4917,18 @@
       "copied": "已复制",
       "copy_failed": "复制失败——浏览器阻止了访问剪贴板。请选中文字后手动复制。",
       "copy_nothing": "这里没有可复制的内容。",
-      "copy_hint": "复制链接"
+      "copy_hint": "复制链接",
+      "cmd_search_mates": "搜索队友",
+      "cmd_search_mates_sub": "按名字找到一位队友，直接打开它的会话。",
+      "placeholder_mates": "搜索全部队友…",
+      "action_search_mates": "搜索队友",
+      "action_open_mate": "打开会话",
+      "action_show_all_mates": "显示全部队友",
+      "fallback_mates": "在队友中搜索“{{query}}”",
+      "no_match_show_all_mates": "没有队友匹配“{{query}}”——显示全部",
+      "mate_also_called": "也叫 {{identity}}",
+      "no_mates_yet_open": "还没有队友——打开队友页面",
+      "action_open_crewmates": "打开队友"
     },
     "awsControl": {
       "manifest": {

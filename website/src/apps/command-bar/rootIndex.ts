@@ -136,6 +136,26 @@ export interface RootRow {
    */
   idleDemote?: boolean
   /**
+   * Whether an installed app CONTRIBUTED this row, rather than the product shipping
+   * it.
+   *
+   * It exists for the group cap, and it is the difference the cap has to see. The
+   * `commands` group holds two populations that do not compete on equal terms: the
+   * product's own builtins, a fixed set decided in this repository, and rows an app
+   * declares in its manifest. A cap that counted both spent a contributed row's slot
+   * on every builtin added -- and at six builtins (New Session, Toggle Theme, and one
+   * corpus entry each for sessions, artifacts, folders and crewmates) the group was
+   * full before any app had contributed anything, with nothing on screen saying so:
+   * the app installed fine, its manifest was accepted, its row simply was not there.
+   *
+   * So the cap counts CONTRIBUTIONS only. A builtin can no longer evict an app's row,
+   * because adding one does not change the count. What that leaves unbounded is the
+   * product's own list, deliberately: it grows only by a change in this repository,
+   * where the page it lands on is reviewable and a row too many is somebody's
+   * decision rather than an invisible eviction.
+   */
+  contributed?: boolean
+  /**
    * Display name of the app that contributed this row, when one did.
    *
    * Rendered in the meta column beside the row's kind. A contributed row otherwise
@@ -342,6 +362,12 @@ export function rankRootRows(
   const perGroup = new Map<RootGroup, number>()
   const capped: RankedRow[] = []
   for (const row of ranked) {
+    // The `commands` group counts CONTRIBUTIONS only, so no builtin this repository
+    // adds can evict an app's row — see {@link RootRow.contributed}.
+    if (row.group === 'commands' && !row.contributed) {
+      capped.push(row)
+      continue
+    }
     const limit = !q && row.group === 'settings' ? SETTINGS_IDLE_LIMIT : PER_GROUP_LIMIT
     const seen = perGroup.get(row.group) ?? 0
     if (seen >= limit) continue

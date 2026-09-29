@@ -4996,7 +4996,18 @@
       "copied": "कॉपी हो गया",
       "copy_failed": "कॉपी विफल — तुम्हारे ब्राउज़र ने क्लिपबोर्ड एक्सेस रोक दिया। टेक्स्ट चुनकर खुद कॉपी करो।",
       "copy_nothing": "यहाँ कॉपी करने के लिए कुछ नहीं है।",
-      "copy_hint": "लिंक कॉपी करें"
+      "copy_hint": "लिंक कॉपी करें",
+      "cmd_search_mates": "क्रूमेट खोजें",
+      "cmd_search_mates_sub": "नाम से क्रूमेट ढूँढो और उसकी चैट खोलो।",
+      "placeholder_mates": "सभी क्रूमेट खोजें…",
+      "action_search_mates": "क्रूमेट खोजें",
+      "action_open_mate": "चैट खोलो",
+      "action_show_all_mates": "सभी क्रूमेट दिखाऐँ",
+      "fallback_mates": "क्रूमेट में “{{query}}” खोजें",
+      "no_match_show_all_mates": "“{{query}}” से कोई क्रूमेट मेल नहीं खाता — सभी दिखाऐँ",
+      "mate_also_called": "{{identity}} भी कहते हैं",
+      "no_mates_yet_open": "अभी कोई क्रूमेट नहीं — क्रूमेट पेज खोलो",
+      "action_open_crewmates": "क्रूमेट खोलो"
     },
     "awsControl": {
       "manifest": {

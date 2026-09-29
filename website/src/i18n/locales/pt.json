@@ -5075,7 +5075,18 @@
       "copied": "Copiado",
       "copy_failed": "Falha ao copiar — o navegador bloqueou o acesso à área de transferência. Selecione o texto e copie manualmente.",
       "copy_nothing": "Não há nada para copiar aqui.",
-      "copy_hint": "Copiar link"
+      "copy_hint": "Copiar link",
+      "cmd_search_mates": "Pesquisar colegas",
+      "cmd_search_mates_sub": "Encontre um colega pelo nome e abra o chat dele.",
+      "placeholder_mates": "Pesquisar em todos os colegas…",
+      "action_search_mates": "Pesquisar colegas",
+      "action_open_mate": "Abrir chat",
+      "action_show_all_mates": "Mostrar todos os colegas",
+      "fallback_mates": "Pesquisar “{{query}}” nos colegas",
+      "no_match_show_all_mates": "Nenhum colega corresponde a “{{query}}” — mostrar todos",
+      "mate_also_called": "também chamado {{identity}}",
+      "no_mates_yet_open": "Ainda não há colegas — abra a página de colegas",
+      "action_open_crewmates": "Abrir colegas"
     },
     "awsControl": {
       "manifest": {
