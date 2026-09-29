@@ -1041,6 +1041,7 @@ async def handle_register_external(request: web.Request) -> web.Response:
 
     Body: { name, version, displayName, source?, manifest? }
     """
+    # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     denied = await require_owner_dashboard_request(request, "app_register_external")
@@ -1234,6 +1235,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     Steps 2–6 run inside the per-app lifecycle lock so the whole teardown is
     atomic and the cron precondition can abort before any irreversible action.
     """
+    # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     denied = await require_owner_dashboard_request(request, "app_uninstall")
@@ -2141,6 +2143,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     - ``app``: run onDisable only
     If onDisable fails, disable proceeds anyway (with warnings).
     """
+    # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
     denied = await require_owner_dashboard_request(request, "app_disable")
