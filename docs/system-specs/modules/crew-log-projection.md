@@ -81,6 +81,22 @@ made, so every total in `usage` rides beside the count of turns that contributed
 to it (`turns.credits_reported`, `turns.tokens_reported`), and a caller comparing
 the two learns what the total covers.
 
+**A session's bill is not only its turns.** Three entry types carry a `credits`
+charge -- `turn/completed`, the two subagent closers, and `background/completed` --
+and `usage.credits` is the sum of all three. Billing turns alone made a session
+that spent most of its budget on a wave of children read as cheap, and left the
+credits `background/completed` already carried unfolded. The split beside the total,
+`credits_by_source`, keeps it readable: buckets `turn`, `subagent` and `background`,
+each with its own `credits` and the `reported` count of charges it covers. The set
+of buckets is CLOSED and every bucket is present from the start, so a source that
+spent nothing reads as zero-with-nothing-reported rather than leaving the reader to
+guess whether the split is partial. One function bills the total and the bucket
+together, so the two cannot drift apart. `turns.credits_reported` stays
+turn-scoped: it answers how many of the session's TURNS reported a cost, which a
+whole-session count could not. `by_model` stays turn-scoped for the same reason --
+a child's closer names no model, so charging the parent turn's model for it would
+attribute one model's spend to another.
+
 **Nothing is synthesized.** An interrupted turn and an unmatched tool call are
 reported OPEN. Closing them is `CrewLog.open(repair=True)`, which appends real
 deterministic closers under write ownership; a reader inventing the same fact in
@@ -161,7 +177,7 @@ and its one caller asks the registry for it by name.
 | projection | what it answers |
 |---|---|
 | `status` | Is this session open, and what is it doing: lifecycle, the open turn and its attempt, agent/owner/slot/cwd, current model and provider, turns completed and refused, the last stop reason, dropped writes. |
-| `usage` | What it spent: credits and the four token dimensions, per model; the per-turn context bill by source kind from `context/composed`; compaction count and the context they freed; step count and time. |
+| `usage` | What it spent: credits from all three spenders, split by which spent what in `credits_by_source`; the four token dimensions, per model; the per-turn context bill by source kind from `context/composed`; compaction count and the context they freed; step count and time. |
 | `timeline` | The newest turn, lifecycle and cost MOMENTS, oldest first. Message, step and tool entries are deliberately absent: they are the bulk of a log, the page route and `tools` already serve them, and including them would make the timeline a second copy of the file. |
 | `tools` | Calls matched to completions by `call_id`: totals, per name, open calls, unmatched completions. An error is `status` in `refused`/`error`/`failed` OR `is_error` true -- two independent signals, and an absent `is_error` is not a claim that the call worked. |
 | `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. No emitter writes these types yet; the fold is against the declared shape. |

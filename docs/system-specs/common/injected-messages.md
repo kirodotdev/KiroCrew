@@ -100,6 +100,11 @@ Usage: <credits> credits · <elapsed>
   intentional, and zero is not a claim that the run was free. Reported credits
   use two decimals below 10 and one decimal at or above 10, matching the
   dashboard's precision.
+- The same charge is written into the PARENT's crew log as `credits` on
+  `subagent/completed` or `subagent/failed`, and `usage.credits_by_source.subagent`
+  folds it. This line and that entry read the one accumulator, so they cannot
+  disagree; the entry drops an unbilled zero rather than writing it, which is the
+  same posture as this line omitting the credit label.
 - A user-stopped agent says so explicitly and instructs the parent not to treat the
   partial output as a finished result or retry it unprompted.
 - A wide wave is delivered in chunks under a sibling prefix,

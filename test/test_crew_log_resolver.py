@@ -896,7 +896,10 @@ def test_the_closer_is_handed_over_before_its_child_s_origin_pin_is_released():
         held.append(bool(emit.child_origin(kw["agent_id"])[0]))
         return real(session_id, **kw)
 
-    info = SimpleNamespace(id="ab12", elapsed=0.5, outcome="completed", error=None)
+    # `credits` stands in for the run accumulator the closer reads: a real
+    # `SubagentInfo` always carries it, so a stand-in that omits it would make this
+    # test fail on the attribute rather than on the ordering it exists to pin.
+    info = SimpleNamespace(id="ab12", elapsed=0.5, outcome="completed", error=None, credits=1.25)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(emit, "on_subagent_completed", _spy)
         TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)

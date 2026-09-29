@@ -1187,14 +1187,27 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
         (
             Field("agent_id", JSON_STRING, required=True, note="The child's run id."),
             Field("ms", JSON_INT, note="Measured run duration; absent when it was not measured."),
+            Field(
+                "credits",
+                JSON_FLOAT,
+                note=(
+                    "What the child billed, cumulative across every attempted turn "
+                    "including billed retries that failed before the last one. Present "
+                    "only when this provider billed credits: a provider that does not "
+                    "reports zero through the shared TurnUsage contract, which is "
+                    "indistinguishable here from a run that was genuinely free, so the "
+                    "zero is dropped rather than written -- the same posture "
+                    "background/completed takes."
+                ),
+            ),
         ),
         note=(
             "Only the completed outcome. A stopped or failed child closes through "
             "subagent/failed, because the runtime's three-way outcome exists precisely to "
-            "stop consumers reading 'no error' as success. No tokens and no credits, and "
-            "their absence is the record: nothing in the subagent runtime measures either, "
-            "so writing zeros would present the absence of a measurement as a measurement "
-            "of zero."
+            "stop consumers reading 'no error' as success. No tokens: the subagent runtime "
+            "measures none, and writing zeros would present the absence of a measurement "
+            "as a measurement of zero. Credits ARE measured, and a zero or unbilled one is "
+            "not written for the same reason."
         ),
     ),
     EntryType(
@@ -1224,6 +1237,16 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 ),
             ),
             Field("ms", JSON_INT, note="Measured run duration; absent on the repair closer."),
+            Field(
+                "credits",
+                JSON_FLOAT,
+                note=(
+                    "What the child billed before it stopped, cumulative across every "
+                    "attempted turn. A run that did not finish still spent, so this is "
+                    "where that charge would otherwise be lost. Absent when unbilled or "
+                    "zero, and on the crash-repair closer, which measured nothing."
+                ),
+            ),
         ),
         note=(
             "Two writers close a child this way: the runtime's own terminal report, and "

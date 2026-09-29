@@ -191,8 +191,8 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `background/completed` | `run_bg_oneliner` and `background_turn`, at the point they record usage, against an owner pinned BEFORE the call | kind, served model, provider, the billed token dimensions, credits, ms -- no turn |
 | `subagent/spawned` | `_log_spawned`, the one site every started run passes and no rejection does | the turn that ASKED, read from the pin taken at acceptance; child id, agent, model, the three context-scope flags |
 | `subagent/steered` | `steer_run` after the provider accepted, `follow_up_run` after the queue accepted | child id, `interrupt` or `follow_up` |
-| `subagent/completed` | the exclusive terminal report, for outcome `completed` | child id, elapsed ms |
-| `subagent/failed` | the same report, for outcome `failed` or `stopped` | child id, reason, which outcome it was, elapsed ms |
+| `subagent/completed` | the exclusive terminal report, for outcome `completed` | child id, elapsed ms, credits when billed |
+| `subagent/failed` | the same report, for outcome `failed` or `stopped` | child id, reason, which outcome it was, elapsed ms, credits when billed |
 | `write/dropped` | writer recovery, before that session's next ordinary append | dropped count and bytes |
 | `object/observed` | `monitoring.controller.MonitorController.tick`, after the service has published a probe's observation whose fingerprint differs from the one it held; into the log of the monitor's OWNER session, named by the host's resolver | `producer` (closed: `probe`), the monitored `kind`, the subject's full `target` URL, the probe's `fingerprint`, the canonical `facts` snapshot verbatim (short by named members in `facts_omitted` only when the line would not fit), `observed_at` -- no turn |
 
@@ -940,10 +940,25 @@ path, and a subagent run does not go through it. A `ref` written now would cite 
 exist, which a reader cannot distinguish from one that was deleted. It becomes writable, unchanged,
 the day subagent sessions get crew logs of their own.
 
-`subagent/completed` likewise carries no `tokens` and no `credits`, and the absence is the record.
-The schema has both fields; nothing in the subagent runtime measures either. A run's record carries
-elapsed time and peak resource use, and the child's spend is never reported back to the parent.
-Zeros there would present the absence of a measurement as a measurement of zero.
+### A child's spend is recorded; a child's tokens are not
+
+`subagent/completed` and `subagent/failed` carry no `tokens`, and the absence is the record: the
+schema has the field, nothing in the subagent runtime measures it, and a zero there would present
+the absence of a measurement as a measurement of zero.
+
+`credits` is the case where that stopped being true. `SubagentInfo.credits` accumulates a run's
+charge across every attempted turn, including billed retries that failed before the last one, so
+the number exists and both closers carry it. It is written only when POSITIVE. A provider that does
+not bill in credits reports zero through the shared `TurnUsage` contract, which is indistinguishable
+at this seam from a run that was genuinely free, so the zero is dropped and absent keeps meaning
+unmetered -- the same posture `background/completed` takes. The value is clamped where it is read
+rather than trusted: it arrives from provider usage reports, and a negative or non-finite one would
+be folded into a session total nothing rewrites. The crash-repair closer passes none, which is
+correct: it knows only that the writer is gone.
+
+The non-success closer carries it for the same reason it carries `ms`. A run the user stopped still
+billed for the turns it attempted, and that closer is the one place the charge would otherwise be
+lost.
 
 ### A stopped child is not a completion and not a failure
 

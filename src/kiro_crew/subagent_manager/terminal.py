@@ -98,9 +98,17 @@ class TerminalCoordinator(ManagerComponent):
             # Reporting stays one-shot without the pop: every route here is gated
             # on `_claim_finalize`, which hands out one token.
             elapsed_ms = int(max(0.0, float(info.elapsed or 0.0)) * 1000)
+            # The run's own accumulator, already cumulative across every attempted
+            # turn. Handed over as measured: the emitter is the one place that decides
+            # what a charge has to be to be written, and it refuses anything not
+            # positive and finite. Screening here as well would put that rule in two
+            # places, where only one of them is the writer.
+            credits = float(info.credits or 0.0)
             outcome = info.outcome
             if outcome == "completed":
-                crew_log_emit.on_subagent_completed(sid, agent_id=info.id, duration_ms=elapsed_ms)
+                crew_log_emit.on_subagent_completed(
+                    sid, agent_id=info.id, duration_ms=elapsed_ms, credits=credits
+                )
             else:
                 crew_log_emit.on_subagent_failed(
                     sid,
@@ -108,6 +116,7 @@ class TerminalCoordinator(ManagerComponent):
                     reason=info.error or "",
                     outcome=outcome,
                     duration_ms=elapsed_ms,
+                    credits=credits,
                 )
         except Exception:
             _logger.debug("crew log: closing a subagent entry failed", exc_info=True)

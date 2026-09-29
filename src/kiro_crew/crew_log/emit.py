@@ -96,6 +96,7 @@ import atexit
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 import traceback
@@ -5278,22 +5279,28 @@ def on_subagent_steered(session_id: str, *, agent_id: str, mode: str = "") -> No
     _write(session_id, "subagent/steered", data, src=_SRC_GATEWAY)
 
 
-def on_subagent_completed(session_id: str, *, agent_id: str, duration_ms: int = 0) -> None:
-    """Close a child that finished its work.
+def on_subagent_completed(
+    session_id: str, *, agent_id: str, duration_ms: int = 0, credits: float = 0.0
+) -> None:
+    """Close a child that finished its work, and what it cost.
 
     Only for the ``completed`` outcome. A stopped or failed child closes through
     :func:`on_subagent_failed`, because the runtime's own three-way outcome exists
     precisely to stop consumers reading "no error" as success.
 
-    No ``tokens`` and no ``credits``, and their absence is the record. The schema
-    has both fields, but nothing in the subagent runtime measures either: a run's
-    record carries elapsed time and peak resource use, and the child's spend is
-    never reported back to the parent. Writing zeros would present the absence of
-    a measurement as a measurement of zero.
+    ``credits`` is the run's own accumulator, cumulative across every attempted
+    turn including billed retries that failed before the last one. It is written
+    only when positive: a provider that does not bill in credits reports zero
+    through the shared ``TurnUsage`` contract, which is indistinguishable at this
+    seam from a run that was genuinely free, so writing the zero would present the
+    absence of a measurement as a measurement of zero. ``tokens`` stays absent
+    throughout -- nothing in the subagent runtime measures them.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     if duration_ms > 0:
         data["ms"] = int(duration_ms)
+    if credits > 0 and math.isfinite(credits):
+        data["credits"] = float(credits)
     _write(session_id, "subagent/completed", data, src=_SRC_GATEWAY)
 
 
@@ -5304,14 +5311,21 @@ def on_subagent_failed(
     reason: str = "",
     outcome: str = "failed",
     duration_ms: int = 0,
+    credits: float = 0.0,
 ) -> None:
-    """Close a child that did NOT finish its work.
+    """Close a child that did NOT finish its work, and what it cost anyway.
 
     Covers both non-success outcomes, and says which in ``outcome``: a run the
     user stopped is not a failure and must not read as one, but it is also not a
     completion, and the schema offers no third closer. Carrying the runtime's own
     outcome verbatim keeps the two distinguishable without renaming a frozen type
     or leaving the ``subagent/spawned`` entry open forever.
+
+    ``credits`` follows :func:`on_subagent_completed`: positive only, because a
+    zero cannot be told apart from an unbilled provider. A run that did not finish
+    still billed for the turns it attempted, so this is the one place that charge
+    would otherwise be lost. The crash-repair closer passes nothing, which is
+    correct -- it knows only that the writer is gone.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     shown = _clip(_safe_text(reason), _MAX_SHORT_TEXT)
@@ -5321,6 +5335,8 @@ def on_subagent_failed(
         data["outcome"] = outcome
     if duration_ms > 0:
         data["ms"] = int(duration_ms)
+    if credits > 0 and math.isfinite(credits):
+        data["credits"] = float(credits)
     _write(session_id, "subagent/failed", data, src=_SRC_GATEWAY)
 
 
