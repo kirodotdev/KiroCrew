@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from kiro_crew.slack.format import build_link_dashboard_button
+
 _MAX_MSG_CHARS = 4000
 _MAX_MESSAGES = 5
 
@@ -534,8 +536,26 @@ def build_stop_failed_blocks() -> list[dict]:
     ]
 
 
-def build_working_blocks(session_key: str) -> list[dict]:
-    """Inline 'working' message with a Stop button shown during execution."""
+def build_working_blocks(session_key: str, *, include_dashboard_link: bool = False) -> list[dict]:
+    """Inline 'working' message with a Stop button shown during execution.
+
+    ``include_dashboard_link`` also adds the "Link to Dashboard" button, so a
+    long turn can be linked to a dashboard session the moment it starts instead
+    of only from the timing footer at turn end. The caller applies the same gate
+    the footer uses (threaded, not already linked, dashboard present); this
+    builder just renders what it is told.
+    """
+    elements: list[dict] = [
+        {
+            "type": "button",
+            "action_id": f"mc_inline_stop_{session_key}",
+            "text": {"type": "plain_text", "text": "⏹ Stop"},
+            "value": session_key,
+            "style": "danger",
+        }
+    ]
+    if include_dashboard_link:
+        elements.append(build_link_dashboard_button())
     return [
         {
             "type": "context",
@@ -543,15 +563,7 @@ def build_working_blocks(session_key: str) -> list[dict]:
         },
         {
             "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "action_id": f"mc_inline_stop_{session_key}",
-                    "text": {"type": "plain_text", "text": "⏹ Stop"},
-                    "value": session_key,
-                    "style": "danger",
-                }
-            ],
+            "elements": elements,
         },
     ]
 
