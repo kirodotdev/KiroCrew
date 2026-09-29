@@ -1476,6 +1476,56 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     return cleaned, warnings
 
 
+def exfiltration_redaction_spans(text: str) -> list[tuple[int, int, str]]:
+    """Every ``(start, end, replacement)`` span :func:`redact_exfiltration_urls` rewrites.
+
+    Positioned against ``text``, sorted by start and pairwise disjoint. This is the
+    span form the control-split wrapper needs so it can compute redactions on a
+    normalised COPY and map the spans back onto the original bytes, rather than
+    returning the normalised text (see :func:`kiro_crew.security.redact_control_split`).
+
+    It reuses the SAME warn verdict and the SAME exempt-host resolution as
+    :func:`redact_exfiltration_urls_with_records`, so a URL this reports is exactly a
+    URL that function would redact. It deliberately does NOT build the blocked-link
+    records or apply the dedup/overflow caps: those describe the redaction for a reader
+    and are the wrapper's caller's concern, not the span geometry. Because ``_URL_RE``
+    matches are non-overlapping, iterating ``finditer`` yields disjoint spans directly;
+    each warned match redacts AT ITS OWN POSITION (unlike the ``.replace`` in
+    :func:`redact_exfiltration_urls_with_records`, which also rewrites other textual
+    occurrences of the same URL -- the wrapper maps back only the positions actually
+    matched, which is the byte-fidelity-correct behaviour).
+    """
+    exempt_hosts = _exfil_exempt_hosts() | _SCOPED_EXEMPT_HOSTS.get()
+    spans: list[tuple[int, int, str]] = []
+    for match in _URL_RE.finditer(text):
+        domain = match.group(1)
+        path_and_query = match.group(3) or ""
+        port = match.group(2) or ""
+        is_https = match.group(0).lower().startswith("https://")
+        rules: list[str] = []
+        warning = _exfil_url_warning(
+            domain,
+            path_and_query,
+            exempt_hosts,
+            port=port,
+            is_https=is_https,
+            _rule_out=rules,
+        )
+        if not warning:
+            continue
+        # Redact any credential embedded in the host before it goes into the tag: the
+        # replacement reproduces the host verbatim, and this span can fully cover a
+        # credential span at the same position, so without this a secret in the host
+        # would reach the returned text unredacted. The sequential redactor chain gets
+        # this for free by running the credential pass over already-substituted text;
+        # the span form must fold it in here.
+        safe_domain, _ = redact_credentials(domain)
+        spans.append(
+            (match.start(), match.end(), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{safe_domain}]")
+        )
+    return spans
+
+
 #: Hosts a reader allowed for the workspace whose message is being redacted,
 #: set only by :func:`scoped_exempt_hosts` around one render. The display pass
 #: re-redacts what the segment flush kept, so it must relax the same hosts or an

@@ -48,10 +48,10 @@ from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.messaging.privacy_mode import hydrate as _hydrate_conv_flags
 from kiro_crew.messaging.privacy_mode import is_incognito as is_thread_incognito
 from kiro_crew.messaging.privacy_mode import is_temporary as is_thread_temporary
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import is_sensitive_path, redact_control_split
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
 from kiro_crew.skills import _trusted_skill_roots, skills_dir
-from kiro_crew.terminal_safe import normalize_for_scanning, strip_control_characters
+from kiro_crew.terminal_safe import strip_control_characters
 
 if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
@@ -61,47 +61,31 @@ logger = logging.getLogger(__name__)
 
 
 def _scrub_text(val: str) -> str:
-    """Redact ``val``, dropping control characters but keeping the content around them.
+    """Redact a memory field, then drop the control bytes around what survives.
 
-    Invisible characters split a token, and both redactors decide by matching a pattern,
-    so a token split by one matches nothing and the field egresses carrying it. They do
-    not all deserve the same treatment on the way out, though, and that is the whole of
-    this function's shape.
+    The field goes out to the dashboard, so it must carry neither a credential nor a
+    live terminal-escape byte. Two steps in order do that:
 
-    A CONTROL character other than tab, newline and carriage return is terminal-escape
-    material rather than text a user wrote, so it always leaves: it drives a terminal that
-    renders the field verbatim, and no consumer is worse off without it. Those three are
-    content and stay, which is why a token split by one of them is still split afterwards.
-    Removing a control character can JOIN a token back together, which is why the redactors
-    run again afterwards rather than trusting the first verdict.
+    :func:`kiro_crew.security.redact_control_split` redacts credentials and exfiltration
+    URLs INCLUDING control-split tokens, with byte fidelity. It scans the original AND
+    several normalised copies of it -- whole escape sequences consumed under each reading
+    of a bare introducer, invisible characters removed, and a per-character control strip
+    that keeps a sequence's printable payload -- computes the redaction spans on each, and
+    maps them back so the result is the original bytes with only the credential/URL spans
+    replaced. The several readings together are what catch a token a single one would miss:
+    consuming a whole sequence rejoins a token split inside its introducer, while the
+    per-character strip rejoins one split by a sequence whose payload the whole-sequence
+    reading swallowed.
 
-    A FORMAT character is usually content. A soft hyphen inside a word, a joiner holding an
-    emoji together, a mark ordering a Latin digit before Arabic -- deleting those rewrites
-    what the user stored, on a path that runs for every row of every listing, and the
-    caller that compares this function's output with its input to decide whether a
-    document is editable then refuses every write to it. So a copy with the format
-    characters removed is scanned as EVIDENCE, and handed back only when it reveals a
-    credential the output still hides: that field holds a credential, so its exact bytes
-    are the thing that must not egress, and its own format characters go with them.
-
-    Scanning the text as stored first is not redundant with scanning that copy. Removing
-    an invisible character can destroy a boundary a pattern requires, so a token the
-    stored text matches can stop matching once the copy is joined up.
+    :func:`kiro_crew.terminal_safe.strip_control_characters` then removes the C0 and C1
+    control bytes that redaction left in a field carrying no credential. A control byte is
+    terminal-escape material, not text a user wrote, and this field reaches a renderer, so
+    it must not leave; tab, newline and carriage return are content and stay. A field the
+    scrub transforms is not shown exactly, which the memory editor reads as
+    not-editable-in-place, and that is intended: a field holding a credential must not be
+    round-tripped through the display form.
     """
-    out, _ = redact_exfiltration_urls(val)
-    out, _ = redact_credentials(out)
-    stripped = strip_control_characters(out)
-    if stripped != out:
-        out, _ = redact_exfiltration_urls(stripped)
-        out, _ = redact_credentials(out)
-    normalised = normalize_for_scanning(out)
-    if normalised == out:
-        return out
-    scanned, _ = redact_exfiltration_urls(normalised)
-    scanned, _ = redact_credentials(scanned)
-    if scanned == normalised:
-        return out
-    return scanned
+    return strip_control_characters(redact_control_split(val))
 
 
 #: Deepest JSON nesting this scrub walks. A stored memory payload is a handful of levels
@@ -308,29 +292,26 @@ def _redact_memory_field(val: object) -> object:
     text this chain can scan and returning it unread would put an unscanned blob on an
     egress path. That case falls to the ``object`` overload.
 
-    The redactors run TWICE, once on the text as stored and once after invisible
-    characters are removed, because each pass catches what the other cannot.
+    The text passes through :func:`_scrub_text`, which redacts credentials and
+    exfiltration URLs -- including a token split by an invisible or control character
+    that no single pattern would match -- and then drops the control bytes around what
+    survives. It does that by redacting the original against several normalised readings
+    of it and mapping the spans back, so a split token is caught under whichever reading
+    rejoins it while every other byte is preserved.
 
-    Both redactors decide by matching a pattern. An invisible character embedded
-    mid-token splits the token so no pattern matches it, and the field would leave on
-    an egress path carrying credential material any consumer that drops those
-    characters can reassemble. Removing them first rejoins the token, which is what the
-    second pass sees.
-
-    The first pass is not redundant, because removing a character can also DESTROY a
-    match. A pattern guarded by a negative lookbehind for a non-word character is
-    satisfied by the invisible character itself, so joining a word character onto the
-    token defeats it -- a credential the text as stored would have given up survives
-    normalisation. Scanning the original first keeps that verdict.
-
-    Normalising between the two passes rather than after both is what makes the order
-    safe. Normalising after the last pass would reassemble the very token that pass had
-    just failed to match, and the field would egress the whole secret.
+    An invisible character embedded mid-token is why one reading is not enough: it splits
+    the token so no pattern matches the text as stored, and the field would otherwise
+    leave on an egress path carrying credential material a consumer that drops those
+    characters could reassemble. Removing them rejoins the token under the normalised
+    readings. Scanning the original as well keeps the verdicts those readings can DESTROY:
+    a pattern guarded by a negative lookbehind for a non-word character is satisfied by the
+    invisible character itself, so joining a word character onto the token can defeat a
+    match the stored text would have given up.
 
     Tab, newline and carriage return are content and survive, so a token split by one of
     those three stays split; see
-    :func:`kiro_crew.terminal_safe.normalize_for_scanning` for what is removed and why
-    no visible content is lost.
+    :func:`kiro_crew.security.redact_control_split` for the readings it unions and why no
+    visible content is lost.
     """
     if isinstance(val, (bytes, memoryview)):
         return None
@@ -341,6 +322,36 @@ def _redact_memory_field(val: object) -> object:
     if isinstance(val, dict):
         return {k: _redact_memory_field(v) for k, v in val.items()}
     return val
+
+
+@overload
+async def redact_memory_field_offloaded(val: dict) -> dict: ...
+
+
+@overload
+async def redact_memory_field_offloaded(val: list) -> list: ...
+
+
+@overload
+async def redact_memory_field_offloaded(val: str) -> str: ...
+
+
+@overload
+async def redact_memory_field_offloaded(val: object) -> object: ...
+
+
+async def redact_memory_field_offloaded(val: object) -> object:
+    """:func:`_redact_memory_field`, run in a worker thread off the event loop.
+
+    The scrub scans several normalised copies of the text per character, so a large
+    stored field costs real CPU. Run inline on the event loop it would hold that loop
+    for the whole scan, and a field big enough would cross the loop-stall watchdog's
+    budget and take the gateway down with it. A handler processing stored content that
+    a request can make arbitrarily large awaits THIS instead, so the scan runs on a
+    thread and the loop stays responsive. The result is identical to the inline call,
+    and the overloads preserve its shape (a dict comes back a dict, a list a list).
+    """
+    return await asyncio.to_thread(_redact_memory_field, val)
 
 
 #: The session-search row fields carrying LLM-authored or peer-supplied prose,

@@ -155,6 +155,21 @@ def test_contiguous_credential_is_redacted() -> None:
     assert "[REDACTED" in redacted
 
 
+def test_scrub_text_consumes_the_control_split_redactor() -> None:
+    """``_scrub_text`` is a production consumer of ``security.redact_control_split``.
+
+    It redacts a control-split credential the raw redactors miss, leaves clean text
+    unchanged, and still strips a lone control byte from a field with no credential --
+    the memory-egress terminal-safety the scrub has always given.
+    """
+    assert "[REDACTED" in _shared._scrub_text("commit AKIA\x1b[0mIOSFODNN7EXAMPLE now")
+    assert CREDENTIAL not in normalize_for_scanning(
+        _shared._scrub_text("commit AKIA\x1b[0mIOSFODNN7EXAMPLE now")
+    )
+    assert _shared._scrub_text("just an ordinary note") == "just an ordinary note"
+    assert _shared._scrub_text("a\x9db") == "ab"
+
+
 @pytest.mark.parametrize("separator", REJOINING_SEPARATORS)
 def test_control_split_credential_is_redacted(separator: bytes | str) -> None:
     """A credential split by invisible characters alone is scrubbed, not passed through."""
@@ -199,19 +214,19 @@ def test_the_credential_is_never_recoverable_from_the_output(separator: bytes | 
 
 
 @pytest.mark.parametrize("separator", PAYLOAD_SEPARATORS)
-def test_a_sequence_payload_survives_as_text(separator: bytes) -> None:
-    """A sequence's printable bytes are content, so they are kept rather than deleted.
+def test_a_sequence_split_credential_is_redacted_payload_and_all(separator: bytes) -> None:
+    """A credential split by a complete escape sequence is redacted whole.
 
-    Consuming them would mean deleting however much visible text sits between an
-    introducer and the next terminator, which loses a user's stored note instead of
-    sanitising it. The token stays split around the payload, and safely so: the bytes
-    that would have told a terminal to hide it are gone.
+    The scrubber consumes the sequence -- introducer, printable payload and terminator
+    together -- and maps the credential back onto the original, so nothing of the token
+    survives for a terminal that strips the sequence to reassemble. A scrub that kept
+    the sequence's printable bytes would leave the split token unredacted; catching it
+    is the point.
     """
     redacted = _redact_memory_field(f"never commit {_split_credential(separator)}")
-    printable = [ch for ch in separator.decode("latin-1") if ch not in INVISIBLE_CHARACTERS]
 
-    for character in printable:
-        assert character in redacted
+    assert "[REDACTED" in redacted
+    assert CREDENTIAL not in normalize_for_scanning(redacted)
 
 
 def test_visible_text_between_an_introducer_and_a_terminator_is_kept() -> None:

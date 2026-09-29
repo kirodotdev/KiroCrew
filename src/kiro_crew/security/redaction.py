@@ -1440,6 +1440,19 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     return _splice(text, spans), warnings
 
 
+def credential_redaction_spans(text: str) -> list[_RedactionSpan]:
+    """Every ``(start, end, replacement)`` span :func:`redact_credentials` rewrites.
+
+    Positioned against ``text``, sorted and pairwise disjoint -- the plan the
+    splice would apply. This is the span form the control-split wrapper needs so it
+    can compute redactions on a normalised COPY and map the spans back onto the
+    original bytes rather than returning the normalised text (see
+    :func:`kiro_crew.security.redact_control_split`).
+    """
+    spans, _warnings, _rules = _credential_redaction_plan(text)
+    return spans
+
+
 #: Label forms of the key-value AWS branches: the key name, its separator and
 #: an optional opening quote. The redactor replaces the WHOLE match, label
 #: included, so a record keeps the label to let the reader see which field

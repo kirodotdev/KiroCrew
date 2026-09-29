@@ -54,6 +54,7 @@ from kiro_crew.memory_stores import (
     resolve_store_path,
 )
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
+from kiro_crew.terminal_safe import scan_normalised_with_map, strip_controls_with_map
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
 from . import (
@@ -409,6 +410,191 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
 def redact(text: str) -> str:
     """Apply all redaction passes (exfiltration URLs + credentials)."""
     return redact_with_findings(text)[0]
+
+
+def _map_spans_back(
+    spans: Sequence[tuple[int, int, str]], index_map: Sequence[int]
+) -> list[tuple[int, int, str]]:
+    """Map redaction spans computed on a normalised copy onto the ORIGINAL bytes.
+
+    ``index_map`` is from :func:`kiro_crew.terminal_safe.scan_normalised_with_map`:
+    position ``i`` of the normalised string came from ``index_map[i]`` of the
+    original, and ``index_map[len(normalised)] == len(original)`` is the sentinel.
+    A half-open span ``[ns, ne)`` on the normalised copy covers original bytes
+    ``[index_map[ns], index_map[ne - 1] + 1)`` -- from the first matched
+    character's original position to just past the LAST matched character's. That
+    interval includes every control/invisible byte dropped BETWEEN the matched
+    characters (the splice inside the token, which must go with the credential),
+    and excludes any dropped byte AFTER the last matched character.
+
+    The end must not be ``index_map[ne]``: that is the original position of the
+    NEXT KEPT character, so a sequence deleted between the credential's last byte
+    and that character -- an ANSI reset right after a secret in a log line -- would
+    fall inside the span and be rewritten as part of the credential tag, corrupting
+    bytes the match never covered. Mapping to ``index_map[ne - 1] + 1`` leaves those
+    trailing bytes exactly as stored.
+
+    An empty span (``ns == ne``, which the primitives never emit) maps to an empty
+    original span and is dropped.
+    """
+    mapped: list[tuple[int, int, str]] = []
+    for ns, ne, replacement in spans:
+        if ne <= ns:
+            continue
+        mapped.append((index_map[ns], index_map[ne - 1] + 1, replacement))
+    return mapped
+
+
+def _merge_spans(*span_lists: Sequence[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    """Union of redaction spans, sorted and made disjoint (earlier start wins).
+
+    The lists come from independent scans (original bytes, and the normalised copy
+    mapped back), so they can overlap. Overlaps are resolved by keeping the span
+    with the earlier start and clipping any later span to begin after it; a span
+    fully covered by an earlier one is dropped. Both inputs already carry a
+    redaction tag as their replacement, so a clipped survivor still replaces real
+    credential bytes -- never plaintext.
+    """
+    ordered = sorted(
+        (s for lst in span_lists for s in lst if s[1] > s[0]), key=lambda s: (s[0], s[1])
+    )
+    out: list[tuple[int, int, str]] = []
+    covered_to = -1
+    for start, end, replacement in ordered:
+        if start < covered_to:
+            start = covered_to
+        if end <= start:
+            continue
+        out.append((start, end, replacement))
+        covered_to = end
+    return out
+
+
+def _splice_original(text: str, spans: Sequence[tuple[int, int, str]]) -> str:
+    """Apply *spans* (sorted, disjoint) to *text* left to right."""
+    parts: list[str] = []
+    cursor = 0
+    for start, end, replacement in spans:
+        parts.append(text[cursor:start])
+        parts.append(replacement)
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def redact_control_split(text: str) -> str:
+    """Redact credentials and exfiltration URLs, INCLUDING control-split tokens.
+
+    The baseline redactors decide by matching a pattern against the text as given.
+    A control or invisible character spliced mid-token -- a CSI/OSC/two-byte-ESC
+    escape (7-bit or 8-bit C1), a C0/C1 control, DEL, or a zero-width/format
+    character -- splits the token so no pattern matches it, and the text is returned
+    with the credential intact for any consumer that drops those bytes to reassemble
+    it. ``AKIA\\x1b[0mIOSFODNN7EXAMPLE`` is the canonical case: a
+    terminal, or a reader stripping the CSI, sees the whole key.
+
+    This closes that bypass while preserving BYTE FIDELITY, which is why it is a
+    wrapper and not a change to the primitives' contract. Of the roughly 216 call
+    sites that hand these redactors a stored field, many want the original bytes
+    back unchanged (a file snapshot, an attachment); a redactor that RETURNED the
+    normalised text would silently rewrite those. So instead it:
+
+    1. Redacts the original directly (the baseline chain), catching every token that
+       matches as stored and keeping those bytes exactly.
+    2. Scans several NORMALISED COPIES: every combination of the two independent
+       widenings of a bare escape introducer -- whether a two-byte ESC is consumed
+       whole, and whether a parameterless 8-bit CSI is -- so a token carrying splits
+       that need different readings is reconstructed under one of them; a per-character
+       control strip that keeps a sequence's printable payload, which catches a token
+       split by a sequence whose payload the whole-sequence readings swallowed; and one
+       more that drops the invisible separators alongside the control bytes, which
+       catches a token split by BOTH at once. Redaction spans are computed on each.
+    3. Maps those spans back onto the ORIGINAL bytes through each copy's index map
+       and redacts the original in place, so a control-split token is removed along
+       with the control bytes that split it, and every other byte is untouched.
+
+    The two scans are complementary, exactly as the memory scrubber's two-pass
+    ``_redact_memory_field`` documents: normalising can also DESTROY a boundary a
+    pattern needs (a negative lookbehind satisfied by the invisible character
+    itself), so a token the stored text gives up can stop matching once its
+    neighbours join -- scanning the original first keeps that verdict.
+
+    Tab, newline and carriage return are content, not control, so a token split by
+    one of those three stays split -- the same policy the primitives, the terminal
+    renderers and the memory scrubber already share, reconciled through
+    :func:`kiro_crew.terminal_safe.scan_normalised_with_map` so the normalisations
+    do not stack.
+
+    Ordering matches :func:`redact_with_findings`: exfiltration URLs are scanned
+    before credentials so a credential placeholder is not spliced inside a URL the
+    URL matcher then fails to recognise.
+    """
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    # Pass 1: the original bytes. Byte-fidelity redaction of everything that
+    # matches as stored.
+    original_spans = _merge_spans(
+        _exfil.exfiltration_redaction_spans(text),
+        _redaction.credential_redaction_spans(text),
+    )
+
+    normalised_spans: list[tuple[int, int, str]] = []
+    saw_change = False
+    # Each reading is built lazily and processed to completion before the next, so at
+    # most ONE index map is alive at a time. Holding all six at once would pin roughly
+    # six index maps' worth of memory per call on an uncapped egress path, which one
+    # large stored field is enough to turn into a memory-exhaustion lever.
+
+    def _readings() -> Iterator[tuple[str, list[int]]]:
+        for two_byte_esc in (False, True):
+            for csi_no_params in (False, True):
+                # A bare escape introducer has two readings -- a lone control (the next
+                # byte survives) and a complete two-byte sequence (the pair is consumed)
+                # -- and a terminal may take either, so both are scanned and their
+                # redactions unioned. The minimal reading alone misses a token split by
+                # ``\x1bM``; the complete reading alone eats a following credential byte.
+                yield scan_normalised_with_map(
+                    text, two_byte_esc=two_byte_esc, csi_no_params=csi_no_params
+                )
+        # The PER-CHARACTER control strip: the four readings above consume a whole escape
+        # sequence (payload included), so a credential split by a sequence whose printable
+        # payload they swallowed rejoins only when the control bytes alone are dropped and
+        # the payload kept -- what a terminal's own per-byte strip performs, and what
+        # catches ``AKIA\x9d…\x07`` -> ``AKIA…``.
+        yield strip_controls_with_map(text)
+        # And once more dropping the invisible separators alongside the control bytes: a
+        # token split by BOTH a control byte (whose sequence the whole-sequence readings
+        # consume, payload included) AND a zero-width separator rejoins under no reading
+        # above. This per-character pass removes both, matching what a renderer
+        # reassembles, and closes that combined split.
+        yield strip_controls_with_map(text, drop_invisibles=True)
+
+    for normalised, index_map in _readings():
+        if normalised == text:
+            continue
+        saw_change = True
+        normalised_spans.extend(
+            _map_spans_back(
+                _merge_spans(
+                    _exfil.exfiltration_redaction_spans(normalised),
+                    _redaction.credential_redaction_spans(normalised),
+                ),
+                index_map,
+            )
+        )
+
+    if not saw_change:
+        # No control or invisible bytes under any reading: the copy is the original,
+        # so pass 1 is the whole answer and there is nothing new to map.
+        if not original_spans:
+            return text
+        return _splice_original(text, original_spans)
+
+    spans = _merge_spans(original_spans, normalised_spans)
+    if not spans:
+        return text
+    return _splice_original(text, spans)
 
 
 # ── Streaming redaction (pentest issue 3) ──

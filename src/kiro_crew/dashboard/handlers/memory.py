@@ -76,6 +76,7 @@ from ._shared import (
     _redact_memory_field,
     markdown_memory_for_store,
     read_bounded_json,
+    redact_memory_field_offloaded,
     require_owner_dashboard_request,
     resolve_lesson_memory_store,
     resolve_requested_memory_store,
@@ -138,9 +139,9 @@ class _MemoryDocumentRedacted(Exception):
     """The current whole-document source contains hidden sensitive content."""
 
 
-def _memory_document_response(content: str) -> web.Response:
+async def _memory_document_response(content: str) -> web.Response:
     """Return display-safe document text and whether the response was transformed."""
-    safe = _redact_memory_field(content)
+    safe = await redact_memory_field_offloaded(content)
     assert isinstance(safe, str)
     return web.json_response({"content": safe, "content_redacted": safe != content})
 
@@ -445,7 +446,7 @@ async def api_memory_preferences(request: web.Request) -> web.Response:
         content = await asyncio.to_thread(mem.read_preferences)
     except (UnknownMemoryStore, OSError) as exc:
         return _store_unavailable_response(store, exc)
-    return _memory_document_response(content)
+    return await _memory_document_response(content)
 
 
 async def api_memory_projects(request: web.Request) -> web.Response:
@@ -527,7 +528,7 @@ async def api_memory_projects(request: web.Request) -> web.Response:
         content = await asyncio.to_thread(mem.read_projects)
     except (UnknownMemoryStore, OSError) as exc:
         return _store_unavailable_response(store, exc)
-    return _memory_document_response(content)
+    return await _memory_document_response(content)
 
 
 async def api_memory_history(request: web.Request) -> web.Response:
@@ -590,7 +591,7 @@ async def api_memory_history(request: web.Request) -> web.Response:
         content = await asyncio.to_thread(mem.read_editable_history)
     except (UnknownMemoryStore, OSError, FileTooLargeError) as exc:
         return _store_unavailable_response(store, exc)
-    return _memory_document_response(content)
+    return await _memory_document_response(content)
 
 
 async def api_memory_settings(request: web.Request) -> web.Response:
@@ -773,15 +774,17 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
         offset = int(request.query.get("offset", "0"))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
-    entries = []
     # Offload: the fetch serializes on the store's _db_lock, and a
     # worker holding it (e.g. backfill's locked FAISS rebuild) would otherwise
     # block the gateway event loop here.
     search = {"q": query} if query.strip() else {}
     rows = await asyncio.to_thread(store.get_all_semantic, limit=limit, offset=offset, **search)
-    for e in rows:
-        d = {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))}
-        entries.append(_redact_memory_field(d))
+    filtered = [
+        {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))} for e in rows
+    ]
+    # Offload the scrub: it scans each field per character, so a large row set kept
+    # inline would hold the event loop past the loop-stall watchdog's budget.
+    entries = await redact_memory_field_offloaded(filtered)
     return web.json_response({"entries": entries})
 
 
@@ -936,9 +939,8 @@ async def api_memory_carve(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc), "code": "facets_unsupported"}, status=409)
     except memory_schema.UnknownFacet as exc:
         return web.json_response({"error": str(exc), "code": "unknown_facet"}, status=400)
-    return web.json_response(
-        {"store": silo, "entries": [_redact_memory_field(dict(row)) for row in rows]}
-    )
+    entries = await redact_memory_field_offloaded([dict(row) for row in rows])
+    return web.json_response({"store": silo, "entries": entries})
 
 
 async def api_memory_events(request: web.Request) -> web.Response:
@@ -955,7 +957,8 @@ async def api_memory_events(request: web.Request) -> web.Response:
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     # Offload: serializes on _db_lock — see api_memory_semantic.
     events = await asyncio.to_thread(store.get_events, limit=limit, offset=offset)
-    return web.json_response({"events": _redact_memory_field(events)})
+    redacted = await redact_memory_field_offloaded(events)
+    return web.json_response({"events": redacted})
 
 
 _embedding_setup_status: dict[str, object] = {"step": "idle", "error": ""}
@@ -1927,7 +1930,6 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
     # _try_embed runs blocking in-process model inference (and a ~1s model
     # load on first call); offload to keep the dashboard event loop responsive.
     emb = await asyncio.to_thread(store._try_embed, query) if store.embed_fn and query else None
-    results = []
     # Offload: search_episodic serializes on _db_lock — see
     # api_memory_semantic.
     hits = await asyncio.to_thread(
@@ -1937,9 +1939,10 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
         limit=limit,
         tag_filter=tag_filter,
     )
-    for e in hits:
-        d = {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))}
-        results.append(_redact_memory_field(d))
+    filtered = [
+        {k: v for k, v in dict(e).items() if not isinstance(v, (bytes, memoryview))} for e in hits
+    ]
+    results = await redact_memory_field_offloaded(filtered)
     return web.json_response({"results": results})
 
 
@@ -1972,7 +1975,7 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
     rows = await asyncio.to_thread(
         store.get_episodic_list, limit=limit, offset=offset, tag_filter=tag_filter, **search
     )
-    entries = [_redact_memory_field(dict(e)) for e in rows]
+    entries = await redact_memory_field_offloaded([dict(e) for e in rows])
     return web.json_response({"entries": entries})
 
 
@@ -2102,14 +2105,13 @@ async def api_memory_context_preview(request: web.Request) -> web.Response:
     query = request.query.get("q", "")[:500]
     if store.algorithm_version == "v2":
         preview = await run_in_embed_pool(store.get_context_preview, query_text=query)
-        return web.json_response(
-            _redact_memory_field(
-                {
-                    "semantic_context": preview["semantic_context"],
-                    "episodic_context": preview["episodic_context"],
-                }
-            )
+        redacted = await redact_memory_field_offloaded(
+            {
+                "semantic_context": preview["semantic_context"],
+                "episodic_context": preview["episodic_context"],
+            }
         )
+        return web.json_response(redacted)
     # Offload: the fetch serializes on _db_lock; see api_memory_semantic.
     # (No query_text is passed, so this is the recency path — no embed calls.)
     semantic_ctx = await asyncio.to_thread(store.get_semantic_context)
@@ -2578,9 +2580,11 @@ async def api_memory_graph(request: web.Request) -> web.Response:
             lambda: _build_memory_graph(mem, state.lessons.load_all())
         )
 
-        for n in nodes:
-            n["label"] = _redact_memory_field(n["label"])
-            n["title"] = _redact_memory_field(n["title"])
+        # Offload the per-node scrub in one pass: it scans each label/title per
+        # character, so a large graph kept inline would hold the event loop.
+        labels = await redact_memory_field_offloaded([[n["label"], n["title"]] for n in nodes])
+        for n, (label, title) in zip(nodes, labels):
+            n["label"], n["title"] = label, title
 
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="memory_graph", outcome="success"
