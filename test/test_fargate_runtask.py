@@ -302,6 +302,7 @@ CALLER_OWNED_ENV = {
     "SMC_ROUTE_PREFIX": "the path routes answer on; the caller reaching the task chose it",
     "SMC_BACKUP_BUCKET": "the spec says nothing about buckets, so a value cannot contradict it",
     "SMC_BACKUP_PREFIX": "as the bucket: outside anything the spec or the definition asserts",
+    "SMC_BACKUP_INTERVAL_SECS": "how often the task copies its own state; no assertion here names a cadence",
 }
 
 

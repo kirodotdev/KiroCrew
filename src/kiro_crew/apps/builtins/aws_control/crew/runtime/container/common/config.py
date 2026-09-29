@@ -100,6 +100,155 @@ def crew_agent_id(crew_name: str) -> str:
     return f"{CREW_AGENT_ID_PREFIX}{crew_name}"
 
 
+#: Ceiling on an object this task will read from the bucket into memory, or warn about
+#: sending to it.
+#:
+#: Pinned here because every process that moves an object reads it, and a second copy is
+#: the drift the shared key module exists to prevent in the other direction. The front
+#: holds a fetched transcript IN MEMORY for the length of a turn and the restore step holds
+#: an authority file long enough to validate and write it, so without a ceiling one object
+#: decides how much memory the task uses. The sidecar reads the same number to say so at
+#: upload time, when an operator can still act, rather than leaving a customer's turn to
+#: discover it.
+#:
+#: 64 MiB is far above any real transcript or slot index (both are JSON text) and far below
+#: the task's memory, so it separates "a big conversation" from "an object that should not
+#: be read at all" without needing to know which conversations exist.
+MAX_OBJECT_BYTES: int = 64 * 1024 * 1024
+
+#: How long one bucket request may take, and how many attempts it gets.
+#:
+#: Declared here because the supervisor's sidecar drain window is sized against them:
+#: the final cycle has to finish inside that window, so one hung connection must not be
+#: able to consume it. boto3's own defaults are minutes long with more retries, which is
+#: the right posture for a long-running client and the wrong one for a process that is
+#: being drained.
+#:
+#: The timeout is spent TWICE per attempt, because it bounds the connect and the read
+#: separately. The count is a count of ATTEMPTS including the first, which is what the
+#: client's ``total_max_attempts`` key means; its ``max_attempts`` key counts RETRIES and
+#: botocore adds one to it, so passing this constant there would buy an attempt the budget
+#: below does not reserve.
+#:
+#: One attempt, so that a whole PUT is one attempt and the final cycle's per-object budget
+#: below can bound it. Retrying inside the drain window cannot help. At four attempts one
+#: object's budget is 47s -- four connect-plus-read pairs at this timeout, plus standard-mode
+#: backoff of ``2 ** (attempts - 1) - 1`` between them -- which is most of
+#: ``SIDECAR_DRAIN_SECS`` on its own, and that window has to cover the un-budgeted pointer
+#: read and the authority reservation as well. So one transcript would spend the whole window
+#: and the authority objects could not publish at all. Written against the constant rather
+#: than against a figure, because a window that moves leaves a worked example describing a
+#: different one. The retry an interval cycle wants is the next interval cycle, which
+#: re-reads the same files and republishes whatever this one recorded as failed; the final
+#: cycle has no next cycle, and that is exactly the window that cannot afford one.
+BACKUP_REQUEST_TIMEOUT_SECS: int = 5
+BACKUP_MAX_ATTEMPTS: int = 1
+
+#: How long each child gets to drain at teardown, and the stop timeout their sum requires.
+#:
+#: Declared here rather than in the supervisor because the sum is ONE CONTRACT SPLIT ACROSS
+#: TWO SUBSYSTEMS. The supervisor spends these windows in order; the task definition the
+#: control plane registers must give the task at least their sum, or the platform SIGKILLs
+#: the supervisor mid-drain. Both read this module, so neither can move without the other.
+#:
+#: The front goes first, to stop new turns arriving. The backend gets the longest of the
+#: three because a ``kiro-cli`` worker setsid's into its own process group, so only the
+#: backend's own SIGTERM handler can reap it and a shorter window orphans workers that go
+#: on to finish their turn. The sidecar goes last, and its window is for ONE cycle that
+#: begins AFTER it is signalled -- the objects the backend's drain just produced, not a
+#: full pass, since everything earlier is already recorded uploaded.
+#:
+#: That window is sized against the transport rather than guessed, and against EVERY step
+#: the cycle spends rather than the uploads alone. The cycle makes TWO un-budgeted preflight
+#: ``GetObject`` reads before it accounts for anything -- the generation pointer, then the
+#: committed generation's transcript index -- and each carries no budget, bounded only by
+#: the client's connect and read timeouts, so each can legitimately spend
+#: ``BACKUP_ATTEMPT_COST_SECS`` and still succeed. Then the authority phase is reserved out
+#: of the window: one attempt per authority file (the pair), one for the transcript index,
+#: and one for the pointer -- FOUR writes -- and only what is left admits a data PUT, which
+#: the gate will not start without ``BACKUP_PER_OBJECT_BUDGET_SECS`` remaining. So the window
+#: must hold the two preflight reads, the four-write authority reservation, and one
+#: worst-case data PUT; sized to the uploads alone, an ordinary slow preflight read is
+#: subtracted from the data phase's admission and the drain cycle attempts NOTHING while
+#: most of the window goes unused. ``test_the_drain_window_covers_every_step_the_final_cycle_spends``
+#: pins the arithmetic, so a window or a cost that moves without the other reds.
+#:
+#: A cut final cycle still costs at most the turns since the last interval, and the objects
+#: it did upload stay durable, so the worst case is bounded and loud rather than total --
+#: but it is a worst case, not the planned window. Fargate caps ``stopTimeout`` at 120s,
+#: which the sum has to stay under.
+FRONT_DRAIN_SECS: float = 5.0
+BACKEND_DRAIN_SECS: float = 25.0
+SIDECAR_DRAIN_SECS: float = 75.0
+#: What one ATTEMPT can cost on the wire: a connect and a read, each bounded by the request
+#: timeout.
+#:
+#: Two timeouts, not one. ``connect_timeout`` and ``read_timeout`` are separate bounds on
+#: separate phases of the same attempt, so an attempt that hangs on the connect and then
+#: again on the read spends both. The authority files are sub-kilobyte JSON whose body is one
+#: read, so this is what a whole index PUT can cost and what its reservation uses. A DATA PUT
+#: can also spend a response wait after a long transmission, which
+#: ``BACKUP_PER_OBJECT_BUDGET_SECS`` adds below.
+BACKUP_ATTEMPT_COST_SECS: float = 2 * BACKUP_REQUEST_TIMEOUT_SECS
+#: What one object can cost the final cycle: every attempt it may make, plus the waits
+#: between them.
+#:
+#: DERIVED from the client's own configuration rather than written as a number, so the gate
+#: cannot promise a bound the transport does not honour. Standard-mode backoff is
+#: exponential from a one-second base, so the wait before attempt n is ``2 ** (n - 2)`` and
+#: the waits across ``attempts`` attempts total ``2 ** (attempts - 1) - 1``.
+#:
+#: ENFORCED, not merely budgeted. The socket timeouts above bound one connect and one read,
+#: which is not a bound on a request: a connection handing over small chunks inside the read
+#: timeout never trips it, so the time to send a large object is unbounded however tight
+#: those numbers are. The cycle therefore hands this number to the store as the window for
+#: the object, and the body stops the transmission when it passes -- so what the gate
+#: reserves and what a PUT may spend are the same number rather than two numbers that agree
+#: only when the network is fast.
+#:
+#: The final cycle uploads sequentially, so its total is this times the number of changed
+#: objects, which nothing bounds. The cycle therefore carries a DEADLINE and stops
+#: attempting objects it cannot finish inside the drain window, naming each one it did not
+#: reach. Between the two, an overrun is a short cycle that reports exactly what is missing
+#: and exits non-zero, rather than a SIGKILL in the middle of a PUT -- which loses the object
+#: being sent and says nothing about the rest.
+#:
+#: An INTERVAL cycle passes no window. It has none to protect and a next cycle to finish the
+#: object, so bounding a slow upload there abandons one that was on its way; an object too
+#: slow for this window is uploaded across intervals and only refused on the final cycle,
+#: where the alternative is losing it silently.
+#:
+#: The response wait is part of it, and is the one part a body-enforced deadline cannot reach.
+#: The transmission stops when the body refuses its next chunk, but once the body is DRAINED
+#: the transport is waiting for the response and nothing in the body is consulted again. That
+#: wait is bounded only by ``read_timeout``, so a PUT can finish transmitting exactly on its
+#: allowance and still spend one more timeout before the call returns. So the number reserved
+#: here is the whole request, and ``BACKUP_TRANSMISSION_BUDGET_SECS`` below is the smaller
+#: share the store hands the body -- reserving one number and spending it plus a timeout is
+#: how a gate that admitted an upload still meets the SIGKILL mid-request.
+BACKUP_PER_OBJECT_BUDGET_SECS: float = (
+    BACKUP_MAX_ATTEMPTS * BACKUP_ATTEMPT_COST_SECS
+    + (2 ** (BACKUP_MAX_ATTEMPTS - 1) - 1)
+    + BACKUP_REQUEST_TIMEOUT_SECS
+)
+#: What the BODY may spend, which is the reservation above less the response wait it cannot
+#: bound. Derived rather than written, so the two cannot drift into a gate that reserves one
+#: number while the store enforces another.
+BACKUP_TRANSMISSION_BUDGET_SECS: float = BACKUP_PER_OBJECT_BUDGET_SECS - BACKUP_REQUEST_TIMEOUT_SECS
+#: Slack between the last drain window and the platform's own stop timeout.
+#:
+#: Draining is not only the children's own time: each group is signalled, waited on, then
+#: swept and reaped, and the orphan sweep runs afterwards. Without this margin the task
+#: timeout equals the windows exactly, so the reap overhead alone puts the supervisor past
+#: it and the platform kills the process that was about to report cleanly.
+TEARDOWN_REAP_MARGIN_SECS: float = 10.0
+TASK_STOP_TIMEOUT_SECS: int = int(
+    FRONT_DRAIN_SECS + BACKEND_DRAIN_SECS + SIDECAR_DRAIN_SECS + TEARDOWN_REAP_MARGIN_SECS
+)
+#: The largest ``stopTimeout`` Fargate accepts on a container definition.
+MAX_TASK_STOP_TIMEOUT_SECS: int = 120
+
+
 class ConfigError(ValueError):
     """Raised when the environment is wrong in a way that must not be repaired.
 
@@ -119,17 +268,25 @@ class Settings:
     route_prefix: str
     control_secret: str | None
 
-    # Shared filesystem. All three processes see the same paths.
+    # Shared filesystem. Every process in the task sees the same paths.
     data_home: Path
     config_dir: Path
 
-    # Where the front reads a slot's transcript from on demand (Track B). These named the
-    # backup destination when the sidecar wrote here too; the backup subsystem was extracted
-    # from this PR, so today only the front's on-demand fetch reads this bucket, and it reads
-    # an empty one until the durability feature lands.
+    # Where the sidecar writes this task's state and where the front reads a slot's
+    # transcript from on demand. One bucket, one prefix, two directions: the key both
+    # sides derive lives in ``keys.py`` so they cannot disagree about it.
     crew_name: str
     backup_bucket: str | None
     backup_prefix: str
+
+    # Seconds between backup cycles. A task replacement loses at most the turns taken
+    # since the last completed cycle, so this is the width of that window, and the
+    # front's rule that a local transcript is never overwritten by a fetched one is
+    # written against it: the local copy leads the bucket by up to one interval.
+    #
+    # Carries a default for the same reason ``bundle_dir`` does: several tests build
+    # Settings by hand.
+    backup_interval_secs: int = 60
 
     # The crew bundle baked into the image (PACKAGING-CONTRACT.md, T3). The
     # supervisor installs it into the crew's read paths before the backend
@@ -276,6 +433,31 @@ def _int(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _interval(name: str, default: int) -> int:
+    """Read a cadence in seconds, refusing one that is not a cadence.
+
+    Zero or negative is not a faster cadence, it is a busy loop: the wait between cycles
+    returns immediately and the process uploads continuously. That is the only value the
+    container can say is wrong, so it is the only one refused.
+
+    There is deliberately no lower floor above it. A floor would be a claim about what a
+    cycle costs on a real data home, and nothing here has measured that; an operator who
+    sets two seconds on a crew with three small transcripts is not making a mistake this
+    module can see. Refused rather than clamped, for the reason ``parse_route_prefix``
+    refuses a bare word: a silently corrected value produces a deployment that behaves
+    differently from the one the operator described.
+    """
+    value = _int(name, default)
+    if value <= 0:
+        raise ConfigError(
+            f"{name} is {value}, which is not a cadence. The wait between cycles would "
+            "return immediately and the task would upload continuously instead of "
+            "serving turns. It is refused rather than raised to a default, because a "
+            "value this low says the operator meant something the container cannot do."
+        )
+    return value
 
 
 def _path(name: str, default: str) -> Path:
@@ -440,6 +622,7 @@ def load() -> Settings:
         crew_name=os.environ.get("SMC_CREW_NAME") or "",
         backup_bucket=os.environ.get("SMC_BACKUP_BUCKET") or None,
         backup_prefix=os.environ.get("SMC_BACKUP_PREFIX") or "",
+        backup_interval_secs=_interval("SMC_BACKUP_INTERVAL_SECS", 60),
         # The crew bundle in the image. Defaults to the real path; a test points
         # SMC_BUNDLE_DIR at a fixture. Never defaulted to a temp dir (see field).
         bundle_dir=_path("SMC_BUNDLE_DIR", "/app/crew-bundle"),
