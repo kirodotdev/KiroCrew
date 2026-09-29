@@ -2860,7 +2860,20 @@ def test_lease_scan_stops_on_its_deadline_and_answers_uncertain(native_tree, mon
         probed.append(path.name)
         return real_probe(path)
 
-    monkeypatch.setattr(projection.time, "monotonic", clock)
+    # The schedule is keyed on call count, so ONLY the module under test may read
+    # it: patching ``time.monotonic`` itself hands the same three slots to every
+    # other thread in the worker (the subprocess-pool reaper polls it every
+    # 0.5 s), and one consumed zero makes the first entry's check read the budget
+    # as already spent -- the scan then reports 0 entries where the test expects 1.
+    real_time = projection.time
+
+    class _ModuleClock:
+        monotonic = staticmethod(clock)
+
+        def __getattr__(self, name):
+            return getattr(real_time, name)
+
+    monkeypatch.setattr(projection, "time", _ModuleClock())
     monkeypatch.setattr(projection, "_probe_projection_lease", probe)
 
     with caplog.at_level("INFO", logger=projection.logger.name):
