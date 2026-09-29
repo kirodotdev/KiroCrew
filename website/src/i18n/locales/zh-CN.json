@@ -16331,7 +16331,6 @@
       "webview_docked_error": "无法渲染此队友的状态卡片。完整的仪表板可能仍可在下方打开。",
       "webview_docked_refresh_error": "无法刷新状态卡片。正在显示上次加载的版本。",
       "webview_retry": "重试",
-      "deploy_trigger": "云端",
       "deploy_title": "你的团队在云端",
       "deploy_loading": "正在读取你的部署…",
       "deploy_error": "读不到你的部署。",

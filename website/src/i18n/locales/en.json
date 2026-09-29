@@ -7499,7 +7499,6 @@
       "filter_source_builtin_description": "Crews that ship with {{productName}}",
       "filter_source_package_description": "Crews installed by capability packages",
       "member_count_filtered": "{{shown}} of {{count}} crewmates",
-      "deploy_trigger": "Cloud",
       "deploy_title": "Your crew in the cloud",
       "deploy_loading": "Reading your deployments…",
       "deploy_error": "Could not read your deployments.",

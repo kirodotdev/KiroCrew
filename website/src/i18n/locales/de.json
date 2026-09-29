@@ -16570,7 +16570,6 @@
       "webview_docked_error": "Die Statuskarte dieses Crew-Kameraden konnte nicht gerendert werden. Das vollständige Dashboard lässt sich unten möglicherweise trotzdem öffnen.",
       "webview_docked_refresh_error": "Die Statuskarte konnte nicht aktualisiert werden. Es wird die letzte geladene Version angezeigt.",
       "webview_retry": "Erneut versuchen",
-      "deploy_trigger": "Cloud",
       "deploy_title": "Deine Crew in der Cloud",
       "deploy_loading": "Deine Bereitstellungen werden gelesen…",
       "deploy_error": "Deine Bereitstellungen konnten nicht gelesen werden.",

@@ -16331,7 +16331,6 @@
       "webview_docked_error": "このクルーメイトのステータスカードを描画できませんでした。完全なダッシュボードは下からまだ開ける可能性があります。",
       "webview_docked_refresh_error": "ステータスカードを更新できませんでした。最後に読み込んだバージョンを表示しています。",
       "webview_retry": "再試行",
-      "deploy_trigger": "クラウド",
       "deploy_title": "クラウド上のクルー",
       "deploy_loading": "デプロイを読み込んでいます…",
       "deploy_error": "デプロイを読み込めませんでした。",

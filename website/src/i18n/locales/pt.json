@@ -16809,7 +16809,6 @@
       "webview_docked_error": "Não foi possível renderizar o cartão de status deste colega. O painel completo ainda pode abrir abaixo.",
       "webview_docked_refresh_error": "Não foi possível atualizar o cartão de status. Mostrando a última versão carregada.",
       "webview_retry": "Tentar novamente",
-      "deploy_trigger": "Nuvem",
       "deploy_title": "Sua equipe na nuvem",
       "deploy_loading": "Lendo suas implantações…",
       "deploy_error": "Não foi possível ler suas implantações.",

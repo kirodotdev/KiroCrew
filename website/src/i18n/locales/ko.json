@@ -16331,7 +16331,6 @@
       "webview_docked_error": "이 크루메이트의 상태 카드를 렌더링할 수 없습니다. 전체 대시보드는 아래에서 여전히 열 수 있습니다.",
       "webview_docked_refresh_error": "상태 카드를 새로 고칠 수 없습니다. 마지막으로 불러온 버전을 표시합니다.",
       "webview_retry": "다시 시도",
-      "deploy_trigger": "클라우드",
       "deploy_title": "클라우드의 내 크루",
       "deploy_loading": "배포를 읽는 중…",
       "deploy_error": "배포를 읽을 수 없습니다.",

@@ -46,11 +46,10 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Cloud, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
-import DeployMyCrewDialog from './DeployMyCrew'
 import NewCrewmateDialog, { type CreatedCrewmate } from './NewCrewmateDialog'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { useTranslation } from 'react-i18next'
@@ -825,9 +824,6 @@ export default function MembersPage() {
   // '' — no thread opened). The remembered-member fallback never sets it —
   // there the user named nobody. Cleared once a different member opens.
   const [gone, setGone] = useState<{ name: string; shown: string } | null>(null)
-  // Deploy my crew. Page-level because a launch is crew-wide, and the panel's
-  // own read is gated on this, so it stays false until someone asks for it.
-  const [deployOpen, setDeployOpen] = useState(false)
   // New crewmate dialog (header "+" and the empty-state hero open it).
   const [createOpen, setCreateOpen] = useState(false)
   // The crewmate just created here, until its chat has opened and its greeting has
@@ -2422,29 +2418,6 @@ export default function MembersPage() {
             <CrewMemberMark size={15} className="inline-block text-muted shrink-0" />
             <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
           </div>
-          {/* Crew-WIDE, so it sits in the page header rather than in a member's
-              own drawer: one launch ships the whole checkout to one machine and
-              names one stack, so there is no per-member deployment and a
-              per-row placement would draw the same one under every member.
-              Labelled, not icon-only: a bare cloud glyph names nothing a
-              first-time reader can guess, and this is the feature's only
-              entry. A plain `Cloud` glyph, not `CloudUpload`: the arrow-into-cloud
-              reads as "send something up", and a reader who takes the button for
-              an action never opens the read-only panel behind it. Bordered like
-              the secondary `Btn`, unlike its ghost `+`
-              sibling: an icon-plus-word with no edge reads as a status chip,
-              and a reader who takes it for a label never opens the panel.
-              The panel's actions lead into Settings > Remote Crew,
-              which owns the set-up flow. */}
-          <button
-            onClick={() => setDeployOpen(true)}
-            className="flex items-center gap-1 h-7 px-2 rounded-md transition-colors bg-transparent border border-border shrink-0 text-[12px] text-muted hover:text-text hover:border-border-strong hover:bg-bg-hover cursor-pointer"
-            title={t('pages.membersPage.deploy_title')}
-            data-testid="member-deploy-open"
-          >
-            <Cloud size={15} />
-            {t('pages.membersPage.deploy_trigger')}
-          </button>
           {/* Two things can be added here, so the "+" opens a menu: a crewmate
               or a team (the dialogs below). The trigger keeps the bare Plus
               and its label. */}
@@ -3843,9 +3816,6 @@ export default function MembersPage() {
             </AnimatePresence>
           )
         })()}
-      {/* Crew-wide and read-only. It owns its own Dialog, and its launch read is
-          gated on `open`, so a visit that never opens it costs no request. */}
-      <DeployMyCrewDialog open={deployOpen} onClose={() => setDeployOpen(false)} members={members} />
       {/* New team / Edit team. A saved team opens its team view; a deleted one
           that was open drops `?team=` and the bare URL falls to the page's
           default (the remembered or most recently used crewmate, or the hero

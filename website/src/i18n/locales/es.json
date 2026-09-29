@@ -16809,7 +16809,6 @@
       "webview_docked_error": "No se pudo renderizar la tarjeta de estado de este compañero. Es posible que el panel completo aún se abra abajo.",
       "webview_docked_refresh_error": "No se pudo actualizar la tarjeta de estado. Se muestra la última versión cargada.",
       "webview_retry": "Reintentar",
-      "deploy_trigger": "Nube",
       "deploy_title": "Tu equipo en la nube",
       "deploy_loading": "Leyendo tus despliegues…",
       "deploy_error": "No se pudieron leer tus despliegues.",

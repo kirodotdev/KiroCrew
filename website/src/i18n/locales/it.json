@@ -16809,7 +16809,6 @@
       "webview_docked_error": "Non è stato possibile rendere la scheda di stato di questo compagno. La dashboard completa potrebbe comunque aprirsi qui sotto.",
       "webview_docked_refresh_error": "Impossibile aggiornare la scheda di stato. Viene mostrata l'ultima versione caricata.",
       "webview_retry": "Riprova",
-      "deploy_trigger": "Cloud",
       "deploy_title": "La tua crew nel cloud",
       "deploy_loading": "Lettura delle tue distribuzioni…",
       "deploy_error": "Non è stato possibile leggere le tue distribuzioni.",
