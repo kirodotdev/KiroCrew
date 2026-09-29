@@ -366,6 +366,9 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "source_links": [{"url": "https://internal.example"}],
             "messages": 42,
             "unknown_future_field": "surprise",
+            # A citation is forwarded, but only its two keys: a peer cannot ride
+            # extra content in on the parent object either.
+            "parent": {"slot": "p0", "key": "p0", "title": "smuggled", "note": "x"},
         }
         mgr = _manager(body=json.dumps([row]).encode())
 
@@ -380,6 +383,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "last_turn_ts",
             "last_ts",
             "created",
+            "parent",
             # Not forwarded FROM the peer — stamped BY this hub after the
             # allowlist runs. A peer cannot influence it: the value is composed
             # from the instance id this route was called with plus the row's own
@@ -387,6 +391,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             # overwritten rather than honoured.
             "row_identity",
         }
+        assert data[0]["parent"] == {"slot": "p0", "key": "p0"}
 
     async def test_every_field_the_sidebar_reads_survives(self, monkeypatch):
         """The allowlist must not cost the feature its rows.
@@ -405,6 +410,8 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "last_turn_ts": "2026-01-01T00:00:00Z",
             "last_ts": "2026-01-01T00:00:01Z",
             "created": "2025-12-31T00:00:00Z",
+            "parent": {"slot": "p0", "key": "p0"},
+            "lineage_pending": True,
         }
         mgr = _manager(body=json.dumps([row]).encode())
 
@@ -414,6 +421,90 @@ class TestPeerTextIsRedactedAndAllowlisted:
         # `row_identity` is added by this route rather than forwarded, so it is
         # named explicitly instead of loosening the comparison to a subset check.
         assert data == [{**row, "row_identity": "nobita:p1"}]
+
+    async def test_a_peer_rows_creator_citation_reaches_the_lane(self, monkeypatch):
+        """The conductor lane nests a peer row on ``parent.key`` -- the same field a
+        local row carries. With the citation stripped at this hop, every session a
+        peer's conductor opened rendered at the top level of this dashboard as a
+        stray, while the peer's own sidebar nested them.
+
+        The key is forwarded as the peer spelled it: the lane resolves a citation
+        within the row's own origin, so rewriting it to ``<instance>:<key>`` here
+        would make it resolve nothing.
+        """
+        _enable_instances(monkeypatch)
+        rows = [
+            {"key": "lead", "title": "Lead"},
+            {"key": "w1", "title": "Worker", "parent": {"slot": "lead", "key": "lead"}},
+        ]
+        mgr = _manager(body=json.dumps(rows).encode())
+
+        data = await _body(await hi.api_instances_chat_slots(_request(_state(mgr))))
+
+        by_key = {r["key"]: r for r in data}
+        assert by_key["w1"]["parent"] == {"slot": "lead", "key": "lead"}
+        # No citation stays ABSENT, as on a local row with ``parent: None`` -- not
+        # an empty object the lane would have to special-case.
+        assert "parent" not in by_key["lead"]
+        assert "lineage_pending" not in by_key["lead"]
+
+    async def test_a_citation_without_a_string_key_is_no_citation(self, monkeypatch):
+        """``parent.key`` is dereferenced by the lane on every frame, so a peer
+        answering ``"parent": "lead"`` or ``{"key": {}}`` must not reach it. Such a
+        row is forwarded WITHOUT a parent, not dropped: the session is real, only
+        its citation is unusable."""
+        _enable_instances(monkeypatch)
+        rows = [
+            {"key": "a", "parent": "lead"},
+            {"key": "b", "parent": {"key": {"nested": 1}}},
+            {"key": "c", "parent": {"slot": "lead"}},
+            {"key": "d", "parent": None},
+            {"key": "e", "parent": ["lead"]},
+        ]
+        mgr = _manager(body=json.dumps(rows).encode())
+
+        data = await _body(await hi.api_instances_chat_slots(_request(_state(mgr))))
+
+        assert [r["key"] for r in data] == ["a", "b", "c", "d", "e"]
+        assert all("parent" not in r for r in data)
+
+    async def test_lineage_pending_is_forwarded_only_when_literally_true(self, monkeypatch):
+        """The lane tests PRESENCE to skip a provisional frame when it records what
+        the user has opened. ``"yes"`` or ``1`` must not read as a settled flag, and
+        ``False`` must not appear at all -- the local payload omits it too."""
+        _enable_instances(monkeypatch)
+        rows = [
+            {"key": "a", "lineage_pending": True},
+            {"key": "b", "lineage_pending": "yes"},
+            {"key": "c", "lineage_pending": 1},
+            {"key": "d", "lineage_pending": False},
+        ]
+        mgr = _manager(body=json.dumps(rows).encode())
+
+        data = await _body(await hi.api_instances_chat_slots(_request(_state(mgr))))
+
+        by_key = {r["key"]: r for r in data}
+        assert by_key["a"]["lineage_pending"] is True
+        for k in ("b", "c", "d"):
+            assert "lineage_pending" not in by_key[k]
+
+    async def test_a_citation_key_is_redacted_and_clamped_like_a_key(self, monkeypatch):
+        """``parent.key`` goes through the same sink as ``key``: a credential-shaped
+        citation never reaches the browser, and an oversized one is clamped."""
+        _enable_instances(monkeypatch)
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        rows = [
+            {"key": "a", "parent": {"key": f"lead {secret}"}},
+            {"key": "b", "parent": {"key": "x" * (hi._PEER_FIELD_MAX_CHARS * 3)}},
+        ]
+        mgr = _manager(body=json.dumps(rows).encode())
+
+        data = await _body(await hi.api_instances_chat_slots(_request(_state(mgr))))
+
+        by_key = {r["key"]: r for r in data}
+        assert secret not in json.dumps(data)
+        assert by_key["a"]["parent"]["key"].startswith("lead ")
+        assert len(by_key["b"]["parent"]["key"]) == hi._PEER_FIELD_MAX_CHARS
 
     async def test_an_absent_title_stays_absent_rather_than_becoming_blank(self, monkeypatch):
         """``""`` and "no title" are different rows.

@@ -1908,6 +1908,37 @@ _PEER_SLOT_STR_FIELDS: dict[str, int] = {
 #: for any reader, not only the one frontend that happens to re-check.
 _PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval")
 
+#: The two keys of a peer row's ``parent`` citation (``{slot, key}``, the shape
+#: ``lineage_parents`` puts on every local row), each clamped like ``key``. The
+#: conductor lane nests a peer row under the peer row whose ``key`` matches
+#: ``parent.key`` WITHIN THE SAME ORIGIN, so the citation stays a bare key in the
+#: peer's own key space and the hub never rewrites it. Dropped from the wire, every
+#: session a peer's conductor opened rendered at the top level of this dashboard as
+#: a stray -- the tree existed on the peer and was stripped one hop from the reader.
+_PEER_SLOT_PARENT_FIELDS: dict[str, int] = {
+    "slot": _PEER_FIELD_MAX_CHARS,
+    "key": _PEER_FIELD_MAX_CHARS,
+}
+
+
+def _clean_peer_parent(value: object) -> dict[str, str] | None:
+    """Shape a peer row's ``parent`` citation, or ``None`` when it carries none.
+
+    A citation is a dict with at least a string ``key``: that is the one field the
+    lane resolves, so a dict without it nests nothing and is treated as no
+    citation at all rather than forwarded as an empty object. ``slot`` rides along
+    when present because the local payload carries both spellings. Anything else
+    -- ``None``, a string, a list -- is not a citation.
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, str] = {}
+    for field, limit in _PEER_SLOT_PARENT_FIELDS.items():
+        shaped = _cap_str(value.get(field), limit)
+        if shaped:
+            out[field] = shaped
+    return out if "key" in out else None
+
 
 def _clean_peer_slot(row: object) -> dict[str, object] | None:
     """Re-shape one untrusted peer slot: allowlist keys, redact, clamp, coerce.
@@ -1940,6 +1971,17 @@ def _clean_peer_slot(row: object) -> dict[str, object] | None:
             out[field] = value
     for field in _PEER_SLOT_BOOL_FIELDS:
         out[field] = row.get(field) is True
+    # Both OMITTED when absent, the distinction the local payload keeps: a row with
+    # no citation carries no ``parent`` (the lane reads absence and ``None`` alike),
+    # and ``lineage_pending`` appears only on the frame whose citations are still
+    # provisional -- the lane skips such a frame when it records what the user has
+    # opened, and a ``False`` here would look like a settled frame to a reader that
+    # tests presence.
+    parent = _clean_peer_parent(row.get("parent"))
+    if parent is not None:
+        out["parent"] = parent
+    if row.get("lineage_pending") is True:
+        out["lineage_pending"] = True
     return out
 
 

@@ -723,6 +723,40 @@ describe('chat sidebar — conductor lane', () => {
     expect(laneRows(lane).length).toBe(3)
   })
 
+  it('nests a peer worker under the peer conductor that opened it, shut by default', () => {
+    // The hub forwards `parent` on a peer row (useInstanceSessions). The lane then
+    // resolves it within the row's own origin: `peer-1:k-lead` owns `peer-1:k-w1` and
+    // `peer-1:k-w2`, and a LOCAL `k-lead` does not gain them. Before the citation
+    // crossed the wire every remote worker rendered here as a top-level stray.
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    localStorage.removeItem('mc-sidebar-conductor-expanded')
+    const peer = (key: string, title: string, modified: number, parent?: string) => ({
+      key, title, messages: 0, running: false, modified,
+      peer_id: 'peer-1', row_identity: `peer-1:${key}`,
+      ...(parent ? { parent: { slot: parent, key: parent } } : {}),
+    })
+    const { getByTestId } = renderSidebar([
+      { key: 'k-lead', title: 'Local lead', messages: 1, running: false, modified: 5000 },
+      peer('k-lead', 'Peer lead', 4000),
+      peer('k-w1', 'Peer worker 1', 3000, 'k-lead'),
+      peer('k-w2', 'Peer worker 2', 2000, 'k-lead'),
+    ])
+    // The lane element is re-queried after the click: the lane remounts on a toggle.
+    const lane = () => getByTestId('conductor-view-lane')
+    // Collapsed by default: two roots, no children rendered, and no stray glyph.
+    expect(laneRows(lane())).toEqual(['k-lead', 'k-lead'])
+    expect(within(lane()).getByTestId('conductor-child-count-peer-1:k-lead').textContent).toBe('2')
+    expect(within(lane()).queryByTestId('conductor-child-count-k-lead')).toBeNull()
+    expect(within(lane()).queryByTestId('conductor-orphan-peer-1:k-w1')).toBeNull()
+    expect(within(lane()).queryByTestId('conductor-orphan-peer-1:k-w2')).toBeNull()
+
+    fireEvent.click(within(lane()).getByTestId('conductor-chevron-peer-1:k-lead'))
+    expect(laneRows(lane())).toEqual(['k-lead', 'k-lead', 'k-w1', 'k-w2'])
+    expect(within(lane()).queryByTestId('conductor-orphan-peer-1:k-w1')).toBeNull()
+    const w1 = lane().querySelector('[data-layout-id="slot-conductor-k-w1"]') ?? Array.from(lane().querySelectorAll('[data-slot-key="k-w1"]'))[0]
+    expect(w1?.getAttribute('data-conductor-depth')).toBe('1')
+  })
+
   it('caps the indent past six levels and names the level in the tooltip', () => {
     // Depth has no ceiling and each level costs 14px, so a deep chain would walk the
     // card off a 320px sidebar. Past the cap the rows stop stepping and the level is

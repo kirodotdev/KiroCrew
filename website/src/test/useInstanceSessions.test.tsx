@@ -128,6 +128,48 @@ describe('useInstanceSessions', () => {
     // asserted through the function the list actually ranks on.
     expect(lastActivityEpoch(row)).toBe(Date.parse('2026-08-31T14:35:00Z') / 1000)
     expect(result.current.failed).toEqual([])
+    // No citation on the wire stays ABSENT, not `parent: undefined` or `null`, so
+    // the row reads the way a citation-less local slot does to a presence test.
+    expect(row).not.toHaveProperty('parent')
+    expect(row).not.toHaveProperty('lineage_pending')
+  })
+
+  it('forwards the creator citation so the conductor lane can nest a peer row', async () => {
+    // The lane resolves `parent.key` against rows of the same `peer_id`. Without
+    // this field every session a peer's conductor opened rendered top-level here
+    // as a stray while the peer's own sidebar nested it.
+    instanceChatSlotsMock.mockResolvedValue([
+      { key: 'lead', title: 'Lead' },
+      { key: 'w1', title: 'Worker', parent: { slot: 'lead', key: 'lead' } },
+      { key: 'w2', title: 'Provisional', parent: { key: 'lead' }, lineage_pending: true },
+    ])
+    const { result } = renderInstanceSessions(true, [CONNECTED])
+
+    await waitFor(() => expect(result.current.rows).toHaveLength(3))
+    const byKey = new Map(result.current.rows.map(r => [r.key, r]))
+    // Only `key` is kept: it is the one field the lane resolves.
+    expect(byKey.get('w1')?.parent).toEqual({ key: 'lead' })
+    expect(byKey.get('w1')).not.toHaveProperty('lineage_pending')
+    expect(byKey.get('w2')?.parent).toEqual({ key: 'lead' })
+    expect(byKey.get('w2')?.lineage_pending).toBe(true)
+    expect(byKey.get('lead')).not.toHaveProperty('parent')
+  })
+
+  it('drops a citation whose key is not a string instead of letting the lane dereference it', async () => {
+    instanceChatSlotsMock.mockResolvedValue([
+      { key: 'a', parent: 'lead' },
+      { key: 'b', parent: { key: { nested: 1 } } },
+      { key: 'c', parent: { slot: 'lead' } },
+      { key: 'd', parent: null },
+      { key: 'e', lineage_pending: 'yes' },
+    ])
+    const { result } = renderInstanceSessions(true, [CONNECTED])
+
+    await waitFor(() => expect(result.current.rows).toHaveLength(5))
+    for (const r of result.current.rows) {
+      expect(r).not.toHaveProperty('parent')
+      expect(r).not.toHaveProperty('lineage_pending')
+    }
   })
 
   it('preserves row identity across unrelated rerenders after query data settles', async () => {

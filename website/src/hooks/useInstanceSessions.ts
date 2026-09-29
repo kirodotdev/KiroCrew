@@ -94,6 +94,14 @@ interface PeerSlot {
    *  `<instance_id>:<key>` for every shaped row so the browser never composes
    *  that format itself. Optional only because the field is read defensively. */
   row_identity?: string
+  /** The session that OPENED this one, as a bare key in the PEER's key space.
+   *  Absent when the peer recorded no creator. The conductor lane resolves it
+   *  against rows of the same `peer_id` only, so it never nests under a local
+   *  session whose key merely matches. */
+  parent?: { slot?: string; key?: string }
+  /** Present and true while the peer's lineage projection is still seeding, so
+   *  this frame's `parent` is provisional. Absent on a settled frame. */
+  lineage_pending?: boolean
 }
 
 /** A peer slot flattened into the shape the Sessions list already renders.
@@ -134,6 +142,12 @@ export interface InstanceSessionRow {
    *  place — `api_instances_chat_slots` — so this format is not a contract the
    *  browser also has to know. */
   row_identity?: string
+  /** The creator citation, forwarded in the shape a local `Slot` carries so the
+   *  conductor lane reads a peer row exactly as it reads a local one. Only a
+   *  string `key` is kept: it is the one field the lane resolves, and it is
+   *  resolved within this row's `peer_id`, never across origins. */
+  parent?: { key: string }
+  lineage_pending?: boolean
 }
 
 export interface InstanceSessions {
@@ -240,7 +254,12 @@ export function useInstanceSessions(
       if (!Array.isArray(r.data)) return
       for (const s of r.data) {
         if (!s || typeof s.key !== 'string') continue
+        // Same runtime guard as `str`, one level down: `parent` crossed a machine
+        // boundary too, and the lane dereferences `parent.key` on every frame.
+        const parentKey = s.parent && typeof s.parent === 'object' ? str(s.parent.key) : undefined
         rows.push({
+          ...(parentKey ? { parent: { key: parentKey } } : {}),
+          ...(s.lineage_pending === true ? { lineage_pending: true } : {}),
           key: s.key,
           title: str(s.title),
           last_turn_ts: str(s.last_turn_ts),
