@@ -5386,12 +5386,32 @@ class TestCliVerbs:
         assert '"port": 7811' in out and '"health": 403' in out
 
     def test_status(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
         monkeypatch.setattr(rt, "derive_port", lambda c, n: 7811)
         monkeypatch.setattr(rt, "is_active", lambda c, n: True)
         monkeypatch.setattr(rt, "health", lambda cfg, name, p: 403)
         pod_cli._status(cfg, argparse.Namespace(name="alpha", json=True))
         out = capsys.readouterr().out
         assert '"status": "up"' in out and '"health": 403' in out
+
+    def test_status_on_linux_refuses_when_the_backend_is_absent(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """With no user manager, `is-active` fails and would read as "down"; the
+        verb must refuse through the backend gate instead of reporting a state."""
+
+        def _absent() -> None:
+            raise rt.PodBackendAbsent("no systemd user session on this host")
+
+        monkeypatch.setattr(rt, "IS_LINUX", True)
+        monkeypatch.setattr(rt, "require_backend", _absent)
+        monkeypatch.setattr(rt, "derive_port", lambda c, n: 7811)
+        monkeypatch.setattr(rt, "is_active", lambda c, n: False)
+        monkeypatch.setattr(rt, "health", lambda cfg, name, p: 0)
+
+        with pytest.raises(rt.PodError, match="no systemd user session"):
+            pod_cli._status(cfg, argparse.Namespace(name="alpha", json=True))
+        assert "down" not in capsys.readouterr().out
 
     def test_url(self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         monkeypatch.setattr(rt, "derive_port", lambda c, n: 7811)

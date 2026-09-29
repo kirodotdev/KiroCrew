@@ -1355,6 +1355,10 @@ def _prune_one_decide(cfg: PodConfig, name: str) -> tuple[str, str, str, str]:
 
 def _status(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
+    # A bare `systemctl is-active` answers "down" on a host with no user
+    # manager, so gate first and let the dispatch layer print the refusal.
+    if rt.IS_LINUX:
+        rt.require_backend()
     port = rt.derive_port(cfg, name)
     up = rt.is_active(cfg, name)
     code = rt.health(cfg, name, port) if up else 0
