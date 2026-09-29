@@ -2521,7 +2521,8 @@ def _apply_tracked_gap_list(items, listname: str, platform_label: str) -> None:
 
     ONE mechanism serves all three gap lists. macOS and the self-hosted Linux runner
     reuse it rather than growing a second matcher, so the node-id spelling rule
-    (``_base_nodeid``: no ``[params]``, no ``@group``) and the burn-down semantics --
+    (never ``@group``; ``[params]`` optional, and selective when present -- see the
+    parametrization paragraph below) and the burn-down semantics --
     anything NOT listed still fails the job -- are identical for every list by
     construction.
 

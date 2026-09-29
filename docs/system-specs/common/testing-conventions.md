@@ -1166,18 +1166,26 @@ measures, never above.
   ratchets the rest: a returning `--deselect` fails it unless the coverage omit comes
   with it, because a file CI cannot run must not be charged to the denominator either.
 
-  Entries in `windows-expected-failures.txt` are **plain node ids** — file, class,
-  function, no `[params]` and no `@group` suffix. The rootdir `conftest.py` matcher
-  reduces both the list and each collected item to that base form before comparing
-  (`_base_nodeid`), which is load-bearing: under the default `--dist loadgroup`, xdist
-  rewrites a grouped test's nodeid to `<nodeid>@<group>`, so a matcher that only split
-  on `[` matched a *different* string for grouped vs ungrouped tests and for `-n0` vs
-  `loadgroup` runs. Never add the `@group` suffix to an entry — it makes the line match
-  in one invocation and silently miss in another.
+  Entries in `windows-expected-failures.txt` are node ids **without the `@group`
+  suffix**. `[params]` is optional and the matcher treats the two spellings
+  differently: a line with no `[` is compared param-stripped (`_base_nodeid`) and so
+  covers **every** parametrization, while a line **with** `[` is compared with its
+  params intact (`_ungrouped_nodeid`) and covers **only that one**. Naming a single
+  parametrization is what makes a strict xfail expressible for a test whose params do
+  not all fail: `test_seed.py::test_seed_audit_uses_rail_tag_not_raw_path` has two
+  that fail on Windows and one that passes, so a single base entry would either
+  un-track the two or red the job forever on the one via XPASS.
+
+  Stripping `@group` on both sides is load-bearing and unconditional: under the
+  default `--dist loadgroup`, xdist rewrites a grouped test's nodeid to
+  `<nodeid>@<group>`, so a matcher that only split on `[` matched a *different* string
+  for grouped vs ungrouped tests and for `-n0` vs `loadgroup` runs. Never add the
+  `@group` suffix to an entry — it makes the line match in one invocation and silently
+  miss in another.
 
   **macOS uses the same list mechanism, not a second one.**
   `test/macos-expected-failures.txt` is applied by the same rootdir
-  `_apply_tracked_gap_list` matcher, with the same plain-node-id spelling and the same
+  `_apply_tracked_gap_list` matcher, with the same node-id spelling and the same
   burn-down semantics: anything not on the list still fails the macOS shards — which
   since the lane moved to `platform-tests.yml` means it fails the NIGHTLY and holds the
   nightly publish, not a pull request, so a widened list is worth the same scrutiny with
