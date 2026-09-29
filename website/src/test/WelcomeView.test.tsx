@@ -164,5 +164,21 @@ describe('WelcomeView', () => {
       expect(normalizeSuggestion({ text: 'zzq none' }).kind).toBe('general')
       expect(normalizeSuggestion({ text: 'zzq proto', kind: 'toString' }).kind).toBe('general')
     })
+
+    it('drops a nested {text} object and other non-strings to empty (React #31 guard)', () => {
+      // The server payload is LLM-generated; a nested object here rendered raw
+      // as a React child threw minified error #31 with keys {text, kind}.
+      // Strict-drop: any non-string text becomes '' so the caller filters it out
+      // rather than reshaping malformed model output into a card.
+      expect(normalizeSuggestion({ text: { text: 'zzq nested', kind: 'ops' } as unknown as string, kind: 'ops' }).text)
+        .toBe('')
+      expect(normalizeSuggestion({ text: 42 as unknown as string, kind: 'ops' }).text).toBe('')
+      expect(normalizeSuggestion({ text: null as unknown as string }).text).toBe('')
+    })
+
+    it('coerces a null or non-object item to an empty suggestion instead of throwing', () => {
+      expect(normalizeSuggestion(null as unknown as string)).toEqual({ text: '', kind: 'general' })
+      expect(normalizeSuggestion(7 as unknown as string)).toEqual({ text: '', kind: 'general' })
+    })
   })
 })

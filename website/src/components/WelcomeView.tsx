@@ -31,11 +31,25 @@ export const SUGGESTION_KIND_STYLE: Record<SuggestionKind, { Icon: LucideIcon; t
 
 export interface Suggestion { text: string; kind: SuggestionKind }
 
-/** Accept a legacy bare string or `{ text, kind }`; an unknown or missing kind becomes `general`. */
+/** Coerce an untrusted suggestion `text` to a string. The server payload is
+ *  LLM-generated, so `text` can arrive as a nested `{ text, kind }` object (or
+ *  any non-string); rendering that raw object as a React child throws the
+ *  minified React #31 that crashed `/chat`. Strict-drop: only a real string is
+ *  kept — any non-string `text` becomes '', which the caller's filter drops in
+ *  favor of the curated fallback. We do not try to reshape malformed model
+ *  output into a card, so half-parsed nested objects can never surface as text. */
+function coerceSuggestionText(text: unknown): string {
+  return typeof text === 'string' ? text : ''
+}
+
+/** Accept a legacy bare string or `{ text, kind }`; an unknown or missing kind becomes `general`.
+ *  The item itself is as untrusted as its `text`: a `null` or other non-object
+ *  element coerces to an empty suggestion, which the caller's filter drops. */
 export function normalizeSuggestion(item: SuggestionItem): Suggestion {
   if (typeof item === 'string') return { text: item, kind: 'general' }
+  if (!item || typeof item !== 'object') return { text: '', kind: 'general' }
   const kind = item.kind && Object.hasOwn(SUGGESTION_KIND_STYLE, item.kind) ? item.kind as SuggestionKind : 'general'
-  return { text: item.text, kind }
+  return { text: coerceSuggestionText(item.text), kind }
 }
 
 /** Greeting catalog keys the non-orchestrator heading picks from; the last one follows the local hour. */
@@ -81,7 +95,10 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
     { text: i18nT('components.welcomeView.suggestion_write_design_doc'), kind: 'write' },
     { text: i18nT('components.welcomeView.suggestion_review_cr'), kind: 'review' },
   ]
-  const cards = data?.suggestions?.length ? data.suggestions.map(normalizeSuggestion) : fallbackSuggestions
+  // Filter first, then fall back: a payload whose every item is malformed would
+  // otherwise leave the grid blank while a curated set exists for exactly that.
+  const served = (data?.suggestions ?? []).map(normalizeSuggestion).filter(s => s.text !== '')
+  const cards = served.length ? served : fallbackSuggestions
 
   const handleRefresh = async () => {
     setRefreshing(true)
