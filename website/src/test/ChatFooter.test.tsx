@@ -112,17 +112,18 @@ describe('ChatFooter', () => {
     expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
   })
 
-  // A throwing theme loader collapses to the visible label, so the running
-  // state is never an empty footer. The fallback copy is aria-hidden because the
-  // hidden label already names the status.
+  // A throwing theme loader renders nothing, and the emptied art wrapper unhides
+  // the label via peer-empty (jsdom has no Tailwind, so assert the wiring).
   it('shows visible text when the theme artwork fails closed', () => {
     const Boom = () => { throw new Error('theme loader exploded') }
     registerThemeBranding({ 'seam-13779-boom': { loader: Boom } })
     document.documentElement.setAttribute('data-theme', 'seam-13779-boom-dark')
     render(<ChatFooter {...base} running={true} lastRole="user" />)
-    const shown = screen.getAllByText('Thinking…').filter(el => !el.classList.contains('sr-only'))
-    expect(shown).toHaveLength(1)
-    expect(shown[0]).toHaveAttribute('aria-hidden', 'true')
+    const label = screen.getByText('Thinking…')
+    expect(label).toHaveClass('peer-empty:not-sr-only')
+    const art = label.previousElementSibling
+    expect(art).toHaveClass('peer')
+    expect(art).toBeEmptyDOMElement()
     expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
   })
 

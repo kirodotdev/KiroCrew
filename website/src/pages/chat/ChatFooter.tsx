@@ -324,9 +324,9 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
             aria-label={i18nT('pages.chat.chatFooter.thinking')}
           >
             {/* A throwing theme loader must not reach the route-level boundary and
-                blank the chat; its fallback is the visible label instead. */}
-            {!artFailed && <span className="contents" onErrorCapture={() => setArtFailed(true)}>
-            <ErrorBoundary fallback={<span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>}>
+                blank the chat; it renders nothing, and the empty wrapper unhides the label. */}
+            {!artFailed && <span className="contents peer" onErrorCapture={() => setArtFailed(true)}>
+            <ErrorBoundary fallback={null}>
               {loader.kind === 'custom'
                 // The theme replaced the whole loader — it owns its size and motion.
                 ? <loader.Component />
@@ -347,7 +347,7 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
                   : <SwapCarousel icons={loader.icons} />}
             </ErrorBoundary>
             </span>}
-            <span className={artFailed ? 'text-muted text-[13px] font-mono' : 'sr-only'}>{i18nT('pages.chat.chatFooter.thinking')}</span>
+            <span className={`text-muted text-[13px] font-mono${artFailed ? '' : ' sr-only peer-empty:not-sr-only'}`}>{i18nT('pages.chat.chatFooter.thinking')}</span>
           </div>
         )}
       </div>
