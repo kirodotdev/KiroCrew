@@ -9252,7 +9252,6 @@
         "wxid": "wxid_…"
       },
       "remoteCrewPanel": {
-        "added_by_you": "Added by you",
         "approve_your_code": "Approve your sign-in code",
         "approve_your_code_for": "Approve the sign-in code for {{name}}",
         "approve_your_code_sso": "Approve with your company SSO account",
@@ -9368,7 +9367,6 @@
         "saving": "Saving…",
         "service_missing": "Not available with this profile yet — the launch needs permission for this service.",
         "service_ok": "Reachable with this profile.",
-        "set_up_a_new_one": "Set up a new one",
         "setting_up": "Setting up",
         "sign_in_hint": "Approve a code in your browser to finish setup.",
         "sign_in_hint_sso": "Approve the code with your company account. That approval IS the Kiro sign-in — there is not a second one to do.",
@@ -9379,9 +9377,6 @@
         "sign_in_starting_short": "Starting…",
         "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew.",
         "size": "Size",
-        "source_ec2": "EC2",
-        "source_ec2_hint": "Launched by the EC2 launcher. Remove only takes it off this list; the EC2 instance keeps running and billing until you delete it in AWS.",
-        "stamped_ec2_note": "Launched by the EC2 launcher. Its instance may still be running and billing; Remove only takes it off this list. To stop the billing, delete it in the AWS console.",
         "start": "Start",
         "start_crew": "Start {{name}}",
         "start_over_new_code": "Start over with a new code",
@@ -9410,16 +9405,11 @@
         "ttl_must_be_hours_or_minutes": "Enter a lifetime like 20h or 30m.",
         "turn_api": "Chat API",
         "turn_url_note": "Point your chat client or script at this URL while connected. There is no dashboard to open.",
-        "type_fargate": "Fargate",
-        "type_ssh": "SSH",
-        "type_ssm": "SSM",
-        "unverified_cloud_note": "{{productName}} cannot verify whether this machine has AWS resources",
+        "unverified_cloud_note": "{{productName}} cannot verify whether this machine has AWS resources. Remove only takes it off this list; anything running in AWS keeps running and billing.",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "Apply my edits to the crew as it is now",
         "your_code": "Your code: {{code}}",
-        "your_crews": "Your crews",
-        "reported_host": "{{host}} (reported)",
-        "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it."
+        "stamped_ec2_note": "Launched by the EC2 launcher. Its instance may still be running and billing; Remove only takes it off this list. To stop the billing, delete it in the AWS console."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",

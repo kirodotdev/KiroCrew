@@ -412,7 +412,11 @@ describe('the panel', () => {
     expect(screen.getByTestId('deploy-action-hint').textContent).toContain('Nothing is created')
 
     fireEvent.click(screen.getByTestId('deploy-action-deploy'))
-    expect(navigateSpy).toHaveBeenCalledWith('/settings/instances')
+    // `?deploy=1`, not the bare panel: the button used to land the reader on a two-tab
+    // panel with nothing open, having to work out which tab answered the question they
+    // arrived with — and neither tab asked which crew. The panel consumes the parameter
+    // and drops it from the URL, so a reload does not reopen a dismissed dialog.
+    expect(navigateSpy).toHaveBeenCalledWith('/settings/instances?deploy=1')
     // Closed before the navigation, so the dialog is not what a reader comes
     // back to.
     expect(onClose).toHaveBeenCalledTimes(1)
@@ -617,7 +621,7 @@ describe('the panel', () => {
     expect(screen.getByTestId('deploy-action-hint').textContent).toContain('Nothing is created')
 
     fireEvent.click(screen.getByTestId('deploy-action-deploy'))
-    expect(navigateSpy).toHaveBeenCalledWith('/settings/instances')
+    expect(navigateSpy).toHaveBeenCalledWith('/settings/instances?deploy=1')
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
@@ -689,7 +693,7 @@ describe('the panel', () => {
     expect(screen.getByTestId('deploy-action-deploy').textContent).toContain('Settings')
     expect(screen.getByTestId('deploy-action-hint').textContent).toContain('Nothing is created')
     fireEvent.click(screen.getByTestId('deploy-action-deploy'))
-    expect(navigateSpy).toHaveBeenCalledWith('/settings/instances')
+    expect(navigateSpy).toHaveBeenCalledWith('/settings/instances?deploy=1')
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 

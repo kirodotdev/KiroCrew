@@ -751,6 +751,14 @@ class DefaultRemoteProvisionerProvider:
                 dataclasses.replace(
                     FARGATE_REMOTE_PROVISIONER,
                     confirm_before_launch=config.credential_recipient(),
+                    # Which MATE the configured image and secret belong to, so the mate
+                    # picker says so while the user is choosing a lane rather than after
+                    # a refused launch. This lane deploys one agent, not a gateway, which
+                    # is why it has a mate to name at all. Derived from the secret
+                    # references by the engine's own `sole_binding`, which
+                    # `is_complete()` above already ran over this set -- so a registered
+                    # lane always names its mate.
+                    serves_mate=config.serves_mate(),
                 )
             )
         return rows

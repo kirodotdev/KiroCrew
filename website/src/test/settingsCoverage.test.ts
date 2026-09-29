@@ -63,6 +63,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
+  'DeployMateDialog.tsx': 'a launch dialog reached from the Remote Crew panel\'s mates tab; picks which mate and which lane for ONE deployment and persists nothing',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
   'TelegramPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=telegram',
   'FeishuPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=feishu',
@@ -161,6 +162,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'BrowserPanel.tsx': {
     counts: { Input: 1 },
     reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
+  },
+  'DeployMateDialog.tsx': {
+    counts: { input: 2 },
+    reason:
+      'the mate search box and the launch confirmation checkbox -- both belong to one ' +
+      'deployment the user is starting, not to a stored setting, so there is nothing for ' +
+      'settings search to take the reader to',
   },
   'ChatPanel.tsx': {
     counts: { Input: 2 },

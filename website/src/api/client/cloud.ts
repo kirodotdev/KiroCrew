@@ -64,6 +64,16 @@ export interface RemoteProvisioner {
   label: string
   posix_only: boolean
   steps: { key: string; label: string }[]
+  /** What the operator must confirm before this lane may launch, resolved by the
+   *  server, or '' for a lane with nothing to confirm. The client sends it back
+   *  verbatim as `confirm_recipient`; the server refuses a launch whose value does
+   *  not match the lane's own, so this is never something the client composes. */
+  confirm_before_launch?: string
+  /** The ONE crew this lane can deploy, or '' for a lane that deploys whichever crew
+   *  it is given. A lane running a prebuilt, digest-pinned image carries one crew's
+   *  bundle and cannot serve another; published here so the crew picker says so while
+   *  the user is choosing rather than after a refused launch. */
+  serves_mate?: string
 }
 
 export type LaunchJobStatus =
@@ -126,6 +136,10 @@ export interface LaunchJob {
   error?: string
   created_at: number
   updated_at: number
+  /** Which crew this launch was for, as the picker chose it; absent on a job from
+   *  before the field, and on any launch that named no crew. It is what lets a card
+   *  for a launch still in flight carry the crew's own name and face after a reload. */
+  mate_name?: string
 }
 
 /** One ECS task as `GET /api/cloud/launch/{id}/task` reports it: the Fargate
@@ -184,7 +198,7 @@ export function createCloudEndpoints({ get, post, del, j }: ClientTransport) {
     cloudIdentity: () => get('/api/cloud/identity').then(j) as Promise<CloudIdentity>,
     // `provider_id` is optional on the wire: the server defaults it to "aws_ec2"
     // and answers 400 `unknown_provisioner` for an id it does not offer.
-    cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string; login_target?: KiroLoginTarget }) =>
+    cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string; login_target?: KiroLoginTarget; confirm_recipient?: string; mate_name?: string }) =>
       post('/api/cloud/launch', body).then(j) as Promise<LaunchJob>,
     cloudLaunchStatus: (id: string) =>
       get('/api/cloud/launch/' + encodeURIComponent(id)).then(j) as Promise<LaunchJob>,

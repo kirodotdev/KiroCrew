@@ -856,7 +856,14 @@ class _Provisioner:
     """A minimal RemoteProvisioner stand-in (duck-typed like the real dataclass)."""
 
     def __init__(
-        self, id, kind=None, label="", posix_only=True, step_labels=(), confirm_before_launch=""
+        self,
+        id,
+        kind=None,
+        label="",
+        posix_only=True,
+        step_labels=(),
+        confirm_before_launch="",
+        serves_mate="",
     ):
         self.id = id
         self.kind = kind or id
@@ -864,6 +871,7 @@ class _Provisioner:
         self.posix_only = posix_only
         self.step_labels = tuple(step_labels)
         self.confirm_before_launch = confirm_before_launch
+        self.serves_mate = serves_mate
 
 
 class _Provider:
@@ -1527,3 +1535,255 @@ class TestProvisionerSeam:
         )
         assert resp.status == 202
         assert provider.asked == []
+
+
+@pytest.mark.asyncio
+class TestTheMateNameIsDecidedAtTheBoundary:
+    """``mate_name`` on ``POST /api/cloud/launch`` — refused here, before anything exists.
+
+    The engine refuses again over the spec it is about to launch, and that is the copy no
+    caller can go around. This one exists so the refusal arrives as a coded 400 with a
+    remedy, BEFORE a job file is persisted and before any AWS call — rather than as a job
+    that fails minutes later, beside a launch record the user then has to reason about.
+    """
+
+    async def test_an_engine_that_cannot_receive_a_crew_name_refuses_the_launch(
+        self, tmp_path, monkeypatch
+    ):
+        """The shape mismatch, and why silence would be the wrong answer.
+
+        ``RecordingEngine.provision`` takes the four original keywords. Dropping the name
+        and launching anyway would put the machine's EXISTING crew behind the name the user
+        picked, which is the one outcome this field exists to prevent.
+        """
+        row = _Provisioner("legacy_lane")
+        engine = RecordingEngine()
+        state = _state(tmp_path)
+        # The engine the SEAM hands out, not the state's test hook: every check here is a
+        # question about the engine's own shape, and the hook answers with a stand-in that
+        # has neither the keyword nor the refusal.
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "mate_name": "orchard-sde",
+                },
+            )
+        )
+
+        assert resp.status == 400, _body(resp)
+        body = _body(resp)
+        assert body["code"] == "mate_name_unsupported"
+        assert "orchard-sde" in body["error"]
+        assert not engine.calls, "a launch ran for a crew the lane could not be told about"
+        assert state.cloud_launch_store.list() == [], "a refused launch left a job file"
+
+    async def test_a_lane_pinned_to_another_crew_refuses_and_names_its_own(
+        self, tmp_path, monkeypatch
+    ):
+        """The engine's own reason is returned verbatim, with the crew it serves echoed.
+
+        Echoed for the same reason ``confirm_before_launch`` is: the client can then correct
+        itself, and the user can see whether to pick again or go build an image.
+        """
+
+        class Pinned(RecordingEngine):
+            def provision(self, *, tag, size_key, profile, region, mate_name=""):
+                self.calls.append(("provision", mate_name))
+                return "ds-devspace-0001"
+
+            def mate_name_refusal(self, mate_name):
+                return f"this lane serves demo, not {mate_name}"
+
+        row = _Provisioner("pinned_lane", serves_mate="demo")
+        engine = Pinned()
+        state = _state(tmp_path)
+        # The engine the SEAM hands out, not the state's test hook: every check here is a
+        # question about the engine's own shape, and the hook answers with a stand-in that
+        # has neither the keyword nor the refusal.
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "mate_name": "orchard-sde",
+                },
+            )
+        )
+
+        assert resp.status == 400, _body(resp)
+        body = _body(resp)
+        assert body["code"] == "mate_name_refused"
+        assert body["error"] == "this lane serves demo, not orchard-sde"
+        assert body["serves_mate"] == "demo"
+        assert not engine.calls
+        assert state.cloud_launch_store.list() == []
+
+    async def test_the_crew_it_serves_launches_and_is_persisted(self, tmp_path, monkeypatch):
+        """The complement, so neither refusal can be satisfied by refusing every named launch.
+
+        It also pins the name onto the JOB: the card for a launch still in flight is drawn
+        from the crew's name and face, so a job that forgot which crew it was for would
+        leave a nameless row after a reload.
+        """
+
+        class Pinned(RecordingEngine):
+            def provision(self, *, tag, size_key, profile, region, mate_name=""):
+                self.calls.append(("provision", mate_name))
+                return "ds-devspace-0001"
+
+            def mate_name_refusal(self, mate_name):
+                return "" if mate_name == "demo" else f"this lane serves demo, not {mate_name}"
+
+        row = _Provisioner("pinned_lane", serves_mate="demo")
+        engine = Pinned()
+        state = _state(tmp_path)
+        # The engine the SEAM hands out, not the state's test hook: every check here is a
+        # question about the engine's own shape, and the hook answers with a stand-in that
+        # has neither the keyword nor the refusal.
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "mate_name": "demo",
+                },
+            )
+        )
+
+        assert resp.status == 202, _body(resp)
+        assert _body(resp)["mate_name"] == "demo"
+        jobs = state.cloud_launch_store.list()
+        assert [j.mate_name for j in jobs] == ["demo"]
+
+    async def test_a_launch_naming_no_crew_is_unchanged(self, tmp_path, monkeypatch):
+        """Every pre-field client body, and the EC2 form, are this case.
+
+        The unsupported-shape refusal above must not fire for them: an engine written
+        against the four-keyword ``provision`` still has to launch when nobody named a crew.
+        """
+        row = _Provisioner("legacy_lane")
+        engine = RecordingEngine()
+        state = _state(tmp_path)
+        # The engine the SEAM hands out, not the state's test hook: every check here is a
+        # question about the engine's own shape, and the hook answers with a stand-in that
+        # has neither the keyword nor the refusal.
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                },
+            )
+        )
+
+        assert resp.status == 202, _body(resp)
+        assert _body(resp)["mate_name"] == ""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "x" * 65,
+            "demo\norchard",
+            "demo\x00",
+        ],
+        ids=["too-long", "newline", "nul"],
+    )
+    async def test_a_value_that_is_not_a_name_is_refused(self, tmp_path, monkeypatch, value):
+        """A BOUND, not a charset.
+
+        The charset belongs to whichever lane derives a resource from the name — the Fargate
+        lane's own ``validated_crew_name`` is narrower than a dashboard member name has to
+        be — so restating one here would refuse names a lane could have carried. What this
+        rejects is a value that is not a name at all, which is what keeps an unbounded
+        string out of a persisted job file.
+        """
+        row = _Provisioner("legacy_lane")
+        engine = RecordingEngine()
+        state = _state(tmp_path)
+        # The engine the SEAM hands out, not the state's test hook: every check here is a
+        # question about the engine's own shape, and the hook answers with a stand-in that
+        # has neither the keyword nor the refusal.
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "mate_name": value,
+                },
+            )
+        )
+
+        assert resp.status == 400, _body(resp)
+        assert _body(resp)["code"] == "invalid_mate_name"
+        assert state.cloud_launch_store.list() == []
+
+    async def test_an_ordinary_member_name_is_not_refused_by_the_bound(self, tmp_path, monkeypatch):
+        """The complement to the bound: a name with characters the Fargate lane's own charset
+        rejects (capitals, an underscore) must still reach the lane, which is what decides."""
+        row = _Provisioner("legacy_lane")
+        state = _state(tmp_path)
+        # The engine the SEAM hands out, not the state's test hook: every check here is a
+        # question about the engine's own shape, and the hook answers with a stand-in that
+        # has neither the keyword nor the refusal.
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, _Provider([row], {row.id: RecordingEngine()}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "mate_name": "Ops_Lead 2",
+                },
+            )
+        )
+
+        # Refused for the SHAPE of the engine, never for the shape of the name.
+        assert _body(resp)["code"] == "mate_name_unsupported", _body(resp)

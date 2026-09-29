@@ -84,6 +84,14 @@ export { deployAge, deployProgress, deployStepLabel } from './deployShared'
  *  whole launch flow. */
 const SETTINGS_PATH = '/settings/instances'
 
+/** Where the DEPLOY buttons land: the same panel, with the crew picker already open.
+ *
+ *  They used to share `SETTINGS_PATH`, which left the reader on a two-tab panel with
+ *  nothing open, having to work out which tab answered the question they arrived with
+ *  — and neither tab asked which crew. The panel consumes the parameter and drops it
+ *  from the URL, so a reload does not reopen a dialog that was dismissed. */
+const DEPLOY_PATH = '/settings/instances?deploy=1'
+
 /** How often the launch list is re-read while a launch is still moving. At
  *  rest nothing is polled: a finished or failed launch does not change. */
 const IN_FLIGHT_POLL_MS = 4000
@@ -417,6 +425,11 @@ export default function DeployMyCrewDialog({
     onClose()
     navigate(SETTINGS_PATH)
   }
+  /** Same navigation, but asking the panel to open the crew picker on arrival. */
+  const goToDeploy = () => {
+    onClose()
+    navigate(DEPLOY_PATH)
+  }
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose() }}>
@@ -473,7 +486,7 @@ export default function DeployMyCrewDialog({
           {ready && view.kind === 'none' && (
             <div className="flex flex-col items-center gap-3 text-center" data-testid="deploy-state-none">
               <p className="m-0 text-[14px] font-medium">{t('pages.membersPage.deploy_state_none')}</p>
-              <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
+              <Btn primary onClick={goToDeploy} data-testid="deploy-action-deploy">
                 {t('pages.membersPage.deploy_action_deploy')}
               </Btn>
               {/* The label names what the button does (open Settings) and where,
@@ -618,7 +631,7 @@ export default function DeployMyCrewDialog({
                   with no launch at all: the set-up flow, with its line. */}
               {view.liveness === 'gone' && (
                 <>
-                  <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
+                  <Btn primary onClick={goToDeploy} data-testid="deploy-action-deploy">
                     {t('pages.membersPage.deploy_action_deploy')}
                   </Btn>
                   <div className="text-[11.5px] text-muted" data-testid="deploy-action-hint">
@@ -642,7 +655,7 @@ export default function DeployMyCrewDialog({
                 className="w-full"
                 testId="deploy-launch-error"
               />
-              <Btn primary onClick={goToSettings} data-testid="deploy-action-deploy">
+              <Btn primary onClick={goToDeploy} data-testid="deploy-action-deploy">
                 {t('pages.membersPage.deploy_action_deploy')}
               </Btn>
               <div className="text-[11.5px] text-muted" data-testid="deploy-action-hint">

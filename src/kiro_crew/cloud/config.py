@@ -283,6 +283,34 @@ class FargateConfig:
         refs = tuple(SecretRef(name=name, arn=arn) for name, arn in self.secrets)
         return _render_credential_recipient(self.image, refs)
 
+    def serves_mate(self) -> str:
+        """Which MATE this lane deploys, or ``""`` for a block that is not a lane.
+
+        A mate -- one individual agent -- and not a crew: a task from this lane holds one
+        agent spec and serves a chat API, where a crew is a gateway serving a roster.
+
+        Read from the SECRET REFERENCES through ``sole_binding`` -- the engine's own
+        function, already run over this same set by :meth:`is_complete`, so a complete
+        block always answers and no second copy of the rule exists to drift. The secret
+        is the mate's identity because the credential it delivers is what the task
+        decrypts that mate's vault with.
+
+        It is published on the lane's descriptor so the dashboard's mate picker can say
+        which mate this lane serves BEFORE a launch, rather than the user discovering it
+        in a refusal. That is the same reason ``confirm_before_launch`` rides the
+        descriptor: a constraint you can only learn by tripping over it is one you cannot
+        plan around.
+        """
+        if not self.is_complete():
+            return ""
+        refs = tuple(SecretRef(name=name, arn=arn) for name, arn in self.secrets)
+        try:
+            return sole_binding(
+                {f"secrets[{i}].valueFrom": ref.arn for i, ref in enumerate(refs)}
+            ).crew
+        except Exception:  # noqa: BLE001 - is_complete already proved this binds; be safe anyway
+            return ""
+
     @classmethod
     def from_mapping(cls, data: object) -> Optional["FargateConfig"]:
         """Read one block, or ``None`` for anything that is not usable.

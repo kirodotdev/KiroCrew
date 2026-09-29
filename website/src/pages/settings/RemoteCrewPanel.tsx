@@ -1,22 +1,37 @@
 /**
- * RemoteCrewPanel — Settings → Remote Crew. One page, two tabs:
+ * RemoteCrewPanel — Settings → Remote Crew. One page, two tabs, one per KIND of
+ * thing this panel lists:
  *
- *   1. "Your crews" (default) — the machines you can switch to from the top
- *      header: any in-progress cloud launch (a durable gateway job), the
- *      connected/added instances, and the add-a-machine form. Cloud-launched
+ *   1. "Remote crews" (default) — GATEWAYS. A whole machine serving a whole
+ *      roster, with a dashboard you switch to from the top header. Cloud-launched
  *      crews are told apart from hand-added ones by correlating each SSM
  *      instance's target id with a launch job's `instance_id`, so cloud rows can
  *      offer the cloud lifecycle (Stop / Delete-by-tag) that a plain tunnel row
- *      cannot.
- *   2. "Set up a new one" — an AWS prerequisite checklist (from the cloud
- *      preflight) and a launch form that spins up a cloud-hosted crew on the
- *      user's OWN AWS account, then a progress card that polls the launch job.
+ *      cannot. Its footer button reveals the EC2 launcher: an AWS prerequisite
+ *      checklist (from the cloud preflight) and a form that spins up a gateway on
+ *      the user's OWN AWS account. That launcher is a long form, so it opens on
+ *      request rather than sitting above the answer to "which crews do I have".
+ *      The add-a-machine form lives here too.
+ *   2. "Remote mates" — ONE AGENT each. A Fargate task carrying one member's
+ *      bundle, with no dashboard and no roster, so it is something to chat to
+ *      rather than to switch to. Its footer button opens the mate picker
+ *      (`DeployMateDialog`), and the lane it deploys into states which mate its
+ *      image serves before a launch rather than after a refused one.
+ *
+ * Neither tab offers the other's lane: `crewLanes` drops the Fargate row and the
+ * picker drops the built-in EC2 row, because a gateway installer cannot answer
+ * "which mate?" and a single-agent task is not a place a gateway can run.
+ *
+ * The launch progress card sits at PANEL level, outside both tabs: a launch can be
+ * started from either, and it is the only surface that reports a failed one.
  *
  * The instance CRUD (connect / disconnect / diagnose / remove) and the
  * enable/disable gate mirror InstancesPanel; the add-existing form and the
  * StatusBadge are reused from it directly.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import type { ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Server,
@@ -38,7 +53,6 @@ import {
   MoreHorizontal,
   Pencil,
   Play,
-  Cloud,
   X,
   KeyRound,
 } from 'lucide-react'
@@ -54,11 +68,12 @@ import {
 } from '../../api/client'
 import {
   BUILTIN_PROVISIONER_ID,
+  FARGATE_PROVISIONER_ID,
   WARM_SET_CAP_AUTO_CEILING,
   hasDashboardPane,
   launchIsInFlight,
-  shortenEcsTarget,
   usesSsmTransport,
+  PRICING_CALCULATOR_URL,
 } from '../../utils/remoteCrew'
 import { Card, Btn, Badge, IconButton } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
@@ -92,25 +107,32 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm } from '../../store/instancesSlice'
 import { i18nT } from '../../i18n/t'
-import { AddInstanceForm, StatusBadge } from './InstancesPanel'
+import { AddInstanceForm } from './InstancesPanel'
 import {
   EditInstanceForm,
   instanceFormFromView,
   type InstanceDraft,
 } from './InstanceFormFields'
+import CrewAvatar from '../../components/CrewAvatar'
+import DeployMateDialog, { type DeployMateRequest } from './DeployMateDialog'
+import {
+  captionWords,
+  detailNote,
+  detailRows,
+  isMate,
+  laneHasLiveReading,
+  laneLabel,
+  laneOf,
+  readClock,
+  statusDotClass,
+  statusWords,
+} from './remoteLane'
 
 
 /** A launch job the user is still waiting on (not yet a switchable crew). The
  *  status list is the shared one in utils/remoteCrew, so the Members page's
  *  cloud panel and this one classify a launch the same way. */
 const isInProgress = (j: LaunchJob) => launchIsInFlight(j.status)
-
-const connectionTypeLabel = (inst: InstanceView): string =>
-  inst.connection_method === 'fargate'
-    ? i18nT('pages.settings.remoteCrewPanel.type_fargate')
-    : inst.connection_method === 'ssm'
-      ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
-      : i18nT('pages.settings.remoteCrewPanel.type_ssh')
 
 // The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
 // not know; the hover title spells out what each one means.
@@ -128,10 +150,10 @@ const connectionTypeHint = (inst: InstanceView): string =>
  * it is a wall of text, and a button that promised a dashboard would be the
  * defect this field replaces.
  */
-function TurnUrlField({ url, crewName }: { url: string; crewName: string }) {
+function TurnUrlField({ url, mateName }: { url: string; mateName: string }) {
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
-  const label = i18nT('pages.settings.remoteCrewPanel.copy_turn_url', { name: crewName })
+  const label = i18nT('pages.settings.remoteCrewPanel.copy_turn_url', { name: mateName })
   const handleCopy = async () => {
     if (await copyToClipboard(url)) {
       setCopyFailed(false)
@@ -297,7 +319,6 @@ const tierWhy = (key: SizeTier['family']) =>
       ? i18nT('pages.settings.remoteCrewPanel.tier_development_why')
       : i18nT('pages.settings.remoteCrewPanel.tier_power_why')
 
-const PRICING_CALCULATOR_URL = 'https://calculator.aws'
 // NOTE: the session-manager-plugin install command is NOT hardcoded here. It has to
 // match the platform of the machine running the gateway — which may be a Linux host
 // while this dashboard is open on a Mac — so the preflight response carries it.
@@ -408,7 +429,7 @@ type SigninNotice =
 /** The device code the user must approve, with its actions. Shared by the setup
  *  card and the crew row so the code is reachable from BOTH tabs — a user who
  *  left the setup tab must not have to find their way back to finish. */
-function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetching, notice, compact, crewName }: {
+function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetching, notice, compact, mateName }: {
   job: LaunchJob
   onRestart: (id: string) => void
   restarting: boolean
@@ -428,7 +449,7 @@ function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetching, noti
    *  "This crew" there attributes the sign-in to whichever row the reader
    *  happened to be looking at. The setup card names the crew in its own header,
    *  so it passes nothing and keeps the shorter title. */
-  crewName?: string
+  mateName?: string
 }) {
   // The code is a one-time value the reader must type into a browser, and the
   // reader tried CLICKING it to copy. `copyToClipboard` is the guarded helper,
@@ -493,16 +514,16 @@ function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetching, noti
           // that says it starts nothing read as a contradiction. Terminal with no
           // code: nothing exists yet, so "Get" is the truthful verb.
           ? awaiting
-            ? crewName
-              ? i18nT('pages.settings.remoteCrewPanel.code_ready_for', { name: crewName })
+            ? mateName
+              ? i18nT('pages.settings.remoteCrewPanel.code_ready_for', { name: mateName })
               : i18nT('pages.settings.remoteCrewPanel.code_ready')
-            : crewName
-              ? i18nT('pages.settings.remoteCrewPanel.get_a_code_for', { name: crewName })
+            : mateName
+              ? i18nT('pages.settings.remoteCrewPanel.get_a_code_for', { name: mateName })
               : i18nT('pages.settings.remoteCrewPanel.get_a_code')
-          : crewName
+          : mateName
             ? isSsoLaunch(job)
-              ? i18nT('pages.settings.remoteCrewPanel.approve_your_code_sso_for', { name: crewName })
-              : i18nT('pages.settings.remoteCrewPanel.approve_your_code_for', { name: crewName })
+              ? i18nT('pages.settings.remoteCrewPanel.approve_your_code_sso_for', { name: mateName })
+              : i18nT('pages.settings.remoteCrewPanel.approve_your_code_for', { name: mateName })
             : isSsoLaunch(job)
               ? i18nT('pages.settings.remoteCrewPanel.approve_your_code_sso')
               : i18nT('pages.settings.remoteCrewPanel.approve_your_code')}
@@ -762,7 +783,7 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
   )
 }
 
-function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel: (id: string) => void; cancelling: boolean }) {
+function SettingUpRow({ job }: { job: LaunchJob }) {
   const total = job.steps.length || 4
   const current = Math.min(total, job.steps.filter(s => s.state === 'done').length + 1)
   const active = job.steps.find(s => s.state === 'active')
@@ -774,36 +795,56 @@ function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel:
     // keep the squeeze; the button gets its own line.
     <div className="flex flex-col sm:flex-row items-stretch sm:items-start sm:justify-between gap-2 sm:gap-3 py-2.5 border-b border-border last:border-b-0">
       <div className="flex items-start gap-3 min-w-0">
-        <span className="mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md bg-accent-subtle text-accent">
-          <Rocket size={16} />
-        </span>
+        {/* The crew being deployed, wearing its own face from the first second — the
+            same avatar the finished card carries, so the row does not change identity
+            when the launch lands. A job from before `mate_name` existed named no crew
+            and falls back to the launch tag it always showed. */}
+        <CrewAvatar
+          seed={job.mate_name || job.tag}
+          size={32}
+          className="mt-0.5 shrink-0 rounded-md border border-border bg-bg-elevated"
+        />
         <div className="min-w-0">
           <div className="text-text-strong text-sm font-medium flex items-center gap-2 flex-wrap">
-            <span className="inline-block w-2 h-2 rounded-full bg-accent" aria-hidden />
-            {i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}
+            {job.mate_name || i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}
             <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.setting_up')}</Badge>
           </div>
-          <div className="text-[12px] text-muted mt-0.5">
-            {job.region}
-            {job.instance_id ? ` · ${job.instance_id}` : ''}
+          {/* Plain words and a step count. The region and the half-created instance id
+              that used to sit here are identifiers for a machine that may not exist
+              yet; the launch's own progress card on the other tab carries them, and
+              this row's question is only how far along it is. */}
+          <div className="mt-1 flex items-center gap-1.5 flex-wrap text-[13px] text-muted">
+            <RefreshCw size={12} className="animate-spin shrink-0 text-warn" aria-hidden />
+            <span>{i18nT('pages.settings.remoteCrewPanel.step_progress', { current, total })}</span>
+            {active?.label ? <span>— {active.label}</span> : null}
           </div>
-          <div className="mt-1.5 rounded-md border border-accent-subtle bg-bg-elevated px-2.5 py-2">
-            <div className="text-[12px] text-text-strong font-medium flex items-center gap-1.5">
-              <RefreshCw size={12} className="animate-spin" />
-              {i18nT('pages.settings.remoteCrewPanel.step_progress', { current, total })}
-              {active?.label ? ` — ${active.label}` : ''}
-            </div>
-            <div className="text-[11px] text-muted mt-0.5">{i18nT('pages.settings.remoteCrewPanel.keeps_running')}</div>
+          <div className="text-[11px] text-muted-strong mt-1">
+            {i18nT('pages.settings.remoteCrewPanel.keeps_running')}
+          </div>
+          {/* One segment per step, so how far along it is reads without being read. */}
+          <div className="mt-2 flex gap-1.5 max-w-[58ch]" aria-hidden>
+            {job.steps.map(st => (
+              <span
+                key={st.key}
+                className={`h-[3px] flex-1 rounded-full ${
+                  st.state === 'done'
+                    ? 'bg-ok'
+                    : st.state === 'failed'
+                      ? 'bg-danger'
+                      : st.state === 'active'
+                        ? 'bg-warn'
+                        : 'bg-border-strong'
+                }`}
+              />
+            ))}
           </div>
         </div>
       </div>
-      <div className="sm:shrink-0 flex items-center gap-2 flex-wrap">
-        {/* Names what it removes. Only unregistered launches reach this row (a
-            sign-in retry is a crew row below), so this is always the teardown
-            case — but it reads the same test as the card rather than hardcoding
-            the answer, so the copy cannot drift from the filter above it. */}
-        <CancelLaunchBtn job={job} onCancel={onCancel} cancelling={cancelling} />
-      </div>
+      {/* No Cancel here. `CancelLaunchBtn` is the launch's own control and it sits on the
+          progress card, which is at panel level and so is on screen whenever this row
+          is: two buttons carrying the same accessible name, for the same one action, is
+          a choice the reader has to make and cannot. This row's job is to hold the
+          arriving crew's place in the list it will join. */}
     </div>
   )
 }
@@ -841,9 +882,32 @@ function CrewRow({
   onFetchSignin,
   fetchingSignin,
   signinNotice,
+  readAt,
+  onCheckAgain,
+  avatarSeed,
 }: {
   inst: InstanceView
   cloudTag: string | null
+  /**
+   * What a MATE row's ghost face is drawn from: the mate a launch deployed here, or ''
+   * to fall back to the row's own name.
+   *
+   * Not the row name, because that carries the launch tag so two tasks of one mate can
+   * be told apart -- and a face that followed the tag would give one agent a different
+   * picture per launch, which is the opposite of what the avatar is for.
+   */
+  avatarSeed: string
+  /**
+   * `HH:MM` of the moment this row's status was last read, or '' when unknown.
+   *
+   * It is the instances query's own last success, which is exactly when this state
+   * was read — not a timestamp the backend stamps on the record. Printed only for a
+   * lane whose status reflects something outside this process (see
+   * `laneHasLiveReading`), because for an SSH tunnel the age is not information.
+   */
+  readAt: string
+  /** Re-read the list. What "Check again" does; the panel owns the invalidation. */
+  onCheckAgain: () => void
   busy: string
   deleting: boolean
   confirmDelete: boolean
@@ -889,99 +953,92 @@ function CrewRow({
   // routinely connected already — and that is precisely when the badge and the
   // recovery controls are needed, because the chats are the thing that fails.
   const awaitingSignin = signinJob !== null
-  // Two persisted signals mark a row possibly-cloud when no launch job matches: an
-  // EC2 stamp (`provisioner_id`), and an SSM target — the CLI launcher registers real
-  // cloud crews the same way, and those never produce a launch job in this gateway's
-  // store. Calling either "added by you" would invite a Remove that unregisters a
-  // live, billing instance and takes away the only place the dashboard could still
-  // delete it. We cannot prove which it is, so treat it as possibly-cloud: same
-  // confirm step, and copy that says what Remove does and does not do.
-  const unverifiedCloud =
-    !isCloud &&
-    (inst.provisioner_id === BUILTIN_PROVISIONER_ID ||
-      (usesSsmTransport(inst) && !!inst.ssm_target))
   // A stop/start this row asked for is still in flight.
   const lifecycleBusy = busy === `stop:${cloudTag}` || busy === `start:${cloudTag}`
   // States that occupy the row's second control slot with an inline button.
   const transient =
     deleting || lifecycleBusy || (isCloud && confirmDelete) || (!isCloud && confirmRemove)
-  const target = usesSsmTransport(inst) ? inst.ssm_target : inst.ssh_host
-  // A CHAINED row's host is a RECORD, not a target. It arrives in the announcing
-  // pane's payload and this gateway never dials it: `_resolve_transport` returns the
-  // PARENT's host for any row carrying `via_instance_id`, so the row's own `ssh_host`
-  // and `remote_port` are never reached. Rendering them where a verified target goes
-  // let an untrusted string borrow that authority -- a compromised pane could make a
-  // row read like a production database while reaching nothing. So they are labelled
-  // as reported, and the port is dropped: it is the crew's own gateway port, which is
-  // not what this dashboard forwards to either.
-  const reportedOnly = !!inst.via_instance_id
   // A fargate crew has no dashboard; while its forward is up, the card shows
   // the turn URL the status carries instead of offering something to open.
   const turnUrl = inst.connection_method === 'fargate' && connected ? inst.status?.turn_url || '' : ''
+  // The lane, in the user's vocabulary: which of SSH / EC2 / Fargate / Coder this crew
+  // runs in. Derived once, because the chip, the status wording and the Details rows
+  // all branch on it and three separate derivations could disagree.
+  const lane = laneOf(inst)
+  // A mate (one agent) or a crew (a gateway). It decides the avatar, and nothing else on
+  // this row: both get the same lane chip, the same plain-words status and the same
+  // Details, because those answer the same questions for either thing.
+  const mate = isMate(inst)
   return (
     <div className="py-2.5 border-b border-border last:border-b-0" data-crew-id={inst.id}>
     <div className="flex items-start justify-between gap-3">
       <div className="flex items-start gap-3 min-w-0">
-        <span className={`mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md ${isCloud ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>
-          {isCloud ? <Rocket size={16} /> : <Server size={16} />}
-        </span>
+        {/* A MATE wears its own face; a CREW wears a machine.
+
+            The avatar is an identity, and only one of these two has one: a mate IS an
+            agent, drawn with the same component and the same seed the Members page uses,
+            so one agent is one picture everywhere. A crew is a gateway serving a whole
+            roster -- giving it one member's face would claim it is that member, and
+            giving it a generic ghost would invent an identity it does not have. So it
+            keeps a machine glyph, and the lane chip beside it says which kind. */}
+        {mate ? (
+          <CrewAvatar
+            seed={avatarSeed || inst.name}
+            size={32}
+            className="mt-0.5 shrink-0 rounded-md border border-border bg-bg-elevated"
+          />
+        ) : (
+          <span
+            className={`mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md ${isCloud ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}
+          >
+            {isCloud ? <Rocket size={16} /> : <Server size={16} />}
+          </span>
+        )}
         <div className="min-w-0">
           <div className="text-text-strong text-sm font-medium truncate">{inst.name}</div>
-          <div className="text-[12px] text-muted truncate">
-            {(inst.provisioner_id === BUILTIN_PROVISIONER_ID || isCloud) && (
-              <Badge
-                variant="aim"
-                className="mr-1"
-                title={i18nT('pages.settings.remoteCrewPanel.source_ec2_hint')}
-                aria-label={i18nT('pages.settings.remoteCrewPanel.source_ec2_hint')}
-              >
-                <Cloud className="lucide-inline" />
-                {i18nT('pages.settings.remoteCrewPanel.source_ec2')}
-              </Badge>
-            )}
-            <Badge variant="muted" className="mr-1" title={connectionTypeHint(inst)} aria-label={connectionTypeHint(inst)}>
-              {connectionTypeLabel(inst)}
+          {/* ONE chip. The host, port, ECS target and instance id that used to share
+              this line are in the kebab's Details: a reader scanning this list is
+              asking which crew and whether they can use it, and an identifier
+              answers neither — while the line was long enough to need truncating in
+              exactly the tail that tells two tasks apart. */}
+          <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+            <Badge variant="muted" title={connectionTypeHint(inst)}>
+              {laneLabel(lane)}
             </Badge>
-            {inst.connection_method === 'fargate'
-              // Two tasks in one cluster differ only at the far right of the
-              // ECS target, which the row's truncation cuts off; the short form
-              // keeps that tail visible and the title carries the full target.
-              ? <span title={target}>{shortenEcsTarget(target)}</span>
-              : reportedOnly
-                ? (
-                  <span title={i18nT('pages.settings.remoteCrewPanel.reported_host_hint')}>
-                    {i18nT('pages.settings.remoteCrewPanel.reported_host', { host: target })}
-                  </span>
-                )
-                : target}
-            {reportedOnly
-              ? ''
-              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
-          </div>
-          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            <StatusBadge status={inst.status} />
             {awaitingSignin && (
               <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}>
                 <KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.needs_sign_in')}
               </Badge>
             )}
           </div>
-          <div className="text-[11px] text-muted-strong mt-1">
-            {isCloud
-              ? i18nT('pages.settings.remoteCrewPanel.launched_by_kiro_crew')
-              : inst.provisioner_id === BUILTIN_PROVISIONER_ID
-                // An EC2-stamped row wears the EC2 badge, whose hint says it WAS
-                // launched by the EC2 launcher — the caption must agree with the
-                // badge, not hedge about whether AWS resources exist.
-                ? i18nT('pages.settings.remoteCrewPanel.stamped_ec2_note')
-                // A fargate row IS an AWS resource by definition, so it must not
-                // hedge like unverifiedCloud does; it keeps the same Remove confirm
-                // step but says plainly that the task keeps running after Remove.
-                : inst.connection_method === 'fargate'
-                ? i18nT('pages.settings.remoteCrewPanel.fargate_task_note')
-                : unverifiedCloud
-                  ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
-                  : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`}
+          {/* Plain words, then the moment they were read, then a way to re-read.
+              The time and the button appear only for a lane whose answer comes from
+              AWS: an SSH tunnel is this process's own socket, so printing an age for
+              it would invent one, and a refresh beside it would promise news that
+              only a reconnect can produce. */}
+          <div className="mt-1 flex items-center gap-1.5 flex-wrap text-[13px] text-muted">
+            <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${statusDotClass(inst)}`} aria-hidden />
+            <span>{statusWords(inst)}</span>
+            {laneHasLiveReading(inst) && readAt && (
+              <>
+                <span className="text-border-strong" aria-hidden>·</span>
+                <span className="font-mono text-[12px]">
+                  {i18nT('pages.settings.remoteCrewPanel.as_of', { time: readAt })}
+                </span>
+                <button
+                  type="button"
+                  onClick={onCheckAgain}
+                  className="text-accent text-[12px] hover:underline"
+                >
+                  {i18nT('pages.settings.remoteCrewPanel.check_again')}
+                </button>
+              </>
+            )}
+            {/* The tunnel's own error from the backend, where it always was. */}
+            <ErrorNotice variant="inline" className="max-w-[240px]" message={inst.status.error} askAgent />
+          </div>
+          <div className="text-[11px] text-muted-strong mt-1 truncate max-w-[52ch]">
+            {captionWords(inst, isCloud)}
           </div>
         </div>
       </div>
@@ -1063,7 +1120,33 @@ function CrewRow({
               <MoreHorizontal className="lucide-inline" />
             </IconButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[200px]">
+          <DropdownMenuContent align="end" className="min-w-[260px]">
+            {/* Details FIRST, and not a menu item: the identifiers are what the card
+                gave up, so the menu that took them has to hand them back without a
+                further click. A definition list rather than a sentence, because a
+                reader here is comparing a value to one they hold — that is a lookup.
+                `onSelect` prevented so copying a value does not close the menu. */}
+            <div
+              className="px-2 pt-1.5 pb-2"
+              onSelect={e => e.preventDefault()}
+              data-testid={`crew-details-${inst.id}`}
+            >
+              <div className="text-[10.5px] uppercase tracking-[.08em] text-muted mb-1">
+                {i18nT('pages.settings.remoteCrewPanel.details')}
+              </div>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-1 m-0 items-baseline">
+                {detailRows(inst).map(row => (
+                  <div key={row.label} className="contents">
+                    <dt className="text-[10.5px] text-muted whitespace-nowrap">{row.label}</dt>
+                    <dd className="m-0 font-mono text-[11px] text-text break-all">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="mt-2 mb-0 text-[11px] text-muted-strong">
+                {detailNote(inst, isCloud)}
+              </p>
+            </div>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className="gap-2 text-[13px]"
               onSelect={() => onDiagnose(inst.id)}
@@ -1124,14 +1207,14 @@ function CrewRow({
         )}
       </div>
     </div>
-    {turnUrl && <TurnUrlField url={turnUrl} crewName={inst.name} />}
+    {turnUrl && <TurnUrlField url={turnUrl} mateName={inst.name} />}
     {/* BELOW the row header, and naming its crew. Rendered above the name it read
         as a page-level warning banner about the whole panel, and with several rows
         it attributed the sign-in to whichever crew the reader was looking at. */}
     {awaitingSignin && signinJob && (
       <SigninPromptBlock
         job={signinJob}
-        crewName={inst.name}
+        mateName={inst.name}
         onRestart={onRestartSignin}
         restarting={restartingSignin}
         onFetch={onFetchSignin}
@@ -1167,6 +1250,78 @@ function CrewRow({
       />
     )}
     </div>
+  )
+}
+
+/**
+ * The built-in form for the `aws_fargate` lane.
+ *
+ * Deliberately not a form. A Fargate launch takes no input this panel could collect:
+ * the cluster, the subnets, the security groups, the digest-pinned image and the crew's
+ * secret references all come from the operator's `cloud.json`, the engine refuses to
+ * guess any of them, and the size is one of the same three interactive tiers the EC2
+ * ladder names (the engine maps each to a cpu/memory pair). So the only decision left
+ * is WHICH CREW — and that is the picker's question, which is why this card's one
+ * control opens it.
+ *
+ * What the card does do is say what the lane is before a launch rather than after one:
+ * the crew its configured image serves, and the region the launch will name. A lane
+ * that answers "which crew does this deploy" only by refusing a launch is a lane the
+ * operator cannot plan around.
+ */
+/**
+ * What the mate lane IS, for a reader deciding whether to deploy into it.
+ *
+ * No action of its own: the mates tab's own footer carries "Deploy a mate to the
+ * cloud" one card above this, and a second identical button with the same footnote
+ * under it read as two different launches.
+ */
+function FargateLaunchCard({
+  provisioner,
+  region,
+  sizeKey,
+}: {
+  provisioner: RemoteProvisioner
+  region: string
+  sizeKey: string
+}) {
+  const serves = provisioner.serves_mate ?? ''
+  return (
+    <Card>
+      <div className="text-text font-medium mb-1">{provisioner.label}</div>
+      <p className="text-[13px] text-muted mt-0 mb-3">
+        {i18nT('pages.settings.remoteCrewPanel.fargate_lane_intro')}
+      </p>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 m-0 items-baseline">
+        {serves && (
+          <div className="contents">
+            <dt className="text-[11px] uppercase tracking-[.08em] text-muted whitespace-nowrap">
+              {i18nT('pages.settings.remoteCrewPanel.fargate_serves_mate')}
+            </dt>
+            <dd className="m-0 text-[13px] text-text-strong font-medium">{serves}</dd>
+          </div>
+        )}
+        <div className="contents">
+          <dt className="text-[11px] uppercase tracking-[.08em] text-muted whitespace-nowrap">
+            {i18nT('pages.settings.remoteCrewPanel.launches_into')}
+          </dt>
+          <dd className="m-0 text-[13px] text-text">{region}</dd>
+        </div>
+        <div className="contents">
+          <dt className="text-[11px] uppercase tracking-[.08em] text-muted whitespace-nowrap">
+            {i18nT('pages.settings.remoteCrewPanel.size')}
+          </dt>
+          <dd className="m-0 text-[13px] text-text">{sizeKey}</dd>
+        </div>
+      </dl>
+      {/* Where the two values above come from. They are the panel's AWS settings, which
+          live in the crews tab's launcher -- and the region is not decoration: every ECS
+          call this launch makes is made in it, so a reader who cannot tell where it was
+          set cannot tell that it is wrong. */}
+      <p className="mt-3 mb-0 text-[11px] text-muted-strong">
+        {i18nT('pages.settings.remoteCrewPanel.lane_settings_from')}
+      </p>
+    </Card>
   )
 }
 
@@ -1382,7 +1537,42 @@ function LaunchProgressCard({
 export function RemoteCrewPanel() {
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
-  const [tab, setTab] = useState<'crews' | 'setup'>('crews')
+  // The panel's two tabs are the two THINGS a remote deployment can be, which is why
+  // there are exactly two of them:
+  //
+  //   crews -- a gateway. A machine running `kirocrew gateway`: it serves a whole
+  //            roster, it has a dashboard, and you switch to it from the top header.
+  //            Reached over SSH, or over Session Manager to an EC2 instance.
+  //   mates -- one agent. A Fargate task holding a single agent spec, serving a chat
+  //            API, with no dashboard and no roster of its own.
+  //
+  // They shared one list before, and that is what made the list unreadable: a Fargate
+  // row sat among machines wearing the same controls, while the one thing that told
+  // them apart -- it has no dashboard, you can only chat to it -- was the third line of
+  // a paragraph nobody finishes.
+  const [tab, setTab] = useState<'crews' | 'mates'>('crews')
+  // The EC2 launcher, which used to be this panel's whole second tab. It belongs to the
+  // crews tab because what it creates is a crew, and it sits behind a button rather than
+  // always open because it is a long form (an AWS probe, a size ladder, a subnet, an
+  // identity) and the answer to "which crews do I have" must not be below all of it.
+  const [showCrewLauncher, setShowCrewLauncher] = useState(false)
+  // The mate picker, opened from the mates tab's footer.
+  const [deployOpen, setDeployOpen] = useState(false)
+  // The Members page's "Your crew in the cloud" dialog navigates here with `?deploy=1`.
+  // It lands on CREWS and opens the crew launcher: that dialog is about the whole roster
+  // (its own comment says "the deployment is the whole roster", and it draws every
+  // member's face), so what it asks for is a gateway and not one agent.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('deploy') !== '1') return
+    setTab('crews')
+    setShowCrewLauncher(true)
+    // Consumed, not left in the URL: a reload, or a Back that returns here, must not
+    // reopen a launch form the user already dismissed.
+    const next = new URLSearchParams(searchParams)
+    next.delete('deploy')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
   // Default-on: when set, the web app auto-connects every crew on load and on
   // tab focus (see useAutoConnectInstances). Off lets a many-crew user stop the
   // per-load SSH + token-mint fan-out.
@@ -1420,6 +1610,19 @@ export function RemoteCrewPanel() {
       ? persistedSize
       : 'balanced'
   ) as SizeTier['key']
+  /**
+   * The size a MATE launch sends: the tier's FAMILY, never an architecture variant.
+   *
+   * The mate picker asks for no size, so the value can only come from the crews tab's
+   * remembered tier -- and that tier may be an x86 one (`balanced-x86`), which the
+   * Fargate engine's `_tier_as_pair` does not know: it maps the three interactive tier
+   * keys and nothing else. Sending the raw key would persist a job, answer 202, and then
+   * raise inside `provision` on a size the mate dialog never offered. The family is what
+   * the engine maps, and it is the same amount of machine either way -- the architecture
+   * is the operator's own image, not a choice a Fargate launch makes.
+   */
+  const mateSizeKey =
+    [...SIZE_TIERS, ...X86_TIERS].find(t => t.key === sizeKey)?.family ?? 'balanced'
   // The provisioner the setup tab draws. '' means "not chosen yet", which resolves
   // to the first renderable row below.
   const [persistedProvisioner, setProvisionerId] = usePersistedString(CLOUD_PROVISIONER_KEY, '')
@@ -1597,6 +1800,16 @@ export function RemoteCrewPanel() {
 
   const launches = useMemo(() => launchesQuery.data?.jobs ?? [], [launchesQuery.data])
   const inProgress = useMemo(() => launches.filter(isInProgress), [launches])
+  /**
+   * Which list a launch in flight belongs under, split the way the finished rows are.
+   *
+   * A job that named a mate is a mate being deployed; every other launch installs a
+   * gateway. Unsplit, an EC2 crew launch drew a "Setting up" row under "Mates you can
+   * chat to" and its presence also suppressed the "no mates yet" line, so the mates tab
+   * claimed a mate was arriving that never would.
+   */
+  const pendingMates = useMemo(() => inProgress.filter(j => !!j.mate_name), [inProgress])
+  const pendingCrews = useMemo(() => inProgress.filter(j => !j.mate_name), [inProgress])
 
   // An OLDER gateway POSIX-gates the read-only launch-history route too, so a
   // Windows host answers 400 posix_host_required for it. That is not a load
@@ -1664,7 +1877,10 @@ export function RemoteCrewPanel() {
   const provisionersQuery = useQuery({
     queryKey: ['cloud', 'provisioners'],
     queryFn: () => api.cloudProvisioners(),
-    enabled: tab === 'setup' && !disabled,
+    // BOTH tabs need the lane list now: the crews tab's launcher resolves which
+    // EC2-kind lane it is posting to, and the mates tab draws its Fargate card and its
+    // picker chips from the same rows. Keyed on the feature being on, not on a tab.
+    enabled: !disabled,
   })
 
   // Built-in first, then the edition's own in the order the server sent them: the
@@ -1677,28 +1893,55 @@ export function RemoteCrewPanel() {
     return [...drawable.filter(p => builtin.includes(p.kind)), ...drawable.filter(p => !builtin.includes(p.kind))]
   }, [provisionersQuery.data])
 
+  // The lanes the CREW launcher may offer. A crew is a GATEWAY, so a lane that
+  // deploys one agent is not one of the places a new crew can run: offering Fargate
+  // under "where should the new crew run?" is the same category error as listing a
+  // Fargate task among the crews. The mates tab resolves its own lane out of the
+  // unfiltered list, which is why the filter lives here rather than in `provisioners`.
+  const crewLanes = useMemo(
+    () => provisioners.filter(p => p.kind !== FARGATE_PROVISIONER_ID),
+    [provisioners],
+  )
+
   // A remembered id the gateway no longer offers must not leave the tab drawing
   // nothing: fall back to the first renderable row, exactly as an unset choice
   // does. `null` while the list is unknown (loading or failed), which is what
   // keeps the built-in form the answer in those cases — the stock build never
   // depends on this query succeeding.
   const selectedProvisioner =
-    provisioners.find(p => p.id === persistedProvisioner) ?? provisioners[0] ?? null
+    crewLanes.find(p => p.id === persistedProvisioner) ?? crewLanes[0] ?? null
   // The user chose a lane the gateway has since stopped offering. Surfaced as a
   // line above the form rather than swallowed: the fallback puts them in front
   // of a different form, and a different bill, than the one they picked.
+  // Measured against the FULL list: a remembered mate lane is not a lane that went
+  // away, it is a lane that moved to the other tab, and saying "no longer offered"
+  // about a row the mates tab is drawing at that moment would be false.
   const staleChoice =
-    persistedProvisioner !== '' && provisioners.length > 0 && selectedProvisioner?.id !== persistedProvisioner
-  // The gateway answered and none of its lanes is one this frontend can draw
-  // (an edition withdrew the built-in and this frontend predates its renderer).
-  // Drawing the EC2 cards here would offer a Launch that the server refuses
-  // with `unknown_provisioner`; a notice says why there is nothing to launch.
-  const noDrawableLane = provisionersQuery.isSuccess && provisioners.length === 0
+    persistedProvisioner !== ''
+    && provisioners.length > 0
+    && !provisioners.some(p => p.id === persistedProvisioner)
+  // The gateway answered and none of its lanes is one this frontend can draw as a
+  // crew lane (an edition withdrew the built-in and this frontend predates its
+  // renderer, or the only lane it offers deploys mates). Drawing the EC2 cards here
+  // would offer a Launch that the server refuses with `unknown_provisioner`; a notice
+  // says why there is nothing to launch.
+  const noDrawableLane = provisionersQuery.isSuccess && crewLanes.length === 0
   // The fallback for an UNKNOWN list is the built-in form, so a failed or
   // still-loading query renders the EC2 cards rather than an empty tab.
   const builtinProvisioner =
     selectedProvisioner === null
     || (BUILTIN_REMOTE_PROVISIONER_KINDS as readonly string[]).includes(selectedProvisioner.kind)
+  // The MATE lane, found in the unfiltered list rather than taken from
+  // `selectedProvisioner`.
+  //
+  // That variable is the CREW launcher's own choice, and the launcher cannot pick this
+  // lane at all now -- so reading it here reported "Fargate is not set up" directly
+  // above a configured Fargate row. The two tabs ask different questions of the same
+  // list, so each resolves its own answer from it.
+  const mateLane = useMemo(
+    () => provisioners.find(p => p.kind === FARGATE_PROVISIONER_ID) ?? null,
+    [provisioners],
+  )
   const registeredProvisioner = builtinProvisioner || selectedProvisioner === null
     ? undefined
     : getRemoteProvisionerRenderer(selectedProvisioner.kind)
@@ -1710,12 +1953,27 @@ export function RemoteCrewPanel() {
     // says, so the probe fires at once, as it always did. Only a remembered
     // choice waits for the list: it may resolve to a lane whose form must not
     // trigger an AWS probe at all.
-    enabled: tab === 'setup' && !disabled && !noDrawableLane
+    // Only while the EC2 launcher is actually open. It shells to `aws sts` and friends,
+    // so merely opening the panel to read the crew list must not probe an AWS account.
+    // The mate lane cannot be the launcher's choice, so there is no lane here whose
+    // form must be kept away from the probe.
+    enabled: showCrewLauncher && !disabled && !noDrawableLane
       && (persistedProvisioner === '' || (builtinProvisioner && !provisionersQuery.isLoading)),
   })
 
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
   const warmCap = instancesQuery.data?.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
+  // When the statuses on screen were READ, which is this query's own last success and
+  // not a field on the record. A card that prints a time has to print a time it can
+  // vouch for: a backend-stamped "checked at" would still be however old the poll that
+  // delivered it is, and this is the number the reader is actually asking about when
+  // they look at a green dot and wonder whether to trust it.
+  const readAt = readClock(instancesQuery.dataUpdatedAt)
+  // The two lists, split by WHAT each row is. One list mixed gateways and single agents
+  // and gave them the same controls, which is the confusion this panel's two tabs exist
+  // to end: a mate has no dashboard to connect to and no roster to switch between.
+  const crewRows = useMemo(() => instances.filter(i => !isMate(i)), [instances])
+  const mateRows = useMemo(() => instances.filter(i => isMate(i)), [instances])
 
   // A draft outlives its form ON PURPOSE, which means it can also outlive the CREW
   // it belongs to: Remove a crew mid-edit and the draft stays keyed by that id, so
@@ -1778,6 +2036,22 @@ export function RemoteCrewPanel() {
     const m = new Map<string, string>()
     for (const j of launches) {
       if (j.instance_id && (j.provider_id ?? BUILTIN_PROVISIONER_ID) === BUILTIN_PROVISIONER_ID) m.set(j.instance_id, j.tag)
+    }
+    return m
+  }, [launches])
+  /**
+   * ECS target -> the mate a launch deployed there, which is the FACE that row wears.
+   *
+   * The registered NAME carries the launch tag, because two tasks of the same mate are
+   * two rows and a reader has to tell them apart. The avatar must not follow that
+   * suffix: one agent is one picture everywhere, and seeding from the row's name would
+   * give the same agent a different face per launch. So the seed comes from the job's
+   * own `mate_name`, and the name is free to disambiguate.
+   */
+  const mateNameByTarget = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const j of launches) {
+      if (j.instance_id && j.mate_name) m.set(j.instance_id, j.mate_name)
     }
     return m
   }, [launches])
@@ -1864,6 +2138,30 @@ export function RemoteCrewPanel() {
     onSuccess: (_r, id) => dispatch(removeWarm(id)),
     onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.remove_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: reloadInstances,
+  })
+  /**
+   * "Check again" on ONE row: re-read that row's tunnel status and nothing else.
+   *
+   * It called `reloadInstances`, which is exactly what the card header's Refresh does --
+   * two controls for one action, and the wrong one for the question being asked. The
+   * button sits beside a single row's stale reading, so it re-reads that row through
+   * `GET /api/instances/{id}/status` and writes the answer into the cached list. No
+   * `diagnose=1`: that runs the probe ladder, which is what the kebab's Diagnose is for.
+   */
+  const recheckMutation = useMutation({
+    mutationFn: (id: string) => api.instanceStatus(id),
+    onSuccess: (status, id) => {
+      queryClient.setQueryData(
+        ['instances'],
+        (prev: { instances: InstanceView[] } | undefined) =>
+          prev
+            ? { ...prev, instances: prev.instances.map(i => (i.id === id ? { ...i, status } : i)) }
+            : prev,
+      )
+    },
+    // A refused read leaves the old reading and its age standing, which is the honest
+    // state: nothing newer was learned. The row's own error surface reports it.
+    onError: (e, id) => setActionErr(i18nT('pages.settings.remoteCrewPanel.row_recheck_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
   })
   const diagnoseMutation = useMutation({
     mutationFn: (id: string) => api.instanceStatus(id, true),
@@ -2001,7 +2299,21 @@ export function RemoteCrewPanel() {
   // registered provisioner's form owns its own inputs, and the core cannot read
   // them. The built-in call site passes the panel's own profile/region/size.
   const launchMutation = useMutation({
-    mutationFn: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string }) =>
+    mutationFn: (body: {
+      provider_id?: string
+      profile: string
+      region: string
+      size_key: string
+      subnet_id?: string
+      // The credential recipient the operator confirmed, sent VERBATIM from the lane's
+      // own `confirm_before_launch`. The client never composes it: the server compares
+      // it to the value that descriptor published and the engine compares it again to
+      // what it is about to launch, so a value this dashboard invented would be refused
+      // rather than honoured.
+      confirm_recipient?: string
+      // Which crew this launch is for. Optional, so the EC2 form's body is unchanged.
+      mate_name?: string
+    }) =>
       api.cloudLaunch(body),
     onMutate: () => setActionErr(null),
     onSuccess: job => { setActiveLaunchId(job.id); reloadLaunches() },
@@ -2151,25 +2463,653 @@ export function RemoteCrewPanel() {
     )
   }
 
+  // ONE row renderer, called by BOTH lists. The crews tab and the mates tab draw the
+  // same card -- a row is a row whichever of the two it is, and only the avatar differs
+  // (see `mate` in CrewRow) -- so a second copy of these nineteen props would be two
+  // places for a prop to be forgotten rather than one.
+  const renderRow = (inst: InstanceView) => (
+              <CrewRow
+                key={inst.id}
+                inst={inst}
+                cloudTag={inst.connection_method === 'ssm' && inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) ?? null : null}
+                avatarSeed={inst.ssm_target ? mateNameByTarget.get(inst.ssm_target) ?? '' : ''}
+                signinJob={inst.connection_method === 'ssm' && inst.ssm_target ? signinJobByInstanceId.get(inst.ssm_target) ?? null : null}
+                onRestartSignin={id => signinRestartMutation.mutate(id)}
+                // Keyed to THIS row's job: the mutation is one object shared by
+                // every row, so its bare `isPending` would disable the sign-in
+                // buttons on every other unsigned instance the moment one is
+                // clicked -- reading as if the whole panel were busy.
+                restartingSignin={signinRestartMutation.isPending && signinRestartMutation.variables === signinJobIdFor(inst)}
+                onFetchSignin={id => signinMutation.mutate(id)}
+                fetchingSignin={signinMutation.isPending && signinMutation.variables === signinJobIdFor(inst)}
+                signinNotice={signinNotice && signinNotice.jobId === signinJobIdFor(inst) ? signinNotice : null}
+                readAt={readAt}
+                onCheckAgain={() => recheckMutation.mutate(inst.id)}
+                busy={busy}
+                deleting={inst.ssm_target ? deletingTags.has(cloudTagByInstanceId.get(inst.ssm_target) ?? '') : false}
+                confirmDelete={confirmDeleteTag !== null && confirmDeleteTag === (inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) : null)}
+                confirmRemove={confirmRemoveId === inst.id}
+                onConnect={id => connectMutation.mutate(id)}
+                onDisconnect={id => disconnectMutation.mutate(id)}
+                onDiagnose={id => diagnoseMutation.mutate(id)}
+                onRemove={id => removeMutation.mutate(id)}
+                onStop={(tag, coords) => stopMutation.mutate({ tag, coords })}
+                onStart={(tag, coords) => startMutation.mutate({ tag, coords })}
+                onDelete={(tag, coords) => deleteMutation.mutate({ tag, coords })}
+                onRequestDelete={tag => setConfirmDeleteTag(tag)}
+                onRequestRemove={id => setConfirmRemoveId(id)}
+                editing={editingId === inst.id}
+                blocked={editBlockedId === inst.id}
+                onEdit={id => {
+                  // Switching rows would unmount another crew's draft.
+                  if (
+                    id !== null
+                    && editDraft !== null
+                    && id !== editDraft.id
+                  ) {
+                    setEditBlockedId(id)
+                    return
+                  }
+                  setEditBlockedId(null)
+                  // Cancel (id === null) is the user CHOOSING to discard; the draft
+                  // goes with it. Every other way the form disappears keeps it.
+                  if (id === null) dispatch(setCrewEditForm(null))
+                  setEditingId(id)
+                }}
+                editDraft={editDraft?.id === inst.id ? editDraft.draft : null}
+                editExternallyChanged={editDraft?.id === inst.id ? editExternallyChanged : []}
+                // A three-way merge, with the old baseline as the merge base: the
+                // user's TYPED fields are kept, and every field they did not touch
+                // is taken from the record that actually exists. Keeping all the old
+                // values instead would turn untouched-but-stale fields into
+                // deliberate writes — the exact clobber the baseline exists to stop.
+                editDraftSeq={editDraft?.id === inst.id ? editDraft.seq : 0}
+                onEditRebase={() => {
+                  if (editDraft === null || editDraft.id !== inst.id) return
+                  const base = instanceFormFromView(editDraft.draft.baseline)
+                  const live = instanceFormFromView(inst)
+                  const merged = { ...live }
+                  for (const k of Object.keys(base) as (keyof typeof base)[]) {
+                    if (editDraft.draft.values[k] === base[k]) continue
+                    // Field-wise assign: the value's type is the field's own, and
+                    // a generic index write cannot see that.
+                    Object.assign(merged, { [k]: editDraft.draft.values[k] })
+                  }
+                  dispatch(setCrewEditForm({
+                    id: inst.id,
+                    draft: { values: merged, baseline: inst },
+                    seq: editDraft.seq + 1,
+                  }))
+                }}
+                onEditDraftChange={draft => {
+                  const next =
+                    draft === null
+                      ? null
+                      : {
+                          id: inst.id, draft,
+                          seq: editDraft?.id === inst.id ? editDraft.seq : 0,
+                        }
+                  // Same values, same action: the report fires on every keystroke,
+                  // and dispatching an equal-but-new object re-renders for nothing.
+                  if (JSON.stringify(editDraft) === JSON.stringify(next)) return
+                  if (next === null) setEditBlockedId(null)
+                  dispatch(setCrewEditForm(next))
+                }}
+                // Clearing editingId without clearing the refusal left the UI
+                // instructing the user about a form that no longer exists.
+                onEditSaved={updated => {
+                  setEditingId(null)
+                  dispatch(setCrewEditForm(null))
+                  setEditBlockedId(null)
+                  // A warm pane is an iframe pointed at the OLD local port with the
+                  // OLD token. If the save tore the tunnel down (any transport
+                  // field changed), that pane cannot be revived by reconnecting —
+                  // it would reuse a credential the new tunnel never issued and sit
+                  // on 403. Drop it so the next Connect builds a fresh one. A
+                  // name-or-ttl-only edit leaves the tunnel up, and its pane keeps
+                  // working, so it is deliberately NOT dropped.
+                  if (updated.status?.state !== 'connected') dispatch(removeWarm(inst.id))
+                  reloadInstances()
+                }}
+              />
+  )
+  // Auto-connect is a CREW setting: it opens tunnels to gateways on page load. A mate is
+  // reached per chat and has no tunnel to pre-open, so this stays on the crews tab.
+  const autoConnectCard = (
+    <Card>
+      <SettingsToggle
+        label={i18nT('pages.settings.remoteCrewPanel.auto_connect')}
+        description={i18nT('pages.settings.remoteCrewPanel.auto_connect_desc')}
+        checked={autoConnect}
+        onChange={setAutoConnect}
+      />
+    </Card>
+  )
+  // The list card, drawn by BOTH tabs. `rows` is the split list; the three things that
+  // differ between a gateway and an agent -- the heading, the empty line and the footer
+  // action -- are passed in rather than branched on inside, so neither tab can quietly
+  // grow a control the other does not have.
+  const rowsCard = ({ rows, pending, heading, what, empty, action, warmLine = false }: {
+    rows: InstanceView[]
+    /** The launches in flight that belong to THIS list, not the panel's whole set. */
+    pending: LaunchJob[]
+    heading: string
+    /** One line under the heading saying what KIND of thing this list holds. The same
+     *  sentence the footer button carries, said where a reader lands rather than only at
+     *  the foot of the list: the two tabs differ in what their rows ARE, and a heading
+     *  naming crews or mates assumes the distinction the reader is here to learn. */
+    what: string
+    empty: string
+    action: ReactNode
+    /** Whether to print the warm-set cap. The cap governs CREW tunnels, so the mates
+     *  list leaves it off rather than naming a concept it does not answer to. */
+    warmLine?: boolean
+  }) => (
+    <Card>
+      <div className="flex items-center justify-between mb-1">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-text font-medium">
+            <Server className="lucide-inline" /> {heading}
+          </div>
+          <div className="text-[11.5px] text-muted-strong mt-0.5">{what}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {warmLine && (
+            <span className="text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.up_to_warm', { n: warmCap })}</span>
+          )}
+          <Btn onClick={reloadInstances} aria-label={i18nT('pages.settings.instancesPanel.refresh')}><RefreshCw className="lucide-inline" /></Btn>
+        </div>
+      </div>
+      {needsRestart && (
+        <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
+          <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
+          <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
+        </div>
+      )}
+      {listLoading ? (
+        <div className="flex items-center gap-2 text-muted text-sm py-2">
+          <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.instancesPanel.loading')}
+        </div>
+      ) : loadError ? (
+        // Never fall through to the empty state on a failed load — that
+        // reads as "your crews are gone" when the list simply did not load.
+        <div className="py-1">
+          {/* No hand-off: the add-crew form shares this tab — a failed
+              list refresh must not offer a navigation that discards it. */}
+          <ErrorNotice message={errMsg(instancesQuery.error ?? launchesQuery.error, i18nT('pages.settings.instancesPanel.unknown_error'))} />
+          {/* Refresh replays the same rejected credential, so it can only
+              reproduce the error until the user re-authenticates through
+              the banner the notice points at. */}
+          {!authExpired && (
+            <Btn className="mt-2" onClick={() => { reloadInstances(); reloadLaunches() }}>
+              <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.refresh')}
+            </Btn>
+          )}
+        </div>
+      ) : (
+        <div>
+          {/* A sign-in retry is also in progress, but its crew is already a
+              row below (the connect step ran); a second "Setting up" row
+              would read as a second instance being created — and billed. */}
+          {pending.filter(job => !isRegistered(job)).map(job => (
+            <SettingUpRow key={job.id} job={job} />
+          ))}
+          {rows.map(renderRow)}
+          {pending.length === 0 && rows.length === 0 && (
+            <div className="text-[13px] text-muted py-1">{empty}</div>
+          )}
+        </div>
+      )}
+      {confirmDeleteTag !== null && <p className="mt-2 text-[12px] text-warn">{i18nT('pages.settings.remoteCrewPanel.delete_warning')}</p>}
+      {confirmRemoveId !== null && <p className="mt-2 text-[12px] text-warn">{i18nT('pages.settings.remoteCrewPanel.remove_warning')}</p>}
+      {/* The way IN, at the foot of the list the thing lives in. It used to be on the
+          other tab, behind an AWS prerequisite checklist and a size ladder -- which is a
+          setup form, not an answer to "put this in the cloud" -- and it never asked WHICH
+          crew or mate at all. Each tab passes its own, because the two create different
+          things: a gateway, or one agent. */}
+      <div className="mt-3.5 pt-3 border-t border-border flex items-center gap-2.5 flex-wrap">
+        {action}
+      </div>
+    </Card>
+  )
+  // The EC2 launcher: the whole of what used to be this panel's second tab. It creates a
+  // CREW -- a gateway on a fresh machine -- so it lives on the crews tab, revealed by
+  // that tab's footer button rather than always open.
+  const crewLauncher = (
+  <div
+    className="space-y-4"
+    id="crew-launcher-panel"
+    role="region"
+    aria-label={i18nT('pages.settings.remoteCrewPanel.deploy_crew_title')}
+  >
+    {/* The lane list could not be read. The built-in form below still
+        renders (the list is presentation, not permission), but the
+        failure is said rather than swallowed: a newer dashboard on an
+        older gateway is exactly the version skew the agent can explain.
+        askAgent ON: the launch form persists its account and size, so
+        the navigation destroys nothing. */}
+    {provisionersQuery.isError && (
+      <ErrorNotice
+        message={errMsg(provisionersQuery.error, i18nT('pages.settings.remoteCrewPanel.provisioners_unavailable'))}
+        askAgent
+      />
+    )}
+
+    {/* Which provisioner, out of the CREW lanes only. Rendered when more than one of
+        them is drawable, so the stock build shows nothing here and goes straight to
+        the AWS cards below -- and so does a build whose only other lane deploys
+        mates, because a mate lane is not an answer to this question. */}
+    {crewLanes.length > 1 && (
+      <Card>
+        <div className="text-text font-medium mb-3">{i18nT('pages.settings.remoteCrewPanel.provisioner_choose')}</div>
+        <div className="space-y-2.5">
+          {crewLanes.map(p => (
+            <ProvisionerCard
+              key={p.id}
+              provisioner={p}
+              on={selectedProvisioner?.id === p.id}
+              onPick={setProvisionerId}
+            />
+          ))}
+        </div>
+      </Card>
+    )}
+
+    {/* The remembered lane is gone; say so before showing a different form. */}
+    {staleChoice && selectedProvisioner && (
+      <p role="status" className="text-[12px] text-muted flex items-start gap-1.5">
+        <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
+        {i18nT('pages.settings.remoteCrewPanel.provisioner_stale_choice', { label: selectedProvisioner.label })}
+      </p>
+    )}
+
+    {noDrawableLane ? (
+      <Card>
+        <div className="text-[13px] text-muted">{i18nT('pages.settings.remoteCrewPanel.provisioner_none_drawable')}</div>
+      </Card>
+    ) : builtinProvisioner ? (
+    <>
+    {/* AWS prerequisites — the account inputs live HERE, above the rows they
+        produce. The check runs against this profile/region, so showing the
+        verdict first and the inputs in a later card inverted cause and effect:
+        a red "credentials expired" row gave no hint that it had probed a
+        different profile than the one the reader had in mind. These same two
+        values are also what the launch below uses. */}
+    <Card>
+      <div className="flex items-center gap-2 mb-3 text-text font-medium">
+        <CheckCircle className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.before_you_start')}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <label htmlFor="cloud-profile" className="flex flex-col gap-1 text-[13px] text-muted">
+          {i18nT('pages.settings.instancesPanel.aws_profile')}
+          <input
+            id="cloud-profile"
+            aria-label={i18nT('pages.settings.instancesPanel.aws_profile')}
+            className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
+            value={profile}
+            onChange={e => setProfile(e.target.value)}
+            onBlur={runCheck}
+            placeholder={i18nT('pages.settings.instancesPanel.default_credential_chain')}
+          />
+        </label>
+        <label htmlFor="cloud-region" className="flex flex-col gap-1 text-[13px] text-muted">
+          {i18nT('pages.settings.remoteCrewPanel.region')}
+          <input
+            id="cloud-region"
+            aria-label={i18nT('pages.settings.remoteCrewPanel.region')}
+            className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
+            value={region}
+            onChange={e => setRegion(e.target.value)}
+            onBlur={runCheck}
+            placeholder="us-east-1"
+          />
+        </label>
+      </div>
+      <p className="mb-3 text-[12px] text-muted">
+        {i18nT('pages.settings.remoteCrewPanel.checking_against', {
+          profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
+          region: checkedRegion,
+        })}
+      </p>
+      {/* Rendered independently of `preflight`: a failed RE-check keeps the
+          previous result in cache, and the rows below would otherwise paint
+          that stale verdict as if the check had just passed. askAgent ON:
+          the launch form on this tab keeps its size and account in
+          localStorage (see the diagnosis notice above), so the navigation
+          destroys nothing, and a preflight that cannot even run is exactly
+          the credential/CLI problem the agent can look into. */}
+      {preflightQuery.isError && (
+        <ErrorNotice
+          className="mb-2"
+          message={errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+          askAgent
+        />
+      )}
+      {preflightQuery.isLoading ? (
+        <div className="flex items-center gap-2 text-muted text-sm py-2">
+          <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.checking')}
+        </div>
+      ) : preflight ? (
+        <ul className="m-0 p-0 list-none">
+          <PrereqRow
+            ok={preflight.reachable && !!preflight.account}
+            title={i18nT('pages.settings.remoteCrewPanel.prereq_credentials')}
+            detail={preflight.reachable && preflight.account
+              ? i18nT('pages.settings.remoteCrewPanel.credentials_ok', { profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'), account: preflight.account })
+              : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+            onRecheck={runCheck}
+            rechecking={preflightQuery.isFetching}
+          />
+          <PrereqRow ok={preflight.ec2_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
+          <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
+          <PrereqRow ok={preflight.ssm_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
+          <PrereqRow
+            ok={preflight.session_manager_plugin}
+            title={i18nT('pages.settings.remoteCrewPanel.plugin')}
+            detail={preflight.session_manager_plugin ? i18nT('pages.settings.remoteCrewPanel.plugin_ok') : i18nT('pages.settings.remoteCrewPanel.plugin_missing')}
+            command={preflight.session_manager_plugin ? undefined : (preflight.session_manager_plugin_command || undefined)}
+            onCopyCommand={
+              preflight.session_manager_plugin || !preflight.session_manager_plugin_command
+                ? undefined
+                : () => { void copyCommand(preflight.session_manager_plugin_command as string) }
+            }
+            copied={copied === 'command'}
+            error={copyErr?.target === 'command' ? copyErr.message : undefined}
+            onRecheck={preflight.session_manager_plugin ? undefined : runCheck}
+            rechecking={preflightQuery.isFetching}
+          />
+        </ul>
+      ) : (
+        <div className="text-[13px] text-muted py-1">
+          {/* The failure itself renders above, independent of this branch;
+              this is the no-result state with its Re-check. */}
+          {i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
+          <div className="mt-2"><Btn onClick={runCheck} disabled={preflightQuery.isFetching}><RefreshCw className={`lucide-inline${preflightQuery.isFetching ? ' animate-spin' : ''}`} /> {preflightQuery.isFetching ? i18nT('pages.settings.remoteCrewPanel.checking') : i18nT('pages.settings.remoteCrewPanel.re_check')}</Btn></div>
+        </div>
+      )}
+      <p className="mt-3 text-[12px] text-muted flex items-start gap-1.5">
+        <CheckCircle size={13} className="mt-0.5 shrink-0 text-ok" /> {i18nT('pages.settings.remoteCrewPanel.profile_name_only')}
+      </p>
+    </Card>
+
+    {/* Launch form — profile/region are set in the prerequisites card above,
+        which is the same account this launches into. */}
+    <Card>
+      <div className="text-text font-medium mb-3">{i18nT('pages.settings.remoteCrewPanel.new_cloud_crew')}</div>
+
+      <div>
+        <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.size')}</div>
+        <div className="space-y-2.5">
+          {SIZE_TIERS.map(tier => (
+            <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowMoreSizes(v => !v)}
+          className="mt-2.5 w-full flex items-center gap-2 text-[12px] text-muted px-3 py-2 rounded-md border border-dashed border-border-strong hover:text-text"
+        >
+          <ChevronDown size={14} className={`transition-transform ${showMoreSizes ? 'rotate-180' : ''}`} /> {i18nT('pages.settings.remoteCrewPanel.more_sizes')}
+        </button>
+        {showMoreSizes && (
+          <>
+            <p className="mt-2 text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.more_sizes_hint')}</p>
+            <div className="mt-2 space-y-2.5">
+              {X86_TIERS.map(tier => (
+                <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      <label className="mt-4 block text-[13px] text-muted">
+        {i18nT('pages.settings.remoteCrewPanel.subnet')}
+        <input
+          type="text"
+          value={subnetId}
+          aria-label={i18nT('pages.settings.remoteCrewPanel.subnet')}
+          onChange={e => setSubnetId(e.target.value)}
+          placeholder="subnet-0123456789abcdef0"
+          spellCheck={false}
+          className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
+        />
+        <span className="block mt-1 text-[12px]">{i18nT('pages.settings.remoteCrewPanel.subnet_hint')}</span>
+      </label>
+
+      <div className="mt-4">
+        <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
+        {identityQuery.isError ? (
+          <>
+            {/* No hand-off: this notice sits beside the unsaved Identity Center
+                start-URL and region draft, and the hand-off navigates to chat,
+                which would unmount the form and discard that draft. The failure is
+                non-blocking — the only consequence is that the launching computer's
+                identity could not be read to preselect the radios; the user can
+                still pick and type the target below. */}
+            <ErrorNotice
+              variant="inline"
+              className="mb-2"
+              message={i18nT('pages.settings.remoteCrewPanel.identity_lookup_failed')}
+            />
+          </>
+        ) : identityUnknownCause !== null ? (
+          <>
+            {/* No hand-off: like the notice above, this sits beside the unsaved
+                Identity Center start-URL and region draft, and a hand-off navigates
+                to chat, unmounting the form and discarding that draft. The server
+                suggests nothing, so no radio is checked until the user picks, and
+                Launch waits for that pick. The notice names the cause the server
+                reported: whoami did not answer, or an Identity Center sign-in was
+                read without its portal address. */}
+            <ErrorNotice
+              variant="inline"
+              className="mb-2"
+              message={i18nT(
+                identityUnknownCause === 'no_portal'
+                  ? 'pages.settings.remoteCrewPanel.identity_unknown_no_portal'
+                  : 'pages.settings.remoteCrewPanel.identity_unknown_no_answer',
+              )}
+            />
+          </>
+        ) : null}
+        <div className="space-y-2">
+          <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+            <input
+              type="radio"
+              name="kiro-identity"
+              className="mt-0.5"
+              checked={identityRadioShown && identityMode === 'builder_id'}
+              aria-label={i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+              onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
+              // Re-selecting the already-checked default fires no change
+              // event, but it IS the user's explicit choice, and that
+              // choice ends the wait for the inherited identity.
+              onClick={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
+            />
+            <span>
+              {i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+              <span className="block text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.identity_builder_id_hint')}</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+            <input
+              type="radio"
+              name="kiro-identity"
+              className="mt-0.5"
+              checked={identityRadioShown && identityMode === 'identity_center'}
+              aria-label={i18nT('pages.settings.remoteCrewPanel.identity_center')}
+              onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('identity_center') }}
+            />
+            <span>
+              {i18nT('pages.settings.remoteCrewPanel.identity_center')}
+              <span className="block text-[12px] text-muted">
+                {identityQuery.data?.discovery !== 'unknown' && identityQuery.data?.identity?.account_type === 'IamIdentityCenter'
+                  ? i18nT('pages.settings.remoteCrewPanel.identity_center_inherited')
+                  : i18nT('pages.settings.remoteCrewPanel.identity_center_hint')}
+              </span>
+            </span>
+          </label>
+          {identityMode === 'identity_center' && (
+            <div className="ml-6 space-y-2">
+              <label className="block text-[12px] text-muted">
+                {i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                <input
+                  type="url"
+                  value={identityStartUrl}
+                  aria-label={i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                  onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityStartUrl(e.target.value) }}
+                  placeholder="https://example.awsapps.com/start"
+                  spellCheck={false}
+                  aria-invalid={identityStartUrl !== '' && !identityStartUrlOk}
+                  className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
+                />
+              </label>
+              <label className="block text-[12px] text-muted">
+                {i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                <input
+                  type="text"
+                  value={identityRegion}
+                  aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                  onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityRegion(e.target.value) }}
+                  placeholder="us-east-1"
+                  spellCheck={false}
+                  aria-invalid={identityRegion !== '' && !identityRegionOk}
+                  className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
+                />
+                <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5">
+        <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" />
+        <div className="text-[12px] text-text">
+          {i18nT('pages.settings.remoteCrewPanel.billing')}{' '}
+          <a className="text-accent font-medium hover:underline inline-flex items-center gap-1" href={PRICING_CALCULATOR_URL} target="_blank" rel="noreferrer">
+            {i18nT('pages.settings.remoteCrewPanel.pricing_calculator')} <ExternalLink size={12} />
+          </a>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center gap-3 flex-wrap">
+        {/* Name the lane that is on screen. The built-in form draws EVERY
+            `aws_ec2`-kind row, and an edition may register a second one
+            behind a different engine; omitting the id would let the server
+            default to the built-in and provision on the wrong lane. Only
+            an UNKNOWN list (loading or failed) sends the pre-seam body. */}
+        <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody })} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
+          <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
+        </Btn>
+        <span className="text-[12px] text-muted">
+          {identityResolving
+            ? identityUnknown
+              ? i18nT('pages.settings.remoteCrewPanel.identity_choose')
+              : i18nT('pages.settings.remoteCrewPanel.identity_resolving')
+            : !identityOk
+              ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
+              : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
+        </span>
+      </div>
+    </Card>
+    </>
+    ) : registeredProvisioner && selectedProvisioner ? (
+      // The edition owns this form entirely — its own inputs, its own copy,
+      // its own prerequisites. Isolated in an ErrorBoundary so a throwing
+      // renderer costs the user this form and not the whole Settings page;
+      // the progress card and the status notice below still render, which is
+      // what keeps a launch already in flight visible.
+      <ErrorBoundary scope={`remote-provisioner:${selectedProvisioner.kind}`}>
+        <registeredProvisioner.component
+          provisioner={selectedProvisioner}
+          launch={input => launchMutation.mutate({
+            provider_id: selectedProvisioner.id,
+            profile: input.profile ?? '',
+            region: input.region ?? '',
+            size_key: input.size_key,
+          })}
+          launching={launchMutation.isPending}
+          disabled={disabled}
+          activeJob={activeJob}
+        />
+      </ErrorBoundary>
+    ) : null}
+
+  </div>
+  )
+
+  /**
+   * How a launch in flight reports itself, and how a failed one reports at all.
+   *
+   * At PANEL level, outside both tabs and outside the crew launcher's disclosure. A
+   * launch can be started from either tab now -- the crews tab's EC2 form, or the mates
+   * tab's picker -- and this is the ONLY render of `job.error` and of a failed status
+   * poll. Inside the launcher it was reachable only on the crews tab with that
+   * disclosure open, so a mate launch whose POST succeeded and whose JOB then failed
+   * (an ECS RunTask refusal, a stale `confirmed_recipient`, the engine's own
+   * `mate_name_refusal`) left `launchMutation.onError` unfired, dropped out of
+   * `inProgress` as its row disappeared, and said nothing anywhere.
+   */
+  const launchSurface = (
+    <>
+      {/* The progress poll itself failed. Gated on the query having a job to
+          poll (`effectiveLaunchId`), NOT on `activeJob`: when the polled
+          detail never arrived and the list carries no copy either, the card
+          below is absent and this notice is the only thing that says why.
+          When a card IS showing, it shows the last state received, not a
+          live one, and would otherwise just stop moving. askAgent ON: the
+          launch form persists its size and account, so the navigation loses
+          nothing. */}
+      {effectiveLaunchId && launchStatusQuery.isError && (
+        <ErrorNotice
+          className="mb-4"
+          message={errMsg(launchStatusQuery.error, i18nT('pages.settings.remoteCrewPanel.launch_status_unavailable'))}
+          askAgent
+        />
+      )}
+      {activeJob && (
+        <div className="mb-4">
+          <LaunchProgressCard
+            job={activeJob}
+            cancelling={cancelMutation.isPending && cancelMutation.variables === activeJob.id}
+            onCancel={id => cancelMutation.mutate(id)}
+            onRestartSignin={id => signinRestartMutation.mutate(id)}
+            restartingSignin={signinRestartMutation.isPending}
+            onFetchSignin={id => signinMutation.mutate(id)}
+            fetchingSignin={signinMutation.isPending}
+            signinNotice={signinNotice && signinNotice.jobId === activeJob.id ? signinNotice : null}
+          />
+        </div>
+      )}
+    </>
+  )
   const Tabs = (
     <div className="flex gap-1 border-b border-border mb-5">
+      {/* Two tabs, one per THING: a crew is a gateway, a mate is one agent. Each count
+          is its own list's, so the strip also says which of the two you have. */}
       <button
         type="button"
         onClick={() => setTab('crews')}
-        aria-label={i18nT('pages.settings.remoteCrewPanel.your_crews')}
+        aria-label={i18nT('pages.settings.remoteCrewPanel.remote_crews')}
         className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'crews' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
-        {i18nT('pages.settings.remoteCrewPanel.your_crews')}
-        <span className={`text-[11px] px-1.5 rounded-full ${tab === 'crews' ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>{instances.length}</span>
+        <Server size={14} /> {i18nT('pages.settings.remoteCrewPanel.remote_crews')}
+        <span className={`text-[11px] px-1.5 rounded-full ${tab === 'crews' ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>{crewRows.length}</span>
+        {/* A launch in flight, on the tab it will land on. */}
+        {pendingCrews.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden />}
       </button>
       <button
         type="button"
-        onClick={() => setTab('setup')}
-        aria-label={i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
-        className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'setup' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
+        onClick={() => setTab('mates')}
+        aria-label={i18nT('pages.settings.remoteCrewPanel.remote_mates')}
+        className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'mates' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
-        <Rocket size={14} /> {i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
-        {inProgress.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden />}
+        <Rocket size={14} /> {i18nT('pages.settings.remoteCrewPanel.remote_mates')}
+        <span className={`text-[11px] px-1.5 rounded-full ${tab === 'mates' ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>{mateRows.length}</span>
+        {pendingMates.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden />}
       </button>
     </div>
   )
@@ -2241,557 +3181,118 @@ export function RemoteCrewPanel() {
     <div>
       {Tabs}
       {Notices}
+      {launchSurface}
+      {/* Mounted ONCE, outside the tab branch: the mates tab's picker and the crews
+          tab's launcher both open a dialog that must survive a tab switch, and one
+          living inside either branch would unmount the moment the other was used. */}
+      <DeployMateDialog
+        open={deployOpen}
+        onClose={() => setDeployOpen(false)}
+        launching={launchMutation.isPending}
+        region={region}
+        onLaunch={(req: DeployMateRequest) => {
+          // The picker chose the lane, so `provider_id` is always named; the
+          // recipient rides along only when the lane published one, and `size_key`
+          // is the shared default tier — the Fargate engine maps the three
+          // interactive tier keys to cpu/memory pairs itself, which is what lets
+          // one picker serve both lanes without asking for a Fargate shape.
+          launchMutation.mutate({
+            provider_id: req.provisioner.id,
+            profile,
+            region,
+            size_key: mateSizeKey,
+            mate_name: req.mateName,
+            ...(req.confirmRecipient ? { confirm_recipient: req.confirmRecipient } : {}),
+          })
+        }}
+      />
 
       {tab === 'crews' ? (
         <div className="space-y-4">
-          <Card>
-            <SettingsToggle
-              label={i18nT('pages.settings.remoteCrewPanel.auto_connect')}
-              description={i18nT('pages.settings.remoteCrewPanel.auto_connect_desc')}
-              checked={autoConnect}
-              onChange={setAutoConnect}
-            />
-          </Card>
-          <Card>
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-2 text-text font-medium">
-                <Server className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.crews_you_can_switch_to')}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.up_to_warm', { n: warmCap })}</span>
-                <Btn onClick={reloadInstances} aria-label={i18nT('pages.settings.instancesPanel.refresh')}><RefreshCw className="lucide-inline" /></Btn>
-              </div>
-            </div>
-            {needsRestart && (
-              <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
-                <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-                <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
-              </div>
-            )}
-            {listLoading ? (
-              <div className="flex items-center gap-2 text-muted text-sm py-2">
-                <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.instancesPanel.loading')}
-              </div>
-            ) : loadError ? (
-              // Never fall through to the empty state on a failed load — that
-              // reads as "your crews are gone" when the list simply did not load.
-              <div className="py-1">
-                {/* No hand-off: the add-crew form shares this tab — a failed
-                    list refresh must not offer a navigation that discards it. */}
-                <ErrorNotice message={errMsg(instancesQuery.error ?? launchesQuery.error, i18nT('pages.settings.instancesPanel.unknown_error'))} />
-                {/* Refresh replays the same rejected credential, so it can only
-                    reproduce the error until the user re-authenticates through
-                    the banner the notice points at. */}
-                {!authExpired && (
-                  <Btn className="mt-2" onClick={() => { reloadInstances(); reloadLaunches() }}>
-                    <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.refresh')}
-                  </Btn>
+          {autoConnectCard}
+          {rowsCard({
+            rows: crewRows,
+            pending: pendingCrews,
+            warmLine: true,
+            heading: i18nT('pages.settings.remoteCrewPanel.crews_you_can_switch_to'),
+            what: i18nT('pages.settings.remoteCrewPanel.deploy_crew_footnote'),
+            empty: i18nT('pages.settings.remoteCrewPanel.no_crews'),
+            action: (
+              <>
+                <Btn
+                  primary={!showCrewLauncher}
+                  onClick={() => setShowCrewLauncher(v => !v)}
+                  disabled={launchMutation.isPending}
+                  aria-expanded={showCrewLauncher}
+                  aria-controls="crew-launcher-panel"
+                  data-testid="deploy-crew-open"
+                >
+                  <Rocket className="lucide-inline" />{' '}
+                  {showCrewLauncher
+                    ? i18nT('pages.settings.remoteCrewPanel.hide_launcher')
+                    : i18nT('pages.settings.remoteCrewPanel.deploy_crew_title')}
+                </Btn>
+                {/* Only while the launcher is CLOSED. Beside "Hide the launcher" it
+                    described neither the button nor anything the reader could see. */}
+                {!showCrewLauncher && (
+                  <span className="text-[11px] text-muted-strong">
+                    {i18nT('pages.settings.remoteCrewPanel.deploy_crew_footnote')}
+                  </span>
                 )}
-              </div>
-            ) : (
-              <div>
-                {/* A sign-in retry is also in progress, but its crew is already a
-                    row below (the connect step ran); a second "Setting up" row
-                    would read as a second instance being created — and billed. */}
-                {inProgress.filter(job => !isRegistered(job)).map(job => (
-                  <SettingUpRow key={job.id} job={job} cancelling={cancelMutation.isPending && cancelMutation.variables === job.id} onCancel={id => cancelMutation.mutate(id)} />
-                ))}
-                {instances.map(inst => (
-                  <CrewRow
-                    key={inst.id}
-                    inst={inst}
-                    cloudTag={inst.connection_method === 'ssm' && inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) ?? null : null}
-                    signinJob={inst.connection_method === 'ssm' && inst.ssm_target ? signinJobByInstanceId.get(inst.ssm_target) ?? null : null}
-                    onRestartSignin={id => signinRestartMutation.mutate(id)}
-                    // Keyed to THIS row's job: the mutation is one object shared by
-                    // every row, so its bare `isPending` would disable the sign-in
-                    // buttons on every other unsigned instance the moment one is
-                    // clicked -- reading as if the whole panel were busy.
-                    restartingSignin={signinRestartMutation.isPending && signinRestartMutation.variables === signinJobIdFor(inst)}
-                    onFetchSignin={id => signinMutation.mutate(id)}
-                    fetchingSignin={signinMutation.isPending && signinMutation.variables === signinJobIdFor(inst)}
-                    signinNotice={signinNotice && signinNotice.jobId === signinJobIdFor(inst) ? signinNotice : null}
-                    busy={busy}
-                    deleting={inst.ssm_target ? deletingTags.has(cloudTagByInstanceId.get(inst.ssm_target) ?? '') : false}
-                    confirmDelete={confirmDeleteTag !== null && confirmDeleteTag === (inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) : null)}
-                    confirmRemove={confirmRemoveId === inst.id}
-                    onConnect={id => connectMutation.mutate(id)}
-                    onDisconnect={id => disconnectMutation.mutate(id)}
-                    onDiagnose={id => diagnoseMutation.mutate(id)}
-                    onRemove={id => removeMutation.mutate(id)}
-                    onStop={(tag, coords) => stopMutation.mutate({ tag, coords })}
-                    onStart={(tag, coords) => startMutation.mutate({ tag, coords })}
-                    onDelete={(tag, coords) => deleteMutation.mutate({ tag, coords })}
-                    onRequestDelete={tag => setConfirmDeleteTag(tag)}
-                    onRequestRemove={id => setConfirmRemoveId(id)}
-                    editing={editingId === inst.id}
-                    blocked={editBlockedId === inst.id}
-                    onEdit={id => {
-                      // Switching rows would unmount another crew's draft.
-                      if (
-                        id !== null
-                        && editDraft !== null
-                        && id !== editDraft.id
-                      ) {
-                        setEditBlockedId(id)
-                        return
-                      }
-                      setEditBlockedId(null)
-                      // Cancel (id === null) is the user CHOOSING to discard; the draft
-                      // goes with it. Every other way the form disappears keeps it.
-                      if (id === null) dispatch(setCrewEditForm(null))
-                      setEditingId(id)
-                    }}
-                    editDraft={editDraft?.id === inst.id ? editDraft.draft : null}
-                    editExternallyChanged={editDraft?.id === inst.id ? editExternallyChanged : []}
-                    // A three-way merge, with the old baseline as the merge base: the
-                    // user's TYPED fields are kept, and every field they did not touch
-                    // is taken from the record that actually exists. Keeping all the old
-                    // values instead would turn untouched-but-stale fields into
-                    // deliberate writes — the exact clobber the baseline exists to stop.
-                    editDraftSeq={editDraft?.id === inst.id ? editDraft.seq : 0}
-                    onEditRebase={() => {
-                      if (editDraft === null || editDraft.id !== inst.id) return
-                      const base = instanceFormFromView(editDraft.draft.baseline)
-                      const live = instanceFormFromView(inst)
-                      const merged = { ...live }
-                      for (const k of Object.keys(base) as (keyof typeof base)[]) {
-                        if (editDraft.draft.values[k] === base[k]) continue
-                        // Field-wise assign: the value's type is the field's own, and
-                        // a generic index write cannot see that.
-                        Object.assign(merged, { [k]: editDraft.draft.values[k] })
-                      }
-                      dispatch(setCrewEditForm({
-                        id: inst.id,
-                        draft: { values: merged, baseline: inst },
-                        seq: editDraft.seq + 1,
-                      }))
-                    }}
-                    onEditDraftChange={draft => {
-                      const next =
-                        draft === null
-                          ? null
-                          : {
-                              id: inst.id, draft,
-                              seq: editDraft?.id === inst.id ? editDraft.seq : 0,
-                            }
-                      // Same values, same action: the report fires on every keystroke,
-                      // and dispatching an equal-but-new object re-renders for nothing.
-                      if (JSON.stringify(editDraft) === JSON.stringify(next)) return
-                      if (next === null) setEditBlockedId(null)
-                      dispatch(setCrewEditForm(next))
-                    }}
-                    // Clearing editingId without clearing the refusal left the UI
-                    // instructing the user about a form that no longer exists.
-                    onEditSaved={updated => {
-                      setEditingId(null)
-                      dispatch(setCrewEditForm(null))
-                      setEditBlockedId(null)
-                      // A warm pane is an iframe pointed at the OLD local port with the
-                      // OLD token. If the save tore the tunnel down (any transport
-                      // field changed), that pane cannot be revived by reconnecting —
-                      // it would reuse a credential the new tunnel never issued and sit
-                      // on 403. Drop it so the next Connect builds a fresh one. A
-                      // name-or-ttl-only edit leaves the tunnel up, and its pane keeps
-                      // working, so it is deliberately NOT dropped.
-                      if (updated.status?.state !== 'connected') dispatch(removeWarm(inst.id))
-                      reloadInstances()
-                    }}
-                  />
-                ))}
-                {inProgress.length === 0 && instances.length === 0 && (
-                  <div className="text-[13px] text-muted py-1">{i18nT('pages.settings.remoteCrewPanel.no_crews')}</div>
-                )}
-              </div>
-            )}
-            {confirmDeleteTag !== null && <p className="mt-2 text-[12px] text-warn">{i18nT('pages.settings.remoteCrewPanel.delete_warning')}</p>}
-            {confirmRemoveId !== null && <p className="mt-2 text-[12px] text-warn">{i18nT('pages.settings.remoteCrewPanel.remove_warning')}</p>}
-          </Card>
-
+              </>
+            ),
+          })}
+          {/* Open only on request: an AWS probe, a size ladder, a subnet and an identity
+              is a long form, and the answer to "which crews do I have" must not sit
+              below all of it. */}
+          {showCrewLauncher && crewLauncher}
           <AddInstanceForm onAdded={reloadInstances} />
         </div>
       ) : (
         <div className="space-y-4">
-          {/* The lane list could not be read. The built-in form below still
-              renders (the list is presentation, not permission), but the
-              failure is said rather than swallowed: a newer dashboard on an
-              older gateway is exactly the version skew the agent can explain.
-              askAgent ON: the launch form persists its account and size, so
-              the navigation destroys nothing. */}
+          {rowsCard({
+            rows: mateRows,
+            pending: pendingMates,
+            heading: i18nT('pages.settings.remoteCrewPanel.mates_you_can_chat_to'),
+            what: i18nT('pages.settings.remoteCrewPanel.deploy_mate_footnote'),
+            empty: i18nT('pages.settings.remoteCrewPanel.no_mates'),
+            action: (
+              <>
+                <Btn
+                  primary
+                  onClick={() => setDeployOpen(true)}
+                  disabled={launchMutation.isPending}
+                  data-testid="deploy-mate-open"
+                >
+                  <Rocket className="lucide-inline" />{' '}
+                  {i18nT('pages.settings.remoteCrewPanel.deploy_mate_title')}
+                </Btn>
+                <span className="text-[11px] text-muted-strong">
+                  {i18nT('pages.settings.remoteCrewPanel.deploy_mate_footnote')}
+                </span>
+              </>
+            ),
+          })}
+          {/* What the mate lane IS, when one is configured: which mate its image serves
+              and the region it launches into. Said before a launch rather than after a
+              refused one. */}
+          {mateLane && (
+            <FargateLaunchCard provisioner={mateLane} region={region} sizeKey={sizeKey} />
+          )}
+          {/* A mate lane the gateway does not offer. Said here, because the mates tab is
+              where a reader looks for it -- the picker's disabled chip says the same
+              thing, and only after they open it. */}
+          {!mateLane && provisionersQuery.isSuccess && (
+            <Card>
+              <div className="text-[13px] text-muted">
+                {i18nT('pages.settings.remoteCrewPanel.lane_fargate_absent')}
+              </div>
+            </Card>
+          )}
           {provisionersQuery.isError && (
             <ErrorNotice
               message={errMsg(provisionersQuery.error, i18nT('pages.settings.remoteCrewPanel.provisioners_unavailable'))}
               askAgent
-            />
-          )}
-
-          {/* Which provisioner. Rendered only when the gateway offers more than
-              one this frontend can draw, so the stock build shows nothing here
-              and goes straight to the AWS cards below. */}
-          {provisioners.length > 1 && (
-            <Card>
-              <div className="text-text font-medium mb-3">{i18nT('pages.settings.remoteCrewPanel.provisioner_choose')}</div>
-              <div className="space-y-2.5">
-                {provisioners.map(p => (
-                  <ProvisionerCard
-                    key={p.id}
-                    provisioner={p}
-                    on={selectedProvisioner?.id === p.id}
-                    onPick={setProvisionerId}
-                  />
-                ))}
-              </div>
-            </Card>
-          )}
-
-          {/* The remembered lane is gone; say so before showing a different form. */}
-          {staleChoice && selectedProvisioner && (
-            <p role="status" className="text-[12px] text-muted flex items-start gap-1.5">
-              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
-              {i18nT('pages.settings.remoteCrewPanel.provisioner_stale_choice', { label: selectedProvisioner.label })}
-            </p>
-          )}
-
-          {noDrawableLane ? (
-            <Card>
-              <div className="text-[13px] text-muted">{i18nT('pages.settings.remoteCrewPanel.provisioner_none_drawable')}</div>
-            </Card>
-          ) : builtinProvisioner ? (
-          <>
-          {/* AWS prerequisites — the account inputs live HERE, above the rows they
-              produce. The check runs against this profile/region, so showing the
-              verdict first and the inputs in a later card inverted cause and effect:
-              a red "credentials expired" row gave no hint that it had probed a
-              different profile than the one the reader had in mind. These same two
-              values are also what the launch below uses. */}
-          <Card>
-            <div className="flex items-center gap-2 mb-3 text-text font-medium">
-              <CheckCircle className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.before_you_start')}
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-              <label htmlFor="cloud-profile" className="flex flex-col gap-1 text-[13px] text-muted">
-                {i18nT('pages.settings.instancesPanel.aws_profile')}
-                <input
-                  id="cloud-profile"
-                  aria-label={i18nT('pages.settings.instancesPanel.aws_profile')}
-                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
-                  value={profile}
-                  onChange={e => setProfile(e.target.value)}
-                  onBlur={runCheck}
-                  placeholder={i18nT('pages.settings.instancesPanel.default_credential_chain')}
-                />
-              </label>
-              <label htmlFor="cloud-region" className="flex flex-col gap-1 text-[13px] text-muted">
-                {i18nT('pages.settings.remoteCrewPanel.region')}
-                <input
-                  id="cloud-region"
-                  aria-label={i18nT('pages.settings.remoteCrewPanel.region')}
-                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
-                  value={region}
-                  onChange={e => setRegion(e.target.value)}
-                  onBlur={runCheck}
-                  placeholder="us-east-1"
-                />
-              </label>
-            </div>
-            <p className="mb-3 text-[12px] text-muted">
-              {i18nT('pages.settings.remoteCrewPanel.checking_against', {
-                profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
-                region: checkedRegion,
-              })}
-            </p>
-            {/* Rendered independently of `preflight`: a failed RE-check keeps the
-                previous result in cache, and the rows below would otherwise paint
-                that stale verdict as if the check had just passed. askAgent ON:
-                the launch form on this tab keeps its size and account in
-                localStorage (see the diagnosis notice above), so the navigation
-                destroys nothing, and a preflight that cannot even run is exactly
-                the credential/CLI problem the agent can look into. */}
-            {preflightQuery.isError && (
-              <ErrorNotice
-                className="mb-2"
-                message={errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
-                askAgent
-              />
-            )}
-            {preflightQuery.isLoading ? (
-              <div className="flex items-center gap-2 text-muted text-sm py-2">
-                <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.checking')}
-              </div>
-            ) : preflight ? (
-              <ul className="m-0 p-0 list-none">
-                <PrereqRow
-                  ok={preflight.reachable && !!preflight.account}
-                  title={i18nT('pages.settings.remoteCrewPanel.prereq_credentials')}
-                  detail={preflight.reachable && preflight.account
-                    ? i18nT('pages.settings.remoteCrewPanel.credentials_ok', { profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'), account: preflight.account })
-                    : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
-                  onRecheck={runCheck}
-                  rechecking={preflightQuery.isFetching}
-                />
-                <PrereqRow ok={preflight.ec2_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
-                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
-                <PrereqRow ok={preflight.ssm_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
-                <PrereqRow
-                  ok={preflight.session_manager_plugin}
-                  title={i18nT('pages.settings.remoteCrewPanel.plugin')}
-                  detail={preflight.session_manager_plugin ? i18nT('pages.settings.remoteCrewPanel.plugin_ok') : i18nT('pages.settings.remoteCrewPanel.plugin_missing')}
-                  command={preflight.session_manager_plugin ? undefined : (preflight.session_manager_plugin_command || undefined)}
-                  onCopyCommand={
-                    preflight.session_manager_plugin || !preflight.session_manager_plugin_command
-                      ? undefined
-                      : () => { void copyCommand(preflight.session_manager_plugin_command as string) }
-                  }
-                  copied={copied === 'command'}
-                  error={copyErr?.target === 'command' ? copyErr.message : undefined}
-                  onRecheck={preflight.session_manager_plugin ? undefined : runCheck}
-                  rechecking={preflightQuery.isFetching}
-                />
-              </ul>
-            ) : (
-              <div className="text-[13px] text-muted py-1">
-                {/* The failure itself renders above, independent of this branch;
-                    this is the no-result state with its Re-check. */}
-                {i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
-                <div className="mt-2"><Btn onClick={runCheck} disabled={preflightQuery.isFetching}><RefreshCw className={`lucide-inline${preflightQuery.isFetching ? ' animate-spin' : ''}`} /> {preflightQuery.isFetching ? i18nT('pages.settings.remoteCrewPanel.checking') : i18nT('pages.settings.remoteCrewPanel.re_check')}</Btn></div>
-              </div>
-            )}
-            <p className="mt-3 text-[12px] text-muted flex items-start gap-1.5">
-              <CheckCircle size={13} className="mt-0.5 shrink-0 text-ok" /> {i18nT('pages.settings.remoteCrewPanel.profile_name_only')}
-            </p>
-          </Card>
-
-          {/* Launch form — profile/region are set in the prerequisites card above,
-              which is the same account this launches into. */}
-          <Card>
-            <div className="text-text font-medium mb-3">{i18nT('pages.settings.remoteCrewPanel.new_cloud_crew')}</div>
-
-            <div>
-              <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.size')}</div>
-              <div className="space-y-2.5">
-                {SIZE_TIERS.map(tier => (
-                  <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
-                ))}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setShowMoreSizes(v => !v)}
-                className="mt-2.5 w-full flex items-center gap-2 text-[12px] text-muted px-3 py-2 rounded-md border border-dashed border-border-strong hover:text-text"
-              >
-                <ChevronDown size={14} className={`transition-transform ${showMoreSizes ? 'rotate-180' : ''}`} /> {i18nT('pages.settings.remoteCrewPanel.more_sizes')}
-              </button>
-              {showMoreSizes && (
-                <>
-                  <p className="mt-2 text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.more_sizes_hint')}</p>
-                  <div className="mt-2 space-y-2.5">
-                    {X86_TIERS.map(tier => (
-                      <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-
-            <label className="mt-4 block text-[13px] text-muted">
-              {i18nT('pages.settings.remoteCrewPanel.subnet')}
-              <input
-                type="text"
-                value={subnetId}
-                aria-label={i18nT('pages.settings.remoteCrewPanel.subnet')}
-                onChange={e => setSubnetId(e.target.value)}
-                placeholder="subnet-0123456789abcdef0"
-                spellCheck={false}
-                className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
-              />
-              <span className="block mt-1 text-[12px]">{i18nT('pages.settings.remoteCrewPanel.subnet_hint')}</span>
-            </label>
-
-            <div className="mt-4">
-              <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
-              {identityQuery.isError ? (
-                <>
-                  {/* No hand-off: this notice sits beside the unsaved Identity Center
-                      start-URL and region draft, and the hand-off navigates to chat,
-                      which would unmount the form and discard that draft. The failure is
-                      non-blocking — the only consequence is that the launching computer's
-                      identity could not be read to preselect the radios; the user can
-                      still pick and type the target below. */}
-                  <ErrorNotice
-                    variant="inline"
-                    className="mb-2"
-                    message={i18nT('pages.settings.remoteCrewPanel.identity_lookup_failed')}
-                  />
-                </>
-              ) : identityUnknownCause !== null ? (
-                <>
-                  {/* No hand-off: like the notice above, this sits beside the unsaved
-                      Identity Center start-URL and region draft, and a hand-off navigates
-                      to chat, unmounting the form and discarding that draft. The server
-                      suggests nothing, so no radio is checked until the user picks, and
-                      Launch waits for that pick. The notice names the cause the server
-                      reported: whoami did not answer, or an Identity Center sign-in was
-                      read without its portal address. */}
-                  <ErrorNotice
-                    variant="inline"
-                    className="mb-2"
-                    message={i18nT(
-                      identityUnknownCause === 'no_portal'
-                        ? 'pages.settings.remoteCrewPanel.identity_unknown_no_portal'
-                        : 'pages.settings.remoteCrewPanel.identity_unknown_no_answer',
-                    )}
-                  />
-                </>
-              ) : null}
-              <div className="space-y-2">
-                <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
-                  <input
-                    type="radio"
-                    name="kiro-identity"
-                    className="mt-0.5"
-                    checked={identityRadioShown && identityMode === 'builder_id'}
-                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
-                    onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
-                    // Re-selecting the already-checked default fires no change
-                    // event, but it IS the user's explicit choice, and that
-                    // choice ends the wait for the inherited identity.
-                    onClick={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
-                  />
-                  <span>
-                    {i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
-                    <span className="block text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.identity_builder_id_hint')}</span>
-                  </span>
-                </label>
-                <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
-                  <input
-                    type="radio"
-                    name="kiro-identity"
-                    className="mt-0.5"
-                    checked={identityRadioShown && identityMode === 'identity_center'}
-                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_center')}
-                    onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('identity_center') }}
-                  />
-                  <span>
-                    {i18nT('pages.settings.remoteCrewPanel.identity_center')}
-                    <span className="block text-[12px] text-muted">
-                      {identityQuery.data?.discovery !== 'unknown' && identityQuery.data?.identity?.account_type === 'IamIdentityCenter'
-                        ? i18nT('pages.settings.remoteCrewPanel.identity_center_inherited')
-                        : i18nT('pages.settings.remoteCrewPanel.identity_center_hint')}
-                    </span>
-                  </span>
-                </label>
-                {identityMode === 'identity_center' && (
-                  <div className="ml-6 space-y-2">
-                    <label className="block text-[12px] text-muted">
-                      {i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
-                      <input
-                        type="url"
-                        value={identityStartUrl}
-                        aria-label={i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
-                        onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityStartUrl(e.target.value) }}
-                        placeholder="https://example.awsapps.com/start"
-                        spellCheck={false}
-                        aria-invalid={identityStartUrl !== '' && !identityStartUrlOk}
-                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
-                      />
-                    </label>
-                    <label className="block text-[12px] text-muted">
-                      {i18nT('pages.settings.remoteCrewPanel.identity_region')}
-                      <input
-                        type="text"
-                        value={identityRegion}
-                        aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
-                        onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityRegion(e.target.value) }}
-                        placeholder="us-east-1"
-                        spellCheck={false}
-                        aria-invalid={identityRegion !== '' && !identityRegionOk}
-                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
-                      />
-                      <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
-                    </label>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5">
-              <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" />
-              <div className="text-[12px] text-text">
-                {i18nT('pages.settings.remoteCrewPanel.billing')}{' '}
-                <a className="text-accent font-medium hover:underline inline-flex items-center gap-1" href={PRICING_CALCULATOR_URL} target="_blank" rel="noreferrer">
-                  {i18nT('pages.settings.remoteCrewPanel.pricing_calculator')} <ExternalLink size={12} />
-                </a>
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-center gap-3 flex-wrap">
-              {/* Name the lane that is on screen. The built-in form draws EVERY
-                  `aws_ec2`-kind row, and an edition may register a second one
-                  behind a different engine; omitting the id would let the server
-                  default to the built-in and provision on the wrong lane. Only
-                  an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody })} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
-                <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
-              </Btn>
-              <span className="text-[12px] text-muted">
-                {identityResolving
-                  ? identityUnknown
-                    ? i18nT('pages.settings.remoteCrewPanel.identity_choose')
-                    : i18nT('pages.settings.remoteCrewPanel.identity_resolving')
-                  : !identityOk
-                    ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
-                    : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
-              </span>
-            </div>
-          </Card>
-          </>
-          ) : registeredProvisioner && selectedProvisioner ? (
-            // The edition owns this form entirely — its own inputs, its own copy,
-            // its own prerequisites. Isolated in an ErrorBoundary so a throwing
-            // renderer costs the user this form and not the whole Settings page;
-            // the progress card and the status notice below still render, which is
-            // what keeps a launch already in flight visible.
-            <ErrorBoundary scope={`remote-provisioner:${selectedProvisioner.kind}`}>
-              <registeredProvisioner.component
-                provisioner={selectedProvisioner}
-                launch={input => launchMutation.mutate({
-                  provider_id: selectedProvisioner.id,
-                  profile: input.profile ?? '',
-                  region: input.region ?? '',
-                  size_key: input.size_key,
-                })}
-                launching={launchMutation.isPending}
-                disabled={disabled}
-                activeJob={activeJob}
-              />
-            </ErrorBoundary>
-          ) : null}
-
-          {/* The progress poll itself failed. Gated on the query having a job to
-              poll (`effectiveLaunchId`), NOT on `activeJob`: when the polled
-              detail never arrived and the list carries no copy either, the card
-              below is absent and this notice is the only thing that says why.
-              When a card IS showing, it shows the last state received, not a
-              live one, and would otherwise just stop moving. askAgent ON: the
-              launch form persists its size and account, so the navigation loses
-              nothing. */}
-          {effectiveLaunchId && launchStatusQuery.isError && (
-            <ErrorNotice
-              className="mt-4"
-              message={errMsg(launchStatusQuery.error, i18nT('pages.settings.remoteCrewPanel.launch_status_unavailable'))}
-              askAgent
-            />
-          )}
-          {activeJob && (
-            <LaunchProgressCard
-              job={activeJob}
-              cancelling={cancelMutation.isPending && cancelMutation.variables === activeJob.id}
-              onCancel={id => cancelMutation.mutate(id)}
-              onRestartSignin={id => signinRestartMutation.mutate(id)}
-              restartingSignin={signinRestartMutation.isPending}
-              onFetchSignin={id => signinMutation.mutate(id)}
-              fetchingSignin={signinMutation.isPending}
-              signinNotice={signinNotice && signinNotice.jobId === activeJob.id ? signinNotice : null}
             />
           )}
         </div>

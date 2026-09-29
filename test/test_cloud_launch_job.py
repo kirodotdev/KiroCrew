@@ -37,8 +37,16 @@ class FakeHandle:
 class FakeEngine:
     """Records calls; each step is individually configurable to raise/return."""
 
-    def __init__(self, *, handle=None, preflight_exc=None, provision_exc=None, register_exc=None,
-                 teardown_exc=None, teardown_confirms=True):
+    def __init__(
+        self,
+        *,
+        handle=None,
+        preflight_exc=None,
+        provision_exc=None,
+        register_exc=None,
+        teardown_exc=None,
+        teardown_confirms=True,
+    ):
         self.handle = handle or FakeHandle(already=True)
         self.preflight_exc = preflight_exc
         self.provision_exc = provision_exc
@@ -222,8 +230,13 @@ class TestRunLaunch:
             seen["code"] = mid.signin.code if mid.signin else None
 
         eng = FakeEngine(
-            handle=FakeHandle(url="https://x/verify", code="BQTZ-XKFD", ports=[54123], signed=True,
-                              on_wait=on_wait)
+            handle=FakeHandle(
+                url="https://x/verify",
+                code="BQTZ-XKFD",
+                ports=[54123],
+                signed=True,
+                on_wait=on_wait,
+            )
         )
         out = lj.run_launch(job, s, eng)
         assert seen["status"] == lj.AWAITING_SIGNIN
@@ -422,9 +435,7 @@ class TestRunLaunch:
             def register(self, *, instance_id, tag, profile, region):
                 # Stands in for the user pressing Cancel while the poll is waiting.
                 cancel.set()
-                super().register(
-                    instance_id=instance_id, tag=tag, profile=profile, region=region
-                )
+                super().register(instance_id=instance_id, tag=tag, profile=profile, region=region)
 
         eng = _CancelDuringRegister(handle=FakeHandle(already=True))
         out = lj.run_launch(job, s, eng, cancel=cancel)
@@ -521,7 +532,8 @@ class TestRealSigninHandleFailures:
         from kiro_crew.cloud import launch_engine as le
 
         monkeypatch.setattr(
-            le.login, "start_device_login",
+            le.login,
+            "start_device_login",
             lambda *a, **k: SimpleNamespace(
                 already_logged_in=False, url="u", code="c", ports=[], close=lambda: None
             ),
@@ -582,11 +594,15 @@ class TestRealEngineGatewayPort:
         from kiro_crew.cloud import launch_engine as le
 
         seen = {}
-        monkeypatch.setattr(le.ec2, "deploy", lambda **kw: (
-            seen.update(kw) or SimpleNamespace(instance_id="i-0abc")))
+        monkeypatch.setattr(
+            le.ec2,
+            "deploy",
+            lambda **kw: (seen.update(kw) or SimpleNamespace(instance_id="i-0abc")),
+        )
         monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
         monkeypatch.setattr(
-            le.connect_mod, "register_instance",
+            le.connect_mod,
+            "register_instance",
             lambda iid, **kw: seen.update({"reg": kw}) or "inst-1",
         )
         return le, seen
@@ -863,7 +879,9 @@ class TestProvisionerOnTheJob:
         """Another provisioner's ``size_key`` is its own vocabulary; refusing it here
         against ``sizes.py`` would refuse every non-EC2 launch."""
         job = _store(tmp_path).create(
-            profile="", region="us-west-2", size_key="dev.standard1.large",
+            profile="",
+            region="us-west-2",
+            size_key="dev.standard1.large",
             provider_id="devspace",
         )
         assert job.provider_id == "devspace"
@@ -871,14 +889,20 @@ class TestProvisionerOnTheJob:
 
     def test_step_labels_override_only_known_keys(self, tmp_path):
         job = _store(tmp_path).create(
-            profile="", region="", size_key="s", provider_id="devspace",
+            profile="",
+            region="",
+            size_key="s",
+            provider_id="devspace",
             step_labels={lj.STEP_PROVISION: "Create the DevSpace", "bogus": "ignored"},
         )
         labels = {st.key: st.label for st in job.steps}
         assert labels[lj.STEP_PROVISION] == "Create the DevSpace"
         assert labels[lj.STEP_PREFLIGHT] == "Check your AWS setup"  # untouched core label
         assert [st.key for st in job.steps] == [
-            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+            lj.STEP_PREFLIGHT,
+            lj.STEP_PROVISION,
+            lj.STEP_SIGNIN,
+            lj.STEP_CONNECT,
         ]
 
     def test_default_steps_with_no_overrides_are_the_core_labels(self):
@@ -912,6 +936,160 @@ class TestProvisionerOnTheJob:
         assert got.status == lj.FAILED
         assert "EC2 stack" not in got.error
         assert "instance may still exist" in got.error
+
+
+class TestTheMateNameOnTheJob:
+    """``mate_name`` — which mate a launch is FOR — persisted, and passed only where it fits.
+
+    It is a request, never an authority. Nothing here selects an image, a size or a
+    placement from it; the engine that can be pinned to one crew refuses a name it
+    cannot serve, and the rest simply carry it.
+    """
+
+    def test_it_defaults_to_empty_and_round_trips(self, tmp_path):
+        s = _store(tmp_path)
+        plain = s.create(profile="dev", region="us-east-1", size_key="balanced")
+        assert plain.mate_name == ""
+        named = s.create(
+            profile="dev", region="us-east-1", size_key="balanced", mate_name="orchard-sde"
+        )
+        assert named.to_dict()["mate_name"] == "orchard-sde"
+        # Through a FRESH store, which is the durability the card depends on: the crew's
+        # name and face are the whole identity of an in-flight row, and a gateway restart
+        # mid-launch must not leave a nameless one behind.
+        assert lj.LaunchJobStore(root=s.root).get(named.id).mate_name == "orchard-sde"
+
+    def test_register_receives_the_mate_only_from_an_engine_that_takes_it(self, tmp_path):
+        """The landed row is NAMED after the mate, through the same shape question.
+
+        Two keywords on two methods: an engine may take a mate name for the launch and
+        still have the four-keyword ``register``. Calling that one with a fifth raises
+        inside the CONNECT step, which is after the compute exists and is billing -- so
+        the probe is asked of ``register`` itself, not inferred from ``provision``.
+        """
+
+        class TakesIt(FakeEngine):
+            def provision(self, *, tag, size_key, profile, region, mate_name=""):
+                self.calls.append(("provision", tag, size_key, mate_name))
+                return "i-0abc123456789def0"
+
+            def register(self, *, instance_id, tag, profile, region, mate_name=""):
+                self.calls.append(("register", instance_id, tag, mate_name))
+
+        takes = TakesIt()
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-1", size_key="balanced", mate_name="analyst")
+        lj.run_launch(job, s, takes)
+        assert ("register", "i-0abc123456789def0", job.tag, "analyst") in takes.calls
+
+        # The complement: the four-keyword register is called WITHOUT the keyword, and
+        # the launch still reaches DONE rather than raising in the connect step.
+        plain = FakeEngine()
+        s2 = _store(tmp_path / "second")
+        job2 = s2.create(
+            profile="dev", region="us-east-1", size_key="balanced", mate_name="analyst"
+        )
+        lj.run_launch(job2, s2, plain)
+        assert ("register", "i-0abc123456789def0", job2.tag) in plain.calls
+        assert s2.get(job2.id).status == lj.DONE
+
+    def test_a_pre_field_job_file_loads_as_no_crew(self):
+        d = lj.LaunchJob(id="a" * 12, profile="", region="", size_key="balanced").to_dict()
+        del d["mate_name"]
+        assert lj.LaunchJob.from_dict(d).mate_name == ""
+
+    def test_an_engine_written_before_the_keyword_does_not_receive_it(self, tmp_path):
+        """The back-compat case, and the one that must not raise.
+
+        ``FakeEngine.provision`` takes the four original keywords. Passing a fifth would
+        raise ``TypeError`` from inside the PROVISION step — the step whose failure arms
+        teardown — so a shape mismatch would be reported to the user as a launch AWS
+        refused, and would roll back a stack that was never created.
+        """
+        engine = FakeEngine()
+        assert lj.engine_accepts_mate_name(engine) is False
+
+        s = _store(tmp_path)
+        job = s.create(profile="", region="us-west-2", size_key="balanced", mate_name="orchard-sde")
+        lj.run_launch(job, s, engine)
+
+        assert job.status == lj.DONE, job.error
+        assert ("provision", job.tag, "balanced") in engine.calls
+
+    def test_an_engine_that_takes_it_receives_the_crew(self, tmp_path):
+        """The complement: the keyword has to actually ARRIVE somewhere.
+
+        Without this, never passing it would satisfy the test above, and the Fargate
+        lane's refusal would be unreachable from the launch path.
+        """
+
+        class Accepting(FakeEngine):
+            def provision(self, *, tag, size_key, profile, region, mate_name=""):
+                self.calls.append(("provision", tag, size_key, mate_name))
+                return "i-0abc123456789def0"
+
+        engine = Accepting()
+        assert lj.engine_accepts_mate_name(engine) is True
+
+        s = _store(tmp_path)
+        job = s.create(profile="", region="us-west-2", size_key="balanced", mate_name="orchard-sde")
+        lj.run_launch(job, s, engine)
+
+        assert ("provision", job.tag, "balanced", "orchard-sde") in engine.calls
+
+    def test_a_job_naming_no_crew_passes_no_keyword(self, tmp_path):
+        """An empty name is absence, not a value to forward.
+
+        An engine that treats "" as a crew it cannot serve would otherwise refuse every
+        launch made without the picker.
+        """
+
+        class Accepting(FakeEngine):
+            def provision(self, *, tag, size_key, profile, region, mate_name="unset"):
+                self.calls.append(("provision", mate_name))
+                return "i-0abc123456789def0"
+
+        engine = Accepting()
+        s = _store(tmp_path)
+        job = s.create(profile="", region="us-west-2", size_key="balanced")
+        lj.run_launch(job, s, engine)
+
+        assert ("provision", "unset") in engine.calls, engine.calls
+
+    def test_an_engine_with_no_opinion_refuses_nothing(self):
+        assert lj.engine_mate_name_refusal(FakeEngine(), "orchard-sde") == ""
+
+    def test_an_engines_own_reason_is_returned_verbatim(self):
+        class Pinned(FakeEngine):
+            def mate_name_refusal(self, mate_name):
+                return f"this lane only serves demo, not {mate_name}"
+
+        assert lj.engine_mate_name_refusal(Pinned(), "orchard-sde") == (
+            "this lane only serves demo, not orchard-sde"
+        )
+
+    def test_an_empty_name_is_never_sent_to_the_probe(self):
+        """A launch that named no crew cannot be refused for naming the wrong one."""
+
+        class Pinned(FakeEngine):
+            def mate_name_refusal(self, mate_name):
+                raise AssertionError("the probe was asked about an absent crew name")
+
+        assert lj.engine_mate_name_refusal(Pinned(), "") == ""
+
+    def test_a_probe_that_raises_is_treated_as_accepting(self):
+        """A broken probe must not block every launch through its lane.
+
+        The engine's own ``provision`` asks again over what it is about to launch, so
+        the guarantee survives a probe that cannot answer; a probe whose exception
+        refused the launch would turn one bug into an unusable lane.
+        """
+
+        class Broken(FakeEngine):
+            def mate_name_refusal(self, mate_name):
+                raise RuntimeError("boom")
+
+        assert lj.engine_mate_name_refusal(Broken(), "orchard-sde") == ""
 
 
 class TestTargetCompatibilityIsDecidedBeforeProvisioning:

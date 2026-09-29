@@ -416,7 +416,6 @@ test/test_cli_desktop.py
 test/test_cli_lazy_imports.py
 test/test_close_guard_parity.py
 test/test_cloud_ec2.py
-test/test_cloud_launch_job.py
 test/test_collection_status_endpoint.py
 test/test_computer_use_apps.py
 test/test_computer_use_overlay.py

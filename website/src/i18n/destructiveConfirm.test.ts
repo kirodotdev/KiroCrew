@@ -274,6 +274,15 @@ export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
     + 'link_open_confirm_title, so it cannot carry a space or a quote',
   'components.redaction.link_open_confirm_body':
     'the {{chars}} operand is a non-negative integer character count, never user text',
+  'pages.settings.remoteCrewPanel.confirm_title':
+    'kind-word form (#4657): the operand is preceded by its kind ("the mate {{mate}}"), '
+    + 'so a mate name carrying a space cannot parse as the rest of the sentence. The other '
+    + 'two operands are not user text -- {{lane}} is one of this build\'s own lane labels '
+    + 'and {{region}} is an AWS region code',
+  'pages.settings.remoteCrewPanel.confirm_sentence':
+    'the same sentence as confirm_title with the region named, exempt for the same reason: '
+    + 'the kind word sits beside the mate name, and the lane and region operands are not '
+    + 'user-supplied text',
   'components.awsConsentGate.confirmed_on':
     'not a confirmation prompt: a past-tense receipt fragment whose only operand is a '
     + 'machine-formatted date from fmtDate, never user-supplied text',

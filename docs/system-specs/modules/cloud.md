@@ -377,8 +377,13 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   A rewritten block therefore produces a **refused launch the operator sees**
   rather than a silent substitution. The confirmation does not come from the file
   and is not persisted, so nothing here depends on a filesystem property; one
-  renderer serves both sides, so the shown value and the launched value cannot be
-  spelled differently. A launch job resumed after a gateway restart carries no
+  renderer serves both sides, so the confirmed value and the launched value cannot
+  be spelled differently. What the gate rests on is that COMPARISON, not on the
+  dashboard printing the pair: a client sends back the string the descriptor
+  published (`RemoteProvisioner.confirm_before_launch`), and a surface that decides
+  the ARN and digest are not worth a paragraph in front of every launch still
+  passes exactly the value this lane's own renderer produced. A launch job resumed
+  after a gateway restart carries no
   confirmation and is refused, because persisting one would put the answer on disk
   beside the file it is meant to be independent of.
 - **Nothing in the product writes `cloud.json`.** The launch path's own profile,

@@ -180,7 +180,29 @@ def test_engine_satisfies_the_launch_engine_protocol() -> None:
     ``LaunchEngine`` is a plain ``Protocol``, so a missing method or a renamed
     keyword is only discovered where the engine is called. Comparing signatures
     here makes that a test failure instead of a launch failure.
+
+    The comparison is EXACT against the protocol's parameters plus a per-method
+    allowlist of the extras the launch path knows how to supply. Exact equality on the
+    protocol alone is not the contract: ``launch_job.run_launch`` calls ``provision``
+    with the protocol's four keywords and adds ``subnet_id`` or ``mate_name`` only when
+    the engine's own signature accepts them, so an optional extra is how a lane takes an
+    input the protocol does not name, and the built-in EC2 engine has had ``subnet_id``
+    that way all along.
+
+    But a PREFIX match is not the contract either, and that is the direction that
+    loosens: an extra nobody taught ``run_launch`` to pass would sail through, silently
+    ignored at every call site, which is the drift this assertion exists to catch.
+    Naming the extras is what keeps both true -- a new keyword fails here until it is
+    added to this list AND given its ``engine_accepts_*`` probe.
+
+    Every extra must also be OPTIONAL. A required one cannot be supplied by a caller
+    that only knows the protocol, so the launch path would raise ``TypeError`` from
+    inside the provision step -- the step whose failure arms teardown -- and the user
+    would be told AWS refused a launch that was never attempted.
     """
+    #: Per method, the extras `run_launch` probes for and passes. Adding a keyword to an
+    #: engine means adding it here, which is the point: the pair is the contract.
+    known_extras = {"provision": ["mate_name"], "register": ["mate_name"]}
     engine = FargateLaunchEngine()
     for name, expected in inspect.getmembers(LaunchEngine, inspect.isfunction):
         if name.startswith("_"):
@@ -191,7 +213,16 @@ def test_engine_satisfies_the_launch_engine_protocol() -> None:
         got = inspect.signature(actual)
         want_params = [p for p in want.parameters if p != "self"]
         got_params = list(got.parameters)
-        assert got_params == want_params, f"{name}: {got_params} != {want_params}"
+        extras = known_extras.get(name, [])
+        assert got_params == want_params + extras, (
+            f"{name}: {got_params} is not the protocol's {want_params} plus the extras "
+            f"run_launch knows to pass ({extras or 'none'})"
+        )
+        for extra in extras:
+            assert got.parameters[extra].default is not inspect.Parameter.empty, (
+                f"{name}: extra parameter {extra!r} has no default, so a caller holding "
+                "only the protocol cannot call it"
+            )
 
 
 def test_engine_is_injectable_where_the_ec2_engine_is() -> None:
@@ -392,6 +423,66 @@ def test_register_resolves_a_target_and_registers_the_fargate_crew(monkeypatch) 
         TASK_ID,
         RUNTIME_ID,
     )
+
+
+def test_register_names_the_row_after_the_mate_it_deployed(monkeypatch) -> None:
+    """The landed row carries the MATE's name, not one derived from the launch tag.
+
+    A mate is one agent, and the card's avatar is seeded from its name -- so a
+    tag-derived name renamed the agent the user picked and confirmed the moment it
+    landed, and changed its face with it. The tag remains the fallback for a launch
+    that named no mate, which is every crew lane and every pre-field request.
+    """
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        fargate_engine.connect,
+        "register_instance",
+        lambda target, **kw: calls.append({"target": target, **kw}) or "inst-1",
+    )
+    _patch_describe(monkeypatch, [_running_task()])
+
+    FargateLaunchEngine(_spec()).register(
+        instance_id=REGISTRABLE_ARN, tag=TAG, profile="p", region="us-west-2", mate_name="analyst"
+    )
+
+    assert calls[0]["name"] == f"analyst ({TAG})"
+
+
+def test_register_keeps_two_launches_of_one_mate_apart(monkeypatch) -> None:
+    """Two tasks of the same mate are two rows, and a reader has to tell them apart.
+
+    ``register_instance`` matches an existing record by ECS TARGET, and two tasks have
+    two, so both land -- named only after the mate they would arrive as a pair of rows
+    reading exactly alike, with the target behind Details the only thing separating them.
+    The launch tag is what separates them in the name; the row's FACE comes from the
+    job's own ``mate_name``, so the suffix costs the agent no identity.
+    """
+    names: list[str] = []
+    monkeypatch.setattr(
+        fargate_engine.connect,
+        "register_instance",
+        lambda target, **kw: names.append(kw["name"]) or "inst-1",
+    )
+    _patch_describe(monkeypatch, [_running_task()])
+    engine = FargateLaunchEngine(_spec())
+
+    engine.register(
+        instance_id=REGISTRABLE_ARN,
+        tag="kc-aaa111",
+        profile="p",
+        region="us-west-2",
+        mate_name="analyst",
+    )
+    engine.register(
+        instance_id=REGISTRABLE_ARN,
+        tag="kc-bbb222",
+        profile="p",
+        region="us-west-2",
+        mate_name="analyst",
+    )
+
+    assert names == ["analyst (kc-aaa111)", "analyst (kc-bbb222)"]
+    assert len(set(names)) == 2, names
 
 
 def test_register_raises_registration_unavailable_when_the_registry_declines(
@@ -2089,6 +2180,109 @@ class TestTheCredentialRecipientIsConfirmed:
         assert raising, "provision refuses nothing, so this pin measures nothing"
         first = ast.dump(raising[0])
         assert "confirmed_recipient" in first, ast.unparse(raising[0])
+
+
+class TestTheLaneNamesTheMateItServes:
+    """Which mate this lane deploys, and what happens when a request names another.
+
+    A mate is ONE agent, and this lane runs ONE digest-pinned image carrying that
+    mate's bundle and that mate's secret. So "deploy mate X here" has exactly two
+    honest answers: X is the mate this lane serves, or the launch is refused. The
+    third possibility — a task running somebody else's agent under the name the user
+    picked — is what these pin out.
+
+    The mate is read from the SECRET references, not from an image label. The secret
+    delivers the credential the task decrypts that mate's vault with, so it is the
+    agent the task can actually reach; a label is a claim about the image. It is also
+    the set ``FargateConfig.is_complete`` already binds through ``sole_binding``, so a
+    registered lane always answers, and it costs no AWS call at all.
+    """
+
+    def test_the_lane_reports_the_mate_its_secret_names(self):
+        assert FargateLaunchEngine(_spec()).serves_mate() == "demo"
+
+    def test_an_engine_with_no_spec_names_no_mate(self):
+        """No spec means no lane: it cannot launch, so it cannot claim a mate either."""
+        assert FargateLaunchEngine().serves_mate() == ""
+
+    def test_the_mate_it_serves_is_accepted(self):
+        assert FargateLaunchEngine(_spec()).mate_name_refusal("demo") == ""
+
+    def test_a_request_naming_no_mate_is_accepted(self):
+        """An empty name is a launch that asked for no particular mate.
+
+        Every pre-field client body is that case, and the EC2 lane's form still is, so
+        an empty name must not be read as a mismatch against whatever the lane serves.
+        """
+        assert FargateLaunchEngine(_spec()).mate_name_refusal("") == ""
+
+    def test_another_mate_is_refused_and_both_names_appear(self):
+        """The refusal names BOTH mates.
+
+        "cannot deploy that mate" without them leaves the operator unable to see which
+        mate this lane IS for, which is the one thing that tells them whether to pick
+        again or to go build an image.
+        """
+        refusal = FargateLaunchEngine(_spec()).mate_name_refusal("orchard-sde")
+        assert "demo" in refusal and "orchard-sde" in refusal, refusal
+
+    def test_provision_refuses_another_mate_before_any_aws_call(self, monkeypatch):
+        """The copy of the check that no caller can go around.
+
+        The HTTP boundary refuses first, so this one is never the message an operator
+        reads in normal use — it is what keeps the guarantee true for a second caller
+        that never passes through that boundary.
+        """
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+        engine = FargateLaunchEngine(_spec())
+
+        with pytest.raises(ValueError) as exc:
+            engine.provision(
+                tag=TAG,
+                size_key="1024/2048",
+                profile="p",
+                region="us-west-2",
+                mate_name="orchard-sde",
+            )
+
+        assert "orchard-sde" in str(exc.value)
+        assert double.ops == [], "a refused mate name reached AWS"
+
+    def test_provision_launches_when_the_mate_matches(self, monkeypatch):
+        """The complement: naming the right mate must not become a way to refuse.
+
+        Without this the refusal above is satisfiable by refusing every named launch,
+        which would make the whole picker unusable while every test still passed.
+        """
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+
+        FargateLaunchEngine(_spec()).provision(
+            tag=TAG, size_key="1024/2048", profile="p", region="us-west-2", mate_name="demo"
+        )
+
+        assert "run-task" in double.ops, double.ops
+
+    def test_the_mate_name_chooses_nothing_about_the_launch(self, monkeypatch):
+        """A matching name is a no-op: the image and secrets come from the spec alone.
+
+        Pinned by launching twice — once naming the mate, once naming none — and
+        comparing the RunTask request bodies. If the name ever started selecting an
+        image, a task definition or a secret, these two would diverge.
+        """
+        named, unnamed = _EcsDouble(), _EcsDouble()
+
+        _patch_aws(monkeypatch, named)
+        FargateLaunchEngine(_spec()).provision(
+            tag=TAG, size_key="1024/2048", profile="p", region="us-west-2", mate_name="demo"
+        )
+        _patch_aws(monkeypatch, unnamed)
+        FargateLaunchEngine(_spec()).provision(
+            tag=TAG, size_key="1024/2048", profile="p", region="us-west-2"
+        )
+
+        assert named.ops == unnamed.ops, (named.ops, unnamed.ops)
 
 
 # ── What bounds a launched task ──────────────────────────────────────────────

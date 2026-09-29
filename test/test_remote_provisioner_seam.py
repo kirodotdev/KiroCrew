@@ -553,6 +553,65 @@ class TestTheOperatorCanReadTheRecipientBeforeConfirming:
         assert field.default == ""
 
 
+class TestTheRowNamesTheMateTheLaneServes:
+    """The lane publishes WHICH CREW it deploys, for the same reason it publishes the recipient.
+
+    The crew picker draws its lane chips from ``GET /api/cloud/provisioners``. A lane pinned to
+    one crew that says so on its row is a constraint the user reads while choosing; the same
+    constraint discovered only as a refused launch is one they could not plan around.
+    """
+
+    _block = staticmethod(TestTheOperatorCanReadTheRecipientBeforeConfirming._block)
+    _provider = TestTheOperatorCanReadTheRecipientBeforeConfirming._provider
+
+    def test_the_fargate_row_names_its_crew(self, monkeypatch, tmp_path):
+        """Read from the SECRET references, which is where the crew's identity already lives.
+
+        ``is_complete`` binds that same set through ``sole_binding`` before the lane is
+        registered, so any row a launch can reach answers -- and it costs no AWS call.
+        """
+        provider = self._provider(monkeypatch, tmp_path, self._block())
+
+        row = next(p for p in provider.provisioners() if p.id == FARGATE_PROVISIONER_ID)
+
+        assert row.serves_mate == "demo"
+
+    def test_a_block_naming_a_different_crew_changes_the_row(self, monkeypatch, tmp_path):
+        """Otherwise the field could be a constant and every test above would still pass."""
+        arn = (
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:"
+            "kirocrew/crew/orchard/KIRO_IDENTITY-abcdef"
+        )
+        block = {
+            **self._block(),
+            "secrets": [["kirocrew/crew/orchard/KIRO_IDENTITY", arn]],
+        }
+        provider = self._provider(monkeypatch, tmp_path, block)
+
+        row = next(p for p in provider.provisioners() if p.id == FARGATE_PROVISIONER_ID)
+
+        assert row.serves_mate == "orchard"
+
+    def test_the_builtin_row_is_pinned_to_no_crew(self, monkeypatch, tmp_path):
+        """It installs a gateway on a fresh machine, which then serves whatever it is given,
+        so an empty value is the truthful answer and not a missing one."""
+        provider = self._provider(monkeypatch, tmp_path, self._block())
+
+        row = next(p for p in provider.provisioners() if p.id == BUILTIN_PROVISIONER_ID)
+
+        assert row.serves_mate == ""
+
+    def test_the_descriptor_declares_the_field(self):
+        """On the shared descriptor, so an edition's own pinned lane can carry one too."""
+        import dataclasses
+
+        from kiro_crew.platform.interfaces import RemoteProvisioner
+
+        assert {f.name: f for f in dataclasses.fields(RemoteProvisioner)}[
+            "serves_mate"
+        ].default == ""
+
+
 class TestTheAliasRefusalSitsWhereTheFileIsConsumed:
     """Item 6: the refusal belongs to the launch, not to every spawn on the host.
 

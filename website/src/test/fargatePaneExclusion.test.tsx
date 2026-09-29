@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { InstanceView } from '../api/client'
 import type { WarmConn } from '../store/instancesSlice'
-import { hasDashboardPane, shortenEcsTarget, usesSsmTransport } from '../utils/remoteCrew'
+import { hasDashboardPane, usesSsmTransport } from '../utils/remoteCrew'
 import { visibleInstanceTabs } from '../components/InstanceTabBar'
 
 /** Minimal InstanceView; only the fields the switcher rule reads matter. */
@@ -38,27 +38,6 @@ describe('remote crew transport predicates', () => {
     expect(hasDashboardPane(inst('c', 'fargate'))).toBe(false)
     // An older record with no method at all is an ssh crew and keeps its pane.
     expect(hasDashboardPane({})).toBe(true)
-  })
-})
-
-describe('shortenEcsTarget', () => {
-  it.each([
-    // An ECS target keeps the cluster, the head of the task id and the tail of
-    // the runtime id, so two tasks in one cluster stay distinguishable once
-    // the row truncates from the right.
-    [
-      'ecs:crew_0123456789abcdef0123456789abcdef_fedcba9876543210fedcba9876543210-2653819172',
-      'ecs:crew_01234567\u2026-2653819172',
-    ],
-    [
-      'ecs:my_cluster_with_underscores_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-1234567890',
-      'ecs:my_cluster_with_underscores_aaaaaaaa\u2026-1234567890',
-    ],
-    // Anything that is not an ECS target passes through unchanged.
-    ['i-0abc12345678', 'i-0abc12345678'],
-    ['', ''],
-  ])('%s -> %s', (target, shown) => {
-    expect(shortenEcsTarget(target)).toBe(shown)
   })
 })
 

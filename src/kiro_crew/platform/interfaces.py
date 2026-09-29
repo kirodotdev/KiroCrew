@@ -1626,6 +1626,23 @@ class RemoteProvisioner:
     #: list. The built-in EC2 lane leaves it empty: nothing in a configuration file chooses
     #: what its credential reaches.
     confirm_before_launch: str = ""
+    #: The ONE MATE this lane can deploy, or ``""`` for a lane that deploys a CREW.
+    #:
+    #: The two are different things a provisioner can create, and this field is what
+    #: tells them apart. A CREW is a gateway: a machine running ``kirocrew gateway``,
+    #: serving a whole roster, with a dashboard. A MATE is one agent: a task holding one
+    #: agent spec, serving a chat API, with no dashboard. A lane that runs a prebuilt,
+    #: digest-pinned image carrying one mate's bundle cannot serve another mate, because
+    #: composing a fresh image is a build and not a launch.
+    #:
+    #: The constraint rides the descriptor for the same reason ``confirm_before_launch``
+    #: does -- the mate picker draws its lane chips from this list, so a restriction
+    #: published here is one the user reads while choosing, instead of discovering it in
+    #: a refused launch.
+    #:
+    #: The built-in EC2 lane leaves it empty, and that is not a missing value: it
+    #: installs a gateway, which then serves whatever mates it is configured with.
+    serves_mate: str = ""
 
 
 class RemoteProvisionerProvider(Protocol):

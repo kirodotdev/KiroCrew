@@ -202,6 +202,26 @@ class LaunchJob:
     target_unreadable: bool = False
     # Explicit EC2 subnet (the VPC follows from it); empty = network auto-discovery.
     subnet_id: str = ""
+    #: Which MATE -- one individual agent -- this launch is for, as the user picked
+    #: it in the dashboard, or empty when the request named none.
+    #:
+    #: A mate, not a crew, and the two are different things a launch can create. A
+    #: CREW is a gateway: a machine running ``kirocrew gateway``, which serves a whole
+    #: roster and has a dashboard. The EC2 lane creates one of those, and it takes no
+    #: mate name because the machine serves whichever mates it is configured with. A
+    #: MATE is one agent: the Fargate lane runs a task holding exactly one agent spec
+    #: (``agent.json`` in the crew bundle) and serves a chat API with no dashboard at
+    #: all. That is the lane this field is for.
+    #:
+    #: Persisted with the job, like ``subnet_id``, so the card the dashboard draws for
+    #: a launch still in flight can name the mate after a reload -- a mate's avatar and
+    #: name ARE its card, and a job file that forgot which mate it was for would leave
+    #: a nameless row where the user expects the one they picked.
+    #:
+    #: A REQUEST, never an authority: the lane's own engine decides whether it can
+    #: serve this mate and refuses when it cannot, so nothing downstream reads this as
+    #: permission to hand one mate's credential to a task built for another.
+    mate_name: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -231,6 +251,7 @@ class LaunchJob:
             "updated_at": self.updated_at,
             "login_target": self.login_target.to_dict(),
             "subnet_id": self.subnet_id,
+            "mate_name": self.mate_name,
         }
 
     @classmethod
@@ -275,6 +296,7 @@ class LaunchJob:
             login_target=login_target,
             target_unreadable=target_unreadable,
             subnet_id=str(d.get("subnet_id") or ""),
+            mate_name=str(d.get("mate_name") or ""),
         )
 
 
@@ -350,6 +372,7 @@ class LaunchJobStore:
         step_labels: Optional[Mapping[str, str]] = None,
         login_target: Optional[KiroLoginTarget] = None,
         subnet_id: str = "",
+        mate_name: str = "",
     ) -> LaunchJob:
         """Build + persist a fresh PENDING job.
 
@@ -362,6 +385,12 @@ class LaunchJobStore:
 
         ``login_target`` is the Kiro identity the crew signs in as; ``None`` is
         the default (Builder ID) target, exactly the pre-field behaviour.
+
+        ``mate_name`` is which MATE (one agent) the request was for, ``""`` when it
+        named none -- which every crew-lane launch is, since a gateway serves a roster
+        rather than one agent. Recorded so a launch still in flight can be drawn under
+        the mate the user picked after a reload; the lane's engine, not this store,
+        decides whether it can be served.
         """
         if provider_id == BUILTIN_PROVISIONER_ID:
             sizes.get_tier(size_key)  # raises KeyError with the valid set if unknown
@@ -374,6 +403,7 @@ class LaunchJobStore:
             steps=default_steps(step_labels),
             login_target=login_target or KiroLoginTarget(),
             subnet_id=subnet_id,
+            mate_name=mate_name,
         )
         # Claim ownership BEFORE the file exists. `reap_orphans` spares only jobs this
         # process owns, and it runs off the event loop: a reap already in flight can
@@ -596,6 +626,14 @@ class LaunchEngine(Protocol):
     """The AWS-touching operations a launch needs, injected for testability."""
 
     def preflight(self, profile: str, region: str) -> None: ...
+
+    #: ``provision`` may also accept ``mate_name`` (which single mate the launch is for)
+    #: and
+    #: ``subnet_id``, both OPTIONAL keywords passed only when the engine's signature
+    #: takes them -- see :func:`engine_accepts_mate_name`. They are not declared here
+    #: because an engine written against this four-keyword shape must keep working, and
+    #: a Protocol that required them would make every such engine a type error while
+    #: changing nothing about what is actually called.
     def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str: ...
 
     def begin_signin(
@@ -713,6 +751,78 @@ def _check_signin_target_supported(engine: "LaunchEngine", job: "LaunchJob") -> 
             f"provisioner {job.provider_id!r} cannot sign in as "
             f"{job.login_target.describe()}: {reason}"
         )
+
+
+def engine_accepts_mate_name(engine: "LaunchEngine") -> bool:
+    """Whether *engine*'s ``provision`` can RECEIVE a ``mate_name``.
+
+    The same shape question :func:`_engine_accepts_login_target` asks, for the same
+    reason: ``mate_name`` is a new keyword on the engine contract, and an engine
+    written against the four-keyword ``provision`` must keep working -- every CREW
+    lane is such an engine, because a gateway takes no mate name. Passing the keyword
+    to one that cannot take it would raise ``TypeError`` from inside the provision
+    step, which is the step whose failure arms teardown -- a launch refused for a
+    shape mismatch would read as a launch AWS rejected.
+    """
+    try:
+        return "mate_name" in inspect.signature(engine.provision).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def engine_accepts_mate_name_on_register(engine: "LaunchEngine") -> bool:
+    """Whether *engine*'s ``register`` can RECEIVE a ``mate_name``.
+
+    The companion of :func:`engine_accepts_mate_name`, asked of the step that NAMES the
+    landed row rather than the one that creates it. Separate because the two are separate
+    keywords on separate methods: an engine may take a mate name for the launch and still
+    have the four-keyword ``register``, and calling it with a fifth would raise inside the
+    connect step -- after the compute exists and is billing.
+    """
+    try:
+        return "mate_name" in inspect.signature(engine.register).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def engine_mate_name_refusal(engine: "LaunchEngine", mate_name: str) -> str:
+    """The engine's own reason it cannot serve *mate_name*, or ``""``.
+
+    Accepting the keyword says an engine can RECEIVE a mate name, not that it can
+    serve every one, and the two are different questions for the same reason they are
+    for an identity target. The Fargate lane launches ONE digest-pinned image holding
+    ONE mate's bundle, so a request naming another mate is a request it cannot
+    satisfy -- and the only honest answer is a refusal, not a task running somebody
+    else's agent under the name the user picked.
+
+    Optional, like ``login_target_refusal``: an engine with no such constraint declares
+    none and every name is accepted. That is every CREW lane, which creates a gateway
+    and never a single agent. A probe that raises is treated as accepted and logged, so
+    a broken probe cannot silently block every launch -- the engine's own ``provision``
+    refuses again with what it is about to launch, which is the check no caller can
+    skip.
+    """
+    if not mate_name:
+        return ""
+    probe = getattr(engine, "mate_name_refusal", None)
+    if probe is None:
+        return ""
+    try:
+        return str(probe(mate_name) or "")
+    except Exception:  # pragma: no cover - defensive; a broken probe must not hide the launch
+        logger.warning(
+            "mate_name_refusal probe failed; treating crew name as accepted", exc_info=True
+        )
+        return ""
+
+
+def mate_name_unsupported_message(provider_id: str, mate_name: str) -> str:
+    return (
+        f"provisioner {provider_id!r} deploys a crew (a gateway), not one mate: its "
+        f"LaunchEngine.provision does not accept mate_name, so {mate_name!r} would be "
+        "launched as whichever mates that machine already serves. Launch without a mate "
+        "name, or pick a lane that deploys a single mate."
+    )
 
 
 #: Prefix of ``job.error`` when the persisted identity target could not be read.
@@ -972,8 +1082,23 @@ def run_launch(
         s = _activate(STEP_PROVISION)
         # Only the built-in EC2 engine takes a subnet; the handler refuses it elsewhere.
         subnet = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        # The mate the user picked, passed only to an engine whose `provision` can
+        # receive it. An engine written against the four-keyword shape would raise
+        # TypeError here, inside the step whose failure arms teardown, so a shape
+        # mismatch would read as a launch AWS rejected; the handler refuses that
+        # combination before anything is persisted, and this keeps the funnel honest.
+        crew = (
+            {"mate_name": job.mate_name}
+            if job.mate_name and engine_accepts_mate_name(engine)
+            else {}
+        )
         job.instance_id = engine.provision(
-            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **subnet
+            tag=job.tag,
+            size_key=job.size_key,
+            profile=job.profile,
+            region=job.region,
+            **subnet,
+            **crew,
         )
         s.detail = job.instance_id
         s.state = STEP_DONE
@@ -1042,8 +1167,21 @@ def run_launch(
         s = _activate(STEP_CONNECT)
         registration_error = ""
         try:
+            # The mate's name rides along only when this engine's `register` can take
+            # it -- the same signature question `provision` asks, for the same reason: a
+            # CREW lane's register is written against four keywords and a TypeError here
+            # would fail a launch whose compute is already running and billing.
+            register_extra = (
+                {"mate_name": job.mate_name}
+                if job.mate_name and engine_accepts_mate_name_on_register(engine)
+                else {}
+            )
             engine.register(
-                instance_id=job.instance_id, tag=job.tag, profile=job.profile, region=job.region
+                instance_id=job.instance_id,
+                tag=job.tag,
+                profile=job.profile,
+                region=job.region,
+                **register_extra,
             )
         except RegistrationUnavailable as exc:
             # The engine has said the launch itself is sound and only the registry

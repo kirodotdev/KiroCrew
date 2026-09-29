@@ -180,9 +180,14 @@ function storeWithWarm(id: string) {
 
 const setup = () => userEvent.setup({ advanceTimers: (ms: number) => { vi.advanceTimersByTime(ms) } })
 
-/** Open the "Set up a new one" tab. */
-async function openSetupTab(u: ReturnType<typeof setup>) {
-  await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+/**
+ * Open the EC2 launcher, which used to be this panel's "Set up a new one" tab.
+ *
+ * It is on the CREWS tab now, behind that tab's footer button, because what it creates
+ * is a crew -- a gateway on a fresh machine. The crew list stays mounted above it.
+ */
+async function openCrewLauncher(u: ReturnType<typeof setup>) {
+  await u.click(await screen.findByTestId('deploy-crew-open'))
 }
 
 beforeEach(() => {
@@ -617,7 +622,7 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     })
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     await u.click(await screen.findByRole('button', { name: /Copy command/ }))
     expect(copyToClipboard).toHaveBeenCalledWith('sudo dnf install -y https://example.invalid/smp.rpm')
@@ -636,7 +641,7 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     vi.mocked(api.cloudIamPolicy).mockResolvedValue({ policy: '{"Version":"2012-10-17"}' })
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('{"Version":"2012-10-17"}'))
@@ -649,7 +654,7 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     vi.mocked(api.cloudIamPolicy).mockRejectedValue(new ApiError(500, 'policy render failed'))
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
     expect(await screen.findByText(/policy render failed/, undefined, { timeout: 5_000 })).toBeInTheDocument()
@@ -660,7 +665,7 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     vi.mocked(api.listInstances).mockResolvedValue(list([]))
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
     await waitFor(() => expect(api.cloudPreflight).toHaveBeenCalledWith(undefined, 'us-east-1'))
 
     const regionInput = await screen.findByLabelText('Region')
@@ -686,7 +691,7 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     })
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     expect(await screen.findByText('Credentials for this profile have expired.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Launch' })).toBeDisabled())
@@ -700,7 +705,7 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     vi.mocked(api.cloudPreflight).mockRejectedValue(new ApiError(500, 'sts call timed out'))
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     expect(await screen.findByText(/sts call timed out/, undefined, { timeout: 5_000 })).toBeInTheDocument()
     const recheck = await screen.findByRole('button', { name: /Re-check/ })
@@ -715,7 +720,7 @@ describe('RemoteCrewPanel — launching', () => {
     vi.mocked(api.cloudLaunch).mockRejectedValue(new ApiError(500, 'no capacity for m7g.2xlarge'))
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     const launch = await screen.findByRole('button', { name: 'Launch' })
     await waitFor(() => expect(launch).not.toBeDisabled())
@@ -735,7 +740,7 @@ describe('RemoteCrewPanel — launching', () => {
     })
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
     await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-run'))
@@ -749,7 +754,7 @@ describe('RemoteCrewPanel — launching', () => {
     vi.mocked(api.cloudLaunchSignin).mockRejectedValue(new ApiError(409, 'no pending sign-in'))
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     await u.click(await screen.findByRole('button', { name: /Show the sign-in code/ }))
     expect(await screen.findByText(/no pending sign-in/, undefined, { timeout: 5_000 })).toBeInTheDocument()
@@ -774,7 +779,7 @@ describe('RemoteCrewPanel — launching', () => {
     vi.mocked(api.cloudLaunchStatus).mockResolvedValue(failed)
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
-    await openSetupTab(u)
+    await openCrewLauncher(u)
 
     expect(await screen.findByText('Launch failed')).toBeInTheDocument()
     expect(screen.getByText('InsufficientInstanceCapacity')).toBeInTheDocument()
@@ -1222,7 +1227,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
       'disabled:border-dashed',
       'disabled:cursor-not-allowed',
     )
-    expect(screen.getByRole('button', { name: /Set up a new one/i })).toBeEnabled()
+    expect(screen.getByTestId('deploy-crew-open')).toBeEnabled()
     // Stop waiting is the in-form exit from a save whose request never returns.
     expect(form.getByRole('button', { name: /^Stop waiting$/i })).toBeEnabled()
 
@@ -1310,8 +1315,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     expect(api.updateInstance).not.toHaveBeenCalled()
   })
 
-  it('keeps a typed edit across a switch to the setup tab and back', async () => {
-    // The crew list unmounts when the setup tab opens, so an edit whose only home
+  it('keeps a typed edit across a switch to the mates tab and back', async () => {
+    // The crew list unmounts when the other tab opens, so an edit whose only home
     // was the form's own state was silently reverted to the stored values on the
     // way back. A guard can only refuse the exits it enumerates; the draft lives
     // in the panel instead, so it survives the unmount rather than being defended
@@ -1326,10 +1331,10 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await u.clear(host)
     await u.type(host, 'dev-box-1-corrected')
 
-    await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
+    await u.click(screen.getByRole('button', { name: /Remote mates/i }))
     expect(screen.queryByRole('group', { name: /Edit dev-box-1/i })).not.toBeInTheDocument()
 
-    await u.click(screen.getByRole('button', { name: /Your crews|Crews/i }))
+    await u.click(screen.getByRole('button', { name: /Remote crews/i }))
     const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     expect((reopened.getByRole('textbox', { name: /SSH host/i }) as HTMLInputElement).value).toBe(
       'dev-box-1-corrected',
@@ -1364,8 +1369,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await act(async () => {
       await u.click(screen.getByRole('button', { name: 'Refresh' }))
     })
-    await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
-    await u.click(screen.getByRole('button', { name: /Your crews/i }))
+    await u.click(screen.getByRole('button', { name: /Remote mates/i }))
+    await u.click(screen.getByRole('button', { name: /Remote crews/i }))
     await screen.findByRole('group', { name: /Edit dev-box-1/i })
 
     // The port moved externally, which is a machine coordinate, so the save is

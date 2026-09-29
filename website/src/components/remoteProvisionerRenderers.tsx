@@ -4,14 +4,14 @@
  * The backend decides WHICH provisioners a deployment offers: `GET
  * /api/cloud/provisioners` returns `{id, kind, label, posix_only, steps}` rows,
  * and the stock build returns exactly one — `aws_ec2`, the EC2-in-your-own-
- * account launcher the "Set up a new one" tab already draws. A row only NAMES a
+ * account launcher the crews tab's own footer button already reveals. A row only NAMES a
  * provisioner, though: the form that collects its inputs and posts
  * `/api/cloud/launch` lives here. This registry is where a downstream edition
  * supplies that form, so a provisioner the backend contributes has something to
  * draw it.
  *
  * It is also the SINGLE definition of the renderable set, read by both
- * consumers: `canRenderRemoteProvisionerKind()` filters the rows the setup tab
+ * consumers: `canRenderRemoteProvisionerKind()` filters the rows either launcher
  * offers and `getRemoteProvisionerRenderer()` supplies the form for the selected
  * one. One definition with two readers cannot disagree the way two copies of a
  * string literal can.
@@ -43,19 +43,32 @@
  */
 import type { ComponentType } from 'react'
 import type { LaunchJob, RemoteProvisioner } from '../api/client'
-import { BUILTIN_PROVISIONER_ID } from '../utils/remoteCrew'
+import { BUILTIN_PROVISIONER_ID, FARGATE_PROVISIONER_ID } from '../utils/remoteCrew'
 import { reportSeamCollision } from '../apps/seamCollision'
 
 /**
  * Provisioner kinds the core draws itself, in `RemoteCrewPanel`.
  *
- * Every member must have a built-in form on that panel's "Set up a new one"
- * tab — a member without one reports as drawable, offers its row in the
- * selector, and then renders nothing when picked, which is the outcome this seam
- * exists to avoid.
+ * Every member must have a built-in form or card on that panel — a member without
+ * one reports as drawable, offers its row in the selector, and then renders nothing
+ * when picked, which is the outcome this seam exists to avoid. `aws_ec2` is the crew
+ * launcher's form; `aws_fargate` is the mates tab's own card.
  */
-// The built-in EC2 launcher's kind equals its provisioner id.
-export const BUILTIN_REMOTE_PROVISIONER_KINDS = [BUILTIN_PROVISIONER_ID] as const
+// Each built-in launcher's kind equals its provisioner id.
+//
+// `aws_fargate` is here because the CORE ships that descriptor:
+// `DefaultRemoteProvisionerProvider` returns it whenever `cloud.json` configures the
+// lane, so it is a core lane and the panel draws its form itself. Until it was listed
+// here, `canRenderRemoteProvisionerKind` answered false for it and the setup tab
+// FILTERED THE ROW OUT — a lane the backend offered, and whose launches the API
+// accepted, was simply absent from the dashboard. Listing it is also what keeps the
+// collision guard honest: a composition step cannot now register over the form the
+// core audits.
+export const BUILTIN_REMOTE_PROVISIONER_KINDS = [
+  BUILTIN_PROVISIONER_ID,
+  // The Fargate descriptor's `kind` equals its id, like the EC2 one's.
+  FARGATE_PROVISIONER_ID,
+] as const
 
 /**
  * What a registered form is handed. Everything a launch needs and nothing the

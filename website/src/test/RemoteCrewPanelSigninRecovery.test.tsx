@@ -170,9 +170,29 @@ beforeEach(() => {
   vi.mocked(copyToClipboard).mockResolvedValue(true)
 })
 
-/** Open the setup tab, where the launch progress card lives. */
-const openSetup = async (u: ReturnType<typeof userEvent.setup>) => {
-  await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+/**
+ * One crew's row, by the id it carries.
+ *
+ * Every assertion about what a ROW says goes through this: the launch progress card is
+ * mounted at panel level, so it and the row are on screen together and an unscoped query
+ * for a badge, a name or a recovery button finds both.
+ */
+const crewRow = async (id: string): Promise<HTMLElement> => {
+  await screen.findByTestId('signin-prompt')
+  const row = document.querySelector(`[data-crew-id="${id}"]`)
+  if (!(row instanceof HTMLElement)) throw new Error(`no crew row for ${id}`)
+  return row
+}
+
+/**
+ * Wait for the panel, where the launch progress card lives.
+ *
+ * No tab switch: the card is mounted at PANEL level, outside both tabs, because a launch
+ * can be started from either and a failed one must report wherever the reader is. It
+ * used to sit inside the setup tab, which is what this helper opened.
+ */
+const openSetup = async (_u: ReturnType<typeof userEvent.setup>) => {
+  await screen.findByRole('button', { name: /Remote crews/i })
 }
 
 describe('a crew created without a Kiro sign-in — the progress card', () => {
@@ -493,9 +513,12 @@ describe('Your crews — an unsigned cloud crew', () => {
     // The user can sign in on the crew itself once connected, so the missing
     // sign-in is shown but never holds Connect back.
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
-    expect(screen.queryByRole('button', { name: /Connect after sign-in/i })).not.toBeInTheDocument()
-    expect(screen.getByText(/Needs sign-in/i)).toBeInTheDocument()
+    // Scoped to the row: the launch progress card sits at panel level now and carries
+    // the same badge, so an unscoped query reads two of everything.
+    const row = within(await crewRow('kc1'))
+    expect(row.getByRole('button', { name: /^Connect$/i })).toBeEnabled()
+    expect(row.queryByRole('button', { name: /Connect after sign-in/i })).not.toBeInTheDocument()
+    expect(row.getByText(/Needs sign-in/i)).toBeInTheDocument()
   })
 
   it('names its crew and sits under the row header, not above every row', async () => {
@@ -504,11 +527,12 @@ describe('Your crews — an unsigned cloud crew', () => {
     // attributed the sign-in to whichever crew the reader was looking at.
     renderWithProviders(<RemoteCrewPanel />)
 
-    const prompt = await screen.findByTestId('signin-prompt')
+    const row = within(await crewRow('kc1'))
+    const prompt = row.getByTestId('signin-prompt')
     // No code yet on this row, so the title names the action, not a code the
     // reader has not been given -- and still names the crew.
     expect(prompt).toHaveTextContent(/Get a sign-in code for Kiro Crew Cloud \(kc-5e10bb\)/i)
-    const header = screen.getByText('Kiro Crew Cloud (kc-5e10bb)')
+    const header = row.getByText('Kiro Crew Cloud (kc-5e10bb)')
     expect(header.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // Inside the row it belongs to, not a sibling of the whole list.
     expect(prompt.closest('[data-crew-id="kc1"]')).not.toBeNull()
@@ -519,9 +543,9 @@ describe('Your crews — an unsigned cloud crew', () => {
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    const row = await screen.findByTestId('signin-prompt')
-    expect(row).toHaveTextContent(/Starts the sign-in on the crew/i)
-    await u.click(await screen.findByRole('button', { name: /Start sign-in/i }))
+    const scope = within(await crewRow('kc1'))
+    expect(scope.getByTestId('signin-prompt')).toHaveTextContent(/Starts the sign-in on the crew/i)
+    await u.click(scope.getByRole('button', { name: /Start sign-in/i }))
     await waitFor(() => expect(api.cloudLaunchSigninRestart).toHaveBeenCalledWith('j-unsigned'))
   })
 
@@ -538,8 +562,9 @@ describe('Your crews — an unsigned cloud crew', () => {
     )
     renderWithProviders(<RemoteCrewPanel />)
 
-    expect(await screen.findByText(/Needs sign-in/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Start sign-in/i })).toBeInTheDocument()
+    const row = within(await crewRow('kc1'))
+    expect(row.getByText(/Needs sign-in/i)).toBeInTheDocument()
+    expect(row.getByRole('button', { name: /Start sign-in/i })).toBeInTheDocument()
   })
 
   it('leaves a signed-in crew alone', async () => {
@@ -986,7 +1011,9 @@ describe('one in-progress job, one name', () => {
     // The card badge now reads the row pill's own string, and no surface says the
     // other name. (Both rendered together is asserted on the real SPA, where the
     // instances list has rows: harness frame 06 requires two matches.)
-    expect(await screen.findByText('Setting up')).toBeInTheDocument()
+    // TWO matches: the row's pill and the card's badge, which is what "the same
+    // string" means once both are on screen together.
+    expect(await screen.findAllByText('Setting up')).toHaveLength(2)
     expect(screen.queryByText(/Launching/)).not.toBeInTheDocument()
   })
 })

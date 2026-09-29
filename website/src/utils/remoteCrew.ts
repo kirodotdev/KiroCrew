@@ -28,27 +28,9 @@ export const usesSsmTransport = (inst: { connection_method?: string }): boolean 
 export const hasDashboardPane = (inst: { connection_method?: string }): boolean =>
   inst.connection_method !== 'fargate'
 
-/** An ECS target as the crew list should print it. The full form is
- *  `ecs:<cluster>_<task id>_<runtime id>`, two 32-hex ids after the cluster,
- *  so two tasks in one cluster differ only far to the right and the row's
- *  CSS truncation (which cuts from the right) shows them identically. Keep
- *  the cluster, the head of the task id and the tail of the runtime id with
- *  an ellipsis between, so the distinguishing digits stay visible; the caller
- *  puts the full target in a `title`. Anything that is not an ECS target
- *  (an `i-...` instance id, an empty string) passes through unchanged. */
-/** Horizontal ellipsis, as an escape so the source stays ASCII. */
-const ELLIPSIS = '\u2026'
-
-export function shortenEcsTarget(target: string): string {
-  // The `ecs:` prefix rides inside the first capture. The cluster is captured
-  // greedily, while the fixed-width task/runtime suffixes anchor the split.
-  // The ellipsis is a named constant so the template below holds no letters in
-  // its raw text: the i18n lint reads a lettered quasi as user copy.
-  const m = /^(ecs:[A-Za-z0-9][A-Za-z0-9_-]{0,254})_([0-9a-f]{32})_([0-9a-f]{32}-[0-9]{1,20})$/.exec(target)
-  if (!m) return target
-  const [, clusterWithPrefix, taskId, runtimeId] = m
-  return `${clusterWithPrefix}_${taskId.slice(0, 8)}${ELLIPSIS}${runtimeId.slice(-11)}`
-}
+/** Where the billing lines send a reader who wants the numbers themselves. Shared by
+ *  the EC2 launcher and the mate confirmation, so the two cannot drift apart. */
+export const PRICING_CALCULATOR_URL = 'https://calculator.aws'
 
 /** Provisioner id of the Fargate lane. Mirrors FARGATE_PROVISIONER_ID in
  *  src/kiro_crew/platform/defaults.py. A launch on this lane records the

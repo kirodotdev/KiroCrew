@@ -78,8 +78,17 @@ function row(over: Record<string, unknown>) {
   return { ...BASE, ...over }
 }
 
-async function clickConnect() {
+/**
+ * Press the row's Connect, on the tab the row lives on.
+ *
+ * A Fargate row is a MATE -- one agent, no dashboard, no roster -- so it lists under
+ * Remote mates; every other row is a gateway and stays under Remote crews.
+ */
+async function clickConnect(tab: 'crews' | 'mates' = 'crews') {
   const u = userEvent.setup()
+  if (tab === 'mates') {
+    await u.click(await screen.findByRole('button', { name: /Remote mates/i }))
+  }
   await u.click(await screen.findByRole('button', { name: /^\s*Connect\s*$/i }))
 }
 
@@ -115,7 +124,7 @@ describe('announcing a crew connected inside a pane', () => {
     })
 
     renderWithProviders(<RemoteCrewPanel />)
-    await clickConnect()
+    await clickConnect('mates')
 
     await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('f1'))
     expect(announceChainedCrew).not.toHaveBeenCalled()

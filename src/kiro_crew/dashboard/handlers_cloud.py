@@ -186,7 +186,20 @@ def _provisioner_dict(p) -> dict:
         # Present on every row, empty for a lane with nothing to confirm, so a client reads
         # one shape rather than branching on whether the key exists.
         "confirm_before_launch": str(getattr(p, "confirm_before_launch", "") or ""),
+        # The one MATE this lane can deploy, empty for a lane that deploys a CREW (a
+        # gateway serving a roster). Published for the same reason as the line above: the
+        # mate picker draws its lane chips from this list, so a lane pinned to one mate
+        # says so while the user is choosing instead of in a refusal afterwards.
+        "serves_mate": str(getattr(p, "serves_mate", "") or ""),
     }
+
+
+#: Longest ``mate_name`` ``POST /api/cloud/launch`` accepts. A bound, not a charset: the
+#: charset belongs to whichever lane derives a resource from the name (see the handler).
+#: 64 is comfortably above every mate name a lane can use -- the Fargate lane's own
+#: ``validated_crew_name`` caps at 32 -- so this rejects only a value that is not a name
+#: at all, which is what keeps an unbounded string out of a persisted job file.
+_MATE_NAME_MAX = 64
 
 
 class LaunchUnavailable(Exception):
@@ -637,7 +650,14 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
     Body: ``{provider_id?, profile, region, size_key, subnet_id?, login_target?,
-    confirm_recipient?}``. ``subnet_id`` pins a built-in EC2 launch to that subnet.
+    confirm_recipient?, mate_name?}``. ``subnet_id`` pins a built-in EC2 launch to that
+    subnet. ``mate_name`` is WHICH MATE -- one individual agent -- the launch is for, as
+    the dashboard's mate picker chose it; it is a request, never an authority. It is
+    absent for a CREW lane, which creates a gateway serving a whole roster and so has no
+    single agent to name. A lane whose engine cannot receive it, and a lane pinned to a
+    single mate that is not this one, are both refused with a code before any job is
+    persisted and before any AWS call -- a launch that quietly served a different agent
+    under the chosen name is the outcome those two refusals exist to avoid.
     ``confirm_recipient`` is the credential recipient the operator confirmed, required by any
     lane whose launch delivers a credential to something its own configuration names (the
     Fargate lane refuses an empty or stale one and names both values); the built-in EC2 lane
@@ -698,6 +718,24 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     except ValidationError as e:
         _audit("launch_create", "denied", error=f"invalid subnet: {e}")
         return web.json_response({"error": str(e), "code": "invalid_subnet"}, status=400)
+    # Which MATE this launch is for. Bounded here and nothing more: the CHARSET a mate
+    # name must satisfy belongs to the lane that derives resources from it
+    # (`cloud.fargate.identity.validated_crew_name` is the Fargate lane's, and it is
+    # narrower than a dashboard roster name has to be), so restating a charset at this
+    # boundary would refuse names a lane could have carried. Whether the lane can serve
+    # this mate is asked of the engine below, before any job file exists.
+    mate_name = str(body.get("mate_name") or "").strip()
+    if len(mate_name) > _MATE_NAME_MAX or any(ch < " " or ch == "\x7f" for ch in mate_name):
+        _audit("launch_create", "denied", error="invalid mate name")
+        return web.json_response(
+            {
+                "error": (
+                    "mate_name must be printable text of at most " f"{_MATE_NAME_MAX} characters"
+                ),
+                "code": "invalid_mate_name",
+            },
+            status=400,
+        )
     provisioner = next((p for p in await _in_executor(_provisioners) if p.id == provider_id), None)
     if provisioner is None:
         _audit("launch_create", "denied", error=f"unknown provisioner {provider_id!r}")
@@ -786,6 +824,30 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             # the operator to file a bug over a symlink they created on purpose.
             _audit("launch_create", "denied", error=f"{exc.code}: {exc}")
             return web.json_response({"error": str(exc), "code": exc.code}, status=400)
+        # A named mate, decided against the ENGINE, before a job file exists and before
+        # any AWS call. Two shapes are refused, exactly as the identity target's are: an
+        # engine whose `provision` cannot receive a mate name at all is a CREW lane, and
+        # would silently launch a gateway under the name of one agent, and one that can
+        # receive it may still be pinned to a single mate and say so. Both are 400s with
+        # a code, not a job that fails minutes later beside a running task.
+        if mate_name:
+            if not lj.engine_accepts_mate_name(engine):
+                message = lj.mate_name_unsupported_message(provider_id, mate_name)
+                _audit("launch_create", "denied", error=message)
+                return web.json_response(
+                    {"error": message, "code": "mate_name_unsupported"}, status=400
+                )
+            refusal = lj.engine_mate_name_refusal(engine, mate_name)
+            if refusal:
+                _audit("launch_create", "denied", error=f"mate name refused: {refusal}")
+                return web.json_response(
+                    {
+                        "error": refusal,
+                        "code": "mate_name_refused",
+                        "serves_mate": str(getattr(provisioner, "serves_mate", "") or ""),
+                    },
+                    status=400,
+                )
         try:
             # create() does mkdir + a temp-write + os.replace; keep it off the event
             # loop like every other store call here (see _astore), so a slow disk
@@ -800,6 +862,7 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                     step_labels=dict(provisioner.step_labels or ()),
                     login_target=login_target,
                     subnet_id=subnet_id,
+                    mate_name=mate_name,
                 )
             )
         except KeyError as e:  # unknown size
