@@ -79,6 +79,7 @@ from kiro_crew.acp._dispatch import (
     error_is_refusal_terminal,
     extract_tool_purpose,
     gate_envelope,
+    harness_tool_name,
 )
 from kiro_crew.acp._dispatch import identified_mcp_call as _identified_mcp_call
 from kiro_crew.acp._dispatch import is_mcp_tool_approval as _is_mcp_tool_approval
@@ -97,6 +98,11 @@ from kiro_crew.acp._dispatch import (
     tool_call_content_text,
 )
 from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp.harness_tool_names import (
+    MAX_HARNESS_CONFIG_MCP_SERVERS,
+    MAX_HARNESS_TOOL_NAME_LEN,
+    opencode_rewrites_name,
+)
 from kiro_crew.acp.liveness import (
     EVIDENCE_SAMPLING,
     VERDICT_WORKING,
@@ -2156,6 +2162,47 @@ def _scrub_observed(value: object) -> object:
     return value
 
 
+def _opencode_config_mcp_server_names(resolved: dict) -> tuple[tuple[str, ...], str]:
+    """The MCP server names the harness's resolved config mounts, and any issue.
+
+    opencode mounts these from its own user and project config, beside the
+    servers Crew places on the session, and names their tools only by a fused
+    ``<server>_<tool>`` title in which a character such as ``.`` became ``_``.
+    Knowing the exact names lets that title be split back to the spelling a
+    spec hook's ``mcp__server__tool`` matcher is written in. Only a name opencode
+    rewrites is kept: any other one the every-``_`` split already reproduces.
+
+    Bounded rather than truncated: a name over :data:`MAX_HARNESS_TOOL_NAME_LEN`,
+    or more than :data:`MAX_HARNESS_CONFIG_MCP_SERVERS` rewritten names, is an
+    issue the caller refuses the session on, because a name left out would let
+    a deny hook written with its exact spelling miss the call.
+    """
+    servers = resolved.get("mcp")
+    if not isinstance(servers, dict):
+        return (), ""
+    names = [name for name in servers if isinstance(name, str) and name]
+    if any(len(name) > MAX_HARNESS_TOOL_NAME_LEN for name in names):
+        return (), (
+            f"its config mounts an MCP server whose name is over "
+            f"{MAX_HARNESS_TOOL_NAME_LEN} characters"
+        )
+    rewritten = [name for name in names if opencode_rewrites_name(name)]
+    if len(rewritten) > MAX_HARNESS_CONFIG_MCP_SERVERS:
+        return (), (
+            f"its config mounts {len(rewritten)} MCP servers whose names it rewrites, "
+            f"more than the {MAX_HARNESS_CONFIG_MCP_SERVERS} Crew can match hooks against"
+        )
+    return tuple(rewritten), ""
+
+
+def _opencode_config_mcp_servers_remedy() -> str:
+    """What an operator does when opencode's config mounts too many MCP servers."""
+    return (
+        "Remove MCP servers from opencode's own config, or rename them to letters, "
+        "digits, '_' and '-' only, then start a new session."
+    )
+
+
 def _opencode_agent_permissions(resolved: dict, setting_key: str) -> list[tuple[str, object]]:
     """Every per-agent permission the harness's resolved config carries, reduced.
 
@@ -3484,6 +3531,9 @@ class AcpClient:
         # env section applies it; holding it here is what keeps that section a plain
         # in-memory read rather than a second place that knows the mechanism.
         self._opencode_config_content = ""
+        # The MCP server names that read-back found in the harness's own resolved
+        # config, so a fused tool title from one of them splits back exactly.
+        self._opencode_config_mcp_servers: tuple[str, ...] = ()
         # The launcher pi-acp is told to run in place of ``pi``, resolved in the
         # pi spawn arm and read back there before the first prompt; the env
         # section applies it.
@@ -3668,6 +3718,9 @@ class AcpClient:
         # canonical mcp__<server>__<tool> for per-tool governance in the
         # app-own-server auto-approve.
         self._tool_call_tool_name: dict[str, str] = {}
+        # toolCallId -> the tool's own name its tool_call frame stated, for the
+        # permission event's harness_tool_id (see _dispatch.harness_tool_name).
+        self._tool_call_harness_tool_name: dict[str, str] = {}
         # Structured raw tool params (rawInput dict) keyed by toolCallId, cached
         # from the ToolCall notification so the later request_permission event —
         # which carries only a truncated title — can recover the real path/url
@@ -4815,6 +4868,10 @@ class AcpClient:
                 "the resolved configuration could not be parsed",
                 _opencode_readback_remedy(),
             )
+        config_servers, servers_issue = _opencode_config_mcp_server_names(resolved)
+        if servers_issue:
+            return servers_issue, _opencode_config_mcp_servers_remedy()
+        self._opencode_config_mcp_servers = config_servers
         observed = _opencode_uniform_permission(resolved.get(setting_key))
         issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
         if issue:
@@ -10949,6 +11006,7 @@ class AcpClient:
         self._pending_skill_reads.clear()
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
+        self._tool_call_harness_tool_name.clear()
         self._tool_call_params.clear()
         self._tool_call_diff_path.clear()
         # Reset the per-turn observed-tool-call bookkeeping (see __init__).
@@ -12973,6 +13031,12 @@ class AcpClient:
                 # Cache the trusted tool name too, so the permission event can
                 # rebuild mcp__<server>__<tool> for per-tool governance.
                 self._tool_call_tool_name[tool_call_id] = identity.tool_name
+                # The tool's own name, for the permission event's
+                # harness_tool_id on a backend with no _meta.kiro.toolId.
+                # getattr for the same reason as _tool_call_unclassified.
+                _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
+                if _harness_names is not None:
+                    _harness_names[tool_call_id] = harness_tool_name(update)
             title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
             if title:
                 title, _ = redact_exfiltration_urls(title)
@@ -13387,6 +13451,29 @@ class AcpClient:
         if msg.id is not None:
             self._pi_gate_request_tool[str(msg.id)] = tool_call_id
 
+    def _placed_mcp_server_names(self) -> tuple[str, ...]:
+        """The server names Crew placed on this session's ``mcpServers`` array.
+
+        Empty when the session has none, including a client built without
+        ``__init__``, which has no array cache to read.
+        """
+        if getattr(self, "_session_mcp_cache", None) is None:
+            return ()
+        return tuple(
+            element["name"]
+            for element in self._session_mcp_servers()
+            if isinstance(element, dict) and isinstance(element.get("name"), str)
+        )
+
+    def _harness_mcp_server_names(self) -> tuple[str, ...]:
+        """Every MCP server name this session's harness may state a tool of.
+
+        The servers Crew placed, then those the opencode read-back found in the
+        harness's own config. An instance built without ``__init__`` has neither.
+        """
+        found = getattr(self, "_opencode_config_mcp_servers", ())
+        return tuple(dict.fromkeys([*self._placed_mcp_server_names(), *found]))
+
     def _build_permission_event(self, msg: JsonRpcMessage) -> AcpEvent | None:
         """Build one permission event through the transport-shared parser.
 
@@ -13414,6 +13501,7 @@ class AcpClient:
             diff_path_cache=getattr(self, "_tool_call_diff_path", None),
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
+            harness_tool_name_cache=getattr(self, "_tool_call_harness_tool_name", None),
             # Set only for a session running Kiro Crew's gate extension, whose
             # dialogs carry the nonce this spawn issued; ``None`` everywhere else,
             # so no other harness's permission frame is ever read as an envelope.
@@ -13421,6 +13509,8 @@ class AcpClient:
             # ``__init__`` has no nonce, and no nonce means no envelope is trusted.
             gate_envelope_nonce=_gate_nonce or None,
             kas_consent_meta=self.backend == ACP_BACKEND_KAS,
+            harness_backend=self.backend,
+            harness_mcp_servers=self._harness_mcp_server_names(),
         )
         if event is None:
             return None

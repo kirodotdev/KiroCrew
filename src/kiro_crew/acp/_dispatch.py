@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 from kiro_crew import mcp_apps_render, session_directive
+from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN, qualified_harness_tool_id
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -1513,6 +1514,35 @@ def _permission_tool_id(params: dict[str, Any]) -> str:
     return tool_id
 
 
+def harness_tool_name(update: dict[str, Any]) -> str:
+    """The tool's own name as a ``tool_call`` frame states it, or "".
+
+    goose writes it in ``_meta.goose.toolCall.toolName``; opencode writes it as the
+    first frame's ``title`` (``bash``), where later updates carry the command. Read
+    from that first frame only, and only as an identifier: a title with whitespace
+    or any other prose character is not a name and yields "". Which backend's
+    table the name is looked up in is decided by the permission event's caller
+    (:func:`kiro_crew.acp.harness_tool_names.qualified_harness_tool_id`), so the
+    title of a backend with no table is never read as a name.
+    """
+    meta = update.get("_meta")
+    goose = meta.get("goose") if isinstance(meta, dict) else None
+    call = goose.get("toolCall") if isinstance(goose, dict) else None
+    name = call.get("toolName") if isinstance(call, dict) else None
+    if name is None:
+        name = update.get("title")
+    # Bounded by MAX_HARNESS_TOOL_NAME_LEN, not KAS's 128: an opencode MCP title
+    # fuses an operator-chosen server name with the tool's, and one dropped here
+    # leaves a deny hook matching the title alone.
+    if (
+        not isinstance(name, str)
+        or len(name) > MAX_HARNESS_TOOL_NAME_LEN
+        or not _HARNESS_TOOL_ID_RE.fullmatch(name)
+    ):
+        return ""
+    return name
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -1526,6 +1556,9 @@ def build_permission_event(
     diff_path_cache: dict[str, str] | None = None,
     gate_envelope_nonce: str | None = None,
     kas_consent_meta: bool = False,
+    harness_tool_name_cache: dict[str, str] | None = None,
+    harness_backend: str = "",
+    harness_mcp_servers: tuple[str, ...] = (),
 ) -> tuple[AcpEvent | None, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
@@ -1539,6 +1572,14 @@ def build_permission_event(
     Crew name as ``tool_name`` so deny and governance rules bind to it; it never sets
     ``is_shell`` True and never overrides a cache hit. Every other backend leaves it
     False, so its payloads are read exactly as before.
+
+    ``harness_tool_name_cache`` (caller-owned ``toolCallId -> harness_tool_name``)
+    and ``harness_backend`` give a backend that states no ``_meta.kiro.toolId`` a
+    ``harness_tool_id`` anyway: the tool name its preceding ``tool_call`` frame
+    stated, qualified by the backend (``goose#shell``). Only a backend with a name
+    table (:mod:`kiro_crew.acp.harness_tool_names`) gets one; every other backend's
+    event is built exactly as before. ``harness_mcp_servers`` are the server names
+    Crew placed on the session, so an opencode MCP tool's fused name is split.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
     the two transports cannot drift on the kiro/claude permission payload shape:
@@ -1811,6 +1852,12 @@ def build_permission_event(
     # ``_meta.kiro.toolId``). Not read under a gate envelope: the frame's _meta
     # then describes the dialog, not the call the envelope names.
     _harness_tool_id = _permission_tool_id(params) if envelope is None else ""
+    # goose and opencode state no such id; the tool name their tool_call frame
+    # stated stands in for it, qualified so it is read through that backend's table.
+    if not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
+        _harness_tool_id = qualified_harness_tool_id(
+            harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
+        )
 
     # The agent's stated reason for the call, shown beside the approval. The
     # same agent-authored display text a tool_call frame carries, read the same
@@ -1855,6 +1902,7 @@ def _build_tool_call_event(
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
+    harness_tool_name_cache: dict[str, str] | None = None,
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -1929,6 +1977,11 @@ def _build_tool_call_event(
     _tool_name = identity.tool_name
     if tool_call_id and tool_name_cache is not None:
         tool_name_cache[_ck] = _tool_name
+    # The tool's own name from this first frame, for the permission event's
+    # harness_tool_id on a backend with no _meta.kiro.toolId. Written on every
+    # tool_call, "" included, so a reused id never inherits a stale name.
+    if tool_call_id and harness_tool_name_cache is not None:
+        harness_tool_name_cache[_ck] = harness_tool_name(update)
     # Initial tool input string from raw params.
     input_str = ""
     if tool_call_id and raw_input:
@@ -2859,6 +2912,7 @@ def parse_session_update(
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
+    harness_tool_name_cache: dict[str, str] | None = None,
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -2897,6 +2951,7 @@ def parse_session_update(
                 cache_scope=cache_scope,
                 tool_input_redacted_cache=tool_input_redacted_cache,
                 diff_path_cache=diff_path_cache,
+                harness_tool_name_cache=harness_tool_name_cache,
             )
         )
         return events

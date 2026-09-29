@@ -463,6 +463,20 @@ def _project_spec_path_for(agent: str, work_dir: str | Path | None) -> Path | No
     return None
 
 
+def project_agent_spec(agent: str, work_dir: str | Path | None) -> tuple[bool, dict | None]:
+    """Whether the checkout declares *agent*, and that spec's read.
+
+    The project half of :func:`_agent_spec_and_snapshot_for`, through the same
+    resolver and reader, for a caller that must see the spec the session runs
+    (Crew-fired spec hooks). ``(True, None)`` is a project spec that exists but
+    could not be read; ``(False, None)`` is no project spec at all.
+    """
+    project = _project_spec_path_for(agent, work_dir)
+    if project is None:
+        return False, None
+    return True, _read_agent_spec(project, operation="spec_hooks_project_agent", source="unknown")
+
+
 def _agent_spec_for(agent: str, work_dir: str | Path | None = None) -> dict[str, Any] | None:
     """The materialized kiro spec for *agent*, or ``None`` when unreadable.
 

@@ -54,9 +54,13 @@ def _fresh_cache():
 # ── The table ──
 
 
-def test_the_translation_table_serves_only_kas():
-    # A second backend that Crew fires spec hooks for needs its own vocabulary.
-    assert ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS == frozenset({ACP_BACKEND_KAS})
+def test_every_backend_crew_fires_spec_hooks_for_has_a_translation_table():
+    # A backend that Crew fires spec hooks for needs its own vocabulary: KAS's is
+    # this module's table, every other member's is in harness_tool_names.
+    from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_TABLES
+
+    assert ACP_BACKEND_KAS in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    assert ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS} == frozenset(HARNESS_TOOL_TABLES)
 
 
 def test_a_kas_shell_call_answers_to_its_kiro_cli_name():

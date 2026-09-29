@@ -1026,13 +1026,16 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/skill_projection.py": [
         ("native_skill_projection", "acp"),
     ],
-    # Two reads, deliberately labelled apart: the session-MCP translation resolves
+    # Three reads, deliberately labelled apart: the session-MCP translation resolves
     # the PROJECT checkout first (kiro-cli resolves --agent there before the user
     # level) and falls back to the user-level spec, so a refusal names which of the
-    # two was refused rather than leaving the reader to guess.
+    # two was refused rather than leaving the reader to guess. The third is the same
+    # project read made for Crew-fired spec hooks (``project_agent_spec``), named
+    # for that surface so a refusal there is not filed under the MCP projection.
     "kiro_crew/acp/session_mcp.py": [
         ("session_mcp_project_agent", "unknown"),
         ("session_mcp_servers", "unknown"),
+        ("spec_hooks_project_agent", "unknown"),
     ],
     "kiro_crew/agent.py": [
         ("agent_spec_lookup", "unknown"),

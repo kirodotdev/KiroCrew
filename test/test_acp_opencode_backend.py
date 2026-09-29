@@ -282,6 +282,62 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         assert "exit 3" in issue
         assert "debug config" in remedy
 
+    def test_the_mcp_servers_of_the_harnesss_own_config_are_recorded(self, tmp_path, monkeypatch):
+        """The read-back names the servers opencode mounts itself, for hook matching."""
+
+        class _Completed:
+            returncode = 0
+            stdout = (
+                'banner\n{"permission": "ask", "mcp": {"docs.server": {"type": "local"},'
+                ' "kirocrew-core": {"type": "local"}}}'
+            )
+            stderr = ""
+
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
+        client = self._client(tmp_path)
+        assert client._opencode_config_mcp_servers == ()
+        issue, _remedy = client._verify_opencode_routing(_ARGV, "{}")
+        assert issue == ""
+        assert client._opencode_config_mcp_servers == ("docs.server",)
+
+    def test_only_the_names_opencode_rewrites_are_kept(self):
+        from kiro_crew.acp.client import _opencode_config_mcp_server_names
+
+        resolved = {"mcp": {"docs.server": {}, "kirocrew-core": {}, "a_b": {}}}
+        assert _opencode_config_mcp_server_names(resolved) == (("docs.server",), "")
+
+    @pytest.mark.parametrize("shape", ["count", "length"])
+    def test_a_config_past_the_bounds_refuses_the_session(self, shape, tmp_path, monkeypatch):
+        """Bounded by refusing, never by truncating: a dropped name would miss its deny."""
+        from kiro_crew.acp.harness_tool_names import (
+            MAX_HARNESS_CONFIG_MCP_SERVERS,
+            MAX_HARNESS_TOOL_NAME_LEN,
+        )
+
+        if shape == "count":
+            servers = {f"s.{i}": {} for i in range(MAX_HARNESS_CONFIG_MCP_SERVERS + 1)}
+        else:
+            servers = {"x" * (MAX_HARNESS_TOOL_NAME_LEN + 1): {}}
+        # Names opencode writes as they are do not count toward the bound.
+        plain = {f"s{i}": {} for i in range(MAX_HARNESS_CONFIG_MCP_SERVERS + 1)}
+
+        def _completed(mcp):
+            class _Completed:
+                returncode = 0
+                stdout = json.dumps({"permission": "ask", "mcp": mcp})
+                stderr = ""
+
+            return _Completed()
+
+        client = self._client(tmp_path)
+        monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _completed(plain))
+        assert client._verify_opencode_routing(_ARGV, "{}") == ("", "")
+        monkeypatch.setattr(
+            acp_client.subprocess_mod, "run", lambda *_a, **_kw: _completed(servers)
+        )
+        issue, remedy = client._verify_opencode_routing(_ARGV, "{}")
+        assert "MCP server" in issue and "opencode's own config" in remedy
+
     def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
         """The child's own reason reaches the refusal, as on the pi read-back."""
 

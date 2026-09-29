@@ -792,7 +792,12 @@ class TestBackendAbilityCardRows:
         out = capsys.readouterr().out
         assert "not sent from your agent file:" in out
         assert "permissions.defaultMode" in out
-        assert "no channel yet: hooks" in out
+        # Crew's turn loop runs opencode's spec hooks, so hooks is no gap here.
+        assert "no channel yet: hooks" not in out
+
+    def test_a_backend_that_still_drops_hooks_names_the_gap(self, capsys):
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        assert "no channel yet: hooks" in capsys.readouterr().out
 
     def test_a_harness_in_use_that_loses_nothing_still_gets_its_row(self, capsys):
         """Silence is wrong for the harness in USE, however good its answer is."""

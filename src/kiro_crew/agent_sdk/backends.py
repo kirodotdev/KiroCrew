@@ -2206,7 +2206,18 @@ ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 #: never become one: it reads the spec off disk and runs the field itself, so
 #: membership there would run every spec hook twice. A harness added later stays
 #: out until it is shown to drop the field.
-ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset({ACP_BACKEND_KAS})
+#:
+#: goose and opencode are members: their session/new element set has no hooks
+#: field either, and both send a permission request for every tool call (goose
+#: under the ``approve`` mode Crew seeds and reads back, opencode under the
+#: ``ask`` permission Crew seeds and reads back), which is where the turn loop runs
+#: a PreToolUse hook. Their tool matchers meet the harness's own tool names
+#: through :mod:`kiro_crew.acp.harness_tool_names`. claude and codex are NOT: each
+#: approves some calls inside the harness without asking, so a PreToolUse hook
+#: would be skipped on exactly those calls until Crew makes them ask.
+ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
+    {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE}
+)
 
 # Backends that keep their OWN session records and resolve a resume from the
 # ``sessionId`` alone. For a member there is no Crew-side transcript to check

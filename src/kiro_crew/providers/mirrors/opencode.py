@@ -505,19 +505,18 @@ class OpenCodeMirror(AgentConfigMirror):
                 "not projected into a backend's config",
             ),
             Concern.HOOKS: Ruling(
-                _D.NO_CHANNEL,
-                "opencode runs hooks natively (its config schema carries them, and "
-                "plugins hook tool execution), and the ACP session/new element set "
-                "has no hooks field -- so a user's per-agent hooks block reaches "
-                "kiro-cli and no other backend, exactly the gap claude and codex "
-                "record. Crew's OWN hooks (hooks.py, fired on ACP tool events) are "
-                "unaffected and work on this backend already; this gap is only the "
-                "spec block",
-                channel="a hooks field on the opencode session/new element set, or "
-                "a hooks block in the OPENCODE_CONFIG_CONTENT Crew already seeds "
-                "for the permission routing -- that channel MERGES rather than "
-                "replaces, so it cannot clobber a user's own hooks, which is why "
-                "this needs a decision about precedence rather than a writer",
+                _D.TRANSLATED,
+                "the ACP session/new element set has no hooks field, so the harness never "
+                "receives the spec's hooks block, and Crew's turn loop runs it instead "
+                "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS), as it does "
+                "for KAS. That is sound here because the ask permission Crew seeds and "
+                "reads back makes every tool call arrive as a permission request, which "
+                "is where a PreToolUse hook runs and can block. A tool matcher is written "
+                "in kiro-cli's names; the tool name opencode states as the first "
+                "tool_call frame's title is mapped back to them "
+                "(acp/harness_tool_names.py), so execute_bash meets opencode's bash. "
+                "This covers the chat, subagent and task-runner turn loops; a "
+                "channel-agent turn runs no script hooks on any backend",
             ),
         }
 

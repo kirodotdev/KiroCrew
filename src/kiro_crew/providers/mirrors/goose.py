@@ -149,19 +149,17 @@ class GooseMirror(AgentConfigMirror):
                 "than resources",
             ),
             Concern.HOOKS: Ruling(
-                _D.NO_CHANNEL,
-                "the one open gap, and it is the same one every spec adapter records: the "
-                "ACP session/new element set has no hooks field, so a user's per-agent "
-                "hooks block reaches kiro-cli and no other backend. Crew's OWN hooks "
-                "(hooks.py, fired on ACP tool events) are unaffected and already work on "
-                "this backend, because every tool call arrives as a permission request; "
-                "this gap is only the spec block",
-                channel="a hooks field on the goose session/new element set, or this "
-                "harness's own config.yaml -- which Crew deliberately does not write, "
-                "because that file is the operator's and holds their provider "
-                "configuration. Crew's one channel into this harness today carries a "
-                "single environment variable, so a hooks projection needs a channel "
-                "decision rather than a writer",
+                _D.TRANSLATED,
+                "the ACP session/new element set has no hooks field, so the harness never "
+                "receives the spec's hooks block, and Crew's turn loop runs it instead "
+                "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS), as it does "
+                "for KAS. That is sound here because every tool call arrives as a "
+                "permission request, which is where a PreToolUse hook runs and can block. "
+                "A tool matcher is written in kiro-cli's names; the tool name goose "
+                "states in _meta.goose.toolCall is mapped back to them "
+                "(acp/harness_tool_names.py), so execute_bash meets goose's shell. "
+                "This covers the chat, subagent and task-runner turn loops; a "
+                "channel-agent turn runs no script hooks on any backend",
             ),
         }
 
