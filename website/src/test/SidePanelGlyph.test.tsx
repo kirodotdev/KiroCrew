@@ -14,7 +14,7 @@ vi.mock('../components/icons/panels', () => {
   }
 })
 
-import { SidePanelGlyph } from '../components/SidePanelGlyph'
+import { SidePanelDockHost, SidePanelGlyph } from '../components/SidePanelGlyph'
 
 describe('SidePanelGlyph', () => {
   beforeEach(() => { localStorage.clear(); mobile.value = false; setSidePanelDock('right') })
@@ -47,9 +47,25 @@ describe('SidePanelGlyph', () => {
     expect(screen.getByTestId('right-solid')).toBeTruthy()
   })
 
-  it('lets the host override the resolved dock', () => {
+  it('draws the right glyph under a host that cannot dock bottom', () => {
     act(() => setSidePanelDock('bottom'))
-    render(<SidePanelGlyph light bottom={false} />)
+    render(
+      <SidePanelDockHost value={false}>
+        <SidePanelGlyph />
+        <SidePanelGlyph light />
+      </SidePanelDockHost>,
+    )
+    expect(screen.getByTestId('right-solid')).toBeTruthy()
     expect(screen.getByTestId('right-light')).toBeTruthy()
+  })
+
+  it('follows the dock under a host that can dock bottom', () => {
+    act(() => setSidePanelDock('bottom'))
+    render(
+      <SidePanelDockHost value={true}>
+        <SidePanelGlyph />
+      </SidePanelDockHost>,
+    )
+    expect(screen.getByTestId('bottom-solid')).toBeTruthy()
   })
 })
