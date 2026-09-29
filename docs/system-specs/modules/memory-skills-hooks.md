@@ -3105,6 +3105,46 @@ Debug catalog logs separate snapshot loading, directory scanning, metadata
 assembly and index persistence. This reduces cold latency without promising a
 constant-time scan of an arbitrary filesystem.
 
+**Loader composition (`skills.py` and `skill_runtime/`).** `SkillsLoader` keeps
+its state, its locks and every member it had. Each delegated method keeps its name
+and signature and calls the function that owns the rule in `kiro_crew.skill_runtime`:
+
+| Module | Owns |
+|---|---|
+| `catalog` | The three `_iter` tiers, the `skill-catalog-refresh` worker and its generation and epoch fences, admission of stored snapshot rows, root enumeration in precedence order (`_iter_uncached`), disabled-app filtering by owning app (`_owning_app`), expansion of an agent's `skill://` mapping (`_scoped_entries`) and enumerated-name lookup |
+| `listing` | `list_skills` rows, the `owned` hint and delivery counts, and the byte-identical duplicate filter |
+| `delivery` | `get_context` (bounded directory, required bodies, legacy reader, project bodies) and its ranking, `split_triggered` and `trigger_hint` |
+| `search` | `search_skills` and its body matching, exact reads while a first walk runs, and `$skillname` resolution |
+| `read_credit` | Direct-read attribution (`resolve_tool_read_keys`, `credit_skill_reads`), ledger alias folding and `_record_use` |
+| `authoring` | `create_skill`, `update_skill`, `set_pinned` and `set_inject_on_trigger` |
+| `auto_skills` | Generated-skill create, refine and similarity, the lifecycle (archive, restore, eviction), the slug allocator and staging, and queue dismissal and pruning |
+| `versions` | Live auto-skill versions, `.versions/` snapshots and their pruning, and the frontmatter rewrite an update approval writes |
+
+`skills.py` keeps what repository guards pin to it by path: the enumerated-read
+choke point and its readers (`_read_enumerated_skill_bytes`, `_cached_frontmatter`,
+`load_skill`), the `repo_scope` gate sites (`get_always_skills`,
+`get_triggered_skills` with its `trigger_score` call, `scoped_skills`,
+`read_scoped_skill`), `delete_skill` and `_candidate_has_symlink` (the link-screen
+baseline), every redactor call site (the pending list, detail read, verdict,
+preview and approval that `security_posture` registers as this file's redaction
+sink, and the consent-picker `catalog_project_skills`), the tree walk
+`_iter_skill_files` (the resolved-path gate's call sites are counted per file), and
+the packaged-skill sync with its provenance, currency and cron-source checks.
+Trust enforcement and its audit stay beside the choke point they feed. A function a
+loader member delegates to carries that member's name, which keeps the link-screen
+gate's name-keyed resolver set unchanged. A method delegate passes the loader
+first; the function works on the loader's state under the loader's locks, reaches
+other loader behaviour through `loader.<method>()` so a class-level patch reaches
+every caller, reads the facade's constants and every name the facade imports from
+another `kiro_crew` module through `kiro_crew.skills` at call time, and logs on the
+`kiro_crew.skills` logger. A patch of one of those names on the facade therefore
+still reaches the moved code. A helper that moved is patched on its owner module,
+and a sibling owner calls it as an attribute of that module
+(`_listing._dedupe_identical_skills(...)`), never through a by-name import, so the
+patch reaches every caller. `skills.py` imports every runtime module when it loads and re-exports every
+module-level name that moved. `test/test_skills_composition_contract.py` pins that
+surface, the seams and these placement rules.
+
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
 **Retired generated skill cleanup.** `skills.remove_retired_conductor_skill()`
