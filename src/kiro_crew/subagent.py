@@ -196,6 +196,7 @@ from kiro_crew.subagent_manager.monitoring import (  # noqa: F401 - resolved by 
     tombstone_recovery_action,
 )
 from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone resolved by run.py via bind_component_globals
+    DISMISSAL_FAILED,
     _agent_dir,
     _cleanup_session_files_sync,
     _subagents_dir,
@@ -207,7 +208,7 @@ from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone reso
     prune_stale_tombstones,
     read_state,
     read_tombstone,
-    record_panel_dismissal,
+    record_panel_dismissal_outcome,
     record_slow_command,
     settle_delivered_batch,
     update_state,
@@ -4324,15 +4325,26 @@ class SubagentManager:
                 self._clear_report_failure(snapshot)
             elif owner:
                 self.discard_report_failures(info.parent_session_key, owner)
-        self._agents.pop(agent_id, None)
-        self._tasks.pop(agent_id, None)
         # The pop is only half of a dismissal. The panel's durable half reads run
         # folders, so without a record of its own the next rebuild found this
         # run's folder and sent the card again -- the dismissal lasted exactly as
         # long as the process. Recorded here rather than in the route so the two
         # halves cannot come apart, and OFF the loop, because the record is a
         # synchronous file write and this is a coroutine.
-        await asyncio.to_thread(record_panel_dismissal, agent_id)
+        #
+        # Written BEFORE the pop, because the pop is the PUBLISH. With the write
+        # second, an unwritable store still popped the run and still answered
+        # "delivered", which the DELETE route reports as success -- and the card
+        # came back on the next reconnect with nothing to explain it. A failed
+        # write now returns the retryable result this coroutine already uses
+        # above, leaving the run in the manager so the operator can dismiss it
+        # again. The two falsy cases are NOT the same: a run with no folder has
+        # nothing durable to resurrect its card, so its dismissal stands.
+        outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
+        if outcome == DISMISSAL_FAILED:
+            return "pending"
+        self._agents.pop(agent_id, None)
+        self._tasks.pop(agent_id, None)
         return "delivered"
 
     def _mint_agent_id(self) -> str:

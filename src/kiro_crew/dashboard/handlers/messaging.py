@@ -1794,10 +1794,27 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
             )
-        if not await asyncio.to_thread(record_panel_dismissal, agent_id):
+        outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
+        if outcome == DISMISSAL_NO_FOLDER:
             # No folder, so nothing durable can rebuild this card and there is no
             # run here to speak of. Same answer as before for a truly unknown id.
             return web.json_response({"error": "not found"}, status=404)
+        if outcome == DISMISSAL_FAILED:
+            # The store is unwritable, so this card returns on the next rebuild.
+            # Answering 404 would say the run does not exist, and answering ok
+            # would claim a dismissal that did not happen; both leave the user
+            # watching a dismissed card come back with nothing to explain it.
+            _sel().log_api_access(
+                caller="internal",
+                operation="spawn.dismiss",
+                outcome="denied",
+                source="subagent",
+                resources=f"persisted run {agent_id}",
+                error="the dismissal record could not be written",
+            )
+            return web.json_response(
+                {"error": "dismissal not recorded", "code": "dismissal_unwritable"}, status=503
+            )
         _sel().log_api_access(
             caller="internal",
             operation="spawn.dismiss",

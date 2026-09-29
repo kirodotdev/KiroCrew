@@ -2079,29 +2079,54 @@ class TestOwnershipIsRecheckedOnTheLoop:
 class TestADetachedSettleBatchSurvivesCancellation:
     """A batch taken off its owner must not be lost when the waiter is cancelled.
 
-    The settle detaches its ids irrevocably before suspending, so awaiting the
-    write once per id would make every id after the first a cancellation point --
-    and ``CancelledError`` is not an ``Exception``, so the usual per-id guard does
-    not catch it. Each id not reached keeps no ``delivered`` tombstone, which is
-    the marker restart reconciliation uses to EXCLUDE a folder, so it replays as
-    a duplicate completion. Handing the batch to one worker operation is what
-    makes the loss impossible rather than unlikely.
+    The settle detaches its held deliveries irrevocably before suspending, so
+    awaiting the write once per delivery would make every one after the first a
+    cancellation point -- and ``CancelledError`` is not an ``Exception``, so the
+    usual per-delivery guard does not catch it. Each one not reached keeps no
+    ``delivered`` tombstone, which is the marker restart reconciliation uses to
+    EXCLUDE a folder, so it replays as a duplicate completion. Handing the batch to
+    one worker operation is what makes the loss impossible rather than unlikely.
+
+    The batch carries the DELIVERIES, not bare ids, because the tombstone records
+    the run's terminal usage: settling by id would write a delivered tombstone with
+    no usage, so a held wave member would show none while its siblings carry theirs.
     """
+
+    def delivery(self, agent_id: str, elapsed: float = 1.5, credits: float = 0.25):
+        """The real frozen dataclass, so these pin the shipped contract."""
+        from kiro_crew.subagent import SubagentDelivery
+
+        return SubagentDelivery(agent_id, elapsed, credits)
 
     def test_every_id_in_the_batch_is_settled(self, agent_root):
         ids = ["batch111", "batch222", "batch333"]
         for agent_id in ids:
             write_record(agent_root, agent_id, tombstone_cause=None)
-        settle_delivered_batch(tuple(ids))
+        settle_delivered_batch(tuple(self.delivery(agent_id) for agent_id in ids))
         for agent_id in ids:
             data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
             assert data["cause"] == "delivered", f"{agent_id} was not settled"
 
+    def test_the_batch_carries_each_runs_terminal_usage(self, agent_root):
+        """Offloading the write must not cost the tombstone its elapsed and credits."""
+        write_record(agent_root, "usage11", tombstone_cause=None)
+        settle_delivered_batch((self.delivery("usage11", elapsed=12.5, credits=3.25),))
+        data = json.loads((agent_root / "usage11" / "tombstone.json").read_text())
+        assert data["cause"] == "delivered"
+        assert data["elapsed"] == 12.5, "the held member's runtime did not reach its tombstone"
+        assert data["credits"] == 3.25, "the held member's credits did not reach its tombstone"
+
     def test_one_unwritable_folder_does_not_strand_the_rest(self, agent_root):
-        """The batch keeps the per-id isolation the single write promised."""
+        """The batch keeps the per-run isolation the single write promised."""
         write_record(agent_root, "batch444", tombstone_cause=None)
         write_record(agent_root, "batch555", tombstone_cause=None)
-        settle_delivered_batch(("batch444", "no-such-run-at-all", "batch555"))
+        settle_delivered_batch(
+            (
+                self.delivery("batch444"),
+                self.delivery("no-such-run-at-all"),
+                self.delivery("batch555"),
+            )
+        )
         for agent_id in ("batch444", "batch555"):
             data = json.loads((agent_root / agent_id / "tombstone.json").read_text())
             assert data["cause"] == "delivered", f"{agent_id} was stranded"
@@ -2116,6 +2141,7 @@ class TestADetachedSettleBatchSurvivesCancellation:
         ids = ["cncl111", "cncl222", "cncl333"]
         for agent_id in ids:
             write_record(agent_root, agent_id, tombstone_cause=None)
+        deliveries = tuple(self.delivery(agent_id) for agent_id in ids)
 
         started = asyncio.Event()
 
@@ -2124,7 +2150,7 @@ class TestADetachedSettleBatchSurvivesCancellation:
             settle_delivered_batch(batch)
 
         async def drive() -> None:
-            task = asyncio.create_task(asyncio.to_thread(slow_batch, tuple(ids)))
+            task = asyncio.create_task(asyncio.to_thread(slow_batch, deliveries))
             await started.wait()
             task.cancel()
             # The waiter is gone; the worker is not, so give it room to finish.
@@ -2352,9 +2378,12 @@ class TestADismissalOutlivesTheManager:
 
         write_record(agent_root, "a1")
         recorded: list[str] = []
-        monkeypatch.setattr(
-            subagent_module, "record_panel_dismissal", lambda agent_id: recorded.append(agent_id)
-        )
+
+        def record(agent_id):
+            recorded.append(agent_id)
+            return subagent_persistence.DISMISSAL_RECORDED
+
+        monkeypatch.setattr(subagent_module, "record_panel_dismissal_outcome", record)
         manager = SimpleNamespace(
             _agents={"a1": SimpleNamespace(id="a1", _report_failure_latched=False)},
             _tasks={},
@@ -2397,6 +2426,288 @@ class TestADismissalOutlivesTheManager:
         assert prune_orphan_panel_dismissals() == 1
         assert prune_orphan_panel_dismissals() == 0
         assert dismissed_panel_ids() == frozenset({"kept"})
+
+
+class TestAFailedDismissalWriteIsNotPublished:
+    """The pop is the publish, so it must not happen before the record is stored.
+
+    With the write second and its result discarded, an unwritable store still
+    popped the run and still answered ``"delivered"`` -- which the DELETE route
+    reports as success -- and the card came back on the next reconnect with
+    nothing to explain it. The user is told the dismissal worked and watches it
+    undo itself.
+
+    The two falsy cases are NOT interchangeable. A run with no folder has nothing
+    durable to bring its card back, so its dismissal stands and the pop proceeds;
+    only a FAILED write holds it. Collapsing them would make every folderless run
+    permanently undismissable, which is the over-correction this pins against.
+    """
+
+    def manager(self):
+        return SimpleNamespace(
+            _agents={"a1": SimpleNamespace(id="a1", _report_failure_latched=False)},
+            _tasks={"a1": object()},
+            _report_owners={},
+        )
+
+    def settle(self, monkeypatch, outcome: str):
+        import kiro_crew.subagent as subagent_module
+
+        monkeypatch.setattr(
+            subagent_module, "record_panel_dismissal_outcome", lambda agent_id: outcome
+        )
+        manager = self.manager()
+        result = asyncio.run(
+            subagent_module.SubagentManager.settle_before_delete(manager, "a1", "")
+        )
+        return result, manager
+
+    def test_a_failed_write_keeps_the_run_and_asks_for_a_retry(self, agent_root, monkeypatch):
+        result, manager = self.settle(monkeypatch, subagent_persistence.DISMISSAL_FAILED)
+        assert result == "pending", "a dismissal that was not stored must not report delivered"
+        assert "a1" in manager._agents, (
+            "the run was popped although its dismissal was never stored, so the card "
+            "returns on the next rebuild and the route reported success"
+        )
+        assert "a1" in manager._tasks
+
+    def test_a_stored_write_publishes_the_dismissal(self, agent_root, monkeypatch):
+        result, manager = self.settle(monkeypatch, subagent_persistence.DISMISSAL_RECORDED)
+        assert result == "delivered"
+        assert "a1" not in manager._agents
+        assert "a1" not in manager._tasks
+
+    def test_a_run_with_no_folder_is_still_dismissable(self, agent_root, monkeypatch):
+        """Control: the fix must not make a folderless run undismissable forever."""
+        result, manager = self.settle(monkeypatch, subagent_persistence.DISMISSAL_NO_FOLDER)
+        assert result == "delivered"
+        assert "a1" not in manager._agents
+
+    def test_the_outcome_separates_a_missing_folder_from_a_failed_write(self, agent_root):
+        """Read off the real function, so the three answers are not just constants."""
+        write_record(agent_root, "real11")
+        assert (
+            subagent_persistence.record_panel_dismissal_outcome("real11")
+            == subagent_persistence.DISMISSAL_RECORDED
+        )
+        assert (
+            subagent_persistence.record_panel_dismissal_outcome("never-ran")
+            == subagent_persistence.DISMISSAL_NO_FOLDER
+        )
+
+    def test_an_unwritable_store_reports_failed_not_missing(self, agent_root, monkeypatch):
+        write_record(agent_root, "real22")
+
+        def boom(*_a, **_kw):
+            raise OSError("store is read-only")
+
+        monkeypatch.setattr(subagent_persistence, "atomic_write", boom)
+        assert (
+            subagent_persistence.record_panel_dismissal_outcome("real22")
+            == subagent_persistence.DISMISSAL_FAILED
+        )
+        # The legacy bool keeps its meaning for callers that only need "stored".
+        assert subagent_persistence.record_panel_dismissal("real22") is False
+
+
+class TestTheDismissalCheckRetainsNothing:
+    """The reader's working set is bounded, so the dismissal check must be too.
+
+    ``read_panel_records`` caps its candidate heap on purpose. Answering "is this
+    dismissed" by enumerating every record into a set put one entry per dismissal
+    back inside that bound, so a registry with many retained dismissals set the
+    memory the cap exists to fix. The question is per candidate, and so is the
+    answer now.
+    """
+
+    def test_many_dismissals_do_not_change_what_the_reader_returns(self, agent_root):
+        """Behavioural control: the cheaper check still filters every one of them."""
+        write_record(agent_root, "visible")
+        for index in range(40):
+            name = f"gone{index:03d}"
+            write_record(agent_root, name)
+            assert record_panel_dismissal(name) is True
+        assert ids(panel(keep=10, max_age_secs=DAY)) == ["visible"]
+
+    def test_the_probe_answers_per_run(self, agent_root):
+        write_record(agent_root, "one")
+        write_record(agent_root, "two")
+        record_panel_dismissal("one")
+        assert subagent_persistence.panel_dismissal_recorded("one") is True
+        assert subagent_persistence.panel_dismissal_recorded("two") is False
+
+    def test_the_probe_fails_open(self, agent_root, monkeypatch):
+        """A fault resurrects a card; it must never hide an undismissed run."""
+        write_record(agent_root, "one")
+        record_panel_dismissal("one")
+        assert subagent_persistence.panel_dismissal_recorded("one") is True
+
+        def boom(_self):
+            raise OSError("registry unreadable")
+
+        monkeypatch.setattr(pathlib.Path, "is_file", boom)
+        assert subagent_persistence.panel_dismissal_recorded("one") is False
+
+
+class TestADismissalHoldsOnBothReaders:
+    """A dismissal has to hold on BOTH durable readers, not just one.
+
+    There are two, and they were reported separately: the WS reconnect replay and
+    the REST listing. Every other dismissal test above calls
+    :func:`read_panel_records` directly, which is the shared helper -- so all of
+    them would still pass if one reader obtained its records some other way and
+    never consulted the store. That is the whole shape of the original report: the
+    listing and the replay each excluded only the ids the LIVE manager held, so a
+    delete that left the folder behind came back on the next reconnect.
+
+    So the two readers are exercised at their own entry points here, and the
+    filter's position -- inside the shared helper rather than at either call site
+    -- is pinned structurally, because that position is the only reason one test
+    can answer for both.
+    """
+
+    def request(self, state, caller: str, app: str = "", *, internal: bool = True):
+        headers = {"X-Session-Key": caller}
+        values: dict[str, object] = {"internal_auth": internal}
+        if app:
+            values["app"] = app
+        return SimpleNamespace(
+            app={"state": state},
+            headers=headers,
+            query={},
+            get=lambda key, default=None: values.get(key, default),
+        )
+
+    def state(self, slot_app: str = ""):
+        manager = SimpleNamespace(all_agents=[])
+        slots = {"chat-1": SimpleNamespace(_app=slot_app)}
+        return SimpleNamespace(subagents=manager, _slots=slots, get_slot=slots.get)
+
+    def run_listing(self, monkeypatch, caller: str = "dashboard:chat-1"):
+        """Drive ``GET /api/spawn`` end to end and return its agent ids."""
+
+        async def fake_scope(request, op):
+            return object(), None
+
+        monkeypatch.setattr(messaging, "internal_memory_scope", fake_scope)
+        payload = asyncio.get_event_loop().run_until_complete(
+            messaging.api_spawn_list(self.request(self.state(), caller))
+        )
+        body = json.loads(payload.text or "{}")
+        return [entry["id"] for entry in body["agents"]]
+
+    def replay_records(self, seen: set[str] | None = None):
+        """The WS reconnect replay's OWN query, with its own constants.
+
+        ``ws.py`` asks for persisted records with the replay keep and age window and
+        an ``exclude_ids`` set built from the live frames it already sent, then turns
+        each survivor into a ``subagent_done`` frame. Asking with those arguments is
+        what makes this the replay's question rather than a generic one.
+        """
+        return read_panel_records(
+            keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+            max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+            exclude_ids=seen or set(),
+        ).records
+
+    def test_a_dismissed_run_is_absent_from_the_rest_listing(self, agent_root, monkeypatch):
+        write_record(agent_root, "keep11", parent_session="dashboard:chat-1")
+        write_record(agent_root, "gone11", parent_session="dashboard:chat-1")
+        # Control: both are listed before the dismissal, so absence below is the
+        # dismissal doing it rather than the record never having been admitted.
+        assert sorted(self.run_listing(monkeypatch)) == ["gone11", "keep11"]
+
+        assert record_panel_dismissal("gone11") is True
+
+        assert self.run_listing(monkeypatch) == ["keep11"]
+
+    def test_a_dismissed_run_is_absent_from_the_ws_reconnect_replay(self, agent_root):
+        """The reader that actually resurrected the card, asked its own question."""
+        write_record(agent_root, "keep22", parent_session="dashboard:chat-1")
+        write_record(agent_root, "gone22", parent_session="dashboard:chat-1")
+        assert sorted(ids(self.replay_records())) == ["gone22", "keep22"]
+
+        assert record_panel_dismissal("gone22") is True
+
+        surviving = self.replay_records()
+        assert ids(surviving) == ["keep22"]
+        # And nothing downstream can put it back: the frames the replay sends are
+        # built from these records alone.
+        frames = [
+            build_persisted_subagent_frame(record, redact=lambda text: text) for record in surviving
+        ]
+        assert [frame["data"]["id"] for frame in frames] == ["keep22"]
+
+    def test_the_replay_still_honours_its_live_exclusions(self, agent_root):
+        """Control on the shape: the dismissal filter is added to that set, not swapped in."""
+        write_record(agent_root, "live33", parent_session="dashboard:chat-1")
+        write_record(agent_root, "gone33", parent_session="dashboard:chat-1")
+        write_record(agent_root, "keep33", parent_session="dashboard:chat-1")
+        record_panel_dismissal("gone33")
+        assert ids(self.replay_records(seen={"live33"})) == ["keep33"]
+
+    def test_the_filter_lives_inside_the_shared_reader_not_at_a_call_site(self):
+        """Why one store answers for both readers -- pinned, not assumed.
+
+        Filtering at the two call sites would read the same on the day it is
+        written and would leave the next reader uncovered. The filter is inside
+        :func:`read_panel_records`, so a third reader inherits it by construction.
+        """
+        import ast
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        tree = ast.parse(
+            (root / "src/kiro_crew/subagent_persistence.py").read_text(encoding="utf-8")
+        )
+        reader = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "read_panel_records"
+        )
+        called = {
+            getattr(call.func, "id", "") or getattr(call.func, "attr", "")
+            for call in ast.walk(reader)
+            if isinstance(call, ast.Call)
+        }
+        assert "panel_dismissal_recorded" in called, (
+            "read_panel_records does not consult the dismissal store, so each reader "
+            "would have to filter for itself and the next one added would not"
+        )
+        # And it consults it per CANDIDATE, never by materialising the whole set:
+        # this function's contract is a bounded working set, and enumerating every
+        # record would let the registry's size decide its memory.
+        assert "dismissed_panel_ids" not in called, (
+            "read_panel_records materialises every dismissal id, so its retained set "
+            "grows with the registry inside the one function bounded on purpose"
+        )
+
+    def test_both_readers_go_through_that_reader_and_nothing_lower(self):
+        """Neither reader may assemble records itself and skip the filter.
+
+        Matched on a word boundary, because ``_panel_record`` is a SUBSTRING of
+        ``read_panel_records`` -- a plain ``in`` test reports every correct reader
+        as an offender, and the failure reads exactly like a real bypass.
+        """
+        import re
+
+        builder = re.compile(r"(?<![A-Za-z0-9_])_panel_record(?![A-Za-z0-9_])")
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for relative in (
+            "src/kiro_crew/dashboard/ws.py",
+            "src/kiro_crew/dashboard/handlers/messaging.py",
+        ):
+            source = (root / relative).read_text(encoding="utf-8")
+            # Control: this reader really is one of the two, so a renamed file
+            # cannot make the assertion below pass by matching nothing.
+            assert "read_panel_records" in source, f"{relative} no longer reads persisted records"
+            assert not builder.search(source), (
+                f"{relative} reaches the per-folder record builder directly, which "
+                "skips the dismissal filter that read_panel_records applies"
+            )
+        # Control on the needle itself: it must match the real thing somewhere, or
+        # the two assertions above pass because the pattern is broken.
+        owner = (root / "src/kiro_crew/subagent_persistence.py").read_text(encoding="utf-8")
+        assert builder.search(owner), "the _panel_record needle matches nothing anywhere"
 
 
 class TestTheDismissalStoreIsRegisteredEverywhereItMustBe:

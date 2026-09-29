@@ -22,7 +22,7 @@ import weakref
 from collections.abc import Collection
 from enum import Enum
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Callable, NamedTuple, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
@@ -113,6 +113,15 @@ def _delete_cleanup_identities_file(agent_id: str) -> None:
 # constant is present in each.
 _PANEL_DISMISSAL_LEAF = "panel-dismissals"
 
+#: What a dismissal write did. Three outcomes rather than a bool, because the two
+#: falsy ones need OPPOSITE answers from a caller that is about to publish the
+#: dismissal: a run with no folder has nothing durable to bring its card back, so
+#: the dismissal stands, while a write that FAILED means the card returns on the
+#: next rebuild and the caller must not report success.
+DISMISSAL_RECORDED = "recorded"
+DISMISSAL_NO_FOLDER = "no_folder"
+DISMISSAL_FAILED = "failed"
+
 
 def _panel_dismissals_dir() -> Path:
     """Gateway-owned home for panel dismissals, outside the run folders.
@@ -177,13 +186,38 @@ def record_panel_dismissal(agent_id: str) -> bool:
     False when the run has no folder: nothing durable can resurrect that card, so
     there is nothing to suppress, and a record for it would outlive every path
     that reclaims one.
+
+    A caller that must not publish a dismissal it failed to store wants
+    :func:`record_panel_dismissal_outcome` instead: this bool cannot tell "no
+    folder, so nothing to suppress" from "the write failed", and those two need
+    opposite answers.
+    """
+    return record_panel_dismissal_outcome(agent_id) == DISMISSAL_RECORDED
+
+
+def record_panel_dismissal_outcome(agent_id: str) -> str:
+    """:func:`record_panel_dismissal`, with its two falsy cases kept apart.
+
+    One of them is success in every sense that matters -- a run with no folder has
+    nothing durable to resurrect its card -- and the other means the card WILL come
+    back. A caller that pops the run out of the manager on either one reports a
+    dismissal that did not happen, so the distinction lives here rather than in
+    each caller's reading of a bool.
     """
     try:
         if not _agent_dir(agent_id).is_dir():
-            return False
+            return DISMISSAL_NO_FOLDER
         path = _panel_dismissal_path(agent_id)
-    except (OSError, ValueError):
-        return False
+    except ValueError:
+        # Not an id any run could carry, so no folder can ever claim it: the same
+        # answer as a missing folder, not a fault.
+        return DISMISSAL_NO_FOLDER
+    except OSError:
+        # The folder check itself faulted, so whether a folder exists is UNKNOWN.
+        # Reporting "no folder" here would let a caller publish a dismissal for a
+        # run whose card the next rebuild still finds.
+        logger.warning("panel dismissal folder check failed for %s", agent_id, exc_info=True)
+        return DISMISSAL_FAILED
     try:
         directory = path.parent
         directory.mkdir(parents=True, exist_ok=True)
@@ -206,8 +240,27 @@ def record_panel_dismissal(agent_id: str) -> bool:
         # the operator log carries the reason. Raising instead would leave the run
         # gone from the manager and still undismissed -- strictly worse.
         logger.warning("panel dismissal not recorded for %s", agent_id, exc_info=True)
+        return DISMISSAL_FAILED
+    return DISMISSAL_RECORDED
+
+
+def panel_dismissal_recorded(agent_id: str) -> bool:
+    """Is THIS run's card dismissed? One stat, nothing retained.
+
+    The membership question the panel reader actually asks, per candidate it is
+    already scanning. Enumerating every dismissal into a set to answer it would
+    retain one entry per record inside a function whose whole contract is a
+    bounded working set -- the registry's size would set the memory, which is the
+    bound's own reason for existing.
+
+    Fails OPEN, the same direction as :func:`dismissed_panel_ids`: an unreadable
+    record answers "not dismissed", so a filesystem fault resurrects a card the
+    user can dismiss again rather than hiding a run nobody dismissed.
+    """
+    try:
+        return _panel_dismissal_path(agent_id).is_file()
+    except (OSError, ValueError):
         return False
-    return True
 
 
 def dismissed_panel_ids() -> frozenset[str]:
@@ -1182,11 +1235,21 @@ class _SettleableDelivery(Protocol):
 
     ``SubagentDelivery`` lives in ``subagent``, which imports this module, so naming
     it here would close a cycle. The three fields are the whole contract.
+
+    Declared as read-only properties, not as attributes: ``SubagentDelivery`` is a
+    frozen dataclass, so its fields do not satisfy a protocol that asks for
+    settable ones -- and settable is not what this asks for anyway, since the batch
+    only ever reads them.
     """
 
-    agent_id: str
-    elapsed: float
-    credits: float
+    @property
+    def agent_id(self) -> str: ...
+
+    @property
+    def elapsed(self) -> float: ...
+
+    @property
+    def credits(self) -> float: ...
 
 
 def settle_delivered_batch(
@@ -1225,9 +1288,7 @@ def settle_delivered_batch(
         try:
             write(delivery.agent_id, elapsed=delivery.elapsed, credits=delivery.credits)
         except Exception:
-            logger.debug(
-                "Failed to settle delivered subagent %s", delivery.agent_id, exc_info=True
-            )
+            logger.debug("Failed to settle delivered subagent %s", delivery.agent_id, exc_info=True)
 
 
 def clear_tombstone(agent_id: str) -> bool:
@@ -1682,10 +1743,13 @@ def read_panel_records(
     if keep <= 0:
         return PanelRecords([], 0, False)
     cutoff = time.time() - max_age_secs if max_age_secs > 0 else float("-inf")
-    # Two exclusions, one set, both applied before the heap below. A dismissed
-    # folder filtered out here cannot spend a candidate slot a visible run needs,
-    # which a filter after the walk would let it do.
-    skip = set(exclude_ids) | dismissed_panel_ids()
+    # The caller's own exclusions. Dismissals are NOT unioned in here: that read
+    # retains one entry per dismissal record, so the registry's size would set this
+    # function's memory -- inside the one function whose contract is a bounded
+    # working set. They are probed per scanned candidate instead, below, which is
+    # still BEFORE the heap: a dismissed folder must not spend a candidate slot a
+    # visible run needs, which a filter after the walk would let it do.
+    skip = set(exclude_ids)
     # At least one candidate BEYOND ``keep`` has to fit, or the window could not
     # see the very overflow it has to report: a heap sized exactly ``keep``
     # admits every entry as a record and truncates in silence.
@@ -1709,6 +1773,10 @@ def read_panel_records(
             except OSError:
                 continue
             if mtime < cutoff or entry.name in skip:
+                continue
+            # Ordered after the cheap tests on purpose: this one costs a stat, and
+            # the two above reject most entries without it.
+            if panel_dismissal_recorded(entry.name):
                 continue
             if len(newest) < candidate_cap:
                 heapq.heappush(newest, (mtime, entry.name))
