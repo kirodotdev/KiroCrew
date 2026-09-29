@@ -17265,6 +17265,7 @@
   "store": {
     "chatSlice": {
       "session_gone_open_failed": "La sessione su cui hai fatto clic è stata eliminata e non può essere aperta.",
+      "session_gone_open_failed_neutral": "Quella sessione è stata eliminata e non può essere aperta.",
       "session_open_error_named": "Impossibile aprire “{{name}}”.",
       "session_open_error": "Impossibile aprire la sessione.",
       "session_gone_open_failed_named": "“{{name}}” è stata eliminata e non può essere aperta.",

@@ -965,7 +965,7 @@ interface ChatState {
    *  the API endpoint, status, and backend code available to Ask the agent
    *  while the displayed sentence stays localized. Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
-  switchSlotGone: { name: string; kind: 'gone' | 'failed'; report?: ErrorReport } | null
+  switchSlotGone: { name: string; kind: 'gone' | 'failed'; gestureNeutral?: boolean; report?: ErrorReport } | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -2403,8 +2403,17 @@ function seedContextUsage(
  *    recovery paths (auto-improvement, issue-radar, cold-boot restore, the
  *    Slack-token reconnect) silently fall back to a fresh session — so
  *    announcing there would double-report or contradict a successful
- *    recovery. */
-export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean }
+ *    recovery.
+ *  - `gestureNeutral`: only meaningful WITH `announceOnMissing`, and only for
+ *    the UNNAMED gone case (a named gone notice already reads neutrally —
+ *    "'{{name}}' was deleted"). Most announcing callers ARE a click on a
+ *    session row, so the default unnamed copy ("The session you CLICKED was
+ *    deleted") names the gesture correctly. The history Back/Forward arrows
+ *    and the late-frame deep-link recovery are NOT clicks on a session — the
+ *    user pressed a nav arrow or followed a URL — so they set this flag to get
+ *    the gesture-neutral "That session was deleted and cannot be opened."
+ *    instead of misnaming a click that never happened. */
+export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; gestureNeutral?: boolean }
 
 /** The slot key of a `switchSlot` argument, in either spelling. Non-object
  *  values pass through untouched: a hand-rolled test dispatch can omit
@@ -2449,7 +2458,7 @@ const switchSlotKey = (arg: SwitchSlotArg): string => typeof arg === 'object' &&
 const switchSlotFailureReport = (
   error: unknown,
   key: string,
-  shown: { kind: 'gone' | 'failed'; name: string },
+  shown: { kind: 'gone' | 'failed'; name: string; gestureNeutral?: boolean },
 ): { report?: ErrorReport } => {
   const raw = errMessage(error)
   const endpoint = chatSlotDetailPath(key)
@@ -2464,7 +2473,7 @@ const switchSlotFailureReport = (
   return {
     report: recordError({
       source: 'api',
-      message: switchSlotNoticeCopy(shown.kind, shown.name),
+      message: switchSlotNoticeCopy(shown.kind, shown.name, shown.gestureNeutral),
       status: typeof status === 'number' ? status : undefined,
       endpoint,
       detail: detail || undefined,
@@ -2475,8 +2484,14 @@ const switchSlotFailureReport = (
 /** The sentence the pane notice shows for a `switchSlotGone` record. ONE owner
  *  for ChatPage (which re-resolves it on a locale switch) and the journal entry
  *  `switchSlotFailureReport` records under it — the journal is keyed by the
- *  message as the UI shows it, so the two must be the same words. */
-export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string): string {
+ *  message as the UI shows it, so the two must be the same words.
+ *
+ *  `gestureNeutral` picks a gesture-agnostic sentence for the UNNAMED gone case:
+ *  a Back/Forward nav (arrow click, keyboard shortcut, or a `?sid=` deep link)
+ *  is not a session-row click, so "The session you clicked…" misnames it. The
+ *  named and `failed` cases already read neutrally, so the flag only forks the
+ *  unnamed gone branch. */
+export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string, gestureNeutral = false): string {
   if (kind === 'failed') {
     return name
       ? i18nT('store.chatSlice.session_open_error_named', { name })
@@ -2484,7 +2499,9 @@ export function switchSlotNoticeCopy(kind: 'gone' | 'failed', name: string): str
   }
   return name
     ? i18nT('store.chatSlice.session_gone_open_failed_named', { name })
-    : i18nT('store.chatSlice.session_gone_open_failed')
+    : gestureNeutral
+      ? i18nT('store.chatSlice.session_gone_open_failed_neutral')
+      : i18nT('store.chatSlice.session_gone_open_failed')
 }
 
 export const switchSlot = createAsyncThunk<
@@ -2633,10 +2650,14 @@ export const switchSlot = createAsyncThunk<
             // NAME is stored, not the sentence, so the copy re-resolves on a
             // locale switch. Cleared by the next `switchSlot.pending` or the
             // notice's own dismiss.
+            // `gestureNeutral` is stored alongside so the UNNAMED gone copy
+            // names the right gesture (a nav arrow / deep link is not a click).
+            const gestureNeutral = typeof arg === 'object' && arg !== null && arg.gestureNeutral === true
             dispatch(chatSlice.actions.setSwitchSlotGone({
               name: name ?? '',
               kind: 'gone',
-              ...switchSlotFailureReport(e, key, { kind: 'gone', name: name ?? '' }),
+              ...(gestureNeutral ? { gestureNeutral: true } : {}),
+              ...switchSlotFailureReport(e, key, { kind: 'gone', name: name ?? '', gestureNeutral }),
             }))
           }
           // Evict only when the selection will ESCAPE the evicted key. The
@@ -4611,7 +4632,7 @@ const chatSlice = createSlice({
     },
     /** See `switchSlotGone` on ChatState. Set by `switchSlot`'s catch for an
      *  `announceOnMissing` caller whose target 404ed. */
-    setSwitchSlotGone(state, action: PayloadAction<{ name: string; kind: 'gone' | 'failed'; report?: ErrorReport }>) { state.switchSlotGone = action.payload },
+    setSwitchSlotGone(state, action: PayloadAction<{ name: string; kind: 'gone' | 'failed'; gestureNeutral?: boolean; report?: ErrorReport }>) { state.switchSlotGone = action.payload },
     clearSwitchSlotGone(state) { state.switchSlotGone = null },
     /** Dismiss the unresumable-surface notice (#5925). Deliberately does NOT
      *  clear `lastResumeRequestId`: that ordering token belongs to the resume

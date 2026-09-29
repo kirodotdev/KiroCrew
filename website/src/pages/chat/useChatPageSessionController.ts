@@ -557,10 +557,30 @@ export function useChatPageSessionController({
       repairPoppedSid()
       return
     }
-    if (filteredSlots.some(s => s.key === urlSid)) {
-      popInFlightRef.current = true
-      dispatch(switchSlot(urlSid))
-    }
+    // A Back/Forward POP is a user-facing session gesture, so it must behave like
+    // every other one (sidebar rows, command palette, keyboard jump): it dispatches
+    // switchSlot with `announceOnMissing`. When the target is still listed the switch
+    // retraces normally and the sync effect below releases `popInFlightRef` once
+    // `activeSlot` catches up to the URL.
+    //
+    // When the target was CLOSED since the entry was pushed it is no longer in
+    // `filteredSlots`, and the old code — a bare `switchSlot(urlSid)` guarded by
+    // `some(...)` — fell through in total silence: no switch, no announce, no URL
+    // repair, `popInFlightRef` left unarmed, so the sync effect flicked the URL
+    // straight back (the reported "click Back, nothing moves" dead-end). Now the
+    // gone target gets the same "Session not found" notice + synchronous
+    // `removeSlotOptimistic` eviction the sidebar already gives. The switch rejects
+    // and `activeSlot` never moves, so the sync effect (which waits for
+    // `activeSlot === urlSlot`) would leave `popInFlightRef` armed forever and the
+    // URL stuck on the dead sid; release the flag and repair the URL when the
+    // dispatch settles unfulfilled so this POP self-heals to the current session.
+    const targetListed = filteredSlots.some(s => s.key === urlSid)
+    popInFlightRef.current = true
+    void dispatch(switchSlot({ key: urlSid, announceOnMissing: true, gestureNeutral: true })).then(result => {
+      if (targetListed || switchSlot.fulfilled.match(result)) return
+      popInFlightRef.current = false
+      repairPoppedSid()
+    })
   }, [searchParams, filteredSlots, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile])
 
   // Timeout: if slot never appears after 5s, show an error. Keep the denied key
@@ -636,7 +656,7 @@ export function useChatPageSessionController({
     // failure through its announced, localized ErrorNotice and structured report.
     setSidError(current => current === denied.error ? '' : current)
     popInFlightRef.current = true
-    void dispatch(switchSlot({ key: denied.key, announceOnMissing: true })).then(() => {
+    void dispatch(switchSlot({ key: denied.key, announceOnMissing: true, gestureNeutral: true })).then(() => {
       popInFlightRef.current = false
     })
   }, [filteredSlots, activeSlotRef, dispatch])

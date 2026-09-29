@@ -659,6 +659,27 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     expect(store.getState().chat.switchSlotGone).toMatchObject({ name: '', kind: 'gone' })
   })
 
+  it('gestureNeutral: a non-click path (nav arrow / deep link) to an unnamed gone target stores the flag so ChatPage picks gesture-neutral copy', async () => {
+    // A Back/Forward history POP or late-frame deep-link recovery is NOT a
+    // click on a session row. Without a name, ChatPage would otherwise show
+    // "The session you clicked was deleted" — misnaming the gesture. The flag
+    // is stored so ChatPage resolves the neutral variant instead, and survives
+    // a locale switch (the name/kind/flag are stored, not the sentence).
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store } = makeRecordingStore()
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true, gestureNeutral: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).toMatchObject({ name: '', kind: 'gone', gestureNeutral: true })
+  })
+
+  it('gestureNeutral is omitted for a plain click, keeping the "you clicked" copy the default', async () => {
+    // A session-row click passes no flag; the stored record must NOT carry
+    // gestureNeutral, so ChatPage keeps the click-naming default copy.
+    detail.mockRejectedValue(apiError(404, 'slot unavailable'))
+    const { store } = makeRecordingStore()
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    expect(store.getState().chat.switchSlotGone).not.toHaveProperty('gestureNeutral')
+  })
+
 
   it('a stale 404 superseded by a newer IN-FLIGHT switch keeps the row (requestId gate)', async () => {
     // The user clicked the stale row, then moved on before its 404 landed; the
