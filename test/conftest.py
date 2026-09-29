@@ -220,23 +220,10 @@ def make_escaping_link(inside: pathlib.Path, outside: pathlib.Path) -> str:
     return "link.py"
 
 
-def make_dir_link(link: pathlib.Path, target: pathlib.Path) -> None:
-    """Create a reparse point at ``link`` that resolves to the directory ``target``.
-
-    Same privilege reasoning as :func:`make_escaping_link`, for the tests that
-    need a *directory* link rather than a path through one: a directory symlink
-    needs SeCreateSymbolicLinkPrivilege on Windows (WinError 1314 in an
-    unelevated shell), while a junction needs none and is followed by the same
-    reparse machinery — ``rglob``, ``resolve`` and
-    ``GetFinalPathNameByHandleW`` all traverse it identically. So the behaviour
-    under test stays exercised on Windows instead of being skipped.
-    """
-    if platform_compat.IS_WINDOWS:
-        import _winapi
-
-        _winapi.CreateJunction(str(target), str(link))
-        return
-    link.symlink_to(target, target_is_directory=True)
+# ``make_dir_link`` lives in kiro_crew.testing.links so the app-embedded test
+# packages, which never see this conftest, share the one copy. Re-exported so
+# ``from conftest import make_dir_link`` keeps working.
+from kiro_crew.testing.links import make_dir_link  # noqa: E402,F401
 
 
 def plant_day_link(link: pathlib.Path, secret_file: pathlib.Path) -> None:

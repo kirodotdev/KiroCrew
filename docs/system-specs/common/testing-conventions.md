@@ -295,6 +295,9 @@ where these path semantics differ most. Two helpers in `test/conftest.py`:
 | A path that reaches OUT of a sandbox root through a link | `make_escaping_link(inside, outside)` |
 | A directory link at a chosen location (`ui/` -> the dev source tree) | `make_dir_link(link, target)` |
 
+`make_dir_link` lives in `kiro_crew.testing.links`; the conftest re-exports it, and
+app-embedded tests under `src/kiro_crew/apps/builtins` import it from there.
+
 Prefer either over a bare `Path.symlink_to` plus a `skipif(sys.platform == "win32")`:
 an unconditional skip drops the whole assertion on Windows. Reach for a skip only
 where the *link kind itself* is the subject (a file symlink's `lstat` mode bits,
