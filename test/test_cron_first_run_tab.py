@@ -59,7 +59,7 @@ def _make_state(history_messages=None):
             slot.messages = []
             slot.title = ""
 
-            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True):
+            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True, redacted=None):
                 supplied = meta.get("mid") if isinstance(meta, dict) else None
                 stored_meta = dict(meta) if isinstance(meta, dict) else {}
                 if mint_mid and not supplied:
@@ -69,6 +69,7 @@ def _make_state(history_messages=None):
                     "content": content,
                     "cls": cls,
                     **({"meta": stored_meta} if stored_meta else {}),
+                    **({"redacted": True} if redacted else {}),
                 }
                 slot.messages.append(msg)
                 return msg

@@ -101,8 +101,8 @@ class TestOffLoopWrappers:
                 log,
                 "cron:abc",
                 [
-                    ("user", "the prompt", "msg msg-u", "m-1"),
-                    ("assistant", "the result", "msg msg-a", "m-2"),
+                    ("user", "the prompt", "msg msg-u", "m-1", None),
+                    ("assistant", "the result", "msg msg-a", "m-2", None),
                 ],
             )
         assert holds == ["cron:abc"], "the pair must share exactly one atomic hold"
@@ -118,8 +118,8 @@ class TestOffLoopWrappers:
             log,
             "cron:abc",
             [
-                ("user", "the prompt", "msg msg-u", "m-1"),
-                ("assistant", "the result", "msg msg-a", "m-2"),
+                ("user", "the prompt", "msg msg-u", "m-1", None),
+                ("assistant", "the result", "msg msg-a", "m-2", None),
             ],
         )
         rows = log.read_messages("cron:abc")

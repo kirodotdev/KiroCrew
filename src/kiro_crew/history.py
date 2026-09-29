@@ -127,11 +127,12 @@ from kiro_crew.llm_helpers import (  # noqa: F401 - facade re-exports
     stream_and_collect_json,
 )
 from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
+from kiro_crew.platform.context import carries_redaction_marker, redact_row_via_context
 from kiro_crew.preview_text import (  # noqa: F401 - facade re-export
     PREVIEW_MAX_CHARS,
     strip_markdown_preview,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 from kiro_crew.sel import sel  # noqa: F401 - facade re-export
 from kiro_crew.skills import (  # noqa: F401 - facade re-export
     AUTO_SKILL_MAX_PROCEDURE_CHARS,
@@ -618,10 +619,15 @@ def append_off_loop(
     loop.run_in_executor(None, _do).add_done_callback(_report)
 
 
+#: ``(role, content, cls, mid, redacted)`` -- the caller's own rewrite answer travels with
+#: the row rather than being left to the write boundary's text-shape inference.
+DurableRow = tuple[str, str, str, "str | None", "bool | None"]
+
+
 def append_rows_if_absent_off_loop(
     conversation_log: "ConversationLog",
     key: str,
-    rows: "Sequence[tuple[str, str, str, str | None]]",
+    rows: "Sequence[DurableRow]",
     *,
     agent: str | None = None,
 ) -> Any:
@@ -641,10 +647,10 @@ def append_rows_if_absent_off_loop(
     per-row locks inside ``append_if_absent`` reuse the hold rather than
     deadlocking on it.
 
-    *rows* is an ordered sequence of ``(role, content, cls, mid)``; they are
-    appended in that order. Each row keeps ``append_if_absent``'s idempotence,
-    so a row the periodic slot save already serialized is skipped individually
-    without dropping its siblings.
+    *rows* is an ordered sequence of :data:`DurableRow`, appended in that order, each
+    persisting its own ``redacted`` answer rather than leaving it to text-shape
+    inference. Each row keeps ``append_if_absent``'s
+    idempotence, so one the periodic slot save already wrote is skipped alone.
 
     Returns the executor future, or None when the write already happened inline
     (no running loop). Best-effort like its siblings: a lock timeout or I/O
@@ -653,8 +659,10 @@ def append_rows_if_absent_off_loop(
 
     def _do() -> None:
         with conversation_log.atomic_appends(key):
-            for role, content, cls, mid in rows:
-                conversation_log.append_if_absent(key, role, content, agent=agent, cls=cls, mid=mid)
+            for role, content, cls, mid, mark in rows:
+                conversation_log.append_if_absent(
+                    key, role, content, agent=agent, cls=cls, mid=mid, redacted=mark
+                )
 
     try:
         loop = asyncio.get_running_loop()
@@ -1463,17 +1471,27 @@ def _redact_at_write_boundary(role: str, content: str) -> str:
     channel thread persist to the same file through different code paths, so the
     rule has to live where the bytes are written rather than in either caller.
 
-    The gate is ``role != "user"``, matching the dashboard's own write-back
-    boundary: text the user typed is stored verbatim, and everything the model or
-    the system produced is scrubbed of credentials and exfiltration URLs.
+    The gate is ``role != "user"``: everything the model or the system produced is
+    scrubbed of credentials and exfiltration URLs here.
+
+    The ``user`` half is not stored verbatim in general, and this function is not
+    what changed it. Channel persisters and the shared ``save_conversation_turn`` scrub
+    their user text BEFORE calling in, so for a user row the rule now lives in those
+    callers -- the opposite of the shape described above. The dashboard's own write-back
+    is the surface still relying on the exemption.
+
+    That split-across-callers shape is INTERIM, and the enforcement is a test rather than
+    a narrative: ``TestEveryUserRowPersisterScrubs`` enumerates every persister it relies
+    on, so a new inbound one fails that suite instead of leaking silently.
+
     Idempotent, so a caller that already redacted loses nothing by passing
     through here.
     """
     if role == "user":
         return content
-    content, _ = redact_exfiltration_urls(content)
-    content, _ = redact_credentials(content)
-    return content
+    # No warning here: ``redact_row_via_context`` already logs the rewrite, and this
+    # function also runs from ``append_if_absent``'s dedup probe, which stores nothing.
+    return redact_row_via_context(content)
 
 
 def latest_transcript_ts(*candidates: str | None) -> str | None:
@@ -2511,6 +2529,7 @@ class ConversationLog:
         tab_id: str | None = None,
         cls: str = "",
         mid: str | None = None,
+        redacted: bool | None = None,
     ) -> None:
         """Append a message with optional provenance to the session log.
 
@@ -2566,9 +2585,14 @@ class ConversationLog:
                     created_with_tab_id = True
                 path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
 
+            scrubbed = _redact_at_write_boundary(role, content)
+            # Carried when the caller knows, inferred only as a fallback: a companion
+            # policy's own tag spelling is invisible to the shape test.
+            mark = carries_redaction_marker(scrubbed) if redacted is None else redacted
             msg: dict = {
                 "role": role,
-                "content": _redact_at_write_boundary(role, content),
+                "content": scrubbed,
+                **({"redacted": True} if mark else {}),
                 **({"cls": cls} if cls else {}),
                 # Strictly after the row already on disk, so the pair written by
                 # one turn stays ordered on a host whose clock cannot separate
@@ -2633,6 +2657,7 @@ class ConversationLog:
         tab_id: str | None = None,
         cls: str = "",
         mid: str | None = None,
+        redacted: bool | None = None,
     ) -> bool:
         """Append a message only if an identical one is not already persisted.
 
@@ -2715,7 +2740,9 @@ class ConversationLog:
             # the critical section we already hold. The skip paths above leave
             # the persisted rows untouched — an id is never retrofitted onto a
             # row already on disk.
-            self.append(key, role, content, agent=agent, tab_id=tab_id, cls=cls, mid=mid)
+            self.append(
+                key, role, content, agent=agent, tab_id=tab_id, cls=cls, mid=mid, redacted=redacted
+            )
             return True
 
     def recent(

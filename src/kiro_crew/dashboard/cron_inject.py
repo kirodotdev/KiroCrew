@@ -18,7 +18,8 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
-from kiro_crew.history import append_rows_if_absent_off_loop
+from kiro_crew.history import DurableRow, append_rows_if_absent_off_loop
+from kiro_crew.platform.context import carries_redaction_marker, redact_row_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -641,9 +642,9 @@ def inject_cron_result_to_dashboard(
     # Rows this call owes the durable transcript, in the order they happened.
     # Collected rather than written per row: the pair is flushed once, below,
     # under a single ``atomic_appends`` hold -- see the flush for why.
-    durable_rows: list[tuple[str, str, str, str | None]] = []
+    durable_rows: list[DurableRow] = []
 
-    def _reflect(role: str, content: str, cls: str) -> None:
+    def _reflect(role: str, content: str, cls: str, redacted: bool | None = None) -> None:
         """Put one row in the live slot and queue it for the durable write."""
         if any(msg.get("content") == content for msg in slot.messages):
             return
@@ -652,8 +653,8 @@ def inject_cron_result_to_dashboard(
         # durable row cannot be matched by the bounded read's identity walk,
         # which then treats the window copy as still owed and re-appends the
         # injection.
-        window_mid = row_mid(slot.append(role, content, cls))
-        durable_rows.append((role, content, cls, window_mid))
+        window_mid = row_mid(slot.append(role, content, cls, redacted=redacted))
+        durable_rows.append((role, content, cls, window_mid, redacted))
 
     def _flush_durable_rows() -> None:
         """Write the queued rows to the canonical log as ONE grouped append.
@@ -718,8 +719,7 @@ def inject_cron_result_to_dashboard(
             # run boundary and the user/assistant alternation hold whichever body
             # it gets. Redacted BEFORE the comparison, because the redacted form
             # is what a previous run stored.
-            safe_prompt, _ = redact_exfiltration_urls(prompt)
-            safe_prompt, _ = redact_credentials(safe_prompt)
+            safe_prompt = redact_row_via_context(prompt)
             if _prompt_already_recorded(slot, safe_prompt, marker):
                 # Mark the row a reference STRUCTURALLY: the invisible
                 # _REFERENCE_MARKER rides in the header's protected block right
@@ -736,13 +736,16 @@ def inject_cron_result_to_dashboard(
                 "user",
                 f"# Cron Run: {safe_name}{stamp}{header_marker}\n\n{prompt_body}",
                 "msg msg-u",
+                # Read off the BODY, before composition: a suppressed row carries the
+                # placeholder instead, and its rewrite is marked on the row it references.
+                redacted=carries_redaction_marker(prompt_body) or None,
             )
-        safe_result, _ = redact_exfiltration_urls(result_text)
-        safe_result, _ = redact_credentials(safe_result)
+        safe_result = redact_row_via_context(result_text)
         _reflect(
             "assistant",
             f"# Cron Job Result: {safe_name}{stamp}{marker}\n\n{safe_result}",
             "msg msg-a",
+            redacted=carries_redaction_marker(safe_result) or None,
         )
         # After BOTH rows are queued, so the pair lands as one write.
         _flush_durable_rows()
@@ -836,7 +839,7 @@ def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None
         content = msg.get("content", "")
         if not content:
             continue
-        content = redact_display_content(content)
+        content = redact_row_via_context(redact_display_content(content))
         if any(m.get("content") == content for m in slot.messages):
             continue
         slot.append(
@@ -846,4 +849,7 @@ def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None
             broadcast=False,
             meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
             mint_mid=False,
+            # The disk row already answered this; re-deriving from text loses a
+            # companion's own tag spelling. None falls back, so this only adds marks.
+            redacted=True if msg.get("redacted") else None,
         )

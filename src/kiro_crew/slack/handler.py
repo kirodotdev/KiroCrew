@@ -125,6 +125,7 @@ from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -5770,15 +5771,24 @@ async def handle_message(
                 slot_name = linked_session_key.removeprefix("dashboard:")
                 slot = getattr(ds, "_slots", {}).get(slot_name)
                 if slot:
-                    slot.append("user", text, "msg msg-u")
-                    slot.append("assistant", accumulated, "msg msg-a")
+                    # An EGRESS once the turn has run: BOTH halves scrub, model output too.
+                    mirrored = await asyncio.to_thread(redact_row_via_context, text)
+                    reply = await asyncio.to_thread(redact_row_via_context, accumulated)
+                    row = slot.append("user", mirrored, "msg msg-u")
+                    slot.append("assistant", reply, "msg msg-a")
                     if slot._on_message:
-                        slot._on_message(
-                            slot.key, {"role": "user", "content": text, "cls": "msg msg-u"}
-                        )
+                        # Off the row `append` returned: a hand-built frame else has no cue.
+                        frame: dict[str, Any] = {
+                            "role": "user",
+                            "content": mirrored,
+                            "cls": "msg msg-u",
+                        }
+                        if row.get("redacted"):
+                            frame["redacted"] = True
+                        slot._on_message(slot.key, frame)
                         slot._on_message(
                             slot.key,
-                            {"role": "assistant", "content": accumulated, "cls": "msg msg-a"},
+                            {"role": "assistant", "content": reply, "cls": "msg msg-a"},
                         )
                     ds.push_slots_update()  # type: ignore[attr-defined]
             except Exception:

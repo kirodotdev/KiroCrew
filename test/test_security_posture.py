@@ -976,6 +976,8 @@ class TestRedactionSinkRegistry:
             "redact_tree",
             "redact_and_truncate",
             "redact_via_context",
+            # Delegates to redact_via_context, plus containment for a miscomposed host.
+            "redact_row_via_context",
             "display_safe",
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.

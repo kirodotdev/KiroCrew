@@ -83,7 +83,7 @@ def _make_state(folders=(FOLDER,), history_messages=None):
             slot.title = ""
             slot.folder_id = ""
 
-            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True):
+            def append(role, content, cls, broadcast=True, meta=None, mint_mid=True, redacted=None):
                 supplied = meta.get("mid") if isinstance(meta, dict) else None
                 stored_meta = dict(meta) if isinstance(meta, dict) else {}
                 if mint_mid and not supplied:

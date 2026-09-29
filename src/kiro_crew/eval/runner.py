@@ -26,6 +26,7 @@ from kiro_crew.permission_floor import (
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
     refusal_for,
 )
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -338,7 +339,9 @@ class EvalRunner:
                 # Persist turns into ConversationLog and consolidate
                 log_key = f"eval_{session_def.name}"
                 for turn in session_result.turns:
-                    conv_log.append(log_key, "user", turn.user_message)
+                    # Persisted row is an egress served to dashboard readers; the
+                    # prompt comes from `turn_def.user` and stays verbatim.
+                    conv_log.append(log_key, "user", redact_row_via_context(turn.user_message))
                     conv_log.append(log_key, "assistant", turn.agent_response)
                 try:
                     # Use _consolidate directly instead of maybe_consolidate because

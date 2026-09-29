@@ -126,6 +126,7 @@ from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import (
     redact,
@@ -1258,6 +1259,9 @@ class DiscordDispatcher:
                     project_channel_turn_live,
                 )
 
+                # Both copies need the SAME body, both halves; own hop.
+                safe_text = await asyncio.to_thread(redact_row_via_context, text)
+                safe_reply = await asyncio.to_thread(redact_row_via_context, reply_text)
                 # A resumed ``dashboard:`` key carries the dashboard slot's privacy
                 # mode, not a Discord-local one. Decide on the loop before either
                 # writer: project_channel_turn_live marks the slot dirty, so even
@@ -1275,8 +1279,8 @@ class DiscordDispatcher:
                     mirror_mids = project_channel_turn_live(
                         dashboard_state,
                         session_key,
-                        text,
-                        reply_text,
+                        safe_text,
+                        safe_reply,
                     )
                     notice_mid = (
                         project_channel_row_live(
@@ -1288,8 +1292,8 @@ class DiscordDispatcher:
                     await asyncio.to_thread(
                         self._persist_turn,
                         session_key,
-                        text,
-                        reply_text,
+                        safe_text,
+                        safe_reply,
                         is_new_own_session,
                         agent=agent,
                         mirror_mids=mirror_mids,
@@ -1438,8 +1442,11 @@ class DiscordDispatcher:
                             redact_local_paths(redact(str(exc) or exc.__class__.__name__))[0][:1000]
                         )
                         dashboard_state = getattr(self._session_resume, "dashboard_state", None)
+                        # The failing path mirrors too, so both halves owe the same scrub.
+                        safe_text = await asyncio.to_thread(redact_row_via_context, text)
+                        partial = await asyncio.to_thread(redact_row_via_context, partial)
                         mirror_mids = project_channel_turn_live(
-                            dashboard_state, session_key, text, partial
+                            dashboard_state, session_key, safe_text, partial
                         )
                         error_mid = (
                             project_channel_row_live(
@@ -1451,7 +1458,7 @@ class DiscordDispatcher:
                         await asyncio.to_thread(
                             self._persist_turn,
                             session_key,
-                            text,
+                            safe_text,
                             partial,
                             False,
                             agent=agent,
@@ -2752,6 +2759,9 @@ class DiscordDispatcher:
         """
         if self.conv_log is None:
             return
+        # An EGRESS: served to readers after the turn ran, so it cannot rewrite the prompt.
+
+        user_text = redact_row_via_context(user_text)
         if mirror_mids is not None:
             user_mid, assistant_mid = mirror_mids
             self.conv_log.append_if_absent(

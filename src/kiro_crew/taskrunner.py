@@ -29,6 +29,7 @@ from kiro_crew.execution_context import (
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.llm_helpers import stream_and_collect_json
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -2587,7 +2588,7 @@ class TaskRunner:
             # two independent append_off_loop dispatches could interleave on the
             # default executor and reorder the transcript — and take the patient
             # off-loop cross-process lock acquire path.
-            log.append(history_key, "user", user_msg)
+            log.append(history_key, "user", redact_row_via_context(user_msg))
             log.append(history_key, "assistant", result_summary)
 
         # _log_task is invoked from async task_executor code running ON the

@@ -568,6 +568,7 @@ export function createTranscriptRenderers(
                 renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
                 hideSteerBadge
                 onReplyInThread={replyInThreadFor(m, ctx)}
+                redacted={m.redacted === true}
               />
               {threadFooterFor(m, ctx, 'end')}
             </>,
