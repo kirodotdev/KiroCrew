@@ -1035,7 +1035,10 @@ The resume ID is consumed on attempt (no retry loop). After successful load,
 `client.resumed` returns `True` — callers use this to skip thread history injection.
 
 Step 3 (`set_mode`) is **conditional**: sent for all kiro-cli backend agents.
-Skipped for claude-agent-acp backend (which does not support set_mode).
+Skipped for claude-agent-acp, whose `session/set_mode` takes permission modes
+(`default`, `acceptEdits`, `plan`, ...) rather than agent names. The claude
+session that leaves a project-owned settings file out uses that verb to pin
+`default` (see claude-code-provider.md).
 Two of the guards in front of it, on `session/new` and `session/load` alike,
 end the session rather than let it run as a different agent. Guard (A): when
 the response advertises a `modes` list, the requested agent must be in it

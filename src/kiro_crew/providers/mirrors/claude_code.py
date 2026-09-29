@@ -55,8 +55,9 @@ class ClaudeCodeMirror(AgentConfigMirror):
                 "withhold rule covers both halves of the array -- codex parity. "
                 "The adapter reads no agent file, so this array is the only channel "
                 "Crew has onto the session's MCP surface. Delivered ONLY when Crew governs "
-                "settings.local.json -- authored it, or verified it is a sibling "
-                "session's byte-identical seed: that file is this backend's "
+                "settings.local.json -- authored it, verified it is a sibling "
+                "session's byte-identical seed, or left a project-owned one out of "
+                "the session's setting sources: that file is this backend's "
                 "permission surface, and a tool Crew cannot gate must not be "
                 "handed to the session at all -- stubs included, since a stub is "
                 "the same server under the same name",
@@ -155,15 +156,17 @@ class ClaudeCodeMirror(AgentConfigMirror):
         fact and cannot withhold it. The seed Crew authors carries
         ``defaultMode`` plus the spec's ``permissions.deny``, which is what puts a
         session under the gate — but the writer is create-or-decline, so a project
-        that already has its own ``settings.local.json`` gets no seed and Crew
-        governs nothing there. Handing THAT session the array would deliver
+        that already has its own ``settings.local.json`` gets no seed. Handing a
+        session the array while that file still loads would deliver
         ``spawn_run``, ``cron_add``, ``send_message`` and every configured server
         into a permission surface Crew does not control.
 
         So the array is withheld unless Crew governs the file -- authored it
-        this session, or verified byte-for-byte that it is a sibling Crew
-        session's live seed identical to what this session would have written
-        (the caller's ``_permission_surface_governed``). The cost is
+        this session, verified byte-for-byte that it is a sibling Crew
+        session's live seed identical to what this session would have written,
+        or left a project-owned file out of the session's setting sources and
+        carried its own settings inline (the caller's
+        ``_permission_surface_governed``). The cost is
         stated rather than hidden: a session where neither holds runs with no
         Crew MCP tools, which is exactly how every claude session behaved before
         this array existed, so nothing regresses — it simply does not gain tools
@@ -241,8 +244,8 @@ class ClaudeCodeMirror(AgentConfigMirror):
                 "included -- Crew does not own this session's settings.local.json, so a "
                 "permissions.allow entry there could pre-approve a Crew tool and skip "
                 "session/request_permission entirely. This session runs without Crew's MCP "
-                "tools; remove or rename the project's own .claude/settings.local.json to "
-                "restore them.",
+                "tools; the client's own warning names why the file could not be left out. "
+                "Removing or renaming the project's .claude/settings.local.json restores them.",
             )
             return SessionProjection(params={"mcpServers": []})
         projection = session_mcp_projection(
