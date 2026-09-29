@@ -1,0 +1,56 @@
+name: Python Client Tests
+
+# The standalone `kirocrew-client` package (packages/kirocrew-client-py) is its
+# own distribution with its own pytest config, so the repo-wide backend suite
+# never collects it (scripts/check_testpaths_coverage.py exempts nested
+# distributions on the understanding that they run on their own). This is that
+# run. Path-scoped: a change that touches neither the package nor this file
+# cannot change its result.
+
+on:
+  pull_request:
+    paths:
+      - "packages/kirocrew-client-py/**"
+      - ".github/workflows/client-py.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/kirocrew-client-py/**"
+      - ".github/workflows/client-py.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-py-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: kirocrew-client (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The package's floor and the main package's current floor.
+        python: ["3.9", "3.12"]
+    defaults:
+      run:
+        working-directory: packages/kirocrew-client-py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Test
+        run: |
+          # setup-python registers a matcher that turns any Python traceback in
+          # the log into an annotation; drop it so only real failures annotate.
+          echo "::remove-matcher owner=python::"
+          python -m pytest -q
