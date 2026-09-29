@@ -28,6 +28,7 @@ from __future__ import annotations
 import errno
 import os
 import runpy
+import stat
 import sys
 import tempfile
 import textwrap
@@ -79,7 +80,7 @@ _LANDMARKS = (
     "for d in READONLY_DIRS:",  # the read-only exposure loop
     "for d in WRITABLE_DIRS:",  # the write carve-out loop (fail-open)
     "for f in SENSITIVE_FILES:",  # the sensitive-file loop
-    "if HIDE_SSH and os.path.isdir(SSH_DIR):",  # the .ssh block
+    "if HIDE_SSH and os.path.lexists(SSH_DIR):",  # the .ssh block
     "sandbox: BLOCKED",  # the refusal
 )
 
@@ -95,6 +96,36 @@ def _pin_ssh_accept_new(monkeypatch: pytest.MonkeyPatch) -> None:
     (test-hygiene class 7). ``True`` is what a modern host answers.
     """
     monkeypatch.setattr("kiro_crew.sandbox._ssh_supports_accept_new", lambda: True)
+
+
+def _resolved_identity(target: object) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of the object *target* names, or ``None``.
+
+    A pinned target is a ``/proc/self/fd/<n>`` bytes path; its fd is
+    still open when the launcher calls ``mount``, so it is ``fstat``-ed here at
+    that moment rather than by re-resolving the spelling later. A plain path is
+    ``lstat``-ed. ``None`` for anything that cannot be resolved (e.g. ``None`` for
+    the propagation mount, or an absent path).
+    """
+    spelling = None
+    if isinstance(target, str):
+        spelling = target
+    elif isinstance(target, bytes):
+        spelling = os.fsdecode(target)
+    if spelling is None:
+        return None
+    prefix = "/proc/self/fd/"
+    if spelling.startswith(prefix):
+        try:
+            info = os.fstat(int(spelling[len(prefix) :]))
+        except (OSError, ValueError):
+            return None
+        return (info.st_dev, info.st_ino)
+    try:
+        info = os.lstat(spelling)
+    except (OSError, ValueError):
+        return None
+    return (info.st_dev, info.st_ino)
 
 
 class _FakeLibc:
@@ -113,9 +144,16 @@ class _FakeLibc:
         self.err = err
         self.calls: list[tuple[object, object, int]] = []
         self.unmounts: list[tuple[object, int]] = []
+        #: Per-call ``(st_dev, st_ino)`` of the object each target RESOLVED to at
+        #: mount time, or ``None`` when it could not be resolved. Captured here
+        #: because the launcher pins its seal/hide targets as ``/proc/self/fd/<n>``
+        #: descriptor paths, whose fd is open only during the region's
+        #: run -- a caller comparing after the region has no fd left to fstat.
+        self.resolved: list[tuple[int, int] | None] = []
 
     def mount(self, source, target, fstype, flags, data):  # noqa: ANN001
         self.calls.append((source, target, flags))
+        self.resolved.append(_resolved_identity(target))
         if self.fail_at is not None and len(self.calls) == self.fail_at:
             import ctypes
 
@@ -151,6 +189,21 @@ def _region(script: str) -> str:
         cut(_HIDE_START, _HIDE_END)
     )
     region = helper + "\n" + body
+    # Neutralise the post-mount name check: it asks whether the configured name
+    # now reaches the stand-in, which is only true after a REAL mount, and this
+    # ``_libc`` records instead of mounting. Left in force it would refuse every
+    # run here and these assertions would describe the harness. Its own verdict
+    # is tested in test_sandbox_mount_pinned_target.py against real objects.
+    _verify = "def _verify_masked_name(name, stand_in_id, what):"
+    _after = "def _locked_mount_flags(target):"
+    assert _verify in region, "the name-check helper was renamed"
+    assert _after in region, "the helper after the name check was renamed"
+    region = (
+        region[: region.index(_verify)]
+        + _verify
+        + "\n    return None\n\n"
+        + region[region.index(_after, region.index(_verify)) :]
+    )
     missing = [m for m in _LANDMARKS if m not in region]
     assert not missing, f"the extracted mount region is missing {missing}"
     return region
@@ -212,6 +265,7 @@ def _run(
         "_MNT_DETACH": 2,
         "ctypes": ctypes,
         "os": os,
+        "stat": stat,
         "sys": sys,
         "tempfile": tempfile,
         "_tmpfs_src": str(src_dir),
@@ -243,6 +297,7 @@ def _run(
         # would end the run before the call numbering above is exercised. The alias tests
         # inject their own entry.
         "FAIL_CLOSED_FILE_MASKS": [],
+        "REQUIRED_MASK_TARGETS": frozenset(),
         "SSH_DIR": str(ssh),
         "SSH_KNOWN_HOSTS": str(ssh / "known_hosts"),
         "HIDE_SSH": True,
@@ -317,12 +372,15 @@ def test_a_failed_mount_refuses_to_exec(
 def test_the_refusal_names_the_hidden_path(tmp_path: Path) -> None:
     """An operator needs the path, not just 'a mount failed'.
 
+    The path the operator must act on is the NAME they configured, which is what
+    the label carries. The mount target itself is a descriptor path pinning the
+    object that name resolved to, and would tell them nothing.
+
     Break-arm: ``drop_path`` (the dirs site's label made a constant).
     """
     libc, refusal = _run(tmp_path, fail_at=4)
     assert refusal is not None
-    target = libc.calls[-1][1].decode()
-    assert target in refusal
+    assert str(tmp_path / "home" / ".aws") in refusal
 
 
 def test_the_refusal_carries_the_errno(tmp_path: Path) -> None:
@@ -369,9 +427,16 @@ def test_a_private_windows_stage_does_not_outlive_the_mask(tmp_path: Path) -> No
     libc, refusal = _run(tmp_path, fail_at=None, private_dirs=[str(window)])
 
     assert refusal is None
-    # The staging mount is the one whose SOURCE is a descriptor path.
+    # The staging mount is the one whose TARGET is a fresh tmpfs stage: every hiding
+    # mount sources from a descriptor path as well, so the source alone cannot tell
+    # a stage from a mask.
     staged = [
-        t for s, t, _flags in libc.calls if isinstance(s, bytes) and s.startswith(b"/proc/self/fd/")
+        t
+        for s, t, _flags in libc.calls
+        if isinstance(s, bytes)
+        and s.startswith(b"/proc/self/fd/")
+        and isinstance(t, bytes)
+        and t.startswith(str(tmp_path / "tmpfs").encode())
     ]
     assert len(staged) == 1, f"expected one staging mount, got {staged}"
     assert libc.unmounts == [(staged[0], 2)], "the stage was not detached"
@@ -406,8 +471,16 @@ def test_a_vouched_window_whose_identity_changed_refuses_the_spawn(tmp_path: Pat
 
     assert refusal is not None, "a mismatched window identity was accepted"
     assert "approved as a data window" in refusal
+    # The staging mount is the one whose TARGET is a fresh tmpfs stage: every hiding
+    # mount sources from a descriptor path as well, so the source alone cannot tell
+    # a stage from a mask.
     staged = [
-        t for s, t, _flags in libc.calls if isinstance(s, bytes) and s.startswith(b"/proc/self/fd/")
+        t
+        for s, t, _flags in libc.calls
+        if isinstance(s, bytes)
+        and s.startswith(b"/proc/self/fd/")
+        and isinstance(t, bytes)
+        and t.startswith(str(tmp_path / "tmpfs").encode())
     ]
     assert staged == [], f"the mismatched window was staged anyway: {staged}"
 
@@ -444,8 +517,16 @@ def test_a_window_whose_identity_matches_is_staged(tmp_path: Path) -> None:
     )
 
     assert refusal is None, f"a matching window was refused: {refusal}"
+    # The staging mount is the one whose TARGET is a fresh tmpfs stage: every hiding
+    # mount sources from a descriptor path as well, so the source alone cannot tell
+    # a stage from a mask.
     staged = [
-        t for s, t, _flags in libc.calls if isinstance(s, bytes) and s.startswith(b"/proc/self/fd/")
+        t
+        for s, t, _flags in libc.calls
+        if isinstance(s, bytes)
+        and s.startswith(b"/proc/self/fd/")
+        and isinstance(t, bytes)
+        and t.startswith(str(tmp_path / "tmpfs").encode())
     ]
     assert len(staged) == 1, f"expected one staging mount, got {staged}"
 
@@ -508,21 +589,39 @@ def _nested_pair(tmp_path: Path) -> tuple[str, str]:
 
 def _seal_and_hide_positions(libc: _FakeLibc, parent: str, leaf: str) -> tuple[int, int, int]:
     """Call indexes of the parent's self-bind, its sealing remount, and the
-    leaf's hide, in the order the region issued them."""
+    leaf's hide, in the order the region issued them.
+
+    The launcher pins its targets as ``/proc/self/fd/<n>`` descriptor paths,
+    so a target is matched by the OBJECT it resolved to at mount
+    time (``libc.resolved``) rather than by the spelling, which need not equal
+    the configured path. The self-bind's SOURCE is still the raw parent path.
+    """
     calls = libc.calls
-    parent_b, leaf_b = parent.encode(), leaf.encode()
+    resolved = libc.resolved
+    try:
+        parent_id = os.lstat(parent)
+        parent_key: tuple[int, int] | None = (parent_id.st_dev, parent_id.st_ino)
+    except OSError:
+        parent_key = None
+    try:
+        leaf_id = os.lstat(leaf)
+        leaf_key: tuple[int, int] | None = (leaf_id.st_dev, leaf_id.st_ino)
+    except OSError:
+        leaf_key = None
     self_bind = next(
         i
-        for i, (src, tgt, flags) in enumerate(calls)
-        if tgt == parent_b and src == parent_b and flags == _MS_BIND
+        for i, (_src, _tgt, flags) in enumerate(calls)
+        if resolved[i] == parent_key and flags == _MS_BIND
     )
     remount = next(
-        i for i, (src, tgt, flags) in enumerate(calls) if tgt == parent_b and flags & _MS_REMOUNT
+        i
+        for i, (_src, _tgt, flags) in enumerate(calls)
+        if resolved[i] == parent_key and flags & _MS_REMOUNT
     )
     hide = next(
         i
-        for i, (src, tgt, flags) in enumerate(calls)
-        if tgt == leaf_b and src != leaf_b and flags == _MS_BIND
+        for i, (_src, _tgt, flags) in enumerate(calls)
+        if resolved[i] == leaf_key and flags == _MS_BIND
     )
     return self_bind, remount, hide
 
@@ -672,16 +771,17 @@ _ARMS: dict[str, tuple[str, str]] = {
         '_libc.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)',
     ),
     "site2": (
-        "_mount_or_die(target, target, _MS_BIND,\n"
+        "_mount_or_die(_seal_target, _seal_target, _MS_BIND,\n"
         '                              "exposing read-only path %s" % d)',
-        "_libc.mount(target, target, None, _MS_BIND, None)",
+        "_libc.mount(_seal_target, _seal_target, None, _MS_BIND, None)",
     ),
     "site3": (
-        "_mount_or_die(target, target,\n"
-        "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY\n"
-        "                              | _locked_mount_flags(target),\n"
-        '                              "sealing read-only path %s" % d)',
-        "_libc.mount(target, target, None, _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
+        "_mount_or_die(_rdonly_target, _rdonly_target,\n"
+        "                                      _MS_REMOUNT | _MS_BIND | _MS_RDONLY\n"
+        "                                      | _locked_mount_flags(_rdonly_target),\n"
+        '                                      "sealing read-only path %s" % d)',
+        "_libc.mount(_rdonly_target, _rdonly_target, None,\n"
+        "                                    _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
     ),
     "site4": (
         "_mount_or_die(per_dir_empty, target, _MS_BIND,\n"
@@ -689,14 +789,14 @@ _ARMS: dict[str, tuple[str, str]] = {
         "_libc.mount(per_dir_empty, target, None, _MS_BIND, None)",
     ),
     "site5": (
-        "_mount_or_die(empty_path.encode(), target, _MS_BIND,\n"
+        "_mount_or_die(empty_path.encode(), _file_target, _MS_BIND,\n"
         '                              "hiding sensitive file %s" % f)',
-        "_libc.mount(empty_path.encode(), target, None, _MS_BIND, None)",
+        "_libc.mount(empty_path.encode(), _file_target, None, _MS_BIND, None)",
     ),
     "site6": (
-        "_mount_or_die(ssh_tmp, SSH_DIR.encode(), _MS_BIND,\n"
-        '                          "hiding ssh key directory %s" % SSH_DIR)',
-        "_libc.mount(ssh_tmp, SSH_DIR.encode(), None, _MS_BIND, None)",
+        "_mount_or_die(ssh_tmp, _ssh_target, _MS_BIND,\n"
+        '                                  "hiding ssh key directory %s" % SSH_DIR)',
+        "_libc.mount(ssh_tmp, _ssh_target, None, _MS_BIND, None)",
     ),
     "happy_path": (
         "if _libc.mount(source, target, None, flags, None) != 0:\n"
