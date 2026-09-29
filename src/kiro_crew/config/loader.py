@@ -5952,7 +5952,10 @@ def resolve_agent_bindings(
     if ws_name in config.workspaces:
         ws_dir = Path(config.workspaces[ws_name].dir)
     else:
-        logger.warning(
+        # When the agent already names default_workspace there is nothing to fall
+        # back to, and "'x' not found, falling back to 'x'" would only mislead.
+        log = logger.debug if ws_name == config.default_workspace else logger.warning
+        log(
             "Agent workspace '%s' not found, falling back to default_workspace '%s'",
             ws_name,
             config.default_workspace,
