@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from body_stream_helpers import attach_body
@@ -86,6 +88,45 @@ class TestOneShotAccepted:
         assert resp.status == 200
         at_ts = crons.list_jobs()[0].schedule.at_ts
         assert at_ts == pytest.approx(time.time() + 45 * 60, abs=30)
+
+    @pytest.mark.asyncio
+    async def test_at_time_clock_is_read_in_the_body_timezone(self, monkeypatch):
+        """A clock time is read in the job's own zone, as ``cron_add`` reads it.
+
+        The configured zone is UTC and the job's zone is 14 hours ahead, so a
+        clock read in the configured zone lands on a different hour in the job's.
+        """
+        monkeypatch.setattr("kiro_crew.cron.published_config_timezone", lambda: "UTC")
+        crons = CronService()
+        resp = await api_crons_create(
+            _create_request(
+                {
+                    "name": "zoned",
+                    "message": "ping",
+                    "at_time": "23:59",
+                    "timezone": "Pacific/Kiritimati",
+                },
+                crons,
+            )
+        )
+        assert resp.status == 200
+        job = crons.list_jobs()[0]
+        assert job.timezone == "Pacific/Kiritimati"
+        local = datetime.fromtimestamp(job.schedule.at_ts, tz=ZoneInfo("Pacific/Kiritimati"))
+        assert (local.hour, local.minute) == (23, 59)
+
+    @pytest.mark.asyncio
+    async def test_invalid_timezone_with_at_time_is_refused(self):
+        crons = CronService()
+        resp = await api_crons_create(
+            _create_request(
+                {"name": "bad", "message": "ping", "at_time": "23:59", "timezone": "Not/AZone"},
+                crons,
+            )
+        )
+        assert resp.status == 400
+        assert "invalid timezone" in _body(resp)["error"]
+        assert crons.list_jobs() == []
 
     @pytest.mark.asyncio
     async def test_at_wins_over_delay_and_at_time(self):
@@ -251,6 +292,25 @@ class TestOneShotRefusals:
         )
         assert resp.status == 400
         assert _body(resp)["code"] == "at_out_of_range"
+        assert crons.list_jobs() == []
+
+    @pytest.mark.asyncio
+    async def test_zoned_at_time_outside_datetime_range_is_refused(self):
+        crons = CronService()
+        resp = await api_crons_create(
+            _create_request(
+                {
+                    "name": "edge-clock",
+                    "message": "ping",
+                    "at_time": "9999-12-31 23:59",
+                    "timezone": "America/Los_Angeles",
+                },
+                crons,
+            )
+        )
+
+        assert resp.status == 400
+        assert _body(resp)["code"] == "invalid_at_time"
         assert crons.list_jobs() == []
 
     @pytest.mark.asyncio

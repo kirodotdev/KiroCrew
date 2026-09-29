@@ -426,7 +426,9 @@ def _schema_field(field_name: str) -> FieldSpec | None:
     return None
 
 
-def _resolve_one_shot_at(body: dict[str, Any]) -> tuple[float | None, web.Response | None]:
+def _resolve_one_shot_at(
+    body: dict[str, Any], tz_name: str = ""
+) -> tuple[float | None, web.Response | None]:
     """Resolve a one-shot fire time from ``at`` / ``delay`` / ``at_time``.
 
     Returns ``(at_ts, None)`` on success — with ``at_ts`` ``None`` when the body
@@ -435,8 +437,9 @@ def _resolve_one_shot_at(body: dict[str, Any]) -> tuple[float | None, web.Respon
 
     Mirrors ``cron_add``'s **parser and precedence**: ``at`` (absolute epoch
     seconds) wins, then ``delay`` (seconds from now), then ``at_time`` (human
-    string, parsed in the CONFIGURED timezone by the shared
-    :func:`parse_time_string`), so a one-shot body means the same instant
+    string, parsed by the shared :func:`parse_time_string` in *tz_name* -- the
+    body's own, already-validated ``timezone`` -- or the CONFIGURED timezone
+    when the body names none), so a one-shot body means the same instant
     whichever door received it. The acceptance sets are NOT identical: the
     resolved-instant ceiling below is stricter than the tool, which bounds only
     its raw fields.
@@ -513,7 +516,7 @@ def _resolve_one_shot_at(body: dict[str, Any]) -> tuple[float | None, web.Respon
                 {"error": str(exc), "code": "invalid_at_time"}, status=400
             )
         if at_time:
-            parsed = parse_time_string(at_time)
+            parsed = parse_time_string(at_time, tz_name)
             if isinstance(parsed, str):
                 # parse_time_string reports failure as an already-prefixed
                 # "Error: ..." string; strip the prefix so the JSON body is not
@@ -790,8 +793,12 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # One-shot scheduling, mirroring cron_add's `at` / `delay` / `at_time`.
     # Precedence matches the tool exactly (`at` wins, then `delay`, then
     # `at_time`) so the same request body cannot mean two different instants
-    # depending on which entry point received it.
-    at_ts, at_err = _resolve_one_shot_at(body)
+    # depending on which entry point received it. The timezone is checked first
+    # because it is the zone an `at_time` clock time is read in.
+    if timezone_val and not is_valid_timezone(timezone_val):
+        safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
+        return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    at_ts, at_err = _resolve_one_shot_at(body, timezone_val)
     if at_err is not None:
         return at_err
     if channel and not CHANNEL_ID_RE.match(channel):
@@ -799,9 +806,6 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if approval_mode and approval_mode not in {"", "auto"}:
         return web.json_response({"error": "invalid approval_mode"}, status=400)
     silent = body.get("silent", False)
-    if timezone_val and not is_valid_timezone(timezone_val):
-        safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
-        return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
     strict_schedule = body.get("strict_schedule", False)
     hide_in_chat = body.get("hide_in_chat", False)
     # A job created on a full context pays for memory, lessons, steering, skills

@@ -57,6 +57,8 @@ cron resume <id>
 
 `cron_expr` uses five fields: `min hour dom month dow`; the MCP schema documents numeric day-of-week values `0=Sun` through `6=Sat`.
 
+A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, falling back to UTC. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` (`"in 2 hours"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed.
+
 ## How It Works
 
 1. The cron timer fires at the scheduled time.

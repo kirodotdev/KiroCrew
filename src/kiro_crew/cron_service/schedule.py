@@ -239,21 +239,66 @@ _UNIT_SECS = {
 }
 
 
-def parse_time_string(s: str) -> float | str:
+def _wall_clock_resolution_error(value: datetime, tz: ZoneInfo, tz_name: str) -> str | None:
+    """Return an error when a zone cannot resolve the requested wall clock."""
+    clock_format = "%H:%M:%S" if value.second else "%H:%M"
+    clock = value.strftime(clock_format)
+    date = f"{value.year:04d}-{value.month:02d}-{value.day:02d}"
+    try:
+        round_tripped = value.astimezone(timezone.utc).astimezone(tz)
+    except (OverflowError, ValueError):
+        return f"Error: {date} {clock} in {tz_name} is outside the supported date range"
+    wall_clock = (
+        value.year,
+        value.month,
+        value.day,
+        value.hour,
+        value.minute,
+        value.second,
+        value.microsecond,
+    )
+    round_tripped_wall_clock = (
+        round_tripped.year,
+        round_tripped.month,
+        round_tripped.day,
+        round_tripped.hour,
+        round_tripped.minute,
+        round_tripped.second,
+        round_tripped.microsecond,
+    )
+    if round_tripped_wall_clock == wall_clock:
+        return None
+    return (
+        f"Error: {clock} on {date} does not exist in {tz_name} "
+        "(the zone's clocks skip it); pick a time the zone has"
+    )
+
+
+def parse_time_string(s: str, tz_name: str = "") -> float | str:
     """Parse a human time string into a Unix timestamp. Returns error string on failure.
 
-    Lives here, next to :func:`get_local_tz`, because BOTH one-shot entry points
-    need it: the ``cron_add`` MCP tool and ``POST /api/crons``. A second copy
-    would let the two drift, and "5pm" resolving to different instants depending
-    on which door the request came through is exactly the class of bug a shared
-    parser prevents. Relative forms ("in 30 minutes") are absolute already;
-    everything else is interpreted in the CONFIGURED timezone, never the
-    process's, so a gateway running in UTC still honours the user's setting.
+    Lives here, next to :func:`get_local_tz`, because EVERY one-shot entry point
+    needs it: the ``cron_add`` MCP tool, ``POST /api/crons`` and
+    ``kirocrew cron add --at``. A second copy would let them drift, and "5pm"
+    resolving to different instants depending on which door the request came
+    through is exactly the class of bug a shared parser prevents. Relative forms
+    ("in 30 minutes") are absolute already; a wall clock ("5pm", "tomorrow 9am",
+    an ISO date and time) is read in *tz_name*, the job's own timezone, when the
+    caller has one -- the same zone the job's ``cron_expr`` and ``skip_dates``
+    are evaluated in and its schedule is rendered in. Without one it is read in
+    the CONFIGURED timezone, never the process's, so a gateway running in UTC
+    still honours the user's setting. *tz_name* must already have passed
+    :func:`is_valid_timezone`; every caller checks it before parsing so a bad
+    name is refused with that caller's own message.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     s = s.strip()
-    _, tz = seams.get_local_tz()
+    if tz_name:
+        resolved_tz_name = tz_name
+        tz = ZoneInfo(tz_name)
+    else:
+        resolved_tz_name, tz = seams.get_local_tz()
     now = seams.datetime.now(tz)
 
     # "in 5 minutes", "in 2 hours"
@@ -278,7 +323,8 @@ def parse_time_string(s: str) -> float | str:
                 result += timedelta(days=1)
             elif result <= now:
                 result += timedelta(days=1)  # "5pm" when it's already 6pm → tomorrow
-            return result.timestamp()
+            error = _wall_clock_resolution_error(result, tz, resolved_tz_name)
+            return error or result.timestamp()
         except ValueError:
             continue
 
@@ -286,7 +332,8 @@ def parse_time_string(s: str) -> float | str:
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
             parsed = seams.datetime.strptime(text, fmt).replace(tzinfo=now.tzinfo)
-            return parsed.timestamp()
+            error = _wall_clock_resolution_error(parsed, tz, resolved_tz_name)
+            return error or parsed.timestamp()
         except ValueError:
             continue
 

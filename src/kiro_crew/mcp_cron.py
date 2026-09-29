@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 from kiro_crew import model_registry
 from kiro_crew.config.loader import config_dir, read_local_secret
@@ -1234,7 +1235,8 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Human time string for one-shot job, parsed server-side. "
                         "Examples: '5pm', '17:00', 'tomorrow 9:30am', 'in 2 hours', "
-                        "'2026-03-28 14:00'. Uses server local timezone. "
+                        "'2026-03-28 14:00'. A clock time is read in 'timezone' when given, "
+                        "else the global config timezone, then UTC. "
                         "Prefer this over 'at' for absolute times.",
                     },
                     "channel": {
@@ -1285,10 +1287,10 @@ def _list_tools() -> list[dict[str, Any]]:
                     },
                     "timezone": {
                         "type": "string",
-                        "description": "IANA timezone for cron expression evaluation and "
-                        "skip_dates (e.g. 'America/New_York'). Cron hour/minute fields are "
-                        "interpreted in this timezone. Falls back to global config timezone, "
-                        "then UTC.",
+                        "description": "IANA timezone for cron expression evaluation, an at_time "
+                        "clock time, and skip_dates (e.g. 'America/New_York'). Cron hour/minute "
+                        "fields and an at_time such as '9am' are interpreted in this timezone. "
+                        "Falls back to global config timezone, then UTC.",
                     },
                     "folder": {
                         "type": "string",
@@ -2538,16 +2540,28 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         at_ts = args.get("at")
         delay = args.get("delay")
         at_time = args.get("at_time")
+        # The job's timezone is validated BEFORE at_time is parsed, because it is
+        # the zone a wall-clock at_time ("9am", "tomorrow 5pm") is read in -- the
+        # same zone the job's cron_expr and skip_dates use and its confirmation
+        # below renders in. A clock read in any other zone stores an instant the
+        # confirmation would then render as a time the caller never asked for.
+        tz = args.get("timezone", "")
+        if tz and not is_valid_timezone(tz):
+            safe_tz = redact(tz)
+            return f"Error: invalid timezone: {safe_tz!r}"
         if delay is not None and at_ts is None:
             at_ts = time.time() + delay
         if at_time is not None and at_ts is None:
-            parsed = parse_time_string(at_time)
+            parsed = parse_time_string(at_time, tz)
             if isinstance(parsed, str):
                 return parsed  # error message
             at_ts = parsed
         # Guard against past timestamps from any source (at, delay, at_time)
         if at_ts is not None and at_ts < time.time():
-            local = datetime.fromtimestamp(at_ts).astimezone()
+            # Rendered in the zone the job keeps its wall clocks in, so a refused
+            # at_time echoes the clock the caller typed rather than the process's.
+            shown_tz = ZoneInfo(tz) if tz else get_local_tz()[1]
+            local = datetime.fromtimestamp(at_ts, shown_tz)
             return f"Error: resolved time {local.strftime('%I:%M %p %Z')} is in the past"
         channel = (args.get("channel") or "").strip() or None
         if channel is None:
@@ -2574,10 +2588,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # the persistence owner, so any create caller is covered and the values
         # land in the job's FIRST _save() -- no orphaned/half-populated job).
         skip_dates = args.get("skip_dates", [])
-        tz = args.get("timezone", "")
-        if tz and not is_valid_timezone(tz):
-            safe_tz = redact(tz)
-            return f"Error: invalid timezone: {safe_tz!r}"
         if skip_dates:
             for d in skip_dates:
                 if not is_valid_skip_date(d):

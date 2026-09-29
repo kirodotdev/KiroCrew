@@ -15,6 +15,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -365,17 +366,32 @@ class TestOneShot:
             svc_cls.return_value.add_job.assert_not_called()
         assert "could not parse time" in err
 
-    def test_timezone_with_at_is_refused(self, home, capsys):
-        # --timezone never reaches parse_time_string (the --at string is read
-        # in the configured tz), so pairing them would render a wall clock the
-        # operator never typed. The pair is refused before anything is written.
+    def test_timezone_with_at_reads_the_time_in_that_zone(self, home, monkeypatch):
+        # --timezone is the zone the --at clock time is read in, exactly as
+        # cron_add and POST /api/crons read at_time. The configured zone is UTC
+        # and the job's zone is 14 hours ahead, so a clock read in the wrong one
+        # lands on a different hour in the job's zone.
+        monkeypatch.setattr("kiro_crew.cron.get_local_tz", lambda: ("UTC", ZoneInfo("UTC")))
         with (
             patch("kiro_crew.cli_commands.CronService") as svc_cls,
             patch("kiro_crew.cli_commands.sel"),
         ):
-            err = _refused(_ns(at="in 2 hours", timezone="Asia/Tokyo"), capsys)
+            svc = svc_cls.return_value
+            svc.add_job.return_value = _mock_job()
+            _cron(_ns(at="23:59", timezone="Pacific/Kiritimati"))
+            kwargs = svc.add_job.call_args.kwargs
+        assert kwargs["timezone"] == "Pacific/Kiritimati"
+        local = datetime.fromtimestamp(kwargs["at_ts"], tz=ZoneInfo("Pacific/Kiritimati"))
+        assert (local.hour, local.minute) == (23, 59)
+
+    def test_invalid_timezone_with_at_is_refused(self, home, capsys):
+        with (
+            patch("kiro_crew.cli_commands.CronService") as svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            err = _refused(_ns(at="23:59", timezone="Not/AZone"), capsys)
             svc_cls.return_value.add_job.assert_not_called()
-        assert "--timezone applies to --cron only" in err
+        assert "invalid timezone" in err
 
     def test_timezone_with_every_refused(self, home, capsys):
         with (
@@ -384,7 +400,7 @@ class TestOneShot:
         ):
             err = _refused(_ns(every=300, timezone="Asia/Tokyo"), capsys)
             svc_cls.return_value.add_job.assert_not_called()
-        assert "--timezone applies to --cron only" in err
+        assert "--timezone applies to --cron and --at only" in err
 
     def test_timezone_with_cron_still_succeeds(self, home):
         with (
