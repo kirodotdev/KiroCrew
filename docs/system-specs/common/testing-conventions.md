@@ -2812,8 +2812,8 @@ went red, or the fix lands in the wrong file and the leak stays.
   The one descriptor the probe still sees
   is pytest-asyncio 0.20.3's replacement loop: +3, one at a time, reclaimed at the next
   test's setup -- a float, not a leak, and never the thing to chase.
-- **A cancelled inline reap is a backend nobody owns.** `mcp_gateway/gatewayd.py`'s stub
-  disconnect `finally` awaited `orphan.shutdown()` inline; daemon teardown cancels those
+- **A cancelled inline reap is a backend nobody owns.** `mcp_gateway/daemon/connection.py`'s stub
+  disconnect teardown awaited `orphan.shutdown()` inline; daemon teardown cancels those
   connection handlers, and the cancel landed AFTER `release_exclusive` had dropped the
   backend from the exclusive map, so it was outside `shutdown_all` -- the child exited on
   its own, SIGKILL escalation never reached it, and its pipe transports were still

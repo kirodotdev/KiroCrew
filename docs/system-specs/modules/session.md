@@ -3369,7 +3369,7 @@ the daemon's `--socket` path. gatewayd creates that socket at bind, so once
 the path is absent from disk no stub can ever connect again — the process is
 provably unreachable regardless of who launched it.
 
-- **Self-exit (primary, in-daemon)**: `gatewayd._socket_liveness_sweeper`
+- **Self-exit (primary, in-daemon)**: `mcp_gateway/daemon/sweepers.py::_socket_liveness_sweeper`
   stats its own socket path on the idle-sweep cadence, armed only after a
   successful bind. Three CONSECUTIVE `ENOENT` observations set `stop_event`,
   taking the same graceful drain as SIGTERM (backends drained and reaped).
@@ -3478,7 +3478,7 @@ a trust root on its own; publication therefore also writes a
   `mcp_shared._policy_session_key` (the policy walk, called by
   `_resolve_tool_policy`),
   `mcp_caller.CallerContext.from_env` (host-pid + walk; also serves
-  `mcp_gateway/stub.py`), and `mcp_gateway/gatewayd._resolve_peer_identity`
+  `mcp_gateway/stub.py`), and `mcp_gateway/daemon/identity.py::_resolve_peer_identity`
   (server-side peer walk). The sidecar is additive. All four are pid-keyed and
   therefore answer with the PARENT for a session-sharing subagent, which is why each
   client-side one reads the per-SESSION token (`session_token_sig`) above these
@@ -3809,12 +3809,12 @@ bounded; escalation happens only when the rung below exhausted its attempts:
 | layer | unit | trigger | cleanup deadline | attempts before escalation | action |
 |---|---|---|---|---|---|
 | `L1_tool_call` | slot | JSON-RPC error classed `recoverable_infra`: the MCP stub's `-32001 capacity` (with `retry_after_secs`), backend gone, spawn-queue timeout | -- | 3 | re-issue the call: one continuation on the same session (`chat_runner`, below); task stays running |
-| `L2_backend` | backend key | `BackendGone`, initialize timeout, breaker OPEN | per-backend shutdown budget (`POOL_SHUTDOWN_SECS`) | 2 | `gatewayd._respawn_backend_for_stub` under the spawn gate |
+| `L2_backend` | backend key | `BackendGone`, initialize timeout, breaker OPEN | per-backend shutdown budget (`POOL_SHUTDOWN_SECS`) | 2 | `daemon/replacement.py::_respawn_backend_for_stub` under the spawn gate |
 | `L3_acp_runtime` | runtime | `AcpRuntimeDead`, stall past the idle window, `session/new` abandoned | `TOTAL_SHUTDOWN_BUDGET_SECS` + process-tree kill | 2 | rebuild the runtime, `session/load` if continuable; task `recovering` |
 | `L4_gatewayd` | daemon | liveness ping failed 3x (neither the fast nor the escalated probe answered) AND no backend progress | daemon drain | one respawn per 600s window (the second escalates) | `GatewayManager._run_watchdog` respawn; stubs reconnect within their 600s budget |
 | `L5_gateway` | gateway | none automatic | -- | 0 | ONE notification per escalation; the user restarts. Never a `kirocrew restart`. |
 
-**Where the rungs are recorded.** L1 for the main chat is `chat_runner`'s infra branch (below); for a sub-agent it is `subagent_manager/run.py::_yield_for_infra_retry`, which takes the ladder's delay and parks the run on the dependency coordinator's `mcp_gateway:<class>` scope ([subagent.md](subagent.md)). L2 is `gatewayd._respawn_backend_for_stub`: a completed respawn is `record_restart(L2_backend)` + `observe_success(L2, server)`, a give-up is `observe_failure(L2, server)` (the breaker's OPEN cooldown is the wait between rungs; the ladder counts, it does not sleep there). L3 is counted by the sub-agent run when the parent's shared runtime is unavailable (`observe_failure(L3, runtime:<parent>)`; the dedicated process stays the per-run recovery, the runtime's rebuild belongs to its owning session). L4 is the gatewayd supervisor. Distinct from these per-rung attempt counts is `SESSION_RECOVERY_MAX_ATTEMPTS` (3), the IN-PLACE budget for continuing one ACP session on the same runtime — the main chat's tool-stall / stale_recover nudges and pipe-death re-queues and the sub-agent's stop recovery all read it (`acp.types.STOP_RECOVERY_MAX_RETRIES` is its re-export).
+**Where the rungs are recorded.** L1 for the main chat is `chat_runner`'s infra branch (below); for a sub-agent it is `subagent_manager/run.py::_yield_for_infra_retry`, which takes the ladder's delay and parks the run on the dependency coordinator's `mcp_gateway:<class>` scope ([subagent.md](subagent.md)). L2 is `daemon/replacement.py::_respawn_backend_for_stub`: a completed respawn is `record_restart(L2_backend)` + `observe_success(L2, server)`, a give-up is `observe_failure(L2, server)` (the breaker's OPEN cooldown is the wait between rungs; the ladder counts, it does not sleep there). L3 is counted by the sub-agent run when the parent's shared runtime is unavailable (`observe_failure(L3, runtime:<parent>)`; the dedicated process stays the per-run recovery, the runtime's rebuild belongs to its owning session). L4 is the gatewayd supervisor. Distinct from these per-rung attempt counts is `SESSION_RECOVERY_MAX_ATTEMPTS` (3), the IN-PLACE budget for continuing one ACP session on the same runtime — the main chat's tool-stall / stale_recover nudges and pipe-death re-queues and the sub-agent's stop recovery all read it (`acp.types.STOP_RECOVERY_MAX_RETRIES` is its re-export).
 
 Overload never enters the ladder: pressure lowers caps and pauses admission
 ([adaptive-concurrency](adaptive-concurrency.md)); only a unit that stopped

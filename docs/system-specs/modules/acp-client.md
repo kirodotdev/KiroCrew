@@ -1096,7 +1096,7 @@ every call as `identity_unattested`. Caller entries keep their own identity and
 third-party servers never receive the token. A tokened entry launches the
 managed invocation (`agent.managed_mcp_spec_entry(name, include_opt_in=True)`),
 never the spec's `command` / `args`: KAS spawns it directly, so
-`gatewayd._spawns_own_control_plane` never vets it, and a hand-edited spec
+`daemon/control_plane.py::_spawns_own_control_plane` never vets it, and a hand-edited spec
 must not hand the token to another binary. Its env keeps only the projected
 `KIROCREW_PORT` / `KIROCREW_SESSION_KEY` plus the managed env; a name whose
 managed invocation does not resolve is hoisted as projected with no token. The move is bounded: only managed names, only the active

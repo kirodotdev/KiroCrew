@@ -1980,7 +1980,7 @@ queue-aware stub is held before a `capacity` refusal and matches the DEFAULT of
 the stub's own reconnect budget (`stub.py` `_RECONNECT_TOTAL_BUDGET_SECS`, a
 constant the stub reads no config for, pinned equal by
 `test_stub_reconnect_budget.py`); the wait the daemon actually arms is
-`min(asked, key)` less `gatewayd._QUEUE_REFUSAL_MARGIN_SECS`
+`min(asked, key)` less `daemon/admission_protocol.py::_QUEUE_REFUSAL_MARGIN_SECS`
 ([`mcp.md`](../../architecture/mcp.md#admission-before-allocation)), so the
 daemon gives up strictly first and raising the key above 600 s buys a queued stub
 no extra wait — what the stub asked for caps it before the margin comes off, and

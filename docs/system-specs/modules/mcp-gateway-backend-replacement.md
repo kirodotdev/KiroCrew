@@ -1,6 +1,6 @@
 # MCP gateway backend replacement (validating a process swapped under a live session)
 
-A client freezes its MCP tool set when the session is created and never re-reads it. The gateway, meanwhile, can swap the PROCESS behind that session: when a shared backend dies mid-call, `gatewayd._respawn_backend_for_stub` spawns a fresh one, replays the captured `initialize`, and re-binds the stub so the transport never breaks and the session keeps its server.
+A client freezes its MCP tool set when the session is created and never re-reads it. The gateway, meanwhile, can swap the PROCESS behind that session: when a shared backend dies mid-call, `mcp_gateway/daemon/replacement.py::_respawn_backend_for_stub` spawns a fresh one, replays the captured `initialize`, and re-binds the stub so the transport never breaks and the session keeps its server.
 
 That recovery is worth keeping. What it must not do is adopt a replacement that publishes something else. A server upgraded in place — or an `npx`/`uvx`-style launcher resolving to a different build — can answer with the same `protocolVersion`, `capabilities` and `serverInfo` while renaming a tool, changing an argument's type, or making a field required. `initialize` metadata does not describe a tool set, so a handshake that replays identically is not evidence that a pending call is still a valid call.
 

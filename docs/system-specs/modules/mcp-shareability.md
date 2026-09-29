@@ -223,7 +223,7 @@ Measured against that, four codes were disqualifying on an inference:
   stubs subscribed to its URI. The table's contract is delete-not-relax — an
   entry leaves the moment the broker learns to attribute the frames it covers.
 - `rotating_secret_env` — a secret-prefixed key is never forwarded into a shared
-  backend at all (`gatewayd._declared_non_secret_env`), so a pooled backend
+  backend at all (`daemon/launch.py::_declared_non_secret_env`), so a pooled backend
   receives *nobody's* secret rather than the wrong session's. What pooling costs is
   a server that authenticates from declared env; one following the documented
   pattern (read the credential from disk) declares the key without needing it and

@@ -48,7 +48,7 @@ Push (new): gateway rekey() ─────────────────�
    that may host several; without it a shared-session sub-agent is
    indistinguishable from its parent by process ancestry alone.
 2. **gatewayd indexes each connection under every usable ancestor PID**
-   (`_CONN_INDEX: pid → {_StubConn}`; `gatewayd.py`). It merges the stub's
+   (`_CONN_INDEX: pid → {_StubConn}`; `daemon/identity.py`). It merges the stub's
    register-time chain with the host chain derived from the kernel-attested peer
    PID, so PID namespaces cannot make every claim miss. `_StubConn` stores the
    caller, per-PID start tokens, and the optional session token; the forward
@@ -105,8 +105,9 @@ claim-path involvement.
 ## Files
 
 - `src/kiro_crew/mcp_gateway/claim.py` — frame builder + sender (stdlib-only)
-- `src/kiro_crew/mcp_gateway/gatewayd.py` — `_StubConn`, `_CONN_INDEX`,
-  `_apply_claim`, claim first-frame dispatch, per-frame caller pickup
+- `src/kiro_crew/mcp_gateway/daemon/identity.py` — `_StubConn`, `_CONN_INDEX`;
+  `daemon/control.py` — `_apply_claim`, claim first-frame dispatch;
+  `daemon/connection.py` — per-frame caller pickup
 - `src/kiro_crew/mcp_gateway/stub.py` — `ancestor_pids` on register; unbounded
   backoff recaller
 - `src/kiro_crew/acp/client.py`, `src/kiro_crew/acp/session_provider.py` —
