@@ -97,11 +97,11 @@ async function assertGlass(page, label) {
   if (!filters.some(f => /blur\(/.test(f))) throw new Error(`${label}: no backdrop blur layer rendered`)
 }
 
-/** At rest the first row's top must sit at or below the dock's bottom edge. */
+/** At rest the first row's top sits 4px below the dock's bottom edge. */
 async function assertRowBelowDock(page, scroller, label) {
   const dock = await page.getByTestId('list-dock').first().boundingBox()
   const pad = await page.locator(scroller).first().evaluate(el => parseFloat(getComputedStyle(el).paddingTop))
-  if (!dock || pad < dock.height - 1) throw new Error(`${label}: scroller pads ${pad}px under a ${dock?.height}px dock`)
+  if (!dock || Math.abs(pad - (dock.height + 4)) > 1) throw new Error(`${label}: scroller pads ${pad}px under a ${dock?.height}px dock (want dock + 4)`)
   console.log(label, `dock ${Math.round(dock.height)}px, scroller pad ${pad}px`)
 }
 

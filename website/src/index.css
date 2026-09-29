@@ -2616,8 +2616,8 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    without it the pinned row sits a padding-height low and sessions scroll
    through the gap above. With no dock that is the lane's own `p-2`. Under the
    floating search dock (components/ListDock.tsx) the lane's top padding is the
-   dock's height and the row pins exactly on the dock's bottom edge, so the
-   dock sets --list-dock-pin-inset to 0. */
+   dock's height plus a 4px rest gap, and the row pins exactly on the dock's
+   bottom edge, so the dock sets --list-dock-pin-inset to that gap. */
 .sidebar,.folder-row-sticky{--folder-row-sticky-h:32px;--folder-row-sticky-inset:var(--list-dock-pin-inset,0.5rem)}
 .folder-row-sticky{height:var(--folder-row-sticky-h)}
 /* Rows scrolled into view (arrow-key roving, focus, reveal) stop below the

@@ -5,8 +5,8 @@ import { ListDock } from '../components/ListDock'
 
 /**
  * The dock floats over the list and the list pads its top by the dock's live
- * height (`--list-dock-h`), so a chip row appearing or an error notice
- * mounting never hides the first row.
+ * height plus the 4px rest gap (`--list-dock-h`), so a chip row appearing or
+ * an error notice mounting never hides the first row.
  */
 describe('ListDock', () => {
   it('writes the measured dock height to --list-dock-h and keeps the dock click-through between its children', () => {
@@ -29,7 +29,8 @@ describe('ListDock', () => {
         </ListDock>,
       )
       const wrapper = container.firstElementChild as HTMLElement
-      expect(wrapper.style.getPropertyValue('--list-dock-h')).toBe('44px')
+      expect(wrapper.style.getPropertyValue('--list-dock-h')).toBe('48px')
+      expect(wrapper.style.getPropertyValue('--list-dock-pin-inset')).toBe('4px')
       const dock = getByTestId('list-dock')
       expect(dock.className).toContain('pointer-events-none')
       // The controls re-arm, and so does the opaque shelf as a whole (a click
@@ -50,7 +51,7 @@ describe('ListDock', () => {
 
       // A chip row appears: the observer fires and the padding var follows.
       act(() => { observers[0]([{ target: dock }]) })
-      expect(wrapper.style.getPropertyValue('--list-dock-h')).toBe('84px')
+      expect(wrapper.style.getPropertyValue('--list-dock-h')).toBe('88px')
     } finally {
       rect.mockRestore()
       vi.unstubAllGlobals()

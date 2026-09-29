@@ -18,15 +18,19 @@ import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
  * over the first pixels below the pane the way the composer's context shelf
  * fades onto the page colour (`.glass-shelf`), so the chips and notices read
  * on their own ground and the rows fade out under them instead of showing
- * through. With nothing on the shelf the scrim is the 4px gap under the pane.
+ * through. With nothing on the shelf there is no shelf: the dock ends at the pane.
  *
  * The dock is measured, not assumed: its height changes when a chip row
  * appears or an error notice mounts, so `useMeasuredHeight` (the composer's
- * own strip measurement) writes the live height to `--list-dock-h` on the
- * wrapper and every scroller inside pads its top — and its scroll-padding — by
- * that much (`LIST_BODY_CLS`, components/listShell.ts). The first row is then
- * fully visible at rest, a row scrolled into view lands below the dock, and
- * rows only slide under it once the user scrolls.
+ * own strip measurement) writes the live height PLUS the 4px rest gap to
+ * `--list-dock-h` on the wrapper, and every scroller inside pads its top — and
+ * its scroll-padding — by that much (`LIST_BODY_CLS`, components/listShell.ts).
+ * The first row is then fully visible 4px below the dock at rest, a row
+ * scrolled into view lands below the dock, and rows only slide under it once
+ * the user scrolls. The dock's own bottom edge is the glass pane's (or, with
+ * something on the shelf, the shelf's): no padding strip of its own, so a row
+ * emerging from under it emerges at the glass, not from a 4px band of a third
+ * tone — the first cut had one, and it read as a leftover box behind the pane.
  *
  * Pointer events follow what the eye sees. The dock wrapper is
  * `pointer-events-none`, so the transparent margin around the field (its
@@ -43,6 +47,9 @@ import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
  * 20): a header pushed off its pin by the next folder travels up through the
  * band, and at `z-10` its opaque surface painted over the glass.
  */
+/** Space between the dock's bottom edge and the first row at rest. */
+const REST_GAP_PX = 4
+
 export function ListDock({ field, shelf, children }: {
   /** The glass search row (`SearchFilterBar`). */
   field: ReactNode
@@ -54,21 +61,18 @@ export function ListDock({ field, shelf, children }: {
   return (
     <div
       className="relative flex-1 min-h-0 flex flex-col"
-      // `--list-dock-pin-inset` 0: a pinned folder header (`.folder-row-sticky`,
-      // index.css) sits exactly on the dock's BOTTOM edge — whatever the dock's
-      // last block is (the shelf's 4px fade under a bare field, a chip row, a
-      // notice with no bottom margin), the header meets it, never tucks under
-      // the dock's `z-30` surface nor leaves a strip the rows show through.
-      style={{ '--list-dock-h': `${height}px`, '--list-dock-pin-inset': '0px' } as CSSProperties}
+      // `--list-dock-h` is the dock plus the 4px rest gap under it; the pin
+      // inset gives that gap back, so a pinned folder header (`.folder-row-sticky`,
+      // index.css) sits exactly on the dock's BOTTOM edge — the pane, or a chip
+      // row or notice on the shelf — never tucked under the dock's `z-30`
+      // surface, never leaving a strip the rows show through.
+      style={{ '--list-dock-h': `${height + REST_GAP_PX}px`, '--list-dock-pin-inset': `${REST_GAP_PX}px` } as CSSProperties}
     >
       <div ref={dockRef} className="absolute top-0 inset-x-0 z-30 pointer-events-none [&_.liquid-glass]:pointer-events-auto [&_button]:pointer-events-auto [&_a]:pointer-events-auto [&_input]:pointer-events-auto [&_select]:pointer-events-auto [&_textarea]:pointer-events-auto [&_[tabindex]]:pointer-events-auto [&_[role=button]]:pointer-events-auto [&_[role=alert]]:pointer-events-auto [&_[role=status]]:pointer-events-auto" data-testid="list-dock">
         {field}
-        {/* Starts 4px up, inside the search row's bottom gap, so the fade begins
-            at the pane's edge; `pt-1` gives that gap back to the shelf's content.
-            Never hidden: with nothing on it the shelf IS that 4px gap, and its
-            fade is what the rows scroll through between the pane and a pinned
-            folder header — a soft edge, not a clear slot. */}
-        <div className="list-dock-shelf -mt-1 pt-1 pointer-events-auto" data-testid="list-dock-shelf">
+        {/* The scrim fades in from the pane's edge; `pt-1` keeps the chips off
+            it. Hidden when empty, so a bare field's dock ends at the glass. */}
+        <div className="list-dock-shelf pt-1 pointer-events-auto empty:hidden" data-testid="list-dock-shelf">
           {shelf}
         </div>
       </div>

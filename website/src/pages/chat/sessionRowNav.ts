@@ -81,12 +81,13 @@ export function focusSiblingSessionRow(row: HTMLElement, step: number): boolean 
  * row actually sits inside the margin band. Rows with no margin (unfiled rows,
  * board columns) are left exactly where `nearest` put them.
  *
- * The band starts at the scroller's `scroll-padding-top`, not at its edge:
+ * The band starts where the pinned headers do, not at the scroller's edge:
  * under the floating search dock (components/ListDock) the lane pads and
- * scroll-pads its top by the dock's height and the pinned headers sit exactly
- * on that padding edge (the dock's bottom), so a row is covered while it lies
- * within `padding + margin` of the edge. With no dock the padding is 0 and
- * the test is the plain margin band.
+ * scroll-pads its top by the dock's height plus a rest gap, and the headers
+ * pin on the dock's bottom edge — the padding edge less that gap, which the
+ * dock publishes as `--list-dock-pin-inset` — so a row is covered while it
+ * lies within `padding - inset + margin` of the edge. With no dock both are 0
+ * and the test is the plain margin band.
  */
 function clearPinnedHeaders(row: HTMLElement): void {
   const view = row.ownerDocument.defaultView
@@ -96,6 +97,8 @@ function clearPinnedHeaders(row: HTMLElement): void {
   let port = row.parentElement
   while (port && !/(auto|scroll)/.test(view.getComputedStyle(port).overflowY)) port = port.parentElement
   if (!port) return
-  const padding = parseFloat(view.getComputedStyle(port).scrollPaddingTop) || 0
-  if (row.getBoundingClientRect().top - port.getBoundingClientRect().top < padding + margin) row.scrollIntoView({ block: 'start' })
+  const portStyle = view.getComputedStyle(port)
+  const padding = parseFloat(portStyle.scrollPaddingTop) || 0
+  const inset = parseFloat(portStyle.getPropertyValue('--list-dock-pin-inset')) || 0
+  if (row.getBoundingClientRect().top - port.getBoundingClientRect().top < padding - inset + margin) row.scrollIntoView({ block: 'start' })
 }

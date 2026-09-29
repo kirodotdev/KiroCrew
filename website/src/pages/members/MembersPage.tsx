@@ -2562,7 +2562,7 @@ export default function MembersPage() {
           // Menu rows keep the menu open (preventDefault) so several can be
           // toggled in one visit, as the sidebar's do.
         <SearchFilterBar
-          className="px-2 pb-1"
+          className="px-2"
           placeholder={t('pages.membersPage.search_members')}
           clearLabel={t('pages.chatSidebar.clear_search')}
           value={filter}
@@ -2683,17 +2683,22 @@ export default function MembersPage() {
         {/* Star-write failure. Falsy message renders nothing. askAgent is ON:
             the roster holds no unsaved draft, so the hand-off's navigation
             destroys nothing (AUTOSDE errors-use-error-notice). */}
-        <div className="px-2">
-          <ErrorNotice
-            message={starError?.message}
-            report={starError?.report}
-            title={t('pages.membersPage.star_failed_title')}
-            onDismiss={() => setStarError(null)}
-            askAgent
-            actionPlacement="below"
-            testId="member-star-error"
-          />
-        </div>
+        {/* Mounted only while there IS an error: the wrapper sits on the dock's
+            shelf, and an empty wrapper would keep the shelf (and its 4px scrim)
+            open under a bare field. */}
+        {starError && (
+          <div className="px-2">
+            <ErrorNotice
+              message={starError.message}
+              report={starError.report}
+              title={t('pages.membersPage.star_failed_title')}
+              onDismiss={() => setStarError(null)}
+              askAgent
+              actionPlacement="below"
+              testId="member-star-error"
+            />
+          </div>
+        )}
         {gone && gone.shown === '' && (
           /* The roster is the answer surface when there is no thread to stand
              in the gone member's place: below md a stale link always lands
