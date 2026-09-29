@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import TurnBlock from '../pages/chat/TurnBlock'
 import type { DisplayItem, TurnItem } from '../pages/chat/types'
+import type { ChatMessage } from '../types'
 
 function makeTurn(items: TurnItem[], complete = true): Extract<DisplayItem, {kind:'turn'}> {
   return { kind: 'turn', items, complete }
@@ -536,6 +537,45 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
     expect(screen.getByRole('button', { name: /Worked through 2 steps/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Worked through 3 steps/ })).not.toBeInTheDocument()
   })
+})
+
+describe('TurnBlock — a system notice after the answer is not the conclusion', () => {
+  // The gateway appends these as assistant rows after the turn has ended, so
+  // they join the answer's turn. Neither is the turn's answer.
+  const notices: [string, ChatMessage][] = [
+    ['watchdog recycle notice', {
+      role: 'assistant', cls: 'msg msg-a', ts: '7',
+      content: '♻️ This session was recycled by the watchdog (RSS 2150 MB > 2048 MB). Conversation history is preserved — your next message starts a fresh process.',
+      meta: { kind: 'compaction', notice: 'session_recycled' },
+    }],
+    ['auto-compact notice', {
+      role: 'assistant', cls: 'msg msg-a', ts: '7',
+      content: '✅ Context auto-compacted at 91% usage. The conversation was summarized to free up space for the rest of this session.',
+      meta: { kind: 'compaction' },
+    }],
+  ]
+  for (const [label, notice] of notices) {
+    it(`keeps the answer visible and the ${label} below it in collapseAll mode`, () => {
+      const items: TurnItem[] = [
+        ...[0, 1, 2, 3, 4].map((i): TurnItem => ({ kind: 'single', msg: { role: 'tool', content: '🔧 Running: shell', cls: '', ts: `${i + 1}` }, idx: i })),
+        { kind: 'single', msg: { role: 'assistant', content: 'Migrated all five tables and the row counts match the source database.', cls: 'msg msg-a', ts: '6', meta: { turn_stats: { tools: 5 } } }, idx: 5 },
+        { kind: 'single', msg: notice, idx: 6 },
+      ]
+      const { container } = render(
+        <TurnBlock
+          turn={makeTurn(items)}
+          renderItem={(it, i) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+          collapseAll={true}
+        />
+      )
+      const answer = container.querySelector('[data-testid="item-5"]')
+      const noticeRow = container.querySelector('[data-testid="item-6"]')
+      expect(answer?.closest('[style*="overflow"]')).toBeNull()
+      expect(noticeRow?.closest('[style*="overflow"]')).toBeNull()
+      expect(answer!.compareDocumentPosition(noticeRow!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(screen.getByRole('button', { name: /Worked through 5 steps/ })).toBeInTheDocument()
+    })
+  }
 })
 
 /**

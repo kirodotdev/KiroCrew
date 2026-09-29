@@ -10,6 +10,7 @@ import { isWorkflowRunTool } from './WorkflowRunCard'
 import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
+import { isSystemNoticeRow } from './CompactionCard'
 import { isReasoningBurst } from './groupDisplayItems'
 import { isDiffToolMessage } from './toolDiff'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
@@ -203,7 +204,9 @@ function substantiveLength(text: string): number {
 /**
  * Find the index of a turn's conclusion item: the last `isConclusion` item that
  * is substantive (>= 50 chars), falling back to the last `isConclusion` item of
- * any length, else -1. Shared by the auto-expand decision and the render split
+ * any length, else -1. A gateway system notice is never the conclusion: it is
+ * status, and one appended after the answer would fold the answer into the
+ * reasoning pane. Shared by the auto-expand decision and the render split
  * so the "what's the always-visible conclusion vs collapsed reasoning" answer
  * can't drift between them (a mismatch wrongly expands reasoning above a visible
  * match and pushes it down).
@@ -213,9 +216,9 @@ function findConclusionIdx(items: TurnItem[]): number {
   let fallbackIdx = -1
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i]
-    if (isConclusion(it)) {
+    if (it.kind === 'single' && isConclusion(it) && !isSystemNoticeRow(it.msg)) {
       if (fallbackIdx === -1) fallbackIdx = i
-      if (it.kind === 'single' && substantiveLength(it.msg.content) >= 50) { conclusionIdx = i; break }
+      if (substantiveLength(it.msg.content) >= 50) { conclusionIdx = i; break }
     }
   }
   return conclusionIdx === -1 ? fallbackIdx : conclusionIdx
