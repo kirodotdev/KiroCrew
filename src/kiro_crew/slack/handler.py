@@ -233,6 +233,31 @@ APPROVAL_AUTO = "auto"
 APPROVAL_INTERACTIVE = "interactive"
 
 
+def _is_classified_acp_error(exc: BaseException) -> bool:
+    """Whether *exc* is an ``AcpError`` whose reason is safe to show a Slack user.
+
+    Only an error Kiro Crew worded for a person qualifies: ``user_worded`` is set
+    by the ACP client's curated formatter branches and by the raise sites with
+    fixed recovery text (an unavailable model, a signed-out harness), and whose
+    ``transient`` verdict is not True: a retryable failure keeps the generic
+    "try again" reply, matching the Telegram transport. ``AcpPromptBusy``
+    qualifies too; its text is the formatter's busy wording.
+    ``transient`` is deliberately not the test: it is a retry verdict, set on every
+    error frame, including the formatter's fallback that passes the provider's own
+    text or the raw error dict through. Timeouts and process deaths are excluded by
+    type, because their messages are internal detail whatever they carry. The text
+    shown is still redacted, capped and escaped by the caller.
+
+    Defined here rather than in ``transport_dispatch``, which reads it, because
+    this module already depends on the ACP error types and the transport path
+    does not (``scripts/check_agent_sdk_boundary.py`` keeps that edge from
+    spreading).
+    """
+    if not isinstance(exc, AcpError) or isinstance(exc, (AcpTimeoutError, AcpProcessDied)):
+        return False
+    return (exc.user_worded and exc.transient is not True) or isinstance(exc, AcpPromptBusy)
+
+
 def _should_auto_approve_spawn(context_builder, event) -> bool:
     """Check if a spawn_run tool call should be auto-approved.
 
