@@ -10416,7 +10416,7 @@
         "fork_conversation_from_here": "এখান থেকে কথোপকথন ফর্ক করুন",
         "next_version": "পরবর্তী সংস্করণ",
         "previous_version": "পূর্ববর্তী সংস্করণ",
-        "raw_markdown": "মূল markdown",
+        "raw_markdown": "মূল markdown দেখাও",
         "regenerate": "পুনরায় তৈরি করুন",
         "regenerate_response": "উত্তর পুনরায় তৈরি করুন",
         "rendered_view": "রেন্ডার করা ভিউ",
@@ -10440,7 +10440,8 @@
         "needs_earlier_history_count_one": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
         "needs_earlier_history_count_other": "আগের ইতিহাস লোড করতে নির্বাচন করুন — আরও {{count}}টি পুরোনো বার্তা বাকি আছে",
         "share_message": "ছবি হিসেবে শেয়ার করুন",
-        "copy_failed": "কপি ব্যর্থ হয়েছে"
+        "copy_failed": "কপি ব্যর্থ হয়েছে",
+        "quote_message": "বার্তা উদ্ধৃত করো"
       },
       "chatFooter": {
         "compacting": "কম্প্যাক্ট করা হচ্ছে…",
@@ -10903,7 +10904,9 @@
         "steering": "স্টিয়ার করা হচ্ছে…",
         "delivery_pending": "ডেলিভারি অপেক্ষমাণ…",
         "redirecting_the_running_turn_not_yet_confirmed": "চলমান টার্ন পুনর্নির্দেশ করা হচ্ছে — এখনও নিশ্চিত হয়নি।",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "এটি প্রযোজ্য হওয়ার আগেই টার্ন শেষ হয়ে গেছে — এটি একটি আলাদা বার্তা হিসেবে চলে।"
+        "turn_ended_before_this_applied_runs_as_its_own_message": "এটি প্রযোজ্য হওয়ার আগেই টার্ন শেষ হয়ে গেছে — এটি একটি আলাদা বার্তা হিসেবে চলে।",
+        "quote_message": "বার্তা উদ্ধৃত করো",
+        "more_actions": "আরও অ্যাকশন"
       },
       "workflowCompletionCard": {
         "hide_result": "ফলাফল লুকাও",
@@ -11285,6 +11288,14 @@
         "rate_right": "Jev এই সংকোচন ঠিক বুঝেছে",
         "rate_wrong": "Jev এই সংকোচন ভুল বুঝেছে",
         "not_scored": "(+{{count}}টি যাচাই হয়নি)"
+      },
+      "quoteCard": {
+        "you": "তুমি",
+        "assistant": "{{productName}}",
+        "quoting_author": "{{author}}-কে উদ্ধৃত করা হচ্ছে",
+        "remove_quote": "উদ্ধৃতি সরাও",
+        "jump_to_quoted_message": "উদ্ধৃত বার্তায় যাও",
+        "message_unavailable": "সেখানে যাওয়া যাচ্ছে না — মূল বার্তাটি আর এই কথোপকথনে নেই।"
       }
     },
     "chatPage": {

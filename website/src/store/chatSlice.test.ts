@@ -346,6 +346,25 @@ describe('queue entries carry their attachment lists onto the queued row', () =>
     expect(row().meta).toEqual({ queueId: 'q1' })
   })
 
+  it('editQueuedMessage drops the row quote once the edit takes its block off the head of the text', () => {
+    const quote = { role: 'assistant' as const, text: 'older reply', ts: 't0' }
+    const block = '> older reply\n> — quoting an earlier message from the assistant'
+    const store = makeStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(appendQueuedMessage({ slot: 'active', content: `${block}\n\nwhy?`, ts: 't', queue_id: 'q1', meta: { quote } }))
+    const row = () => store.getState().chat.messages.find((m) => m.role === 'queued')!
+    // The text under an intact block changes: the record stays.
+    store.dispatch(editQueuedMessage({ slot: 'active', queue_id: 'q1', content: `${block}\n\nwhy not?` }))
+    expect(row().meta).toEqual({ queueId: 'q1', quote })
+    // The block itself is edited away: the record goes with it, on the
+    // optimistic edit and on the server frame alike.
+    store.dispatch(editQueuedMessage({ slot: 'active', queue_id: 'q1', content: 'why not?' }))
+    expect(row().meta).toEqual({ queueId: 'q1' })
+    store.dispatch(appendQueuedMessage({ slot: 'active', content: `${block}\n\nagain`, ts: 't', queue_id: 'q2', meta: { quote } }))
+    store.dispatch(editQueuedMessage({ slot: 'active', queue_id: 'q2', content: 'again', attachments: {} }))
+    expect(store.getState().chat.messages.find((m) => m.meta?.queueId === 'q2')!.meta).toEqual({ queueId: 'q2' })
+  })
+
   it('queueEntryAttachments drops anything but a non-empty list of strings', () => {
     expect(queueEntryAttachments(undefined)).toEqual({})
     expect(queueEntryAttachments({ files: [] })).toEqual({})

@@ -1,4 +1,5 @@
 import type { SessionRef } from '../../utils/sessionRefs'
+import type { MessageQuote } from '../../chat-core/composer/messageQuote'
 import type { ResizeInfo } from '../../utils/resizeImage'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import type { AutomationRecord } from '../../monitoring/automation'
@@ -90,6 +91,13 @@ export interface ChatInputProps {
   pendingSessions?: SessionRef[]
   /** Unstage a session reference by its session key */
   onRemoveSessionRef?: (key: string) => void
+  /** A whole message staged as the quote of the next send (`messageQuote.ts`).
+   *  Drawn INSIDE the text area, above the caret, as a card with a remove
+   *  control -- part of what is being written, not a strip of chrome. The host
+   *  owns the state and folds it into the send; ChatInput only shows and
+   *  unstages it. A staged quote counts as a draft for the send button. */
+  pendingQuote?: MessageQuote | null
+  onRemoveQuote?: () => void
   /** Show macOS-only buttons (screenshot) */
   isMac?: boolean
   /** Drag-and-drop handler for the entire input bar */

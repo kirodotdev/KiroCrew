@@ -2284,6 +2284,23 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
         return out
     out = {k: _redact_value(v) for k, v in list(meta.items()) if k not in REDACTION_RECORD_FIELDS}
     out.update({k: v for k, v in validated_records.items() if v})
+    if role == "user" and isinstance(meta.get("quote"), dict):
+        # The whole-message quote record (``chat_delivery.quote_meta``) must
+        # byte-match the ``>`` block that opens this row's content, and a user
+        # row's content is served as typed (``_prepare_messages``): the record
+        # follows the same rule, or the card is drawn beside the raw block and
+        # the next queue edit drops it. A sender other than the session's human
+        # had the record redacted where it entered (``quote_meta``). Rebuilt
+        # through the same bounded validator rather than passed through: a
+        # transcript line is attacker-writable, so an oversized or malformed
+        # record is dropped here like every other retention point drops it.
+        from kiro_crew.dashboard.chat_delivery import quote_meta
+
+        bounded = quote_meta({"quote": meta["quote"]}, user_origin=True)
+        if bounded:
+            out["quote"] = bounded["quote"]
+        else:
+            out.pop("quote", None)
     return out
 
 
@@ -3993,6 +4010,11 @@ def carries_attachments(item: dict) -> bool:
     meta = item.get("meta")
     if not isinstance(meta, dict):
         return False
+    # A whole-message quote (``meta.quote``) drains alone for the same reason:
+    # the row's card strips the quote's block from the START of the content,
+    # and a merged row would open with another entry's text instead.
+    if isinstance(meta.get("quote"), dict) and meta.get("quote"):
+        return True
     return any(isinstance(meta.get(k), list) and meta.get(k) for k in ATTACHMENT_META_KEYS)
 
 

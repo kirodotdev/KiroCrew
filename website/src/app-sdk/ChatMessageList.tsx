@@ -69,6 +69,9 @@ export interface ChatMessageListProps {
    *  hides its action (see chat-core/composer/selectionActions). */
   onQuote?: (text: string, rect: DOMRect) => void
   onAsk?: (text: string) => void
+  /** Quote a whole row into the host's next send. Host capability; absent
+   *  hides the action on every row (see `MessageRenderContext.onQuoteMessage`). */
+  onQuoteMessage?: MessageRenderContext['onQuoteMessage']
   /** Reply threads on this transcript's messages (a crewmate's chat): footer
    *  data per `mid` and the open action. Absent on every other surface. */
   threads?: ThreadHooks
@@ -168,6 +171,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onFileOpen,
   onQuote,
   onAsk,
+  onQuoteMessage,
   threads,
   renderTool,
   hideCardOwnedOAuth = false,
@@ -284,6 +288,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       onFileOpen,
       onQuote,
       onAsk,
+      onQuoteMessage,
       threads,
       hideCardOwnedOAuth,
       autoDeniedIds,
@@ -292,7 +297,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       row,
     }
     return entry.render(m, ctx)
-  }, [messages, running, contentWidth, onFileOpen, onQuote, onAsk, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, activeRenderers])
+  }, [messages, running, contentWidth, onFileOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, activeRenderers])
 
 
   // Render a TurnItem (single or group)

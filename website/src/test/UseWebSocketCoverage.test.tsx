@@ -1443,6 +1443,18 @@ describe('useWebSocket frame router', () => {
     expect(steer?.role).toBe('user')
   })
 
+  it('a steer echo keeps the quote its meta carries, and drops a malformed one', () => {
+    const { ws } = mount()
+    const quote = { role: 'assistant', text: 'older reply', ts: '29' }
+    act(() => {
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: '> older reply\n\nfollow-up', ts: '30', meta: { quote } } })
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'plain', ts: '31', meta: { quote: { role: 'system', text: 'x' } } } })
+    })
+    const steers = chat().messages.filter(m => m.meta?.steer === true)
+    expect(steers[0]?.meta?.quote).toEqual(quote)
+    expect(steers[1]?.meta?.quote).toBeUndefined()
+  })
+
   it('records a tool call and its result against the slot', () => {
     const { ws } = mount()
     act(() => {

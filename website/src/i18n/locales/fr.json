@@ -10559,7 +10559,7 @@
         "fork_conversation_from_here": "Bifurquer la conversation à partir d'ici",
         "next_version": "Version suivante",
         "previous_version": "Version précédente",
-        "raw_markdown": "Markdown brut",
+        "raw_markdown": "Afficher le Markdown brut",
         "regenerate": "Régénérer",
         "regenerate_response": "Régénérer la réponse",
         "rendered_view": "Vue rendue",
@@ -10584,7 +10584,8 @@
         "needs_earlier_history_count_many": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
         "needs_earlier_history_count_other": "Sélectionnez pour charger l’historique antérieur – {{count}} messages antérieurs restants",
         "share_message": "Partager en image",
-        "copy_failed": "Échec de la copie"
+        "copy_failed": "Échec de la copie",
+        "quote_message": "Citer le message"
       },
       "chatFooter": {
         "compacting": "Compactage…",
@@ -11060,7 +11061,9 @@
         "steering": "Réorientation en cours…",
         "delivery_pending": "Envoi en attente…",
         "redirecting_the_running_turn_not_yet_confirmed": "Réorientation du tour en cours — pas encore confirmé.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "Le tour s'est terminé avant que ceci ne s'applique — s'exécute comme un message distinct."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Le tour s'est terminé avant que ceci ne s'applique — s'exécute comme un message distinct.",
+        "quote_message": "Citer le message",
+        "more_actions": "Plus d'actions"
       },
       "workflowCompletionCard": {
         "hide_result": "Masquer le résultat",
@@ -11444,6 +11447,14 @@
         "rate_right": "Jev a bien lu ce compactage",
         "rate_wrong": "Jev a mal lu ce compactage",
         "not_scored": "(+{{count}} non évalués)"
+      },
+      "quoteCard": {
+        "you": "Toi",
+        "assistant": "{{productName}}",
+        "quoting_author": "Citation de {{author}}",
+        "remove_quote": "Retirer la citation",
+        "jump_to_quoted_message": "Aller au message cité",
+        "message_unavailable": "Impossible d’y aller : le message d’origine n’est plus dans cette conversation."
       }
     },
     "chatPage": {

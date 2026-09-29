@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         is_system_injection_item,
         logger,
         queued_text_for_display,
+        quote_meta,
         settle_consumed_steers,
     )
 
@@ -343,11 +344,18 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "queue_id": qid,
             }
-            # The requeued steer's attachment lists were folded into `_meta`
-            # above; the card drawn from this frame is what a cancel restores.
-            _push_attachments = attachment_meta(_meta)
-            if _push_attachments:
-                _push["meta"] = _push_attachments
+            # The requeued steer's attachment lists and quote were folded into
+            # `_meta` above; the card drawn from this frame is what a cancel
+            # restores, and a frame without the quote would show the raw
+            # blockquote as text until a reload.
+            _push_meta = {
+                **attachment_meta(_meta),
+                # Same rule the entry's text follows (`queue_entry_is_user_origin`):
+                # the human's own words stay as typed, anyone else's are redacted.
+                **quote_meta(_meta, user_origin=_requeue_user_origin and not _channel),
+            }
+            if _push_meta:
+                _push["meta"] = _push_meta
             state.broadcast_ws("queue_push", _push)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the

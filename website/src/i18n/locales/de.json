@@ -10416,7 +10416,7 @@
         "fork_conversation_from_here": "Unterhaltung ab hier verzweigen",
         "next_version": "Nächste Version",
         "previous_version": "Vorherige Version",
-        "raw_markdown": "Rohes Markdown",
+        "raw_markdown": "Rohes Markdown anzeigen",
         "regenerate": "Neu erstellen",
         "regenerate_response": "Antwort neu erstellen",
         "rendered_view": "Gerenderte Ansicht",
@@ -10440,7 +10440,8 @@
         "needs_earlier_history_count_one": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachricht",
         "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten",
         "share_message": "Als Bild teilen",
-        "copy_failed": "Kopieren fehlgeschlagen"
+        "copy_failed": "Kopieren fehlgeschlagen",
+        "quote_message": "Nachricht zitieren"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -10903,7 +10904,9 @@
         "steering": "Wird eingesteuert…",
         "delivery_pending": "Zustellung ausstehend…",
         "redirecting_the_running_turn_not_yet_confirmed": "Der laufende Zug wird umgeleitet — noch nicht bestätigt.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "Der Zug endete, bevor dies angewendet wurde — wird als eigene Nachricht ausgeführt."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Der Zug endete, bevor dies angewendet wurde — wird als eigene Nachricht ausgeführt.",
+        "quote_message": "Nachricht zitieren",
+        "more_actions": "Weitere Aktionen"
       },
       "workflowCompletionCard": {
         "hide_result": "Ergebnis ausblenden",
@@ -11285,6 +11288,14 @@
         "rate_right": "Jev hat diese Verdichtung richtig eingeschätzt",
         "rate_wrong": "Jev hat diese Verdichtung falsch eingeschätzt",
         "not_scored": "(+{{count}} nicht bewertet)"
+      },
+      "quoteCard": {
+        "you": "Du",
+        "assistant": "{{productName}}",
+        "quoting_author": "Zitat von {{author}}",
+        "remove_quote": "Zitat entfernen",
+        "jump_to_quoted_message": "Zur zitierten Nachricht springen",
+        "message_unavailable": "Sprung nicht möglich — die ursprüngliche Nachricht ist nicht mehr in dieser Unterhaltung."
       }
     },
     "chatPage": {

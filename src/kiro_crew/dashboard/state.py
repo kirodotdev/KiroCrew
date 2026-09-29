@@ -4193,7 +4193,7 @@ class _ChatSlot:
         # Validated attachment lists for a pending steer. Requeue moves them
         # to the queue entry; a consumption echo releases them after an accepted
         # steer has stamped its own row.
-        self._steer_attachment_meta: dict[str, dict[str, list[str]]] = {}
+        self._steer_attachment_meta: dict[str, dict[str, Any]] = {}
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so

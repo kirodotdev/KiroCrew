@@ -10559,7 +10559,7 @@
         "fork_conversation_from_here": "Dirama la conversazione da qui",
         "next_version": "Versione successiva",
         "previous_version": "Versione precedente",
-        "raw_markdown": "Markdown grezzo",
+        "raw_markdown": "Mostra Markdown grezzo",
         "regenerate": "Rigenera",
         "regenerate_response": "Rigenera la risposta",
         "rendered_view": "Vista formattata",
@@ -10584,7 +10584,8 @@
         "needs_earlier_history_count_many": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
         "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
         "share_message": "Condividi come immagine",
-        "copy_failed": "Copia non riuscita"
+        "copy_failed": "Copia non riuscita",
+        "quote_message": "Cita messaggio"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",
@@ -11060,7 +11061,9 @@
         "steering": "Indirizzamento in corso…",
         "delivery_pending": "Consegna in attesa…",
         "redirecting_the_running_turn_not_yet_confirmed": "Reindirizzamento del turno in corso — non ancora confermato.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "Il turno è terminato prima che questo venisse applicato — viene eseguito come messaggio separato."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Il turno è terminato prima che questo venisse applicato — viene eseguito come messaggio separato.",
+        "quote_message": "Cita messaggio",
+        "more_actions": "Altre azioni"
       },
       "workflowCompletionCard": {
         "hide_result": "Nascondi il risultato",
@@ -11444,6 +11447,14 @@
         "rate_right": "Jev ha letto bene questa compattazione",
         "rate_wrong": "Jev ha letto male questa compattazione",
         "not_scored": "(+{{count}} non valutate)"
+      },
+      "quoteCard": {
+        "you": "Tu",
+        "assistant": "{{productName}}",
+        "quoting_author": "Citazione di {{author}}",
+        "remove_quote": "Rimuovi citazione",
+        "jump_to_quoted_message": "Vai al messaggio citato",
+        "message_unavailable": "Impossibile raggiungerlo: il messaggio originale non è più in questa conversazione."
       }
     },
     "chatPage": {

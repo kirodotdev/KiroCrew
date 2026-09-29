@@ -4,7 +4,7 @@
 import { useMemo, type MutableRefObject } from 'react'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
-import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity } from '../../store/chatSlice'
+import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, unreadWatermarkTs } from '../unreadOnAttention'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
@@ -116,9 +116,12 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       const steerMeta = (data as { meta?: unknown }).meta
       const steerFiles = steerMeta && typeof steerMeta === 'object' ? (steerMeta as { files?: unknown }).files : undefined
       const steerDirs = steerMeta && typeof steerMeta === 'object' ? (steerMeta as { dirs?: unknown }).dirs : undefined
+      // The quote the steer carries (`messageQuote.ts`): without it another
+      // tab would draw the blockquote as body text until a reload.
+      const steerQuote = queueEntryQuote(steerMeta).quote
       dispatch(appendSlotMessage({
         slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}) }, ts: (data as { ts?: string }).ts },
+        message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(Array.isArray(steerFiles) ? { files: steerFiles } : {}), ...(Array.isArray(steerDirs) ? { dirs: steerDirs } : {}), ...(steerQuote ? { quote: steerQuote } : {}) }, ts: (data as { ts?: string }).ts },
       }))
       // Steering is the other way to type into a busy session, so it
       // settles the rank exactly like a queued send. The server appends a

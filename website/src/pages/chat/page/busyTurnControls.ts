@@ -2,6 +2,8 @@ import { useCallback, useMemo, type MutableRefObject, type RefObject } from 'rea
 
 import type { ComposerHandle } from '../../../chat-core/composer/Composer'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
+import { prependQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
+import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
@@ -27,7 +29,10 @@ interface BusyTurnControlsOptions {
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
   /** The receipt-aware steer POST (ChatPage's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean }) => void }
+  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null }) => void }
+  /** The whole-message quote stage (`useMessageQuote`): a steer consumes it
+   *  like a send does, and a cancelled queued send hands its quote back here. */
+  messageQuote: UseMessageQuote
   composerRef: RefObject<ComposerHandle | null>
   composerSlotRef: MutableRefObject<string | null>
   inputRef: MutableRefObject<string>
@@ -56,6 +61,7 @@ export function useBusyTurnControls({
   messages,
   send,
   steerMutation,
+  messageQuote,
   composerRef,
   composerSlotRef,
   inputRef,
@@ -114,7 +120,10 @@ export function useBusyTurnControls({
     if (!slotRunning) { void send(undefined, undefined, true); return }
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
-    if (!raw && !files.length) return
+    // A staged quote alone is a payload; a slash command is not a send, so the
+    // quote stays staged through it.
+    const steerQuote = isInterceptedSlashCommand(raw) ? null : messageQuote.consume('').quote
+    if (!raw && !files.length && !steerQuote) return
     // Same rule as send(): a steer while STREAMING dictation is live ends the
     // dictation before the composer is cleared below. AFTER the empty-payload
     // check, like send(): an Enter on an empty composer before the first
@@ -177,7 +186,10 @@ export function useBusyTurnControls({
     // under replay. Serialize on steer only if that transport ever carries
     // attachment metadata.
     const activePastes = pasteBlocksRef.current
-    const llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
+    const expanded = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
+    // The quoted message opens the steer exactly as it opens a send -- after
+    // the paste pass, so the quoted text is never read as a paste token.
+    const llmTxt = steerQuote ? prependQuote(expanded, steerQuote) : expanded
     // Optimistically show the steered text immediately. Steer is the default
     // mid-turn action (split send button), so pressing Enter while a turn is
     // running routes here; without an optimistic bubble the message only appears
@@ -195,12 +207,12 @@ export function useBusyTurnControls({
     // no streaming row to freeze, so that text would flush BELOW this card
     // and post-steer chunks would append to it (see lib/pendingChunkDrain.ts).
     drainPendingChunks()
-    dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
+    dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId, ...(steerQuote ? { quote: steerQuote } : {}) } }))
     // The optimistic bubble above stays a STEER bubble for an `auto` send: steer
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote })
     // Staged session references are deliberately NOT part of steering: neither
     // carried into the payload nor cleared. Only the TEXT has a restore path
     // (steerMutation hands it back on a refused, failed or unconfirmed steer);
@@ -213,7 +225,7 @@ export function useBusyTurnControls({
     setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, slotRunning, send, steerMutation, saveDrafts, dispatch, setInput,
+  }, [activeSlot, slotRunning, send, steerMutation, messageQuote, saveDrafts, dispatch, setInput,
     // Refs and state setters: stable, so none of these re-creates the callback.
     activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts,
     pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens])
@@ -230,8 +242,10 @@ export function useBusyTurnControls({
   // Whatever lands here is persisted into this slot's draft by the draft
   // commit (useComposerDraftLifecycle), so a recovered draft survives a slot switch.
   const restoreQueuedDraft = useCallback(
-    (text: string, files: string[], aliases?: Record<string, string[]>) => {
-      setInput(prev => mergeRecoveredDraft(prev, text))
+    (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote) => {
+      // The stash carries the quote the send consumed: back as a staged card
+      // when the stage is free, else in the restored text.
+      setInput(prev => mergeRecoveredDraft(prev, messageQuote.recoverInto(text, quote ?? null)))
       // Chips MERGE like the text does: paths join whatever is already staged,
       // deduped, so a re-send serializes each attachment exactly once.
       if (files.length) setPendingFiles(prev => [...new Set([...prev, ...files])])
@@ -243,7 +257,7 @@ export function useBusyTurnControls({
         if (slot) mergeSlotTokens(slot, aliases)
       }
     },
-    [mergeSlotTokens, setInput, setPendingFiles, composerSlotRef],
+    [mergeSlotTokens, setInput, setPendingFiles, composerSlotRef, messageQuote],
   )
   const {
     onCancel: handleCancelQueued,
