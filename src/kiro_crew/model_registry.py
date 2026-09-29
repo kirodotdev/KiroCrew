@@ -667,6 +667,15 @@ def resolve_wire_model_id(model_id: str, provider: str) -> str:
     only ever tightens a bare id onto an advertised versioned one, never rewrites
     an id the provider does not serve. When several advertised ids match, a 1M
     window variant wins over a base one.
+
+    The key compare only bridges spelling, so it cannot fold the dotted
+    ``global.anthropic.claude-fable-5[1m]`` onto an adapter that advertises the
+    bare family alias ``fable`` instead: the two share no normalized key. When it
+    misses, an advertised id that is a VERSION-LESS alias of ``model_id``'s own
+    registry entry is accepted. Versioned aliases are excluded on purpose: an
+    entry also lists substitution aliases (``claude-haiku-4.5`` under Sonnet,
+    because the claude backend serves no Haiku), and folding onto one of those
+    would send a different model the provider really does serve.
     """
     if not model_id or model_id == "auto":
         return model_id
@@ -678,8 +687,23 @@ def resolve_wire_model_id(model_id: str, provider: str) -> str:
         return model_id
     matches = [a for a in adv if _normalize_advertised_key(a) == want]
     if not matches:
+        matches = _family_alias_matches(model_id, provider, adv)
+    if not matches:
         return model_id
     return preferred_advertised_spelling(matches)
+
+
+def _family_alias_matches(model_id: str, provider: str, adv: Sequence[str]) -> list[str]:
+    """Advertised ids that are a version-less alias of ``model_id``'s registry entry."""
+    key = _resolve_canonical(model_id, provider)
+    if key is None:
+        return []
+    family = {
+        alias.lower()
+        for alias in _REGISTRY[key].get("aliases", [])
+        if not any(ch.isdigit() for ch in alias)
+    }
+    return [a for a in adv if a.lower() in family]
 
 
 def preferred_advertised_spelling(matches: Sequence[str]) -> str:

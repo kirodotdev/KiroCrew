@@ -205,6 +205,14 @@ and `same_registered_model` refuses to fold one onto the other -- a pin never
 resolves to its neighbour with a different context window. Two ids the registry
 cannot both place are unknown, not different, and fold on spelling alone.
 
+`resolve_wire_model_id` has one fallback past the spelling fold. An adapter can
+advertise a bare family alias (`fable`, `opus`) where a session stored the dotted
+provider id, and those share no normalized key. When the key compare misses, an
+advertised id that is a VERSION-LESS alias of the stored id's own registry entry
+is accepted. Versioned aliases never qualify: an entry also lists substitution
+aliases (`claude-haiku-4.5` under Sonnet), and an adapter advertising one is
+serving that other model.
+
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in
 `providers/acp.py`, the warm-pool post-claim switch in `session_allocation.py`
