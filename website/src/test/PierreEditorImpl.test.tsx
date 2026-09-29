@@ -389,6 +389,65 @@ describe('PierreEditorImpl cacheKey contract', () => {
     // NOT be what Pierre keys its line cache on.
     expect((lastSurface().props.file as FileContents).cacheKey).not.toBe('papyrus:main.tex:0')
   })
+
+  // The caller echoes each edit Pierre emits back as `file.contents`. A new
+  // cacheKey makes Pierre's editor rebuild its document and reset selections
+  // (caret to line 1, focus lost); new contents under the old key re-render
+  // against a stale line cache ("Line doesnt exist" on Return). Either way the
+  // echo must leave Pierre's `file` input exactly as it was.
+  it.each([
+    ['an in-line edit', 'a\nbb\nc\n'],
+    ['a Return that grows the buffer', 'a\nb\n\nc\n'],
+  ])('keeps Pierre’s file input unchanged when the caller echoes %s', (_label, typed) => {
+    const { rerender } = mount({ file: seedFile('a\nb\nc\n') })
+    const before = lastSurface().props.file as FileContents
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+
+    act(() => announceChange({ ...before, contents: typed }))
+    rerender({ file: seedFile(typed) })
+
+    expect(lastSurface().props.file).toBe(before)
+  })
+
+  it('still reseeds Pierre when the source changes from outside after an edit', () => {
+    const { rerender } = mount({ file: seedFile('a\nb\nc\n') })
+    const seeded = lastSurface().props.file as FileContents
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+    act(() => announceChange({ ...seedFile(''), contents: 'a\nbb\nc\n' }))
+    rerender({ file: seedFile('a\nbb\nc\n') })
+
+    // Cancel: the host puts the seed text back, which Pierre never emitted. The
+    // key must move even though the text matches the seed, or Pierre keeps the
+    // edited document on screen.
+    rerender({ file: seedFile('a\nb\nc\n') })
+    const reseeded = lastSurface().props.file as FileContents
+    expect(reseeded.contents).toBe('a\nb\nc\n')
+    expect(reseeded.cacheKey).not.toBe(seeded.cacheKey)
+  })
+
+  it('reseeds Pierre when an outside change restores the text a recovery remount rendered', () => {
+    const { rerender } = mount({ file: seedFile('a\nb\nc\n') })
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+    act(() => announceChange({ ...seedFile(''), contents: 'saved\n' }))
+    rerender({ file: seedFile('saved\n') })
+
+    pierre.poolState.current = { phase: 'recovering', generation: 1 }
+    rerender({ file: seedFile('saved\n') })
+    pierre.poolState.current = { phase: 'ready', generation: 2, pool: {} }
+    rerender({ file: seedFile('saved\n') })
+    const remounted = lastSurface().props.file as FileContents
+    expect(remounted.contents).toBe('saved\n')
+
+    const announceReplacementChange = attachEditor().options.onChange as (file: FileContents) => void
+    act(() => announceReplacementChange({ ...seedFile(''), contents: 'draft\n' }))
+    rerender({ file: seedFile('draft\n') })
+
+    // Cancel back to the saved text, which is exactly what the remount rendered.
+    rerender({ file: seedFile('saved\n') })
+    const reseeded = lastSurface().props.file as FileContents
+    expect(reseeded.contents).toBe('saved\n')
+    expect(reseeded.cacheKey).not.toBe(remounted.cacheKey)
+  })
 })
 
 
