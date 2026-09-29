@@ -809,7 +809,6 @@ test/test_session_core_audit.py
 test/test_session_coverage.py
 test/test_session_end_interaction.py
 test/test_session_grid.py
-test/test_session_keepalive.py
 test/test_session_map_locking.py
 test/test_session_map_migration.py
 test/test_session_mtime_ordering.py
