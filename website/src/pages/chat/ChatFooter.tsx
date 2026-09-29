@@ -255,7 +255,12 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
   return active && idle
 }
 
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean }) {
+/** `streamIdleMs` is how long `streamTick` must hold still before a quiet
+ *  stream counts as quiet. A live-socket host keeps the default; a POLLING host
+ *  (ChatEmbed) passes a window wider than its poll interval, because its tick
+ *  only advances once per poll and a shorter window would flash the indicator
+ *  between every two reads of a reply that is still arriving. */
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const slug = useThemeSlug()
   const themeState = useOptionalTheme()
@@ -269,7 +274,7 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // also goes quiet for seconds while it generates a tool call. Both looked like
   // "still streaming", so the loader stayed hidden with nothing else moving.
   const streamingText = lastRole === 'streaming' && state === 'streaming'
-  const streamQuiet = useStreamIdle(streamTick, streamingText)
+  const streamQuiet = useStreamIdle(streamTick, streamingText, streamIdleMs)
   // Hidden once the turn is inactive. While the turn RUNS the indicator shows for
   // thinking, tool calls, AND the gaps between steps: the backend keeps
   // slot.running true for the whole turn, so the post-tool gap stays covered

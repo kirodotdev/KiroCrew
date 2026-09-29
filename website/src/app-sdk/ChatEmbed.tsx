@@ -21,6 +21,7 @@ import ChatMessageList, { type VirtualTranscriptHandle } from './ChatMessageList
 import ErrorNotice from '../components/ErrorNotice'
 import { JumpToBottomButton } from './ChatScrollChrome'
 import FollowUpBar from '../components/FollowUpBar'
+import ChatFooter from '../pages/chat/ChatFooter'
 import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
 import { useAppApi } from './index'
@@ -99,6 +100,13 @@ interface ChatSlotData {
 export const EMBED_PAGE_LIMIT = 200
 /** The handler clamps `limit` here; a wider ask is silently this. */
 export const EMBED_PAGE_LIMIT_MAX = 500
+/** Poll cadence while the slot runs (see the query's `refetchInterval`). */
+const RUNNING_POLL_MS = 1000
+/** How long a streaming reply must stay unchanged before the working indicator
+ *  takes over from the reply's own caret. The tail only grows once per poll,
+ *  so the window spans two polls: one slow read must not flash the indicator
+ *  under a reply that is still arriving. */
+export const EMBED_STREAM_IDLE_MS = RUNNING_POLL_MS * 2 + 500
 
 function ChatEmbed({
   slotKey,
@@ -154,7 +162,7 @@ function ChatEmbed({
       prevQuery && (prevQuery.queryKey as unknown[])[1] === slotKey ? prev : undefined,
     refetchInterval: (query) => {
       const running = query.state.data?.running ?? false
-      return running ? 1000 : 5000
+      return running ? RUNNING_POLL_MS : 5000
     },
   })
 
@@ -376,6 +384,20 @@ function ChatEmbed({
           ) : messages.length === 0 && !running ? (
             <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
           ) : undefined,
+          // The main chat's working indicator (ChatFooter, shared with ChatPage
+          // and ChatPane), after the last row, so a running turn reads as "the
+          // reply is coming" where the reply will land. The poll carries no
+          // stop or compaction state, so only the plain running branch applies.
+          belowRows: (
+            <ChatFooter
+              running={running}
+              stopping={false}
+              state={running ? 'streaming' : ''}
+              lastRole={tail?.role ?? ''}
+              streamTick={tail?.role === 'streaming' ? (tail.content?.length ?? 0) : 0}
+              streamIdleMs={EMBED_STREAM_IDLE_MS}
+            />
+          ),
         }}
       />
 
