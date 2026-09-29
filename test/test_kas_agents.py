@@ -1972,6 +1972,23 @@ class TestHoistManagedServers:
         assert [e["name"] for e in array] == ["kirocrew-core"]
         assert array[0]["env"] == []
 
+    def test_explicit_session_array_suppresses_the_active_agent_block(self):
+        projected = self._projected()
+        before = json.loads(json.dumps(projected))
+        explicit = [{"name": "client", "command": "client"}]
+
+        agents, array = hoist_managed_servers(
+            [projected],
+            "kirocrew",
+            explicit,
+            explicit_session_servers=True,
+        )
+
+        assert projected == before, "the projection is not mutated"
+        assert array is explicit
+        assert "mcpServers" not in agents[0]
+        assert agents[0]["tools"] == projected["tools"]
+
     def test_caller_entries_stay_first_and_are_never_duplicated(self):
         projected = self._projected()
         member = {

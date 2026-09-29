@@ -3491,6 +3491,225 @@ class TestDirectSendGrantsAreAudited:
             "auditing a grant that did not happen would make the trail lie"
         )
 
+    def test_dedicated_session_socket_gets_no_initial_snapshot(self, monkeypatch):
+        """The dedicated wire starts empty until it subscribes to explicit keys."""
+        internal_auth, owner_request = False, True
+        import asyncio as _aio
+
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+        from kiro_crew.dashboard.websocket_hub import (
+            SLOT_PATCH_CAPABILITY,
+            SLOT_PATCH_WS_FLAG,
+        )
+        from kiro_crew.gateway.constants import (
+            SESSION_EVENTS_CAPABILITY,
+            SESSION_EVENTS_HEADER,
+            SESSION_EVENTS_VALUE,
+        )
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = [
+            {"key": "private-slot", "title": "secret"}
+        ]
+        state._yolo = True
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__(
+                    {
+                        "internal_auth": internal_auth,
+                        "is_dashboard_user": owner_request,
+                    }
+                )
+                self.app = {"state": state}
+                self.headers = {SESSION_EVENTS_HEADER: SESSION_EVENTS_VALUE}
+                self.query = {
+                    "caps": f"{SESSION_EVENTS_CAPABILITY},{SLOT_PATCH_CAPABILITY}"
+                }
+
+        fake_ws = self._fake_ws()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(
+            dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws
+        )
+        monkeypatch.setattr(
+            source_providers,
+            "is_owner_dashboard_request",
+            lambda request: owner_request,
+        )
+        refresh = MagicMock()
+        visibility = MagicMock()
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
+        monkeypatch.setattr(source_providers, "schedule_visibility_refresh", visibility)
+
+        with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
+            _aio.run(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+        assert fake_ws.sent == []
+        state.register_ws.assert_called_once_with(fake_ws, owner=False)
+        assert fake_ws[SLOT_PATCH_WS_FLAG] is False
+        assert "slots_yolo" not in [call.args[1] for call in audit.call_args_list]
+        state.send_members_subscribed.assert_not_called()
+        refresh.assert_not_called()
+        visibility.assert_not_called()
+
+    def test_dedicated_session_socket_ignores_owner_log_subscription(self, monkeypatch):
+        """The session-only control plane cannot replay owner-wide logs."""
+        import asyncio as _aio
+
+        from aiohttp import WSMsgType
+
+        from kiro_crew.dashboard import handlers as dashboard_handlers
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+        from kiro_crew.gateway.constants import (
+            SESSION_EVENTS_CAPABILITY,
+            SESSION_EVENTS_HEADER,
+            SESSION_EVENTS_VALUE,
+        )
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"is_dashboard_user": True})
+                self.app = {"state": state}
+                self.headers = {SESSION_EVENTS_HEADER: SESSION_EVENTS_VALUE}
+                self.query = {"caps": SESSION_EVENTS_CAPABILITY}
+
+        class Msg:
+            type = WSMsgType.TEXT
+            data = json.dumps({"type": "subscribe_logs"})
+
+        base = self._fake_ws()
+
+        class LoopWs(type(base)):  # type: ignore[misc]
+            def __init__(self) -> None:
+                super().__init__()
+                self._yielded = False
+
+            async def __anext__(self):
+                if self._yielded:
+                    raise StopAsyncIteration
+                self._yielded = True
+                return Msg()
+
+        fake_ws = LoopWs()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda request: True)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
+        monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
+        monkeypatch.setattr(
+            dashboard_handlers,
+            "_log_ring",
+            [json.dumps({"message": "other session secret"})],
+        )
+
+        _aio.run(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+
+        state.subscribe_logs.assert_not_called()
+        assert not any(frame.get("type") == "log" for frame in fake_ws.sent)
+
+    def test_derived_app_cannot_open_dedicated_session_socket(self, monkeypatch):
+        """The internal secret authenticates transport, not an app as the owner."""
+        import asyncio as _aio
+
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.gateway.constants import (
+            SESSION_EVENTS_CAPABILITY,
+            SESSION_EVENTS_HEADER,
+            SESSION_EVENTS_VALUE,
+        )
+
+        app_name = self.APP
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"internal_auth": True, "app": app_name})
+                self.headers = {SESSION_EVENTS_HEADER: SESSION_EVENTS_VALUE}
+                self.query = {"caps": SESSION_EVENTS_CAPABILITY}
+
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        with pytest.raises(dashboard_ws.web.HTTPForbidden):
+            _aio.run(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+
+    def test_claimless_internal_secret_cannot_open_any_websocket(self, monkeypatch):
+        """A cron-shaped ``X-Internal-Secret`` caller is refused before upgrade.
+
+        The internal branch sets no owner claim and the secret is held by every
+        loopback process the gateway spawns (a script cron's ``ScriptContext``
+        among them), so even the exact session-events capability and header do
+        not buy a dedicated subscription to another slot's finalized messages --
+        and the socket is never registered or prepared.
+        """
+        import asyncio as _aio
+
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.gateway.constants import (
+            SESSION_EVENTS_CAPABILITY,
+            SESSION_EVENTS_HEADER,
+            SESSION_EVENTS_VALUE,
+        )
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"internal_auth": True})
+                self.app = {"state": state}
+                self.headers = {SESSION_EVENTS_HEADER: SESSION_EVENTS_VALUE}
+                self.query = {"caps": SESSION_EVENTS_CAPABILITY}
+
+        fake_ws = self._fake_ws()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        with pytest.raises(dashboard_ws.web.HTTPForbidden):
+            _aio.run(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+        state.register_ws.assert_not_called()
+        assert fake_ws.sent == []
+
+    def test_non_owner_dashboard_token_gets_no_session_subscription(self, monkeypatch):
+        """A member's ``!dashboard`` link declaring the capability stays an ordinary socket."""
+        import asyncio as _aio
+
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+        from kiro_crew.gateway.constants import (
+            SESSION_EVENTS_CAPABILITY,
+            SESSION_EVENTS_HEADER,
+            SESSION_EVENTS_VALUE,
+        )
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"is_dashboard_user": True, "app": "", "user": "U_MEMBER"})
+                self.app = {"state": state}
+                self.headers = {SESSION_EVENTS_HEADER: SESSION_EVENTS_VALUE}
+                self.query = {"caps": SESSION_EVENTS_CAPABILITY}
+
+        fake_ws = self._fake_ws()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda request: False)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
+        monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
+
+        _aio.run(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+
+        assert fake_ws["_session_events_subscription"] is False
+        state.register_ws.assert_called_once_with(fake_ws, owner=False)
+
     def test_subscribe_logs_grant_is_audited(self, monkeypatch):
         """The ring replay writes to the socket directly, so the grant that
         admits it needs its own record -- the deny side already had one.

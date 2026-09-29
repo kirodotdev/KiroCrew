@@ -4639,6 +4639,7 @@ class KiroCrewConfig:
             # the session would spawn on the backend's default with no error.
             permission_mode: str | None = None,
             shared_scratch: Path | None = None,
+            session_mcp_servers: list[dict[str, Any]] | None = None,
             # The subagent manager's gate-exit start-clock reset for a DEDICATED
             # subagent process. NAMED for the same reason ``permission_mode``
             # is: swallowed by the catch-all, the dedicated path would silently
@@ -4787,6 +4788,7 @@ class KiroCrewConfig:
                 shared_scratch=shared_scratch,
                 on_gate_acquired=on_gate_acquired,
                 on_gate_queued=on_gate_queued,
+                session_mcp_servers=session_mcp_servers,
                 # Only a work dir DERIVED from a one-run key is the provider's
                 # to reclaim at shutdown; an explicit ``cwd`` is the caller's
                 # directory whatever the key says (session_work_dir).

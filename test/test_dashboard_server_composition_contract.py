@@ -457,7 +457,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.ask_question": (
         "api_ask_question api_ask_question_answer api_ask_question_dismiss "
-        "api_ask_question_pending"
+        "api_ask_question_pending api_ask_question_slot_answer "
+        "api_ask_question_slot_pending"
     ),
     "kiro_crew.dashboard.handlers.autonudge": (
         "api_autonudge_delete api_autonudge_fire api_autonudge_get api_autonudge_list "
@@ -509,7 +510,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 76
+    assert len(expected) == 78
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -588,7 +589,11 @@ def test_facade_state_stays_on_the_facade() -> None:
     only while no owner keeps a copy."""
     state = _module_assignments(_FACADE_PATH.read_text(encoding="utf-8"))
     assert {"logger", "_tailnet_awake_cache", "_OWN_HOST_WARM_TASKS", "_BASE_CSP"} <= state
-    assert {"_STRICT_INTERNAL_API_PATHS", "_MIXED_INTERNAL_API_PATHS"} <= state
+    assert {
+        "_STRICT_INTERNAL_API_PATHS",
+        "_MIXED_INTERNAL_API_PATHS",
+        "_EXACT_MIXED_INTERNAL_API_PATHS",
+    } <= state
     assert {"_CREWMATE_PRUNE_GATE_TIMEOUT_S", "_TIME_WAIT_BUDGET_SECS"} <= state
     owned = {stem: sorted(_module_assignments(source)) for stem, source in _owner_sources().items()}
     assert {stem: names for stem, names in owned.items() if names} == {}
@@ -1399,7 +1404,8 @@ _API_HOOKS = {
 _DASHBOARD_BOOT = tuple("""
     consume_managed_service_launch_environment set_pending_staged_hook
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
-    wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
+    wire_session_subagent_probe install_pending_auth_cookie_finalizer
+    _wire_tunnel_shutdown _wire_status_delta_sink
     register_status_delta_sink _precompute_telemetry current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
@@ -1455,7 +1461,7 @@ _DASHBOARD_ELSEWHERE = tuple("""
     """.split())
 _API_BOOT = tuple("""
     set_global_hook_store register_skill_read_observer wire_session_subagent_probe
-    _precompute_telemetry current_context tailnet_effective_allowed_logins
+    install_pending_auth_cookie_finalizer _precompute_telemetry current_context tailnet_effective_allowed_logins
     tailnet_identity_unknown degraded_config_files build_allowed_origins
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
@@ -1664,8 +1670,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 232
-_MCP_TABLE_DIGEST = "e2d49d27dbc55c44b0d0614e408b87cd27d0dd1e24e285a8818c1673ef50fb64"
+_MCP_TABLE_ROWS = 235
+_MCP_TABLE_DIGEST = "c5d79ddf6b29398e2f148c8016149f3969bd8168bd3f68a8bc4e6bedda309f31"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

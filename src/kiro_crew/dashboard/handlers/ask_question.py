@@ -37,9 +37,23 @@ import uuid
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.chat_delivery import (
+    STEER_UNAVAILABLE,
+    queue_for_next_turn,
+    steer_into_running_turn,
+)
+from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_utils import dashboard_slot_key, effective_session_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.interaction_coordinator import QuestionAnswerInProgress
+from kiro_crew.dashboard.session_control import containment_meta
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+from kiro_crew.gateway.constants import (
+    MCP_OWNER_HEADER,
+    QUEUED_GATEWAY_MCP_META_KEY,
+    TURN_ORIGIN_HEADER,
+)
 from kiro_crew.sel import sel
 from kiro_crew.validation import (
     _ASK_MAX_ANSWER_LEN,
@@ -168,9 +182,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         # Valid JSON is not necessarily an object: `[]`, `null` and bare scalars
         # all parse, then blow up on `.get()` as a 500 instead of a 400.
@@ -200,9 +212,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
     try:
         questions = validate_ask_user_question(body)
     except ValidationError as exc:
-        return web.json_response(
-            {"error": str(exc), "code": "invalid_questions"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "invalid_questions"}, status=400)
 
     try:
         timeout_secs = int(body.get("timeout_secs") or state._QUESTION_TIMEOUT_DEFAULT)
@@ -235,9 +245,7 @@ async def api_ask_question(request: web.Request) -> web.Response:
         # Raised when redaction collapses two questions into the same key, which
         # is only detectable after the redaction pass — so it surfaces here as a
         # 400 rather than from validate_ask_user_question.
-        return web.json_response(
-            {"error": str(exc), "code": "duplicate_question_key"}, status=400
-        )
+        return web.json_response({"error": str(exc), "code": "duplicate_question_key"}, status=400)
     if answers is None:
         return web.json_response({"status": "timeout", "ask_id": ask_id})
     return web.json_response({"status": "answered", "ask_id": ask_id, "answers": answers})
@@ -301,6 +309,183 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
                 }
             )
     return web.json_response(out)
+
+
+async def api_ask_question_slot_pending(request: web.Request) -> web.Response:
+    """GET pending stateless question cards for one slot.
+
+    Owner-only like the other question-card routes: ``_deny_non_owner`` has no
+    internal-secret exemption, because the loopback secret is also held by a
+    script cron's agent-writable body and proves transport, not the owner.
+    """
+    state: DashboardState = request.app["state"]
+    deny = _deny_app_token(request, "ask_question_slot_pending")
+    if deny is not None:
+        return deny
+    deny = _deny_non_owner(request, "ask_question_slot_pending")
+    if deny is not None:
+        return deny
+    slot_key = request.match_info["slot_key"]
+    if slot_key not in state._slots:
+        return web.json_response({"error": "slot not found", "code": "slot_not_found"}, status=404)
+    return web.json_response({"questions": state.pending_question_cards(slot_key)})
+
+
+async def api_ask_question_slot_answer(request: web.Request) -> web.Response:
+    """POST validated answers and return a prompt when the card is complete.
+
+    Owner-only (see :func:`api_ask_question_slot_pending`): an answer becomes a
+    prompt the agent acts on, so a claimless internal caller cannot supply one.
+    """
+    state: DashboardState = request.app["state"]
+    deny = _deny_app_token(request, "ask_question_slot_answer")
+    if deny is not None:
+        return deny
+    deny = _deny_non_owner(request, "ask_question_slot_answer")
+    if deny is not None:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    answers = body.get("answers") if isinstance(body, dict) else None
+    if not isinstance(answers, dict) or not answers or len(answers) > _ASK_MAX_QUESTIONS:
+        return web.json_response(
+            {"error": "answers must be a non-empty object", "code": "invalid_answers"},
+            status=400,
+        )
+    for question, answer in answers.items():
+        if not isinstance(question, str) or len(question) > _ASK_MAX_QUESTION_LEN:
+            return web.json_response(
+                {"error": "invalid question key", "code": "invalid_answers"}, status=400
+            )
+        values = answer if isinstance(answer, list) else [answer]
+        if not values or any(
+            not isinstance(value, str) or not value or len(value) > _ASK_MAX_ANSWER_LEN
+            for value in values
+        ):
+            return web.json_response(
+                {"error": "invalid answer value", "code": "invalid_answers"}, status=400
+            )
+    slot_key = request.match_info["slot_key"]
+    card_id = request.match_info["card_id"]
+    slot = state._slots.get(slot_key)
+    if slot is None:
+        return web.json_response({"error": "slot not found", "code": "slot_not_found"}, status=404)
+    requested_origin = request.headers.get(TURN_ORIGIN_HEADER, "")
+    requested_owner = request.headers.get(MCP_OWNER_HEADER, "")
+    if requested_origin and requested_origin != slot_key:
+        return web.json_response(
+            {"error": "turn origin does not match slot", "code": "invalid_origin"}, status=409
+        )
+    if requested_origin and requested_owner != slot.session_mcp_owner:
+        return web.json_response(
+            {
+                "error": "this client no longer owns the slot MCP registration",
+                "code": "mcp_owner_stale",
+            },
+            status=409,
+        )
+    pending_record = slot._question_pending.get(card_id)
+    if not isinstance(pending_record, dict) or pending_record.get("blocking"):
+        return web.json_response(
+            {"error": "question card not found", "code": "question_not_found"}, status=404
+        )
+    native_live_answer = bool(pending_record.get("native") and slot.turn_running)
+    subagents = getattr(state, "subagents", None)
+    held_by_subagents = bool(
+        subagents is not None and subagents.running_agents_for(effective_session_key(slot))
+    )
+    if (
+        requested_origin
+        and (slot.turn_running or slot._turn_admission_reserved or held_by_subagents)
+        and not native_live_answer
+    ):
+        return web.json_response(
+            {"error": "slot prompt is in progress", "code": "slot_busy"}, status=409
+        )
+    answer_claim = uuid.uuid4().hex if native_live_answer else ""
+    try:
+        if native_live_answer:
+            prompt = state.answer_question_card(
+                slot_key,
+                card_id,
+                answers,
+                consume=False,
+                claim_token=answer_claim,
+            )
+        else:
+            prompt = state.answer_question_card(slot_key, card_id, answers)
+    except QuestionAnswerInProgress:
+        return web.json_response(
+            {
+                "error": "question card answer delivery is already in progress",
+                "code": "native_answer_in_progress",
+            },
+            status=409,
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_answers"}, status=400)
+    if prompt is None:
+        return web.json_response({"ok": True, "completed": False})
+
+    if native_live_answer:
+        accepted = False
+        origin_token = slot._turn_origin.set(requested_origin) if requested_origin else None
+        admission = containment_meta(state, slot)
+        if requested_origin:
+            admission[QUEUED_GATEWAY_MCP_META_KEY] = (
+                list(slot.session_mcp_servers) if slot._session_mcp_configured else None
+            )
+        try:
+            outcome = await steer_into_running_turn(
+                state,
+                slot,
+                prompt,
+                user_origin=True,
+                admission=admission,
+            )
+            accepted = outcome != STEER_UNAVAILABLE
+        finally:
+            if origin_token is not None:
+                slot._turn_origin.reset(origin_token)
+            if not accepted:
+                state.release_question_answer_claim(slot_key, card_id, answer_claim)
+        if not accepted:
+            return web.json_response(
+                {
+                    "error": "the live turn could not accept this answer",
+                    "code": "native_answer_not_delivered",
+                },
+                status=409,
+            )
+        state.clear_question_pending(slot_key, blocking=False, card_id=card_id)
+    elif slot.turn_running or slot._turn_admission_reserved or held_by_subagents:
+        queue_for_next_turn(state, slot, prompt, directive_user_origin=True)
+    else:
+        origin_token = None
+        mcp_token = None
+        if requested_origin:
+            origin_token = slot._turn_origin.set(requested_origin)
+            if slot._session_mcp_configured:
+                mcp_token = slot._request_mcp_servers.set(list(slot.session_mcp_servers))
+        try:
+            slot.append("user", prompt, "msg msg-u")
+            task = spawn_guarded_turn(
+                state,
+                slot,
+                state.run_background_turn(
+                    slot, _run_chat(state, slot, prompt, _directive_user_origin=True)
+                ),
+            )
+        finally:
+            if origin_token is not None:
+                slot._turn_origin.reset(origin_token)
+            if mcp_token is not None:
+                slot._request_mcp_servers.reset(mcp_token)
+        slot.task = task
+        state.push_slots_update()
+    return web.json_response({"ok": True, "completed": True})
 
 
 async def api_ask_question_dismiss(request: web.Request) -> web.Response:
@@ -381,9 +566,7 @@ async def api_ask_question_answer(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
             {"error": "body must be a JSON object", "code": "invalid_body"}, status=400

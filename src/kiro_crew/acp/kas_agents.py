@@ -1186,6 +1186,8 @@ def hoist_managed_servers(
     agent_id: str,
     session_servers: list[dict[str, Any]],
     session_token: str = "",
+    *,
+    explicit_session_servers: bool = False,
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
     """Carry the ACTIVE agent's managed declarations in the session-level array.
 
@@ -1248,11 +1250,26 @@ def hoist_managed_servers(
     The agent's ``tools`` / ``excludedTools`` / ``permissions`` are untouched:
     ``@server`` refs resolve wherever the server was declared, which is the same
     property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
+    When *explicit_session_servers* is true, the caller's array is the whole
+    session MCP composition: the active agent's ambient ``mcpServers`` block is
+    removed and no managed declaration is hoisted into the array.
     """
     if not custom_agents:
         # The kiro path (no wire payload) returns here without importing the
         # agent/config translation machinery below as a side effect.
         return custom_agents, session_servers
+    if explicit_session_servers:
+        explicit_agents: list[dict[str, Any]] = []
+        changed = False
+        for descriptor in custom_agents:
+            if descriptor.get("id") == agent_id and "mcpServers" in descriptor:
+                copied = dict(descriptor)
+                del copied["mcpServers"]
+                explicit_agents.append(copied)
+                changed = True
+            else:
+                explicit_agents.append(descriptor)
+        return (explicit_agents if changed else custom_agents), session_servers
     from kiro_crew.acp.session_mcp import acp_server_element
 
     taken = {

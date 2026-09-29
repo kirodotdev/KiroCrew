@@ -26,6 +26,7 @@ from kiro_crew.dashboard.state import (
     _slots_serialization_note,
 )
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
+from kiro_crew.dashboard.token_auth import attach_pending_access_cookie
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_CAPABILITY, SLOT_PATCH_WS_FLAG
 from kiro_crew.dashboard.ws_event_scope import (
     DASHBOARD_USER_AUDITEE,
@@ -39,6 +40,14 @@ from kiro_crew.dashboard.ws_event_scope import (
     persisted_precap_readings,
     persisted_replay_denial_reason,
     slots_envelope_extras,
+)
+from kiro_crew.gateway.constants import (
+    MAX_SESSION_EVENT_KEY_CHARS,
+    MAX_SESSION_EVENT_KEYS,
+    SESSION_EVENTS_CAPABILITY,
+    SESSION_EVENTS_HEADER,
+    SESSION_EVENTS_VALUE,
+    SUBSCRIBE_SESSIONS_MESSAGE,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent_persistence import read_panel_records
@@ -75,6 +84,17 @@ async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
         return
     revisions = publisher.known_revisions()
     await ws.send_str(json.dumps({"type": SLOT_SUBSCRIBED_FRAME, "data": {"revisions": revisions}}))
+
+
+def _session_subscription_keys(raw: Any) -> set[str] | None:
+    """Return a bounded subscription set, or ``None`` for invalid input."""
+    if not isinstance(raw, list) or len(raw) > MAX_SESSION_EVENT_KEYS:
+        return None
+    if any(
+        not isinstance(key, str) or not key or len(key) > MAX_SESSION_EVENT_KEY_CHARS for key in raw
+    ):
+        return None
+    return set(raw)
 
 
 async def _status_frame(state: DashboardState) -> dict[str, Any]:
@@ -853,6 +873,15 @@ def _check_ws_origin(request: web.Request) -> None:
 async def api_ws(request: web.Request) -> web.WebSocketResponse:
     """GET /api/ws — single multiplexed WebSocket for all real-time events."""
     _check_ws_origin(request)
+    headers = getattr(request, "headers", {})
+    if request.get("internal_auth") is True:
+        # The loopback secret is transport-admitted on exact ``/api/ws`` only so the
+        # presigned carrier gets the mixed-route exchange; it is never a WebSocket
+        # credential. The internal branch sets no owner claim, and the secret is
+        # also held by a script cron's agent-writable body, so a dedicated
+        # session-event subscription (or any other frame) would hand another
+        # slot's finalized messages to a caller that never proved the owner.
+        raise web.HTTPForbidden(text="the internal secret is not a WebSocket credential")
 
     from kiro_crew.dashboard.handlers import _log_ring
 
@@ -873,6 +902,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
 
     owner_request = is_owner_dashboard_request(request)
     ws = web.WebSocketResponse(heartbeat=30)
+    attach_pending_access_cookie(request, ws)
     await ws.prepare(request)
 
     # Warm the self-managed GitLab allowlist BEFORE the first serialization.
@@ -926,7 +956,18 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             await ws.close(code=WSCloseCode.POLICY_VIOLATION, message=b"app disabled")
             return ws
 
-    state.register_ws(ws, owner=owner_request)
+    query = getattr(request, "query", None) or {}
+    declared_caps = {cap.strip() for cap in str(query.get("caps", "")).split(",")}
+    # Owner credential only: a non-owner dashboard token (a ``!dashboard`` link
+    # minted for an allowed Slack user) declaring the capability gets an
+    # ordinary socket, never another slot's finalized messages.
+    session_events_subscription = bool(
+        headers.get(SESSION_EVENTS_HEADER) == SESSION_EVENTS_VALUE
+        and SESSION_EVENTS_CAPABILITY in declared_caps
+        and not ws_app
+        and owner_request
+    )
+    state.register_ws(ws, owner=owner_request and not session_events_subscription)
 
     # Store app identity on the WS connection so the broadcast chokepoint can
     # filter. ``_is_dashboard_user`` comes from a POSITIVE signal produced by
@@ -941,12 +982,16 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     # without the declaration (an older bundle, a companion window, an app
     # token) the socket keeps receiving the full ``slots`` list for every
     # metadata edit. Dashboard users only: the frame bypasses the app scope gate.
-    # ``getattr``: request doubles in the suite are plain dicts with no query.
-    query = getattr(request, "query", None) or {}
-    declared_caps = {cap.strip() for cap in str(query.get("caps", "")).split(",")}
-    ws[SLOT_PATCH_WS_FLAG] = bool(ws["_is_dashboard_user"]) and (
-        SLOT_PATCH_CAPABILITY in declared_caps
+    # ``query`` and ``declared_caps`` are resolved before registration because
+    # dedicated session sockets must never enter the owner-only fan-out set.
+    ws[SLOT_PATCH_WS_FLAG] = (
+        bool(ws["_is_dashboard_user"])
+        and not session_events_subscription
+        and SLOT_PATCH_CAPABILITY in declared_caps
     )
+    ws["_session_events_subscription"] = session_events_subscription
+    ws["_session_event_keys"] = set()
+    send_initial_snapshot = not ws["_session_events_subscription"]
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
@@ -1005,7 +1050,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             # never receives the tree, so its generation would describe data the
             # app does not have.
             envelope_extras["foldersGeneration"] = state.folders_generation()
-        if "yolo" in envelope_extras:
+        if send_initial_snapshot and "yolo" in envelope_extras:
             # Handing a socket the live blanket-approval override is a grant
             # of operator security posture, not slot data, and this initial
             # push writes to the socket directly -- so record it here or it
@@ -1036,7 +1081,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             exc.add_note(_slots_serialization_note(slots_data, path="ws-connect-snapshot"))
             logger.warning("slots connect snapshot failed to serialize", exc_info=True)
             raise
-        await ws.send_str(snapshot_payload)
+        if send_initial_snapshot:
+            await ws.send_str(snapshot_payload)
         # One-shot per-member event-log baseline, to THIS socket only, right
         # after the connect snapshot and before any later broadcast can reach
         # it -- so the client's held member_projection frames can be pruned
@@ -1045,16 +1091,17 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         # member_projection / members_subscribed (the hub's per-socket gate refuses
         # them), so the baseline goes to the owner's socket alone.
         if owner_request:
-            # A direct send, so the grant is recorded here: the hub's per-socket
-            # gate, which audits broadcast frames, never sees it.
-            _audit_grant_quietly(_grant_auditee(ws, ws_app), "members_subscribed")
-            # Isolated: a failure to send this baseline must not take the
-            # provider refresh scheduling below down with it.
-            try:
-                await state.send_members_subscribed(ws)
-            except Exception:
-                logger.debug("members_subscribed baseline not sent", exc_info=True)
-        if is_dashboard_user:
+            if send_initial_snapshot:
+                # A direct send, so the grant is recorded here: the hub's per-socket
+                # gate, which audits broadcast frames, never sees it.
+                _audit_grant_quietly(_grant_auditee(ws, ws_app), "members_subscribed")
+                # Isolated: a failure to send this baseline must not take the
+                # provider refresh scheduling below down with it.
+                try:
+                    await state.send_members_subscribed(ws)
+                except Exception:
+                    logger.debug("members_subscribed baseline not sent", exc_info=True)
+        if send_initial_snapshot and is_dashboard_user:
             # The same shape for SLOT folds, and the same reason: a revision floor the
             # client holds BEFORE it issues a baseline read, so a read already on the
             # wire cannot resolve later and overwrite a newer pushed value. Isolated for
@@ -1063,7 +1110,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 await _send_slot_projection_subscribed(ws)
             except Exception:
                 logger.debug("slot_projection/subscribed baseline not sent", exc_info=True)
-        if owner_request or is_dashboard_user:
+        if send_initial_snapshot and (owner_request or is_dashboard_user):
             # Issue links carry no check status — skip them so the scheduler
             # never hands an issue URL to the pull-request-only chip fetch.
             urls = [
@@ -1102,6 +1149,9 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         answer_generation = initial_answer_generation
         try:
             while not ws.closed and not shutdown_event.is_set():
+                if ws.get("_session_events_subscription", False):
+                    await asyncio.sleep(_WS_STATUS_INTERVAL)
+                    continue
                 # Gateway-wide cache: one store touch per TTL across ALL
                 # sockets; the shared refresh inside _status_frame returns the
                 # cache immediately unless it is the one that refreshes it.
@@ -1307,7 +1357,19 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 try:
                     data = json.loads(msg.data)
                     msg_type = data.get("type", "")
-                    if msg_type == "subscribe_logs":
+                    # Dedicated session sockets expose one narrow control plane;
+                    # ordinary dashboard commands must not inherit owner authority.
+                    if (
+                        ws.get("_session_events_subscription", False)
+                        and msg_type != SUBSCRIBE_SESSIONS_MESSAGE
+                    ):
+                        continue
+                    if msg_type == SUBSCRIBE_SESSIONS_MESSAGE:
+                        if not ws.get("_session_events_subscription", False):
+                            continue
+                        keys = _session_subscription_keys(data.get("keys"))
+                        ws["_session_event_keys"] = keys if keys is not None else set()
+                    elif msg_type == "subscribe_logs":
                         # The gateway log stream is privileged. The broadcast
                         # chokepoint filters future ``log`` events, but the
                         # ring-buffer replay below bypasses it — gate at the

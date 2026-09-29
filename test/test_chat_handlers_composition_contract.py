@@ -116,7 +116,7 @@ _BASE_NAMES = frozenset("""
         api_chat_slot_agent api_chat_slot_approve api_chat_slot_autocompact api_chat_slot_color
         api_chat_slot_context api_chat_slot_continue api_chat_slot_create api_chat_slot_delete
         api_chat_slot_detail api_chat_slot_end_wait api_chat_slot_followup
-        api_chat_slot_interrupt api_chat_slot_model api_chat_slot_note api_chat_slot_project
+        api_chat_slot_interrupt api_chat_slot_mcp api_chat_slot_model api_chat_slot_note api_chat_slot_project
         api_chat_slot_queue_cancel api_chat_slot_queue_edit api_chat_slot_queue_reorder
         api_chat_slot_reasoning_effort api_chat_slot_reload api_chat_slot_reset_conversation
         api_chat_slot_resume api_chat_slot_selection_capabilities
@@ -194,6 +194,7 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/end-wait", "api_chat_slot_end_wait"),
     ("POST", "/api/chat/slots/{slot}/followup", "api_chat_slot_followup"),
     ("POST", "/api/chat/slots/{slot}/interrupt", "api_chat_slot_interrupt"),
+    ("POST", "/api/chat/slots/{slot}/mcp", "api_chat_slot_mcp"),
     ("POST", "/api/chat/slots/{slot}/model", "api_chat_slot_model"),
     ("POST", "/api/chat/slots/{slot}/note", "api_chat_slot_note"),
     ("POST", "/api/chat/slots/{slot}/project", "api_chat_slot_project"),

@@ -102,7 +102,9 @@ Four mechanisms clean up processes. They are complementary — not redundant.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import logging
 import os
 import re
@@ -440,6 +442,38 @@ def _provider_uses_kiro_identity_store(provider: Any) -> bool:
     return declared is True
 
 
+def _mcp_fingerprint(servers: list[dict[str, Any]] | None) -> str:
+    """Return an opaque identity for an ordered session MCP array."""
+    if servers is None:
+        return ""
+    entries: list[dict[str, Any]] = []
+    for server in servers:
+        if not isinstance(server, dict):
+            entries.append({"invalid": type(server).__name__})
+            continue
+        raw_env = server.get("env")
+        env_pairs: list[tuple[str, str]] = []
+        if isinstance(raw_env, dict):
+            env_pairs = [(str(key), str(value)) for key, value in raw_env.items()]
+        elif isinstance(raw_env, list):
+            env_pairs = [
+                (str(item.get("name", "")), str(item.get("value", "")))
+                for item in raw_env
+                if isinstance(item, dict)
+            ]
+        raw_args = server.get("args")
+        entries.append(
+            {
+                "name": str(server.get("name", "")),
+                "command": str(server.get("command", "")),
+                "args": [str(arg) for arg in raw_args] if isinstance(raw_args, list) else [],
+                "env": sorted(env_pairs),
+            }
+        )
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def detect_provider_switch(session_map: "SessionMap", session_key: str, new_provider: str) -> bool:
     """Detect if the provider for a session differs from the stored one.
 
@@ -535,6 +569,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",
+        "bypass_mcp",
         "disabled",
         "other",
     }
@@ -1094,6 +1129,10 @@ class _Session:
     # does not resolve models made the session. Both are "no selection to report",
     # which is what a consumer of the empty value states.
     requested_model: str = ""
+    # Snapshot whose opaque identity is recorded in ``mcp_fingerprint``.
+    session_mcp_servers: list[dict[str, Any]] | None = None
+    # Empty means no request-specific MCP configuration.
+    mcp_fingerprint: str = ""
     # The crew log this session SUPERSEDED: what the slot-to-session mapping named
     # -- its live id, or the stash a recycle left -- at the instant the allocation
     # registered this session, read inside that registration's critical section
@@ -1269,6 +1308,7 @@ class SessionManager:
             detect_provider_switch=lambda session_map, key, provider: detect_provider_switch(
                 session_map, key, provider
             ),
+            mcp_fingerprint=lambda servers: _mcp_fingerprint(servers),
             session_factory=lambda **kwargs: _Session(**kwargs),
             first_turn_nothing_armed=FirstTurnState.NOTHING_ARMED,
             first_turn_fresh=FirstTurnState.FRESH,
@@ -2332,9 +2372,11 @@ class SessionManager:
             reservation=reservation,
         )
 
-    async def _evict_stale_session(self, key: str, sess: "_Session") -> None:
+    async def _evict_stale_session(
+        self, key: str, sess: "_Session", *, lease_held: bool = False
+    ) -> None:
         """Evict and close the exact stale session."""
-        await self._allocation_boundary()._evict_stale_session(key, sess)
+        await self._allocation_boundary()._evict_stale_session(key, sess, lease_held=lease_held)
 
     async def open_task_session(
         self,
@@ -2571,6 +2613,7 @@ class SessionManager:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
@@ -2591,6 +2634,7 @@ class SessionManager:
             model=model,
             cwd=cwd,
             extra_env=extra_env,
+            session_mcp_servers=session_mcp_servers,
             speculative=speculative,
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,
@@ -3783,9 +3827,15 @@ class SessionManager:
         """Best-effort abort gateway work before hard session teardown."""
         await self._lifecycle_boundary()._send_abort_for_session(key, session)
 
-    async def _eager_respawn(self, key: str) -> None:
+    async def _eager_respawn(
+        self,
+        key: str,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Respawn after hard teardown and release the acquired lease."""
-        await self._lifecycle_boundary()._eager_respawn(key)
+        await self._lifecycle_boundary()._eager_respawn(
+            key, session_mcp_servers=session_mcp_servers
+        )
 
     @property
     def count(self) -> int:

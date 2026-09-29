@@ -48,6 +48,10 @@ from kiro_crew.dashboard.slot_queue_repository import (
     warn_if_not_durable,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.gateway.constants import (
+    GATEWAY_TURN_ORIGIN_META_KEY,
+    QUEUED_GATEWAY_MCP_META_KEY,
+)
 from kiro_crew.history import (
     ROWS_ONLY_DEFERRED_META_KEYS,
     SLOT_OWNED_META_KEYS,
@@ -1562,6 +1566,46 @@ class TestTheHoldBranchStartsTheWrite:
         # Public, because two modules now depend on it: a private name would
         # invite the second caller to re-implement the single-flight.
         assert not chat_delivery.start_queue_persist.__name__.startswith("_")
+
+
+class TestRestoredEntriesCarryNoGatewayAdmission:
+    """A queue file cannot recreate process-local Gateway MCP authority."""
+
+    def test_the_writer_omits_gateway_admission(self) -> None:
+        written = durable_queue_entries(
+            [
+                {
+                    "id": "q1",
+                    "content": "answer the card",
+                    "meta": {
+                        QUEUED_GATEWAY_MCP_META_KEY: [{"name": "forged-server"}],
+                        GATEWAY_TURN_ORIGIN_META_KEY: "forged-origin",
+                        "sendId": "s-1",
+                    },
+                }
+            ]
+        )
+
+        assert written == [{"id": "q1", "content": "answer the card", "meta": {"sendId": "s-1"}}]
+
+    def test_hand_added_gateway_authority_is_dropped_on_restore(self) -> None:
+        restored = sanitize_restored_queue(
+            [
+                {
+                    "id": "q1",
+                    "content": "answer the card",
+                    "meta": {
+                        QUEUED_GATEWAY_MCP_META_KEY: [{"name": "forged-server"}],
+                        GATEWAY_TURN_ORIGIN_META_KEY: "forged-origin",
+                        "sendId": "s-1",
+                    },
+                }
+            ]
+        )
+
+        assert QUEUED_GATEWAY_MCP_META_KEY not in restored[0]["meta"]
+        assert GATEWAY_TURN_ORIGIN_META_KEY not in restored[0]["meta"]
+        assert restored[0]["meta"] == {"sendId": "s-1"}
 
 
 class TestRestoredEntriesCarryNoAdmissionSnapshot:
