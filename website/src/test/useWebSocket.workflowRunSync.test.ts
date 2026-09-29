@@ -1,5 +1,5 @@
 /**
- * The delivery half of the workflow-status fix, in `useWebSocket.ts`.
+ * The delivery half of the workflow-status fix, in `hooks/websocket/workflowRuns.ts`.
  *
  * `workflow_run_event` is a one-shot broadcast with no replay, so the chat's
  * workflow row is only as correct as the frames this tab happened to be awake

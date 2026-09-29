@@ -1,5 +1,6 @@
 /**
- * The artifact library's freshness contract in `useWebSocket.ts` (#10867).
+ * The artifact library's freshness contract in the socket layer
+ * (`hooks/websocket/serverState.ts`) (#10867).
  *
  * The Artifacts page does not poll. Live `artifact_update` frames keep its
  * queries fresh while the socket is up — but a frame pushed while the socket

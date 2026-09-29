@@ -450,6 +450,33 @@ Real-time updates arrive on a single WebSocket at `/api/ws`, read through
 10s ceiling) and re-fetches state through Redux on reconnect instead of reloading
 the page.
 
+`src/hooks/useWebSocket.ts` is the composition point and the only import path:
+it holds the frame routing table (one `case` per frame type), the silence
+watchdog and the connect wiring, and it composes the owners in
+`src/hooks/websocket/`. `connection.ts` owns the socket, its backoff and its
+best-effort sends, and exposes the connection-scoped refs the open sequence and
+the arms share; `reconnectCatchUp.ts` owns the first-connect and reconnect
+sequences, in order, including their subscribe and focus frames;
+`streamBuffers.ts` owns the per-frame coalescing of chat, reasoning, subagent
+and sidebar-recency streams. Frame families live with their domain:
+`chatStream.ts` and `turnCompletion.ts` (transcript frames, and what `chat_done`
+means after its row), `approvals.ts` and `composerCards.ts` (coordinator
+approvals; question, follow-up and folder cards), `slotList.ts`,
+`bundleReload.ts` (the `dashboard` status frame), `serverState.ts` (the
+server-owned caches), `automationSeed.ts` and `voicePlayback.ts`;
+`workflowRuns.ts` reconciles the workflow rows those frames fold, `attention.ts`
+owns the unread / read-relay rules and the focus senders, and `browserEvents.ts`
+owns the window events that re-broadcast a frame. `frames.ts` decodes the
+`/api/ws` envelope and types its `FrameData` for the router, and `retiredIds.ts`
+holds the watermarked retired-id logs `approvals.ts` and `composerCards.ts`
+share (and `resolvedSince`). The router's other arms are written inline. A new
+frame gets its `case` in the router; when it needs state an owner keeps, the arm
+calls that owner (or reads a ref the owner exposes) rather than reaching into
+it. An owner receives its dependencies (`dispatch`, `queryClient`, the socket
+connection and peer owners) as arguments and never imports the facade; outside
+`src/hooks/websocket/` only the facade imports an owner, and owners import each
+other only along the edges `src/test/useWebSocket.ownership.test.ts` lists.
+
 Redux Toolkit (`src/store/index.ts`) holds the cross-page shell state in **four**
 slices:
 

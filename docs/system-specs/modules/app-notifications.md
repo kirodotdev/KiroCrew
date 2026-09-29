@@ -206,10 +206,12 @@ three sites:
   snapshot and the transcript rehydration, not through this frame, and stays
   silent.
 
-Every chime is suppressed during reconnect catch-up replay, and
+Every synthesized chime (`TURN_DONE_KIND` and all three `APPROVAL_KIND`
+sites) is suppressed during reconnect catch-up replay, and
 `shouldChimeOnTurnDone` also suppresses slot-less turn completions. A real feed
 `notification` frame fires `MC_NOTIFICATION_EVENT` with its own `kind`, except
-when the note is muted-channel (`silenced`) or `passive`.
+when the note is muted-channel (`silenced`) or `passive`; that sound is not
+gated on catch-up, only the frame's live banner is (see Trigger below).
 
 ### Settings and resolution
 
@@ -257,7 +259,8 @@ unsilenced notes in the Redux store and, when the count grows, posts one toast
 carrying the newest note's title and flattened body, tagged with its
 `approval_id` / `job_id` / `task_id` (or `kirocrew-notif`) so a burst about
 one subject replaces rather than stacks. An `approval` frame reaches the OS
-through the feed entry `useWebSocket` dispatches for it; the socket layer
+through the feed entry the socket's approval registry
+(`website/src/hooks/websocket/approvals.ts`) dispatches for it; the socket layer
 constructs no toast of its own. One event, one constructor, one tag: the OS
 collapses only equal tags, so a second constructor with its own tag is two
 banners for one approval.
@@ -275,7 +278,8 @@ best-effort `requestPermission()` on an undecided permission runs regardless
 of focus.
 
 The opt-in "a background chat finished" toast (`hooks/chatCompleteNotify.ts`,
-constructed in `useWebSocket` on `chat_done`) is a separate, default-OFF
+constructed by the socket's turn-completion owner
+`website/src/hooks/websocket/turnCompletion.ts` on `chat_done`) is a separate, default-OFF
 surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
 predicate.
 
@@ -317,15 +321,17 @@ server-side.
 ### Trigger
 
 The banner listens to `MC_LIVE_NOTIFICATION_EVENT` (`hooks/notificationEvent.ts`),
-which `useWebSocket` fires for a `notification` frame received on a live
-connection and for the feed note it synthesizes from an `approval` frame (the
+which the socket fires for a `notification` frame received on a live
+connection (the frame's arm in `useWebSocket`'s router) and for the feed note
+the approval registry (`website/src/hooks/websocket/approvals.ts`) synthesizes
+from an `approval` frame (the
 note carries the owning `slot`, so `targetsCurrentView` skips it while that
 chat is on screen and its inline permission card is visible; an approval with
 no slot banners on every surface). It never reads the Redux list: the boot `fetchNotifications`
 snapshot and reconnect refetches fill the store with history, and history is
-never bannered. `useWebSocket` withholds the event during a reconnect catch-up
-(`reconnectingRef`) for both frames, the same window that mutes the turn-done
-chime.
+never bannered. Both paths withhold the event during a reconnect catch-up
+(`reconnectingRef`, held by `website/src/hooks/websocket/connection.ts`), the
+same window that mutes the turn-done chime.
 
 ### Priorities
 

@@ -290,8 +290,10 @@ at all until the user reloads. The fallback also dispatches the payload as a
 Notification, adding a `ts`-less entry to the bell feed.
 `test_session_summary_api.py::TestSessionSummaryBroadcast` pins the envelope.
 
-The client closes the same gap on its other edge: `useWebSocket`'s reconnect
-catch-up invalidates `['session-summary']` wholesale, because a summary
+The client closes the same gap on its other edge: the socket's reconnect
+catch-up (`website/src/hooks/websocket/reconnectCatchUp.ts`, through
+`refreshServerStateAfterReconnect` in `website/src/hooks/websocket/serverState.ts`)
+invalidates `['session-summary']` wholesale, because a summary
 regenerated while the socket was down pushed a frame nobody received, and a
 non-polling panel would otherwise keep showing the stale one until the tab
 remounted. `useWebSocket.sessionSummary.test.ts` covers both the live frame and

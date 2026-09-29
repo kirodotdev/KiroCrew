@@ -75,7 +75,7 @@ const thinking = (slot: string, content: string) => ({
   data: { slot, content },
 })
 
-// Mirrors CHUNK_BUF_FLUSH_CHARS in useWebSocket.ts; a pinned literal so a
+// Mirrors CHUNK_BUF_FLUSH_CHARS in hooks/websocket/streamBuffers.ts; a pinned literal so a
 // silent change to the threshold fails here rather than shifting the test.
 const THRESHOLD = 50_000
 const PIECE = 'p'.repeat(10_000)

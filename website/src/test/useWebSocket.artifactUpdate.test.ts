@@ -1,6 +1,6 @@
 /**
  * `artifact_update` WebSocket frame -> react-query cache, through the real
- * dispatch adapter in `useWebSocket.ts`.
+ * dispatch adapter (`hooks/websocket/serverState.ts`, routed by `useWebSocket.ts`).
  *
  * This is the live-refresh half of the artifact companion chat: the backend
  * broadcasts from its artifact mutation funnel, and the client must turn that

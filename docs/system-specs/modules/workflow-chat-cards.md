@@ -8,7 +8,7 @@ Workflow launches and completions render as durable inline cards in chat. `ChatP
 
 `website/src/pages/chat/WorkflowRunCard.tsx` renders a launch card only for a `tool` message whose persisted `meta.output` yields a run ID through `extractWorkflowRunId`; `isWorkflowRunTool` enforces the role check. The detector matches the `Started workflow run ...` contract returned by `src/kiro_crew/mcp_tools/workflows.py::workflow_run` for source and intent launches. Exact saved-definition launches currently return `Started saved workflow ... as ...`, so they fall through to the generic tool row rather than rendering this card.
 
-The card reads the live entry from `chat.workflowRuns`. `website/src/hooks/useWebSocket.ts` folds workflow event frames into that slice and reconciles it with the workflow-runs API; `WorkflowRunCard` also uses `useRunSnapshot` when its live entry is not running. This makes the card useful both while a run is active and after an event frame was missed or the live entry has gone away.
+The card reads the live entry from `chat.workflowRuns`. `website/src/hooks/useWebSocket.ts` folds workflow event frames into that slice, and `website/src/hooks/websocket/workflowRuns.ts` reconciles it with the workflow-runs API (on every socket open, and on a slow heal tick while a row shows running); `WorkflowRunCard` also uses `useRunSnapshot` when its live entry is not running. This makes the card useful both while a run is active and after an event frame was missed or the live entry has gone away.
 
 The card sanitizes display text, switches to its own slot before opening the Workflows panel when rendered from a background pane, and dispatches `openActivityToTab('workflows')`. A finished run exposes the save-workflow flow; `WorkflowRunCard` requires a snapshot source before the library-promotion action is enabled.
 
@@ -31,4 +31,5 @@ The card sanitizes display text, switches to its own slot before opening the Wor
 - `website/src/test/WorkflowRunCard.test.tsx` covers launch detection, live-state and intent fallback rendering, panel opening, slot retargeting, and saving a finished workflow.
 - `website/src/test/WorkflowCompletionCard.test.tsx` covers parsing, parse-gated fallback, rendering disclosure, panel opening, and completion-body containment.
 - `website/src/test/transcriptRenderersRenderCov80.test.tsx` verifies that the shared transcript registry selects both cards and wraps their rows.
+- `website/src/test/useWebSocket.workflowRunSync.test.ts` covers the reconcile against the workflow-runs API: first connect, reconnect, the heal tick and a failed read.
 - `test/test_workflows_inject.py::test_summary_header_format_is_pinned_for_frontend` pins the header emitted by `_summarize` for the completion parser.
