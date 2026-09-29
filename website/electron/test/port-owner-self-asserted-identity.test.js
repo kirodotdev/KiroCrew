@@ -113,6 +113,16 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
+    what: "boot: stale-bundle detection requires a positively local holder",
+    code: '&& (localOwner === "kirocrew" || localOwner === "service")',
+    times: 1,
+  },
+  {
+    what: "stale-bundle warning: a service manager needs the extra recovery step",
+    code: 'const recovery = localOwner === "service"',
+    times: 1,
+  },
+  {
     what: "boot: refuse to adopt a holder this app did not start with no remote crew configured",
     code: 'if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {',
     times: 1,

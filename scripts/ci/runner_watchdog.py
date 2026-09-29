@@ -80,14 +80,34 @@ would only add to the contention. The two are told apart by what the OTHER
 routed jobs are doing -- counting only starts AFTER the orphaned job queued,
 because a fleet that was dispatching before the orphan queued says nothing
 about the fleet it is waiting on (the onset of an outage looks exactly like
-that). When a CodeBuild job that did get a runner started in that window after
-waiting a long time (a third of the orphan threshold or more), CodeBuild is
+that).
+
+The orphaned job's OWN queue is asked first. A routed label is
+``codebuild-<project>-<run>-<attempt>``, optionally with an ``instance-size``
+override; the project and override pick the CodeBuild project and fleet, the run
+and attempt are only there because CodeBuild requires them (``dispatch_queue``
+strips them). A start served by that same project and fleet after the orphan
+queued is a job that stood in the same line and got out of it, so it decides the
+hold on its own: one that waited a third of the orphan threshold or more means
+that queue is saturated and the tick holds; prompt ones and nothing slow mean the
+queue is being served and a job that has waited a quarter of an hour in it is not
+in it at all, whatever another label's queue is doing. The typical carrier is the
+run's own sibling jobs: a fast-gate run queues fourteen jobs on one label within
+a second, and thirteen of them starting in under a minute while the fourteenth
+sits for an hour and a half is the dropped-dispatch shape exactly (a slow start on
+another label that afternoon held that orphan unhealed for six hours before this
+reading existed).
+
+Only when the orphan's own queue served nothing that qualifies -- a single-job
+run, or a run whose orphans span two queues -- is the fleet-wide, label-blind
+reading used. When a CodeBuild job that did get a runner started in that window
+after waiting a long time (a third of the orphan threshold or more), CodeBuild is
 dispatching slowly and every queued job is presumed alive; the tick reports the
-runs as ``saturated`` and heals nothing. This evidence is label-blind, so the
-line is deliberately low: a start served quickly on another label says nothing
-about the queue the orphan is in. When such starts were prompt -- the normal
-case, 27s median and 47s at p90 over 404 measured starts here -- a job that has
-waited a quarter of an hour is not in any queue, and is healed. When NOTHING has started
+runs as ``saturated`` and heals nothing. That line is deliberately low BECAUSE
+this reading is label-blind: a start served quickly on another label says nothing
+about the queue the orphan is in. When such starts were prompt -- the normal case,
+27s median and 47s at p90 over 404 measured starts here -- a job that has waited a
+quarter of an hour is not in any queue, and is healed. When NOTHING has started
 on CodeBuild since the orphan queued (live runs first, then the newest
 completed runs), the evidence is inconclusive: from the queued side a
 total fleet outage looks exactly like an orphan, and cancelling and re-running
@@ -201,7 +221,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
@@ -423,9 +443,14 @@ RECOVERY_LISTING_MAX_PAGES = 10
 # A run is re-run whole so `changes` recomputes the per-attempt runner label.
 RERUN_ENDPOINT = "rerun"
 # A recent CodeBuild start that waited at least this fraction of the orphan
-# threshold means CodeBuild is saturated, not that a label is dead. See
-# ``Policy.saturation_wait`` for why raising it needs label-scoped evidence first.
+# threshold means CodeBuild is saturated, not that a label is dead. Judged first
+# on starts from the orphaned job's own queue, then fleet-wide; see
+# ``Policy.saturation_wait`` for why the fleet-wide reading pins the line low.
 SATURATION_FRACTION = 3
+# What the orphaned job's own queue says (``DispatchEvidence.own_queue``).
+OWN_QUEUE_SATURATED = "saturated"
+OWN_QUEUE_DISPATCHING = "dispatching"
+OWN_QUEUE_SILENT = "silent"
 
 # When no live run shows a recent CodeBuild start, this many newest completed
 # runs are read for one before anything is healed.
@@ -928,12 +953,13 @@ class Policy:
         median and 47s at p90 but 429s at p99 and 709s at the slowest, so a third
         of the threshold reads as saturated on 10 of those starts, and the hold it
         takes is what keeps a stuck run stuck -- but the inference behind a raise
-        is unsound while this evidence is label-blind. A start served in seven
-        minutes on ANOTHER label says nothing about the queue the orphan is in, so
-        raising the line widens the window in which a queued-but-alive job is
-        cancelled. Scoping the evidence to the orphaned job's own labels is what
-        makes the comparison a same-queue one and the raise safe; both are tracked
-        together at #13644 rather than changed here.
+        is unsound for the fleet-wide reading, which is label-blind. A start served
+        in seven minutes on ANOTHER label says nothing about the queue the orphan is
+        in, so raising the line there widens the window in which a queued-but-alive
+        job is cancelled. The same-queue reading (``DispatchEvidence.same_queue``)
+        is the comparison a raise would be safe against; the line is shared by both
+        readings and is left where the label-blind one needs it, and the raise for
+        the same-queue reading is tracked at #13644 rather than made here.
         """
         return self.orphan_after / SATURATION_FRACTION
 
@@ -954,6 +980,33 @@ def is_codebuild_job(job: dict[str, Any]) -> bool:
     so match on the prefix of each label rather than on equality.
     """
     return any(str(label).startswith(CODEBUILD_LABEL_PREFIX) for label in job.get("labels") or [])
+
+
+_PER_RUN_LABEL_SUFFIX = re.compile(r"-\d+-\d+$")
+
+
+def dispatch_queue(labels: Iterable[str]) -> frozenset[str]:
+    """The CodeBuild queue a job's labels route it to, with the per-run suffix removed.
+
+    A routed job's label is ``codebuild-<project>-<run id>-<run attempt>``, optionally
+    followed by an override such as ``instance-size:large``. The project selects the
+    CodeBuild project and the override selects its fleet; the run id and attempt
+    only exist because CodeBuild requires them in the label and say nothing about
+    which queue serves the job. Stripping them makes two jobs in different runs
+    that wait on the same project and fleet compare equal, which is the comparison
+    the same-queue evidence below needs. Labels that are not CodeBuild-routed are
+    kept verbatim.
+    """
+    queue: set[str] = set()
+    for label in labels:
+        text = str(label)
+        if not text.startswith(CODEBUILD_LABEL_PREFIX):
+            queue.add(text)
+            continue
+        head, _, overrides = text.partition(" ")
+        head = _PER_RUN_LABEL_SUFFIX.sub("", head)
+        queue.add(f"{head} {overrides}".strip())
+    return frozenset(queue)
 
 
 def is_fork_run(run: dict[str, Any], repo: str) -> bool:
@@ -1348,12 +1401,15 @@ class DispatchEvidence:
         )
 
     def absorb(self, jobs: list[dict[str, Any]], policy: Policy) -> None:
+        # Every served start is kept, whatever its age. The fleet-wide readings apply
+        # the lookback when they are asked (``_since``, ``slowest_served_wait``),
+        # because for them a start is evidence about the fleet NOW and ages out; the
+        # same-queue reading does not, because for it a start is evidence about
+        # whether the orphan ever stood in that line, and that does not age.
         for job in jobs:
             if not is_codebuild_job(job) or not job.get("runner_name") or not job.get("started_at"):
                 continue
             started = parse_timestamp(str(job["started_at"]))
-            if policy.now - started > policy.saturation_lookback:
-                continue
             waited = started - parse_timestamp(job["created_at"])
             if waited < timedelta(0):
                 # Carried over from an earlier attempt: (re-)created after it started.
@@ -1379,14 +1435,64 @@ class DispatchEvidence:
             return None
         return max(slow, key=lambda entry: entry[1])[2]
 
+    def same_queue(
+        self, since: datetime, policy: Policy, queue: frozenset[str], *, recent: bool
+    ) -> list[tuple[datetime, timedelta, OrphanedJob]]:
+        """The starts served by the orphaned job's OWN queue after it queued.
+
+        The label-blind evidence above answers "is the fleet dispatching"; this
+        answers the narrower question the hold actually needs, "was this job ever in
+        the line it is waiting on". A start on the same CodeBuild project and fleet
+        (``dispatch_queue``) after the orphan queued is a job that stood in the same
+        line and got out of it, so what it says about that line is not diluted by a
+        slow start on another label with its own capacity.
+
+        ``recent`` applies the lookback, as the fleet-wide readings do; without it every
+        start after ``since`` counts. ``own_queue`` says which is asked when.
+        """
+        floor = max(since, policy.now - policy.saturation_lookback) if recent else since
+        return [
+            entry
+            for entry in self.starts
+            if entry[0] >= floor and dispatch_queue(entry[2].labels) == queue
+        ]
+
+    def own_queue(
+        self, since: datetime, policy: Policy, queue: frozenset[str]
+    ) -> tuple[str, OrphanedJob | None]:
+        """What the orphan's own queue says: SATURATED, DISPATCHING, or nothing.
+
+        Recent starts (inside the lookback) are read first and read as the fleet-wide
+        rule reads them: one that waited ``saturation_wait`` or more means that queue is
+        saturated NOW and is returned with the verdict; prompt ones and nothing slow
+        mean it is dispatching. Only when the queue served nothing recently are the
+        older starts consulted, and they carry ONE conclusion: if every one of them was
+        prompt, the queue served jobs that stood in line with the orphan and the orphan
+        was never in that line -- a fact that does not age, unlike the state of the
+        fleet. An old slow start with nothing recent is not read as saturation (it says
+        nothing about the queue now) and not read as dispatching either; the label-blind
+        rules take over. Whether the fleet is up now is the outage hold's question, and
+        ``resolve_hold`` still asks it after a DISPATCHING reading.
+        """
+        recent = self.same_queue(since, policy, queue, recent=True)
+        if recent:
+            slow = [entry for entry in recent if entry[1] >= policy.saturation_wait]
+            if slow:
+                return OWN_QUEUE_SATURATED, max(slow, key=lambda entry: entry[1])[2]
+            return OWN_QUEUE_DISPATCHING, None
+        older = self.same_queue(since, policy, queue, recent=False)
+        if older and all(entry[1] < policy.saturation_wait for entry in older):
+            return OWN_QUEUE_DISPATCHING, None
+        return OWN_QUEUE_SILENT, None
+
     def saturated(self, since: datetime, policy: Policy) -> bool:
         return self.slowest(since, policy) is not None
 
     def inconclusive(self, since: datetime, policy: Policy) -> bool:
         return self.recent_starts(since, policy) == 0
 
-    def slowest_served_wait(self) -> tuple[timedelta, str] | None:
-        """The longest queue wait among every start absorbed this tick, slow or not.
+    def slowest_served_wait(self, policy: Policy) -> tuple[timedelta, str] | None:
+        """The longest queue wait among the starts inside the lookback, slow or not.
 
         Reported whether or not it crosses ``saturation_wait``, because the margin
         between the two is what says whether the line still discriminates. Measured
@@ -1394,11 +1500,15 @@ class DispatchEvidence:
         climbs toward the line means the hold is about to fire on ordinary traffic,
         and one that sits far below it means the line could be raised. Either way it
         is drift a reader should see in the tick's own log rather than have to
-        re-measure by hand.
+        re-measure by hand. Bounded to the lookback like the fleet-wide readings it
+        calibrates: a start served hours ago is not the queue the line judges now.
         """
-        if not self.starts:
+        recent = [
+            entry for entry in self.starts if policy.now - entry[0] <= policy.saturation_lookback
+        ]
+        if not recent:
             return None
-        started, waited, job = max(self.starts, key=lambda entry: entry[1])
+        started, waited, job = max(recent, key=lambda entry: entry[1])
         return waited, job.name
 
 
@@ -2565,7 +2675,12 @@ def sample_completed_runs(api: Api, policy: Policy, evidence: DispatchEvidence) 
 
 
 def resolve_hold(
-    api: Api, policy: Policy, evidence: DispatchEvidence, since: datetime
+    api: Api,
+    policy: Policy,
+    evidence: DispatchEvidence,
+    since: datetime,
+    *,
+    queue: frozenset[str] | None = None,
 ) -> tuple[str, str] | None:
     """Whether the fleet's state forbids acting on an orphan that queued at ``since``.
 
@@ -2573,17 +2688,40 @@ def resolve_hold(
     recovery pass alike, so both obey the same hold: re-running into saturation
     or an outage is as wrong for a cancelled orphan as for a live one. Only
     starts after ``since`` count -- a fleet that was dispatching before the
-    orphan queued says nothing about the fleet it is waiting on. The
-    completed-run sample is taken at most once per tick, and only when no recent
-    start was seen at all: it cannot settle an unread-listing case, which the
-    ``unread_saturation_capable`` branch below holds on instead.
+    orphan queued says nothing about the fleet it is waiting on.
+
+    ``queue`` is the orphaned job's own CodeBuild queue (``dispatch_queue`` of its
+    labels), and ``DispatchEvidence.own_queue`` is asked first. SATURATED holds:
+    that queue is slow now, whatever the rest of the fleet did. DISPATCHING rules
+    the label-blind saturation hold out for this queue, and only that: it does NOT
+    settle whether the fleet is up now, so the outage question below is still asked
+    of the fleet-wide starts, and a fleet that has served nothing lately still holds;
+    and it does not lift the partial-evidence hold, because it is read off the starts
+    this sweep read while a slow start on this same queue may sit in a run that went
+    unread. SILENT (the queue served nothing usable after the orphan queued) leaves
+    every label-blind rule in force, because a slow start on ANOTHER label is a fact
+    about that label's capacity, not this queue's. The completed-run sample is taken
+    at most once per tick, and only when no recent start was seen at all: it cannot
+    settle an unread-listing case, which the ``unread_saturation_capable`` branch
+    below holds on instead.
     """
+    own_queue_prompt = False
+    if queue is not None:
+        reading, slow = evidence.own_queue(since, policy, queue)
+        if reading == OWN_QUEUE_SATURATED and slow is not None:
+            return (
+                SKIPPED_SATURATED,
+                f"the orphaned job's own CodeBuild queue is dispatching slowly ({slow.name} "
+                f"started after waiting {_fmt_delta(slow.queued_for)}); queued jobs are presumed "
+                f"alive, nothing healed",
+            )
+        own_queue_prompt = reading == OWN_QUEUE_DISPATCHING
     if evidence.inconclusive(since, policy) and not evidence.completed_sampled:
         # Nothing live has started on CodeBuild lately. Before treating that as
         # an outage, read the newest completed runs: a fleet that finished jobs
         # promptly in the last half hour is dispatching, even if quietly.
         sample_completed_runs(api, policy, evidence)
-    slowest = evidence.slowest(since, policy)
+    slowest = None if own_queue_prompt else evidence.slowest(since, policy)
     if slowest is not None:
         return (
             SKIPPED_SATURATED,
@@ -2607,6 +2745,13 @@ def resolve_hold(
         # completions, so a fleet serving some jobs promptly and queueing others past
         # the threshold can show a prompt start there while the slow one sits in a
         # live run this sweep never read. Hold rather than guess.
+        #
+        # An own-queue DISPATCHING reading does not lift this hold. It is derived from
+        # the starts this sweep READ, and a slow start on the orphan's own queue would
+        # turn it into SATURATED; an unread run can hold exactly that start, and the
+        # retained candidates carry no queue attribution that could rule it out. So
+        # the reading rules out the label-blind saturation hold above (a slow start on
+        # another label is not about this queue) and nothing more.
         #
         # Counted at THIS call's clock, so a retained unread run that was under the
         # line when the listing was read and has since crossed it turns the hold on
@@ -2634,6 +2779,20 @@ def _latest_queue(verdict: RunVerdict) -> datetime:
     may be about to be picked up.
     """
     return max(orphan.queued_at for orphan in verdict.orphans)
+
+
+def _orphan_queue(verdict: RunVerdict) -> frozenset[str] | None:
+    """The one CodeBuild queue every orphaned job of the run waits in, or None.
+
+    Same-queue evidence speaks for one queue. A matrix run whose orphans span two
+    (a Linux shard and a Windows shard, say) gets no same-queue reading: a served
+    start on one of them says nothing about the other, and the hold is judged for
+    the run as a whole, so it falls back to the label-blind rules.
+    """
+    queues = {dispatch_queue(orphan.labels) for orphan in verdict.orphans}
+    if len(queues) != 1:
+        return None
+    return next(iter(queues))
 
 
 def _out_of_time(
@@ -3366,7 +3525,9 @@ def run_watchdog(
         for verdict in verdicts:
             if verdict.verdict != ORPHANED:
                 continue
-            hold = resolve_hold(api, policy, evidence, _latest_queue(verdict))
+            hold = resolve_hold(
+                api, policy, evidence, _latest_queue(verdict), queue=_orphan_queue(verdict)
+            )
             if hold is not None and supersession_clears_hold(api, policy, verdict, log):
                 hold = None
             if hold is not None:
@@ -3381,7 +3542,7 @@ def run_watchdog(
         # `saturation_wait` is what says whether the line still separates a slow queue
         # from a dead label, so it belongs in the tick's own log rather than in a hand
         # measurement taken after the hold misbehaves.
-        slowest_seen = evidence.slowest_served_wait()
+        slowest_seen = evidence.slowest_served_wait(policy)
         if slowest_seen is not None:
             waited, name = slowest_seen
             # Seconds, not `_fmt_delta`: it floors to whole minutes, and the waits this
@@ -3504,7 +3665,11 @@ def run_watchdog(
         # already taken, so this is a pure judgement -- no read, no delay
         # between the run's own re-read and its cancel.
         hold = resolve_hold(
-            api, replace(policy, now=tick.now()), fresh["evidence"], _latest_queue(verdict)
+            api,
+            replace(policy, now=tick.now()),
+            fresh["evidence"],
+            _latest_queue(verdict),
+            queue=_orphan_queue(verdict),
         )
         if hold is not None and supersession_clears_hold(
             api, replace(policy, now=tick.now()), verdict, log

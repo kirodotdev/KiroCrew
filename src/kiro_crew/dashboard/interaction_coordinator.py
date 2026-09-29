@@ -53,6 +53,10 @@ class ApprovalCoordinator:
         state._approval_futures[approval_id] = future
         state._pending_approvals[approval_id] = {
             "id": approval_id,
+            # The request id is the caller's and can recur; this names THIS
+            # request, so a card rendered from an earlier record with the same
+            # id cannot resolve its replacement.
+            "instance": uuid.uuid4().hex,
             "source": source,
             "tool": _redact(tool, redact_url, redact_secret),
             "tool_input": _redact(tool_input, redact_url, redact_secret),
@@ -75,19 +79,26 @@ class ApprovalCoordinator:
         except (asyncio.TimeoutError, asyncio.CancelledError):
             return False
         finally:
-            # A future that never carried a decision means the wait expired or
-            # was cancelled: retire the approval BEFORE popping it, or the
-            # rendered card keeps live buttons that answer 404 forever because
-            # no ``approval_resolved`` frame is ever emitted. A resolved future
-            # (done with a result) is retired by resolve()/resolve_state();
-            # retiring again here would double the broadcast on the healthy path.
-            if future.cancelled() or not future.done():
-                ApprovalCoordinator._retire_unresolved(state, approval_id, slot)
-            state._pending_approvals.pop(approval_id, None)
-            state._approval_futures.pop(approval_id, None)
-            # Every exit -- decided, expired, cancelled -- leaves the record
-            # gone, so one push here takes the slot back out of the lane.
-            _push_slots(state)
+            # The id is the caller's and can recur while this wait is open; a
+            # later request then owns the record and the future under it. Only
+            # this request's own are retired and removed, judged by the future
+            # this wait created: the replacement's card, buttons and resolver
+            # stay live, and its own exit takes the slot out of the lane.
+            if state._approval_futures.get(approval_id) is future:
+                # A future that never carried a decision means the wait expired
+                # or was cancelled: retire the approval BEFORE popping it, or
+                # the rendered card keeps live buttons that answer 404 forever
+                # because no ``approval_resolved`` frame is ever emitted. A
+                # resolved future (done with a result) is retired by
+                # resolve()/resolve_state(); retiring again here would double
+                # the broadcast on the healthy path.
+                if future.cancelled() or not future.done():
+                    ApprovalCoordinator._retire_unresolved(state, approval_id, slot)
+                state._pending_approvals.pop(approval_id, None)
+                state._approval_futures.pop(approval_id, None)
+                # Every exit -- decided, expired, cancelled -- leaves the record
+                # gone, so one push here takes the slot back out of the lane.
+                _push_slots(state)
 
     @staticmethod
     def _retire_unresolved(state: Any, approval_id: str, slot_key: str) -> None:

@@ -2818,7 +2818,7 @@ async def test_uninstall_route_refuses_before_running_anything_destructive(
     )
     _install(tmp_path, _APP, enabled=False)
 
-    uninstall_app_router = web.Application()
+    uninstall_app_router = as_owner(web.Application())
     uninstall_app_router.router.add_delete(
         "/api/apps/{name}", approutes.handle_uninstall_app
     )

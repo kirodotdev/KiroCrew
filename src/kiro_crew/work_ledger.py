@@ -28,7 +28,8 @@ fields are added. Phase 1 performs NO identity resolution; that is Phase 2's job
 the tool layer, and the split shape here is what lets it be done by construction.
 
 LOCK ORDER, for the two paths that hold more than one lock. ``create`` enforces the
-per-conductor item cap, which means reading the items directory, so it holds the
+two per-conductor bounds, which means reading the header's create counter and the
+items directory and then writing both the header and the item, so it holds the
 conductor lock across the whole transaction and takes the new item's lock from
 inside that hold. ``bind`` holds the item lock and takes the worker's binding lock
 from inside it, because "this worker holds no other open item" is a property of
@@ -78,7 +79,9 @@ from kiro_crew.session_ledger import (
     unlink_lock_in_hold,
 )
 from kiro_crew.work_vocab import (
+    WORK_FOLD_NAME,
     WORK_ITEM_STATES,
+    WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
     work_event_id,
@@ -160,7 +163,33 @@ CONDUCTOR_ACTIONS: frozenset[str] = frozenset(
 # Caps. Each one refuses; none truncates.
 # --------------------------------------------------------------------------- #
 
+#: How many OPEN items one conductor may hold at once -- the bound on live fan-out,
+#: which is the only thing a per-conductor item cap is for. Items in a
+#: :data:`TERMINAL_ITEM_STATES` state do not count: they stay on disk, are still
+#: listed and readable, but a queue conductor that mints one item per ticket and
+#: closes each as it lands would otherwise exhaust the cap on its own history within
+#: a day, with nothing live behind the refusal. Enforced by :func:`_create_item`.
+#: Closed items are bounded with the open ones by
+#: :data:`MAX_STORED_ITEMS_PER_CONDUCTOR` below.
 MAX_ITEMS_PER_CONDUCTOR = 32
+#: How many items one conductor's board may CREATE over its life, open and closed
+#: together -- the bound on stored history, where the cap above bounds live fan-out.
+#: Equal to the crew log fold's per-board item ceiling
+#: (``crew_log.projection.WORK_ITEM_LIMIT``) by construction: both read
+#: :data:`kiro_crew.work_vocab.WORK_STORED_ITEM_LIMIT`. Every create this bound
+#: admits is one recorded create, so a board that cannot admit more creates than the
+#: fold retains cannot overflow the fold, and the fold is always the whole board.
+#: Counted by :attr:`ConductorRecord.created_total`, a monotonic counter in the
+#: header that :func:`_create_item` bumps under the conductor lock, NOT off the
+#: record files and not off the readable listing: the fold counts creates in an
+#: append-only log, so a record removed from ``items/`` -- torn, hand-deleted, lost
+#: -- still has its create there, and a count of what the directory holds would
+#: admit one create more than the fold retains for every record it lost. Removing
+#: a record reclaims nothing. Enforced by :func:`_create_item`, which refuses rather
+#: than evicts -- nothing in this module deletes a record. A board at this bound has
+#: run its course: once every item is closed, ``kirocrew ledger-sweep --purge``
+#: removes the finished ledger whole.
+MAX_STORED_ITEMS_PER_CONDUCTOR = WORK_STORED_ITEM_LIMIT
 MAX_EVENTS_PER_ITEM = 200
 MAX_DEPTH = 2
 
@@ -197,6 +226,7 @@ CODE_UNKNOWN_ITEM = "unknown_item"
 CODE_ALREADY_BOUND = "already_bound"
 CODE_ITEM_CLOSED = "item_closed"
 CODE_ITEM_CAP_EXCEEDED = "item_cap_exceeded"
+CODE_ITEM_STORE_FULL = "item_store_full"
 CODE_CREW_LOG_INCOMPLETE = "crew_log_incomplete"
 CODE_CACHE_DIRTY = "cache_dirty"
 CODE_DEPTH_EXCEEDED = "depth_exceeded"
@@ -256,6 +286,15 @@ class ConductorRecord:
     #: counterpart of an item's ``recorded_at``): from then on the record is
     #: expected to hold every goal write, and a rebuild checks that it does.
     recorded_at: str = ""
+    #: How many items this board has created over its life, open and closed
+    #: together -- what :data:`MAX_STORED_ITEMS_PER_CONDUCTOR` is measured against.
+    #: Monotonic under the store's own writes: :func:`_create_item` bumps it under
+    #: the conductor lock in the same hold that writes the item, and nothing here
+    #: lowers it -- a record removed from ``items/`` keeps the create it counted,
+    #: as the crew log keeps that create's entry. :func:`rebuild_from_projection`
+    #: sets it to the count the log holds. Zero on records from before it; the
+    #: first create on such a board seeds it from the records on the board.
+    created_total: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -269,6 +308,7 @@ class ConductorRecord:
             "generation": self.generation,
             "goal_version": self.goal_version,
             "recorded_at": self.recorded_at,
+            "created_total": self.created_total,
         }
 
     @classmethod
@@ -292,6 +332,7 @@ class ConductorRecord:
             generation=_as_str(raw.get("generation")),
             goal_version=_as_int(raw.get("goal_version"), 0),
             recorded_at=_as_str(raw.get("recorded_at")),
+            created_total=max(0, _as_int(raw.get("created_total"), 0)),
         )
 
 
@@ -911,6 +952,27 @@ def list_work_items(slot_key: str) -> list[WorkItem]:
     return items
 
 
+def _stored_item_ids(slot_key: str) -> list[str]:
+    """The id of every item RECORD on the board, sorted, whether or not it reads.
+
+    The roster of files a board holds, where :func:`list_work_items` is the roster
+    of items that read. :func:`rebuild_from_projection` locks and snapshots every
+    record by this list, a torn one included, and :func:`_create_item` seeds a
+    header that predates :attr:`ConductorRecord.created_total` from it, once. It
+    is NOT what the stored bound counts: a directory listing goes down when a
+    record is removed, and the fold's count of creates never does. Only a full
+    ``it_<8 hex>`` stem is a record, as in the listing: a stray ``it_bad.json``
+    was never minted here and has no create in the fold. Lock-free, like the
+    listing; both callers hold the conductor lock.
+    """
+    directory = items_dir(slot_key)
+    return sorted(
+        path.stem
+        for path in (directory.glob("it_*.json") if directory.is_dir() else ())
+        if _ITEM_ID_RE.fullmatch(path.stem)
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Events
 # --------------------------------------------------------------------------- #
@@ -1061,6 +1123,22 @@ def _restore_text(path: Path, snapshot: str | None) -> None:
         )
 
 
+def _require_record_fits(payload: dict[str, Any]) -> None:
+    """Refuse with ``CODE_FIELD_TOO_LONG`` when *payload*'s stored form would exceed
+    the read ceiling.
+
+    Measured BEFORE any write. ``_require_acceptance`` bounds the compact form, but
+    the stored form is indented, and an item that writes successfully and then
+    reads as absent is the silent loss this module exists to refuse.
+    """
+    if len(_serialize(payload).encode("utf-8")) > MAX_RECORD_BYTES:
+        raise WorkLedgerError(
+            "item record would exceed the read ceiling; shrink acceptance",
+            code=CODE_FIELD_TOO_LONG,
+            field="acceptance",
+        )
+
+
 def _commit_item_locked(
     slot_key: str, item: WorkItem, kind: str, text: str, *, status: str | None = None
 ) -> WorkEvent:
@@ -1072,19 +1150,11 @@ def _commit_item_locked(
     a disk-full between the writes persist a state change with no line explaining
     it -- a terminal item with no ``close`` event, forever.
 
-    The serialized item is measured against the read ceiling BEFORE either write.
-    ``_require_acceptance`` bounds the compact form, but the stored form is indented,
-    and an item that writes successfully and then reads as absent is the silent loss
-    this module exists to refuse.
+    The serialized item is measured against the read ceiling before either write
+    (:func:`_require_record_fits`).
     """
     payload = item.to_dict()
-    body = _serialize(payload)
-    if len(body.encode("utf-8")) > MAX_RECORD_BYTES:
-        raise WorkLedgerError(
-            "item record would exceed the read ceiling; shrink acceptance",
-            code=CODE_FIELD_TOO_LONG,
-            field="acceptance",
-        )
+    _require_record_fits(payload)
     events_path = item_events_path(slot_key, item.item_id)
     log_before = _read_text_or_none(events_path)
     event = _append_event_locked(slot_key, item.item_id, kind, text, status=status)
@@ -1646,24 +1716,26 @@ def apply_conductor_action(
     )
 
 
-def _header_under_lock(slot_key: str, snapshot: ConductorRecord, verb: str) -> ConductorRecord:
-    """The live header for a writer that holds the conductor lock.
+def _header_under_lock(slot_key: str, verb: str) -> ConductorRecord:
+    """The live header for a writer that holds the conductor lock, or a refusal.
 
     Refuses with ``CODE_NO_LEDGER`` when the header FILE IS ABSENT: the ledger was
-    purged while this writer waited on the lock, and writing the pre-lock
-    snapshot back would resurrect a header into a removed store -- one with no
-    breadcrumb, which no later purge could name. That is the one case the purge
-    needs refused, and it is the only one refused here.
+    purged while this writer waited on the lock, and writing a pre-lock snapshot
+    back would resurrect a header into a removed store -- one with no breadcrumb,
+    which no later purge could name.
 
-    A header that is PRESENT but does not parse is a different situation. The
-    caller holds the lock, so no other writer is mid-replace; what is on disk is
-    a torn record, and *snapshot* -- read moments ago from this same file, before
-    the lock -- is the best account of it. Returning the snapshot lets the write
-    proceed on that account: a ``goal`` rewrites the header and so repairs it, and
-    a create takes its default round from it. That is what the store always did
-    before the purge existed and what a live conductor needs from a crash-torn
-    header. The distinction is the file's presence, which is what separates
-    "purged" from "damaged" under a lock the purge also takes.
+    Refuses with the same code when the header is PRESENT but does not read. The
+    header carries :attr:`ConductorRecord.created_total`, the count the stored
+    bound is measured against, and only the header holds it: the caller's pre-lock
+    snapshot was read before every writer that held the lock since, so a write
+    that stood the snapshot in for the torn file would put a lower count back --
+    for a ``goal``, into the header the next create then reads; for a create, into
+    the bound itself -- and admit creates past what the fold retains. Corruption
+    reads as absent everywhere else in this module, and the same header would
+    have read as absent to :func:`apply_conductor_action` a moment earlier; the
+    refusal says which of the two it found. The remedy is a rebuild from the crew
+    log (:func:`rebuild_from_projection`), which writes the header from the record,
+    the counter with it.
     """
     live = read_conductor(slot_key, strict=True)
     if live is not None:
@@ -1674,12 +1746,13 @@ def _header_under_lock(slot_key: str, snapshot: ConductorRecord, verb: str) -> C
             "or is incomplete; ensure_conductor recreates the header",
             code=CODE_NO_LEDGER,
         )
-    logger.warning(
-        "work ledger header for %s is present but unreadable under the lock; "
-        "repairing it from the pre-lock snapshot",
-        slot_key,
+    raise WorkLedgerError(
+        f"conductor ledger header is present but unreadable, so {verb} -- it holds "
+        "the board's create count and a pre-lock snapshot of it cannot stand in; "
+        "rebuild the board from the crew log (rebuild_from_projection), which writes "
+        "the header from the record",
+        code=CODE_NO_LEDGER,
     )
-    return snapshot
 
 
 def _write_goal(
@@ -1690,17 +1763,19 @@ def _write_goal(
     Bounds are checked before the lock; the fields a caller omitted are filled from
     the record re-read inside it, never from the pre-lock snapshot. Otherwise a
     goal-only call and a round-only call racing each other would each restore the
-    other's field to the stale value it read before waiting.
+    other's field to the stale value it read before waiting. *record* is the
+    caller's pre-lock read, which is how the caller knew a ledger exists; nothing
+    written here is taken from it.
     """
     checked_goal = None if goal is None else _require_text(goal, MAX_GOAL_CHARS, "goal")
     checked_round = None if round_number is None else _require_count(round_number, "round")
     with _existing_conductor_lock(slot_key):
-        # The header is re-read under the lock and REQUIRED to be present, like
-        # ``_create_item``: a ``goal`` that waited behind a purge must not
-        # rewrite its pre-lock snapshot into the removed store. A present but
-        # torn header is repaired from that snapshot instead; see
-        # ``_header_under_lock``.
-        current = _header_under_lock(slot_key, record, "its goal cannot be updated")
+        # The header is re-read under the lock and REQUIRED to be present and
+        # readable, like ``_create_item``: a ``goal`` that waited behind a purge
+        # must not rewrite its pre-lock snapshot into the removed store, and one
+        # that finds the header torn must not rewrite the snapshot's create count
+        # over the live one; see ``_header_under_lock``.
+        current = _header_under_lock(slot_key, "its goal cannot be updated")
         if checked_goal is not None:
             current.goal = checked_goal
         if checked_round is not None:
@@ -1719,10 +1794,40 @@ def _create_item(
 ) -> dict[str, Any]:
     """Mint one item under the conductor lock.
 
-    The lock is the conductor's, not the item's, because the cap it enforces is a
-    property of the SET: counting the items and adding one must not interleave with
-    another call doing the same, or two calls each see thirty-one and both write.
-    The new item's own lock is taken from inside that hold, in the documented order.
+    Two bounds, each checked under the lock and each off the thing it bounds. The
+    stored TOTAL first: :data:`MAX_STORED_ITEMS_PER_CONDUCTOR` is measured against
+    the header's :attr:`ConductorRecord.created_total`, a counter of every create
+    this board has admitted, which this function bumps in the same hold that writes
+    the item. It is a counter and not a count of the records on the board because
+    the fold that equals this bound counts creates in an append-only log: a record
+    removed from ``items/`` -- torn, hand-deleted, lost -- still has its create
+    there, so a count of what the directory holds would admit one create more than
+    the fold retains for every record it lost, and the fold's ceiling guard in
+    :func:`rebuild_from_projection` would then refuse that board for good. The
+    counter only ever climbs here, so a removed record reclaims nothing; a board
+    this refusal admits can always be folded whole, and that guard is defensive.
+    A header from before the counter holds zero: the first create on such a board
+    seeds it from the records the board holds (:func:`_stored_item_ids`), once,
+    before the compare -- a backfill that can only over-count the log, never under.
+    Then the OPEN count: :data:`MAX_ITEMS_PER_CONDUCTOR` bounds live fan-out, read
+    off :func:`list_work_items`, so an item in a terminal state is listed but not
+    counted there, and a torn record -- whose state cannot be read -- counts toward
+    neither. Closed items stay on the board until the stored bound; nothing here
+    evicts one.
+
+    The header is written FIRST, then the item. A failure between the two leaves
+    the counter one ahead of the board -- a create the fold never sees, so the
+    safe side -- and the header is put back when the item write raises. The
+    other order would let a failed header write leave an item the counter never
+    saw, which is the side that overflows the fold. Every refusal, the item's own
+    size included, is decided before the header write, so a refused create leaves
+    every file byte-identical.
+
+    The lock is the conductor's, not the item's, because the caps it enforces are
+    properties of the SET: counting the items and adding one must not interleave
+    with another call doing the same, or two calls each see thirty-one and both
+    write. The new item's own lock is taken from inside that hold, in the
+    documented order.
 
     Refuses when the conductor is at the depth cap, because an item is a dispatch and
     a session at the cap may not dispatch.
@@ -1738,22 +1843,49 @@ def _create_item(
             field="depth",
         )
     with _existing_conductor_lock(slot_key):
-        # The header is re-read INSIDE the lock and is REQUIRED to be present. Two
-        # reasons. The default round must come from the live header, not the
-        # pre-lock snapshot, so a concurrent ``goal`` round bump is seen. And a
-        # header that is GONE means the ledger was purged while this call waited
-        # on the lock: minting an item now would write a record into a store with
-        # no header -- a ledger destroyed down to the records that made it one.
-        # A header that is present but torn is a damaged live ledger, not a
-        # purged one, and the snapshot stands in for it; see
-        # ``_header_under_lock``.
-        live = _header_under_lock(slot_key, record, "no item can be created in it")
+        # The header is re-read INSIDE the lock and is REQUIRED to be present and
+        # readable. The default round must come from the live header, not the
+        # pre-lock snapshot, so a concurrent ``goal`` round bump is seen. A header
+        # that is GONE means the ledger was purged while this call waited on the
+        # lock: minting an item now would write a record into a store with no
+        # header -- a ledger destroyed down to the records that made it one. And
+        # the header holds the create count the stored bound is measured against,
+        # which the pre-lock snapshot may hold low, so a header that is present
+        # but torn refuses too; see ``_header_under_lock``.
+        live = _header_under_lock(slot_key, "no item can be created in it")
         if checked_round is None:
             checked_round = live.round
-        existing = list_work_items(slot_key)
-        if len(existing) >= MAX_ITEMS_PER_CONDUCTOR:
+        if live.created_total == 0:
+            # Backfill, once, for a header written before the counter existed:
+            # every record the board holds is a create it admitted, so the count
+            # starts there rather than at zero. Persisted by the header write
+            # below; a refusal here leaves it unwritten and the next create seeds
+            # it again, to the same value.
+            live.created_total = len(_stored_item_ids(slot_key))
+        # The stored total first: a board that has admitted every create it may
+        # ever admit is refused whatever its open count, so closed history cannot
+        # carry the board past the fold's ceiling.
+        if live.created_total >= MAX_STORED_ITEMS_PER_CONDUCTOR:
             raise WorkLedgerError(
-                f"conductor holds {len(existing)} items; the cap is " f"{MAX_ITEMS_PER_CONDUCTOR}",
+                f"conductor has created {live.created_total} items over its life, open "
+                f"and closed together; the stored bound is {MAX_STORED_ITEMS_PER_CONDUCTOR}. "
+                "Nothing evicts a record and removing one reclaims nothing: once every "
+                "item is closed, `kirocrew ledger-sweep --purge` removes the finished "
+                "ledger whole",
+                code=CODE_ITEM_STORE_FULL,
+                field="items",
+            )
+        # Only OPEN items count toward the fan-out cap: a closed item is history, not
+        # fan-out. It stays on the board and ``list_work_items`` still returns it; it
+        # does not block a create. Read off the listing, since only a readable record
+        # has a state.
+        open_items = [
+            item for item in list_work_items(slot_key) if item.state not in TERMINAL_ITEM_STATES
+        ]
+        if len(open_items) >= MAX_ITEMS_PER_CONDUCTOR:
+            raise WorkLedgerError(
+                f"conductor holds {len(open_items)} open items; the cap is "
+                f"{MAX_ITEMS_PER_CONDUCTOR}",
                 code=CODE_ITEM_CAP_EXCEEDED,
                 field="items",
             )
@@ -1768,9 +1900,20 @@ def _create_item(
             round=checked_round,
             created_at=_now_iso(),
         )
-        with item_lock(slot_key, item_id):
-            event = _commit_item_locked(slot_key, item, "create", checked_title)
-        return {"conductor": read_conductor(slot_key), "item": item, "event": event}
+        # The last refusal, before the first write: ``_commit_item_locked`` measures
+        # the item again, but by then the header below is on disk.
+        _require_record_fits(item.to_dict())
+        header_path = conductor_dir(slot_key) / _CONDUCTOR_FILE
+        header_before = _read_text_or_none(header_path)
+        live.created_total += 1
+        _write_record(header_path, live.to_dict())
+        try:
+            with item_lock(slot_key, item_id):
+                event = _commit_item_locked(slot_key, item, "create", checked_title)
+        except BaseException:
+            _restore_text(header_path, header_before)
+            raise
+        return {"conductor": live, "item": item, "event": event}
 
 
 def _write_item_action(
@@ -2689,7 +2832,11 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
     writer can take the lock of an item whose record does not exist yet, so the
     window a writer could use opens only once this rebuild writes the file, by
     which time its lock is held. A slot whose fold holds no entry leaves the files
-    untouched, so a caller can tell "no entries" from "rebuilt empty".
+    untouched, so a caller can tell "no entries" from "rebuilt empty". The rebuilt
+    header's :attr:`ConductorRecord.created_total` is the number of records the
+    rebuilt board holds -- every item the fold retained plus every legacy record
+    kept -- so the stored bound afterwards agrees with the record rather than with
+    whatever the cache's header held.
 
     Returns the counts: ``{"slot_key", "items", "events", "removed", "legacy"}``.
     """
@@ -2700,17 +2847,16 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
     # which fails when these move up. The ``top-level-imports`` convention is
     # advisory; this boot-path invariant is enforced, so the invariant wins.
     from kiro_crew.crew_log import emit as crew_log_emit
-    from kiro_crew.crew_log.projection import read_slot_projection, work_slots_naming_board
+    from kiro_crew.crew_log.projection import (
+        WORK_ITEM_LIMIT,
+        read_slot_projection,
+        work_slots_naming_board,
+    )
     from kiro_crew.crew_log.store import unprovable_session_units
 
-    directory = items_dir(slot_key)
     with ExitStack() as held:
         held.enter_context(conductor_lock(slot_key, create=True))
-        present = sorted(
-            path.stem
-            for path in (directory.glob("it_*.json") if directory.is_dir() else ())
-            if _ITEM_ID_RE.fullmatch(path.stem)
-        )
+        present = _stored_item_ids(slot_key)
         for item_id in present:
             held.enter_context(item_lock(slot_key, item_id, create=True))
         crew_log_emit.flush(timeout=5.0)
@@ -2732,7 +2878,7 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
         for other in work_slots_naming_board(slot_key):
             if other not in extra_slots:
                 extra_slots.append(other)
-        folded = read_slot_projection(slot_key, "work", also_slots=extra_slots).value
+        folded = read_slot_projection(slot_key, WORK_FOLD_NAME, also_slots=extra_slots).value
         header = folded.get("conductor") if isinstance(folded, dict) else None
         if not isinstance(header, dict) or not header.get("entries"):
             # No entry names this board: nothing recorded, so nothing to rebuild
@@ -2742,6 +2888,31 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
         # way through puts all of them back, so the cache is never left half
         # rewritten: it is the old board or the rebuilt one, nothing between.
         fold_items = [raw for raw in (folded.get("items") or ()) if isinstance(raw, dict)]
+        omitted = folded.get("omitted")
+        if len(fold_items) >= WORK_ITEM_LIMIT and (not isinstance(omitted, int) or omitted > 0):
+            # The fold keeps a board's first ``WORK_ITEM_LIMIT`` items and counts
+            # every later create in ``omitted``. The writer bounds a board's creates
+            # at that same number (``MAX_STORED_ITEMS_PER_CONDUCTOR`` reads the same
+            # ``work_vocab`` value) with a monotonic counter in the header that a
+            # removed record does not lower, and every create it admits is one
+            # recorded create, so a board the writer admits cannot overflow the
+            # fold and this guard is defensive: it fires on a full fold whose
+            # ``omitted`` counts something else (a straggler entry, a parked one),
+            # or on a board whose header something other than this module wrote
+            # with a count below its creates. A full fold that reports omissions
+            # might be a PREFIX of the board -- rebuilding from it would write the
+            # oldest items back and, past the dirty-cache shortcut below, which
+            # trusts the fold over the cache, unlink every newer one, open items
+            # included -- so it is refused; the cache stands, and it is complete.
+            # A full fold that omitted nothing is the whole board and rebuilds; a
+            # fold whose count is unreadable is treated as full.
+            raise WorkLedgerError(
+                f"the crew log's fold holds {len(fold_items)} items for this board, its "
+                f"ceiling of {WORK_ITEM_LIMIT}, and omitted {omitted!r}; a board that "
+                "minted more than the fold retains cannot be rebuilt from the record -- "
+                "keep the cache as it stands",
+                code=CODE_CREW_LOG_INCOMPLETE,
+            )
         # An item the fold CREATES needs its lock held here, not merely while its
         # own files are written. The write routes take an item's lock alone and
         # never the conductor lock, so a lock released as soon as that item was
@@ -3078,10 +3249,6 @@ def _rebuild_locked(
         # The fold holds a goal entry, which is what the stamp asserts; a rebuild
         # that left it empty would exempt the header from the next check.
         record = dataclasses.replace(record, recorded_at=_now_iso())
-    _write_record(conductor_dir(slot_key) / _CONDUCTOR_FILE, record.to_dict())
-    # The identity breadcrumb beside the record, as the bootstrap writes it, so a
-    # cache rebuilt into an empty directory carries the same two files a new one does.
-    atomic_write(conductor_dir(slot_key) / _KEY_FILE, slot_key + "\n", mode=0o600)
 
     written_items = 0
     written_events = 0
@@ -3130,6 +3297,19 @@ def _rebuild_locked(
         item_path(slot_key, item_id).unlink(missing_ok=True)
         item_events_path(slot_key, item_id).unlink(missing_ok=True)
         removed += 1
+    # The stored bound's counter is set from the record, not carried over from the
+    # cache's header: every item the fold retained is a create the log holds, and
+    # every legacy record kept is one the log may yet hold whole (its first recorded
+    # mutation carries it as a baseline, which takes a fold slot). Nothing else the
+    # fold reports counts -- past the ceiling guard the fold dropped no create, and
+    # a non-zero ``omitted`` there counts entries that are not this board's creates
+    # (stragglers of a purged board, parked lines), which would refuse creates a
+    # board has room for.
+    record = dataclasses.replace(record, created_total=len(kept) + len(legacy))
+    _write_record(conductor_dir(slot_key) / _CONDUCTOR_FILE, record.to_dict())
+    # The identity breadcrumb beside the record, as the bootstrap writes it, so a
+    # cache rebuilt into an empty directory carries the same two files a new one does.
+    atomic_write(conductor_dir(slot_key) / _KEY_FILE, slot_key + "\n", mode=0o600)
     _reconcile_bindings(slot_key, fold_items, kept, legacy)
     return {
         "slot_key": slot_key,

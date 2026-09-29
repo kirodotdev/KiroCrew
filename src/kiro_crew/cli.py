@@ -2077,6 +2077,20 @@ Examples:
     )
     pod_up.add_argument("--ttl", default="2h", help="Token TTL (default: 2h)")
     pod_up.add_argument(
+        "--no-token",
+        dest="no_token",
+        action="store_true",
+        help=(
+            "Boot the pod but do NOT mint a dashboard token: `token` in the "
+            "--json handle is empty and no /api/token/local call is made. The "
+            "gateway's agent pod surface uses this so it can mint in-process "
+            "instead (see agent_pod_api); a sandboxed `pod up` child is in its "
+            "own user namespace and the pod refuses to certify it as the local "
+            "owner. A human running `pod up` should omit this and let the CLI "
+            "mint, then `pod token` to re-mint."
+        ),
+    )
+    pod_up.add_argument(
         "--seed",
         default="",
         help=(
@@ -2902,7 +2916,12 @@ Examples:
     agent_sub = agent_parser.add_subparsers(dest="agent_action")
     agent_sub.add_parser("list", help="List Kiro Crew agents")
     agent_create = agent_sub.add_parser("create", help="Create a Kiro Crew agent")
-    agent_create.add_argument("--name", required=True, help="Agent name")
+    agent_create.add_argument(
+        "--name",
+        required=True,
+        help="Agent id, or any name: shown as typed, stored under a URL-safe id",
+    )
+    agent_create.add_argument("--display-name", default="", help="Label the dashboard shows")
     agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")
     agent_create.add_argument("--workspace", default="default", help="Workspace name")
     agent_create.add_argument(

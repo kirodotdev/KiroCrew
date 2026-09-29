@@ -48,6 +48,30 @@ reading the ``.txt`` without a signature check, but through
 :func:`read_session_pid_txt` (same hardened no-follow read path) — the
 sidecar is additive, no format break.
 
+What one pid can and cannot say: a pid names a PROCESS, and one kiro-cli
+process hosts many ACP sessions (a ``spawn_run`` subagent on its parent's
+runtime, a workflow pool worker). The mapping holds one key, so a pid alone
+cannot tell those sessions apart: a reader that answered from it would name
+whichever session published last, which is a positive misattribution rather
+than a refusal and so undetectable by the caller.
+Publication therefore records the TENANT SET when it is asked to: a
+``tenants=<n>`` line and one ``tenant=<key>`` line per member, covered by the
+same MAC as the rest of the body. Two consequences follow, and both are the
+asymmetry :func:`_pid_recycled` already applies to the start token —
+positive evidence refuses, absence stays unknown:
+
+* a reader resolving its OWN identity declines to name a session on a pid
+  recorded as hosting several, rather than answering with a co-tenant;
+* a reader VERIFYING a DECLARED identity (``dashboard.token_auth``) checks
+  MEMBERSHIP instead of equality with one key, so a legitimate co-tenant is
+  admitted where comparing against one key would 403 it.
+
+The section appears only above one session, so a 1:1 pid produces the exact
+pre-section bytes and a reader from another build — or from before this change
+— reads them unchanged. Such a reader meeting the section refuses the body
+rather than mis-parsing it, which is the safe direction: it declines to name a
+session instead of naming the wrong one.
+
 Threat model — what the sidecar does and does NOT defend against:
 
 * IN SCOPE (blocked): file forgery (agent writes a bare ``.txt`` mapping its
@@ -91,6 +115,8 @@ import logging
 import os
 import stat
 import threading
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew import platform_compat
@@ -124,6 +150,12 @@ _HMAC_KEY_MIN_BYTES = 32
 # The raw root key is used ONLY as the derivation input, never to sign a
 # sidecar directly.
 _SUBKEY_DOMAIN = b"kirocrew.session_pid.sig.v1"
+
+#: Tenant-section line prefixes. Both end in ``=``, which a session key and a
+#: start token never contain at position 0, so a body's plain lines and its
+#: tenant section are separable without a length-based grammar.
+_TENANT_COUNT_PREFIX = "tenants="
+_TENANT_LINE_PREFIX = "tenant="
 
 
 def _txt_path(pid: int | str, cfg: Path) -> Path:
@@ -293,38 +325,76 @@ def _derive_subkey(root: bytes) -> bytes:
 
 def _compute_sig(key: bytes, pid: int | str, payload: str) -> str:
     """MAC over ``"<pid>:<payload>"``, *payload* being the canonical ``.txt``
-    body: the bare session key (legacy) or ``"<session_key>\\n<start_token>"``
-    (recycle-guarded — see :func:`publish_session_pid`). Binding the pid
-    blocks cross-pid replay; covering the whole body means the start token,
-    when present, is signed — flipping only the token invalidates the MAC.
-    A legacy body produces a byte-identical message to the pre-token scheme,
-    so every signed mapping written before the format change still verifies.
+    body :func:`_canonical_body` produces: the bare session key (legacy),
+    ``"<session_key>\\n<start_token>"`` (recycle-guarded), plus the tenant
+    section on a pid hosting several sessions. Binding the pid blocks
+    cross-pid replay; covering the whole body means the start token and the
+    tenant list are signed — flipping either invalidates the MAC, so a
+    same-uid agent can neither replay another incarnation's mapping nor add
+    itself to a signed pid's tenant list. A legacy body produces a
+    byte-identical message to the pre-token scheme, so every signed mapping
+    written before either format change still verifies.
     """
     subkey = _derive_subkey(key)
     return hmac.new(subkey, f"{pid}:{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _parse_mapping_body(raw: str) -> tuple[str, str | None] | None:
-    """Split a ``.txt`` body into ``(session_key, start_token)``.
+def _parse_mapping_body(raw: str) -> tuple[str, str | None, tuple[str, ...], int] | None:
+    """Split a ``.txt`` body into ``(session_key, start_token, tenants, count)``.
 
     Dual-parse, following ``session_pid.py``'s legacy-vs-guarded record
-    handling (``<gw>:<pid>`` vs ``<gw>:<pid>:<start_token>``): one line is
-    the legacy pre-token form (token ``None``); two lines are
-    ``<session_key>\\n<start_token>``. The token rides a second LINE rather
-    than a colon field because — unlike that record's integer fields — the
-    session key itself contains colons (``dashboard:chat-7-...``), so a
-    colon split could not tell a legacy key from a key+token pair. Anything
-    else was never written by :func:`publish_session_pid` — refuse
+    handling (``<gw>:<pid>`` vs ``<gw>:<pid>:<start_token>``): the first line
+    is the publisher's own session key, and a bare second line is the process
+    START TOKEN (PID-recycle guard). The token rides a LINE rather than a
+    colon field because -- unlike that record's integer fields -- the session
+    key itself contains colons (``dashboard:chat-7-...``), so a colon split
+    could not tell a legacy key from a key+token pair.
+
+    Lines carrying a ``<marker>=`` prefix are the TENANT SECTION: one
+    ``tenants=<n>`` stating how many ACP sessions the gateway saw on this pid,
+    and one ``tenant=<session key>`` per enumerated member. The section is
+    written only when *n* is greater than one, so a 1:1 pid produces the exact
+    pre-section bytes and every reader that predates it -- including another
+    gateway build -- keeps reading it unchanged. Such a reader meeting the
+    section refuses the whole body rather than mis-reading it, which is the
+    safe direction: it declines to name a session instead of naming the wrong
+    one.
+
+    Anything else was never written by :func:`publish_session_pid` -- refuse
     (``None``) rather than guess a parse.
     """
-    lines = raw.strip().split("\n")
-    if len(lines) == 1:
-        session_key = lines[0].strip()
-        return (session_key, None) if session_key else None
-    if len(lines) == 2:
-        session_key, token = lines[0].strip(), lines[1].strip()
-        return (session_key, token) if session_key and token else None
-    return None
+    lines = [line.strip() for line in raw.strip().split("\n")]
+    if not lines or not lines[0]:
+        return None
+    session_key = lines[0]
+    tenants: list[str] = []
+    count = 0
+    plain: list[str] = []
+    for line in lines[1:]:
+        if line.startswith(_TENANT_LINE_PREFIX):
+            member = line[len(_TENANT_LINE_PREFIX) :].strip()
+            if not member:
+                return None
+            tenants.append(member)
+        elif line.startswith(_TENANT_COUNT_PREFIX):
+            if count:
+                return None  # two count lines were never written
+            try:
+                count = int(line[len(_TENANT_COUNT_PREFIX) :])
+            except ValueError:
+                return None
+            if count < 2:
+                return None  # the section exists only above one
+        elif line:
+            plain.append(line)
+    if len(plain) > 1:
+        return None
+    if tenants and not count:
+        return None  # membership without a count was never written
+    token = plain[0] if plain else None
+    if token == "":
+        return None
+    return session_key, token, tuple(tenants), count
 
 
 def _pid_recycled(pid: int | str, recorded_token: str) -> bool:
@@ -348,7 +418,9 @@ def _pid_recycled(pid: int | str, recorded_token: str) -> bool:
     return live is not None and live != recorded_token
 
 
-def publish_session_pid(pid: int, session_key: str) -> None:
+def publish_session_pid(
+    pid: int, session_key: str, *, co_tenants: Sequence[str] | None = None
+) -> None:
     """Publish the pid -> session-key mapping with its HMAC sidecar.
 
     Gateway-side only. Writes ``session_pid_<pid>.txt`` (the lenient-reader
@@ -375,18 +447,40 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     recycled this pid number". An unreadable token (Windows, probe failure)
     degrades to the legacy single-line form — readers then treat identity
     as unknown, exactly as for a legacy file.
+
+    *co_tenants* is every session key the gateway sees on this pid right now.
+    One member, or none, is the 1:1 case and writes the historical body
+    unchanged — the whole point, because that is the only shape a reader from
+    another build understands. More than one records a TENANT SECTION, which is
+    the positive evidence a reader needs to decline to name a session on a pid
+    that names several: without it the pid answers with whoever published last,
+    and the caller has no way to know that happened. Membership is enumerated
+    as far as the file's size bound allows and the true count is always stated,
+    so a reader can tell a complete set from a truncated one.
+
+    The section is covered by the MAC like the rest of the body, so a same-uid
+    agent cannot add itself to a signed pid's tenant list to have an
+    authorization check admit its declared key.
     """
     cfg = config_dir()
     token = platform_compat.get_process_start_id(pid)
     # The "\n" guard keeps a pathological multi-line session key (never
     # produced by any surface — keys are single-line ``surface:slot`` shapes)
     # from aliasing the legacy and token-bearing forms under one MAC.
-    if token and "\n" not in session_key:
-        body = f"{session_key}\n{token}"
-    else:
-        body = session_key
-    atomic_write(_txt_path(pid, cfg), body)
+    if "\n" in session_key:
+        token = None
+    members = _recordable_tenants(session_key, token, co_tenants)
+    body = _canonical_body(session_key, token, members, _tenant_count(co_tenants))
+    # The trust root is read BEFORE either replacement, so the two land back to
+    # back with no I/O between them. The pair is not replaced atomically -- two
+    # files, two `os.replace` calls -- so a reader can see a new `.txt` beside
+    # the old `.sig` and compute a MAC mismatch for a body nobody forged. That
+    # window cannot be closed here without changing the on-disk format, so it is
+    # made as narrow as the writes themselves, and the consumer that would
+    # otherwise read the mismatch as "this pid hosts one session" carries the
+    # distinction instead (`peer_resolve.PeerTenancy.unverifiable`).
     key = _load_hmac_key()
+    atomic_write(_txt_path(pid, cfg), body)
     if key is None:
         _report_signing_unavailable()
         try:
@@ -395,6 +489,97 @@ def publish_session_pid(pid: int, session_key: str) -> None:
             pass
         return
     atomic_write(_sig_path(pid, cfg), _compute_sig(key, pid, body))
+
+
+def _canonical_body(session_key: str, token: str | None, tenants: Sequence[str], count: int) -> str:
+    """The ``.txt`` body for one mapping, in the one form the MAC is taken over.
+
+    Both sides go through here — the publisher to produce the bytes, the
+    verifier to re-derive them from its parse — so the two can never disagree
+    about what was signed. The verifier must NOT hash the raw file text:
+    :func:`kiro_crew.atomic_write.atomic_write` applies universal-newline
+    translation, so on Windows the bytes on disk carry ``\\r\\n`` where this
+    body has ``\\n``, and a MAC over the raw text would fail there for every
+    multi-line mapping.
+
+    A 1:1 mapping yields the historical body exactly: the key alone, or the key
+    and its start token. The tenant section appears only above one session, so
+    the cap-1 bytes are unchanged and a reader from another build reads them as
+    it always did.
+    """
+    lines = [session_key]
+    if token:
+        lines.append(token)
+    if count > 1:
+        lines.append(f"{_TENANT_COUNT_PREFIX}{count}")
+        lines.extend(f"{_TENANT_LINE_PREFIX}{member}" for member in tenants)
+    return "\n".join(lines)
+
+
+def _tenant_count(co_tenants: Sequence[str] | None) -> int:
+    """How many distinct sessions the caller reports on the pid.
+
+    The TRUE count, which is what the record states even when the enumeration
+    below it is truncated: a reader compares the two to tell a complete set from
+    a partial one, and a count narrowed to what fitted would make a partial set
+    look complete and get the unnamed sessions denied.
+    """
+    return len({k for k in (co_tenants or ()) if k})
+
+
+def _recordable_tenants(
+    session_key: str, token: str | None, co_tenants: Sequence[str] | None
+) -> list[str]:
+    """The members to enumerate: deduplicated, newline-free, size-bounded.
+
+    Returns nothing for the 1:1 case, which :func:`_canonical_body` renders with
+    no tenant section at all.
+
+    The enumeration is truncated at the readers' own bound
+    (:data:`_MAX_MAPPING_FILE_BYTES`) so a runtime with very many sessions
+    yields a set a reader can still parse rather than a file every reader
+    refuses. The bound is applied to :func:`_on_disk_bytes`, not to the
+    canonical body's own length: the readers weigh the file as it lands on
+    disk, where a platform that translates newlines makes it LONGER than the
+    body signed here, and a set budgeted against the shorter form would
+    overflow the bound there and be refused whole. :func:`_tenant_count` states
+    the true count regardless, so a reader can tell a complete set from a
+    truncated one and decline to read absence as denial.
+
+    A key containing a newline would forge extra lines under one MAC, so it is
+    dropped from the enumeration; no surface produces one, and the count still
+    accounts for it.
+    """
+    members = [k for k in dict.fromkeys(co_tenants or ()) if k]
+    count = _tenant_count(co_tenants)
+    if count < 2:
+        return []
+    kept: list[str] = []
+    for member in members:
+        if "\n" in member:
+            continue
+        probe = _canonical_body(session_key, token, kept + [member], count)
+        if _on_disk_bytes(probe) > _MAX_MAPPING_FILE_BYTES:
+            break
+        kept.append(member)
+    return kept
+
+
+def _on_disk_bytes(body: str) -> int:
+    """The largest size *body* can occupy once written, on any platform.
+
+    ``atomic_write`` writes text, so a platform whose line separator is not a
+    bare newline stores two bytes where the body holds one — on Windows a
+    200-member tenant section lands ~200 bytes larger than the string signed
+    here. Every reader bounds the FILE (``st_size`` and the bytes read), so the
+    publisher has to budget in the file's units or a mapping that fits
+    everywhere else is refused whole there, reporting no tenancy at all.
+
+    Counting the separator as two bytes unconditionally costs a few members on
+    platforms that need only one, which is the safe direction: the count stays
+    true and the set stays parseable.
+    """
+    return len(body.encode("utf-8")) + body.count("\n")
 
 
 # Upper bound for mapping-file reads. Session keys are short strings
@@ -470,6 +655,117 @@ def _read_regular_nofollow(path: Path) -> str | None:
         os.close(fd)
 
 
+#: Refusal reasons a mapping read can report. Distinct because a caller owes
+#: each one a different answer, and an operator a different diagnosis:
+#: ``absent`` is normal (a warm-pool runtime before claim, a cron script),
+#: ``malformed`` means a file nothing here wrote, ``recycled`` means the pid
+#: number now names a different process, and ``co_tenant`` means the pid is
+#: correct and names SEVERAL sessions, so no single one can be handed out.
+REFUSAL_ABSENT = "absent"
+REFUSAL_MALFORMED = "malformed"
+REFUSAL_RECYCLED = "recycled"
+REFUSAL_CO_TENANT = "co_tenant"
+
+
+@dataclass(frozen=True)
+class PidMapping:
+    """What ``session_pid_<pid>.txt`` says about the sessions on one pid.
+
+    ``session_key`` is non-empty only when the pid names EXACTLY ONE session,
+    which keeps it a drop-in for the historical ``str`` readers. When the pid
+    hosts several, the key is empty and ``tenants``/``tenant_count`` carry what
+    is known: a caller resolving its OWN identity has nothing to go on and must
+    refuse, while a caller VERIFYING a declared identity can still check
+    membership with :meth:`admits`.
+    """
+
+    session_key: str = ""
+    #: Enumerated members, possibly truncated by the file's size bound.
+    tenants: tuple[str, ...] = ()
+    #: Sessions the publisher saw on the pid; 0 when nothing was recorded.
+    tenant_count: int = 0
+    refusal: str = ""
+
+    @property
+    def shared(self) -> bool:
+        """True only on POSITIVE evidence of several sessions on this pid.
+
+        An absent tenant section means UNKNOWN, never "not shared" -- the same
+        asymmetry :func:`_pid_recycled` applies to a start token, and for the
+        same reason: every mapping written before the section existed, and every
+        one written by a build that does not record it, has none.
+        """
+        return self.tenant_count > 1
+
+    @property
+    def membership_complete(self) -> bool:
+        """True when every session on this pid is known, so absence is decisive.
+
+        Either the pid names one session, or its enumerated members match the
+        recorded count. The file is size-bounded, so a runtime with very many
+        sessions records the true count without every key; a consumer must not
+        read a declared key's absence from a TRUNCATED set as grounds to deny.
+        """
+        if self.session_key:
+            return True
+        return bool(self.tenant_count) and len(self.tenants) == self.tenant_count
+
+    def admits(self, session_key: str) -> bool:
+        """True when *session_key* is attested as living on this pid.
+
+        The sole recorded key, or a member of the tenant set. Consult
+        :attr:`membership_complete` before reading False as a denial.
+        """
+        if not session_key:
+            return False
+        if session_key == self.session_key:
+            return True
+        return session_key in self.tenants
+
+
+def _mapping_from_body(pid: int | str, txt: str) -> PidMapping:
+    """Interpret an already-read ``.txt`` body, applying both refusals.
+
+    Shared by the lenient and the strict reader so the two can never disagree
+    about what a body means; the strict one only adds the MAC check in front.
+    """
+    parsed = _parse_mapping_body(txt)
+    if parsed is None:
+        return PidMapping(refusal=REFUSAL_MALFORMED)
+    session_key, token, tenants, count = parsed
+    if token is not None and _pid_recycled(pid, token):
+        # No tenant section survives a proven recycle. The membership belonged
+        # to the pid's PREVIOUS owner, so carrying it would make a mapping this
+        # function just disproved read as ``shared`` -- enough for the peer walk
+        # to accept it as its answer (``session_key or shared``) and to deny a
+        # legitimate caller on a stale roster.
+        return PidMapping(refusal=REFUSAL_RECYCLED)
+    if count > 1:
+        # The pid is right and names several sessions. Naming one of them would
+        # be the misattribution this section exists to make visible.
+        return PidMapping(refusal=REFUSAL_CO_TENANT, tenants=tenants, tenant_count=count)
+    return PidMapping(session_key=session_key, tenant_count=count or 1, tenants=tenants)
+
+
+def read_session_pid_mapping(pid: int | str, cfg: Path | None = None) -> PidMapping:
+    """The LENIENT read of ``session_pid_<pid>.txt``, with its refusal reason.
+
+    Same hardened read path and same refusals as :func:`read_session_pid_txt`,
+    which is the thin ``str`` view of this and stays the right call for a
+    consumer that only wants the key. Use this one when the REASON changes what
+    you do: to log a co-tenant refusal as such rather than as a missing file,
+    or to verify a declared key against the recorded membership.
+
+    No signature check, so the membership it reports proves only what a local
+    process wrote. An AUTHORIZATION decision must use
+    :func:`verify_session_pid_mapping`.
+    """
+    txt = _read_regular_nofollow(_txt_path(pid, cfg if cfg is not None else config_dir()))
+    if txt is None:
+        return PidMapping(refusal=REFUSAL_ABSENT)
+    return _mapping_from_body(pid, txt)
+
+
 def read_session_pid_txt(pid: int | str, cfg: Path | None = None) -> str:
     """Return the session key from ``session_pid_<pid>.txt`` WITHOUT signature
     verification, but through the same hardened read path as the strict
@@ -494,17 +790,13 @@ def read_session_pid_txt(pid: int | str, cfg: Path | None = None) -> str:
     recovered by the fallback and the stale attribution kept. A mismatch is
     positive evidence of a wrong owner — unlike an absent or unreadable
     token, which is merely unknown and resolves as before.
+
+    A pid recorded as hosting SEVERAL sessions refuses for the same reason: the
+    mapping holds one key, so naming it would attribute the caller to whichever
+    co-tenant published last. :func:`read_session_pid_mapping` is the same read
+    with the reason and the recorded membership attached.
     """
-    txt = _read_regular_nofollow(_txt_path(pid, cfg if cfg is not None else config_dir()))
-    if txt is None:
-        return ""
-    parsed = _parse_mapping_body(txt)
-    if parsed is None:
-        return ""
-    session_key, token = parsed
-    if token is not None and _pid_recycled(pid, token):
-        return ""
-    return session_key
+    return read_session_pid_mapping(pid, cfg).session_key
 
 
 def session_pid_mapping_path(pid: int | str) -> Path:
@@ -524,27 +816,31 @@ def session_pid_mapping_path(pid: int | str) -> Path:
     return _txt_path(pid, peek_data_home())
 
 
-def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
-    """Return the session key for *pid* iff its HMAC sidecar verifies.
+def verify_session_pid_mapping(pid: int | str, cfg: Path | None = None) -> PidMapping:
+    """The MAC-verified read of ``session_pid_<pid>.txt``, with its refusal reason.
 
-    Fails closed to ``""`` on: missing ``.txt``, missing ``.sig``, a symlink
-    or non-regular file at either path (see :func:`_read_regular_nofollow`),
-    missing or short SEL key, or signature mismatch. Never raises.
+    :func:`verify_session_pid` is the ``str`` view of this and stays the right
+    call for a consumer that only wants the key. Use this one when the reason
+    changes what you do, and for any AUTHORIZATION decision that needs the
+    recorded MEMBERSHIP: the MAC covers the tenant section, so a same-uid agent
+    cannot add itself to a signed pid's tenant list.
 
-    *cfg* overrides the mapping directory (mirrors
-    :func:`read_session_pid_txt`); defaults to :func:`config_dir`.
+    Fails closed to an empty mapping on: missing ``.txt``, missing ``.sig``, a
+    symlink or non-regular file at either path (see
+    :func:`_read_regular_nofollow`), missing or short SEL key, or signature
+    mismatch. Never raises.
     """
     if cfg is None:
         cfg = config_dir()
     txt = _read_regular_nofollow(_txt_path(pid, cfg))
     sig_raw = _read_regular_nofollow(_sig_path(pid, cfg))
     if txt is None or sig_raw is None:
-        return ""
+        return PidMapping(refusal=REFUSAL_ABSENT)
     parsed = _parse_mapping_body(txt)
     sig = sig_raw.strip()
     if parsed is None or not sig:
-        return ""
-    session_key, token = parsed
+        return PidMapping(refusal=REFUSAL_MALFORMED)
+    session_key, token, tenants, count = parsed
     key = _load_hmac_key()
     if key is None:
         # Distinguishable from the MAC-mismatch warning below: this branch
@@ -563,27 +859,43 @@ def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
             sel_hmac_key_path(),
             pid,
         )
-        return ""
-    # Recompute over the canonical body: legacy files (no token) produce the
-    # exact pre-change message, so existing signed mappings keep verifying.
-    payload = session_key if token is None else f"{session_key}\n{token}"
-    expected = _compute_sig(key, pid, payload)
+        return PidMapping(refusal=REFUSAL_MALFORMED)
+    # Recompute over the canonical body rather than the raw file text, so
+    # newline translation on the write cannot invalidate a mapping. Legacy
+    # files (no token, no tenant section) produce the exact pre-change
+    # message, so existing signed mappings keep verifying.
+    expected = _compute_sig(key, pid, _canonical_body(session_key, token, tenants, count))
     if not hmac.compare_digest(expected, sig):
         logger.warning(
             "session_pid_%s signature mismatch — refusing identity "
             "(possible forgery or stale sidecar)",
             pid,
         )
-        return ""
-    # Recycle check AFTER the MAC: the recorded token is only meaningful
-    # once the signature proves it is the one the publisher wrote. Mismatch
-    # = the pid was recycled → refuse; absent/unreadable = unknown → resolve
-    # (see _pid_recycled for why the asymmetry is load-bearing).
-    if token is not None and _pid_recycled(pid, token):
+        return PidMapping(refusal=REFUSAL_MALFORMED)
+    # Both refusals AFTER the MAC: the recorded token and tenant section are
+    # only meaningful once the signature proves the publisher wrote them.
+    mapping = _mapping_from_body(pid, txt)
+    if mapping.refusal == REFUSAL_RECYCLED:
         logger.warning(
             "session_pid_%s start-token mismatch — pid was recycled; "
             "refusing the previous owner's session identity",
             pid,
         )
-        return ""
-    return session_key
+    return mapping
+
+
+def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
+    """Return the session key for *pid* iff its HMAC sidecar verifies.
+
+    Fails closed to ``""`` on: missing ``.txt``, missing ``.sig``, a symlink
+    or non-regular file at either path (see :func:`_read_regular_nofollow`),
+    missing or short SEL key, signature mismatch, a proven pid recycle, or a
+    pid recorded as hosting several sessions (one key cannot name them, so
+    naming it would attribute the caller to a co-tenant).
+    :func:`verify_session_pid_mapping` is the same read with the reason and the
+    recorded membership attached.
+
+    *cfg* overrides the mapping directory (mirrors
+    :func:`read_session_pid_txt`); defaults to :func:`config_dir`.
+    """
+    return verify_session_pid_mapping(pid, cfg).session_key

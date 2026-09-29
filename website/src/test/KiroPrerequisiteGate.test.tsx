@@ -193,6 +193,19 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
   })
 
+  it('pins its footer actions to the bottom of the scrolling scrim on a phone', async () => {
+    // Same stacked layout as the onboarding chapters: without the pinned
+    // footer the actions sit below the fold under the browser toolbar.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ platform: 'Windows' }))
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+    const footer = await screen.findByTestId('gate-footer')
+    const cls = footer.className.split(/\s+/)
+    expect(cls).toEqual(expect.arrayContaining(['sticky', 'bottom-0', 'bg-card', 'sm:static']))
+    expect(footer.className).toContain('env(safe-area-inset-bottom)')
+  })
+
   it('tells an installed-but-signed-out CLI to sign in via Kiro CLI', async () => {
     // Any Kiro CLI that runs is usable regardless of install source, so this
     // state must show the sign-in instruction and the exact command — and no

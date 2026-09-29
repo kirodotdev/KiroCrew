@@ -106,10 +106,25 @@ describe('leading chrome under a bottom-pinned reader', () => {
     expect(el.scrollHeight - el.scrollTop - CLIENT).toBe(0)
   })
 
-  it('a reader who wheeled since the pin is left where they are', async () => {
+  it('a reader who wheeled at the end without moving is still carried', async () => {
+    // Input that moved nothing is not a move: they are still resting on the pin.
     const { view, el, items, scrollerRef } = await mountAtBottom(false)
-    const parked = el.scrollTop
-    await act(async () => { el.dispatchEvent(new Event('wheel')); await vi.advanceTimersByTimeAsync(200) })
+    await act(async () => { el.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 })); await vi.advanceTimersByTimeAsync(200) })
+    await act(async () => {
+      view.rerender(<Harness items={items} scrollerRef={scrollerRef} headChrome={46} runActive={false} />)
+    })
+    expect(el.scrollHeight - el.scrollTop - CLIENT).toBe(0)
+  })
+
+  it('a reader who scrolled UP since the pin is left where they are', async () => {
+    const { view, el, items, scrollerRef } = await mountAtBottom(false)
+    const parked = el.scrollTop - 120
+    await act(async () => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
+      el.scrollTop = parked
+      el.dispatchEvent(new Event('scroll'))
+      await vi.advanceTimersByTimeAsync(200)
+    })
     await act(async () => {
       view.rerender(<Harness items={items} scrollerRef={scrollerRef} headChrome={46} runActive={false} />)
     })

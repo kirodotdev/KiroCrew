@@ -202,10 +202,19 @@ class LaunchApprovals:
     probe: bool = False
     #: Fingerprints recorded during this pass (stem -> set).
     captured: dict[str, set[str]] = field(default_factory=dict)
+    #: Exact command/environment pairs recorded during this pass.
+    captured_pairs: dict[str, set[str]] = field(default_factory=dict)
     #: The launches behind :attr:`captured` (stem -> fingerprint -> launch).
     captured_launches: dict[str, dict[str, ResolvedLaunch]] = field(default_factory=dict)
     #: Launches refused during this pass (stem -> reason).
     refused: dict[str, str] = field(default_factory=dict)
+    #: Pairs this pass admitted because the operator approved the declared
+    #: launch and only its ``${VAR}`` expansion differs (stem -> pair ->
+    #: the approved fingerprint it was admitted under).
+    rebound: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: The approved pairs a stem held before this pass rebound any of them, so
+    #: a save can tell whether the store moved underneath the pass.
+    rebind_base: dict[str, frozenset[str]] = field(default_factory=dict)
     #: Additional redacted display argv found by the final target filter.
     refused_commands: dict[str, list[list[str]]] = field(default_factory=dict)
     #: Every approval identity and its redacted command/env displays seen this pass.
@@ -221,6 +230,14 @@ class LaunchApprovals:
     #: Set by a full rewrite pass; a cache-served pass keeps the stored
     #: refusals and derived env.
     full_pass: bool = False
+    #: Set when a pass kept at least one agent's previous overlay without
+    #: admitting the launches behind it, so :attr:`launch_identities` is not
+    #: the full set of launches live after this pass. Retirement of a stale
+    #: pair needs the full set, so it waits for a pass that has it.
+    live_incomplete: bool = False
+    #: Set when an environment sidecar failed to publish during this pass.
+    #: Rebound pairs depend on that content, so a save withholds all of them.
+    rebind_incomplete: bool = False
     #: Whether this snapshot already reported reaching ``_MAX_SERVER_RECORDS``.
     _record_cap_reported: bool = field(default=False, repr=False, compare=False)
 
@@ -312,6 +329,7 @@ class LaunchApprovals:
         self.approved.setdefault(stem, set()).add(fingerprint)
         self.approved_pairs.setdefault(stem, set()).add(pair)
         self.captured.setdefault(stem, set()).add(fingerprint)
+        self.captured_pairs.setdefault(stem, set()).add(pair)
         self.names.setdefault(stem, _bounded_name(name))
         if launch is not None:
             self.captured_launches.setdefault(stem, {})[fingerprint] = ResolvedLaunch(
@@ -343,10 +361,21 @@ class LaunchApprovals:
         stem = target_stem(name)
         command_hash, _declared_env_hash = _split(fingerprint)
         identity = launch_pair(command_hash, derived_env_hash)
+        # The operator approved this exact declared launch -- resolved command,
+        # args and the env text with its ``${VAR}`` references unexpanded -- and
+        # only the expansion moved. Those values come from the gateway process
+        # environment (the operator's shell and the crew ``.env``), which no
+        # agent can write, so the new expansion is the approved launch.
+        rebind = (
+            not self.probe
+            and not managed
+            and fingerprint in self.approved.get(stem, ())
+            and not self.admits_launch(stem, command_hash, derived_env_hash)
+        )
         additions: list[tuple[Mapping[str, Collection[Any]], Collection[Any]]] = []
         if not self.probe:
             additions.append((self.launch_identities, (identity,)))
-        if self.probe or managed:
+        if self.probe or managed or rebind:
             additions.extend(
                 (
                     (self.approved, (fingerprint,)),
@@ -383,6 +412,21 @@ class LaunchApprovals:
             return True
         if managed:
             self._record(stem, name, fingerprint, derived_env_hash, launch, env)
+            return True
+        if rebind:
+            self.rebind_base.setdefault(stem, frozenset(self.approved_pairs.get(stem, ())))
+            self._record(stem, name, fingerprint, derived_env_hash, launch, env)
+            self.rebound.setdefault(stem, {})[identity] = fingerprint
+            if display_complete and command_display is not None and env_display is not None:
+                self.approved_displays.setdefault(stem, {})[identity] = (
+                    command_display,
+                    env_display,
+                )
+            logger.info(
+                "mcp launch approvals: %s keeps its approval; only a ${VAR} value "
+                "in its declared env changed",
+                _bounded_name(name),
+            )
             return True
         self.names.setdefault(stem, _bounded_name(name))
         self.refused[stem] = REFUSED_CHANGED if self.approved.get(stem) else REFUSED_UNAPPROVED
@@ -828,6 +872,57 @@ def _refusal_record(approvals: LaunchApprovals, stem: str, reason: str) -> dict[
     return record
 
 
+def _pairs_under(pairs: Iterable[str], command_hash: str) -> set[str]:
+    return {pair for pair in pairs if _split(pair)[0] == command_hash}
+
+
+#: Audit reason for a pair admitted because only a ``${VAR}`` value changed.
+REBIND_AUDIT_REASON = "approved launch, ${VAR} value changed"
+
+
+def _settle_rebinds(
+    approvals: LaunchApprovals, stem: str, current_pairs: set[str], before: set[str]
+) -> tuple[set[str], set[str], set[str]]:
+    """Which rebound pairs a save may write, retire, or leave untouched.
+
+    A rebind is written only while the store under its command hash is exactly
+    what the pass started from: an operator approval or another pass that
+    landed meanwhile is newer, and wins. A rebind whose fingerprint is absent
+    from the current store is dropped too. Where it is written, the pairs
+    under that command hash become the ones this full pass saw live, so a
+    ``${VAR}`` that keeps changing replaces its older expansions instead of
+    filling the per-server launch cap, whichever agents declare the launch.
+
+    Retiring what the pass did not see needs the pass to have seen everything:
+    a pass that kept an agent's overlay without reading its source
+    (``live_incomplete``) never admitted that agent's launches, so its own
+    still-approved pair is absent from ``launch_identities``. Such a pass
+    writes the rebind and retires nothing; the stale expansions wait for a
+    pass that admitted every live launch. A pass whose environment sidecar
+    publication failed writes and retires no rebound pair.
+    """
+    if approvals.rebind_incomplete:
+        return set(), set(), set()
+    base = approvals.rebind_base.get(stem, frozenset())
+    live = set(approvals.launch_identities.get(stem, {}))
+    by_command: dict[str, set[str]] = {}
+    for pair, fingerprint in approvals.rebound.get(stem, {}).items():
+        if fingerprint in before:
+            by_command.setdefault(_split(pair)[0], set()).add(pair)
+    written: set[str] = set()
+    retired: set[str] = set()
+    untouched: set[str] = set()
+    for command_hash, pairs in by_command.items():
+        stored = _pairs_under(current_pairs, command_hash)
+        if stored != _pairs_under(base, command_hash):
+            untouched.add(command_hash)
+            continue
+        written |= pairs
+        if approvals.full_pass and not approvals.live_incomplete:
+            retired |= stored - (live & (stored | pairs))
+    return written, retired, untouched
+
+
 def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
     """Persist what a full rewrite pass captured and refused. True if written.
 
@@ -844,24 +939,51 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
         for stem, fps in approvals.captured.items():
             before = set(current.approved.get(stem, ()))
             before_pairs = set(current.approved_pairs.get(stem, ()))
+            written, retired, untouched = _settle_rebinds(approvals, stem, before_pairs, before)
+            dropped = set(approvals.rebound.get(stem, {})) - written
+            withdrawn = {
+                approvals.rebound[stem][pair]
+                for pair in dropped
+                if approvals.rebound[stem][pair] not in before
+            }
+            fps = {fp for fp in fps if fp not in withdrawn}
+            if not fps:
+                continue
             captured_pairs = {
                 pair
-                for pair in approvals.approved_pairs.get(stem, ())
-                if any(pair.startswith(f"{_split(fp)[0]}:") for fp in fps)
+                for pair in approvals.captured_pairs.get(stem, ())
+                if (
+                    any(pair.startswith(f"{_split(fp)[0]}:") for fp in fps)
+                    and _split(pair)[0] not in untouched
+                    and pair not in dropped
+                )
             }
             name = approvals.names.get(stem, stem)
+            final_fps = before | fps
+            final_pairs = (before_pairs | captured_pairs) - retired
             if not current._admission_allowed(
                 stem,
                 name,
-                ((current.approved, fps), (current.approved_pairs, captured_pairs)),
+                ((current.approved, final_fps), (current.approved_pairs, final_pairs)),
+                replace=True,
             ):
                 if current.refused.get(stem) == REFUSED_TOO_MANY:
                     approvals.refused[stem] = REFUSED_TOO_MANY
                 continue
-            current.approved[stem] = before | fps
-            current.approved_pairs[stem] = before_pairs | captured_pairs
+            current.approved[stem] = final_fps
+            current.approved_pairs[stem] = final_pairs
             current.names.setdefault(stem, _bounded_name(name))
-            changed = changed or not fps <= before or not captured_pairs <= before_pairs
+            pass_displays = approvals.approved_displays.get(stem, {})
+            new_displays = {
+                pair: pass_displays[pair]
+                for pair in captured_pairs
+                if pair in pass_displays and pair not in current.approved_displays.get(stem, {})
+            }
+            if new_displays:
+                current.approved_displays.setdefault(stem, {}).update(new_displays)
+            changed = (
+                changed or final_fps != before or final_pairs != before_pairs or bool(new_displays)
+            )
 
         def _approved_since(stem: str) -> bool:
             identities = approvals.refused_identities(stem)
@@ -894,15 +1016,29 @@ def save_pass(approvals: LaunchApprovals, path: Path | None = None) -> bool:
         if not changed:
             return False
         _write(target, _document(current, refused))
-    captured = sorted(approvals.names.get(s, s) for s in approvals.captured)
-    if captured:
+    for reason, fingerprints in _captured_by_reason(approvals).items():
         logger.warning(
             "mcp launch approvals: recorded %d launch fingerprint(s) for %s (%s)",
-            sum(len(v) for v in approvals.captured.values()),
-            ", ".join(captured),
-            "managed launch",
+            sum(len(v) for v in fingerprints.values()),
+            ", ".join(sorted(approvals.names.get(s, s) for s in fingerprints)),
+            reason,
         )
     return True
+
+
+def _captured_by_reason(approvals: LaunchApprovals) -> dict[str, dict[str, set[str]]]:
+    """Split what a pass captured by why it was admitted, for the audit line.
+
+    A rebound fingerprint is an operator-approved declaration whose ``${VAR}``
+    expansion changed; every other captured fingerprint is a managed launch.
+    """
+    by_reason: dict[str, dict[str, set[str]]] = {}
+    for stem, fps in approvals.captured.items():
+        rebound = set(approvals.rebound.get(stem, {}).values())
+        for fingerprint in fps:
+            reason = REBIND_AUDIT_REASON if fingerprint in rebound else "managed launch"
+            by_reason.setdefault(reason, {}).setdefault(stem, set()).add(fingerprint)
+    return by_reason
 
 
 def approve(launches: Mapping[str, Iterable[ResolvedLaunch]], path: Path | None = None) -> None:

@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Sparkles, Wrench } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import type { DisplayItem, TurnItem } from './types'
 import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
@@ -15,7 +15,6 @@ import { isDiffToolMessage } from './toolDiff'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
-import ToolGroupToggle from '../../components/ToolGroupToggle'
 
 // A workflow_run launch renders as its own always-visible inline card
 // (WorkflowRunCard), so it must never be folded into the collapsible tool-call
@@ -433,7 +432,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
       return <>{items.map((it, i) => <div key={rowKey(i)}>{renderItem(it, i)}</div>)}</>
     }
     const children: ReactNode[] = [
-      <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle} icon="steps"
+      <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle}
         label={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count: stepCount })} />,
     ]
     for (const seg of segs) {
@@ -473,7 +472,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     }
 
     const children: ReactNode[] = [
-      <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle} icon="steps"
+      <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle}
         label={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count: stepCount })} />,
     ]
     for (const seg of segs) {
@@ -526,7 +525,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   }
 
   const children: ReactNode[] = [
-    <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle} icon="tools"
+    <CollapseToggle key="toggle" expanded={expanded} onToggle={toggle}
       label={expanded ? i18nT('pages.chat.turnBlock.hide_tool_calls') : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: toolCount })} />,
   ]
   for (const seg of segments) {
@@ -547,25 +546,16 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   return <>{children}</>
 }
 
-/**
- * The turn's fold toggle, rendered through the SAME pill `CollapsibleToolGroup`
- * uses (see components/ToolGroupToggle) so the two hosts show one affordance for "N tool
- * calls are folded here" (#9699). This wrapper only adds what the turn-level
- * placement needs: the content-column width the folded rows below it share,
- * and the icon that says what kind of steps are folded — a wrench for tool
- * calls, the reasoning sparkle for the interim / collapse-all step folds.
- * No `labelText`: the visible label already states the action ("2 tool
- * calls" folded, "Hide tool calls" open), so it IS the accessible name and a
- * speech-input user can say what they see; `aria-expanded` carries the state.
- */
-function CollapseToggle({ expanded, onToggle, label, icon }: { expanded: boolean; onToggle: () => void; label: string; icon: 'tools' | 'steps' }) {
+function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onToggle: () => void; label: string }) {
   return (
-    <div className="px-4 py-1 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
-      <ToolGroupToggle
-        expanded={expanded}
-        onToggle={onToggle}
-        label={<>{icon === 'tools' ? <Wrench className="lucide-inline" /> : <Sparkles className="lucide-inline" />} {label}</>}
-      />
+    <div className="px-4 py-0 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+      {/* The visible label IS the accessible name ("Worked through 2 steps" folded,
+          "Hide reasoning" open), so no aria-label; aria-expanded carries the state,
+          which a rotated chevron alone never announces. */}
+      <button aria-expanded={expanded} className="flex items-center gap-2 text-[12px] leading-5 text-muted/60 hover:text-muted cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
+        <ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`} />
+        {label}
+      </button>
     </div>
   )
 }

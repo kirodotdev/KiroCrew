@@ -174,6 +174,28 @@ class TestParsingFailsLoudRatherThanEmpty:
     def test_a_clean_environment_is_no_findings(self) -> None:
         assert gate.parse_report(_report(_dep("pkg", "1.2.3"))) == []
 
+    def test_the_local_project_may_be_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "Kiro_Crew"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(gate, "_REPO_ROOT", tmp_path)
+        skipped = {
+            "name": "kiro-crew",
+            "skip_reason": "Dependency is not published on PyPI and could not be audited",
+        }
+        findings = gate.parse_report(_report(skipped, _dep("pkg", "1.2.3", "PYSEC-2026-1")))
+        assert [finding.identity for finding in findings] == ["pkg 1.2.3 PYSEC-2026-1"]
+
+    def test_a_different_skipped_dependency_fails_the_audit(self) -> None:
+        skipped = {
+            "name": "published-package",
+            "skip_reason": "Dependency could not be audited",
+        }
+        with pytest.raises(gate.AuditError, match="published-package"):
+            gate.parse_report(_report(skipped))
+
     @pytest.mark.parametrize(
         "payload",
         [

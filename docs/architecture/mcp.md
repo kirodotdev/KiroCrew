@@ -719,6 +719,14 @@ A stub roster entry selects routing, while
 command and arguments together with the derived effective-environment hash that
 gatewayd may run outside a session sandbox. Command and environment hashes are
 stored and checked as one pair, so values from two approvals cannot be combined.
+The approved fingerprint hashes the declared environment with its `${VAR}`
+references unexpanded. When that declared launch is approved and only an
+expansion changed, a rewrite pass whose environment sidecars all publish records
+the new pair and drops the older expansion of the same launch: the values come
+from the gateway environment (the operator's shell and the crew `.env`), which
+no agent can write. A sidecar publication failure drops every rebind from that
+pass, so gatewayd refuses the changed expansion and the next boot retries. A
+changed command, argument or declared env text is still refused.
 An absent or empty store approves nothing. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
@@ -1189,7 +1197,7 @@ text names the missing token, its usual cause, the `policy_unreadable` text the 
 directory -- and
 audited as `rejected_policy_unresolved`; the read that produced `identity_unattested` is
 itself audited as `tool_policy.unattested`. A control-plane backend
-(`CONTROL_PLANE_BACKENDS` in `mcp_gateway/gatewayd.py`) is handed the token per frame in
+(`CONTROL_PLANE_BACKENDS` in `mcp_gateway/daemon/control_plane.py`) is handed the token per frame in
 the caller block and the policy read sends it, so its calls do not land there. The test
 for admitting a reason here is that it means ONE thing, because a refusal derived from an
 ambiguous reason is wrong for half the callers it hits.
@@ -2193,7 +2201,7 @@ guarantee: the classifier sees an environment free of every denied namespace, an
 lands on a child whose verdict is already fixed -- the same pair present before
 the verdict would deny every control plane its own token.
 `Backend.control_plane` is set from that pre-spawn verdict and never recomputed.
-The token joins a caller in one place, `gatewayd._caller_for_backend`, which
+The token joins a caller in one place, `daemon/control_plane.py::_caller_for_backend`, which
 reads the flag off the backend that receives THAT frame and returns a
 token-bearing copy; the connection's base `CallerContext` stays tokenless for
 its whole life. A transparent respawn is therefore judged on its own: the
@@ -2216,7 +2224,7 @@ in the caller block, emitted only when set), and the backend's
 `logs/mcp-gatewayd.stdout`, which no session surfaces, and the refusal's generic
 text pointed at the token and the spec when the cause was neither.
 
-`CONTROL_PLANE_BACKENDS` is named in gatewayd itself (importing
+`CONTROL_PLANE_BACKENDS` is named in the daemon itself, in `mcp_gateway/daemon/control_plane.py` (importing
 `acp.session_mcp` would put `kiro_crew.agent` on the daemon's boot path; the
 set is read from the `mcp_cleanup` leaf instead). It is
 a superset of `acp.session_mcp.CONTROL_PLANE_SERVERS`, not a mirror, because the

@@ -24,6 +24,7 @@ from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
+from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_INSTRUCTION,
     extracted_lesson_applies,
@@ -217,11 +218,22 @@ def _persistence_disabled() -> bool:
 
 
 def _fmt_message(message: dict) -> str:
-    """Render one transcript message for a consolidation prompt."""
+    """Render one transcript message for a consolidation prompt.
+
+    The row's image references are replaced with a content-free marker before
+    the text is quoted. A consolidation prompt is history ABOUT a session, and
+    the prompt builder (``build_prompt_blocks``) inlines every still-readable
+    image path it finds in a prompt as a real image block. Left in, each
+    screenshot the session ever pasted rides along at full base64 size on every
+    extraction turn: one measured span carried 83 attachments and 67 MB of
+    image data around 600 KB of conversation, and the background session's own
+    transcript grew by that whole record on each retry until its KAS process
+    held 1.9 GB. Memory extraction reads text; it has no use for the pixels.
+    """
     tools = f" [tools: {', '.join(message['tools'])}]" if message.get("tools") else ""
     return (
         f"[{message.get('ts', '?')[:16]}] {message['role'].upper()}"
-        f"{tools}: {message['content']}"
+        f"{tools}: {strip_image_refs(message['content'])}"
     )
 
 

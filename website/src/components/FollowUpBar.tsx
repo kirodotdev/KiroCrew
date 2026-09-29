@@ -626,8 +626,12 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating,
           only decides where a chip would sit if one ever became taller (an
           icon, a badge, a second line). Bottom, not centre: the strip sits
           directly above the composer, so that is the edge the row is read
-          against. */}
-      <div ref={setScroller} data-tip-boundary className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          against.
+          `py-px -my-px`: overflow-x:auto forces overflow-y to auto as well, and
+          the glass hairline is drawn 0.5px OUTSIDE each chip's box, so a row
+          exactly one chip tall clips it. One pixel of padding, cancelled by the
+          negative margin, lets the line through without changing row height. */}
+      <div ref={setScroller} data-tip-boundary className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end py-px -my-px`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {options.map((o, i) => {
           const isPicked = picked.has(o)
           const chipPending = !!pendingOptions?.has(o)

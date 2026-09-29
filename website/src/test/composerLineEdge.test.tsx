@@ -39,23 +39,31 @@ describe('isMacOSPlatform', () => {
 })
 
 describe('lineEdgeForKey', () => {
-  it('maps bare Home and End to the line start and end on macOS', () => {
-    expect(lineEdgeForKey(key({ key: 'Home' }), true)).toBe('start')
-    expect(lineEdgeForKey(key({ key: 'End', keyCode: 35 }), true)).toBe('end')
+  it('maps bare Home and End to a move to the line start and end on macOS', () => {
+    expect(lineEdgeForKey(key({ key: 'Home' }), true)).toEqual({ edge: 'start', extend: false })
+    expect(lineEdgeForKey(key({ key: 'End', keyCode: 35 }), true)).toEqual({ edge: 'end', extend: false })
+  })
+
+  it('maps Shift+Home and Shift+End to extending the selection on macOS', () => {
+    expect(lineEdgeForKey(key({ key: 'Home', shiftKey: true }), true)).toEqual({ edge: 'start', extend: true })
+    expect(lineEdgeForKey(key({ key: 'End', keyCode: 35, shiftKey: true }), true)).toEqual({ edge: 'end', extend: true })
   })
 
   it('leaves every platform other than macOS on native behaviour', () => {
     expect(lineEdgeForKey(key({ key: 'Home' }), false)).toBeNull()
     expect(lineEdgeForKey(key({ key: 'End' }), false)).toBeNull()
+    expect(lineEdgeForKey(key({ key: 'Home', shiftKey: true }), false)).toBeNull()
   })
 
-  it.each(['altKey', 'ctrlKey', 'metaKey', 'shiftKey'] as const)('ignores Home with %s held', modifier => {
+  it.each(['altKey', 'ctrlKey', 'metaKey'] as const)('ignores Home and Shift+Home with %s held', modifier => {
     expect(lineEdgeForKey(key({ [modifier]: true }), true)).toBeNull()
+    expect(lineEdgeForKey(key({ [modifier]: true, shiftKey: true }), true)).toBeNull()
   })
 
   it('ignores keys that belong to an IME composition', () => {
     expect(lineEdgeForKey(key({ isComposing: true }), true)).toBeNull()
     expect(lineEdgeForKey(key({ keyCode: 229 }), true)).toBeNull()
+    expect(lineEdgeForKey(key({ isComposing: true, shiftKey: true }), true)).toBeNull()
   })
 
   it('ignores other keys', () => {
@@ -65,16 +73,18 @@ describe('lineEdgeForKey', () => {
 })
 
 // happy-dom has no layout, so `Selection.modify('lineboundary')` is stood in
-// for by a stub that moves the caret to the edge of the focused text node —
-// the row the real engine would pick for a one-row line. What the DOM tests
-// pin is everything around that call: the claim, the Lexical selection sync
-// and the keys that must stay native.
+// for by a stub that moves the focus to the edge of the focused text node —
+// the row the real engine would pick for a one-row line — collapsing on
+// 'move' and keeping the anchor on 'extend'. What the DOM tests pin is
+// everything around that call: the claim, the Lexical selection sync and the
+// keys that must stay native.
 function stubLineBoundary() {
-  const modify = vi.fn(function (this: Selection, _alter: string, direction: string) {
+  const modify = vi.fn(function (this: Selection, alter: string, direction: string) {
     const node = this.focusNode
     if (!node) return
     const offset = direction === 'backward' ? 0 : (node.textContent ?? '').length
-    this.collapse(node, offset)
+    if (alter === 'extend') this.extend(node, offset)
+    else this.collapse(node, offset)
   })
   Object.defineProperty(Selection.prototype, 'modify', { value: modify, configurable: true, writable: true })
   return modify
@@ -158,8 +168,26 @@ describe('MacLineEdgePlugin', () => {
     await waitFor(() => expect(control.getSelection()).toEqual({ start: 11, end: 11 }))
   })
 
+  it('extends the Lexical selection to the line start on Shift+Home', async () => {
+    const modify = stubLineBoundary()
+    const { control, root } = await mount('hello world', 6)
+    const event = press(root, { key: 'Home', keyCode: 36, shiftKey: true })
+    expect(event.defaultPrevented).toBe(true)
+    expect(modify).toHaveBeenCalledWith('extend', 'backward', 'lineboundary')
+    await waitFor(() => expect(control.getSelection()).toEqual({ start: 0, end: 6 }))
+  })
+
+  it('extends the Lexical selection to the line end on Shift+End', async () => {
+    const modify = stubLineBoundary()
+    const { control, root } = await mount('hello world', 6)
+    const event = press(root, { key: 'End', keyCode: 35, shiftKey: true })
+    expect(event.defaultPrevented).toBe(true)
+    expect(modify).toHaveBeenCalledWith('extend', 'forward', 'lineboundary')
+    await waitFor(() => expect(control.getSelection()).toEqual({ start: 6, end: 11 }))
+  })
+
   it.each([
-    ['Shift', { shiftKey: true }],
+    ['Cmd+Shift', { metaKey: true, shiftKey: true }],
     ['Cmd', { metaKey: true }],
     ['Ctrl', { ctrlKey: true }],
     ['Alt', { altKey: true }],
@@ -189,6 +217,7 @@ describe('MacLineEdgePlugin', () => {
     const event = press(root, { key: 'Home', keyCode: 36 })
     expect(event.defaultPrevented).toBe(false)
     expect(modify).not.toHaveBeenCalled()
+    expect(press(root, { key: 'Home', keyCode: 36, shiftKey: true }).defaultPrevented).toBe(false)
   })
 
   it('does not claim Home when a chip inside the editor has focus', async () => {
@@ -199,6 +228,7 @@ describe('MacLineEdgePlugin', () => {
     expect(chip).not.toBeNull()
     const event = press(chip!, { key: 'Home', keyCode: 36 })
     expect(event.defaultPrevented).toBe(false)
+    expect(press(chip!, { key: 'Home', keyCode: 36, shiftKey: true }).defaultPrevented).toBe(false)
     expect(modify).not.toHaveBeenCalled()
   })
 

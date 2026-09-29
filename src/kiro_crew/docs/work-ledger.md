@@ -91,9 +91,20 @@ hand after looking at it. A worker's claimed `pr` is never read as the bar,
 because a worker that could fill in its own bar could point it at somebody
 else's already-green pull request.
 
-Limits: 32 items per conductor, and a conductor may dispatch a conductor only
-once — depth is capped at 2, so a second-level conductor's own children are
-workers. A worker holds one open item at a time.
+Limits: 32 open items per conductor (an item in a terminal state -- accepted,
+rejected, abandoned -- stays on the board, listed and readable, and does not count
+toward the open cap) and 256 items stored per conductor in total, open and closed
+together, which is also the crew log fold's per-board ceiling, so a board is
+always folded whole. The stored bound is measured against `created_total`, a
+monotonic counter in the conductor header of every item the board has created over
+its life: each create bumps it under the conductor lock, deleting or losing an item
+record does not reclaim capacity, and a create is refused rather than counted when
+the header cannot be read. A rebuild from the crew log sets the counter to the
+records the rebuilt board holds. Closed items stay on the board until that stored
+bound; a board at it refuses further creates (`item_store_full`) until the finished
+ledger is purged (see "Cleaning up finished ledgers"). A conductor may dispatch a
+conductor only once — depth is capped at 2, so a second-level conductor's own
+children are workers. A worker holds one open item at a time.
 
 ## Dispatch order: create, bind, seed
 

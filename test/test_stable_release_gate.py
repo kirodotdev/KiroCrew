@@ -48,6 +48,8 @@ PUBLISH_JOBS = (
     "publish-linux-rpm-arm64",
     "publish-docker",
     "sign-and-notarize",
+    "sign-and-notarize-arm64",
+    "sign-and-notarize-x64",
     "github-release",
 )
 

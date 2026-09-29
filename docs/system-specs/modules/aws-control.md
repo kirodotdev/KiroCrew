@@ -1901,14 +1901,45 @@ existed.
 
 The startup order is a correctness requirement rather than a preference:
 
-1. Gate the environment (path layout, model credential, sandbox) and install the
-   crew bundle. Nothing has started.
+1. Gate the environment (path layout, model credential, sandbox), point the task's
+   kiro home at `<data home>/kiro`, and install the crew bundle. Nothing has started.
 2. Write the container's own configuration. It must land after the bundle, because
    a bundle may ship config and the container's posture has to win on the keys it
    sets, and before the backend, which reads the file at boot.
 3. Start the backend. `wait_until_ready` returns only when the port answers **and**
    the boot secret file exists; process-alive is not ready.
 4. Start the front process.
+
+**The task owns its agent-spec directory, and that is what lets the backend write
+it.** `KIRO_HOME` is set to `<data home>/kiro`, so the crew's spec and Kiro Crew's own
+`kirocrew.json` share one directory under the volume. The default is wrong here and
+fails in a way nothing reports: with `KIRO_HOME` unset the specs resolve to the process
+HOME's `~/.kiro/agents`, which every instance under that `$HOME` shares, and a backend
+on a non-default data home (`KIROCREW_HOME=<data home>`) REFUSES to rewrite a shared
+agents directory -- the specs it writes pin the writer's data home into every managed
+MCP server entry, which breaks strict session identity for a default-home gateway
+(#9690). The refusal is correct and stays. Its consequence in the container was that the
+supervisor's crew spec landed in the shared directory carrying no ownership provenance,
+the backend read it as another home's, declined, and never wrote the default spec at
+all; the boot looked healthy and every turn died at `DerivedSpecStale: the default agent
+spec .../kirocrew.json is missing`.
+
+`<data home>/kiro` is that guard's own private-target case: `<data home>/kiro/agents` is
+exactly `config.paths.isolated_agents_dir(data home)`, a directory this task's teardown
+owns and shares with nobody, so the guard stands aside without being relaxed. The match
+is EXACT rather than by ancestry -- "anywhere beneath the data home" would read the
+machine-wide directory as private whenever the data home is an ancestor of it -- so the
+`kiro` segment is load-bearing and no other nesting works.
+
+Two processes have to agree on that one directory and they reach it by different routes:
+the supervisor's installer mirrors kiro-cli's own `$KIRO_HOME`-or-`~/.kiro` rule from the
+environment (it imports no `kiro_crew`), while the backend goes through Kiro Crew's
+resolver. So the value is exported into the supervisor's environment *and* set on the
+backend's from the settings, and the export then asserts that the installer's resolver
+answers the same path -- a rename on either side fails at boot instead of installing the
+crew where nothing serves it. A directory that cannot be created is a refusal too, since
+the alternative is the backend declining for a second reason minutes later with the
+failure attributed to the guard.
 
 There is no backup sidecar and no restore phase. Durability across task
 replacement is a capability the container does not have; the front still fetches a
@@ -2261,6 +2292,37 @@ reason: the harness strips the key from the relay's environment and the relay as
 host for a token over `_kiro/auth/getAccessToken`, answered by
 `acp/kas_host_auth.answer_get_access_token` inside the backend process.
 
+Seeding the vault is necessary and not sufficient. `kiro-cli acp` validates its OWN
+credential store before it offers an ACP handshake, so on a store it has never signed
+into it exits `rc=1` "You are not logged in" and that token request is never reached:
+the container answers `/health` 200 and every dashboard turn with
+`503 kiro_prerequisite_required`. So `kiro_login.seed_kiro_cli_login` runs immediately
+after `require_model_identity` and writes one row into that store
+(`$XDG_DATA_HOME/kiro-cli/data.sqlite3`, falling back to `$HOME/.local/share/...`;
+table `auth_kv`, plain JSON).
+
+**That row is a non-secret sentinel, not a copy of the credential.** It carries a
+labelled placeholder access token, no refresh token, and a fixed far-future expiry;
+nothing in it comes from the vault, and it takes no argument, so nothing in it is
+worth reading. That is sound because Crew is the auth owner: the engine raises its
+credential request on the wire and `answer_get_access_token` answers it from the
+vault, which the shipped binary confirms by logging `Auth: --auth=acp-callback
+(host-mediated refresh via _kiro/auth/getAccessToken)` with this exact row in the
+store. The row answers only "has this store been signed into".
+
+A real identity here would be strictly worse, and the reason is the same threat model
+as `build_backend_env`'s: this store is pinned OUT of the sandbox masking tiers on
+purpose, so a raw `open()` from a spawned shell reads it, and the model worker
+auto-approves every tool it calls on untrusted prompt content. A sentinel's expiry is also a fixed
+far-future constant rather than the vault's, so a long-lived task's later spawns pass
+the same check as its first, and an aged delivery the vault can still renew does not
+become a startup refusal.
+
+It is written in the container supervisor and nowhere else, which is what keeps it
+internal-only: a desktop host signs kiro-cli in by itself. Every failure inside it is
+a startup refusal, because the alternative is the 503 above with a healthy-looking
+task in front of it.
+
 **That is defence in depth, not a licence to drop the sandbox.** What decides whether
 an auto-approved worker is safe is whether it can REACH a credential, not whether one
 is resident in its own environment, and the vault is a route the container cannot
@@ -2306,6 +2368,17 @@ backend -- stop new turns arriving, then let the backend drain and flush -- and
 anything still alive afterwards is an escaped worker, which the teardown sweeps by
 process group over bounded rounds, because a killed process's children reparent to
 PID 1 and surface in the next round.
+
+A child in the supervisor's OWN process group is withheld from that discovery. The sweep's
+remedy is a group signal, and on its own group that SIGKILLs the supervisor -- so the
+remaining rounds never run and every real orphan is left alive. One such child is enough,
+and it is a reachable shape: a library the supervisor itself uses can hold a pool of helper
+children (the sensitive-path resolver keeps several), and those are its children in its own
+group. Nothing the sweep exists to reach is lost, because every one of those is in a group of
+its own -- an escaped worker by `setsid`, the front and backend by being spawned into theirs
+-- and a same-group child dies with the supervisor when it exits, which is the next thing to
+happen. The group is read from the same `/proc` line the parent is, so a candidate has one
+source of truth and no second syscall on a pid that may already be gone.
 
 The exit code distinguishes the reasons, because it is the only thing the
 platform reads: a stop signal and a spent task lifetime are the success cases, and

@@ -22,7 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import work_ledger as wl
-from kiro_crew.crew_log import projection
+from kiro_crew.crew_log import entry_types, projection, schema
 from kiro_crew.dashboard.handlers import work_ledger as routes
 
 CONDUCTOR = "chat-9-conductor"
@@ -455,7 +455,93 @@ def test_rebuild_of_an_empty_fold_writes_nothing(monkeypatch):
     assert wl.read_conductor(CONDUCTOR) is None
 
 
-# -- real units, no mocked resolver and no pre-rendered fold ------------------
+def test_a_fold_at_its_item_ceiling_refuses_the_rebuild_even_on_a_dirty_cache(monkeypatch):
+    """The fold keeps a board's first ``WORK_ITEM_LIMIT`` items; a full fold may
+    be a prefix of a board whose closed items were archived out of ``items/``.
+    Rebuilding from it would re-materialise the prefix and, past the dirty-cache
+    shortcut, unlink every newer item. So it refuses -- and the cache stands."""
+    monkeypatch.setattr(projection, "WORK_ITEM_LIMIT", 1)
+    fold = _rendered(CONDUCTOR, "it_0000abcd")  # exactly one item: the ceiling
+    fold["omitted"] = 1  # ... and a later create the fold could not hold
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    # A live board holding a NEWER item the fold never saw, flagged dirty (the one
+    # state whose documented cure is this rebuild).
+    wl.ensure_conductor(CONDUCTOR, goal="live")
+    newer = wl.apply_conductor_action(CONDUCTOR, "create", title="newest", acceptance={})["item"]
+    wl.mark_cache_dirty(CONDUCTOR, "an unrecorded write could not be undone")
+    before = {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()}
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.rebuild_from_projection(CONDUCTOR)
+
+    assert caught.value.code == wl.CODE_CREW_LOG_INCOMPLETE
+    assert "ceiling" in str(caught.value)
+    assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
+    assert wl.read_work_item(CONDUCTOR, newer.item_id) is not None
+    assert wl.read_work_item(CONDUCTOR, "it_0000abcd") is None
+    assert wl.cache_dirty(CONDUCTOR), "the refusal leaves the flag for the operator"
+
+
+def test_a_full_fold_that_omitted_nothing_is_the_whole_board_and_rebuilds(monkeypatch):
+    """Exactly ``WORK_ITEM_LIMIT`` items and ``omitted == 0`` is a complete record,
+    not a prefix: the rebuild proceeds."""
+    monkeypatch.setattr(projection, "WORK_ITEM_LIMIT", 1)
+    fold = _rendered(CONDUCTOR, "it_0000abcd")  # exactly one item, nothing omitted
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    result = wl.rebuild_from_projection(CONDUCTOR)
+    assert result["items"] == 1
+    assert wl.read_work_item(CONDUCTOR, "it_0000abcd") is not None
+
+
+def test_a_rebuild_sets_the_create_counter_to_what_the_record_holds(monkeypatch):
+    """The stored bound's counter is rebuilt from the fold, not carried over.
+
+    A cache header can hold a count the record does not: higher, after a create
+    whose entry never landed and whose record was then removed, or after the
+    one-time seed from an old board's files; lower, after a hand edit. Rebuilt,
+    ``created_total`` is the number of items the fold retained -- past the ceiling
+    guard the fold dropped no create, and its ``omitted`` there counts entries that
+    are not this board's creates -- so with the fold's one item a counter of 7
+    comes down to 1, and one of 0 comes up to 1, and a board so rebuilt admits
+    exactly the creates the fold has room for.
+    """
+    fold = _rendered(CONDUCTOR, "it_0000abcd")
+    fold["omitted"] = 3  # stragglers of a purged board: not creates, not counted
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    wl.ensure_conductor(CONDUCTOR, goal="ship it")
+    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
+    for stale in (7, 0):
+        stored = json.loads(header_path.read_text(encoding="utf-8"))
+        stored["created_total"] = stale
+        header_path.write_text(json.dumps(stored), encoding="utf-8")
+        assert wl.read_conductor(CONDUCTOR).created_total == stale
+
+        counts = wl.rebuild_from_projection(CONDUCTOR)
+
+        assert (counts["items"], counts["legacy"]) == (1, 0)
+        header = wl.read_conductor(CONDUCTOR)
+        assert header is not None and header.created_total == 1
+    # The rebuilt counter is live: with the bound at the fold's one item, the next
+    # create is refused, and with room for one more it lands and bumps the counter.
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 1)
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 2)
+    wl.apply_conductor_action(CONDUCTOR, "create", title="second", acceptance={})
+    assert wl.read_conductor(CONDUCTOR).created_total == 2
 
 
 def test_a_bound_workers_real_unit_joins_the_fold_and_its_report_is_rebuilt():
@@ -1291,6 +1377,9 @@ async def test_items_from_before_the_projection_survive_a_rebuild(monkeypatch):
     assert wl.read_binding("chat-9-old-worker") == (CONDUCTOR, old_a.item_id)
     header = wl.read_conductor(CONDUCTOR)
     assert header is not None and header.goal == "old goal"
+    # The counter covers every record the rebuilt board holds: a legacy item's
+    # first recorded mutation materialises it in the fold, where it takes a slot.
+    assert header.created_total == counts["items"] + counts["legacy"] == 3
 
 
 @pytest.mark.asyncio
@@ -1734,7 +1823,7 @@ def test_a_rebuild_that_fails_part_way_leaves_the_cache_as_it_was(monkeypatch):
 
     def _failing_write(path, payload):
         calls["n"] += 1
-        if calls["n"] == 2:  # the header went through; the first item write fails
+        if calls["n"] == 2:  # the item went through; the header write after it fails
             raise OSError("disk full")
         return real_write(path, payload)
 
@@ -3119,3 +3208,129 @@ async def test_a_board_with_no_generation_still_accepts_a_write(recorded):
     assert [data.get("generation") for _unit, data in recorded] == [None]
     landed = wl.read_work_item(CONDUCTOR, item_id)
     assert landed is not None and landed.status == "progress"
+
+
+# ---------------------------------------------------------------------------
+# _work_render reads last_entry_at directly, because the resume gate guarantees it
+# ---------------------------------------------------------------------------
+
+
+def test_work_render_surfaces_the_folded_last_entry_at() -> None:
+    """The rendered conductor header carries the state's own ``last_entry_at``."""
+    state = projection._work_start()
+    state["last_entry_at"] = "2026-09-27T12:00:00+00:00"
+    view = projection._work_render(state)
+    assert view["conductor"]["last_entry_at"] == "2026-09-27T12:00:00+00:00"
+
+
+def test_work_render_does_not_mask_a_missing_last_entry_at() -> None:
+    """The pin. ``_work_render`` reads ``last_entry_at`` directly, like its sibling
+    keys, so a state missing it surfaces loudly rather than as a silent ``""``.
+
+    Reverting the read to ``state.get("last_entry_at", "")`` makes this state -- which
+    the resume gate would never admit (see below) -- render without error, so the pin
+    fails on the fix being mutated back.
+    """
+    state = projection._work_start()
+    del state["last_entry_at"]
+    with pytest.raises(KeyError):
+        projection._work_render(state)
+
+
+def test_a_work_checkpoint_missing_last_entry_at_cannot_resume() -> None:
+    """Why the direct read is safe. ``_work_start`` declares ``last_entry_at`` in the
+    fold's durable top-level shape, and ``_state_matches_fold`` refuses any state whose
+    top-level keys differ from that shape. Such a checkpoint is discarded and
+    cold-folded, so it never reaches ``_work_render`` with the key absent.
+    """
+    start = projection._work_start()
+    assert "last_entry_at" in start, "the work fold's start shape must declare last_entry_at"
+    missing = dict(start)
+    del missing["last_entry_at"]
+    assert projection._state_matches_fold("work", missing) is False
+
+
+# ---------------------------------------------------------------------------
+# last_entry_at is the board's NEWEST accepted stamp, not the last one folded
+# ---------------------------------------------------------------------------
+
+
+def _work_entry(*, seq: int, time_ms: int, actor: str, action: str, **fields: Any) -> schema.Entry:
+    """One ``work/recorded`` entry for this board, at a chosen append time."""
+    data: dict[str, Any] = {"slot": "member-board", "actor": actor, "by": "member-board"}
+    data["action"] = action
+    data.update(fields)
+    return schema.Entry(
+        type=entry_types.WORK_ENTRY_TYPE, seq=seq, time=time_ms, src="test", data=data
+    )
+
+
+def test_a_worker_entry_older_in_wall_time_does_not_pull_the_board_age_backwards() -> None:
+    """THE fold-order defect. ``last_entry_at`` must be the newest stamp ACCEPTED, not
+    the stamp of whichever entry happened to be folded last.
+
+    ``_work_units`` returns the conductor's units first and then each bound worker's, so
+    the fold order is by UNIT, never by wall time. A worker whose report was appended
+    before the conductor's latest round is therefore folded after it, and an
+    unconditional write hands the board that older stamp. The board's age is then
+    computed from it, inflating to the gap between the two, and the drawer reads a
+    current board as stale. It reproduces on every re-fold because the log order never
+    changes.
+    """
+    state = projection._work_start()
+    later = 1790000010000  # T+10s, the conductor's own round
+    earlier = 1790000000000  # T+0, a worker's report appended before it
+
+    projection._work_step(
+        state, _work_entry(seq=1, time_ms=later, actor="conductor", action="goal")
+    )
+    assert state["last_entry_at"] == projection._work_iso(later)
+
+    projection._work_step(
+        state, _work_entry(seq=2, time_ms=earlier, actor="worker", action="report")
+    )
+    assert state["last_entry_at"] == projection._work_iso(
+        later
+    ), "a worker entry older in wall time must not become the board's newest stamp"
+
+
+def test_a_genuinely_newer_entry_still_advances_the_board_age() -> None:
+    """The control. Keeping the greatest stamp must not freeze the field at the first
+    one: a fold that never advanced it would satisfy the test above too.
+    """
+    state = projection._work_start()
+    first = 1790000000000
+    newer = 1790000020000
+
+    projection._work_step(
+        state, _work_entry(seq=1, time_ms=first, actor="conductor", action="goal")
+    )
+    projection._work_step(
+        state, _work_entry(seq=2, time_ms=newer, actor="conductor", action="decide")
+    )
+    assert state["last_entry_at"] == projection._work_iso(newer)
+
+
+def test_a_new_board_generation_starts_its_age_over() -> None:
+    """The greatest stamp is kept WITHIN one board generation, not across slots' history.
+
+    A reset mints a new board under the same slot, and its age is its own. Carrying the
+    previous board's newest stamp would make a board born now read as older than it is --
+    and, worse, would pin the field where no entry of the new board could advance it.
+    """
+    state = projection._work_start()
+    old = 1790000900000  # the previous board's newest entry, ahead of the new board's
+    fresh = 1790000000000
+
+    projection._work_step(
+        state, _work_entry(seq=1, time_ms=old, actor="conductor", action="goal", generation="g1")
+    )
+    assert state["last_entry_at"] == projection._work_iso(old)
+
+    projection._work_step(
+        state, _work_entry(seq=2, time_ms=fresh, actor="conductor", action="goal", generation="g2")
+    )
+    assert state["generation"] == "g2"
+    assert state["last_entry_at"] == projection._work_iso(
+        fresh
+    ), "a new generation's age is its own, not the purged board's"

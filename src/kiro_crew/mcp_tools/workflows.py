@@ -60,14 +60,19 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "workflow_run",
             "description": (
-                "★ THE tool for 'use a dynamic workflow to …' / 'run a workflow' / any "
-                "multi-phase, monitorable, restartable agent orchestration. PREFER THIS "
-                "over spawn_sub_agents for such requests. Just pass `intent` (the user's "
-                "goal in plain words) and it authors + launches the workflow in one step "
-                "— do NOT hand-roll the orchestration with spawn tools. Returns a run_id "
-                "immediately; the run streams to the Workflows dashboard tab and its "
-                "result is injected back into this chat on completion. Monitor with "
-                "workflow_status / workflow_result; restart parts with "
+                "Run a DYNAMIC WORKFLOW: a sandboxed script that orchestrates agents "
+                "in phases, streams to the Workflows dashboard tab, and can be "
+                "restarted from any step. Choose it yourself, without waiting for the "
+                "user to name it, when a task has several dependent phases or many "
+                "independent pieces AND a failed piece should re-run without redoing "
+                "the rest (e.g. research many sources, then synthesize; one audit "
+                "applied across many files). A single task needs neither; a one-shot "
+                "fan-out whose results you need only once fits spawn_run. Pass a saved "
+                "slug as `workflow`, or `intent` (the goal in plain words) to author "
+                "+ launch in one step — do not hand-roll the "
+                "same orchestration with spawn tools. Returns a run_id immediately; "
+                "the result is injected back into this chat on completion. Monitor "
+                "with workflow_status / workflow_result; restart parts with "
                 "workflow_rerun_subtree."
             ),
             "inputSchema": {

@@ -24,6 +24,12 @@ import { i18nT } from '../../i18n/t'
 export interface TranscriptVirtWiring {
   topSentinelRef: React.MutableRefObject<HTMLDivElement | null>
   bottomSentinelRef: React.MutableRefObject<HTMLDivElement | null>
+  /** The virtualizer's ref for the wrapper around `belowRows`: its
+   *  ResizeObserver watches that wrapper so chrome mounting or growing below
+   *  the rows (the working footer under a reply gone quiet) is followed like
+   *  tail growth. Optional so a wiring that predates it (tests, a host with no
+   *  trailing chrome) still type-checks; the wrapper renders either way. */
+  trailingRef?: React.MutableRefObject<HTMLDivElement | null>
   offsetBefore: number
   offsetAfter: number
 }
@@ -154,7 +160,14 @@ export default function TranscriptScrollShell({
       <div aria-hidden className="vc-spacer-skeleton mx-auto w-full" style={{ height: virt.offsetAfter, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />
       {/* Bottom sentinel: drives downward window expansion when in jump mode. */}
       <div ref={virt.bottomSentinelRef} aria-hidden style={{ height: 1 }} />
-      {belowRows}
+      {/* Trailing chrome, in one block so the virtualizer can OBSERVE it: the
+          footer that mounts here when a reply goes quiet grows the content
+          under a bottom-pinned reader with no row resize and no viewport
+          change to announce it. A plain block wrapper, no class of its own,
+          so the slot content keeps its width and the theming contract. */}
+      <div ref={virt.trailingRef} data-vc-trailing="">
+        {belowRows}
+      </div>
     </div>
   )
 }

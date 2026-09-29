@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.cli import main
 
 
@@ -138,6 +140,30 @@ class TestWorkspaceArgparse:
             main()
         assert "Created workspace: newws" in capsys.readouterr().out
         assert (tmp_path / "workspace-newws").is_dir(), "config entry without a directory"
+
+    @requires_symlinks
+    def test_create_refuses_a_link_at_the_workspace_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The CLI resolves the dir first; the link at the final name is still refused."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        target = tmp_path / "real-target"
+        target.mkdir()
+        platform_compat.symlink_or_junction(str(target), str(tmp_path / "linked"))
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "newws", "--dir", "linked"],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+        assert "is a link" in capsys.readouterr().err
+        assert "newws" not in json.loads(cfg_path.read_text(encoding="utf-8"))["workspaces"]
 
     def test_create_accepts_copy_from(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

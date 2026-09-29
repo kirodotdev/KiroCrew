@@ -59,13 +59,13 @@ const shoot = async (name, locator) => {
   console.log(`wrote ${OUT}/${name}`)
 }
 
-await page.goto(`${base}/settings?tab=display`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${base}/settings/display/terminal`, { waitUntil: 'domcontentloaded' })
 
 // The Terminal card is the crop for every frame: the whole settings page would
 // bury an 11px preview row in an 8000px screenshot.
 const fontRow = page.locator('[data-setting-label="Font"]').last()
 await fontRow.waitFor({ timeout: 20000 })
-const card = fontRow.locator('xpath=ancestor::div[contains(@class,"card-glow")][1]')
+const card = fontRow.locator('xpath=ancestor::div[@data-settings-card][1]')
 
 // The probe runs in an effect, so let it resolve before claiming the row is empty.
 await page.waitForTimeout(1200)

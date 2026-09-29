@@ -625,7 +625,7 @@ class TestStartPoolPrunesOffTheLoop:
             m.context_usage_unknown = lambda: False
             m.context_window_tokens = lambda: 0
             m.has_active_turn = lambda: False
-            m.runtime_info = lambda: (None, None)
+            m.runtime_abort_target = lambda: None
             m.stream_command = MagicMock()
             return m
 
@@ -769,7 +769,7 @@ def _provider_factory(session_key=None, agent=None, channel_id=None, **kwargs):
     m.context_usage_unknown = lambda: False
     m.context_window_tokens = lambda: 0
     m.has_active_turn = lambda: False
-    m.runtime_info = lambda: (None, None)
+    m.runtime_abort_target = lambda: None
     m.stream_command = MagicMock()
     return m
 

@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from kiro_crew.constants import md_link_destination
+
 #: Fence delimiter line: three or more backticks or tildes, optional info string.
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})\s*(\S*)\s*$")
 
@@ -39,11 +41,19 @@ _ORDERED_RE = re.compile(r"^(\s*)(\d{1,9})[.)]\s+")
 _QUOTE_RE = re.compile(r"^\s{0,3}(?:>\s?)+")
 
 #: Image before link, so the "!" is consumed rather than left dangling.
-#: The label class excludes "[" and "]" so the match cannot span two links,
-#: and the target class excludes whitespace and parens -- both keep the
-#: pattern linear-time on adversarial input.
-_IMAGE_RE = re.compile(r"!\[([^\][]*)\]\(([^\s()]*)\)")
-_LINK_RE = re.compile(r"\[([^\][]*)\]\(([^\s()]*)\)")
+#: The label class excludes "[", "]" and the line break, the display-safety
+#: screen's class, so the match cannot span two links; the target class
+#: excludes whitespace -- both keep the pattern linear-time on adversarial
+#: input. A parenthesis may appear in the target only as a balanced pair
+#: (``.../Python_(programming_language)``); see
+#: :func:`kiro_crew.constants.md_link_destination`.
+_LINK_DESTINATION_CHAR_CLASS = r"[^\s()]"
+_IMAGE_RE = re.compile(
+    rf"!\[([^\[\]\n]*)\]\(({md_link_destination(_LINK_DESTINATION_CHAR_CLASS)}*)\)"
+)
+_LINK_RE = re.compile(
+    rf"\[([^\[\]\n]*)\]\(({md_link_destination(_LINK_DESTINATION_CHAR_CLASS)}*)\)"
+)
 
 #: Inline code span. Non-greedy over a single backtick pair.
 _CODE_SPAN_RE = re.compile(r"`([^`]*)`")

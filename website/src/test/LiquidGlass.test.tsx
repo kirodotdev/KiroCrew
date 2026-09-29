@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
-import { LiquidGlass } from '../components/ui/liquid-glass'
+import { LiquidGlass, resetDisplacementMapCache } from '../components/ui/liquid-glass'
 
 type ResizeCallback = (entries: Array<{ contentRect: { width: number; height: number } }>) => void
 
@@ -33,7 +33,7 @@ const fakeContext = {
 const MAP_URL = 'data:image/png;base64,map'
 
 /** The composer's settings — the pane has no defaults, every caller sets all three. */
-const composer = { cornerRadius: 16, frost: 6, lightIntensity: 25 }
+const composer = { cornerRadius: 16, frost: 4, lightIntensity: 25 }
 
 function measure(width: number, height: number) {
   act(() => {
@@ -56,6 +56,7 @@ function frostBoxOf(layer: HTMLElement) {
 beforeEach(() => {
   vi.useFakeTimers()
   observers.length = 0
+  resetDisplacementMapCache()
   fakeContext.putImageData.mockClear()
   vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(fakeContext as unknown as CanvasRenderingContext2D)
@@ -84,9 +85,9 @@ describe('LiquidGlass', () => {
     // The tint is the polarity-fixed token, not a per-caller colour.
     const frost = frostBoxOf(layers[1])
     expect(frost.style.background).toContain('var(--glass-tint)')
-    expect(frost.style.backdropFilter).toBe('blur(6px) saturate(1.55)')
+    expect(frost.style.backdropFilter).toBe('blur(4px) saturate(1.55)')
     // Two blur radii of overhang on every side, clipped by the layer.
-    expect(frost.style.inset).toBe('-12px')
+    expect(frost.style.inset).toBe('-8px')
     expect(layers[1].style.overflow).toBe('hidden')
     // Every layer clips on the same circular radius as the root, and paints
     // under the children inside the host's own stacking context.
@@ -173,12 +174,14 @@ describe('LiquidGlass', () => {
     const layers = layersOf(root)
     expect(layers).toHaveLength(4)
     expect(layers[0].style.backdropFilter).toBe(`url(#${filter.id})`)
-    expect(frostBoxOf(layers[1]).style.backdropFilter).toBe('blur(6px) saturate(1.55)')
+    expect(frostBoxOf(layers[1]).style.backdropFilter).toBe('blur(4px) saturate(1.55)')
     // The side lines lead: 1px of --glass-edge down each flank, nothing on the
-    // top and bottom edges. Then the two OUTER half-pixel hairlines just past
+    // top and bottom edges. Then the lit edges' crisp core: 1px of --glass-band
+    // just inside the top and bottom edges (full strength, so a light page
+    // reads #ffffff there). Then the two OUTER half-pixel hairlines just past
     // the top and bottom edges. Then the bevel, lit from straight above (no
     // horizontal offset in either inset).
-    expect(layers[2].style.boxShadow).toMatch(/^inset 1px 0(px)? 0(px)? var\(--glass-edge\), inset -1px 0(px)? 0(px)? var\(--glass-edge\), 0(px)? -0\.5px 0(px)? 0(px)? var\(--glass-hairline\), 0(px)? 0\.5px 0(px)? 0(px)? var\(--glass-hairline\), inset 0px 3\.27px/)
+    expect(layers[2].style.boxShadow).toMatch(/^inset 1px 0(px)? 0(px)? var\(--glass-edge\), inset -1px 0(px)? 0(px)? var\(--glass-edge\), inset 0(px)? 1px 0(px)? var\(--glass-band\), inset 0(px)? -1px 0(px)? var\(--glass-band\), 0(px)? -0\.5px 0(px)? 0(px)? var\(--glass-hairline\), 0(px)? 0\.5px 0(px)? 0(px)? var\(--glass-hairline\), inset 0px 3\.27px/)
     // The map fed the canvas: a 512-capped raster of the host's aspect.
     expect(fakeContext.putImageData).toHaveBeenCalledTimes(1)
     const raster = fakeContext.putImageData.mock.calls[0][0] as { width: number; height: number; data: Uint8ClampedArray }
@@ -231,6 +234,21 @@ describe('LiquidGlass', () => {
     expect(image.getAttribute('height')).toBe('140')
     expect(fakeContext.putImageData.mock.calls.length).toBe(1)
     act(() => { vi.advanceTimersByTime(200) })
+    expect(fakeContext.putImageData.mock.calls.length).toBe(2)
+  })
+
+  it('rasterises one map for many panes of the same size, and one more per new size', () => {
+    // A list of panes (the bell popover's rows, a row of chips) mounts many
+    // equal boxes in one commit; the map is a pure function of (size, radius,
+    // band), so the second pane reuses the first pane's encode.
+    const { container } = render(<><LiquidGlass {...composer} /><LiquidGlass {...composer} /><LiquidGlass {...composer} /></>)
+    measure(400, 80)
+    expect(fakeContext.putImageData.mock.calls.length).toBe(1)
+    const roots = Array.from(container.children) as HTMLElement[]
+    for (const root of roots) expect((root.querySelector('feImage') as SVGElement).getAttribute('href')).toBe(MAP_URL)
+    // A different size (or radius) is a different map.
+    render(<LiquidGlass {...composer} cornerRadius={4} />)
+    measure(400, 80)
     expect(fakeContext.putImageData.mock.calls.length).toBe(2)
   })
 

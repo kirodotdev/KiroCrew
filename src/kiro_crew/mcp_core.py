@@ -20,10 +20,8 @@ import contextlib
 import copy
 import json
 import os
-import platform
 import re as _re
 import socket
-import subprocess
 import tempfile
 import threading
 import time
@@ -34,7 +32,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.autonudge import binding_key_for, structured_monitor_binding_key_for
 from kiro_crew.config.loader import (
@@ -53,7 +50,12 @@ from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loopback_http import loopback_urlopen
-from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_caller
+from kiro_crew.mcp_caller import (
+    CallerContext,
+    current_caller,
+    resolve_own_identity,
+    set_current_caller,
+)
 from kiro_crew.mcp_shared import (
     call_tool_with_logging,
     external_client_identity_note,
@@ -370,10 +372,18 @@ def _secret_for_base(base: str) -> str:
     pre-restart secret is the desync that helper exists to close.
 
     The port comes from the base being dialled rather than a fresh resolution,
-    so the credential and the target cannot name different gateways.
+    so the credential and the target cannot name different gateways. The HOST is
+    taken from that same base, so the credential is resolved for the exact
+    listener this base addresses (``read_local_secret`` prefers the address-keyed
+    entry and fails closed): a port names a SET of listeners, and pairing the
+    read to the dialled host is what keeps the secret from reaching a co-resident
+    that merely holds the port.
     """
     try:
-        return read_local_secret(int(base.rsplit(":", 1)[-1]))
+        authority = base.split("//", 1)[-1].split("/", 1)[0]
+        host = authority.rsplit(":", 1)[0]
+        port = int(authority.rsplit(":", 1)[-1])
+        return read_local_secret(port, dial_host=host)
     except Exception:
         return ""
 
@@ -488,94 +498,16 @@ def _internal_secret() -> str:
 
     Thin wrapper over ``config.loader.read_local_secret``, which owns the
     per-listener-then-shared order. The port is passed rather than re-resolved
-    because ``_api_port`` already resolved and cached it for this process.
+    because ``_api_port`` already resolved and cached it for this process. The
+    dial host is the IPv4 loopback literal every ``_api_base`` in this module
+    addresses, so the credential is resolved for that listener and refuses when
+    the address-keyed entry is absent rather than falling back to the port-keyed
+    read.
     """
     try:
-        return read_local_secret(_api_port())
+        return read_local_secret(_api_port(), dial_host="127.0.0.1")
     except Exception:
         return ""
-
-
-def _ppid_via_libproc(pid: int) -> int:
-    """macOS parent-PID lookup via libproc's ``proc_pidinfo`` (stdlib ctypes).
-
-    macOS has no ``/proc``, and the app sandbox denies spawning ``ps``
-    (``Operation not permitted``). ``proc_pidinfo`` is an information syscall
-    (no ``exec``), so the sandbox allows it — the same primitive psutil uses,
-    but with zero third-party dependency. Returns 0 on any failure so the caller
-    can fall back.
-    """
-    import ctypes
-    import struct
-
-    proc_pidtbsdinfo = 3
-    # sizeof(struct proc_bsdinfo) is 232 on 64-bit Darwin; over-allocate.
-    buf_size = 256
-    try:
-        libproc = ctypes.CDLL("libproc.dylib", use_errno=True)
-        libproc.proc_pidinfo.restype = ctypes.c_int
-        libproc.proc_pidinfo.argtypes = [
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_uint64,
-            ctypes.c_void_p,
-            ctypes.c_int,
-        ]
-        buf = ctypes.create_string_buffer(buf_size)
-        n = libproc.proc_pidinfo(pid, proc_pidtbsdinfo, 0, buf, buf_size)
-        # pbi_ppid is the 5th uint32 (offset 16); need at least that many bytes.
-        if n <= 16:
-            return 0
-        # struct proc_bsdinfo starts: pbi_flags, pbi_status, pbi_xstatus,
-        # pbi_pid, pbi_ppid (5 x uint32) — pbi_ppid is index 4.
-        return int(struct.unpack_from("<5I", buf.raw, 0)[4])
-    except Exception:
-        return 0
-
-
-def _get_ppid(pid: int) -> int:
-    """Get parent PID cross-platform. Returns 0 on failure.
-
-    Standard-library only — deliberately NO third-party dependency (e.g.
-    psutil), so the shipped app needs nothing extra bundled or code-signed and
-    works across OS versions out of the box.
-
-    - Linux: read ``/proc/<pid>/status`` (plain file read).
-    - macOS: ``proc_pidinfo`` via libproc (see ``_ppid_via_libproc``). The old
-      code shelled out to ``ps`` here, which the macOS app sandbox denies
-      (``Operation not permitted``) — that broke the ancestor PID-walk in
-      ``_resolve_session_key``, leaving spawned sub-agents unable to resolve
-      their parent session key (empty ``KIROCREW_SESSION_KEY``) and surfacing
-      spurious tool-approval cards on trusted sessions. libproc needs no
-      ``exec``, so it works under the sandbox.
-    - Windows: ``CreateToolhelp32Snapshot`` via
-      ``platform_compat.get_ppid``. Without this branch the walk fell through
-      to ``ps``, which does not exist on Windows, so every lookup returned 0
-      and ``_resolve_session_key`` could never resolve a key -- silently
-      breaking every session-keyed tool (``learn_add``, cron management,
-      callback delivery) with ``missing X-Session-Key``.
-    - Other/unknown platforms: fall back to ``ps`` (may be blocked, then 0).
-    """
-    system = platform.system()
-    try:
-        if system == "Windows":
-            ppid = platform_compat.get_ppid(pid)
-            return ppid if ppid > 0 else 0
-        if system == "Linux":
-            for line in Path(f"/proc/{pid}/status").read_text().splitlines():
-                if line.startswith("PPid:"):
-                    return int(line.split()[1])
-        elif system == "Darwin":
-            ppid = _ppid_via_libproc(pid)
-            if ppid:
-                return ppid
-        # Last-resort fallback (unknown platform, or a libproc/proc miss): ``ps``.
-        # May be sandbox-blocked, in which case this raises and we return 0.
-        out = subprocess.check_output(["ps", "-o", "ppid=", "-p", str(pid)], text=True, timeout=2)
-        return int(out.strip())
-    except Exception:
-        pass
-    return 0
 
 
 # ── Knowledge-search store/embedder cache ──
@@ -698,7 +630,7 @@ def _session_key_from_token() -> str:
 
 
 def _resolve_session_key() -> str:
-    """Return the real session key, falling back to PID file when env var is absent.
+    """Return this session's key, or ``""`` when nothing can name it.
 
     Source 0 is the gateway-injected per-call caller context (pooled
     topology): gatewayd strips client-forged ``kirocrew.caller`` blocks and
@@ -706,53 +638,23 @@ def _resolve_session_key() -> str:
     identity when present — env-var identity is wrong-by-construction in a
     shared backend (one process, many sessions).
 
-    Warm-pool kiro-cli processes have no KIROCREW_SESSION_KEY env var (the pool
-    spawns with an empty key so rekey() + PID file provide the correct mapping).
+    Everything below it is :func:`kiro_crew.mcp_caller.resolve_own_identity`,
+    the one client-side ladder every such resolver shares: the signed
+    per-session token, then ``KIROCREW_SESSION_KEY``, then the gateway-published
+    pid mapping by host pid and by ancestor walk. The protected member binding is
+    deliberately NOT consulted here — it gates a private memory store, and this
+    lenient resolver's consumers are attribution rather than authorization.
 
-    After rekey, the process tree may be: gateway -> kiro-cli (pool, has PID file)
-    -> kiro-cli-chat (forked child) -> MCP server.  os.getppid() returns the
-    immediate parent (kiro-cli-chat) which has no PID file.  Walk up ancestors
-    until we find a matching file or hit init.
+    Warm-pool kiro-cli processes have no ``KIROCREW_SESSION_KEY`` (the pool
+    spawns with an empty key so rekey() + pid mapping provide the mapping), and
+    a pid mapping answers for the PROCESS: on a runtime hosting several sessions
+    it names a co-tenant, so the ladder refuses there rather than returning the
+    wrong session.
     """
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
         return ctx.session_key
-    # The signed per-session token, ABOVE the env var: after a warm-pool rekey the
-    # env key names the previous session and the mapping file names the current
-    # one. See :func:`_session_key_from_token`.
-    from_token = _session_key_from_token()
-    if from_token:
-        return from_token
-    sk = os.environ.get("KIROCREW_SESSION_KEY", "")
-    if sk:
-        return sk
-    try:
-        from kiro_crew.session_pid_sig import read_session_pid_txt
-
-        cfg_dir = config_dir()
-        # Sandbox launcher exports its own HOST pid (the pid the gateway keys
-        # session_pid files by) — direct lookup works even when this
-        # process's pid view diverges from the host's (PID-namespace
-        # sandboxing), where the ancestor walk below can never match.
-        # Reads go through session_pid_sig's hardened reader (symlink
-        # refusal, regular-file check, size bound) — same read discipline
-        # as the strict verifier, minus the signature requirement.
-        host_pid = os.environ.get("KIROCREW_HOST_PID", "")
-        if host_pid.isdigit():
-            key = read_session_pid_txt(host_pid, cfg_dir)
-            if key:
-                return key
-        pid = os.getppid()
-        seen: set[int] = set()
-        while pid > 1 and pid not in seen:
-            seen.add(pid)
-            key = read_session_pid_txt(pid, cfg_dir)
-            if key:
-                return key
-            pid = _get_ppid(pid)
-    except Exception:
-        pass
-    return ""
+    return resolve_own_identity(consult_protected_binding=False).session_key
 
 
 def _resolve_session_key_strict() -> str:
@@ -788,8 +690,11 @@ def _resolve_session_key_strict() -> str:
        fully identified.
 
     Returns ``""`` when only the ``/proc`` ancestor WALK would have
-    matched, or when the sidecar is missing/invalid. The walk stays
-    excluded: a subagent spawned via ``spawn_run`` lives under the
+    matched, when the sidecar is missing/invalid, or when the mapping
+    records that its pid hosts SEVERAL sessions — one key cannot name
+    them, so answering would attribute this caller to a co-tenant, and a
+    state-mutating tool would write another session's state. The walk
+    stays excluded: a subagent spawned via ``spawn_run`` lives under the
     parent slot's process tree, so walking ancestors from its MCP-core
     child silently resolves to the parent — which would let the
     subagent mutate state on the wrong slot. Read-only callers (audit,
@@ -2441,6 +2346,24 @@ def _crew_memory_unavailable_reason(error: UnknownMemoryStore) -> str:
     return redact_local_paths(redact(str(error)))[0][:1000]
 
 
+def _with_display_name(entry: dict[str, Any], key: str, agent: Any) -> dict[str, Any]:
+    """Add the crew's dashboard label to a routing entry when it has one.
+
+    The user names a crew by the label the dashboard shows; the model must
+    dispatch by the key. Without the label beside the key, a crew whose label
+    differs from its id cannot be matched to the user's words.
+    """
+    label = (getattr(agent, "display_name", "") or "").strip()
+    if label and label != key:
+        entry["display_name"] = label
+    return entry
+
+
+def _key_with_label(key: str, label: str | None) -> str:
+    """Render one ``available`` item: the key, then its label when it has one."""
+    return f"{key} ({label})" if label else key
+
+
 def _do_route_crew(task: str) -> str:
     """Rank the crews whose triggers match *task* (the route_crew tool body).
 
@@ -2471,15 +2394,25 @@ def _do_route_crew(task: str) -> str:
         try:
             binding = resolve_agent_bindings(cfg, name, validate_memory_files=False)
         except UnknownMemoryStore as exc:
-            unavailable.append({"crew": name, "reason": _crew_memory_unavailable_reason(exc)})
+            unavailable.append(
+                _with_display_name(
+                    {"crew": name, "reason": _crew_memory_unavailable_reason(exc)},
+                    name,
+                    cfg.agents[name],
+                )
+            )
             continue
         matches.append(
-            {
-                "crew": name,
-                "score": round(score, 3),
-                "description": (cfg.agents[name].description or "").strip(),
-                "memory_store": binding.memory_store_name,
-            }
+            _with_display_name(
+                {
+                    "crew": name,
+                    "score": round(score, 3),
+                    "description": (cfg.agents[name].description or "").strip(),
+                    "memory_store": binding.memory_store_name,
+                },
+                name,
+                cfg.agents[name],
+            )
         )
     return json.dumps(
         {
@@ -2518,7 +2451,7 @@ def _do_select_crew(crew: str) -> str:
     default = cfg.default_agent
     if not crew:
         roster = [
-            {"name": n, "triggers": c.triggers}
+            _with_display_name({"name": n, "triggers": c.triggers}, n, c)
             for n, c in cfg.agents.items()
             if n != default and c.triggers.strip()
         ]
@@ -2530,13 +2463,21 @@ def _do_select_crew(crew: str) -> str:
                     "Select a crew ONLY when its triggers clearly and specifically "
                     "match the task with high confidence. If no crew is a strong "
                     "match (or the list is empty), do NOT route — use the default "
-                    "crew. Crews without triggers are intentionally omitted."
+                    "crew. Crews without triggers are intentionally omitted. "
+                    "The user may refer to a crew by its display_name; always "
+                    "pass its name to spawn_run(crew=...)."
                 ),
             },
             ensure_ascii=False,
         )
     if crew not in cfg.agents:
-        available = ", ".join(sorted(cfg.agents)) or "(none)"
+        available = (
+            ", ".join(
+                _key_with_label(k, _with_display_name({}, k, cfg.agents[k]).get("display_name"))
+                for k in sorted(cfg.agents)
+            )
+            or "(none)"
+        )
         return json.dumps(
             {"error": f"unknown crew '{crew}'", "available": available},
             ensure_ascii=False,

@@ -39,12 +39,29 @@ def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, s
     # credential for a port this home once served would send the stale one. No
     # caller does that; closing it means this parameter going away, not the order
     # flipping.
-    secret = run_marker.read_secret(port)
-    if not secret:
-        try:
-            secret = secret_path.read_text().strip()
-        except FileNotFoundError:
-            pass
+    #
+    # This dials the IPv4 loopback literal, so the credential is resolved for THAT
+    # listener first (``read_listener_secret``): a port names a SET of listeners,
+    # and the address-keyed read refuses to hand the credential to whatever else
+    # holds the port. When the gateway published listener entries but none covers
+    # the dialled family, that is the desync -- fail closed, do NOT fall back. When
+    # it published NONE (an older gateway, or one that could not name its bound
+    # address), fall back to the port-keyed read, then the named path -- but only
+    # when absence is PROVEN (``has_listener_entries(port) is False``); an
+    # enumeration error returns ``None``, absence is unproven, so fail closed
+    # rather than downgrade to the port-keyed credential over an unreadable run/.
+    # The named path is never outranked by the home-wide ``.local_secret`` here,
+    # which is why this does its own resolution rather than delegating to
+    # ``read_local_secret``: that helper's tail is the very home-wide file a
+    # second generation replaces.
+    secret = run_marker.read_listener_secret(port, "127.0.0.1")
+    if not secret and run_marker.has_listener_entries(port) is False:
+        secret = run_marker.read_secret(port)
+        if not secret:
+            try:
+                secret = secret_path.read_text().strip()
+            except FileNotFoundError:
+                pass
     if secret:
         headers["X-Internal-Secret"] = secret
     try:

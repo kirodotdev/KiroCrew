@@ -1492,6 +1492,147 @@ describe('chatSlice thunks', () => {
     expect(chat(store).activeSlot).toBeNull()
   })
 
+  // A 404 on DELETE means the server no longer has the slot, which is the end
+  // state the close asked for: a second tab or a repeat click racing a slow
+  // first close must not surface an error or put the row back (#14823).
+  it('treats a 404 on DELETE as a completed close', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [], running: false })
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    apiMock.chatSlots.mockResolvedValue([slotRow('peer')])
+    const outcome = await store.dispatch(deleteSlot('doomed'))
+    expect(outcome.type).toBe('chat/deleteSlot/fulfilled')
+    expect(root(store).dashboard.closingSlots).toEqual({})
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+  })
+
+  // The 404 path drops its close hold, so a slot list serialized before the
+  // server popped the key (a poll or reconnect refetch already in flight at
+  // click time) would re-add the closed row with nothing left to remove it.
+  // The recovery refetch is the authoritative list that settles it.
+  it('refetches after a 404 close so a pre-close slot list cannot keep the row', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [], running: false })
+    let answerStale: (v: unknown) => void = () => {}
+    let answerRecovery: (v: unknown) => void = () => {}
+    apiMock.chatSlots
+      .mockReturnValueOnce(new Promise(resolve => { answerStale = resolve }))
+      .mockReturnValueOnce(new Promise(resolve => { answerRecovery = resolve }))
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    const stale = store.dispatch(fetchSlots())
+    await store.dispatch(deleteSlot('doomed'))
+    // The pre-pop reply lands first and, with no hold left, re-adds the row...
+    answerStale([slotRow('doomed'), slotRow('peer')])
+    await stale
+    expect(apiMock.chatSlots).toHaveBeenCalledTimes(2)
+    // ...and the list serialized after the pop takes it out again.
+    answerRecovery([slotRow('peer')])
+    for (let i = 0; i < 6; i++) await Promise.resolve()
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+  })
+
+  // The two HTTP replies are unordered: the pre-close reply can also land AFTER
+  // the recovery one, when no later list is guaranteed. It is paired with the
+  // key before the hold is released, so its stale row is dropped on arrival.
+  it('drops a pre-close slot list that lands after the 404 close\'s recovery refetch', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [], running: false })
+    let answerStale: (v: unknown) => void = () => {}
+    apiMock.chatSlots
+      .mockReturnValueOnce(new Promise(resolve => { answerStale = resolve }))
+      .mockResolvedValueOnce([slotRow('peer')])
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    const stale = store.dispatch(fetchSlots())
+    await store.dispatch(deleteSlot('doomed'))
+    for (let i = 0; i < 6; i++) await Promise.resolve()
+    expect(apiMock.chatSlots).toHaveBeenCalledTimes(2)
+    answerStale([slotRow('doomed'), slotRow('peer')])
+    await stale
+    expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+    expect(root(store).dashboard.staleSlotFetches).toEqual({})
+  })
+
+  // Only the fetches already in flight at the 404 are distrusted: the recovery
+  // refetch is dispatched after the pairing, so a slot the popping close put
+  // back still shows from it.
+  it('trusts the recovery refetch when the popping close restored the slot', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [], running: false })
+    let answerStale: (v: unknown) => void = () => {}
+    apiMock.chatSlots
+      .mockReturnValueOnce(new Promise(resolve => { answerStale = resolve }))
+      .mockResolvedValueOnce([slotRow('doomed'), slotRow('peer')])
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    const stale = store.dispatch(fetchSlots())
+    await store.dispatch(deleteSlot('doomed'))
+    for (let i = 0; i < 6; i++) await Promise.resolve()
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+    answerStale([slotRow('doomed'), slotRow('peer')])
+    await stale
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+  })
+
+  // A 404 close closed nothing, and the close that did pop the key can still
+  // fail and restore the slot, so this tab keeps the slot's view state for an
+  // authoritative list to settle. A close that did succeed still evicts it.
+  it('keeps the slot\'s view state on a 404 close and evicts it on a real one', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [{ role: 'assistant', content: 'hi' }], running: false })
+    apiMock.chatSlots.mockResolvedValue([slotRow('doomed'), slotRow('peer')])
+    apiMock.deleteChatSlot.mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    await store.dispatch(switchSlot('doomed'))
+    expect(chat(store).slotMessages.doomed).toBeDefined()
+
+    const gone = await store.dispatch(deleteSlot('doomed'))
+    expect(gone.type).toBe('chat/deleteSlot/fulfilled')
+    expect(chat(store).slotMessages.doomed).toBeDefined()
+
+    apiMock.deleteChatSlot.mockResolvedValueOnce({ ok: true })
+    const closed = await store.dispatch(deleteSlot('doomed'))
+    expect(closed.type).toBe('chat/deleteSlot/fulfilled')
+    expect(chat(store).slotMessages.doomed).toBeUndefined()
+  })
+
+  // The 404 can land while another close of the same key is mid-flight on the
+  // server, and that close can still fail and restore the slot. This request
+  // closed nothing, so it must not hold the restored row out of view.
+  it('shows a slot the server restores after a 404 close', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [], running: false })
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    await store.dispatch(deleteSlot('doomed'))
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+  })
+
+  it('still fails the close on a non-404 status', async () => {
+    apiMock.chatSlotDetail.mockResolvedValue({ messages: [], running: false })
+    apiMock.deleteChatSlot.mockRejectedValue(Object.assign(new Error('boom'), { status: 500 }))
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    const outcome = await store.dispatch(deleteSlot('doomed'))
+    expect(outcome.type).toBe('chat/deleteSlot/rejected')
+    expect(apiMock.chatSlots).toHaveBeenCalled()
+  })
+
   // The dismissed tab must not wait on an unrelated conversation's transcript.
   // The peer's history fetch is unbounded, so awaiting it before the removal
   // pins the close control for as long as that load takes; only the state

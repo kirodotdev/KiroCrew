@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, render, screen, fireEvent } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { store as globalStore } from '../store'
@@ -169,7 +170,10 @@ describe('Settings toggle', () => {
 
   it('is off by default and persists a flip', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(createElement(QueryClientProvider, { client: qc }, createElement(NotificationsPanel)))
+    // The toggle lives in the "Desktop alerts" rail item; SettingsSubNav reads the
+    // sub param from the router, so mount under one pointed at that item.
+    render(createElement(MemoryRouter, { initialEntries: ['/settings?tab=notifications&sub=alerts'] },
+      createElement(QueryClientProvider, { client: qc }, createElement(NotificationsPanel))))
     const label = en.pages.settings.notificationsPanel.unread_only_when_done_or_waiting
     const toggle = screen.getByRole('switch', { name: label })
     expect(toggle.getAttribute('aria-checked')).toBe('false')

@@ -160,7 +160,7 @@ class TestTokenRefusal:
 
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
-        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "s3cr3t")
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
         monkeypatch.setattr(cli_server, "loopback_urlopen", refused)
         with pytest.raises(SystemExit) as exc:
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
@@ -175,7 +175,7 @@ class TestTokenRefusal:
 
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
-        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "s3cr3t")
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
         monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
         with pytest.raises(SystemExit) as exc:
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
@@ -194,11 +194,11 @@ class TestLogout:
     @pytest.fixture
     def secret_home(self, monkeypatch, tmp_path):
         (tmp_path / ".local_secret").write_text("s3cr3t\n", encoding="utf-8", newline="\n")
-        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "s3cr3t")
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
         return tmp_path
 
     def test_missing_secret_reports_gateway_down(self, monkeypatch, tmp_path, capsys) -> None:
-        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port: "")
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "")
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1

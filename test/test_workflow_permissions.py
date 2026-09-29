@@ -210,11 +210,18 @@ class TestReleasePermissions:
             "id-token": "write",
             "attestations": "write",
         }
-        assert _permission_block(lines, "  sign-and-notarize:") == {
-            "id-token": "write",
-            "contents": "read",
-            "attestations": "write",
-        }
+        # The three macOS callers (universal + one per single arch) grant the
+        # same three: each notarize job attests its own shipping DMG.
+        for job in (
+            "  sign-and-notarize:",
+            "  sign-and-notarize-arm64:",
+            "  sign-and-notarize-x64:",
+        ):
+            assert _permission_block(lines, job) == {
+                "id-token": "write",
+                "contents": "read",
+                "attestations": "write",
+            }
         assert _permission_block(lines, "  github-release:") == {
             "contents": "write",
         }

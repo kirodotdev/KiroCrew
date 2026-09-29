@@ -38,6 +38,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.subagent import (
+    SubagentDelivery,
     SubagentInfo,
     SubagentManager,
     stage_boundary_owner_for_run,
@@ -82,6 +83,86 @@ def _done_events(mgr: SubagentManager) -> list:
 
 async def _noop_reset(session_key, **_):
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_reap_settles_credits_before_a_cancelled_state_writer_drains(monkeypatch):
+    from kiro_crew.acp.types import AcpPromptStats
+
+    mgr = _make_manager()
+    mgr._sessions.reset = AsyncMock()
+    mgr._running_count = 1
+    info = _info(credits=1.25)
+    mgr._agents[info.id] = info
+    provider = MagicMock()
+    provider.last_prompt_stats = AcpPromptStats(credits=9.0)
+    entered = asyncio.Event()
+    draining = asyncio.Event()
+    released = asyncio.Event()
+    workers = []
+    persisted = []
+    tombstoned = []
+    delivered = []
+    original_wait = asyncio.wait
+    original_to_thread = asyncio.to_thread
+
+    async def blocked_write(func, *args, **fields):
+        # Only the manager's off-loop state writes carry keyword ``fields``
+        # (``turns=`` for the diagnostics write, other keys for plain
+        # persistence). ``asyncio.to_thread`` is patched on the module object,
+        # so it is process-wide for the test's lifetime: any OTHER coroutine
+        # that reaches ``asyncio.to_thread`` (with a bare callable and no state
+        # fields) must run for real rather than be swallowed here — delegating
+        # keeps the patch scoped to the state-writer seam this test drives.
+        if not fields:
+            return await original_to_thread(func, *args)
+        if "turns" in fields:
+            workers.append(asyncio.current_task())
+            entered.set()
+            await released.wait()
+        else:
+            persisted.append(fields)
+        return True
+
+    async def observe_drain(futures, **kwargs):
+        if info._state_drain_active:
+            draining.set()
+        return await original_wait(futures, **kwargs)
+
+    async def billed_consumer(self, run, session_key, usage):
+        usage.begin(provider)
+        provider.last_prompt_stats = AcpPromptStats(credits=0.75)
+        await mgr._write_state_off_loop(run, "diagnostics", turns=1)
+
+    async def on_done(run):
+        delivered.append(run.credits)
+
+    mgr._on_done = on_done
+    mgr._write_tombstone = MagicMock(side_effect=lambda run, cause: tombstoned.append(run.credits))
+    monkeypatch.setattr(type(mgr._run_events), "_run_inner_impl", billed_consumer)
+    monkeypatch.setattr("kiro_crew.subagent.asyncio.to_thread", blocked_write)
+    monkeypatch.setattr("kiro_crew.subagent.asyncio.wait", observe_drain)
+    task = asyncio.create_task(mgr._run_inner(info, f"subagent:{info.id}"))
+    mgr._tasks[info.id] = task
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        await asyncio.wait_for(draining.wait(), timeout=5)
+        await asyncio.wait_for(mgr._force_reap(info.id, info, 12.5, reason="deadline"), timeout=5)
+        assert info._state_drain_active, "test must report before the worker drains"
+        assert not task.done()
+        assert _done_events(mgr)[0].args[2]["credits"] == 2.0
+        assert persisted == []
+        assert tombstoned == [2.0]
+        assert delivered == [2.0]
+    finally:
+        released.set()
+        task.cancel()
+        await asyncio.wait_for(
+            asyncio.gather(task, *workers, *mgr._report_tasks, return_exceptions=True), timeout=5
+        )
+    assert info.credits == 2.0, "the outer finally must not count the attempt twice"
+    assert info._credit_accounting is None
 
 
 async def _schedule_recovery(mgr: SubagentManager, info: SubagentInfo) -> None:
@@ -765,7 +846,10 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
         batch_total=7,
         _digest_held=True,
         _digest_flush_only=True,
-        _digest_settle_ids=["held-a", "held-b"],
+        _digest_settle_deliveries=[
+            SubagentDelivery("held-a", 1.0, 0.1),
+            SubagentDelivery("held-b", 2.0, 0.2),
+        ],
         _delivery_queued=True,
     )
     info.history = ["history" * 100_000]
@@ -800,7 +884,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
     assert retained.batch_total == info.batch_total
     assert retained._digest_held is info._digest_held is True
     assert retained._digest_flush_only is info._digest_flush_only is True
-    assert retained._digest_settle_ids == tuple(info._digest_settle_ids)
+    assert retained._digest_settle_deliveries == tuple(info._digest_settle_deliveries)
     assert retained._delivery_queued is info._delivery_queued is True
     for field in ("result", "task", "error"):
         value = getattr(retained, field)
@@ -830,7 +914,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
     assert redelivered.batch_total == info.batch_total
     assert redelivered._digest_held is info._digest_held
     assert redelivered._digest_flush_only is info._digest_flush_only
-    assert redelivered._digest_settle_ids == info._digest_settle_ids
+    assert redelivered._digest_settle_deliveries == info._digest_settle_deliveries
     assert redelivered._delivery_queued is info._delivery_queued
     for field in ("result", "task", "error"):
         assert "[truncated " in getattr(redelivered, field)
@@ -1491,19 +1575,20 @@ async def test_run_does_not_block_on_its_report_during_shutdown():
 
     mgr._on_done = _wedged_on_done
 
-    # Must return promptly even though the injection is wedged.
-    await asyncio.wait_for(mgr._run(info), timeout=5)
-
-    # The report publishes only once the run's teardown has decided (it waits
-    # on the `teardown_done` event `_run`'s `finally` sets), so it reaches the
-    # injection on the tick after `_run` returns.
-    await asyncio.sleep(0)
-    assert wedged.is_set(), "report never started"
-    pending = [t for t in mgr._report_tasks if not t.done()]
-    assert pending, "report should still be pending, owned by cancel_all's drain"
-    for t in pending:
-        t.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+    try:
+        # Must return promptly even though the injection is wedged.
+        await asyncio.wait_for(mgr._run(info), timeout=5)
+        # The independent report may still be persisting terminal usage when
+        # the run returns; synchronize with its callback rather than scheduling.
+        await asyncio.wait_for(wedged.wait(), timeout=5)
+        assert wedged.is_set(), "report never started"
+        pending = [t for t in mgr._report_tasks if not t.done()]
+        assert pending, "report should still be pending, owned by cancel_all's drain"
+    finally:
+        pending = list(mgr._report_tasks)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 @pytest.mark.asyncio

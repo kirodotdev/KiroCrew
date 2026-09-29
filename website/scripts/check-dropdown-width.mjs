@@ -31,7 +31,10 @@ const CRONS = {
 
 /** Surfaces to sweep. `prep` runs after navigation to reveal the controls. */
 const SURFACES = [
-  { id: 'settings-display', url: '/settings?tab=display' },
+  { id: 'settings-display-view', url: '/settings/display/view' },
+  { id: 'settings-display-zoom', url: '/settings/display/zoom' },
+  { id: 'settings-display-terminal', url: '/settings/display/terminal' },
+  { id: 'settings-display-theme', url: '/settings/display/theme' },
   { id: 'settings-chat', url: '/settings?tab=chat' },
   { id: 'settings-voice', url: '/settings?tab=voice' },
   { id: 'settings-overview', url: '/settings?tab=overview' },

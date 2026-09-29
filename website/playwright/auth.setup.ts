@@ -49,5 +49,9 @@ setup('authenticate', async ({ page }) => {
   // test projects inherit it (the ephemeral gateway port makes a committed
   // state.json localStorage entry useless across runs, so it must be set live).
   await page.evaluate(() => window.localStorage.setItem('mc-onboarded', '1'))
+  // Same for the Meet CrewMates chapter: it opens by itself on the first
+  // Crewmates page visit to a workspace that has not seen it, and would cover
+  // every /members spec. `mc-crewmates-onboarded` is its render cache.
+  await page.evaluate(() => window.localStorage.setItem('mc-crewmates-onboarded', '1'))
   await page.context().storageState({ path: STATE_PATH })
 })

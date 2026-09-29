@@ -199,7 +199,7 @@ const PROBE = () => {
   }
 }
 
-await page.goto(`${base}/settings?tab=display`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${base}/settings/display/theme`, { waitUntil: 'domcontentloaded' })
 await page.waitForSelector('[data-setting-label]', { timeout: 15_000 })
 await freezeMotion(page)
 await page.waitForTimeout(700)

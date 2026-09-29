@@ -16,12 +16,16 @@ name. ``config_dir()`` and ``data_home()`` resolve to the SAME directory, so a
   Kiro Crew derives into the same directory; see ``common.crew_agent_id`` for why it
   covers the declared name as well as the filename.
   ``agent_discovery.list_agents`` is THE reader of installed agent specs, keyed by
-  the spec's ``name``, and it reads and JSON-parses every ``~/.kiro/agents/*.json``
+  the spec's ``name``, and it reads and JSON-parses every ``<kiro home>/agents/*.json``
   on each call. The gateway resolves that directory as ``kiro_home() / "agents"``,
-  where ``kiro_home()`` is ``$KIRO_HOME`` or ``~/.kiro``. It is NOT under the data
-  home and NOT governed by ``KIROCREW_HOME``: the backend is launched with
-  ``KIROCREW_HOME=data_home`` but no ``KIRO_HOME`` (``supervisor/backend.py``),
-  so the spec lands under the process HOME. Resolved here the same way rather
+  where ``kiro_home()`` is ``$KIRO_HOME`` or ``~/.kiro``. It is NOT governed by
+  ``KIROCREW_HOME``. The supervisor exports ``KIRO_HOME=<data home>/kiro``
+  (``supervisor.__main__.export_kiro_home``) before calling this module, so the spec
+  lands in a directory the task owns, beside the default spec the backend writes
+  there. It must NOT land in the process HOME's shared ``~/.kiro/agents``: the
+  backend runs on a non-default data home and Kiro Crew refuses to write the shared
+  dir from one, so a spec landing there leaves the backend with no ``kirocrew.json``
+  and every turn dies. Resolved here from the environment the way kiro-cli does rather
   than imported, so this module needs no ``kiro_crew`` install (matching the
   supervisor's other minimal, import-free config reads).
 
@@ -85,12 +89,15 @@ INSTALLED_MARKER = ".smc-crew-installed.json"
 def default_kiro_agents_dir() -> Path:
     """Where kiro-cli reads agent specs: ``<kiro home>/agents``.
 
-    Mirrors ``kiro_crew.config.paths.kiro_home`` (``config/paths.py:510``):
-    ``$KIRO_HOME`` if set, else ``~/.kiro``, then ``/agents``. Deliberately NOT
-    under the data home -- see the module docstring. The one behaviour not
-    mirrored is ``kiro_home``'s rejection of a system-directory ``$KIRO_HOME``;
-    that guards a pathological override the container never sets, and copying it
-    would only widen this module's surface.
+    Mirrors ``kiro_crew.config.paths.kiro_home``: ``$KIRO_HOME`` if set, else
+    ``~/.kiro``, then ``/agents``. In the container ``$KIRO_HOME`` is always set, by
+    ``supervisor.__main__.export_kiro_home``, which also asserts that this function
+    answers the directory the task owns -- so a drift between the two spellings fails
+    at boot instead of installing the crew where nothing serves it.
+
+    The one behaviour not mirrored is ``kiro_home``'s rejection of a system-directory
+    ``$KIRO_HOME``; the value is derived from ``SMC_DATA_HOME`` rather than passed
+    through, and copying the check would only widen this module's surface.
     """
     override = os.environ.get("KIRO_HOME")
     home = Path(override).expanduser() if override else Path.home() / ".kiro"

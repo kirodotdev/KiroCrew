@@ -277,16 +277,20 @@ host-arch build is a local-machine artifact.
 
 **Single-arch macOS DMGs in CI (opt-in).** `build-desktop.yml` has a second
 macOS job, `build-desktop-mac-single-arch`, behind the boolean input
-`mac_single_arch` (default `false`; `nightly.yml` passes `true`, `release.yml`
-keeps the default). When on, it runs the script twice on `macos-15` —
+`mac_single_arch` (default `false`; `nightly.yml` and `release.yml` both pass
+`true`). When on, it runs the script twice on `macos-15` —
 `UNIVERSAL=0 TARGET_ARCH=arm64` and
 `UNIVERSAL=0 TARGET_ARCH=x86_64` — and uploads `unsigned-build-darwin-arm64`
 and `unsigned-build-darwin-x64` beside `unsigned-build-darwin-universal`. The
-job is `continue-on-error`, so a failed single-arch build never holds the
-universal signing or the Linux publishers.
+job is `continue-on-error` only when the caller passes
+`soft_fail_mac_single_arch: true`, which `nightly.yml` does (a failed
+single-arch build never holds the universal signing or the Linux publishers
+there). `release.yml` keeps the default: both DMGs are required promotion-bundle
+roles, so a failed build fails the aggregate before any publisher writes a key.
 
-On nightly each single-arch artifact is then signed, notarized and published by
-its own call of `sign-and-notarize.yml` (`mac_variant: arm64 | x64` plus
+On nightly and on both release channels each single-arch artifact is then
+signed, notarized and published by its own call of `sign-and-notarize.yml`
+(`mac_variant: arm64 | x64` plus
 `mac_artifact`), which suffixes every shared name with the arch: signing-bucket
 keys, `desktop/<channel>/<version>/KiroCrew-<arch>.{zip,dmg}`, the alias
 `desktop/<channel>/latest/KiroCrew-<arch>.dmg`, and the channel file at
@@ -297,10 +301,13 @@ single-arch app knows which feed to follow from `desktopDistArch` in its own
 `package.json` (`-c.extraMetadata.desktopDistArch=<arch>`, stamped by the
 script on `TARGET_ARCH` builds only): `auto-update.js` resolves that directory
 as the feed `variant` and offers `KiroCrew-<arch>.dmg` as the reinstall link;
-the universal app carries no stamp and keeps the channel root. `release.yml`
-still calls the universal leg alone — the stable promotion bundle records
-exactly one DMG — so insider/stable per-arch feeds are a later change. To get
-the two DMGs from any ref, dispatch `build-desktop.yml` manually with the box
+the universal app carries no stamp and keeps the channel root. On `release.yml`
+the two single-arch callers are required lanes: the stable promotion bundle
+carries all three zip/DMG pairs (the single-arch zip travels as
+`notarized-<arch>.zip` so the flat bundle can hold it beside the universal
+`notarized.zip`), a byte promotion republishes all three, and the GitHub
+Release page lists `KiroCrew-<v>-{universal,arm64,x64}.dmg`. To get the two
+DMGs unsigned from any ref, dispatch `build-desktop.yml` manually with the box
 ticked, or pick them up from the nightly run.
 
 Prerequisite: **Rosetta 2** on the build machine
@@ -537,8 +544,17 @@ When the app starts, [`main.js`](../../website/electron/main.js) composes the
 desktop lifecycle and delegates gateway ownership to
 [`gateway-supervisor.js`](../../website/electron/gateway-supervisor.js). The
 supervisor first checks whether a gateway is already running. An existing
-gateway—including a local SSH forward to a remote gateway—is reused. Otherwise
-it locates the backend binary via
+gateway, including a local SSH forward to a remote gateway, is reused. Before
+reusing a same-family local gateway on a fixed-path POSIX install, the shell
+checks whether its sole listener is running from this app's current bundled
+backend path. If that bundled gateway reports an older version than the app,
+the shell warns that updated features may be unavailable and offers Continue or
+Quit. The warning explains how to stop the old gateway before reopening the
+app; it adds service guidance only when the listener is service-classified.
+Unknown owners, remote tunnels, separate CLI installs, same or newer versions,
+Windows, and moved AppImages keep the existing reuse behavior. The shell does
+not restart or force-stop a stale gateway automatically. Otherwise it locates
+the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
 gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
 healthy.

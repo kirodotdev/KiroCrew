@@ -42,6 +42,13 @@ import { Btn, Input, SendBtn, Toggle } from './ui'
  */
 
 export const START_MEET_CREWMATES_EVENT = 'mc-start-meet-crewmates'
+/**
+ * The Crewmates page announces itself with this once its roster has loaded and
+ * holds no crewmate. Unlike {@link START_MEET_CREWMATES_EVENT} (the user asked)
+ * it is a request, not an order: the host opens the flow only if it is still
+ * due, so the first visit shows it and later visits do not.
+ */
+export const CREWMATES_PAGE_ENTERED_EVENT = 'mc-crewmates-page-entered'
 
 const TOTAL_STEPS = 4
 const NAME_MAX = 24
@@ -134,44 +141,6 @@ export function builtFromOptions(installed: InstalledAgentRow[] | undefined): st
 }
 
 const FIELD_LABEL_CLS = 'block text-[11px] uppercase tracking-wide text-muted mb-1.5'
-
-/**
- * App-level notice for a failed eligibility read (roster or installed agents):
- * the chapter cannot decide whether to fire, so it says so instead of silently
- * never appearing. No agent hand-off, by decision: a first-run user has not
- * met the agent yet; the Crew Members page entry is the recovery path.
- */
-export function MeetCrewmatesEligibilityNotice({ onDismiss }: { onDismiss: () => void }) {
-  const { t } = useTranslation()
-  const btn =
-    'px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors'
-  return (
-    <div className="fixed bottom-safe-offset-4 right-safe-offset-4 z-40 max-w-sm flex flex-col gap-2" data-testid="meet-crewmates-eligibility-error">
-      {/* Nothing to lose here (a read failed before the flow ever opened), so
-          the hand-off is on per `errors-use-error-notice`; it also dismisses
-          the notice, since the chat it opens sits behind this overlay. */}
-      <ErrorNotice message={t('components.meetCrewmatesFlow.eligibility_error')} askAgent onHandoff={onDismiss} />
-      <div className="flex justify-end gap-2">
-        <button type="button" className={btn} onClick={onDismiss} data-testid="meet-crewmates-eligibility-dismiss">
-          {t('app.dismiss')}
-        </button>
-        {/* The remedy IS the flow, not a page the user may already be on: the
-            same event the Crew Members entry fires, then the notice goes. */}
-        <button
-          type="button"
-          className={btn}
-          onClick={() => {
-            window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT))
-            onDismiss()
-          }}
-          data-testid="meet-crewmates-eligibility-open"
-        >
-          {t('components.meetCrewmatesFlow.eligibility_open')}
-        </button>
-      </div>
-    </div>
-  )
-}
 
 /** Renders nothing; runs `onMount` once when its subtree enters the DOM. Placed
  *  inside the incoming step so focus is seated on controls that exist, after

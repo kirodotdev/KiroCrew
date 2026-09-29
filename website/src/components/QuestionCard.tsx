@@ -29,6 +29,8 @@ interface QuestionCardProps {
   /** True while a submission is in flight: both controls lock so a second
    *  click cannot produce a duplicate resolution or a duplicate chat turn. */
   busy?: boolean
+  /** Surface-specific action copy; other chat callers keep the standard label. */
+  submitLabel?: string
   /** Flips of "the user has an answer in progress" — a non-empty custom
    *  input OR a pending option selection. All of that state lives only in
    *  this component; publishing the boolean lets the store refuse to
@@ -55,7 +57,7 @@ const initialCollapsed = (questions: Question[]): Record<number, boolean> =>
     ? Object.fromEntries(questions.slice(1).map((_, i) => [i + 1, true]))
     : {}
 
-function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftChange }: QuestionCardProps) {
+function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftChange, submitLabel }: QuestionCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
   const [selections, setSelections] = useState<Record<number, Set<string>>>({})
@@ -337,7 +339,7 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
           disabled={!allAnswered || busy}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
         >
-          <MessageSquare size={14} /> {i18nT('components.questionCard.submit')}
+          <MessageSquare size={14} /> {submitLabel ?? i18nT('components.questionCard.submit')}
         </button>
       </div>
       {/* Dismiss is the only control that ends a question nobody is going to

@@ -308,8 +308,12 @@ entry.
    (completed / execute-now / pending), previous stage results, the current
    stage's title and bullets, and an explicit "execute Stage N of M now"
    instruction. It is appended as a hidden user message (`auto-go` class) and
-   passed to `_run_chat`. An exception from `_run_chat` clears `_auto_run`,
-   posts a stage-error notice, logs `auto_run_stage_error`, and breaks.
+   passed to `_run_chat`, bounded by the stage timeout. Hitting that ceiling
+   clears `_auto_run`, posts a timed-out notice, logs `auto_run_timeout`
+   (`stage_turn_ceiling`), and breaks; any other exception from `_run_chat` does
+   the same with a stage-error notice and `auto_run_stage_error`. Both halts
+   cancel the stage's subagents first (see **Halts cancel the stage's
+   subagents** below).
 7. **Wait for the stage's sub-agents.** Registers one
    `SubagentManager.completion_event(parent_key)` for every immutable parent key
    captured by the boundary, pulsed once per terminal report from
@@ -336,6 +340,28 @@ entry.
    and an `auto_run_subagent_check_failed` SEL event rather than silently skipping
    verification. Exhausting the ceiling stops auto-run with
    `auto_run_subagent_timeout`.
+
+   **Halts cancel the stage's subagents.** The wait-exhausted, stage-turn
+   timeout and stage-turn error halts switch `_auto_run` off and then call
+   `_cancel_exhausted_stage_subagents`, so the stage's children do not run on
+   to their own `subagent_timeout_secs` deadline. It cancels the same scope
+   explicit Cancel does, through the same per-parent sequence
+   (`_cancel_boundary_parents`): every captured parent is reserved first and
+   each `cancel_for_boundary` keeps its retained hold; when the reservation is
+   refused it falls back to `retain_scope=False`, with no hold. Every manager
+   call is guarded, so a failure is logged and counted, never raised into the
+   halt. The halt waits at most `_HALT_CANCEL_BUDGET_SECS` for the
+   cancel; a slower one keeps running on a tracked background task and is never
+   cancelled at the bound. The notice is worded from the real outcome
+   (`_halt_cancel_notice`: stopped, refused, still finishing, failed or
+   pending), and a halt that could not confirm every child stopped says to stop
+   them from the subagent panel before Go. Only a wait-exhausted halt whose
+   children were all confirmed stopped offers "Send Go to continue"; a plan
+   Cancel landing during the wait suppresses the Go line. If the controller is
+   itself cancelled during the bounded wait (Stop, slot close), the notice,
+   its audit event and, for the turn halts, stage preservation still land,
+   worded from the unfinished outcome, and the `CancelledError` then
+   propagates.
 
    **Settlement invariants.** These ids are stable; code comments and review
    findings cite them bare, and the named tests decide if prose and behavior

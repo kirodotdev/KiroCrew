@@ -495,9 +495,16 @@ jobs:
       # fed by its OWN sign-and-notarize caller below (mac_variant), under
       # feed/nightly/<arch>/; the universal caller still excludes both
       # artifact names, so the universal DMG stays the only mac bytes it sees.
-      # release.yml keeps the default (false): the stable promotion bundle
-      # records exactly one DMG, and per-arch stable is a later change.
+      # release.yml passes the same and carries both DMGs in the stable
+      # promotion bundle.
       mac_single_arch: true
+      # A failed single-arch macOS build must not skip the universal signing
+      # or the Linux publishers on THIS lane: nightly records no cross-arch
+      # completeness claim (no promotion bundle), so the other lanes publish
+      # and the failed arch's own sign-and-notarize caller fails at
+      # download-artifact. release.yml keeps the default (false): there both
+      # DMGs are REQUIRED promotion-bundle roles.
+      soft_fail_mac_single_arch: true
 
   # Windows builds in its own workflow because it Authenticode-signs during the
   # build (the Squirrel installer embeds already-signed executables), so unlike

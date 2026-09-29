@@ -84,7 +84,10 @@ vi.mock('../hooks/useVoiceInput', () => ({
     level: 0,
     deviceLabel: '',
     clearError: vi.fn(),
-    partial: voice.partial,
+    // Live, like the real engine's state: a partial arrives with the engine's own
+    // re-render. A per-render snapshot would go stale, because a composer
+    // keystroke does not re-render the page or the voice atom.
+    get partial() { return voice.partial },
     sampleRef: { current: { level: 0, centroid: 0.5, onset: 0 } },
     })
   },

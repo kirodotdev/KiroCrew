@@ -5,10 +5,11 @@
  */
 
 import type { ClientTransport } from './transport'
+import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '../crewBoard'
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
-export function createSessionsEndpoints({ post, del, j }: ClientTransport) {
+export function createSessionsEndpoints({ get, post, del, j }: ClientTransport) {
   const runtimes = {
     restartSessions: () =>
       post('/api/sessions/restart').then(j) as Promise<{
@@ -82,5 +83,30 @@ export function createSessionsEndpoints({ post, del, j }: ClientTransport) {
     clearSessions: () => del('/api/sessions').then(j),
   }
 
-  return { runtimes, history, historyDetail }
+  const crewBoard = {
+    /**
+     * The Crew page's work-item board for ONE conductor.
+     *
+     * A MASKED projection over the work ledger, deliberately not the conductor's
+     * own `/api/work-ledger` route: that path is in the gateway's strict-internal
+     * list (MCP callers only) and its rows carry `worker_session_key`, which may
+     * not reach a browser. Spelled `/api/crew-board` rather than under
+     * `/api/work-ledger/` because that list matches by PREFIX, so a sub-path would
+     * silently inherit MCP-only auth and 403 every call from here.
+     */
+    crewBoard: (conductor: string) =>
+      get(`/api/crew-board?conductor=${encodeURIComponent(conductor)}`).then(j) as Promise<WorkBoardResponse>,
+    /**
+     * Act on one ORPHANED item. The worker session key is never sent and never
+     * returned: the server resolves it from the store, which is what lets this call
+     * stop a session the masked read deliberately does not name. A non-orphaned
+     * item answers 409, so a click made from a stale poll is refused rather than
+     * quietly doing nothing.
+     */
+    crewBoardAction: (conductor: string, itemId: string, action: CrewBoardAction) =>
+      post('/api/crew-board/action', { conductor, item_id: itemId, action })
+        .then(j) as Promise<CrewBoardActionResult>,
+  }
+
+  return { runtimes, history, historyDetail, crewBoard }
 }

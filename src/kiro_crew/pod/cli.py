@@ -884,19 +884,28 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     #   in `mint_token`, which raised before dialling anything.
     token = ""
     unproven = ""
-    try:
-        token = rt.mint_token(cfg, name, args.ttl)
-    except rt.PodOwnershipUnproven as exc:
-        unproven = str(exc)
-        _audit(
-            "pod.token",
-            "denied",
-            f"name={name} port={port}",
-            error="ownership unprovable; credential withheld",
-        )
-    except rt.PodError as exc:
-        _audit("pod.token", "failure", f"name={name} port={port}", error="mint failed")
-        _die(str(exc))
+    if getattr(args, "no_token", False):
+        # The caller (the gateway's agent pod surface) will mint in-process. A
+        # sandboxed `pod up` child runs in its own user namespace, which the pod
+        # refuses to certify as the local owner (member_owner_token_refused), so
+        # minting here would fail the whole boot for a caller that never wanted
+        # this token. Skip the mint entirely: an empty `token` is the handle's
+        # documented "no credential" signal and the gateway supplies its own.
+        _audit("pod.token", "skipped", f"name={name} port={port} reason=no-token")
+    else:
+        try:
+            token = rt.mint_token(cfg, name, args.ttl)
+        except rt.PodOwnershipUnproven as exc:
+            unproven = str(exc)
+            _audit(
+                "pod.token",
+                "denied",
+                f"name={name} port={port}",
+                error="ownership unprovable; credential withheld",
+            )
+        except rt.PodError as exc:
+            _audit("pod.token", "failure", f"name={name} port={port}", error="mint failed")
+            _die(str(exc))
     if token:
         _audit("pod.token", "allowed", f"name={name} port={port} ttl={args.ttl}")
     base = f"http://127.0.0.1:{port}"
@@ -927,6 +936,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         if token:
             print(f"  token    : {token}")
             print(f"  open     : {base}/?token={token}")
+        elif getattr(args, "no_token", False):
+            print("  token    : (skipped by request: --no-token)")
         else:
             print("  token    : (withheld — ownership of the port could not be proven)")
         print(f"  stop     : kirocrew pod down {name}")
@@ -1344,6 +1355,10 @@ def _prune_one_decide(cfg: PodConfig, name: str) -> tuple[str, str, str, str]:
 
 def _status(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
+    # A bare `systemctl is-active` answers "down" on a host with no user
+    # manager, so gate first and let the dispatch layer print the refusal.
+    if rt.IS_LINUX:
+        rt.require_backend()
     port = rt.derive_port(cfg, name)
     up = rt.is_active(cfg, name)
     code = rt.health(cfg, name, port) if up else 0

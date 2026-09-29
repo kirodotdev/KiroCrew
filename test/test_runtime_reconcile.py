@@ -1172,6 +1172,14 @@ def test_a_descendant_only_record_is_retracted_from_the_descendant_file(
         "kiro_crew.platform_compat.pid_liveness",
         lambda pid: platform_compat.PID_DEAD if pid == 5501 else platform_compat.PID_ALIVE,
     )
+    # The live sibling must also pass the recycle check, so its identity is pinned
+    # to the token its row records. Left to the real probe, 5502 can answer with a
+    # STRANGER's start time: Windows ignores the low two bits of a pid on
+    # ``OpenProcess``, so 5502 opens whatever process holds pid 5500 on the runner
+    # and the reconciler retracts the sibling's row as recycled.
+    monkeypatch.setattr(
+        session_pid, "_pid_start_token", lambda pid: {5501: "TOK-D", 5502: "TOK-E"}.get(pid)
+    )
 
     reading = rr.build_reconciler(
         active_pids=lambda: set(), notify_dead=lambda pid: None

@@ -101,6 +101,17 @@ surfaces, out-of-range values are clamped with a warning rather than raising, an
 a malformed section degrades to defaults so a hand-edited file cannot prevent the
 gateway from starting.
 
+`dashboard.dynamic_dashboard_cards` follows the same cost rule: default false,
+hot-applied through the live watcher, with a native control on Dynamic Dashboard
+surfaces. It enables event-driven per-session HTML cards without enabling
+`session_summary`. Runtime status and native decisions remain available when it
+is off. Route and watcher registration do not import or construct the optional
+producer. Both server entrypoints activate it in the deferred post-listen watcher
+task when enabled, or on the first live enable; later toggles reuse that instance
+and its charged budgets. Fixed call, byte, cache and iframe limits and the disable/cancellation
+contract are documented in
+[learn-cron-dashboard](learn-cron-dashboard.md#automatic-session-status-cards).
+
 ## Orchestration prompt contract
 
 `config/prompt.md` and `config/prompt-orchestrator.md` guide direct work and
@@ -1980,7 +1991,7 @@ queue-aware stub is held before a `capacity` refusal and matches the DEFAULT of
 the stub's own reconnect budget (`stub.py` `_RECONNECT_TOTAL_BUDGET_SECS`, a
 constant the stub reads no config for, pinned equal by
 `test_stub_reconnect_budget.py`); the wait the daemon actually arms is
-`min(asked, key)` less `gatewayd._QUEUE_REFUSAL_MARGIN_SECS`
+`min(asked, key)` less `daemon/admission_protocol.py::_QUEUE_REFUSAL_MARGIN_SECS`
 ([`mcp.md`](../../architecture/mcp.md#admission-before-allocation)), so the
 daemon gives up strictly first and raising the key above 600 s buys a queued stub
 no extra wait — what the stub asked for caps it before the margin comes off, and
@@ -2958,17 +2969,19 @@ config sections cannot enter configuration through this path.
 
 `DashboardConfig.crewmates_onboarded` records that the four-step "Meet CrewMates"
 flow (`website/src/components/MeetCrewmatesFlow.tsx`) was finished or dismissed.
-The flow fires once, after the other first-run chapters, only while the Crew
-Members preview (`PREVIEW_CREW`, Settings → Developer → Feature Previews — the
-switch that shows the Crewmates page) is on, and only for a workspace with no
-crewmate beyond the `default` row and no installed agent beyond the ones
-Kiro Crew itself wrote -- judged solely by the server's `kirocrew_owned` flag on
-each `GET /api/agents/installed` row (`useMeetCrewmatesGate`); a row without the
-flag is a custom agent; an existing user with custom agents is never shown
-the flow -- their earlier-sync crewmates are the launch migration's job
-(`docs/request-for-change/rfc-crewmates-launch.md`, "Existing installs"; no
-user-facing step exists for them), and a gate that cannot read the roster or
-the agent list fails safe by not firing. `POST /api/agents` now refuses a crew name that fails the shared agent-name
+Whether the workspace has seen the flow is the ONLY condition on showing it:
+existing crewmates and custom agents do not suppress it (`useMeetCrewmatesGate`
+reads neither the roster nor the installed agents). It opens once, at the first
+of: the end of the first-run tour for a new user while the Crew Members preview
+(`PREVIEW_CREW`, Settings → Developer → Feature Previews — the switch that shows
+the Crewmates page) is on, or the first visit to the Crewmates page (the page
+announces `mc-crewmates-page-entered`, and the gate opens unless
+`crewmates_onboarded` is already true on the server). The tour-end path keeps
+its `mc-crewmates-pending` timing so a workspace that finished first run before
+the chapter shipped is not interrupted on its next load; that workspace gets
+the flow on its first Crewmates page visit instead. This supersedes the
+earlier custom-agent exclusion (`docs/request-for-change/rfc-crewmates-launch.md`,
+"Existing installs") per that RFC's screen 08 amendment of 2026-09-28. `POST /api/agents` now refuses a crew name that fails the shared agent-name
 grammar (`validation._AGENT_NAME_RE`, code `invalid_agent_name`), because `GET
 /api/members` skips such a row and the crew would exist with no roster able to
 show it; the rule lives at that route, for every client of it -- `kirocrew agent
@@ -2977,12 +2990,9 @@ this change leaves as it is. The flow previews the
 same grammar under the name field as the user types (a plain hint, not an
 `ErrorNotice`; `test/test_meet_crewmates_builtin_pin.py` keeps the copy honest)
 and disables Next until it passes; a server `invalid_agent_name` or 409
-`agent_exists` lands as an `ErrorNotice` under the same field. A failed eligibility
-read (roster or installed agents) is surfaced by App as a dismissible
-`ErrorNotice` (`MeetCrewmatesEligibilityNotice`) rather than silently leaving
-the chapter unfired; the Crew Members page entry works regardless. Notices
+`agent_exists` lands as an `ErrorNotice` under the same field.  Notices
 follow `errors-use-error-notice`: the agent hand-off is on where nothing can be
-lost (the eligibility notice, the step-4 schedule notices, the "done" notice on
+lost (the step-4 schedule notices, the "done" notice on
 steps 1 and 4) and closes the flow the way that step's own exit does, since the
 chat it opens sits behind the dialog; it is off beside the unsaved name and job
 on steps 2-3, each such notice naming the draft. Its Create step is two

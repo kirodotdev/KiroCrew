@@ -50,7 +50,7 @@ async function main() {
       localStorage.setItem('mc-onboarded', '1')
     }, [shot.lang, shot.mode])
 
-    await page.goto(base + '/settings?tab=display', { waitUntil: 'domcontentloaded' })
+    await page.goto(base + '/settings/display/zoom', { waitUntil: 'domcontentloaded' })
 
     const desc = page.getByText(shot.expect, { exact: true })
     await desc.waitFor({ timeout: 20000 })

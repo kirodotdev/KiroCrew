@@ -78,6 +78,21 @@ SKILLS_DIR_NAME = "skills"
 # submitted work so a large catalog cannot create one thread/future per skill.
 _CATALOG_READ_WORKERS = 8
 _CATALOG_READ_BATCH = 64
+
+
+# A SKILL.md whose body is a saved web page is not a skill: its markup would
+# land in the prompt. The bounded cache warns about each path about once.
+@functools.lru_cache(maxsize=256)
+def _warn_html_skill(path: str) -> bool:
+    logger.warning("Skipping skill whose SKILL.md body is HTML, not markdown: %s", path)
+    return True
+
+
+def _html_skill_refused(meta: dict, path: object) -> bool:
+    # The key holds a colon, so no front-matter line can set it.
+    return bool(meta.get("_html:body")) and _warn_html_skill(str(path))
+
+
 # One script-entry population budget for the pending verdict and API reports.
 # Reports may additionally retain ONE fixed truncation-summary entry.
 _PENDING_SCRIPT_MAX_ENTRIES = 64
@@ -3679,6 +3694,8 @@ class SkillsLoader:
             if changed is not None:
                 changed_metadata.append(changed)
             skill_reads += reads
+            if _html_skill_refused(meta, skill_file):
+                continue
             skills.append(
                 {
                     # Internal: lets a later re-read (see _rank_key) reuse the root
@@ -4113,6 +4130,8 @@ class SkillsLoader:
                 # Decoded explicitly: an implicit read would use the platform's
                 # locale encoding and mangle non-ASCII bodies on Windows.
                 content = _decode_skill_text(raw, strict=False)
+                if _html_skill_refused(self._parse_frontmatter_text(content), skill_file):
+                    break
                 self._emit_lazy_load_metric(_t0, hit=True)
                 return content
         self._emit_lazy_load_metric(_t0, hit=False)
@@ -4152,7 +4171,8 @@ class SkillsLoader:
             return None
         if raw is None:
             return None
-        return _decode_skill_text(raw, strict=max_bytes is None)
+        text = _decode_skill_text(raw, strict=max_bytes is None)
+        return None if _html_skill_refused(self._parse_frontmatter_text(text), path) else text
 
     @staticmethod
     def _emit_lazy_load_metric(t0: float, *, hit: bool) -> None:
@@ -8087,7 +8107,11 @@ class SkillsLoader:
         Path signature because it has a legitimate non-skill caller (the Agent SOP
         description reader) that is not subject to skill confinement.
         """
-        return parse_frontmatter(content, SKILL_LOADER)
+        meta = parse_frontmatter(content, SKILL_LOADER)
+        body = SkillsLoader.strip_frontmatter(content.lstrip("\ufeff")).lstrip()[:10]
+        if re.match(r"<(?:!doctype|html)[\s>]", body, re.IGNORECASE):
+            meta["_html:body"] = "true"
+        return meta
 
     @staticmethod
     def strip_frontmatter(content: str) -> str:

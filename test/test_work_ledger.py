@@ -96,6 +96,7 @@ def test_conductor_actions_are_exactly_six():
 
 def test_caps_hold_their_rfc_values():
     assert wl.MAX_ITEMS_PER_CONDUCTOR == 32
+    assert wl.MAX_STORED_ITEMS_PER_CONDUCTOR == 256
     assert wl.MAX_EVENTS_PER_ITEM == 200
     assert wl.MAX_DEPTH == 2
     assert wl.MAX_GOAL_CHARS == 2000
@@ -108,6 +109,23 @@ def test_caps_hold_their_rfc_values():
     assert wl.MAX_ARTIFACT_VALUE_CHARS == 512
     assert (wl.MIN_PR, wl.MAX_PR) == (1, 1_000_000_000)
     assert wl.SCHEMA_VERSION == 1
+
+
+def test_the_stored_bound_is_the_folds_item_ceiling():
+    """The two numbers MUST be one number.
+
+    Every stored item is one recorded create, so a board that can never hold more
+    records than the fold retains can never overflow the fold: ``omitted`` stays 0,
+    the fold is always the whole board and never a prefix, and the rebuild's ceiling
+    guard is defensive. Both sides read the same ``work_vocab`` value; this pins
+    that neither has grown a number of its own.
+    """
+    from kiro_crew.crew_log import projection
+    from kiro_crew.work_vocab import WORK_STORED_ITEM_LIMIT
+
+    assert wl.MAX_STORED_ITEMS_PER_CONDUCTOR == projection.WORK_ITEM_LIMIT
+    assert wl.MAX_STORED_ITEMS_PER_CONDUCTOR == WORK_STORED_ITEM_LIMIT
+    assert wl.MAX_ITEMS_PER_CONDUCTOR < wl.MAX_STORED_ITEMS_PER_CONDUCTOR
 
 
 # ── paths and ids ─────────────────────────────────────────────────────────
@@ -847,6 +865,248 @@ def test_the_item_cap_refuses_the_thirty_third_item():
     assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
 
 
+@pytest.mark.parametrize("terminal_state", sorted(wl.TERMINAL_ITEM_STATES))
+def test_closed_items_do_not_count_toward_the_item_cap(terminal_state: str):
+    """The cap bounds LIVE fan-out: closing an item frees its seat.
+
+    A queue conductor mints one item per ticket and closes each as it lands, so a
+    cap that counted its closed history would refuse the 33rd ticket of the shift
+    with nothing live behind the refusal.
+    """
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    ids = [
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+            "item"
+        ].item_id
+        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
+    ]
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
+
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[0], state=terminal_state)
+    minted = wl.apply_conductor_action(CONDUCTOR, "create", title="next ticket", acceptance={})
+    assert minted["item"].state == "open"
+
+    # Thirty-two open again, so the next one is refused -- the cap still holds.
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
+    assert "open items" in str(caught.value)
+
+
+def test_closed_items_stay_on_disk_listed_and_readable_past_the_cap():
+    """Freeing a seat changes nothing about the closed item's own record."""
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    ids = [
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+            "item"
+        ].item_id
+        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
+    ]
+    for item_id in ids:
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+    closed_bytes = {item_id: _bytes_on_disk(item_id) for item_id in ids}
+
+    # A whole second shift's worth fits once the first is closed...
+    second = [
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"s{index}", acceptance={})[
+            "item"
+        ].item_id
+        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
+    ]
+    # ...and the cap bites again at thirty-two OPEN.
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
+
+    listed = wl.list_work_items(CONDUCTOR)
+    assert len(listed) == 2 * wl.MAX_ITEMS_PER_CONDUCTOR
+    assert {it.item_id for it in listed} == set(ids) | set(second)
+    assert sum(it.state == "accepted" for it in listed) == wl.MAX_ITEMS_PER_CONDUCTOR
+    for item_id in ids:
+        stored = wl.read_work_item(CONDUCTOR, item_id)
+        assert stored is not None and stored.state == "accepted"
+        assert wl.item_path(CONDUCTOR, item_id).exists()
+        assert _bytes_on_disk(item_id) == closed_bytes[item_id]
+    brief = wl.read_work_brief(CONDUCTOR, ids[0])
+    assert brief is not None and brief["item_id"] == ids[0]
+
+
+def test_the_stored_bound_refuses_a_create_on_a_board_of_closed_items(monkeypatch):
+    """The second bound counts EVERY create, so closed history cannot grow past it.
+
+    A board that has created ``MAX_STORED_ITEMS_PER_CONDUCTOR`` items, every one of
+    them closed, has zero open items and is refused anyway -- with the store's own
+    code, not the open cap's -- and the refusal changes no bytes. The message names
+    the create count, the bound and the remedy (the ledger sweep's purge), and the
+    header's counter stands at the bound. The bound is patched small the way the
+    projection tests patch the fold's ceiling: filling a board to the real number
+    takes seconds, and the number itself is pinned by
+    ``test_caps_hold_their_rfc_values`` and
+    ``test_the_stored_bound_is_the_folds_item_ceiling``.
+    """
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    ids: list[str] = []
+    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
+        ids.append(
+            wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+                "item"
+            ].item_id
+        )
+        # Close as we go, so the open cap never bites and only the stored bound can.
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
+    listed = wl.list_work_items(CONDUCTOR)
+    assert len(listed) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+    assert not any(item.state == "open" for item in listed)
+    before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+    assert caught.value.field == "items"
+    message = str(caught.value)
+    assert f"has created {wl.MAX_STORED_ITEMS_PER_CONDUCTOR} items" in message
+    assert f"stored bound is {wl.MAX_STORED_ITEMS_PER_CONDUCTOR}" in message
+    assert "kirocrew ledger-sweep --purge" in message
+    assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
+    # Closing frees nothing here: the bound is on creates, and a close keeps its
+    # record. Every closed item is still on the board, listed and readable.
+    assert wl.read_work_item(CONDUCTOR, ids[0]) is not None
+    assert len(wl.list_work_items(CONDUCTOR)) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+    header = wl.read_conductor(CONDUCTOR)
+    assert header is not None and header.created_total == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+
+
+def _closed_board_at_the_stored_bound() -> list[str]:
+    """Fill the board to ``MAX_STORED_ITEMS_PER_CONDUCTOR`` creates, closing each as
+    it lands so the open cap never bites and only the stored bound can."""
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    ids: list[str] = []
+    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
+        ids.append(
+            wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+                "item"
+            ].item_id
+        )
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
+    return ids
+
+
+def test_the_stored_bound_counts_a_record_the_listing_cannot_read(monkeypatch):
+    """A torn record still holds its place on the board.
+
+    The stored bound is measured against the header's create counter, which the
+    torn record's own create bumped, so a board of ``MAX_STORED_ITEMS_PER_CONDUCTOR``
+    creates with one record torn to unreadable JSON lists one item fewer and holds
+    zero open ones, and a create is refused anyway, with the store's code, changing
+    no byte under ``items/``. Counted off the listing instead, the torn record would
+    have let one create more through than the fold retains.
+    """
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
+    ids = _closed_board_at_the_stored_bound()
+    torn = ids[1]
+    wl.item_path(CONDUCTOR, torn).write_text("{", encoding="utf-8")
+    listed = wl.list_work_items(CONDUCTOR)
+    assert len(listed) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1
+    assert torn not in {item.item_id for item in listed}
+    assert not any(item.state == "open" for item in listed)
+    before = {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()}
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+    assert caught.value.field == "items"
+    assert f"has created {wl.MAX_STORED_ITEMS_PER_CONDUCTOR} items" in str(caught.value)
+    assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
+
+
+def test_removing_a_record_does_not_reclaim_stored_capacity(monkeypatch):
+    """The bound is a counter of creates, not a count of the files in ``items/``.
+
+    The crew log's fold counts creates in an append-only log, so a record removed
+    from the cache -- by hand, by the ``cache_dirty`` remedy, by loss -- still has
+    its create there. A board of ``MAX_STORED_ITEMS_PER_CONDUCTOR`` creates with one
+    record file (and its event log) deleted lists one item fewer, and the next
+    create is refused all the same: ``item_store_full``, every remaining file under
+    ``items/`` byte-identical, and the header's ``created_total`` exactly where the
+    last create left it. Counted off the files, the deletion would have admitted a
+    create the fold cannot hold, and the rebuild's ceiling guard would then refuse
+    that board for good.
+    """
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
+    ids = _closed_board_at_the_stored_bound()
+    header_before = wl.read_conductor(CONDUCTOR)
+    assert header_before is not None
+    assert header_before.created_total == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+    wl.item_path(CONDUCTOR, ids[2]).unlink()
+    wl.item_events_path(CONDUCTOR, ids[2]).unlink()
+    assert len(wl._stored_item_ids(CONDUCTOR)) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1
+    assert len(wl.list_work_items(CONDUCTOR)) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1
+    before = {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()}
+    header_bytes = (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes()
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+    assert caught.value.field == "items"
+    assert "removing one reclaims nothing" in str(caught.value)
+    assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
+    assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == header_bytes
+    header_after = wl.read_conductor(CONDUCTOR)
+    assert header_after is not None
+    assert header_after.created_total == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+
+
+def test_a_header_from_before_the_counter_is_seeded_from_its_records_once(monkeypatch):
+    """``created_total`` is zero on a header that predates it. The first create on
+    such a board seeds the counter from the records the board holds, then bumps it,
+    so the count starts where the board stands rather than at zero; a board that
+    already holds every record it may hold is refused on that seed."""
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    for index in range(2):
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})
+    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    assert stored["created_total"] == 2
+    del stored["created_total"]  # a header written before the field existed
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+    assert wl.read_conductor(CONDUCTOR).created_total == 0
+
+    wl.apply_conductor_action(CONDUCTOR, "create", title="third", acceptance={})
+    assert wl.read_conductor(CONDUCTOR).created_total == 3, "seeded from two records, then bumped"
+
+    wl.apply_conductor_action(CONDUCTOR, "create", title="fourth", acceptance={})
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    del stored["created_total"]  # zero again, with four records on the board
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+    assert json.loads(header_path.read_text(encoding="utf-8")) == stored, "a refusal writes nothing"
+
+
+def test_the_stored_bound_is_checked_before_the_open_cap(monkeypatch):
+    """At both bounds at once the refusal names the store.
+
+    The open cap's remedy -- close something -- would not help a board that is
+    full of records, so the stored bound speaks first.
+    """
+    monkeypatch.setattr(wl, "MAX_ITEMS_PER_CONDUCTOR", 2)
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 2)
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    for index in range(2):
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
+
+
 @pytest.mark.parametrize(
     "kwargs,expected_field",
     [
@@ -1003,6 +1263,9 @@ def test_a_record_lands_at_the_size_the_ceiling_measured(monkeypatch):
     for call in records:
         assert call["newline"] == "\n", call["path"].name
         assert "\r" not in call["content"]
+    # The header is written by the bootstrap and again by the create (its create
+    # counter), so what is on disk is each path's LAST write.
+    for call in {c["path"]: c for c in records}.values():
         assert call["path"].read_bytes() == call["content"].encode("utf-8")
 
 
@@ -1938,6 +2201,25 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # supplied. It is also not model-reachable: no MCP tool routes to it,
         # because the deletion it performs is irreversible.
         "ledger_sweep.py",
+        # The Crew page's masked, cookie-authenticated projection and its action
+        # route. A third seam, and the argument is about WHICH PRINCIPAL rather
+        # than about convenience.
+        #
+        # The rule above exists so that one AGENT session cannot name another's
+        # ledger: that is a privilege claim, and deriving identity from
+        # X-Session-Key is what refuses it. This module's caller is the dashboard
+        # OWNER, who already reads every session on this gateway and can stop any
+        # of them from the Stop button, and a browser carries a cookie rather than
+        # a session key -- so it cannot name a conductor through the agent route at
+        # all. An operator naming their own conductor is not the thing the rule
+        # forbids.
+        #
+        # What the rule does still buy here is kept: no payload this module emits
+        # carries ``worker_session_key`` (the field is masked and the key-bearing
+        # ``bind`` event text is blanked), liveness is joined server-side so the
+        # page never needs the key, and its action route resolves the key from the
+        # store rather than accepting one from the body.
+        "dashboard/handlers/work_ledger_board.py",
     }
 )
 
@@ -2454,24 +2736,33 @@ def test_a_goal_on_a_purged_ledger_refuses_and_rebuilds_nothing(monkeypatch):
     assert not directory.exists(), "neither writer may rebuild the purged store"
 
 
-def test_a_torn_but_present_header_is_repaired_from_the_snapshot_not_refused():
-    """The refusal is for the header being GONE -- the purge case. A header that is
-    present but does not parse under the lock is a damaged live ledger: no other
-    writer can be mid-replace while this one holds the lock, so the pre-lock
-    snapshot is the best account of it and the write repairs the header, as the
-    store always did. Both conductor writers, both ways."""
+def test_a_torn_but_present_header_refuses_both_writers_under_the_lock():
+    """The header holds the create count the stored bound is measured against, and
+    the pre-lock snapshot may hold it low -- every writer that held the lock since
+    the snapshot was read is missing from it. So a header that is present but does
+    not read under the lock refuses the write instead of standing the snapshot in
+    for it: a create mints no record and bumps nothing, a goal rewrites nothing,
+    and the torn bytes stay exactly as found for the rebuild to replace. The code is
+    the one the same header reads as everywhere else -- corruption reads as absent
+    -- and the message says the header is present."""
     record = wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
     header = wl.conductor_dir(CONDUCTOR) / "conductor.json"
-
     header.write_text("{tor", encoding="utf-8")
-    result = wl._create_item(CONDUCTOR, record, "after the tear", {"kind": "human_approval"}, None)
-    assert result["item"].title == "after the tear"
-    assert result["item"].round == record.round, "the snapshot supplied the default round"
-    assert wl.item_path(CONDUCTOR, result["item"].item_id).exists()
+    torn = header.read_bytes()
 
-    repaired = wl._write_goal(CONDUCTOR, record, "new goal", 3)
-    assert (repaired.goal, repaired.round) == ("new goal", 3)
-    assert wl.read_conductor(CONDUCTOR, strict=True).goal == "new goal", "header repaired"
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl._create_item(CONDUCTOR, record, "after the tear", {"kind": "human_approval"}, None)
+    assert caught.value.code == wl.CODE_NO_LEDGER
+    assert "present but unreadable" in str(caught.value)
+    assert "rebuild_from_projection" in str(caught.value)
+    assert header.read_bytes() == torn, "the snapshot was not written over the torn header"
+    assert not wl.items_dir(CONDUCTOR).exists(), "no record was minted"
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl._write_goal(CONDUCTOR, record, "new goal", 3)
+    assert caught.value.code == wl.CODE_NO_LEDGER
+    assert "present but unreadable" in str(caught.value)
+    assert header.read_bytes() == torn
 
 
 def test_census_reads_a_misnamed_item_as_unreadable_not_closed(monkeypatch):

@@ -841,6 +841,9 @@ async def test_pod_up_json_output_is_merged(monkeypatch, allow_pod):
 @pytest.mark.asyncio
 async def test_pod_up_inactive_after_start_fails_closed(monkeypatch):
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "{}", "")))
     monkeypatch.setattr(runtime, "_load_cfg", lambda: SimpleNamespace())
     monkeypatch.setattr(runtime, "_POD_AVAILABLE", True)
@@ -856,6 +859,9 @@ async def test_pod_up_inactive_after_start_fails_closed(monkeypatch):
 @pytest.mark.asyncio
 async def test_pod_up_unverifiable_start_fails_closed(monkeypatch):
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "{}", "")))
     monkeypatch.setattr(runtime, "_load_cfg", lambda: SimpleNamespace())
     monkeypatch.setattr(runtime, "_POD_AVAILABLE", True)

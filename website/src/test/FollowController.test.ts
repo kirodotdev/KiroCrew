@@ -18,7 +18,45 @@ import {
   SELF_SCROLL_EPSILON,
   DEFAULT_BOTTOM_THRESHOLD,
   FOLLOW_REENGAGE_PX,
+  scrollIntentPending,
 } from '../hooks/virtualizer/FollowController'
+
+describe('scrollIntentPending — an input still waiting for its scroll event', () => {
+  // The one input term the position-only resting rule keeps: between an upward
+  // input (or a scrollbar grab) and the scroll event it causes, the reader still
+  // rests on our write to the pixel, and a pin landing in that frame would
+  // override the scroll they have begun. Returns the ms left on the hold so the
+  // caller can retry the held pin exactly at expiry.
+  it('is pending, with the time left, while the stamp is newer than the last scroll event and inside the window', () => {
+    expect(scrollIntentPending(1000, 990, 900, 150)).toBe(140)
+  })
+  it('is spent once a scroll event of any origin has arrived after it', () => {
+    expect(scrollIntentPending(1000, 990, 995, 150)).toBe(0)
+  })
+  it('expires with the settle window when no scroll event ever comes (unscrollable transcript)', () => {
+    expect(scrollIntentPending(1200, 990, 900, 150)).toBe(0)
+    expect(scrollIntentPending(1140, 990, 900, 150)).toBe(0)
+  })
+  it('never pends with no intent on record', () => {
+    expect(scrollIntentPending(1000, Number.NEGATIVE_INFINITY, 900, 150)).toBe(0)
+    expect(scrollIntentPending(1000, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, 150)).toBe(0)
+  })
+  it('property: a stamp older than the last scroll event is never pending', () => {
+    fc.assert(fc.property(
+      fc.double({ min: 0, max: 1e6, noNaN: true }), fc.double({ min: 0, max: 1e6, noNaN: true }), fc.double({ min: 1, max: 1e4, noNaN: true }),
+      (up, delta, settle) => {
+        const scroll = up + Math.abs(delta) + 1e-9
+        return scrollIntentPending(scroll + 1, up, scroll, settle) === 0
+      },
+    ))
+  })
+  it('property: the hold never outlives the settle window', () => {
+    fc.assert(fc.property(
+      fc.double({ min: 0, max: 1e6, noNaN: true }), fc.double({ min: 0, max: 1e4, noNaN: true }), fc.double({ min: 1, max: 1e4, noNaN: true }),
+      (stamp, elapsed, settle) => scrollIntentPending(stamp + elapsed, stamp, Number.NEGATIVE_INFINITY, settle) <= settle,
+    ))
+  })
+})
 
 describe('geometry helpers', () => {
   it('bottomTarget is scrollHeight - clientHeight, clamped at 0', () => {
@@ -232,75 +270,94 @@ describe('evaluateAutoPin — the race-proof core', () => {
     expect(r).toEqual({ pin: false, stick: false, target: 600 })
   })
 
-  it('IDLE: releases a reader sitting above the bottom instead of pinning them', () => {
-    // Follow means "keep me at the end of a LIVE turn". With nothing running
-    // there is no output to follow, so a reader 120px up is not following — and
-    // pinning them is a spring-back with no cause (reported from a phone after
-    // scrolling up about a hundred pixels with nothing streaming). Releasing
-    // rather than merely skipping matters: leaving follow armed would hand the
-    // yank to whichever turn starts next.
-    //
-    // `lastWriteTop` EQUALS scrollTop on purpose, so the pre-existing
-    // scroll-up release cannot fire and this pins the idle rule alone: the gap
-    // opened because content grew below the fold, not because anyone scrolled.
+  it('IDLE: a reader whose scrollTop has LEFT our last write is released, not pinned', () => {
+    // Follow means "keep me at the end". With nothing running there is no
+    // output to follow, so a reader 120px up who is NOT resting on our write
+    // (they moved down to 480 from a write at 300 and stopped short of the
+    // bottom) is not following — pinning them is a spring-back with no cause
+    // (reported from a phone after scrolling around with nothing streaming).
+    // Releasing rather than merely skipping matters: leaving follow armed
+    // would hand the yank to whichever turn starts next.
     const up = { scrollTop: 480, scrollHeight: 1000, clientHeight: 400 } // 120px above bottom
-    const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false })
+    const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 300, runActive: false })
     expect(r).toEqual({ pin: false, stick: false, target: 600 })
   })
 
-  describe('readerMovedSinceWrite — who opened the gap', () => {
-    // The idle rule above releases because a gap while idle USUALLY means the
-    // reader scrolled. When the caller can say that nothing but layout has
-    // happened since we last placed them (no hardware input, no unexplained
-    // scroll), the gap is content settling under a still reader, and the same
-    // geometry means the opposite: carry them back. WebKit has no native scroll
-    // anchoring, so this is the only thing standing between an entry pin and a
-    // transcript that opens a viewport above its end.
+  it('IDLE with nothing written this session: a reader above the bottom is released', () => {
+    const up = { scrollTop: 480, scrollHeight: 1000, clientHeight: 400 }
+    const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: -1, runActive: false })
+    expect(r).toEqual({ pin: false, stick: false, target: 600 })
+  })
+
+  describe('resting on our write — who opened the gap', () => {
+    // Distance alone cannot say who opened a gap while idle, and the two causes
+    // want opposite answers: a reader who scrolled up must be left alone, a
+    // reader the CONTENT moved away from must be carried back. Position is the
+    // discriminator: a reader resting exactly where our last write put them
+    // never scrolled (a scroll moves scrollTop), so the gap is content's — a new
+    // message landing in an idle chat, a row settling from its estimate — and
+    // they are carried, live turn or not. WebKit has no native scroll anchoring,
+    // so this is also what stands between an entry pin and a transcript that
+    // opens a viewport above its end.
     const up = { scrollTop: 480, scrollHeight: 1000, clientHeight: 400 }
 
-    it('IDLE + no reader movement: the gap is ours, so the reader is carried back', () => {
-      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false, readerMovedSinceWrite: false })
+    it('IDLE + resting on our write: the gap is content\'s, so the reader is carried back', () => {
+      // `lastWriteTop` EQUALS scrollTop: nobody scrolled, content grew below
+      // the fold (a crewmate's complete reply landing in a DM whose turn is
+      // over). This is the "new message arrived and I had to scroll by hand"
+      // report, and it pins.
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false })
       expect(r).toEqual({ pin: true, stick: true, target: 600 })
     })
 
-    it('IDLE + reader moved: unchanged, released', () => {
-      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false, readerMovedSinceWrite: true })
-      expect(r).toEqual({ pin: false, stick: false, target: 600 })
+    it('hardware input that moved nothing is not a move: position alone decides', () => {
+      // A wheel-down at the end, a finger that landed and lifted, a scrollbar
+      // grab that went nowhere: each stamps input and leaves scrollTop on our
+      // write. The predicate takes no input signal at all, so there is nothing
+      // for such a stamp to flip — the same geometry pins regardless of what
+      // the caller believes about input. (The old `readerMovedSinceWrite`
+      // argument read every stamp as "the reader left" and released here.)
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false })
+      expect(r).toEqual({ pin: true, stick: true, target: 600 })
     })
 
-    it('no input but scrollTop has LEFT our last write: not ours to close (a reveal in flight)', () => {
+    it('scrollTop has LEFT our last write: not ours to close (a reveal in flight)', () => {
       // scrollTop below our last write AND away from the bottom is the
-      // user-scroll-up signature. With no hardware input it can still be a
-      // programmatic reveal -- a search hit, a pinned prompt, find-in-page --
-      // whose scroll event has not dispatched yet when a height commit lands.
-      // Position and input must BOTH say "the reader never moved"; here the
-      // position says otherwise, so the existing release stands.
-      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 600, runActive: true, readerMovedSinceWrite: false })
+      // user-scroll-up signature. A programmatic reveal -- a search hit, a
+      // pinned prompt, find-in-page -- wears it too when its scroll event has
+      // not dispatched yet as a height commit lands. Either way the position
+      // says the reader is no longer where we put them, so the release stands.
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 600, runActive: true })
       expect(r).toEqual({ pin: false, stick: false, target: 600 })
+      const idle = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 600, runActive: false })
+      expect(idle).toEqual({ pin: false, stick: false, target: 600 })
     })
 
-    it('resting on a clamp-rebaselined write counts as resting', () => {
-      // The clamp branch re-baselines lastWriteTop onto the clamped scrollTop;
-      // the regrowth then opens the gap with scrollTop unchanged. That is the
-      // entry shape on a phone, and it is carried.
-      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false, readerMovedSinceWrite: false })
+    it('resting on a re-baselined write counts as resting', () => {
+      // The scroll handler re-baselines lastWriteTop onto the clamped scrollTop
+      // (or onto where a reader's own return to the bottom left them); the
+      // regrowth then opens the gap with scrollTop unchanged. That is the entry
+      // shape on a phone and the re-engaged reader's shape in a DM, and both
+      // are carried.
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false })
       expect(r).toEqual({ pin: true, stick: true, target: 600 })
     })
 
-    it('at the bottom with no movement: still following, nothing to write', () => {
-      const r = evaluateAutoPin({ stick: true, geom: tall, lastWriteTop: 600, runActive: false, readerMovedSinceWrite: false })
+    it('at the bottom: still following, nothing to write', () => {
+      const r = evaluateAutoPin({ stick: true, geom: tall, lastWriteTop: 600, runActive: false })
       expect(r).toEqual({ pin: false, stick: true, target: 600 })
     })
 
     it('never overrides a released stick or an owning restore', () => {
-      expect(evaluateAutoPin({ stick: false, geom: up, lastWriteTop: 480, readerMovedSinceWrite: false }).pin).toBe(false)
-      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, restoreGate: true, readerMovedSinceWrite: false })
+      expect(evaluateAutoPin({ stick: false, geom: up, lastWriteTop: 480 }).pin).toBe(false)
+      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, restoreGate: true })
       expect(r).toEqual({ pin: false, stick: false, target: 600 })
     })
 
-    it('omitted = assume the reader may have moved (legacy, release-leaning)', () => {
-      const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, runActive: false })
-      expect(r.stick).toBe(false)
+    it('resting within the self-scroll epsilon still counts (sub-pixel jitter)', () => {
+      const jitter = { scrollTop: 481, scrollHeight: 1000, clientHeight: 400 }
+      const r = evaluateAutoPin({ stick: true, geom: jitter, lastWriteTop: 480, runActive: false })
+      expect(r).toEqual({ pin: true, stick: true, target: 600 })
     })
   })
 

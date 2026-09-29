@@ -156,6 +156,20 @@ def _every_fold_items() -> list[dict[str, Any]]:
                 "turn": 3,
             },
         },
+        # The two non-turn spenders, so the digest covers `usage`'s credit buckets
+        # rather than only its turn path. Without these the pin would keep passing
+        # while the subagent and background arithmetic changed underneath it.
+        {"type": "subagent/spawned", "data": {"turn": 3, "agent_id": "sub-1"}},
+        {"type": "subagent/completed", "data": {"agent_id": "sub-1", "ms": 7, "credits": 1.0}},
+        {"type": "subagent/spawned", "data": {"turn": 3, "agent_id": "sub-2"}},
+        {
+            "type": "subagent/failed",
+            "data": {"agent_id": "sub-2", "outcome": "stopped", "ms": 3, "credits": 0.25},
+        },
+        {
+            "type": "background/completed",
+            "data": {"kind": "title", "model": "haiku", "credits": 0.5, "ms": 20},
+        },
     ]
 
 
@@ -170,12 +184,12 @@ def _state_digest(state: dict[str, Any]) -> str:
 #: keys do not moves its digest here, which is what obliges the version bump that
 #: retires savepoints written by the older build.
 _FOLD_STATE_DIGESTS: dict[str, str] = {
-    "status": "4d24a49402b82428",
-    "usage": "c56df0d14126410f",
-    "timeline": "ca89b3c765575d9a",
+    "status": "929af8634f6d6a5f",
+    "usage": "fca1ed719ebf34fc",
+    "timeline": "72b9531063943783",
     "tools": "008b36fed498d32b",
     "approvals": "c9db629215cc2620",
-    "class": "96f8e5381997f6fd",
+    "class": "1eb292eff34fd7d9",
 }
 
 #: The savepoint version the digests above were taken at.
@@ -186,8 +200,12 @@ _FOLD_STATE_DIGESTS: dict[str, str] = {
 #: ``_checkpoint_from`` matches a file to a fold by NAME, so no file on disk claims
 #: to be this one. Bumping for a new fold would instead retire every VALID savepoint
 #: of the other folds, costing each a refold to retire nothing. What obliges the bump
-#: is an EXISTING fold's digest moving, and the five above are unchanged.
-_DIGESTS_RECORDED_AT_VERSION = 3
+#: is an EXISTING fold's digest moving, which is why this number is at 4: ``usage`` now
+#: stores a credit bucket per source, so every savepoint written at 3 describes the old
+#: meaning. ``status``, ``timeline`` and ``class`` moved with it because the script above
+#: grew the entries that reach those buckets, and a fold retaining a seq or a moment sees
+#: them; the arithmetic of those three is unchanged.
+_DIGESTS_RECORDED_AT_VERSION = 4
 
 
 def _log(unit_id: str = SESSION) -> CrewLog:
@@ -853,6 +871,29 @@ def test_a_savepoint_from_a_future_build_is_ignored():
     resumed = crew_log.fold_session(SESSION)
 
     assert resumed.projection("status").value["turns_completed"] == _LONG_TURNS
+
+
+def test_a_savepoint_from_an_older_build_is_refused_and_folded_cold():
+    """The bump's whole purpose: a state written under the old number never resumes.
+
+    :func:`test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move`
+    obliges the bump when a fold's stored state changes. This is the other half --
+    that the bump actually retires the files, rather than the version being a label
+    nothing reads. The payload is otherwise perfect, so its version is the only thing
+    that can reject it, and the number it carries is the one a real older build wrote.
+    """
+    _long_log()
+    crew_log.fold_session(SESSION)
+    payload = _payload("usage")
+    payload["v"] = savepoints.CHECKPOINT_VERSION - 1
+    payload["state"]["credits"] = 99999.0
+    _write_payload("usage", payload)
+
+    cold = _cold_bundle()
+    resumed = crew_log.fold_session(SESSION)
+
+    assert resumed.projection("usage").value == cold.projection("usage").value
+    assert resumed.projection("usage").value["credits"] != 99999.0
 
 
 def test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move(monkeypatch):

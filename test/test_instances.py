@@ -2489,6 +2489,29 @@ class TestHandlers:
         r = asyncio.run(handlers.api_instances_list(_FakeReq(_State(self._reg(tmp_path)))))
         assert r.status == 403 and "disabled" in _body(r)["error"]
 
+    def test_disabled_denial_carries_its_discriminator_code(self, tmp_path, monkeypatch):
+        # The dashboard opts THIS denial out of its error journal, and keys that on
+        # the code rather than on the 403 -- the owner-only and Slack-origin denials
+        # below share the status and must still be reported.  Dropping or renaming
+        # the code silently re-breaks the spurious-error-report defect, so it is
+        # asserted here rather than left to the SPA's fixture to assume.
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch, enabled=False)
+        r = asyncio.run(handlers.api_instances_list(_FakeReq(_State(self._reg(tmp_path)))))
+        assert _body(r)["code"] == "instances_disabled"
+
+    def test_slack_origin_denial_carries_no_benign_code(self, tmp_path, monkeypatch):
+        # The converse guard: a denial the dashboard must REPORT may not wear the
+        # benign code, or it would be swallowed with the routine one.
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        req = _FakeReq(_State(self._reg(tmp_path)), headers={"X-Session-Key": "slack:T:C"})
+        r = asyncio.run(handlers.api_instances_list(req))
+        assert r.status == 403
+        assert _body(r).get("code") != "instances_disabled"
+
     def test_slack_origin_rejected(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers
 

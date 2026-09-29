@@ -2396,6 +2396,93 @@ def test_a_resume_leaves_a_child_the_registry_still_lists_alone():
         emit.set_child_liveness(None)
 
 
+def _closer(kind: str) -> dict:
+    """The one closer of *kind* in the log, so a test reads its data directly."""
+    closers = [e for e in _body() if e["type"] == kind]
+    assert len(closers) == 1, f"expected exactly one {kind}, saw {len(closers)}"
+    return closers[0]["data"]
+
+
+def test_a_completed_child_records_the_credits_it_billed():
+    """A child's spend is measured, so the parent's log carries it.
+
+    ``SubagentInfo.credits`` accumulates the charge across every attempted turn, and
+    the parent's log is the durable record of it: the runtime's own copy dies with
+    the process.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=7, credits=1.5)
+    assert emit.flush()
+    assert _closer("subagent/completed")["credits"] == 1.5
+
+
+def test_a_child_billed_nothing_writes_no_credits_key_at_all():
+    """Absent means unmetered, and zero would claim a measurement of zero.
+
+    A provider that does not bill in credits reports 0.0 through the shared
+    ``TurnUsage`` contract, which is indistinguishable at this seam from a run that
+    was genuinely free. Writing the zero would present one as the other, so the key
+    is dropped -- the same posture ``background/completed`` takes.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=7, credits=0.0)
+    assert emit.flush()
+    assert "credits" not in _closer("subagent/completed")
+
+
+@pytest.mark.parametrize("outcome", ["failed", "stopped"])
+def test_a_child_that_did_not_finish_still_records_what_it_spent(outcome):
+    """A failed or stopped run billed for the turns it did attempt.
+
+    The credits are cumulative across attempts, including billed retries that failed
+    before the last one, so the non-success closer is exactly where the charge would
+    otherwise be lost.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    emit.on_subagent_failed(
+        SESSION, agent_id="sub-1", reason="boom", outcome=outcome, duration_ms=3, credits=0.75
+    )
+    assert emit.flush()
+    data = _closer("subagent/failed")
+    assert data["outcome"] == outcome
+    assert data["credits"] == 0.75
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_charge_is_not_written_at_all(bad):
+    """``inf > 0`` is True, so the positive-only gate alone would write it.
+
+    The charge arrives from a provider usage report. A non-finite one is not a
+    measurement, and a reader that sums it has no way back: every later total is
+    non-finite too. The writer refuses it rather than handing the fold a value the
+    fold must then defend against.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=7, credits=bad)
+    assert emit.flush()
+    assert "credits" not in _closer("subagent/completed")
+
+
+@pytest.mark.parametrize("outcome", ["failed", "stopped"])
+def test_a_child_that_did_not_finish_and_billed_nothing_writes_no_credits(outcome):
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1")
+    emit.on_subagent_failed(
+        SESSION, agent_id="sub-1", reason="boom", outcome=outcome, duration_ms=3, credits=0.0
+    )
+    assert emit.flush()
+    assert "credits" not in _closer("subagent/failed")
+
+
 def test_the_child_probe_reports_present_while_this_session_owes_an_entry():
     # The window the registry alone cannot answer. A child's terminal closer goes
     # through the writer and `_submit` returns before it lands, so the child leaves

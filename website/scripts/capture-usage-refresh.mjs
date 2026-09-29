@@ -303,12 +303,18 @@ for (const theme of ['light', 'dark']) {
   /* ── 06 Settings > Display: no control for the scrape ───────────────────── */
   {
     const { page } = await scene(theme, 'reading', 'reading')
-    await page.goto(base + '/settings/display', { waitUntil: 'domcontentloaded' })
+    // The rail mounts one pane at a time; sweep every Display pane so the
+    // scrape-absence guard keeps its pre-rail whole-page reach (view last = shot).
+    for (const sub of ['zoom', 'terminal', 'theme', 'sidebar', 'view']) {
+      await page.goto(`${base}/settings/display/${sub}`, { waitUntil: 'domcontentloaded' })
+      await page.waitForSelector('[data-settings-card]', { timeout: 15000 })
+      await page.waitForTimeout(400)
+      const text = (await page.textContent('main')) || (await page.textContent('body')) || ''
+      if (/credit|balance|usage_text_scrape/i.test(text)) fail(`${theme}: Settings > Display (${sub}) still mentions the credit meter`)
+    }
     const view = page.getByRole('heading', { name: /^View$/ }).first()
     await view.waitFor({ state: 'visible', timeout: 15000 })
-    await page.waitForTimeout(900)
-    const text = (await page.textContent('main')) || (await page.textContent('body')) || ''
-    if (/credit|balance|usage_text_scrape/i.test(text)) fail(`${theme}: Settings > Display still mentions the credit meter`)
+    await page.waitForTimeout(500)
     await view.scrollIntoViewIfNeeded()
     await page.waitForTimeout(200)
     await shot(page, `06-display-${theme}`)

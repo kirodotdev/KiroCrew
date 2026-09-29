@@ -255,13 +255,21 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
   return active && idle
 }
 
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean }) {
+/** `streamIdleMs` is how long `streamTick` must hold still before a quiet
+ *  stream counts as quiet. A live-socket host keeps the default; a POLLING host
+ *  (ChatEmbed) passes a window wider than its poll interval, because its tick
+ *  only advances once per poll and a shorter window would flash the indicator
+ *  between every two reads of a reply that is still arriving. */
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const slug = useThemeSlug()
   const themeState = useOptionalTheme()
   const packSlug = packSlugOf(slug)
   const installedTheme = packSlug ? themeState?.customThemeDataMap.get(packSlug) : undefined
   const loader = resolveLoader(slug, installedTheme?.assets)
+  // Set when a loader image fails to load; a new theme brings new art, so retry it.
+  const [artFailed, setArtFailed] = useState(false)
+  useEffect(() => { setArtFailed(false) }, [slug])
   // Text is only ACTIVELY streaming while the slot says so AND chunks keep
   // arriving. `lastRole` alone cannot tell the two apart: the trailing
   // 'streaming' message is deliberately left unfinalized across a whole tool
@@ -269,7 +277,7 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // also goes quiet for seconds while it generates a tool call. Both looked like
   // "still streaming", so the loader stayed hidden with nothing else moving.
   const streamingText = lastRole === 'streaming' && state === 'streaming'
-  const streamQuiet = useStreamIdle(streamTick, streamingText)
+  const streamQuiet = useStreamIdle(streamTick, streamingText, streamIdleMs)
   // Hidden once the turn is inactive. While the turn RUNS the indicator shows for
   // thinking, tool calls, AND the gaps between steps: the backend keeps
   // slot.running true for the whole turn, so the post-tool gap stays covered
@@ -308,28 +316,16 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
         ) : !regenerating && state === 'compacting' ? (
           <span className="text-muted text-[13px] font-mono animate-pulse"><Hourglass className="lucide-inline" /> {i18nT('pages.chat.chatFooter.compacting')}</span>
         ) : (
-          // The plain running state. The artwork (mascot carousel / theme loader /
-          // pack image) is DECORATIVE — aria-hidden, no alt — so on its own it
-          // gives a sighted user nothing to read and assistive tech nothing to
-          // announce, and when the images fail to paint the user is left staring
-          // at broken-image glyphs unsure whether the turn is working (#13779).
-          // A visible, localized "Thinking…" label sits beside it: it reads the
-          // same as the sidebar row and matches how the stopping / compacting
-          // branches present, so the indicator is never a bare glyph row. The row
-          // is the accessible status; the artwork stays hidden from it.
+          // The artwork is the visible indicator; the label is for screen readers,
+          // and only shows when the art cannot paint, so the row is never bare glyphs (#13779).
           <div
             className="inline-flex items-center gap-2"
             role="status"
             aria-label={i18nT('pages.chat.chatFooter.thinking')}
           >
-            {/* Both branches render THEME-SUPPLIED components (a whole replacement
-                loader, or the icons the carousel cycles). A throwing one must not
-                escape: unguarded it reaches the route-level ErrorBoundary and
-                swaps the entire chat UI for the error card. The loader is
-                decorative, so failing it closed to nothing is strictly better
-                than losing the chat. `fallback={null}` is honoured explicitly
-                (ErrorBoundary tests `'fallback' in props`), so this renders
-                nothing rather than a card — and the label below still shows. */}
+            {/* A throwing theme loader must not reach the route-level boundary and
+                blank the chat; it renders nothing, and the empty wrapper unhides the label. */}
+            {!artFailed && <span className="contents peer" onErrorCapture={() => setArtFailed(true)}>
             <ErrorBoundary fallback={null}>
               {loader.kind === 'custom'
                 // The theme replaced the whole loader — it owns its size and motion.
@@ -350,7 +346,8 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
                     />
                   : <SwapCarousel icons={loader.icons} />}
             </ErrorBoundary>
-            <span className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>
+            </span>}
+            <span className={`text-muted text-[13px] font-mono${artFailed ? '' : ' sr-only peer-empty:not-sr-only'}`}>{i18nT('pages.chat.chatFooter.thinking')}</span>
           </div>
         )}
       </div>

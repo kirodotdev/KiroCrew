@@ -7,6 +7,7 @@
 
 import type { ChatSlot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
+import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
 import { chatSlotDetailPath } from '../chatSlotPaths'
 import { resolveDefaultMemoryMode } from '../queryClient'
@@ -46,6 +47,8 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
      *  error) when the feature is off, so the panel can explain itself. */
     sessionSummary: (slot: string) =>
       fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/summary').then(j) as Promise<SessionSummary>,
+    dashboardCard: (slot: string) =>
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/dashboard-card').then(j) as Promise<DynamicDashboardCard>,
     /** Summarize this session NOW, on the person's explicit request.
      *
      *  Same path as the GET, different verb: reading a summary must stay free of

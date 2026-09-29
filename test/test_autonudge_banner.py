@@ -999,7 +999,7 @@ class TestRestSurface:
         """Negative control: redaction that does NOT grow the value stays accepted.
 
         The exfiltration placeholder replaces the whole matched URL and here
-        measures 27 characters SHORTER, so this at-cap banner ends well inside the
+        measures 39 characters SHORTER, so this at-cap banner ends well inside the
         bound. Without this, a fix that rejected any banner whose redaction
         changed it — or that simply lowered the cap — would pass the two arms
         above while refusing legitimate input. Complements
@@ -1007,7 +1007,8 @@ class TestRestSurface:
         """
         from aiohttp.test_utils import TestClient, TestServer
 
-        url = "https://a.co/upload?data=aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQ="
+        # 48-char padded base64: a run of 40+ on its own, not via ``data=``.
+        url = "https://a.co/upload?data=aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgcGF5bG9hZA=="
         at_cap_with_url = "y" * (MAX_BANNER_CHARS - len(url)) + url
         assert len(at_cap_with_url) == MAX_BANNER_CHARS, "fixture is not at the cap"
         svc = self._svc()

@@ -112,6 +112,21 @@ class _TaskqBridgeMixin(ManagerComponent):
         admitting = list(getattr(self._manager, "_admitting_ids", ()) or ())
         return self.taskq_window_ids() + live + admitting
 
+    def taskq_dispatch_excluded_ids(self) -> list[str]:
+        """:meth:`taskq_excluded_ids` plus the rows the pump has popped from the
+        window and not yet claimed (``_dispatching_ids``).
+
+        For the pump's own reads only: the refill that tops the window up and
+        the depth the chip shows. A popped row's durable state is still QUEUED
+        until its claim lands, so without this the refill re-hydrates a row that
+        is being started and the depth counts it as waiting. Cancellation and
+        pending-work reads keep :meth:`taskq_excluded_ids`: a parent's Stop must
+        reach a row in exactly this popped-unclaimed state, or it starts after
+        the stop has reported done.
+        """
+        dispatching = list(getattr(self._manager, "_dispatching_ids", ()) or ())
+        return self.taskq_excluded_ids() + dispatching
+
     def taskq_open(self, cfg: Any, *, home: Any) -> "_taskq.TaskStore | None":
         """Open the store for this manager per ``cfg.agent``.
 
@@ -873,23 +888,32 @@ class _TaskqBridgeMixin(ManagerComponent):
             current or "gone",
         )
 
-    def taskq_overflow(self, parent_session_key: str | None = None) -> int:
+    def taskq_overflow(
+        self, parent_session_key: str | None = None, *, for_dispatch: bool = False
+    ) -> int:
         """Queued rows that live only in the store (outside the in-memory window).
 
         A store that cannot be read answers :data:`UNKNOWN_PENDING`, not 0: no
         store at all is a queue with no rows in it, while a locked or full one is
         a queue whose rows nobody can see, and only the first of those is
         evidence that this parent has nothing waiting.
+
+        *for_dispatch* selects :meth:`taskq_dispatch_excluded_ids`, which also
+        leaves out a row the pump has popped and not yet claimed. Only the depth
+        the chip shows asks for that: a pending-work read (the guard that holds
+        a parent's reset while its children wait) must keep counting such a row,
+        because it is still this parent's accepted work.
         """
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
         if store is None:
             return 0
+        exclude = self.taskq_dispatch_excluded_ids() if for_dispatch else self.taskq_excluded_ids()
         try:
             return store.count_pending(
                 _taskq.KIND_SUBAGENT,
-                exclude_ids=self.taskq_excluded_ids(),
+                exclude_ids=exclude,
                 session_key=parent_session_key,
             )
         except _taskq.TaskStoreUnavailable:
@@ -900,7 +924,9 @@ class _TaskqBridgeMixin(ManagerComponent):
             )
             return UNKNOWN_PENDING
 
-    async def taskq_overflow_async(self, parent_session_key: str | None = None) -> int:
+    async def taskq_overflow_async(
+        self, parent_session_key: str | None = None, *, for_dispatch: bool = False
+    ) -> int:
         """:meth:`taskq_overflow` with its store count on the writer thread.
 
         The exclusion set is in-memory manager state, so it is snapshotted HERE
@@ -913,7 +939,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         store = self.taskq_store()
         if store is None:
             return 0
-        exclude = self.taskq_excluded_ids()
+        exclude = self.taskq_dispatch_excluded_ids() if for_dispatch else self.taskq_excluded_ids()
         try:
             return int(
                 await store.run(
@@ -1253,7 +1279,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         }
         pending = store.pending_lanes(
             _taskq.KIND_SUBAGENT,
-            exclude_ids=self.taskq_excluded_ids(),
+            exclude_ids=self.taskq_dispatch_excluded_ids(),
             children_only=children_only,
         )
         return [lane for lane in pending if lane not in present], lanes
@@ -1286,7 +1312,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         """Store read: the absent lanes' heads first, then whatever room is left."""
         from kiro_crew import taskq as _taskq
 
-        exclude = self.taskq_excluded_ids()
+        exclude = self.taskq_dispatch_excluded_ids()
         rows: list[_taskq.TaskRecord] = []
         if absent and room > 0:
             rows.extend(

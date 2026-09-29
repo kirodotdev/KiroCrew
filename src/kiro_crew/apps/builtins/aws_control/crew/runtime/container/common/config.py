@@ -217,6 +217,37 @@ class Settings:
         return f"http://{BACKEND_HOST}:{self.backend_port}"
 
     @property
+    def kiro_home(self) -> Path:
+        """kiro-cli's user directory for this container: ``<data home>/kiro``.
+
+        The ONE definition of that path, because two processes have to agree on it
+        and they reach it by different routes: the supervisor installs the crew's
+        agent spec under it (``bundle.install_bundle``) and the backend reads and
+        REWRITES specs there (``kiro_crew.agent.rebuild_agent_config``). Both are
+        pointed at it by the same exported ``KIRO_HOME`` (``backend.ENV_KIRO_HOME``,
+        exported in ``supervisor.__main__.export_kiro_home``), so a change to the
+        layout moves both sides at once.
+
+        Why not the process HOME's ``~/.kiro/agents``, which is where this landed
+        before: that directory is SHARED by every instance under this ``$HOME``, and
+        the backend runs on a non-default data home (``KIROCREW_HOME=<data home>``).
+        Kiro Crew refuses to rewrite a shared agents dir from a non-default home --
+        the specs it would write pin the writer's data home into every managed MCP
+        server entry, which breaks strict session identity for a default-home
+        gateway (kirodotdev/KiroCrew#9690). In the container that refusal meant the
+        default spec ``kirocrew.json`` was never written at all, and every turn died
+        at ``DerivedSpecStale``.
+
+        ``<data home>/kiro`` is the one layout that guard exempts by construction:
+        it matches ``config.paths.isolated_agents_dir(data home)`` exactly (``<data
+        home>/kiro/agents``), which is its documented private-target case -- a
+        directory this instance's own teardown owns, shared with nobody. Matched
+        EXACTLY there, not by ancestry, so the ``kiro`` segment is load-bearing and
+        the container must not spell this ``<data home>`` or any other nesting.
+        """
+        return self.data_home / "kiro"
+
+    @property
     def sessions_dir(self) -> Path:
         return self.data_home / "sessions"
 

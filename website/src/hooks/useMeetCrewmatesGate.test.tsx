@@ -3,7 +3,7 @@ import { act, waitFor } from '@testing-library/react'
 import { renderHookWithProviders } from '../test/helpers'
 import { useMeetCrewmatesGate } from './useMeetCrewmatesGate'
 import { useTheme } from './useTheme'
-import { START_MEET_CREWMATES_EVENT } from '../components/MeetCrewmatesFlow'
+import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../components/MeetCrewmatesFlow'
 import { PREVIEW_CREW } from '../utils/previewFlags'
 import { api } from '../api/client'
 
@@ -109,17 +109,6 @@ describe('useMeetCrewmatesGate', () => {
     expect(result.current.gate.open).toBe(false)
   })
 
-  it('does not open when a crewmate already exists', async () => {
-    vi.mocked(api.members).mockResolvedValue({
-      members: [{ name: 'default', slug: 'default' }, { name: 'Radar', slug: 'radar' }],
-    } as never)
-    const { result } = renderHookWithProviders(useBoth)
-    await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
-    act(() => result.current.theme.markOnboarded())
-    await waitFor(() => expect(api.members).toHaveBeenCalled())
-    expect(result.current.gate.open).toBe(false)
-  })
-
   it('a persist refused at onCreated is shown on the ready step; onDone closes at once and marks nothing locally', async () => {
     vi.mocked(api.updateThemeConfig).mockRejectedValue(new Error('refused'))
     const { result } = renderHookWithProviders(useBoth)
@@ -150,52 +139,18 @@ describe('useMeetCrewmatesGate', () => {
     expect(result.current.gate.open).toBe(true)
   })
 
-  it('a failed eligibility read is surfaced, not swallowed: eligibilityError until dismissed, flow stays closed', async () => {
-    // React Query retries by default; the providers' test client disables retries, so one rejection is the failure.
-    vi.mocked(api.members).mockRejectedValue(new Error('network'))
-    const { result } = renderHookWithProviders(useBoth)
-    await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
-    expect(result.current.gate.eligibilityError).toBe(false)
-    act(() => result.current.theme.markOnboarded())
-    await waitFor(() => expect(result.current.gate.eligibilityError).toBe(true))
-    expect(result.current.gate.open).toBe(false)
-    act(() => result.current.gate.dismissEligibilityError())
-    expect(result.current.gate.eligibilityError).toBe(false)
-    // The Crew Members page entry still works regardless of the failed read.
-    act(() => window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT)))
-    expect(result.current.gate.open).toBe(true)
-  })
-
-  it('a spec owned by Kiro Crew that is not in the name fallback still counts as built-in (server flag wins)', async () => {
-    vi.mocked(api.agentsInstalled).mockResolvedValue([
-      { name: 'kirocrew', kirocrew_owned: true },
-      { name: 'kirocrew-some-future-builtin', kirocrew_owned: true },
-    ] as never)
+  it('opens after the tour even when crewmates and custom agents exist: having seen it is the only condition', async () => {
+    vi.mocked(api.members).mockResolvedValue({
+      members: [{ name: 'default', slug: 'default' }, { name: 'Radar', slug: 'radar' }],
+    } as never)
+    vi.mocked(api.agentsInstalled).mockResolvedValue([{ name: 'issue-triage', kirocrew_owned: false }] as never)
     const { result } = renderHookWithProviders(useBoth)
     await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
     act(() => result.current.theme.markOnboarded())
     await waitFor(() => expect(result.current.gate.open).toBe(true))
-  })
-
-  it('a user spec with the server flag false is a custom agent even if its name looks built-in', async () => {
-    vi.mocked(api.agentsInstalled).mockResolvedValue([
-      { name: 'kirocrew', kirocrew_owned: true },
-      { name: 'kirocrew-lite', kirocrew_owned: false },
-    ] as never)
-    const { result } = renderHookWithProviders(useBoth)
-    await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
-    act(() => result.current.theme.markOnboarded())
-    await waitFor(() => expect(api.agentsInstalled).toHaveBeenCalled())
-    expect(result.current.gate.open).toBe(false)
-  })
-
-  it('does not open when a custom agent is installed (that user gets the opt-in step)', async () => {
-    vi.mocked(api.agentsInstalled).mockResolvedValue([{ name: 'kirocrew', kirocrew_owned: true }, { name: 'issue-triage', kirocrew_owned: false }] as never)
-    const { result } = renderHookWithProviders(useBoth)
-    await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
-    act(() => result.current.theme.markOnboarded())
-    await waitFor(() => expect(api.agentsInstalled).toHaveBeenCalled())
-    expect(result.current.gate.open).toBe(false)
+    // Nothing about the roster or the installed agents is read to decide it.
+    expect(api.members).not.toHaveBeenCalled()
+    expect(api.agentsInstalled).not.toHaveBeenCalled()
   })
 
   it('a NEW user who reloads between the tour and this chapter is still due it: the tour leaves a pending mark', async () => {
@@ -247,5 +202,65 @@ describe('useMeetCrewmatesGate', () => {
       window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT))
     })
     expect(result.current.gate.open).toBe(true)
+  })
+  describe('first visit to the Crewmates page', () => {
+    const enterPage = () => act(() => { window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT)) })
+
+    it('opens for an existing user with crewmates and custom agents who never saw the flow, once', async () => {
+      // Onboarded before the chapter shipped (no crewmates_onboarded on the
+      // server), with a custom agent: the tour-end auto-fire skips this user.
+      vi.mocked(api.themeBoot).mockResolvedValueOnce({
+        mode: '', color: '', onboarded: true, import_onboarded: true, privacy_acked: true,
+      })
+      vi.mocked(api.agentsInstalled).mockResolvedValue([{ name: 'issue-triage', kirocrew_owned: false }] as never)
+      vi.mocked(api.members).mockResolvedValue({
+        members: [{ name: 'default', slug: 'default' }, { name: 'Radar', slug: 'radar' }],
+      } as never)
+      const { result } = renderHookWithProviders(useBoth)
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      expect(result.current.gate.open).toBe(false)
+
+      enterPage()
+      await waitFor(() => expect(result.current.gate.open).toBe(true))
+
+      act(() => result.current.gate.onDone('dismissed'))
+      expect(result.current.gate.open).toBe(false)
+      await waitFor(() => expect(result.current.theme.crewmatesFlowSeen).toBe(true))
+      // A second visit does not show it again.
+      enterPage()
+      await new Promise(r => setTimeout(r, 20))
+      expect(result.current.gate.open).toBe(false)
+    })
+
+    it('does not open once the server records the flow as seen', async () => {
+      vi.mocked(api.themeBoot).mockResolvedValueOnce({
+        mode: '', color: '', onboarded: true, import_onboarded: true, privacy_acked: true,
+        crewmates_onboarded: true,
+      } as never)
+      const { result } = renderHookWithProviders(useBoth)
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      enterPage()
+      await new Promise(r => setTimeout(r, 20))
+      expect(result.current.gate.open).toBe(false)
+    })
+
+    it('an entry announced before the theme boot lands is honoured once it lands', async () => {
+      vi.mocked(api.themeBoot).mockResolvedValueOnce({
+        mode: '', color: '', onboarded: true, import_onboarded: true, privacy_acked: true,
+      })
+      const { result } = renderHookWithProviders(useBoth)
+      enterPage()
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      await waitFor(() => expect(result.current.gate.open).toBe(true))
+    })
+
+    it('does not cover the first-run chapters that are still running', async () => {
+      // Default mock: the tour is not done yet.
+      const { result } = renderHookWithProviders(useBoth)
+      await waitFor(() => expect(result.current.theme.themeBootReady).toBe(true))
+      enterPage()
+      await new Promise(r => setTimeout(r, 20))
+      expect(result.current.gate.open).toBe(false)
+    })
   })
 })

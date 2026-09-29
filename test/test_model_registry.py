@@ -760,6 +760,36 @@ class TestAdvertisedModelCache:
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": [served]})
         assert mr.resolve_wire_model_id(served, "claude_code") == served
 
+    def test_wire_id_folds_stored_id_onto_bare_family_alias(self, monkeypatch):
+        # An adapter can advertise the registry's bare family alias ("fable")
+        # instead of the dotted provider id a session stored. The two share no
+        # normalized key, so only the registry entry's own alias bridges them.
+        monkeypatch.setattr(
+            mr, "_ADVERTISED_MODELS", {"claude_code": ["default", "opus", "fable", "sonnet"]}
+        )
+        assert (
+            mr.resolve_wire_model_id("global.anthropic.claude-fable-5[1m]", "claude_code")
+            == "fable"
+        )
+        assert (
+            mr.resolve_wire_model_id("global.anthropic.claude-opus-4-8[1m]", "claude_code")
+            == "opus"
+        )
+
+    def test_wire_id_never_folds_onto_a_substitution_alias(self, monkeypatch):
+        # The Sonnet entry lists "claude-haiku-4.5" as an alias because the
+        # claude backend serves no Haiku. An adapter that DOES advertise it is
+        # serving a different model, so a stored Sonnet id must not fold onto it.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["claude-haiku-4.5"]})
+        stored = "global.anthropic.claude-sonnet-4-6[1m]"
+        assert mr.resolve_wire_model_id(stored, "claude_code") == stored
+
+    def test_wire_id_family_alias_keeps_the_context_window(self, monkeypatch):
+        # "opus" is an alias of the 1M entry only; the 200K Opus must not fold onto it.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus"]})
+        stored = "global.anthropic.claude-opus-4-8"
+        assert mr.resolve_wire_model_id(stored, "claude_code") == stored
+
     def test_to_provider_id_unknown_still_passes_through(self, monkeypatch):
         # Guard: the pure translation is unchanged — folding lives in
         # resolve_wire_model_id, not to_provider_id.

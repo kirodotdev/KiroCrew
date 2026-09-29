@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.cli_commands import _cron
+from kiro_crew.history import ConversationLog
 
 
 def _job(job_id="abc12345", *, session_key="", created_by=""):
@@ -234,11 +235,96 @@ class TestAdoptTargetVisibility:
         self._run_adopt_with_known(True)
         assert "no recorded session" not in capsys.readouterr().err
 
-    def test_existence_is_checked_on_the_slot_not_the_prefixed_key(self):
-        """The lookup must use the same slot the delivery path derives, or the
-        warning would fire on every adopt and be trained away as noise."""
+    def test_a_real_existing_session_does_not_warn(self, capsys, tmp_path, monkeypatch):
+        """The lookup must use the spelling the transcript store actually uses.
+
+        Every other test here mocks ``has_log``, so each one passes whichever
+        spelling the CLI passes and none of them can see a mismatch with the
+        real store. That is how this warning came to fire on EVERY correct
+        dashboard adopt: the CLI looked up the prefix-stripped slot
+        (``chat-9-...``) while this session's transcript is keyed
+        ``dashboard_chat-9-....jsonl``, so the file could never be found and
+        the operator was trained to ignore a warning that would also have been
+        the only signal for a genuine typo. That prefix is not universal --
+        a channel-origin slot's transcript carries none -- which is why the
+        check resolves the key through the delivery path's own helpers rather
+        than assuming one spelling.
+
+        So this test writes a transcript through the REAL ConversationLog and
+        drives the real lookup. It fails if the two halves disagree, which a
+        mocked assertion on the call argument cannot.
+        """
+        monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
+        ConversationLog(base_dir=tmp_path).append("dashboard:chat-9-1712799999", "user", "hello")
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.adopt_job.return_value = True
+            _cron(_adopt_args(session_of="chat-9-1712799999"))
+        assert "no recorded session" not in capsys.readouterr().err
+
+    def test_a_real_absent_session_still_warns(self, capsys, tmp_path, monkeypatch):
+        """The warning must survive the fix: a typo is still worth catching."""
+        monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.adopt_job.return_value = True
+            _cron(_adopt_args(session_of="chat-9-typo"))
+        assert "no recorded session" in capsys.readouterr().err
+
+    def test_existence_is_checked_on_the_delivery_resolved_key(self):
+        """Not on the prefix-stripped slot, which no transcript is keyed by.
+
+        The check must ask for the same file the DELIVERY path would read, so
+        the two cannot drift apart. For the common ``chat-N`` spelling that is
+        the full session key; the two tests below cover the spellings where
+        delivery resolves something else.
+        """
         mock_log_cls = self._run_adopt_with_known(True)
-        mock_log_cls.return_value.has_log.assert_called_once_with("chat-9-1712799999")
+        mock_log_cls.return_value.has_log.assert_called_once_with("dashboard:chat-9-1712799999")
+
+    def test_a_channel_origin_slot_does_not_warn(self, capsys, tmp_path, monkeypatch):
+        """``dashboard:slack_<ts>`` has no ``dashboard_`` on its transcript.
+
+        This is the owner ``cron list`` prints for an unbound channel-origin
+        slot, and its transcript is ``slack_<ts>.jsonl`` -- ``_safe_key`` folds
+        the stem and the live ``slack:<ts>`` onto one file, so the delivery path
+        deliberately does NOT prefix it. Looking the raw session key up instead
+        asks for ``dashboard_slack_<ts>.jsonl``, which never exists, so the
+        false warning this PR removes would come straight back for this key.
+        """
+        monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
+        ConversationLog(base_dir=tmp_path).append("slack_1785370133.085469", "user", "hello")
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.adopt_job.return_value = True
+            _cron(_adopt_args(session_of="dashboard:slack_1785370133.085469"))
+        assert "no recorded session" not in capsys.readouterr().err
+
+    def test_a_stacked_dashboard_prefix_does_not_warn(self, capsys, tmp_path, monkeypatch):
+        """``--session-of dashboard_chat-N-...`` must not double the prefix.
+
+        A filename stem reaches this flag whenever someone reads a key off disk.
+        It carries no ``:``, so the CLI prefixes it to
+        ``dashboard:dashboard_chat-N-...``; looking that up raw asks for
+        ``dashboard_dashboard_chat-N-....jsonl``. ``_normalize_slot_key`` strips
+        the stacked prefix, which is why resolving through it is what keeps the
+        check honest for this spelling.
+        """
+        monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
+        ConversationLog(base_dir=tmp_path).append("dashboard:chat-9-1712799999", "user", "hello")
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.adopt_job.return_value = True
+            _cron(_adopt_args(session_of="dashboard_chat-9-1712799999"))
+        assert "no recorded session" not in capsys.readouterr().err
 
     def test_a_failing_lookup_stays_quiet(self, capsys):
         """Cannot-tell is not evidence of a typo -- never cry wolf."""

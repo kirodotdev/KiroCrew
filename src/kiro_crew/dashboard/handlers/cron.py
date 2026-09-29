@@ -865,6 +865,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
 
 async def api_cron_delete(request: web.Request) -> web.Response:
     """DELETE /api/crons/{id} — remove a cron job."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.delete")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
@@ -896,6 +900,10 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     purged per successfully-removed job, mirroring the single-delete path, and a
     single ``crons`` refresh is pushed after the batch instead of one per id.
     """
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.batch_delete")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     # Default cap: the body is a bounded list of short job ids.
     body, body_err = await read_bounded_json(request)
@@ -953,6 +961,10 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
 
 async def api_cron_update(request: web.Request) -> web.Response:
     """PATCH /api/crons/{id} — update a cron job (partial)."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.update")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
@@ -1792,6 +1804,10 @@ async def api_cron_secret_grant(request: web.Request) -> web.Response:
 
 async def api_cron_run(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/run — trigger immediate execution."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.run")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
@@ -1913,6 +1929,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
 
 async def api_cron_enable(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/enable — toggle enable/disable."""
+    if request.get("app") == "":
+        owner_denied = await require_owner_dashboard_request(request, "crons.enable")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState = request.app["state"]
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
@@ -2057,7 +2077,10 @@ def _read_script_source_sync(
         # resolver would crash on it. Refuse, same code as any bad path.
         return None, ("script path refused", "script_path_refused")
     try:
-        file_path, func_name = resolve_script_path(script_spec)
+        # A PERSISTED spec off crons.json, so an app cron's bundle path must
+        # resolve here; the nolink read below stays pinned to crons/, so a
+        # bundle script yields a typed refusal rather than bundle bytes.
+        file_path, func_name = resolve_script_path(script_spec, allow_bundle_roots=True)
     except FileNotFoundError:
         return None, ("script file not found", "script_not_found")
     except Exception:

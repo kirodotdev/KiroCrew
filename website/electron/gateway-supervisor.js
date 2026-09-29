@@ -301,7 +301,7 @@ function createGatewaySupervisor({
     waitForPortFree,
     waitForIncumbentExit,
   });
-  const { fetchRemoteToken, fetchLocalToken } = createTokenSources({
+  const { fetchRemoteToken, mintLocalToken } = createTokenSources({
     store,
     port: PORT,
     backendUrl: BACKEND_URL,
@@ -716,6 +716,15 @@ function createGatewaySupervisor({
     }
   }
 
+  async function isCurrentBundleGateway() {
+    if (!app.isPackaged || IS_WIN || !path.isAbsolute(processObj.resourcesPath || "")) return false;
+    const pids = await snapshotGatewayPortPids(PORT);
+    if (pids?.length !== 1) return false;
+    const command = (await psCommand(pids[0])).trim();
+    const bundleRoot = path.join(processObj.resourcesPath, "backend-dist") + path.sep;
+    return command.startsWith(bundleRoot);
+  }
+
   async function resolveGatewayConflict(rebindDepth = 0) {
     const health = await fetchHealthInfo();
     // A remote host configured for this port makes the holder a tunnel by
@@ -725,7 +734,13 @@ function createGatewaySupervisor({
       glog(`:${PORT} is a configured remote host (${remoteHost}) — holder treated as non-local`);
     }
     const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);
-    const decision = decideGatewayAction(app.getVersion(), health, { localOwner });
+    const bundledGateway = runLocalGateway
+      && health?.version !== app.getVersion()
+      && (localOwner === "kirocrew" || localOwner === "service")
+      && await isCurrentBundleGateway();
+    const decision = decideGatewayAction(app.getVersion(), health, {
+      localOwner, bundledGateway,
+    });
     // The rule this enforces, as one sentence: adopt a responder on this port
     // only when the port can be attributed either to us (a Kiro Crew LISTEN
     // owner, or a service-managed one) or to a crew the user configured here.
@@ -735,7 +750,7 @@ function createGatewaySupervisor({
     // an unidentified payload, a same-family gateway, a dev-family one, and a
     // cross-family one whose LISTEN owner is not ours -- and a gateway reached
     // through `ssh -L` answers with a perfectly ordinary same-family payload, so
-    // a gate on one reason value misses four. `fetchLocalToken` then posts this
+    // a gate on one reason value misses four. `mintLocalToken` then posts this
     // machine's `.local_secret` to it, because the mint only requires a literal
     // loopback origin and a tunnel's local end is one. The header goes out before
     // any 403 is seen, so there is no recovery after the fact.
@@ -744,11 +759,31 @@ function createGatewaySupervisor({
     // it". `kirocrew` and `service` still adopt, and so do `none` and `unknown`:
     // the fail-open this narrows is preserved wherever the probe did not
     // positively find someone else holding the port.
+    //
+    // `warn-stale` cannot reach here with a `foreign` owner: the bundled-path
+    // probe above only runs for a `kirocrew` or `service` owner, so that action
+    // is unreachable without positive local attribution.
     if (decision.action === "reuse" && localOwner === "foreign" && !remoteHost) {
       glog(`:${PORT} is served by a process this app did not start and no remote crew is configured there — refusing to adopt it`);
       return "foreign-holder";
     }
-    if (decision.action === "reuse") {
+    if (decision.action === "warn-stale") {
+      glog(`bundled gateway ${decision.oldVersion} predates app ${app.getVersion()} — warning before reuse`);
+      const stopGateway = `Run this command in Terminal:\nkirocrew stop --port ${PORT}`;
+      const recovery = localOwner === "service"
+        ? `${stopGateway}\nIf the gateway starts again automatically, stop or update the service that restarts it.`
+        : stopGateway;
+      const { response } = await dialog.showMessageBox({
+        type: "warning",
+        message: "The gateway is still running an older version.",
+        detail: `This app is version ${app.getVersion()}. The gateway is still running version ${decision.oldVersion}.\n\nContinue will try to connect to the existing gateway; updated features may be unavailable.\n\nTo finish the update, quit Kiro Crew.\n${recovery}\nThen reopen Kiro Crew.`,
+        buttons: ["Continue with existing gateway", "Quit"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (response === 1) return "abort";
+    }
+    if (decision.action === "reuse" || decision.action === "warn-stale") {
       // Adopt-or-wait. Only a positive shutting-down verdict refuses adoption;
       // every ambiguity preserves historical fail-open reuse. Remote tunnels are
       // exempt because their local socket is not expected to clear on restart.
@@ -1826,7 +1861,7 @@ function createGatewaySupervisor({
       // just before local mint accepts that secret, so retry only an own-gateway
       // 403; foreign/SSH gateways can never be minted from this machine.
       for (let attempt = 0; ; attempt += 1) {
-        let token = await fetchLocalToken(targetBackendUrl);
+        let token = await mintLocalToken(targetBackendUrl);
         if (!token) {
           ({ token } = await fetchRemoteToken(new URL(targetBackendUrl).port));
         }
@@ -2235,7 +2270,7 @@ function createGatewaySupervisor({
   return Object.freeze({
     start: startGateway,
     connect: showLoadingThenConnect,
-    fetchLocalToken,
+    mintLocalToken,
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,

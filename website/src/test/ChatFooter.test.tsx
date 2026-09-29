@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import ChatFooter, { pickDistinct, resolveLoader, resolveLoaderIcons, SwapCarousel, STREAM_IDLE_MS } from '../pages/chat/ChatFooter'
 import { GHOST_POSE_ICONS, GHOST_POSE_URLS } from '../components/GhostPoses'
 import { registerThemeBranding } from '../themeBranding'
@@ -82,14 +82,12 @@ describe('ChatFooter', () => {
     expect(screen.getByText(/Compacting…/)).toBeInTheDocument()
   })
 
-  // #13779: the plain running state must expose a READABLE, localized indicator,
-  // not only the decorative (aria-hidden, alt="") mascot carousel. When the pose
-  // images fail to paint, the icon-only footer left a first-time user staring at
-  // broken-image glyphs unsure whether the turn was working; assistive tech got
-  // nothing either. A visible "Thinking…" label beside the carousel fixes both.
-  it('shows a readable localized "Thinking…" label while running', () => {
+  // #13779: the plain running state must be readable to assistive tech and must
+  // never be a row of broken-image glyphs. The ghosts are the visible indicator;
+  // "Thinking…" is visually hidden and shows only when the art cannot paint.
+  it('keeps a localized "Thinking…" label for screen readers, visually hidden', () => {
     render(<ChatFooter {...base} running={true} lastRole="user" />)
-    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+    expect(screen.getByText('Thinking…')).toHaveClass('sr-only')
   })
 
   it('exposes the running indicator as an accessible status', () => {
@@ -99,23 +97,34 @@ describe('ChatFooter', () => {
     expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
   })
 
-  it('keeps the mascot carousel AND the label together while running', () => {
+  it('shows the ghosts, not visible text, while the art loads', () => {
     const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
-    // The label never replaces the artwork — the carousel stays for users where
-    // the poses render; the text is an additional, always-readable fallback.
     expect(container.querySelector('.csb4')).toBeInTheDocument()
-    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+    expect(screen.getByText('Thinking…')).toHaveClass('sr-only')
   })
 
-  // Even if the theme loader/artwork collapses to nothing (ErrorBoundary
-  // fallback={null} on a throwing custom loader), the readable label survives, so
-  // the running state is never a truly empty or glyph-only footer.
-  it('still shows the label when the theme artwork fails closed', () => {
+  it('swaps the ghosts for visible text when a pose image fails to load', () => {
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    const img = container.querySelector('.csb4 img')!
+    act(() => { fireEvent.error(img) })
+    expect(container.querySelector('.csb4')).toBeNull()
+    expect(screen.getByText('Thinking…')).not.toHaveClass('sr-only')
+    expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
+  })
+
+  // A throwing theme loader renders nothing, and the emptied art wrapper unhides
+  // the label via peer-empty (jsdom has no Tailwind, so assert the wiring).
+  it('shows visible text when the theme artwork fails closed', () => {
     const Boom = () => { throw new Error('theme loader exploded') }
     registerThemeBranding({ 'seam-13779-boom': { loader: Boom } })
     document.documentElement.setAttribute('data-theme', 'seam-13779-boom-dark')
     render(<ChatFooter {...base} running={true} lastRole="user" />)
-    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+    const label = screen.getByText('Thinking…')
+    expect(label).toHaveClass('peer-empty:not-sr-only')
+    const art = label.previousElementSibling
+    expect(art).toHaveClass('peer')
+    expect(art).toBeEmptyDOMElement()
+    expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
   })
 
   it('renders 4 slots, each with both cross-fade layers', () => {

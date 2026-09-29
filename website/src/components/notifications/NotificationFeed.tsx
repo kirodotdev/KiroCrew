@@ -8,16 +8,17 @@ import { deleteNotification, clearNotifications, ackAllNotifications } from '../
 import { api } from '../../api/client'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
+import Glass from '../Glass'
 import MarkdownRenderer from '../MarkdownRenderer'
 import MessageErrorBoundary from '../MessageErrorBoundary'
 import { disintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
   parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, safeInternalUrl,
-  MAC_CARD_TINT_CLASS, MAC_CARD_BLUR_CLASS, MAC_CARD_SHADOW_CLASS, MAC_CARD_BORDER_CLASS, MAC_ACTION_BTN_CLASS,
+  MAC_ACTION_BTN_CLASS,
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
-import NotificationCard, { type NotificationCardAction } from './NotificationCard'
+import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
 
 import { i18nT } from '../../i18n/t'
 /** localStorage key for app channels the user has already decided on (keep or
@@ -242,13 +243,32 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     </div>
   )
 
+  /** The first-note-from-a-channel prompt: keep or mute. One body, two
+   *  shells (an accent glass pane in mac mode, an attached strip in panel mode). */
+  const promptBody = (pc: { channel: string; label: string }) => (
+    <>
+      <Bell className="lucide-inline shrink-0 text-accent" />
+      <div className="flex-1 min-w-0 text-[12px] text-text">{i18nT('components.notifications.notificationFeed.first_notification_from')} <span className="font-semibold">{pc.label}</span>{i18nT('components.notifications.notificationFeed.keep_receiving_these')}</div>
+      <button
+        type="button"
+        className="px-2.5 py-1 rounded-md text-[12px] font-semibold cursor-pointer border-none bg-accent text-card hover:opacity-90 transition-opacity font-body whitespace-nowrap"
+        onClick={() => markChannelSeen(pc.channel)}
+      >{i18nT('components.notifications.notificationFeed.keep')}</button>
+      <button
+        type="button"
+        className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer bg-transparent text-muted border border-border-strong hover:text-text transition-colors font-body whitespace-nowrap"
+        onClick={() => muteChannel(pc.channel)}
+      >{i18nT('components.notifications.notificationFeed.mute_channel')}</button>
+    </>
+  )
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Controls: mac mode groups header + search + muted disclosure in ONE
           floating card (search above the disclosure); panel mode puts the
           disclosure first, directly on the popover surface. */}
       {mac ? (
-        <div className={`notif-material rounded-2xl ${MAC_CARD_TINT_CLASS} ${MAC_CARD_BLUR_CLASS} ${MAC_CARD_SHADOW_CLASS} ${MAC_CARD_BORDER_CLASS} px-2.5 pt-2 pb-1 mb-2 shrink-0`}>
+        <Glass variant="panel" radius={CARD_RADIUS} className="notif-material glass-shadow px-2.5 pt-2 pb-1 mb-2 shrink-0">
           <div className="flex items-center gap-1.5">
             <div className="flex-1 min-w-0">{header}</div>
             {unread > 0 && (
@@ -276,7 +296,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
               of the inbox's own settings, not as a notification row. */}
           <NotificationPermissionHint hasNotes={items.length > 0} />
           {footer}
-        </div>
+        </Glass>
       ) : (
         <>
           {mutedRow}
@@ -302,14 +322,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const active = selectedTs === n.ts
                 const prio = notePriority(n)
                 const silenced = !!n.silenced
-                // Priority tiers: passive dims, silenced renders as a
-                // dashed-border ghost; critical is signalled by its danger dot
-                // alone. The shared card carries `notif-material`: index.css
-                // solidifies these surfaces to var(--card) where backdrop-filter
-                // is unsupported (#1817).
-                const macCard = silenced
-                  ? 'bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-xl border border-dashed border-[color-mix(in_srgb,var(--border)_70%,transparent)]'
-                  : `${MAC_CARD_TINT_CLASS} ${MAC_CARD_BLUR_CLASS} ${MAC_CARD_SHADOW_CLASS} ${active ? 'border border-accent bg-accent-subtle' : `${MAC_CARD_BORDER_CLASS} hover:bg-[color-mix(in_srgb,var(--card)_82%,transparent)]`}`
+                // Priority tiers: passive dims, silenced thins the glass
+                // pane's tint (`muted`); critical is signalled by its danger
+                // dot alone. Selection is the pane's accent tint step
+                // (`active`). The shared card carries `notif-material`:
+                // index.css solidifies these surfaces to var(--card) where
+                // backdrop-filter is unsupported (#1817).
                 const panelBorder = silenced ? 'border-l-muted' : prio === 'critical' ? 'border-l-danger' : km.borderColor
                 const promptChannel = promptTs === n.ts && n.channel && n.source
                   ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
@@ -379,9 +397,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       <NotificationCard
                         data-notif-row data-ts={n.ts}
                         n={n}
-                        elevation="popover"
-                        material={macCard}
-                        className={`${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''}`}
+                        className={`${collapsedStack ? 'mb-0' : promptChannel ? 'mb-1' : 'mb-2'} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''}`}
                         active={active}
                         muted={silenced}
                         onOpen={() => { if (collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
@@ -472,28 +488,24 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         stack -- click anywhere on the head to expand. */}
                     {mac && collapsedStack && (
                       <div aria-hidden className="mb-2">
-                        <div className={`notif-material relative z-[1] h-3 -mt-1.5 mx-2 rounded-b-2xl ${silenced ? 'bg-[color-mix(in_srgb,var(--card)_30%,transparent)]' : 'bg-[color-mix(in_srgb,var(--card)_58%,transparent)]'} backdrop-blur-xl border border-t-0 border-[color-mix(in_srgb,var(--border)_45%,transparent)] shadow-[0_4px_12px_rgba(0,0,0,.06)]`} />
-                        <div className="notif-material relative z-0 h-3 -mt-1.5 mx-4 rounded-b-2xl bg-[color-mix(in_srgb,var(--card)_45%,transparent)] backdrop-blur-lg border border-t-0 border-[color-mix(in_srgb,var(--border)_35%,transparent)]" />
+                        {/* The same glass as the head on the faded tint step,
+                            tucked under it: only each shell's lower edge shows.
+                            Never `opacity` here — it would void the blur. */}
+                        <Glass variant="panel" radius={CARD_RADIUS} className="notif-material glass-faded relative z-[1] h-3 -mt-1.5 mx-2" />
+                        <Glass variant="panel" radius={CARD_RADIUS} className="notif-material glass-faded relative z-0 h-3 -mt-1.5 mx-4" />
                       </div>
                     )}
-                    {promptChannel && (
-                      <div className={`flex items-center gap-2 px-3 py-2 border border-t-0 ${mac
-                        ? 'notif-material rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
-                        : 'rounded-b-md mb-1 bg-accent-subtle border-border'}`}>
-                        <Bell className="lucide-inline shrink-0 text-accent" />
-                        <div className="flex-1 min-w-0 text-[12px] text-text">{i18nT('components.notifications.notificationFeed.first_notification_from')} <span className="font-semibold">{promptChannel.label}</span>{i18nT('components.notifications.notificationFeed.keep_receiving_these')}</div>
-                        <button
-                          type="button"
-                          className="px-2.5 py-1 rounded-md text-[12px] font-semibold cursor-pointer border-none bg-accent text-card hover:opacity-90 transition-opacity font-body whitespace-nowrap"
-                          onClick={() => markChannelSeen(promptChannel.channel)}
-                        >{i18nT('components.notifications.notificationFeed.keep')}</button>
-                        <button
-                          type="button"
-                          className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer bg-transparent text-muted border border-border-strong hover:text-text transition-colors font-body whitespace-nowrap"
-                          onClick={() => muteChannel(promptChannel.channel)}
-                        >{i18nT('components.notifications.notificationFeed.mute_channel')}</button>
+                    {promptChannel && (mac ? (
+                      // Its own accent-tinted glass under the row (a pane has
+                      // one radius, so the strip is not glued to the card).
+                      <Glass variant="chip" radius={12} className="notif-material glass-accent glass-shadow flex items-center gap-2 px-3 py-2 mb-2">
+                        {promptBody(promptChannel)}
+                      </Glass>
+                    ) : (
+                      <div className="flex items-center gap-2 px-3 py-2 border border-t-0 rounded-b-md mb-1 bg-accent-subtle border-border">
+                        {promptBody(promptChannel)}
                       </div>
-                    )}
+                    ))}
                   </div>
                 )
               })}

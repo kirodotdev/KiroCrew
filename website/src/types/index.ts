@@ -1436,7 +1436,7 @@ export interface SubagentActivity {
   childSession?: string
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
-  startedAt: number; elapsed: number; error?: string
+  startedAt: number; elapsed: number; credits?: number; error?: string
   /** True when `startedAt` was ASSUMED rather than observed, which is the case
    *  for an entry minted by `upsertSlotSub` from an incremental frame: that frame
    *  carries no start time, so the entry records its arrival instant. The agent
@@ -1538,6 +1538,9 @@ export interface NotificationChannel {
 }
 
 export interface PendingApproval {
+  origin?: 'native' | 'coordinator'
+  request_mid?: string
+  tool_purpose?: string
   tool: string
   tool_input: string
   tool_kind: string

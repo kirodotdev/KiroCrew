@@ -588,6 +588,7 @@ make this tool possible:
 <a href="https://github.com/hardjaso" title="Jason Harding"><img src="https://github.com/hardjaso.png?size=64" width="64" height="64" alt="Jason Harding" /></a>
 <a href="https://github.com/harking" title="George Montana Harkin"><img src="https://github.com/harking.png?size=64" width="64" height="64" alt="George Montana Harkin" /></a>
 <a href="https://github.com/harpreetmultani1994" title="Harpreet Singh"><img src="https://github.com/harpreetmultani1994.png?size=64" width="64" height="64" alt="Harpreet Singh" /></a>
+<a href="https://github.com/harshakshit" title="Harsh Akshit"><img src="https://github.com/harshakshit.png?size=64" width="64" height="64" alt="Harsh Akshit" /></a>
 <a href="https://github.com/hazlijohar95" title="Hazli Johar"><img src="https://github.com/hazlijohar95.png?size=64" width="64" height="64" alt="Hazli Johar" /></a>
 <a href="https://github.com/hchy0422" title="Kathy Han"><img src="https://github.com/hchy0422.png?size=64" width="64" height="64" alt="Kathy Han" /></a>
 <a href="https://github.com/hegxiten" title="Zezhou Wang"><img src="https://github.com/hegxiten.png?size=64" width="64" height="64" alt="Zezhou Wang" /></a>

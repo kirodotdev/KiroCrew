@@ -345,6 +345,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "answer a backend that never defined the channel, which is a defect rather "
         "than a shortfall"
     ),
+    "ACP_BACKENDS_OPEN_EXTERNAL_URL": (
+        "which backend's engine sends an MCP sign-in link to its client instead of "
+        "running the OAuth flow itself. Both paths end at the same Authorize banner, "
+        "so a reader choosing a harness loses nothing; a wrong membership would answer "
+        "a request the backend never sends, or leave a KAS server unable to sign in, "
+        "which is a defect"
+    ),
     "ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS": (
         "who runs the agent spec's own hooks: the harness, or Crew's turn loop for a "
         "harness that never receives them. The hooks run either way, so a reader "

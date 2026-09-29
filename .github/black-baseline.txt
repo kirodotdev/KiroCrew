@@ -37,7 +37,6 @@ src/kiro_crew/apps/builtins/code_review_sage/sage_lib/learning.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/pipeline.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/report.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/results.py
-src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_driver.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_pool.py
 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/store.py
 src/kiro_crew/apps/builtins/code_review_sage/tests/fixtures.py
@@ -221,14 +220,12 @@ src/kiro_crew/knowledge/extractor.py
 src/kiro_crew/knowledge/folder_watcher.py
 src/kiro_crew/knowledge/ingestion.py
 src/kiro_crew/knowledge/kiroignore.py
-src/kiro_crew/knowledge/llm_pool.py
 src/kiro_crew/knowledge/readers.py
 src/kiro_crew/knowledge/retrieval.py
 src/kiro_crew/knowledge/spend.py
 src/kiro_crew/knowledge/store.py
 src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
-src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
 src/kiro_crew/mcp_gateway/backend.py
@@ -416,7 +413,6 @@ test/test_chat_slot_reasoning_effort.py
 test/test_chat_title.py
 test/test_chat_turn_timeout_consistency.py
 test/test_cli_desktop.py
-test/test_cli_doctor.py
 test/test_cli_lazy_imports.py
 test/test_close_guard_parity.py
 test/test_cloud_ec2.py
@@ -538,7 +534,6 @@ test/test_display_time_redaction.py
 test/test_doc_parser.py
 test/test_docker_entrypoint.py
 test/test_doctor_sandbox_verdict.py
-test/test_effort.py
 test/test_embedding_model_apply.py
 test/test_embedding_space_reconcile.py
 test/test_enable_embeddings_faiss.py
@@ -595,7 +590,6 @@ test/test_image_artifacts.py
 test/test_inbound_unbind_notice.py
 test/test_installer_distro.py
 test/test_installer_node_floor.py
-test/test_instance_credential_pairing.py
 test/test_instances_search_federation.py
 test/test_interactions_shortcut.py
 test/test_ios_simulator_preview_skill.py
@@ -622,15 +616,12 @@ test/test_knowledge_artifact_ingest.py
 test/test_knowledge_budget.py
 test/test_knowledge_dedup.py
 test/test_knowledge_delete_off_loop.py
-test/test_knowledge_effort_pools.py
 test/test_knowledge_folder_cost_guards.py
-test/test_knowledge_handlers_coverage.py
 test/test_knowledge_ingest_guard.py
 test/test_knowledge_ingest_magic_byte.py
 test/test_knowledge_items_source_filter.py
 test/test_knowledge_kiroignore.py
 test/test_knowledge_source_spend.py
-test/test_knowledge_sync_local_file.py
 test/test_learn.py
 test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
@@ -649,7 +640,6 @@ test/test_mcp_artifacts.py
 test/test_mcp_core.py
 test/test_mcp_core_arg_crash.py
 test/test_mcp_core_audit_e.py
-test/test_mcp_core_more_coverage.py
 test/test_mcp_core_set_project.py
 test/test_mcp_core_spawn_sub_agents.py
 test/test_mcp_core_wait.py
@@ -685,7 +675,6 @@ test/test_mcp_probe_warn_once.py
 test/test_mcp_registry_governance.py
 test/test_mcp_seed.py
 test/test_mcp_shareability.py
-test/test_mcp_shared.py
 test/test_mcp_shared_cache.py
 test/test_mcp_shared_cancelled_bound.py
 test/test_mcp_skill_registry.py
@@ -778,7 +767,6 @@ test/test_regex_anchor_contract.py
 test/test_registry_hero_fields.py
 test/test_release_promotion.py
 test/test_remote_artifacts.py
-test/test_resolve_session_key.py
 test/test_resolve_skill_root_package.py
 test/test_resource_health_endpoint.py
 test/test_resource_pressure_notify.py
@@ -811,7 +799,6 @@ test/test_session_core_audit.py
 test/test_session_coverage.py
 test/test_session_end_interaction.py
 test/test_session_grid.py
-test/test_session_keepalive.py
 test/test_session_map_locking.py
 test/test_session_map_migration.py
 test/test_session_mtime_ordering.py
@@ -902,7 +889,6 @@ test/test_theme_authoring_skill.py
 test/test_theme_css_security.py
 test/test_theme_install.py
 test/test_thread_parent_context.py
-test/test_to_dict_board_fields.py
 test/test_toolbox_migration.py
 test/test_trusted_apps_api.py
 test/test_turn_duration_hooks.py

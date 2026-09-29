@@ -8,6 +8,7 @@ import { Reorder } from 'framer-motion'
 import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, History, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
 import { PanelRightLight } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
+import CommandCenterPanel from './command-center/CommandCenterPanel'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
 import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
@@ -52,6 +53,7 @@ import { i18nT } from '../../i18n/t'
 // — their icon comes from the manifest descriptor via `iconForKind` instead.
 type BuiltinTabKind = Exclude<TabKind, `app:${string}`>
 const KIND_ICON: Record<BuiltinTabKind, ReactNode> = {
+  'command-center': <PanelRight size={16} />,
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, crewlog: <History size={16} />, context: <Layers size={16} />, side: <MessageCircleQuestionMark size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   summary: <ListTree size={16} />,
@@ -87,6 +89,7 @@ function iconForKind(kind: TabKind, descriptors: readonly PanelTabDescriptor[]):
  * label and description is a type error rather than a missing-key render.
  */
 export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
+  'command-center': 'commandCenter.title',
   changes: 'pages.chat.sidePanel.menu_changes',
   issues: 'pages.chat.sidePanel.menu_issues',
   files: 'pages.chat.sidePanel.menu_files',
@@ -106,6 +109,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
 }
 
 export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
+  'command-center': 'commandCenter.description',
   changes: 'pages.chat.sidePanel.menu_changes_desc',
   issues: 'pages.chat.sidePanel.menu_issues_desc',
   files: 'pages.chat.sidePanel.menu_files_desc',
@@ -152,6 +156,7 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind | 'terminal'; icon:
   {
     id: 'session-output',
     items: [
+      { kind: 'command-center', icon: <PanelRight size={15} /> },
       { kind: 'summary', icon: <ListTree size={15} /> },
       { kind: 'pins', icon: <Pin size={15} /> },
       { kind: 'changes', icon: <GitPullRequest size={15} /> },
@@ -254,8 +259,9 @@ export interface SidePanelLeadingTab {
   /** Strip glyph. The host owns it — these are the chips whose icon `KIND_ICON`
    *  does not own. */
   icon: ReactNode
-  /** Body, rendered only while the tab is active (it is a query-driven view
-   *  like the category tabs, not a mounted editor). */
+  /** Preserve a visited body that owns drafts or a published iframe. */
+  keepMounted?: boolean
+  /** Body; query-only views normally mount just while active. */
   render: () => ReactNode
 }
 
@@ -892,12 +898,10 @@ export default function SidePanel({
       {/* Content area: left + top border (square corner) so the border wraps
           only the content, NOT the tab strip above (which stays borderless). */}
       <div className="flex-1 min-h-0 relative">
-        {/* The ACTIVE leading tab's body. Only that one mounts, like the
-            category views: each is a query-driven view, not an editor whose
-            buffer a switch would lose. Scrolls itself — the host renders plain
-            content, and this keeps the strip pinned above a long body. */}
-        {leadingTabs?.filter(lt => lt.id === activeId).map(lt => (
-          <div key={lt.id} className="absolute inset-0 overflow-y-auto" data-testid="side-panel-leading-body" data-leading-id={lt.id}>
+        {/* Query-only leading views mount while active. A host can retain a
+            visited dashboard so tab switches preserve its drafts and iframe. */}
+        {leadingTabs?.filter(lt => lt.id === activeId || lt.keepMounted).map(lt => (
+          <div key={lt.id} className="absolute inset-0 overflow-y-auto" hidden={lt.id !== activeId} data-testid="side-panel-leading-body" data-leading-id={lt.id}>
             {lt.render()}
           </div>
         ))}
@@ -974,6 +978,12 @@ export default function SidePanel({
           // body-owning kinds skip: an MCP frame's iframe and an app-contributed
           // tab's `AppHost` are equally destroyed by a key change on chat switch.
           if (t.kind === 'app' || isPanelTabKind(t.kind)) return null
+          // Keep the authored document and per-question drafts alive on tab switches.
+          if (t.kind === 'command-center') return (
+            <div key={`${t.id}:${slot}`} className="absolute inset-0" hidden={!isActive}>
+              <CommandCenterPanel slot={slot ?? null} active={isActive && !panelHidden} />
+            </div>
+          )
           // The pinned Files tab renders the file-browser home directly — it
           // is not one of ActivityViewer's multiplexed session views.
           if (t.kind === 'files') {

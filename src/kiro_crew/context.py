@@ -86,7 +86,6 @@ if TYPE_CHECKING:
     from kiro_crew.agent_sdk import ContextPromptProvider
     from kiro_crew.channel_history import ChannelHistory
     from kiro_crew.history import ConversationLog
-    from kiro_crew.session import SessionManager
     from kiro_crew.vector_memory import VectorMemoryStore
 
 logger = logging.getLogger(__name__)
@@ -1488,35 +1487,6 @@ def _build_stop_event_notes(conversation_log: "ConversationLog", session_key: st
     return "\n".join(notes) + "\n\n"
 
 
-# Budget tradeoff: 100 user+assistant msgs covers P90 of sessions.
-# Role filtering excludes tool display titles, so the budget is spent
-# on actual conversation content.
-_COMPRESSION_MAX_MESSAGES = 100
-_HEAD_TAIL_MESSAGES = 2  # verbatim head/tail kept around compressed middle
-
-_COMPRESSION_PROMPT_PREFIX = """\
-You are a conversation compressor. Given a chat transcript and the user's \
-latest query, produce a compressed summary that preserves ALL of the following:
-
-- File paths, URLs, branch names, package names (verbatim)
-- Decisions made and their rationale
-- Code snippets discussed or modified (abbreviated, keep key lines)
-- Error messages and their resolutions
-- Action items and status (done / in-progress / pending)
-- Names, aliases, ticket IDs, CR numbers
-- Any factual information the user or assistant stated
-
-Drop:
-- Greetings, filler, acknowledgments ("sure", "got it", "let me check")
-- Redundant tool output (keep only the conclusion)
-- Build logs (keep only pass/fail and error lines)
-- Repeated explanations of the same concept
-
-Format: dense paragraphs grouped by topic. Bullet points for lists of \
-facts. File paths in backticks.
-
-Respond with ONLY the compressed summary, no preamble."""
-
 # Docs directory bundled inside the kiro_crew package
 _BUNDLED_DOCS_DIR = Path(__file__).resolve().parent / "docs"
 
@@ -2731,102 +2701,6 @@ def build_cancelled_turn_preamble(
     return "\n".join(lines)
 
 
-async def compress_thread_history(
-    conversation_log: "ConversationLog",
-    session_key: str,
-    query: str,
-    sessions: "SessionManager",
-    *,
-    exclude_last_n: int = 0,
-    model_window: int | None = None,
-) -> str | None:
-    """Compress full thread history via background LLM call.
-
-    ``is_new`` in callers means a new kiro-cli process (or dashboard tab)
-    attached to an *existing* Slack thread — not a brand-new conversation.
-    The thread already has history from prior processes, so we compress it
-    to fit within the context window of the fresh session.
-
-    Returns the compressed summary string, or None on failure (callers
-    fall back to raw truncation).  This is the ONLY async function in
-    this module — callers await it and pass the result into the sync
-    ``build_session_context`` / ``build_message`` methods.
-
-    The output uses a head/tail pattern: the first and last
-    ``_HEAD_TAIL_MESSAGES`` are kept verbatim while the middle is
-    LLM-compressed, preserving both conversation opening context and
-    the most recent exchanges.
-
-    *exclude_last_n* is forwarded to ``conversation_log.recent`` to drop
-    the just-flushed current-turn user message from history.
-    """
-    from kiro_crew.llm_helpers import (  # circular import
-        background_turn,
-        stream_and_collect,
-    )
-
-    compressed_cap = _resolve_caps(model_window).compressed_history
-
-    # Off-thread because the per-role quota needs the WHOLE file: a tail slice
-    # cannot bound each role, so this read cannot be the cheap one.
-    recent = await asyncio.to_thread(
-        _recall_rows,
-        conversation_log,
-        session_key,
-        conv_max=_COMPRESSION_MAX_MESSAGES,
-        exclude_last_n=exclude_last_n,
-    )
-    if not recent:
-        return None
-
-    lines: list[str] = []
-    for m in recent:
-        # Compression path: no per-message cap, no code stripping.
-        # The LLM compressor sees full content and decides what to keep.
-        lines.append(f"{m['role'].title()}: {m['content']}")
-    transcript = "\n".join(lines)
-
-    if len(transcript) <= compressed_cap:
-
-        transcript, _ = redact_exfiltration_urls(transcript)
-        transcript, _ = redact_credentials(transcript)
-        return transcript.translate(_MULTIBYTE_TABLE)
-
-    head_lines = lines[:_HEAD_TAIL_MESSAGES]
-    tail_lines = lines[-_HEAD_TAIL_MESSAGES:] if len(lines) > _HEAD_TAIL_MESSAGES else []
-
-    prompt = (
-        _COMPRESSION_PROMPT_PREFIX
-        + f"\n\nTarget {compressed_cap} characters max."
-        + "\n\n## Latest user query (for relevance weighting)\n"
-        + query
-        + "\n\n## Transcript to compress\n"
-        + transcript
-    )
-
-    try:
-        async with background_turn(
-            sessions, task="thread_compress", agent="kirocrew-lite"
-        ) as client:
-            result = await stream_and_collect(client, prompt)
-            if not result:
-                return None
-
-            parts: list[str] = []
-            if head_lines:
-                parts.append("## Thread start (verbatim)\n" + "\n".join(head_lines))
-            parts.append("## Compressed history\n" + result[:compressed_cap])
-            if tail_lines:
-                parts.append("## Recent exchanges (verbatim)\n" + "\n".join(tail_lines))
-            final = "\n\n".join(parts)
-            final, _ = redact_exfiltration_urls(final)
-            final, _ = redact_credentials(final)
-            return final.translate(_MULTIBYTE_TABLE)
-    except Exception:
-        logger.warning("Thread history compression failed", exc_info=True)
-        return None
-
-
 # ── Provider-Agnostic Session Replay ──
 
 
@@ -2975,11 +2849,8 @@ def _recall_rows(
     reference is the only thing that would arrive: either as a path the prompt
     builder re-inlines -- resurrecting an image a compaction already dropped --
     or, once the file is gone, as prose naming a picture the model cannot see.
-    Stripping HERE rather than at each consumer is what makes the guarantee hold
-    for all three of them: this recall feeds both the thread-history fallback in
-    ``build_session_context`` and the transcript ``compress_thread_history``
-    hands to the LLM compressor (which returns it VERBATIM under the cap, and
-    above it would be free to narrate a picture it never saw).
+    Stripping HERE is what makes the guarantee hold for its consumer, the
+    thread-history fallback in ``build_session_context``.
     """
     messages = conversation_log.read_messages(session_key)
     if exclude_last_n > 0:
@@ -4927,8 +4798,8 @@ class ContextBuilder:
         skills, and hook context. ACP native history is trusted — no parallel
         transcript is injected.
 
-        Pass *compressed_history* (from ``compress_thread_history()``) to
-        inject LLM-compressed thread context instead of naive truncation.
+        Pass *compressed_history* (from ``build_session_replay()``) to
+        inject prepared thread context instead of naive truncation.
 
         Pass *request_prefix_context* for generated procedure/persona context
         that must appear before the current-request boundary while the actual
@@ -5811,6 +5682,16 @@ class ContextBuilder:
             # what blocks is the DECISION, not the tool call. [OPTIONS:] remains
             # the cheaper choice mechanism on every interactive surface.
             if has_dashboard_surface(session_key or "") and _agent_includes_crew_context(agent):
+                if not minimal_context:
+                    current_config = live.snapshot() or KiroCrewConfig.load()
+                    if current_config.dashboard.dynamic_dashboard_cards:
+                        _interactive_guidance.append(
+                            "\n\n(Automatic cards: At milestones, failures or human-only "
+                            "decisions, report concise evidence, result and next step. "
+                            "The host queues eligible updates; queued is not published. "
+                            "Do not enable generation, spawn a builder or publish a duplicate "
+                            "status artifact.)"
+                        )
                 _interactive_guidance.append(
                     "\n\n(The ask_question tool posts a NON-BLOCKING dashboard card. "
                     "DEFAULT TO SILENCE: use it only when work cannot continue without a "

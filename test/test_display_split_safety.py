@@ -13,6 +13,9 @@ import pytest
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
 from kiro_crew.messaging.display_safety import (
+    _balanced_link_reading,
+    _first_close_reading,
+    _link_free_reading,
     canonicalize_display,
     joins_to_a_credential,
     redact_for_display,
@@ -164,6 +167,27 @@ class TestJoinsToACredential:
         assert (_default_redactor(joined) != joined) is seen_by_the_join
         assert (_default_redactor(on_screen) != on_screen) is not seen_by_the_join
 
+    def test_a_heading_marker_dropped_after_the_cut_is_reported(self) -> None:
+        # Caught ONLY by a further reading, applied per side. Telegram's fallback
+        # and its HTML seal both drop a heading marker, so a field name ending one
+        # message and ``#   : <value>`` opening the next read as the assignment on
+        # screen. The literal join keeps the ``#`` between them, and the canonical
+        # form keeps it too, so both scan clean while the reader sees the key.
+        head = "Rotated the key.\n\nSecretAccessKey"
+        tail = "#   : wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY"
+        assert _default_redactor(head) == head
+        assert _default_redactor(tail) == tail
+        assert _default_redactor(head + tail) == head + tail
+        joined = canonicalize_display(head + tail)
+        assert _default_redactor(joined) == joined, "the canonical form keeps the marker"
+
+        assert joins_to_a_credential(head, tail, _default_redactor)
+
+    def test_a_heading_the_cut_leaves_whole_is_allowed(self) -> None:
+        head = "Rotated the key.\n\nSecretAccessKey rotated."
+        tail = "# Next steps\n\nNothing else."
+        assert not joins_to_a_credential(head, tail, _default_redactor)
+
 
 class TestSafeSplitOffset:
     def test_prose_cuts_at_the_limit(self) -> None:
@@ -253,6 +277,34 @@ class TestSeversACredential:
         collapses the url away and puts the label straight against ``AKIA``.
         """
         pieces = ["AKIA", "[IOSFODNN7EXAMPLE](https://ex.test/", "padpadpad)"]
+        assert severs_a_credential(pieces, _default_redactor)
+
+    @pytest.mark.parametrize(
+        "pieces",
+        [
+            [
+                "Rotated the key.\n\nSecretAccessKey",
+                "#   : wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",
+            ],
+            [
+                "Rotated the key.\n\nSecretAccess",
+                "Key",
+                "#   : wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY",
+            ],
+        ],
+    )
+    def test_further_readings_grade_the_full_sequence(self, pieces) -> None:
+        assert severs_a_credential(pieces, _default_redactor)
+
+    def test_a_clean_heading_sequence_stays_clean(self) -> None:
+        pieces = [
+            "Rotated.\n\nSecretAccessKey rotated.",
+            "# Next steps\n\nNothing else.",
+        ]
+        assert not severs_a_credential(pieces, _default_redactor)
+
+    def test_balanced_link_reading_grades_the_full_sequence(self) -> None:
+        pieces = ["[AKIA](https://x/((a)))", "IOSFODNN7EXAMPLE"]
         assert severs_a_credential(pieces, _default_redactor)
 
     def test_the_pieces_are_graded_as_delivered_not_as_split(self) -> None:
@@ -406,3 +458,48 @@ class TestAnInteriorRunIsRead:
     def test_a_clean_sequence_of_many_pieces_stays_clean(self) -> None:
         """Control: the windows refuse runs, they do not reject ordinary text."""
         assert not severs_a_credential(["word " * 4 for _ in range(40)], _default_redactor)
+
+
+class TestLinkReadingsAgreeWithoutAnOpener:
+    """Without a ``](`` opener every link reading IS the canonical rendering.
+
+    Each link collapse is the identity on text with no ``](``, and the canonical
+    link grammar cannot match without it, so the balanced, first-close and
+    link-free readings all reduce to the same joining passes the canonical form
+    applies. ``_sequence_readings`` relies on this equality: it renders such a
+    window once and grades that one string for all four readings. A reading that
+    starts to differ here would have to be rendered on its own again.
+    """
+
+    _WINDOWS = [
+        "plain words and digits 123",
+        "AKIA**IOSF**ODNN__7EXA__MPLE",
+        "AKIA`IOSF`ODNN``7EXA``MPLE ```fenced```",
+        "AKIA~~IOSF~~ODNN||7EXA||MPLE",
+        "<https://x/y|AKIAIOSF>ODNN<https://q|7EXAMPLE>",
+        "AKIA\u200bIOSF\u200dODNN\ufeff7EXA\u00adMPLE",
+        "[AKIAIOSF] (ODNN) [7EXA] (MPLE) and no opener",
+        "[label] (https://x/y) [other][ref] ((nested)) )(",
+        "\\[AKIA\\]\\(IOSF\\) \\*ODNN\\* \\`7EXA\\` \\<MPLE\\>",
+        "line one **AKIA\nIOSF** line two <u|l>\n\n*_~`|",
+        "the opener held apart: ] ( and ]\n( and ]\u200b(",
+        "",
+    ]
+
+    @pytest.mark.parametrize("window", _WINDOWS)
+    def test_every_link_reading_equals_the_canonical_form(self, window: str) -> None:
+        assert "](" not in window
+        canonical = canonicalize_display(window)
+        assert _balanced_link_reading(window) == canonical
+        assert _first_close_reading(window) == canonical
+        assert _link_free_reading(window) == canonical
+
+    def test_the_equality_is_specific_to_the_missing_opener(self) -> None:
+        """Control: with the opener present the readings genuinely diverge."""
+        window = "[AKIAIOSF](https://x/a_(b))ODNN7EXAMPLE"
+        readings = {
+            canonicalize_display(window),
+            _first_close_reading(window),
+            _link_free_reading(window),
+        }
+        assert len(readings) == 3

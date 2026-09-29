@@ -21,7 +21,7 @@ import os
 import subprocess
 from typing import Any, Optional
 
-from kiro_crew.deploy.engine import resolve_aws_bin
+from kiro_crew.deploy.engine import aws_spawn_env, resolve_aws_bin
 from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
 
 logger = logging.getLogger(__name__)
@@ -235,6 +235,11 @@ def run_aws(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # The CLI runs ``credential_process`` by name on its OWN PATH,
+                # which a GUI-launched gateway leaves minimal. The sandbox's
+                # AWS_SECRET*/AWS_SESSION* scrub still applies: the wrapped argv
+                # runs it inside the child, on whatever env it is handed.
+                env=aws_spawn_env(argv[0]),
             )
             if proc_sink is not None:
                 try:

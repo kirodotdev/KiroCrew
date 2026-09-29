@@ -15,18 +15,147 @@ from kiro_crew.messaging import identity
 
 
 class _Sessions:
-    def __init__(self, pid: object) -> None:
+    def __init__(self, pid: object, rows: list[dict] | None = None) -> None:
         self._pid = pid
+        self._rows = rows
 
     def get_pid(self, key: str) -> object:
         return self._pid
 
+    def runtime_pids(self) -> list[dict]:
+        if self._rows is None:
+            raise RuntimeError("no process-identity snapshot")
+        return self._rows
+
 
 def test_publishes_with_host_pid_and_key() -> None:
+    """A sole tenant is published with today's call, argument for argument.
+
+    Wave 1 changes who a mapping is ATTRIBUTED to, not what a 1:1 pid produces,
+    and the call's own shape is part of that: a widened signature reaches the
+    writer through ``run_in_executor``, where a mismatch surfaces as a swallowed
+    exception and a silently missing publish rather than as an error.
+    """
     sessions = _Sessions(4242)
     with patch.object(identity, "publish_session_pid") as pub:
         asyncio.run(identity.publish_turn_identity(sessions, "telegram:kirocrew:direct:7"))
         pub.assert_called_once_with(4242, "telegram:kirocrew:direct:7")
+
+
+def test_publishes_every_session_sharing_the_pid() -> None:
+    """One kiro-cli process hosts several ACP sessions; the mapping names one.
+
+    The publisher records the whole set so a reader on that pid declines to
+    resolve a session rather than answering with whoever published last.
+
+    Rows carry ``sid`` because the manager's per-session rows do. The fixture
+    matches the producer deliberately: a shape production never emits would let
+    this pass while the real snapshot was filtered away.
+    """
+    rows = [
+        {"key": "dashboard:chat-1", "sid": "s1", "pid": 4242},
+        {"key": "subagent:chat-1-child", "sid": "s2", "pid": 4242},
+        {"key": "dashboard:chat-2", "sid": "s3", "pid": 9999},
+    ]
+    sessions = _Sessions(4242, rows)
+    with patch.object(identity, "publish_session_pid") as pub:
+        asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
+        pub.assert_called_once_with(
+            4242,
+            "dashboard:chat-1",
+            co_tenants=["dashboard:chat-1", "subagent:chat-1-child"],
+        )
+
+
+def test_a_companion_runtime_row_does_not_make_a_sole_tenant_shared() -> None:
+    """HEADLINE: the snapshot's trailing rows are RUNTIMES, not sessions.
+
+    ``runtime_pids`` appends one row per manager-owned companion runtime, and a
+    subagent runtime is frequently the runtime a session is already served by --
+    registered once ownership transfers -- so its row repeats that session's pid.
+    Its ``key`` is display text, not a session key. Counting it records two
+    tenants for a pid hosting ONE session, after which every reader refuses to
+    name a session that is not shared, and a declaration with no token is
+    403'd. A pid hosting one session is the common case, so this is a denial in
+    ordinary operation.
+    """
+    rows = [
+        {"key": "dashboard:chat-1", "sid": "s1", "pid": 4242},
+        {"key": "Subagent runtime (dashboard:chat-1)", "pid": 4242},
+        {"key": "Background runtime", "pid": 4242},
+    ]
+    sessions = _Sessions(4242, rows)
+    with patch.object(identity, "publish_session_pid") as pub:
+        asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
+        pub.assert_called_once_with(4242, "dashboard:chat-1")
+        assert "co_tenants" not in pub.call_args.kwargs
+
+
+def test_a_genuine_co_tenant_still_counts_beside_a_companion_row() -> None:
+    """The converse, so the filter cannot be widened into "ignore extra rows":
+    a second real session on the pid is still recorded, and only the runtime row
+    beside it is dropped."""
+    rows = [
+        {"key": "dashboard:chat-1", "sid": "s1", "pid": 4242},
+        {"key": "Subagent runtime (dashboard:chat-1)", "pid": 4242},
+        {"key": "subagent:chat-1-child", "sid": "s2", "pid": 4242},
+    ]
+    sessions = _Sessions(4242, rows)
+    with patch.object(identity, "publish_session_pid") as pub:
+        asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
+        pub.assert_called_once_with(
+            4242,
+            "dashboard:chat-1",
+            co_tenants=["dashboard:chat-1", "subagent:chat-1-child"],
+        )
+
+
+def test_the_companion_producer_still_omits_the_field_the_filter_tests() -> None:
+    """The filter reads ``sid`` because only per-session rows carry it. That is a
+    fact about ANOTHER module's producer, so it is asserted against the real
+    function rather than restated here: if a companion row ever gains ``sid``,
+    the filter silently stops filtering, and this reddens instead."""
+    from types import SimpleNamespace
+
+    from test_update_provider import _UNALLOCATABLE_PID
+
+    from kiro_crew.session_allocation import SessionAllocationService
+
+    runtime = SimpleNamespace(pid=_UNALLOCATABLE_PID, is_alive=lambda: True, _spawn_monotonic=None)
+    owner = SimpleNamespace(_bg_runtime=runtime)
+    service = SimpleNamespace(
+        _runtime_pid=SessionAllocationService._runtime_pid,
+        _deps=SimpleNamespace(logger=MagicMock(), constants=SimpleNamespace(background_agent="bg")),
+        _owner=owner,
+        _subagent_runtimes={"dashboard:chat-1": runtime},
+    )
+    rows: list[dict] = []
+    SessionAllocationService._append_companion_runtime_rows(service, rows)
+
+    assert len(rows) == 2, rows
+    assert [r["key"] for r in rows] == [
+        "Background runtime",
+        "Subagent runtime (dashboard:chat-1)",
+    ]
+    for row in rows:
+        assert "sid" not in row, row
+        assert row["pid"] == _UNALLOCATABLE_PID
+
+
+def test_an_unreadable_snapshot_records_no_tenant_set() -> None:
+    """An unanswerable snapshot must read as UNKNOWN, not as a sole tenant.
+
+    Recording a set of one would make every reader confident about a pid the
+    manager could not account for. Unknown and sole-tenant produce the same
+    RECORD -- no tenant section either way -- so what this pins is that no
+    membership is claimed: the section is written only from a snapshot that
+    actually named more than one session.
+    """
+    sessions = _Sessions(4242, None)  # runtime_pids raises
+    with patch.object(identity, "publish_session_pid") as pub:
+        asyncio.run(identity.publish_turn_identity(sessions, "dashboard:chat-1"))
+        pub.assert_called_once_with(4242, "dashboard:chat-1")
+        assert "co_tenants" not in pub.call_args.kwargs
 
 
 def test_no_publish_when_pid_unavailable() -> None:

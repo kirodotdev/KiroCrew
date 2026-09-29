@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 from dataclasses import replace
 from typing import Any
@@ -533,6 +534,206 @@ def test_usage_bills_injected_context_per_source():
     assert context["estimated_turns"] == 1
     assert context["by_source"]["memory"] == {"blocks": 2, "tokens": 25, "chars": 100}
     assert context["by_source"]["system"] == {"blocks": 1, "tokens": 25, "chars": 100}
+
+
+def test_usage_bills_every_source_that_spends_and_says_which_spent_what():
+    """A session's bill is its turns PLUS its children PLUS its helpers.
+
+    A total that billed turns alone would read a session that spent most of its
+    budget on subagents as cheap, and would fold none of the credits
+    ``background/completed`` carries. The split beside the total is what keeps the
+    total readable: one number cannot say whether the spend was the user's turns or
+    a wave of children.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=2.0)
+    handle.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src=GATEWAY)
+    handle.append("subagent/completed", {"agent_id": "sub-1", "ms": 7, "credits": 1.0}, src=GATEWAY)
+    handle.append(
+        "background/completed", {"kind": "title", "model": "haiku", "credits": 0.5}, src=GATEWAY
+    )
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 3.5
+    assert value["credits_by_source"] == {
+        "turn": {"credits": 2.0, "reported": 1},
+        "subagent": {"credits": 1.0, "reported": 1},
+        "background": {"credits": 0.5, "reported": 1},
+    }
+    # The turn-scoped count still answers for turns alone: it is what tells a reader
+    # how many of the session's turns the turn bucket covers.
+    assert value["turns"]["credits_reported"] == 1
+
+
+def test_usage_bills_a_child_that_failed_against_the_subagent_bucket():
+    """A run the user stopped still billed for the turns it attempted."""
+    handle = _log()
+    _opened(handle)
+    handle.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src=GATEWAY)
+    handle.append(
+        "subagent/failed",
+        {"agent_id": "sub-1", "outcome": "stopped", "ms": 3, "credits": 0.75},
+        src=GATEWAY,
+    )
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 0.75
+    assert value["credits_by_source"]["subagent"] == {"credits": 0.75, "reported": 1}
+
+
+#: Every charge shape the fold refuses, and why each one is not a measurement of
+#: spend. They are one list because they are one rule: a charge is billed only when
+#: it is a real number this fold can add to a running total and defend afterwards.
+#: ``nan`` and the infinities cannot be added -- every later sum is non-finite too,
+#: ``round`` keeps it so, and the savepoint persists it, so the total is poisoned for
+#: the life of the unit. A negative can be added, and that is the problem: it REDUCES
+#: a total, so a session reads as having spent less than it did, and no later entry
+#: corrects it. ``json`` round-trips all five without complaint.
+_UNUSABLE_CHARGES = [float("nan"), float("inf"), float("-inf"), -0.5, -1.0e9]
+
+
+@pytest.mark.parametrize("source", ["subagent/completed", "subagent/failed"])
+@pytest.mark.parametrize("bad", _UNUSABLE_CHARGES)
+def test_usage_refuses_an_unusable_credit_charge_from_a_child(bad, source):
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=2.0)
+    handle.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src=GATEWAY)
+    handle.append(source, {"agent_id": "sub-1", "credits": bad}, src=GATEWAY)
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 2.0
+    assert value["credits_by_source"]["subagent"] == {"credits": 0.0, "reported": 0}
+
+
+@pytest.mark.parametrize("bad", _UNUSABLE_CHARGES)
+def test_usage_refuses_an_unusable_credit_charge_from_a_background_helper(bad):
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=2.0)
+    handle.append("background/completed", {"kind": "title", "credits": bad}, src=GATEWAY)
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 2.0
+    assert value["credits_by_source"]["background"] == {"credits": 0.0, "reported": 0}
+
+
+@pytest.mark.parametrize("bad", _UNUSABLE_CHARGES)
+def test_usage_refuses_an_unusable_credit_charge_from_a_turn(bad):
+    """One rule for all three spenders, including the one that predates the buckets.
+
+    The turn path is where a charge has always been read, so leaving it out would
+    make the rule depend on which spender wrote the line -- and the poisoned total it
+    produces is the same total.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=2.0)
+    _turn(handle, 2, credits=bad)
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 2.0
+    assert value["credits_by_source"]["turn"] == {"credits": 2.0, "reported": 1}
+    assert value["turns"]["credits_reported"] == 1
+    assert value["by_model"]["opus"]["credits"] == 2.0
+
+
+def test_usage_survives_a_charge_too_large_to_be_a_float():
+    """A JSON integer is unbounded, so a charge can be unrepresentable, not just wrong.
+
+    ``float()`` raises ``OverflowError`` on a 400-digit int, and nothing between
+    ``_usage_step`` and ``fold_session`` catches it, so the whole fold would fail on
+    one bad entry rather than skipping it. The fold's contract is that a line it
+    cannot interpret costs that line, never the projection.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=2.0)
+    handle.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src=GATEWAY)
+    handle.append("subagent/completed", {"agent_id": "sub-1", "credits": 10**400}, src=GATEWAY)
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 2.0
+    assert value["credits_by_source"]["subagent"] == {"credits": 0.0, "reported": 0}
+
+
+def test_usage_refuses_a_charge_that_would_overflow_the_running_total():
+    """Two charges that are each finite can still sum to infinity.
+
+    This is the case an input check cannot see: both values pass every test that
+    looks at them alone. Only the RESULT of the addition is wrong, and once it is
+    stored the savepoint keeps it, so the invariant has to be checked after the add
+    rather than before it.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=1.0e308)
+    handle.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src=GATEWAY)
+    handle.append("subagent/completed", {"agent_id": "sub-1", "credits": 1.0e308}, src=GATEWAY)
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert math.isfinite(value["credits"])
+    assert value["credits"] == 1.0e308
+    assert value["credits_by_source"]["turn"] == {"credits": 1.0e308, "reported": 1}
+    assert value["credits_by_source"]["subagent"] == {"credits": 0.0, "reported": 0}
+    assert math.isfinite(value["by_model"]["opus"]["credits"])
+
+
+def test_usage_counts_a_charge_of_exactly_zero_as_measured():
+    """Zero is the one falsy charge that IS a measurement, so it stays counted.
+
+    A provider that reports ``0.0`` explicitly measured zero, which is a different
+    fact from a closer that reported nothing -- and ``reported`` is the field that
+    tells those two apart. The refusals above are values that cannot be summed or
+    that move a total the wrong way; zero is neither.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=0.0)
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 0.0
+    assert value["credits_by_source"]["turn"] == {"credits": 0.0, "reported": 1}
+
+
+def test_usage_does_not_read_an_unmetered_child_as_a_free_one():
+    """A closer with no ``credits`` key measured nothing, which is not zero."""
+    handle = _log()
+    _opened(handle)
+    handle.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src=GATEWAY)
+    handle.append("subagent/completed", {"agent_id": "sub-1", "ms": 7}, src=GATEWAY)
+
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert value["credits"] == 0.0
+    assert value["credits_by_source"]["subagent"] == {"credits": 0.0, "reported": 0}
+
+
+def test_timeline_keeps_a_child_run_duration():
+    """``ms`` is what subagent and step entries call their measured duration.
+
+    ``duration_ms`` is the turn entry's spelling, so a copied-key list carrying only
+    that one keeps a child's run time out of the timeline entirely.
+    """
+    handle = _log()
+    _opened(handle)
+    handle.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src=GATEWAY)
+    handle.append("subagent/completed", {"agent_id": "sub-1", "ms": 7, "credits": 1.0}, src=GATEWAY)
+
+    moments = crew_log.fold_timeline(_entries(handle))["moments"]
+    closer = [m for m in moments if m["type"] == "subagent/completed"]
+    assert len(closer) == 1
+    assert closer[0]["ms"] == 7
+    assert closer[0]["credits"] == 1.0
 
 
 def test_usage_splits_cost_by_model():

@@ -35,7 +35,7 @@ export const PULSE_MOTION = {
  *  state and active-press feedback stay identical to the rest of the
  *  dashboard; only the pill radius is app-specific. */
 export function Btn({
-  label, onClick, primary, danger, disabled, title, big, ariaLabel,
+  label, onClick, primary, danger, disabled, title, big, ariaLabel, nowrap,
 }: {
   label: ReactNode
   onClick?: () => void
@@ -46,6 +46,8 @@ export function Btn({
   big?: boolean
   /** Required when `label` renders an icon with no adjacent text. */
   ariaLabel?: string
+  /** Keep the label on one line and refuse to shrink in a crowded header. */
+  nowrap?: boolean
 }) {
   return (
     <HostBtn
@@ -55,7 +57,7 @@ export function Btn({
       primary={primary}
       danger={danger}
       aria-label={ariaLabel}
-      className={twMerge('rounded-full', big && 'px-6 py-2 text-sm')}
+      className={twMerge('rounded-full', big && 'px-6 py-2 text-sm', nowrap && 'whitespace-nowrap shrink-0')}
     >
       {label}
     </HostBtn>

@@ -111,6 +111,14 @@ ENV_KIRO_API_KEY: str = "KIRO_API_KEY"
 # Environment variable names the backend reads. VERIFIED against the installed
 # source (paths cited), replacing the earlier laptop guesses.
 ENV_HOME: str = "KIROCREW_HOME"  # config/paths.py:265 config_dir() honours it
+# kiro-cli's own user directory, and the one variable that moves the agent-spec
+# directory Kiro Crew reads and writes (``config/paths.py`` ``kiro_home`` ->
+# ``kiro_agents_dir``). Set to ``<data home>/kiro`` so the specs land in a directory
+# this task owns rather than in the process HOME's shared ``~/.kiro/agents``, which a
+# non-default-data-home backend REFUSES to rewrite: without this the default spec is
+# never written and every turn dies at ``DerivedSpecStale``. See
+# ``Settings.kiro_home`` for why the ``kiro`` segment is exact rather than arbitrary.
+ENV_KIRO_HOME: str = "KIRO_HOME"
 ENV_PORT: str = "KIROCREW_PORT"  # dashboard/urls.py:116 overrides the port
 # Pin the bind ADDRESS. dashboard/urls.py:208 reads KIROCREW_BIND; the OFFICIAL
 # image sets it to 0.0.0.0 (urls.py:218), which would put the backend on the
@@ -474,14 +482,23 @@ def _atomic_write_nofollow(dst: Path, data: bytes) -> None:
 def build_backend_env(settings: Settings, base: Mapping[str, str] | None = None) -> dict[str, str]:
     """The environment the backend is launched with.
 
-    Points the backend at the shared data home and loopback port, pins the bind
-    address to loopback (overriding any inherited ``KIROCREW_BIND=0.0.0.0`` from
-    the base image), disables the beacon, and removes every credential: the
-    channel ones, the task role's, the front's control secret, and the model
-    identity in both of its shapes.
+    Points the backend at the shared data home, the task-owned kiro home and the
+    loopback port, pins the bind address to loopback (overriding any inherited
+    ``KIROCREW_BIND=0.0.0.0`` from the base image), disables the beacon, and removes
+    every credential: the channel ones, the task role's, the front's control secret,
+    and the model identity in both of its shapes.
     """
     env = dict(os.environ if base is None else base)
     env[ENV_HOME] = str(settings.data_home)
+    # Set from the SETTINGS rather than inherited, even though ``export_kiro_home`` has
+    # already put the same value in this process's environment. The two writers are
+    # deliberate: the export is what the bundle installer reads (it resolves the agents
+    # dir from ``os.environ``), and this assignment is what makes the backend's value a
+    # function of ``settings.data_home`` alone -- so a base mapping that carries a stale
+    # or absent ``KIRO_HOME`` cannot hand the backend a different agents dir from the one
+    # the crew spec was installed into. Disagreement there is not an error the backend
+    # reports; it is a backend that reads an agents dir the crew is not in.
+    env[ENV_KIRO_HOME] = str(settings.kiro_home)
     env[ENV_PORT] = str(settings.backend_port)
     env[ENV_BIND] = common.BACKEND_HOST
     env[ENV_TELEMETRY_DISABLED] = "1"

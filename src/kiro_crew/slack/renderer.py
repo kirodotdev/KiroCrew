@@ -1124,13 +1124,17 @@ class SlackRenderer(Renderer):
 
         def _bounded() -> list[str]:
             chunks = split_markdown_safe(text, limit, reserve=reserve, redactor=_redact_all)
+            cap = SLACK_MSG_LIMIT - reserve
+
+            def capped(chunk: str) -> list[str]:
+                return chunk_text(chunk, cap) or [chunk]
+
             out: list[str] = []
             for chunk in chunks:
-                cap = SLACK_MSG_LIMIT - reserve
-                pieces = chunk_text(chunk, cap) or [chunk]
-                repaired = repaired_for_delivery(chunk, pieces, _redact_all)
+                pieces = capped(chunk)
+                repaired = repaired_for_delivery(chunk, pieces, _redact_all, capped)
                 if repaired is not None:
-                    pieces = chunk_text(repaired, cap) or [repaired]
+                    pieces = capped(repaired)
                 out.extend(pieces)
             return out
 

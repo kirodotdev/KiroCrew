@@ -311,6 +311,14 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     # to a few ms; a stall that trips the controller is 250ms to seconds, and
     # _FAST_BUCKETS_MS (0.5ms..60s) resolves both ends.
     "kirocrew.loop.lag_ms": _FAST_BUCKETS_MS,
+    # Observed round-trip of an escalated liveness probe the daemon ANSWERED.
+    # Its range is 0-20s: the fast 2s ping missed first, but that miss can be an
+    # instant connect refusal rather than a 2s timeout, so a local escalated
+    # round-trip can answer well under 2s, while a saturated one runs up to the
+    # _LIVENESS_ESCALATED_TIMEOUT_SECS (20s) cap. _FAST_BUCKETS_MS (0.5ms..60s)
+    # keeps resolution across that whole span and leaves headroom above the cap
+    # rather than flooring the tail into +Inf.
+    "kirocrew.mcp_gateway.liveness.escalated_latency_ms": _FAST_BUCKETS_MS,
 }
 
 # Per-turn billed amount. Calibrated against 17,240 real per-turn credit rows

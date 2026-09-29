@@ -7,6 +7,7 @@ import { ackNotification } from '../../store/notificationsSlice'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import Clickable from '../Clickable'
+import Glass from '../Glass'
 import ErrorNotice from '../ErrorNotice'
 import { MC_LIVE_NOTIFICATION_EVENT, type McLiveNotificationDetail } from '../../hooks/notificationEvent'
 import { isWindowAway } from '../../hooks/windowAway'
@@ -16,7 +17,7 @@ import {
 } from '../../hooks/notificationBanner'
 import type { Notification } from '../../types'
 import { notePriority, safeInternalUrl } from './notifMeta'
-import NotificationCard, { CARD_MATERIAL, type NotificationCardAction } from './NotificationCard'
+import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
 
 /** Where a leaving card travels: the vector from its own top-right corner to
  *  the bell's centre, so with `transform-origin: top right` the card shrinks
@@ -42,10 +43,12 @@ export function exitTarget(delta: ExitDelta | undefined, reduced: boolean): Targ
   }
 }
 
-/** Deck geometry per depth behind the top card: offset, scale, opacity. */
+/** Deck geometry per depth behind the top card: offset and scale. Recession
+ *  is the shell's own `glass-faded` tint step, never an opacity on this
+ *  wrapper: opacity < 1 would make it a backdrop root and void the glass
+ *  pane's blur, so page content would print through the shell unblurred. */
 const DECK_Y = [0, 4, 8]
 const DECK_SCALE = [1, 0.98, 0.96]
-const DECK_OPACITY = [1, 0.8, 0.55]
 
 type ExitDeltas = Record<string, ExitDelta | undefined>
 
@@ -369,11 +372,11 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
                 layout={!reduced}
                 initial={enterInitial}
                 animate={reduced
-                  ? { opacity: DECK_OPACITY[deck ? idx : 0] }
+                  ? { opacity: 1 }
                   // Deck cards shrink about the top centre so both side edges
                   // recede evenly; the exit re-anchors to the top-right corner
                   // the travel vector was measured from.
-                  : { x: 0, y: deck ? DECK_Y[idx] : 0, scale: deck ? DECK_SCALE[idx] : 1, opacity: DECK_OPACITY[deck ? idx : 0], originX: deck ? 0.5 : 1, originY: 0 }}
+                  : { x: 0, y: deck ? DECK_Y[idx] : 0, scale: deck ? DECK_SCALE[idx] : 1, opacity: 1, originX: deck ? 0.5 : 1, originY: 0 }}
                 variants={variants}
                 exit="exit"
                 transition={{ duration: 0.22, ease: 'easeOut' }}
@@ -386,20 +389,23 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
                 className="rounded-2xl"
               >
                 {deck ? (
-                  // A peeking deck card is a BLANK shell -- the card material
+                  // A peeking deck card is a BLANK shell -- the card's glass
                   // and nothing else, as in the chosen mockup -- so no text,
                   // icon or time can print through the translucent top card.
                   // It is one control: "show me the rest".
-                  <Clickable
+                  <Glass
+                    as="button"
+                    type="button"
+                    variant="panel"
+                    radius={CARD_RADIUS}
                     aria-label={moreLabel}
                     data-testid="notification-banner-deck-shell"
-                    className={`notif-material h-full cursor-pointer rounded-2xl ${CARD_MATERIAL.banner}`}
+                    className="notif-material glass-shadow glass-faded block w-full h-full cursor-pointer"
                     onClick={() => setExpanded(true)}
                   />
                 ) : (
                   <NotificationCard
                     n={n}
-                    elevation="banner"
                     onOpen={() => openNote(n)}
                     openLabel={i18nT('components.notifications.notificationBanner.open_notification', { title: n.title })}
                     onDismiss={() => removeNotes([n.ts])}
@@ -428,10 +434,14 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
           })}
         </AnimatePresence>
         {overflow > 0 && (
-          <Clickable
-            className={`notif-material rounded-xl ${CARD_MATERIAL.banner} px-3 py-1.5 text-[12px] text-accent text-center cursor-pointer`}
+          <Glass
+            as="button"
+            type="button"
+            variant="chip"
+            radius={12}
+            className="notif-material glass-shadow glass-hover px-3 py-1.5 text-[12px] text-accent text-center cursor-pointer font-body"
             onClick={openInbox}
-          >{i18nT('components.notifications.notificationBanner.more_in_inbox_count', { count: overflow })}</Clickable>
+          >{i18nT('components.notifications.notificationBanner.more_in_inbox_count', { count: overflow })}</Glass>
         )}
         {deckHidden > 0 && (
           // The deck's peeking edges are a few pixels tall, so the "N more"

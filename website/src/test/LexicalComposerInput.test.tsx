@@ -338,15 +338,15 @@ describe('LexicalComposerInput', () => {
     expect(screen.getByTestId('blocks').textContent).not.toContain('four\\n\\n')
   })
 
-  it('keeps raw paste inline and preserves trailing blanks', async () => {
+  it.each([
+    ['Ctrl+Shift+V', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true }],
+    ['Cmd+Option+Shift+V', { key: '◊', code: 'KeyV', metaKey: true, altKey: true, shiftKey: true }],
+  ])('keeps a %s raw paste inline and preserves trailing blanks', async (_chord, init) => {
     const editorRef = createRef<LexicalEditor>()
     render(<ControlledHost editorRef={editorRef} />)
     await waitFor(() => expect(editorRef.current).not.toBeNull())
     act(() => {
-      editorRef.current!.dispatchCommand(
-        KEY_MODIFIER_COMMAND,
-        new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, shiftKey: true }),
-      )
+      editorRef.current!.dispatchCommand(KEY_MODIFIER_COMMAND, new KeyboardEvent('keydown', init))
     })
     const payload = 'one\ntwo\nthree\nfour\n\n'
     const event = new Event('paste', { cancelable: true }) as ClipboardEvent
@@ -357,6 +357,24 @@ describe('LexicalComposerInput', () => {
     await waitFor(() => expect(screen.getByTestId('value').textContent).toBe(payload))
     expect(screen.getByTestId('blocks')).toHaveTextContent('[]')
     expect(screen.queryByTestId('paste-token-1')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['Cmd+Option+V', { key: '√', code: 'KeyV', metaKey: true, altKey: true }],
+    ['Ctrl+Alt+Shift+V', { key: 'V', code: 'KeyV', ctrlKey: true, altKey: true, shiftKey: true }],
+  ])('still collapses a large paste after %s', async (_chord, init) => {
+    const editorRef = createRef<LexicalEditor>()
+    render(<ControlledHost editorRef={editorRef} />)
+    await waitFor(() => expect(editorRef.current).not.toBeNull())
+    act(() => {
+      editorRef.current!.dispatchCommand(KEY_MODIFIER_COMMAND, new KeyboardEvent('keydown', init))
+    })
+    const event = new Event('paste', { cancelable: true }) as ClipboardEvent
+    Object.defineProperty(event, 'clipboardData', {
+      value: { types: ['text/plain'], items: [], getData: () => 'one\ntwo\nthree\nfour' },
+    })
+    await dispatchAtEnd(editorRef.current!, PASTE_COMMAND, event)
+    await waitFor(() => expect(screen.getByTestId('paste-token-1')).toBeInTheDocument())
   })
 
   it('keeps a large paste inline when showFullPastes is on', async () => {

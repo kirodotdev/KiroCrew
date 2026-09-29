@@ -101,7 +101,7 @@ async function main() {
       localStorage.setItem('mc-theme', t)
       localStorage.setItem('mc-onboarded', '1')
     }, theme)
-    await page.goto(base + '/settings?tab=display', { waitUntil: 'domcontentloaded' })
+    await page.goto(base + '/settings/display/terminal', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2400)
   }
 

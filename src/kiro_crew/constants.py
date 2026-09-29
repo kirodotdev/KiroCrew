@@ -1197,6 +1197,72 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     return text[:suffix_start], text[suffix_start:]
 
 
+# ── Markdown link destinations ─────────────────────────────────────────────
+
+#: A nested Markdown link opener. Backslash escapes are one token, and bare
+#: brackets and newlines end the label, so an escaped ``]`` cannot close the
+#: probe while a real nested opener is still refused.
+_MD_LINK_NESTED_OPENER = r"\[(?:\\.|[^\[\]\\\n])*\]\("
+
+
+def md_link_destination(char_class: str) -> str:
+    """Regex for one unit of a Markdown link destination, the ``HERE`` in ``[label](HERE)``.
+
+    *char_class* is a negated character class for one destination character, and it
+    MUST exclude both parentheses (``r"[^()\\s]"``). A unit is one such character or a
+    parenthesised run of them, so repeating it (``+`` or ``*``) matches a destination
+    whose parentheses come in balanced pairs one level deep.
+
+    That is what CommonMark allows (a destination "includes parentheses only if ...
+    they are part of a balanced pair"), and it is the shape real URLs have:
+    ``https://en.wikipedia.org/wiki/Python_(programming_language)``,
+    ``.../ms123401(v=vs.85)``. A ``[^)]+`` destination ends that URL at its first
+    ``)`` instead: the link opens a page that does not exist and a stray ``)``
+    follows the label. Deeper nesting is left unlinked rather than cut.
+
+    This is the parenthesis grammar of ``messaging.outbound_files._walk_destination``
+    bounded to one nesting level. A backslash escape is one token, as it is to the
+    walker: a backslash and the destination character after it are consumed as a
+    pair, so ``a\\\\)`` closes at that ``)`` where the walker closes, and ``\\[`` is an
+    escaped bracket rather than the ``[`` of a nested link. An unescaped backslash
+    directly before ``(`` or ``)`` is refused: neither is a destination character, so
+    a destination carrying ``\\)`` or ``\\(`` is left unlinked rather than cut at the
+    escape. A ``[`` that opens a nested ``[label](`` is refused,
+    because that starts a link of its own; this keeps an outer destination from
+    swallowing an inner link. Without the refusal ``[x](a [AKIA](u)REST)`` is one link
+    to the display-safety screen, which collapses it to ``x`` and scans no key, while
+    a CommonMark reader (an unbracketed destination admits no space) links only
+    ``[AKIA](u)`` and shows ``AKIAREST`` joined. A ``](`` that opens no link, as in
+    ``https://x/a](b)``, stays part of the URL. Wherever the unit matches, it closes
+    at the same ``)`` as the walker; otherwise it does not match. Only the destination
+    text can differ: the walker drops the backslash of an escaped non-parenthesis
+    character as it walks, and ``messaging.outbound_files._finish_destination`` then
+    rewrites or rejects what it collected. Neither moves the end: the dropped
+    backslash escapes no parenthesis, and the rewrite runs after the close is found.
+    It is a regex rather than a call to the walker because four channel renderers
+    compose it into one ``re.sub`` pass and the display-safety screen must stay
+    linear-time: a walk started from every ``[label](`` opener is quadratic on
+    repeated openers. ``test/test_markdown_link_parentheses.py`` pins the shared end.
+
+    Linear on adversarial text: the three alternatives start on disjoint characters
+    (a backslash, a *char_class* character other than a backslash, ``(``), and the
+    escape is two characters wide. The nested-opener lookahead is not fixed-width,
+    but it scans only to the next bracket or newline, so the lookaheads of one
+    attempt never cover the same text twice. A group closes only on ``)``, so a
+    doomed match never re-partitions what it already consumed.
+
+    Every channel renderer that turns a Markdown link into a platform link builds its
+    destination from this unit, and so does the display-safety screen
+    (``messaging.display_safety``), which has to collapse exactly the links a reader
+    will see as links.
+    """
+    escape = rf"\\{char_class}"
+    return (
+        rf"(?:{escape}|(?!\\|{_MD_LINK_NESTED_OPENER}){char_class}"
+        rf"|\((?:{escape}|(?!\\|{_MD_LINK_NESTED_OPENER}){char_class})*\))"
+    )
+
+
 # Wire markers opening an injected sub-agent completion turn. They live in this
 # leaf module rather than beside the dashboard's other transcript prefixes so a
 # CORE module can import them at module scope: `subagent.py` composes them too,
@@ -1410,6 +1476,13 @@ ARTIFACT_MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
 #: it rejects. ``dashboard.state`` re-exports every name, so its importers are
 #: unchanged.
 DENY_CAUSE_POLICY = "policy"
+#: The SURFACE the turn runs on refuses the call -- a reject-all or read-only
+#: tool policy, a tool-free background one-liner -- as opposed to a safety rule
+#: judging the call itself (``DENY_CAUSE_POLICY``). Kept apart because the
+#: policy notice appends class-specific remediation keyed off the reason AND
+#: the model's own tool title; on a surface where no tool can run, naming a
+#: sanctioned command the model should run instead would be a second wall.
+DENY_CAUSE_SURFACE_POLICY = "surface_policy"
 DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
 DENY_CAUSE_BATCH_CASCADE = "batch_cascade"

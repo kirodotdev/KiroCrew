@@ -1,17 +1,18 @@
 """One-time startup migration: prune the crewmates an older agent sync generated.
 
 An enrol-on-mount build of the dashboard called ``POST /api/agents/sync`` on
-every chat mount, and that sync enrolled EVERY user-authored spec under
-``~/.kiro/agents`` as a crewmate --
-a ``config.agents`` row with no ``member_id``, on the shared ``default`` memory
-store, bound to the spec by name. An existing install therefore carries one
-crewmate per custom agent, most of them never opened. This module runs once at
-gateway startup and:
+every chat mount, and that sync enrolled discovered user and package specs as
+crewmates: a ``config.agents`` row with no ``member_id``, on the shared
+``default`` memory store, bound to the spec by name and stamped with the spec's
+discovery source. An existing install therefore carries one crewmate per synced
+user or package agent, most of them never opened.
+This module runs once at gateway startup and:
 
-* **removes** each such crewmate that was never chatted with as a crewmate --
-  no DM thread on the Crewmates page, no session that recorded it as its
-  agent, and no entry in its member activity log -- by deleting its
-  ``config.agents`` row (:func:`remove_never_chatted`);
+* **removes** each such crewmate the owner never chatted with on the Crewmates
+  page -- its DM thread holds no turn -- by deleting its ``config.agents`` row
+  (:func:`remove_never_chatted`). The agent stays installed: a session that ran
+  it as a subagent, a cron job, an app's own slot or a plain chat used the
+  AGENT, not the crewmate, and does not keep the row;
 * **leaves the chatted ones exactly as they are**: on the shared ``default``
   store, with no ``member_id``. A memory binding is identity and is chosen only
   at creation; an existing member keeps its exact V1 binding (see
@@ -21,60 +22,49 @@ gateway startup and:
 Design:
 
 * **Precise identification.** A row is a candidate only when it is EXACTLY
-  what the sync wrote: its name is its ``kiro_agent``, that spec is on disk,
-  user-authored (``source == "builtin"``), not the runtime's own and not a
-  crew's private copy, its ``description`` is the spec's current description
-  (the sync copied it from there; a description the owner rewrote is a
-  customization), and every other field sits at its default -- no
-  ``member_id``, the shared ``default`` store, no model, effort, triggers,
-  colour, star, avatar or workspace, and no key the record does not declare
-  (:func:`_is_fresh_sync_shape`, tested on the RAW row as ``config.json`` holds
-  it, a missing key reading as its default). Both config
-  layers are consulted: a name that ``config.local.json`` touches in its own
-  ``agents`` section -- ``kirocrew config set --local agents.<name>.model``,
-  the capability writer's overlay binding -- is the owner's and is never a
-  candidate, because deleting the base row would leave the overlay leaf as a
-  crewmate bound to nothing. A row the owner touched in any of those ways is
-  the owner's; a hand-made crewmate has a ``member_id``; a package's spec has
-  another source; a row whose spec is gone is left alone.
-* **Removal needs complete history; the pass always finishes.** Removal is
-  decided from three kinds of evidence, each read STRICTLY by this module --
-  never through the roster's total-by-contract readers, which answer "absent"
-  for a damaged directory or file: every session file's metadata line
-  (:func:`_agents_named_in_history`, the union of every agent the record
-  names in ``agent`` and in ``execution_context``; message rows carry no
-  agent provenance and an agent switch writes none, so there is nothing below
-  that line to read), the crewmate's member activity log --
-  the per-session pointer ``record_activity`` appends when a chat runs as that
-  member, which survives a later agent switch on the same slot
-  (:func:`_activity_names_member`) -- and the crewmate's DM binding file
-  (:func:`_chatted`). Two kinds of session file are kept apart on purpose
-  (:func:`_session_agents_named`): one that READS AND PARSES but names
-  nobody or names another agent -- an older build's first line that is not a
-  metadata record, a metadata record with no ``agent``, a session that ran as
-  some other agent -- is evidence, speaks only for whom it names, and never
-  voids the pass; one that CANNOT BE READ -- an open, stat or read failure, a
-  first line that is not UTF-8, an empty file, a first line over the budget,
-  a first line that is not JSON -- means the history is incomplete, and an
-  incomplete history removes nothing: every candidate is kept and listed under
-  ``doubted``, the skipped files under ``unreadable_sessions``. The same holds
-  per candidate for the other two sources: a member activity log that exists
-  but cannot be loaded, a member log whose segments are present but hold
-  nothing readable (a torn log the store reads as absent), a legacy activity
-  file that cannot be read or parsed or is over budget, a DM binding that
-  cannot be resolved, read or parsed -- each keeps that candidate. No
-  conversation log at all keeps every candidate. Only a candidate that a
-  complete history nowhere names is removed. The pass always completes and
-  writes the marker; it never loops boot after boot on one bad file, and a
-  row it keeps loses nothing by staying.
-* **Agent-writable paths are opened defensively.** The session files and the
-  legacy activity files are opened with ``open_file_no_reparse`` (``O_NOFOLLOW``
-  / reparse-point refusal settled in the same operation as the open,
-  ``O_NONBLOCK`` so a FIFO cannot hang the pass) and read only when ``fstat``
-  says regular file -- a link, a FIFO or anything else is not a session file
-  and is "no record", neither evidence nor doubt. The legacy activity file
-  is streamed under ``MAX_LEGACY_ACTIVITY_BYTES``, the same budget the event
-  log's own fold applies; over budget is doubt for that candidate.
+  what the sync wrote: its name is its ``kiro_agent``; its string ``source``
+  stamp matches an installed spec's discovery source (``package`` and its
+  legacy alias ``aim`` are equivalent); and every field it did not copy from
+  the spec sits at its default -- no ``member_id``, the shared ``default``
+  store, no model, effort, triggers, colour, star, avatar or workspace, and no
+  key the record does not declare (:func:`_is_fresh_sync_shape`, tested on the
+  RAW row as ``config.json`` holds it, a missing key reading as its default).
+  Description is copied from the spec and is not part of that default-field
+  comparison, so editing it does not protect a never-chatted generated row.
+  The row and spec source must each be ``builtin``, ``package`` or ``aim``;
+  ``kirocrew`` (the stamp every non-sync writer leaves), crew private copies,
+  and rows without an installed spec are excluded. So is every row bound to
+  one of the runtime's own agents: a spec discovery marks ``kirocrew_owned``
+  (the conductor, worker, knowledge, research and heartbeat specs, which read
+  as ``builtin`` because that flag is deliberately kept apart from ``source``
+  in ``agent_discovery``) is never a candidate, and a delete is refused when
+  the spec re-read under the lock has become one. Both
+  config layers are consulted: a name that ``config.local.json`` touches in
+  its own ``agents`` section -- ``kirocrew config set --local
+  agents.<name>.model``, the capability writer's overlay binding -- is the
+  owner's and is never a candidate, because deleting the base row would leave
+  the overlay leaf as a crewmate bound to nothing. So is a crewmate that any
+  team lists (``crew_teams.read_teams``): placing it on a team is the owner's
+  own act, so the row is the owner's whatever its shape. A team document that
+  is there but cannot be read keeps every candidate (listed under ``doubted``),
+  since none of them can be shown to be off a team. A hand-made crewmate has
+  a ``member_id``.
+* **Chatted means the DM thread holds a turn.** The one piece of evidence is
+  the crewmate's own Crewmates-page thread: its transcript, live or an
+  archived segment, has a row past the metadata line (:func:`_chatted`).
+  Opening the thread writes a DM binding and at most a metadata line, so a
+  crewmate that was only clicked in the roster is not chatted. The binding
+  and the transcript are read STRICTLY: one that is there but cannot be read
+  or judged keeps that crewmate (listed under ``doubted``), and no
+  conversation log at all keeps every candidate. The pass always completes
+  and writes the marker; it never loops boot after boot on one bad file, and
+  a row it keeps loses nothing by staying.
+* **Agent-writable paths are opened defensively.** The DM transcripts are
+  opened with ``open_file_no_reparse`` (``O_NOFOLLOW`` / reparse-point refusal
+  settled in the same operation as the open, ``O_NONBLOCK`` so a FIFO cannot
+  hang the pass) and read only when ``fstat`` says regular file -- a link, a
+  FIFO or anything else is not a transcript and is "no record", neither
+  evidence nor doubt.
 * **One process runs the pass.** The whole pass -- the marker check, the
   history scan, every delete and the marker write -- runs under an exclusive
   cross-process lock on :data:`PRUNE_LOCK` beside the marker
@@ -96,19 +86,18 @@ Design:
   tracked background task right after the bind (``_kick_crewmate_prune``) and
   sets the event in ``finally``. Nothing on the startup path awaits it, so
   readiness is never gated by a scan whose cost scales with the session
-  count; the slot restores need not wait either, because a row this pass
-  removes has no DM binding and no session naming it (either would have kept
-  it), so no restore can rebuild a slot for it. That
+  count; the slot restores need not wait either: a removed row's DM thread
+  held no turn, and a session that ran its agent elsewhere resolves the same
+  name onto the installed agent on the default crew's workspace and memory --
+  the binding the removed row carried -- so no restore depends on the row.
+  That
   function's middleware holds every mutating request on it -- the chat send,
   slot create, slot agent switch, member thread, channel and import routes
   under ``/api/`` and the OpenAI-compatible ``POST /v1/chat/completions`` are
   all such requests -- so no session can bind an agent, and no DM binding can
-  appear, between the history snapshot and a candidate's delete. It also holds
-  every request under ``/api/members`` whatever its method: the roster read
-  folds a member's legacy activity file into the event log and retires it,
-  and appends config reconciles to that log -- the very places
-  :func:`_activity_names_member` reads -- so a roster load beside the pass
-  could move a crewmate's only record out from under it. The writers that do
+  appear, between a candidate's check and its delete. It also holds every
+  request under ``/api/members`` whatever its method, so the roster is read
+  after the pass has settled rather than beside a delete. The writers that do
   not come through HTTP -- the subagent pump, channel agent resume, cron
   dispatch -- start only after ``await_crewmate_prune_settled`` returns (in
   ``GatewayOrchestrator.run`` after the memory barrier, past
@@ -121,15 +110,18 @@ Design:
   still delete. Each candidate's check runs immediately before its own
   removal, never once for the whole list.
 * **A refused delete is not a commit.** The delete re-tests the row inside
-  the base config lock: the base row must still carry the same ``kiro_agent``
-  and the fresh-sync shape; the bound SPEC is re-read from disk under
-  ``agents_spec_lock`` (nested inside the config lock, the order every other
-  spec writer keeps) and its description must still be the one the row was
-  judged against -- a spec whose description moved on between the discovery
-  snapshot and the delete, by a hand edit of the file while the pass ran, is
-  newer evidence, so the row is kept; and the overlay must still not name it,
+  the base config lock: the base row must still carry the same ``kiro_agent``,
+  source identity and fresh-sync shape; the bound spec is re-read from disk
+  under ``agents_spec_lock`` (nested inside the config lock, the order every
+  other spec writer keeps) and must still declare the bound name, remain
+  non-private and not ``kirocrew_owned``, and have the same canonical
+  discovery source; and the overlay must
+  still not name it,
   read under its own sidecar lock, taken inside the base lock and held until
   the base write has committed, so no overlay leaf can land for the name
+  between that check and the delete; and no team may list it, the team
+  document re-read under ``crew_teams.document_lock`` -- taken last, inside
+  the spec lock, and held the same way, so no team write can place the name
   between that check and the delete. A row that changed meanwhile in any of
   these ways is refused, the pass writes no marker and logs which rows, and
   the next boot re-judges them.
@@ -172,14 +164,20 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import config_dir
+from kiro_crew.crew_teams import TeamsUnreadable, document_lock, read_teams
+from kiro_crew.jsonl_util import OversizedRecord, UnreadableRecord, strict_raw_records
 from kiro_crew.platform_compat import file_lock, open_file_no_reparse, open_lock_file
 
 logger = logging.getLogger(__name__)
 
 #: Written under the config directory once a pass completes. Its body is the
 #: record of what the pass did, so an operator can see which crewmates left
-#: and which were kept because their history could not be read.
-PRUNE_MARKER = "crewmate_prune_migrated.json"
+#: and which were kept because their history could not be read. ``v2``: the
+#: first pass (marker ``crewmate_prune_migrated.json``, left in place) judged
+#: only user-authored specs and counted any session that ran the agent as a
+#: chat, so on an install full of package agents it removed nothing. A new
+#: marker name lets the current pass run once on such an install too.
+PRUNE_MARKER = "crewmate_prune_v2_migrated.json"
 
 #: The cross-process lock the whole pass runs under, beside the marker. Two
 #: gateway processes on one data home take turns here; the second finds the
@@ -194,10 +192,11 @@ PRUNE_LOCK = "crewmate_prune.lock"
 #: slow.
 PRUNE_LOCK_WAIT_S = 120.0
 
-#: The discovery ``source`` of a user-authored spec under ``~/.kiro/agents``
-#: (``kirocrew`` = the runtime's own, ``package`` = installed by a package).
-#: Tested on the SPEC the row is bound to, never on the row's own stamp.
-USER_SPEC_SOURCE = "builtin"
+#: The ``source`` stamps a sync-written row can carry. The sync copied the
+#: bound spec's discovery source onto the row: ``builtin`` for a spec the user
+#: wrote and ``package`` for one a package installed (``aim`` is that source's
+#: older name).
+SYNC_ROW_SOURCES = frozenset({"builtin", "package", "aim"})
 
 
 class HistoryUnreadable(RuntimeError):
@@ -214,9 +213,6 @@ class PruneReport:
     kept: list[str] = dataclasses.field(default_factory=list)
     #: Kept because history could not be read in full; reason per name.
     doubted: dict[str, str] = dataclasses.field(default_factory=dict)
-    #: Session files that could not be read or parsed. Any entry here means the
-    #: history is incomplete, and every candidate was kept on that ground.
-    unreadable_sessions: list[str] = dataclasses.field(default_factory=list)
     refused: list[str] = dataclasses.field(default_factory=list)
     skipped_marker: bool = False
     #: How many :data:`PRUNE_LOCK_WAIT_S` waits passed with another process
@@ -228,14 +224,14 @@ class PruneReport:
 class SyncedCandidate:
     """What the discovery snapshot recorded about one candidate's spec.
 
-    ``description`` is the spec's description as discovery read it -- the value
-    the row was judged against; ``filename`` is the spec file under the agents
-    directory, so the delete can re-read that same file under the spec lock and
-    confirm the description has not moved on.
+    ``filename`` is the spec file under the agents directory, so the delete can
+    re-read that same file under the spec lock and confirm it remains readable.
+    ``source`` is the canonical discovery source the row matched, so a source
+    change between discovery and deletion refuses the delete.
     """
 
-    description: str
     filename: str
+    source: str
 
 
 def marker_path() -> Path:
@@ -259,49 +255,67 @@ def _raw_agents_section(path: Path | None = None) -> dict:
     return agents if isinstance(agents, dict) else {}
 
 
-def _fresh_sync_row(kiro_agent: str, description: str, source: str) -> dict:
-    """What ``_do_agents_sync`` wrote for one spec: the binding, the spec's
-    description and source, every other field at its default."""
-    return dataclasses.asdict(
-        KiroCrewAgentConfig(kiro_agent=kiro_agent, description=description, source=source)
-    )
+#: Sync copies these fields from the spec rather than using record defaults.
+_SPEC_COPIED_FIELDS = frozenset({"description", "source"})
 
 
-def _is_fresh_sync_shape(raw: dict, *, kiro_agent: str, description: str) -> bool:
+def _canonical_sync_source(source: str) -> str:
+    """Return the canonical source identity for sync row and spec comparison."""
+    return "package" if source in {"package", "aim"} else source
+
+
+def _is_fresh_sync_shape(raw: dict, *, kiro_agent: str) -> bool:
     """Whether a RAW ``config.agents`` row is exactly a sync-written row.
 
-    Compared field by field against :func:`_fresh_sync_row` built from the
-    binding and the SPEC's current ``description`` (the sync copied it from the
-    spec, so a row whose description differs from the spec's was edited by the
-    owner -- or the spec moved on -- and is kept either way); every other
-    declared field must equal its default -- a row the owner gave a model,
-    triggers, a colour, a star, an avatar or a workspace is the owner's and is
-    never a candidate -- and the row may carry no key the record does not
-    declare, since an unknown key is something a writer other than the sync put
-    there. A declared key the row lacks reads as its default: a row written by
-    a build whose record had fewer fields is still the sync's row.
+    Compared field by field against a default record bound to ``kiro_agent``.
+    ``description`` and ``source`` are copied from the spec and handled
+    separately; every other declared field must equal its default. The row may
+    carry no key the record does not declare. A declared key the row lacks
+    reads as its default, so a row written by a build whose record had fewer
+    fields is still the sync's row.
     """
-    expected = _fresh_sync_row(kiro_agent, description, USER_SPEC_SOURCE)
+    expected = dataclasses.asdict(KiroCrewAgentConfig(kiro_agent=kiro_agent))
     if set(raw) - set(expected):
         return False
     for key, default in expected.items():
+        if key in _SPEC_COPIED_FIELDS:
+            continue
         if raw.get(key, default) != default:
             return False
     return True
 
 
-def _synced_candidates(
-    cfg: KiroCrewConfig, raw_agents: dict, overlay_agents: dict
-) -> dict[str, SyncedCandidate]:
-    """The crewmates an older sync generated, in config order, each with the
-    current description of the spec it is bound to and that spec's filename.
+def _teamed_names() -> frozenset[str]:
+    """Every crewmate name some team lists, as ``crew-teams/teams.json`` holds it.
 
-    ``raw_agents`` is the ``agents`` section as ``config.json`` holds it (not
-    the default-filled dataclasses): the shape test must see the row the file
-    holds, and the same test -- against the same spec description -- is re-run
-    inside the delete's lock. ``overlay_agents`` is the same section from
-    ``config.local.json``; any name it mentions is excluded, whatever it says
-    about it.
+    An absent document is no teams. One that is there but cannot be read raises
+    :class:`~kiro_crew.crew_teams.TeamsUnreadable` (``read_teams`` never answers
+    an empty list for it); the caller keeps every candidate on that doubt. The
+    names are taken as written, not filtered against the registry: a candidate
+    is a registry name, so a stale entry for a gone crew names nothing here.
+    """
+    return frozenset(member for team in read_teams() for member in team.members)
+
+
+def _synced_candidates(
+    cfg: KiroCrewConfig, raw_agents: dict, overlay_agents: dict, teamed: frozenset[str]
+) -> dict[str, SyncedCandidate]:
+    """The crewmates an older sync generated, in config order, each with what
+    discovery recorded about the spec it is bound to (see :class:`SyncedCandidate`).
+
+    A row's string source must match the installed spec's discovery source;
+    ``package`` and ``aim`` compare as one source identity. Specs and rows use
+    only ``builtin``, ``package`` or ``aim``. Rows without an installed spec,
+    crew-private specs and the runtime's own specs (``kirocrew_owned``, which
+    discovery keeps apart from ``source``: the conductor, worker, knowledge,
+    research and heartbeat specs read as ``builtin``) are excluded -- a row
+    bound to one of the runtime's own agents is never pruned. ``raw_agents`` is
+    the ``agents`` section as ``config.json`` holds it (not the default-filled
+    dataclasses): the shape test must see the row the file holds, and the same
+    test is re-run inside the delete's lock. ``overlay_agents`` is the same
+    section from ``config.local.json``; any name it mentions is excluded,
+    whatever it says about it. ``teamed`` is every name some team lists
+    (:func:`_teamed_names`); a teamed crewmate is the owner's and is excluded.
     """
     from kiro_crew.agent import kiro_agents_dir_path
     from kiro_crew.agent_discovery import list_agents
@@ -311,355 +325,157 @@ def _synced_candidates(
     for name, agent in cfg.agents.items():
         if name in ("default", cfg.default_agent):
             continue
-        if name in overlay_agents:
+        if name in overlay_agents or name in teamed:
             continue
         raw = raw_agents.get(name)
         if not isinstance(raw, dict) or name != agent.kiro_agent:
             continue
         spec = specs.get(agent.kiro_agent)
-        if (
-            spec is None
-            or spec.source != USER_SPEC_SOURCE
-            or spec.kirocrew_owned
-            or spec.private_to
-        ):
+        if spec is None or spec.private_to or spec.kirocrew_owned or not spec.filename:
             continue
-        if not spec.filename:
+        raw_source = raw.get("source")
+        spec_source = spec.source
+        if not isinstance(raw_source, str) or spec_source not in SYNC_ROW_SOURCES:
             continue
-        description = str(spec.description or "")
-        if not _is_fresh_sync_shape(raw, kiro_agent=agent.kiro_agent, description=description):
+        if not _is_fresh_sync_shape(raw, kiro_agent=agent.kiro_agent):
             continue
-        out[name] = SyncedCandidate(description=description, filename=spec.filename)
+        source = _canonical_sync_source(spec_source)
+        if _canonical_sync_source(raw_source) != source:
+            continue
+        out[name] = SyncedCandidate(filename=spec.filename, source=source)
     return out
 
 
-def _current_spec_description(filename: str) -> str | None:
-    """The bound spec's ``description`` as its file holds it NOW, or ``None``.
+def _read_discovered_spec_identity(filename: str) -> tuple[str, str, str, bool] | None:
+    """Return the spec's current ``(name, source, private_to, kirocrew_owned)``.
 
-    Read through :func:`~kiro_crew.agent_discovery.read_agent_spec_strict` --
-    the same hardened gate discovery reads every spec through -- and
-    normalised by the same ``spec_str`` discovery applies, so the value is the
-    one :func:`_synced_candidates` would record for the file today. ``None``
-    means the file cannot be read as a spec any more (gone, unreadable, refused
-    by the path fence, not a JSON object): the caller treats that as newer
-    evidence and refuses the delete. The file is only read, never written.
+    The file goes through :func:`read_agent_spec_strict`, then the same
+    :func:`_global_agent_info` derivation and fork-lineage lookup as global
+    discovery -- ``kirocrew_owned`` included, which that derivation reads off
+    the filename (``OWNED_KIRO_AGENT_FILES``) and never off ``source``. A
+    missing, unreadable, refused, non-record or unclassifiable spec fails
+    closed. The file and lineage are only read, never written.
     """
+    from kiro_crew import agent_state
     from kiro_crew.agent import kiro_agents_dir_path
-    from kiro_crew.agent_discovery import read_agent_spec_strict, spec_str
+    from kiro_crew.agent_discovery import _global_agent_info, read_agent_spec_strict
 
     path = Path(kiro_agents_dir_path()) / filename
     try:
         data = read_agent_spec_strict(path, operation="crewmate_prune", source="dashboard")
+        if not isinstance(data, dict):
+            return None
+        info = _global_agent_info(path, data)
+        fork_info = agent_state.get_fork_info(info.name, strict=True)
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict):
-        return None
-    return spec_str(data, "description")
+    private_to = fork_info["private_to"] if fork_info else ""
+    return info.name, info.source, private_to, info.kirocrew_owned
 
 
-#: Longest metadata line the session scan reads. A real metadata record is a few
-#: hundred bytes; the cap bounds the per-file cost on an agent-writable tree.
-_SESSION_META_LINE_MAX = 64 * 1024
+#: Longest first line the DM transcript read accepts. The first line is the
+#: metadata record, a few hundred bytes in practice; the cap bounds the cost of
+#: one read on an agent-writable tree.
+_TRANSCRIPT_META_LINE_MAX = 64 * 1024
 
 
-def _read_first_line_of_regular_file(path: Path, budget: int) -> bytes | None:
-    """The first line of *path* when it is a plain regular file, else ``None``.
+def _transcript_has_a_turn(path: Path, *, missing_is_doubt: bool = False) -> bool:
+    """Whether one transcript file holds anything past its metadata line.
 
-    Opened with ``open_file_no_reparse``: the link/reparse refusal is settled
-    in the same operation as the open (no check-then-open window), and
-    ``O_NONBLOCK`` makes a FIFO return at once so ``fstat`` can refuse it
-    instead of the open waiting for a writer that never comes. Anything that
-    is not a regular file is ``None`` -- "no record" -- never a hang. Reads at
-    most ``budget + 1`` bytes, so a caller can tell a line that fits from one
-    that does not. Returned raw: decoding is the caller's judgement. I/O
-    failures propagate to the caller, except the one that IS the link
-    refusal: ``open_file_no_reparse`` reports a link or reparse point at the
-    path as ``ELOOP`` (on every platform), and that is the "not a regular
-    file" answer arriving from the open rather than from ``fstat``.
+    A transcript is born with its metadata record and gains one row per
+    message, so a second non-blank line means a turn was written; its content
+    is not parsed, since even a torn row proves one was being written. A first
+    line that parses to something other than the metadata record is a message
+    row from an older build, and counts the same way.
+
+    ``False`` when the file does not exist (unless ``missing_is_doubt``), is a
+    link, a FIFO or anything but a regular file (opened with
+    ``open_file_no_reparse``, ``O_NONBLOCK``: the link refusal lands in the
+    open, and a FIFO returns at once instead of hanging), or holds only its
+    metadata line. Raises :class:`HistoryUnreadable` when the file is there but
+    cannot be judged: an open or read failure, an empty file (a torn write), or
+    a first line that is over budget, not UTF-8 or not JSON. The caller keeps
+    the crewmate. ``missing_is_doubt`` is for an archived segment already seen
+    in a directory listing: if it disappears before the open, its evidence is
+    unknown rather than absent.
     """
     try:
         fd = open_file_no_reparse(path, nonblocking=True)
+    except FileNotFoundError as exc:
+        if missing_is_doubt:
+            raise HistoryUnreadable(
+                f"transcript {path.name} disappeared before it could be opened"
+            ) from exc
+        return False
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            return None
-        raise
+            return False
+        raise HistoryUnreadable(f"transcript {path.name} could not be opened: {exc}") from exc
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
+            return False
         with os.fdopen(fd, "rb") as fh:
             fd = -1
-            return fh.readline(budget + 1)
+            first = fh.readline(_TRANSCRIPT_META_LINE_MAX + 1)
+            if len(first) > _TRANSCRIPT_META_LINE_MAX:
+                raise HistoryUnreadable(
+                    f"transcript {path.name}: first line exceeds {_TRANSCRIPT_META_LINE_MAX} bytes"
+                )
+            try:
+                text = first.decode("utf-8").strip()
+            except UnicodeError as exc:
+                raise HistoryUnreadable(f"transcript {path.name} is not UTF-8: {exc}") from exc
+            if not text:
+                raise HistoryUnreadable(f"transcript {path.name} is empty: no metadata line")
+            try:
+                record = json.loads(text)
+            except ValueError as exc:
+                raise HistoryUnreadable(
+                    f"transcript {path.name}: first line is not JSON: {exc}"
+                ) from exc
+            if not isinstance(record, dict) or record.get("_type") != "metadata":
+                return True
+            try:
+                for line in strict_raw_records(fh, path, cap=_TRANSCRIPT_META_LINE_MAX):
+                    if line.strip():
+                        return True
+            except OversizedRecord:
+                # A row too long to hold is still a row: a turn was written.
+                return True
+            except UnreadableRecord as exc:
+                raise HistoryUnreadable(f"transcript {path.name} could not be read: {exc}") from exc
+            return False
+    except OSError as exc:
+        raise HistoryUnreadable(f"transcript {path.name} could not be read: {exc}") from exc
     finally:
         if fd >= 0:
             os.close(fd)
 
 
-def _session_agents_named(path: Path) -> set[str]:
-    """Every agent one session file's metadata line names; empty for nobody.
+def _dm_binding_slot_key(name: str, slug: str) -> str:
+    """The slot key this crewmate's DM binding records, or ``""`` for none.
 
-    Two kinds of file are kept apart here, because the pass treats them
-    oppositely:
-
-    * A file that READS AND PARSES is evidence, whatever it says. A first line
-      that is a metadata record returns the UNION of every agent it names (see
-      below). One that is not a metadata record -- an older build's first
-      line, or a record naming no agent (a session that ran as the default
-      crew) -- returns the empty set: it speaks for nobody and condemns
-      nobody, and the other files still decide. A link, a FIFO or any
-      non-regular file is not a session file at all and is empty on the same
-      footing.
-    * A file that CANNOT BE READ raises :class:`HistoryUnreadable`: the open,
-      stat or read failed; the first line is not UTF-8; the file is empty (a
-      session file is born with its metadata line, so an empty one is a torn
-      write); the first line is longer than :data:`_SESSION_META_LINE_MAX`; or
-      the first line is not JSON. The pass reads that as an incomplete history
-      and keeps every candidate.
-
-    A file that is gone by the time it is opened raises ``FileNotFoundError``
-    unchanged; the caller skips it, since a file that has been deleted is not
-    history.
-
-    Usage evidence per session is the union of every agent the record names,
-    not one field of it. The metadata record carries the agent in up to three
-    places: ``agent`` (the slot-owned name), and inside ``execution_context``
-    the ``selection_name`` and the ``template_id`` (the kiro agent the
-    selection runs on). They agree after a completed switch, but an
-    interrupted one can leave them apart (``chat_persistence._restored_agent_name``
-    prefers the durable selection for that reason), and a name any of them
-    holds is a name this session ran as. Nothing below the metadata line
-    carries agent provenance: ``ConversationLog.append`` writes a row as role,
-    content, ``ts``, ``tools``, source thread/user and ``meta.mid``, and an
-    agent switch (``api_chat_slot_agent``) rewrites the metadata line in place
-    and appends no row -- there is no switch marker to find and no earlier
-    agent to recover from the rows. So a session that ran as a crewmate,
-    switched, and had that crewmate's name overwritten in every field is
-    evidence only through the member activity log
-    (:func:`_activity_names_member`); this function does not read past the
-    first line, because there is nothing there to read.
-    """
-    try:
-        raw = _read_first_line_of_regular_file(path, _SESSION_META_LINE_MAX)
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        raise HistoryUnreadable(f"session file {path.name} could not be read: {exc}") from exc
-    if raw is None:
-        return set()
-    if len(raw) > _SESSION_META_LINE_MAX:
-        raise HistoryUnreadable(
-            f"session file {path.name}: first line exceeds {_SESSION_META_LINE_MAX} bytes"
-        )
-    try:
-        text = raw.decode("utf-8").strip()
-    except UnicodeError as exc:
-        raise HistoryUnreadable(f"session file {path.name} is not UTF-8: {exc}") from exc
-    if not text:
-        raise HistoryUnreadable(f"session file {path.name} is empty: no metadata line")
-    try:
-        record = json.loads(text)
-    except ValueError as exc:
-        raise HistoryUnreadable(f"session file {path.name}: first line is not JSON: {exc}") from exc
-    names: set[str] = set()
-    if not isinstance(record, dict) or record.get("_type") != "metadata":
-        return names
-    agent = record.get("agent")
-    if isinstance(agent, str) and agent:
-        names.add(agent)
-    execution = record.get("execution_context")
-    if isinstance(execution, dict):
-        for field in ("selection_name", "template_id"):
-            value = execution.get(field)
-            if isinstance(value, str) and value:
-                names.add(value)
-    return names
-
-
-def _agents_named_in_history(conversation_log) -> tuple[set[str], list[str]]:
-    """Every agent any session's metadata line names, plus the files not read.
-
-    ``ConversationLog.agent_usage()`` is built on ``list_sessions()``, which
-    skips a file it cannot stat and swallows a first line it cannot read or
-    parse. Here every ``*.jsonl`` in the history directory is classified by
-    :func:`_session_agents_named`: a file that reads and parses adds every
-    agent it names (or nothing) to the first element; a file that cannot be
-    read is returned by name in the second. The second element non-empty means
-    the history is INCOMPLETE, and the caller removes nothing on it. A
-    directory that cannot be listed raises :class:`HistoryUnreadable`.
-
-    A file the listing saw and the open did not find is in the second element
-    too: whatever it named was destroyed between the two, and the pass has no
-    way to know it was not the one session that ran as a candidate. Nothing
-    on the startup path deletes a transcript while the pass runs (the channel
-    transcript migration defers its deletes until the pass has settled), so
-    this is a user or another process deleting history under the pass, and it
-    voids the pass rather than the evidence.
-
-    Every agent-naming field of the record is read, but all of them are
-    rewritten in place when the slot switches agents and no row records the
-    switch, so together they name the LAST agent a session ran as; a session
-    that ran as a crewmate and later switched is found through the member
-    activity log instead (:func:`_activity_names_member`).
-    """
-    history_dir = getattr(conversation_log, "_dir", None)
-    if not isinstance(history_dir, Path):
-        raise HistoryUnreadable("conversation log exposes no history directory")
-    named: set[str] = set()
-    unreadable: list[str] = []
-    try:
-        if not history_dir.exists():
-            return named, unreadable
-        paths = list(history_dir.glob("*.jsonl"))
-    except OSError as exc:
-        raise HistoryUnreadable(f"could not list session history: {exc}") from exc
-    for path in paths:
-        try:
-            agents = _session_agents_named(path)
-        except (FileNotFoundError, HistoryUnreadable):
-            unreadable.append(path.name)
-            continue
-        named |= agents
-    return named, unreadable
-
-
-def _activity_names_member(slug: str, name: str) -> bool:
-    """Whether the member activity log under ``slug`` records a session for ``name``.
-
-    ``record_activity`` appends one ``activity/record`` event per session a chat
-    ran as this member, carrying the exact member name (slugs collide) and the
-    session key; it is written once per session and never rewritten, so it
-    survives the slot switching to another agent afterwards. Two places hold
-    it: the member event log, and -- on an install that has not yet folded it
-    -- the pre-log ``activity.jsonl`` / ``activity.jsonl.1`` in the member
-    directory. Both are read here, STRICTLY and read-only: nothing is created
-    or folded, an event log that cannot be loaded or a legacy file that cannot
-    be read or parsed raises :class:`HistoryUnreadable`. So does an event log
-    whose segment files are present but hold nothing the store will read: the
-    store answers "absent" for a zero-byte segment, which is what a torn write
-    leaves behind, and a log that may have held this crewmate's record is
-    incomplete evidence, not none. Only a log and files that do not exist --
-    or that are not regular files -- read as "no record".
-
-    The legacy path is agent-writable, so it is opened through
-    ``open_file_no_reparse`` (no link following, no FIFO hang) and streamed
-    line by line under ``MAX_LEGACY_ACTIVITY_BYTES``, the budget the event
-    log's own fold applies to the same file; a file over budget is doubt.
-    """
-    from kiro_crew import members as members_mod
-    from kiro_crew.crew_log.schema import KIND_MEMBER
-    from kiro_crew.crew_log.store import segment_paths
-    from kiro_crew.eventlog.log import MemberLog
-    from kiro_crew.eventlog.service import MAX_LEGACY_ACTIVITY_BYTES
-    from kiro_crew.eventlog.types import ACTIVITY_RECORD
-
-    try:
-        log = MemberLog(slug)
-        if log.exists():
-            # Streamed oldest-first without retaining: the store's own read
-            # path, which refuses (``LogCorrupt``) rather than guesses.
-            for event in log.iter_events():
-                if event.get("type") != ACTIVITY_RECORD:
-                    continue
-                data = event.get("data") or {}
-                if data.get("member") == name and data.get("session"):
-                    return True
-        elif segment_paths(KIND_MEMBER, slug):
-            raise HistoryUnreadable(
-                f"{name!r}'s activity log is present but holds nothing readable (torn)"
-            )
-    except HistoryUnreadable:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- a log that will not load is "unknown"
-        raise HistoryUnreadable(f"could not read {name!r}'s activity log: {exc}") from exc
-    try:
-        base = members_mod.member_dir(slug) / members_mod.ACTIVITY_FILE_NAME
-    except Exception as exc:  # noqa: BLE001
-        raise HistoryUnreadable(f"could not resolve {name!r}'s activity file: {exc}") from exc
-    for path in (base.with_name(base.name + ".1"), base):
-        try:
-            fd = open_file_no_reparse(path, nonblocking=True)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise HistoryUnreadable(f"could not open {name!r}'s activity file: {exc}") from exc
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                os.close(fd)
-                continue
-            fh = os.fdopen(fd, "rb")
-        except OSError as exc:
-            os.close(fd)
-            raise HistoryUnreadable(f"could not read {name!r}'s activity file: {exc}") from exc
-        budget = MAX_LEGACY_ACTIVITY_BYTES
-        try:
-            with fh:
-                while True:
-                    line = fh.readline(budget + 1)
-                    if not line:
-                        break
-                    budget -= len(line)
-                    if budget < 0:
-                        raise HistoryUnreadable(
-                            f"{name!r}'s activity file {path.name} exceeds "
-                            f"{MAX_LEGACY_ACTIVITY_BYTES} bytes"
-                        )
-                    text = line.decode("utf-8").strip()
-                    if not text:
-                        continue
-                    row = json.loads(text)
-                    if isinstance(row, dict) and row.get("member") == name and row.get("session"):
-                        return True
-        except HistoryUnreadable:
-            raise
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise HistoryUnreadable(
-                f"could not read {name!r}'s activity file {path.name}: {exc}"
-            ) from exc
-    return False
-
-
-def _chatted(cfg: KiroCrewConfig, name: str, named: set[str]) -> bool:
-    """Whether any chat history records this crewmate.
-
-    Three sources, any suffices: a session whose metadata names it as the agent
-    (``named``, from :func:`_agents_named_in_history`); the crewmate's member
-    activity log (:func:`_activity_names_member`); or the crewmate's own DM
-    thread on the Crewmates page -- the thread route writes the binding file
-    the first time the owner opens the thread, so a binding that names this
-    crewmate IS the evidence, whether or not a message was ever sent.
-
-    The binding is read STRICTLY here, not through ``read_dm_binding``: that
-    reader is total by contract and answers "not bound" for an unreadable
-    directory, an unreadable file and a malformed payload alike, which a
-    removal must never mistake for "never opened". Only a binding file that
-    does not exist reads as never opened. Every other failure -- the path
-    cannot be resolved (a containment refusal included), the file cannot be
-    statted or read, the payload does not parse -- raises
-    :class:`HistoryUnreadable`, and the caller keeps the crewmate.
+    Read STRICTLY, not through ``read_dm_binding``: that reader is total by
+    contract and answers "not bound" for an unreadable file or a malformed
+    payload alike, which a removal must never mistake for "never opened". Only
+    a binding file that does not exist reads as none; any other failure raises
+    :class:`HistoryUnreadable`. A binding that names another crew (slugs
+    collide) is not this crewmate's thread and reads as none.
     """
     from kiro_crew import members as members_mod
     from kiro_crew.atomic_write import read_bytes_with_retry
 
-    if name in named:
-        return True
-    try:
-        slug = members_mod.member_slug(name, cfg)
-    except members_mod.MemberSlugError:
-        # No slug means no DM thread and no activity log can exist; the usage
-        # read above covers the rest.
-        return False
-    if _activity_names_member(slug, name):
-        return True
     try:
         path = members_mod.dm_binding_path(slug)
     except Exception as exc:  # noqa: BLE001 -- an unresolvable path is "unknown", never "no"
-        # ``MemberSlugError`` included: the slug passed ``member_slug`` above, so
-        # here it means the containment check refused a path that resolves
+        # ``MemberSlugError`` included: the slug passed ``member_slug`` already,
+        # so here it means the containment check refused a path that resolves
         # outside the trust root -- a binding that may exist, not one that does not.
         raise HistoryUnreadable(f"could not resolve {name!r}'s DM binding: {exc}") from exc
     try:
         raw = read_bytes_with_retry(path)
     except FileNotFoundError:
-        return False
+        return ""
     except Exception as exc:  # noqa: BLE001 -- present but unreadable is "unknown"
         raise HistoryUnreadable(f"could not read {name!r}'s DM binding: {exc}") from exc
     try:
@@ -668,9 +484,72 @@ def _chatted(cfg: KiroCrewConfig, name: str, named: set[str]) -> bool:
         raise HistoryUnreadable(f"{name!r}'s DM binding does not parse: {exc}") from exc
     if not isinstance(data, dict):
         raise HistoryUnreadable(f"{name!r}'s DM binding is not a record")
-    # A colliding slug's binding belongs to exactly one crew name; one that
-    # names another crew is legitimately not this crewmate's thread.
-    return data.get("member") == name
+    if data.get("member") != name:
+        return ""
+    slot_key = data.get("slot_key")
+    return slot_key if isinstance(slot_key, str) else ""
+
+
+def _chatted(cfg: KiroCrewConfig, name: str, sessions_dir: Path) -> bool:
+    """Whether the owner ever chatted with this crewmate on the Crewmates page.
+
+    The one piece of evidence is the crewmate's own DM thread holding a turn:
+    its transcript, live or an archived segment of it, has a row past the
+    metadata line (:func:`_transcript_has_a_turn`). Nothing else counts. A
+    session elsewhere that ran as this agent -- a subagent spawn, a cron job,
+    an app's own slot, a plain chat that picked the template -- used the
+    AGENT, not the crewmate, and the agent stays installed after the row goes.
+    Opening the thread without sending anything writes the DM binding and at
+    most a metadata line, so a crewmate that was only clicked in the roster is
+    not chatted either.
+
+    The thread's transcript lives under ``dashboard_<slot key>``. The slot key
+    is derived from the slug (:func:`~kiro_crew.members.member_slot_key`), and
+    the DM binding's recorded key is read too, so a thread opened under another
+    derivation is not missed. A binding that cannot be read, or a transcript
+    that is there but cannot be judged, raises :class:`HistoryUnreadable` and
+    the caller keeps the crewmate.
+    """
+    from kiro_crew import members as members_mod
+    from kiro_crew.history import ARCHIVE_DIR_NAME, ARCHIVE_SEGMENT_DELIMITER, _safe_key
+
+    try:
+        slug = members_mod.member_slug(name, cfg)
+    except members_mod.MemberSlugError:
+        # No slug means no DM thread can exist.
+        return False
+    slot_keys = {members_mod.member_slot_key(slug)}
+    bound = _dm_binding_slot_key(name, slug)
+    if bound:
+        slot_keys.add(bound)
+    stems: list[str] = []
+    for slot_key in sorted(slot_keys):
+        stem = _safe_key(f"dashboard_{slot_key}")
+        if _transcript_has_a_turn(sessions_dir / f"{stem}.jsonl"):
+            return True
+        stems.append(stem)
+
+    archive = sessions_dir / ARCHIVE_DIR_NAME
+    prefixes = tuple(f"{stem}{ARCHIVE_SEGMENT_DELIMITER}" for stem in stems)
+    try:
+        with os.scandir(archive) as entries:
+            archive_names = sorted(
+                entry.name
+                for entry in entries
+                if entry.name.endswith(".jsonl") and entry.name.startswith(prefixes)
+            )
+    except FileNotFoundError:
+        archive_names = []
+    except OSError as exc:
+        raise HistoryUnreadable(f"could not list archived transcripts: {exc}") from exc
+    for stem in stems:
+        prefix = f"{stem}{ARCHIVE_SEGMENT_DELIMITER}"
+        for name in archive_names:
+            if name.startswith(prefix) and _transcript_has_a_turn(
+                archive / name, missing_is_doubt=True
+            ):
+                return True
+    return False
 
 
 def _never_abandoned() -> bool:
@@ -685,27 +564,34 @@ def remove_never_chatted(
 ) -> tuple[list[str], list[str], list[str]]:
     """Delete the ``config.agents`` rows named; returns ``(removed, refused, abandoned)``.
 
-    ``candidates`` maps each name to what :func:`_synced_candidates` recorded
-    about its spec: the description the row was judged against and the spec's
-    filename. Each delete re-runs the candidate test on the ROWS AND THE SPEC
-    AS THE FILES HOLD THEM, inside the base config lock: the base row must
-    carry the same ``kiro_agent`` and still be the fresh-sync shape against
-    that recorded description (:func:`_is_fresh_sync_shape`);
+    ``candidates`` maps each name to the spec filename and canonical source
+    identity :func:`_synced_candidates` recorded. Each delete re-runs the
+    candidate test on the rows and spec as the files hold them, inside the base
+    config lock: the base row must carry the same ``kiro_agent``, source
+    identity and fresh-sync shape (:func:`_is_fresh_sync_shape`);
     ``config.local.json`` must still not name it, read under the overlay's own
-    sidecar lock; and the bound spec, re-read from disk under
-    ``agents_spec_lock``, must still carry that same description. Both inner
-    locks are taken inside the base lock, overlay then spec (the order every
-    binding writer keeps), and HELD UNTIL THE BASE WRITE HAS COMMITTED, so
-    neither an overlay writer landing a leaf for the name nor a spec writer
-    changing the description can slip between the check and the delete. A row
-    or spec that changed meanwhile -- the owner edited
-    the row, a member-aware write stamped it, the spec's description moved on,
-    the spec vanished or stopped reading as a spec, an overlay leaf appeared --
-    is newer evidence and is refused, not deleted. The test is on identity and
-    shape, never on equality with a default-filled snapshot: a row written by
-    a build whose record had fewer keys must still be recognised as the
-    sync's. Nothing but the base row moves: the overlay, the spec under
-    ``~/.kiro/agents`` (only read) and any transcript stay.
+    sidecar lock; the bound spec, re-read from disk under
+    ``agents_spec_lock``, must still declare ``kiro_agent``, remain non-private,
+    not be one of the runtime's own (``kirocrew_owned``) and have the same
+    canonical discovery source; and no team may list it, the team document
+    re-read under ``crew_teams.document_lock``. The three inner locks are
+    taken inside the base lock, overlay then spec then team document -- the
+    first two in the order every binding writer keeps, the team lock last
+    because its own contract is "the registry's lock first, then this one" and
+    nothing takes a registry, overlay or spec lock while holding it -- and held
+    until the base write has committed, so neither an overlay writer landing a
+    leaf for the name, a spec writer replacing the file nor a team write placing
+    the name can slip between the check and the delete. A row or spec that
+    changed meanwhile
+    -- the row's identity or shape changed, a member-aware write stamped it, the
+    spec vanished, stopped reading as a spec, changed identity, became private
+    or became one of the runtime's own, an overlay leaf appeared, or a team
+    lists the name -- is newer
+    evidence and is refused, not deleted.
+    The test is on identity and shape, never on equality with a default-filled
+    snapshot: a row written by a build whose record had fewer keys must still be
+    recognised as the sync's. Nothing but the base row moves: the overlay, the
+    spec under ``~/.kiro/agents`` (only read) and any transcript stay.
 
     ``abandoned`` is read inside the config lock, after every re-check and
     right before the delete: once it answers true the row is left in place and
@@ -736,7 +622,7 @@ def remove_never_chatted(
         # released only after ``update_config_locked`` has renamed the base
         # file into place. A lock released when its check returned would leave
         # the window the check exists to close -- an overlay writer landing a
-        # leaf for the name, or a spec writer moving the description, after the
+        # leaf for the name, or a spec writer replacing the file, after the
         # check and before the base row is gone.
         with contextlib.ExitStack() as locks:
 
@@ -744,8 +630,8 @@ def remove_never_chatted(
                 doc: dict,
                 _name: str = name,
                 _bound: str = kiro_agent,
-                _desc: str = candidate.description,
                 _file: str = candidate.filename,
+                _source: str = candidate.source,
                 _locks: contextlib.ExitStack = locks,
             ) -> dict | None:
                 nonlocal deleted, gave_up
@@ -753,29 +639,50 @@ def remove_never_chatted(
                 raw = agents.get(_name)
                 if not isinstance(raw, dict) or raw.get("kiro_agent") != _bound:
                     return None
-                if not _is_fresh_sync_shape(raw, kiro_agent=_bound, description=_desc):
+                if not _is_fresh_sync_shape(raw, kiro_agent=_bound):
+                    return None
+                raw_source = raw.get("source")
+                if not isinstance(raw_source, str):
+                    return None
+                if _canonical_sync_source(raw_source) != _source:
                     return None
                 # Base lock first, overlay lock second, spec lock third -- the
                 # order every binding writer keeps (``_write_bindings``, the
-                # template create). Both inner locks are entered on the stack
-                # that outlives this callback, so they are released only after
+                # template create) -- and the team document lock fourth: its
+                # own contract is registry lock first, then it, and nothing
+                # takes a registry, overlay or spec lock while holding it, so
+                # entering it innermost cannot invert any order. All three
+                # inner locks are entered on the stack that outlives this
+                # callback, so they are released only after
                 # ``update_config_locked`` has renamed the base file into
-                # place: neither an overlay leaf for the name nor an edit of
-                # the spec can land between the checks below and the delete.
-                # The overlay is read directly under its lock and the spec is
-                # re-read under its lock; nothing is written to either. The
-                # spec's description is the one spec-derived input to the
-                # shape test above, so a stale value would pass the row. A
-                # lock that cannot be taken, or an overlay that cannot be
-                # read, is doubt, and doubt refuses.
+                # place: neither an overlay leaf for the name, a replacement
+                # of the spec nor a team write placing the name can land
+                # between the checks below and the delete. The overlay and the
+                # team document are read directly under their locks and the
+                # spec is re-read under its lock; nothing is written to any of
+                # them. A lock that cannot be taken, an unreadable overlay or
+                # team document, or a spec whose discovery identity differs
+                # from the candidate is doubt, and doubt refuses.
                 try:
                     _locks.enter_context(_config_write_lock(overlay_path))
                     overlay = read_config_for_update(overlay_path)
                     _locks.enter_context(agents_spec_lock(Path(kiro_agents_dir_path())))
-                except (OSError, ConfigReadError):
+                    _locks.enter_context(document_lock())
+                    teamed = _teamed_names()
+                except (OSError, ConfigReadError, TeamsUnreadable):
                     return None
-                current = _current_spec_description(_file)
-                if current != _desc:
+                if _name in teamed:
+                    return None
+                spec_identity = _read_discovered_spec_identity(_file)
+                if spec_identity is None:
+                    return None
+                spec_name, spec_source, private_to, kirocrew_owned = spec_identity
+                if (
+                    spec_name != _bound
+                    or private_to
+                    or kirocrew_owned
+                    or _canonical_sync_source(spec_source) != _source
+                ):
                     return None
                 overlay_agents = overlay.get("agents")
                 if isinstance(overlay_agents, dict) and _name in overlay_agents:
@@ -816,7 +723,6 @@ def _write_marker(report: PruneReport) -> None:
         "removed": report.removed,
         "kept": report.kept,
         "doubted": report.doubted,
-        "unreadable_sessions": report.unreadable_sessions,
     }
     marker = marker_path()
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -835,6 +741,10 @@ def _write_marker(report: PruneReport) -> None:
 #: The ``doubted`` reason for a candidate the pass was told to stop before judging.
 ABANDONED_REASON = "the startup barrier timed out before this crewmate was judged"
 
+#: The ``doubted`` reason when ``crew-teams/teams.json`` is there but cannot be
+#: read: no candidate can then be shown to be off a team.
+TEAMS_UNREADABLE_REASON = "the crew-teams document could not be read; team membership unknown"
+
 
 def prune_synced_crewmates(
     conversation_log, *, abandoned: Callable[[], bool] = _never_abandoned
@@ -842,9 +752,11 @@ def prune_synced_crewmates(
     """Run the pass once. Thread-side; safe to call on every boot.
 
     ``conversation_log`` is the gateway's :class:`~kiro_crew.history.ConversationLog`;
-    ``None`` means history is unavailable, so every candidate is kept on doubt.
-    Never raises :class:`HistoryUnreadable`: unreadable evidence keeps the
-    crewmates it could have vouched for, and the pass still finishes.
+    ``None`` means history is unavailable, so every candidate is kept on doubt,
+    and so does a ``crew-teams/teams.json`` that is there but cannot be read.
+    Never raises :class:`HistoryUnreadable` or
+    :class:`~kiro_crew.crew_teams.TeamsUnreadable`: unreadable evidence keeps
+    the crewmates it could have vouched for, and the pass still finishes.
 
     The whole pass runs under an exclusive cross-process lock on
     :data:`PRUNE_LOCK`: the marker check, the history scan, each delete and
@@ -897,6 +809,42 @@ def prune_synced_crewmates(
         return _prune_locked(conversation_log, report, abandoned=abandoned)
 
 
+def _judge_each(
+    cfg: KiroCrewConfig,
+    candidates: dict[str, SyncedCandidate],
+    sessions_dir: Path,
+    report: PruneReport,
+    *,
+    abandoned: Callable[[], bool],
+) -> None:
+    """Judge and, when never chatted, remove each candidate in turn."""
+    # Check and delete ONE candidate at a time: the strict history check
+    # runs immediately before its own row's removal, never once for the
+    # whole list up front. The gateway holds every mutating request
+    # back while the pass runs (``DashboardState.crewmate_prune_settled``,
+    # armed before the listener bound), so no session can bind an agent and
+    # no thread can be opened between a candidate's check and its delete.
+    for name, candidate in candidates.items():
+        if abandoned():
+            report.doubted[name] = ABANDONED_REASON
+            continue
+        try:
+            chatted = _chatted(cfg, name, sessions_dir)
+        except HistoryUnreadable as exc:
+            report.doubted[name] = str(exc)
+            continue
+        if chatted:
+            report.kept.append(name)
+        else:
+            removed, refused, left = remove_never_chatted(
+                cfg, {name: candidate}, abandoned=abandoned
+            )
+            report.removed.extend(removed)
+            report.refused.extend(refused)
+            for gone in left:
+                report.doubted[gone] = ABANDONED_REASON
+
+
 def _prune_locked(
     conversation_log, report: PruneReport, *, abandoned: Callable[[], bool]
 ) -> PruneReport:
@@ -908,57 +856,29 @@ def _prune_locked(
     cfg = KiroCrewConfig.load()
     raw_agents = _raw_agents_section()
     overlay_agents = _raw_agents_section(config_local_path())
-    candidates = _synced_candidates(cfg, raw_agents, overlay_agents)
+    # An unreadable team document is doubt about EVERY candidate, the way no
+    # conversation log is: none can be shown to be off a team. Read as "no
+    # teams" only for the candidate test below, so the doubt can name the rows
+    # it keeps; nothing is judged or removed on it.
+    teams_doubt = ""
+    try:
+        teamed = _teamed_names()
+    except TeamsUnreadable as exc:
+        teams_doubt = f"{TEAMS_UNREADABLE_REASON} ({exc})"
+        teamed = frozenset()
+    candidates = _synced_candidates(cfg, raw_agents, overlay_agents, teamed)
     if candidates:
-        named: set[str] = set()
-        try:
-            if conversation_log is None:
-                raise HistoryUnreadable("no conversation log; removal needs chat history")
-            named, report.unreadable_sessions = _agents_named_in_history(conversation_log)
-            if report.unreadable_sessions:
-                skipped = ", ".join(sorted(report.unreadable_sessions))
-                raise HistoryUnreadable(
-                    f"session history incomplete: {len(report.unreadable_sessions)} "
-                    f"file(s) could not be read ({skipped})"
-                )
-        except HistoryUnreadable as exc:
-            # Incomplete history: nothing can be shown never to have run as a
-            # crewmate, so everyone is kept. The marker still records it.
+        sessions_dir = getattr(conversation_log, "_dir", None)
+        if teams_doubt:
             for name in candidates:
-                report.doubted[name] = str(exc)
-            candidates = {}
-        # Check and delete ONE candidate at a time: the strict history check
-        # runs immediately before its own row's removal, never once for the
-        # whole list up front. The gateway holds every mutating request
-        # back while the pass runs (``DashboardState.crewmate_prune_settled``,
-        # armed before the listener bound), so no session can bind an agent and
-        # no thread can be opened between a candidate's check and its delete.
-        for name, candidate in candidates.items():
-            if abandoned():
-                report.doubted[name] = ABANDONED_REASON
-                continue
-            try:
-                chatted = _chatted(cfg, name, named)
-            except HistoryUnreadable as exc:
-                report.doubted[name] = str(exc)
-                continue
-            if chatted:
-                report.kept.append(name)
-            else:
-                removed, refused, left = remove_never_chatted(
-                    cfg, {name: candidate}, abandoned=abandoned
-                )
-                report.removed.extend(removed)
-                report.refused.extend(refused)
-                for gone in left:
-                    report.doubted[gone] = ABANDONED_REASON
-    if report.unreadable_sessions:
-        logger.warning(
-            "crewmate prune: %d session file(s) could not be read, so the history is "
-            "incomplete and every candidate was kept: %s",
-            len(report.unreadable_sessions),
-            ", ".join(sorted(report.unreadable_sessions)),
-        )
+                report.doubted[name] = teams_doubt
+        elif not isinstance(sessions_dir, Path):
+            # No transcripts to read: nothing can be shown never to have been
+            # chatted with, so everyone is kept. The marker still records it.
+            for name in candidates:
+                report.doubted[name] = "no conversation log; removal needs chat history"
+        else:
+            _judge_each(cfg, candidates, sessions_dir, report, abandoned=abandoned)
     if report.doubted:
         logger.warning(
             "crewmate prune: %d crewmate(s) kept because their history could not be read: %s",

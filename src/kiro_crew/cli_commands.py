@@ -118,7 +118,7 @@ from kiro_crew.mcp_cron import (
     _vet_shell_command,
 )
 from kiro_crew.member_memory_auth import require_member_memory_creation
-from kiro_crew.members import MemberNameError, validate_member_name
+from kiro_crew.members import MemberNameError, key_new_crew, validate_member_name
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
@@ -216,6 +216,16 @@ def _cli_validated_workspace_dst(ws_dir: str, *, operation: str, name: str) -> P
     return validated
 
 
+def _ws_dir_composed(ws_dir: str) -> Path:
+    """*ws_dir* as a path: ``~`` expanded, a relative dir joined onto the data home.
+
+    NOT resolved. The one composition the containment check resolves and the
+    create hands to the link screen as the unresolved leaf.
+    """
+    expanded = Path(ws_dir).expanduser()
+    return expanded if expanded.is_absolute() else config_dir() / expanded
+
+
 def _ws_dir_resolves_inside_home(ws_dir: str) -> Path | None:
     """The resolved path when *ws_dir* is a STRICT descendant of the data home, else None.
 
@@ -260,8 +270,7 @@ def _ws_dir_resolves_inside_home(ws_dir: str) -> Path | None:
     thing that crashes.
     """
     try:
-        expanded = Path(ws_dir).expanduser()
-        candidate = (expanded if expanded.is_absolute() else config_dir() / expanded).resolve()
+        candidate = _ws_dir_composed(ws_dir).resolve()
         root = config_dir().resolve()
         if candidate == root or not candidate.is_relative_to(root):
             return None
@@ -306,13 +315,19 @@ def _internal_secret(port: int) -> str:
     Returns an empty string if the file is missing or unreadable; the
     server then rejects the request with 403, which is the correct
     failure mode.
+
+    Dials the IPv4 loopback LITERAL, matching the ``http://127.0.0.1`` bases its
+    callers construct: a literal reaches one family, so the credential pairs with
+    the address actually dialled and an ordinary single-family gateway (v4-only or
+    a wildcard/container bind) still authenticates. The ambiguous ``localhost``
+    would demand BOTH families and refuse such a gateway.
     """
-    return read_local_secret(port)
+    return read_local_secret(port, dial_host="127.0.0.1")
 
 
 def _spawn(args: argparse.Namespace) -> None:
     """Dispatch spawn subcommands: run, list."""
-    base = f"http://localhost:{args.port}"
+    base = f"http://127.0.0.1:{args.port}"
     action = getattr(args, "spawn_action", None)
 
     if action == "list":
@@ -634,7 +649,9 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             # write -- a concurrent create can already have adopted and registered it.
             else:
                 try:
-                    materialize_workspace_dir(dst_path, display=ws_dir)
+                    materialize_workspace_dir(
+                        dst_path, leaf=_ws_dir_composed(ws_dir), display=ws_dir
+                    )
                 except WorkspaceDirUnusable as exc:
                     raise _CliConflict(str(exc)) from exc
             workspaces[args.name] = dataclasses.asdict(WorkspaceConfig(dir=ws_dir))
@@ -1441,9 +1458,14 @@ def _handle_agent(args: argparse.Namespace) -> None:
         except MemberNameError as exc:
             print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
             sys.exit(1)
-        if args.name in cfg.agents:
-            print(f"Error: agent '{args.name}' already exists", file=sys.stderr)
+        # Same keying as POST /api/agents.
+        keyed = key_new_crew(
+            args.name, (getattr(args, "display_name", None) or "").strip(), cfg.agents
+        )
+        if keyed.taken:
+            print(f"Error: agent '{keyed.taken}' already exists", file=sys.stderr)
             sys.exit(1)
+        args.name, display_name = keyed.key, keyed.display_name
         if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
             print("Error: invalid kiro agent name", file=sys.stderr)
             sys.exit(1)
@@ -1463,6 +1485,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
             kiro_agent=args.kiro_agent,
             workspace=args.workspace,
             memory_store=memory_store,
+            display_name=display_name,
         )
         previous_store = cfg.agents[args.name].memory_store
         previous_member_id = cfg.agents[args.name].member_id
@@ -1493,7 +1516,10 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 raise
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-        print(f"Created agent: {args.name}")
+        if display_name:
+            print(f"Created agent: {args.name} (display name: {display_name})")
+        else:
+            print(f"Created agent: {args.name}")
 
     elif action == "update":
         if args.name not in cfg.agents:
@@ -2050,16 +2076,36 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 # first and only falls back to rehydrating from history, so a
                 # brand-new tab that has not logged anything yet is a legitimate
                 # target and absence of a log does not prove the key is wrong.
-                slot = session_key.removeprefix("dashboard:")
+                #
+                # Resolve the transcript the way DELIVERY resolves it, rather
+                # than guessing at the spelling. The original bug was asking for
+                # the prefix-stripped slot, which found nothing for EVERY
+                # dashboard session and warned on every correct adopt -- which
+                # trains the operator to ignore the one message that would also
+                # be a real typo's only signal. Passing the raw session key
+                # instead fixes the common ``chat-N`` spelling but reintroduces
+                # the same false warning for the two spellings where the two
+                # differ: a channel-origin slot (``dashboard:slack_<ts>``, whose
+                # transcript is ``slack_<ts>.jsonl`` with no ``dashboard_``
+                # prefix) and a stacked prefix (``--session-of
+                # dashboard_chat-N-...`` becomes ``dashboard:dashboard_chat-N``).
+                # ``_normalize_slot_key`` + ``slot_transcript_key`` are the pair
+                # the delivery path itself composes, so reusing them keeps the
+                # check and the delivery it predicts from drifting apart.
                 try:
-                    known = ConversationLog().has_log(slot)
+                    from kiro_crew.dashboard.chat_utils import slot_transcript_key
+                    from kiro_crew.dashboard.state import _normalize_slot_key
+
+                    transcript_key = slot_transcript_key(_normalize_slot_key(session_key))
+                    known = ConversationLog().has_log(transcript_key)
                 except Exception:
                     known = True  # cannot tell -> stay quiet rather than cry wolf
                 if not known:
                     print(
-                        f"Warning: no recorded session named {slot!r}. If that is a typo, "
-                        f"the job's results will not reach anyone -- re-run with the right "
-                        f"key, or `--release` to undo.",
+                        f"Warning: no recorded session named "
+                        f"{session_key.removeprefix('dashboard:')!r}. If that is a "
+                        f"typo, the job's results will not reach anyone -- re-run "
+                        f"with the right key, or `--release` to undo.",
                         file=sys.stderr,
                     )
             else:
@@ -4106,7 +4152,7 @@ def _artifact(args: argparse.Namespace) -> None:
     """List, save, view, update, or delete artifacts."""
     cfg = KiroCrewConfig.load()
     _host, port = parse_dashboard_url(cfg.dashboard.url)
-    base = f"http://localhost:{port}"
+    base = f"http://127.0.0.1:{port}"
 
     action = getattr(args, "artifact_action", None) or "list"
 

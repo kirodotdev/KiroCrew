@@ -10,6 +10,8 @@ and transient failures stay silent.
 from __future__ import annotations
 
 import asyncio
+import gc
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,6 +22,7 @@ from slack_sdk.errors import SlackApiError
 from kiro_crew.slack.client import RealSlackClient, SlackClientOps
 from kiro_crew.slack.scope_probe import (
     UNREADABLE_ERRORS,
+    log_probe_failure,
     warn_unreadable_tracked_channels,
 )
 
@@ -239,6 +242,76 @@ class TestInteractionsProbeHook:
         monkeypatch.setattr(interactions, "_orch", orch)
         interactions._probe_tracked_channel_scope(set())
         assert not tasks
+
+
+class RaisingProbeClient(ProbeStubClient):
+    """A client whose probe raises, as a non-awaitable mock does under test."""
+
+    async def probe_channel_history(self, channel: str) -> str | None:
+        raise TypeError("probe exploded")
+
+
+async def _settle_and_collect(tasks: set) -> list[dict]:
+    """Let the probe task finish, drop it, and return asyncio's unretrieved reports."""
+    reports: list[dict] = []
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: reports.append(ctx))
+    try:
+        await asyncio.wait(set(tasks))
+        await asyncio.sleep(0)  # run the done-callbacks
+        gc.collect()
+    finally:
+        loop.set_exception_handler(previous)
+    return reports
+
+
+class TestProbeFailureIsRetrieved:
+    """A raising probe is logged on the Slack logger, never left unretrieved."""
+
+    @pytest.mark.asyncio
+    async def test_gateway_boot_probe_failure_logs_and_does_not_leak(self, caplog):
+        # The gateway boot site attaches exactly these two callbacks.
+        tasks: set = set()
+        task = asyncio.create_task(warn_unreadable_tracked_channels(RaisingProbeClient({}), {"C1"}))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        task.add_done_callback(log_probe_failure)
+        del task
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.scope_probe"):
+            reports = await _settle_and_collect(tasks)
+        assert reports == []
+        assert not tasks
+        [record] = [r for r in caplog.records if r.name == "kiro_crew.slack.scope_probe"]
+        assert record.levelno == logging.WARNING
+        assert isinstance(record.exc_info[1], TypeError)
+
+    @pytest.mark.asyncio
+    async def test_interactions_probe_failure_logs_and_does_not_leak(self, monkeypatch, caplog):
+        from kiro_crew.slack import interactions
+
+        tasks: set = set()
+        orch = SimpleNamespace(
+            slack=RaisingProbeClient({}), dashboard_state=None, _handler_tasks=tasks
+        )
+        monkeypatch.setattr(interactions, "_orch", orch)
+        interactions._probe_tracked_channel_scope({"C_NEW"})
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.scope_probe"):
+            reports = await _settle_and_collect(tasks)
+        assert reports == []
+        assert not tasks
+        [record] = [r for r in caplog.records if r.name == "kiro_crew.slack.scope_probe"]
+        assert isinstance(record.exc_info[1], TypeError)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_probe_is_silent(self, caplog):
+        task = asyncio.create_task(asyncio.sleep(10))
+        task.add_done_callback(log_probe_failure)
+        task.cancel()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.scope_probe"):
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+        assert not [r for r in caplog.records if r.name == "kiro_crew.slack.scope_probe"]
 
 
 def test_unreadable_errors_are_the_definitive_codes():

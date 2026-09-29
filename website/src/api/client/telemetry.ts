@@ -29,7 +29,7 @@ export type WakaTimeStats = {
   }
 }
 
-export function createTelemetryEndpoints({ post, j }: ClientTransport) {
+export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
   const usageReadouts = {
     /** The five session folds of a crew log, keyed by name, in ONE request.
      *
@@ -75,6 +75,9 @@ export function createTelemetryEndpoints({ post, j }: ClientTransport) {
         envFile: typeof read.env_file === 'string' && read.env_file ? read.env_file : '~/.kiro/crew/.env',
       }
     },
+    /** The conductor's accepted work, not worker-reported completion. */
+    sessionWorkProjection: (slot: string) =>
+      get(`/api/sessions/${encodeURIComponent(slot)}/crew-log/projection/work`).then(j),
     telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
     // Per-turn context injection breakdown for one session. Independent of the
     // telemetry main switch: the usage rows it reads are always written.

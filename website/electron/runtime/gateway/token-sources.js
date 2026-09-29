@@ -4,7 +4,7 @@ const { getRemoteHostConfig } = require("../../host-config");
 const { validateRemoteSettings } = require("../../validation");
 const { buildRemoteTokenCommand, parseTokenFromStdout } = require("../../remote-token");
 const { defaultedPort } = require("../../gateway-auth-hint");
-const { fetchLocalToken: fetchTokenFromHome } = require("../../local-token");
+const { mintLocalToken: mintTokenFromHome } = require("../../local-token");
 const { resolveHome } = require("../../home-dir");
 
 /**
@@ -75,7 +75,19 @@ function createTokenSources({
     });
   }
 
-  async function fetchLocalToken(targetBackendUrl = BACKEND_URL) {
+  /**
+   * Mint a dashboard token for `targetBackendUrl`.
+   *
+   * The token is delivered to the URL it was minted for, unchanged: the mint only
+   * produces one after confirming this gateway holds every loopback family that
+   * URL's host resolves to (`listenerSecretsFor`), so the host as written can
+   * reach no other listener. Every refusal below answers with the same empty
+   * string a miss produces, so a refusal and an absent credential are one case
+   * for the caller.
+   *
+   * @returns {Promise<string>}
+   */
+  async function mintLocalToken(targetBackendUrl = BACKEND_URL) {
     // The secret is the thing that must not leave this machine, so the check
     // belongs here rather than on the adoption. `local-token.js` sends
     // `X-Local-Secret` to whatever answers a literal loopback origin, and an
@@ -151,7 +163,7 @@ function createTokenSources({
     }
     // Re-resolve the home at call time so a KIROCREW_HOME change after Electron
     // starts is honored. Mint only against the literal loopback endpoint.
-    return fetchTokenFromHome({
+    return mintTokenFromHome({
       backendUrl: targetBackendUrl,
       resolveHome,
       path,
@@ -160,7 +172,7 @@ function createTokenSources({
     });
   }
 
-  return { fetchRemoteToken, fetchLocalToken };
+  return { fetchRemoteToken, mintLocalToken };
 }
 
 module.exports = { createTokenSources };

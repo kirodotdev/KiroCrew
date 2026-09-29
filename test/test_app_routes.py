@@ -233,7 +233,7 @@ async def test_uninstall_aborts_409_when_cron_cleanup_busy(tmp_path, monkeypatch
     monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
 
     app = _make_app()
-    app["state"] = SimpleNamespace(crons=object())
+    app["state"] = SimpleNamespace(crons=object(), owner_id="owner")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/apps/api-test-app/uninstall")
         assert resp.status == 409
@@ -283,7 +283,7 @@ async def test_uninstall_aborts_non_retryable_when_cron_store_unreadable(tmp_pat
     monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
 
     app = _make_app()
-    app["state"] = SimpleNamespace(crons=object())
+    app["state"] = SimpleNamespace(crons=object(), owner_id="owner")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/apps/api-test-app/uninstall")
         assert resp.status == 409
@@ -326,7 +326,7 @@ async def test_uninstall_retries_then_succeeds_on_transient_cron_busy(
     monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
 
     app = _make_app()
-    app["state"] = SimpleNamespace(crons=object())
+    app["state"] = SimpleNamespace(crons=object(), owner_id="owner")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/apps/api-test-app/uninstall")
         assert resp.status == 200
@@ -388,7 +388,7 @@ async def test_uninstall_cron_busy_runs_no_destructive_step_before_abort(
     monkeypatch.setattr(routes_mod, "stop_app_backend", _spy_stop)
 
     app = _make_app()
-    app["state"] = SimpleNamespace(crons=object())
+    app["state"] = SimpleNamespace(crons=object(), owner_id="owner")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/api/apps/api-test-app/uninstall")
         assert resp.status == 409

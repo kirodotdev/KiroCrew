@@ -28,7 +28,7 @@ upstream OpenClaw `/btw` protocol.
 ┌─────────────────────────────────────────────────────────────────┐
 │  Frontend (KiroCrewWebsite)                                     │
 │  ┌────────────┐  ┌────────────────┐  ┌───────────────────────┐ │
-│  │ SideChat   │→ │ chatSlice      │← │ useWebSocket          │ │
+│  │ SideChat   │→ │ chat/side.ts   │← │ useWebSocket          │ │
 │  │ .tsx       │  │ slotSide state │  │ chat.side_result case │ │
 │  └────────────┘  └────────────────┘  └───────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
@@ -206,10 +206,12 @@ Payload shape (broadcast per chunk and per final response):
 }
 ```
 
-Run-ID isolation: the frontend routes `chat.side_result` frames to
-`chatSlice.slotSide` via a dedicated reducer (`sseSideResult`). The main
-chat assembler never sees these frames — isolation is structural (separate
-event type → separate reducer → separate redux slice), not filter-based.
+Run-ID isolation: the frontend routes `chat.side_result` frames to the chat
+state's `slotSide` map via a dedicated reducer (`sseSideResult`, owned by
+`website/src/store/chat/side.ts` and exported through the `chatSlice` facade).
+The main chat assembler never sees these frames — isolation is structural
+(separate event type → separate reducer → separate `slotSide` state key), not
+filter-based.
 
 ## Backend Modules
 
@@ -488,8 +490,8 @@ invariants this file must not re-derive:
   only source that cannot disagree with what the user sends.
 - Text the server hands back (a cancelled queue entry, a rejected submit, a
   failed edit) is APPENDED to the draft, never substituted for it — via the
-  host's single `utils/chatDrafts.mergeIntoDraft`, which `chatSlice`'s own
-  release path already uses.
+  host's single `utils/chatDrafts.mergeIntoDraft`, which the chat store's own
+  release path (the `sseSideQueue` cancel in `store/chat/side.ts`) already uses.
 - An Enter that commits an IME candidate is not a submit. This surface's own
   handler predated the shared hook and lacked the guard, so a Chinese/Japanese/
   Korean candidate confirmed with Enter submitted the partial text with nothing
@@ -522,7 +524,13 @@ memo on the second pass and eats the user's punctuation).
 because the IME defect was in the WIRING and a hook test cannot see it. A
 source-level guard fails if this file re-grows a local copy of any of them.
 
-### `chatSlice.ts` — Side State
+### `store/chat/side.ts` — Side State
+
+`website/src/store/chat/side.ts` owns the side reducers; `chatSlice.ts` composes
+them into the one `chat` slice and re-exports their action creators, so the
+action types stay `chat/<name>` and every consumer keeps importing them from
+`store/chatSlice`. The state types (`SideState`, `SideMessage`,
+`SideQueueEntry`) live with the rest of the chat state in `store/chat/state.ts`.
 
 - `slotSide: Record<string, SideState>` on ChatState, each with `messages` and
   `queue`.
@@ -530,11 +538,14 @@ source-level guard fails if this file re-grows a local copy of any of them.
   (delta-append within same run_id), error frames always start new entry, and a
   `steer` user frame is spliced in ABOVE a streaming assistant row of the same
   run.
-- `sseSideQueue` reducer: `push` appends (replay-safe — a redelivered id updates
-  in place), `edit` rewrites, `cancel`/`drain` remove. Never resurrects a closed
-  side.
+- `sseSideQueue` reducer: `push` appends, or head-inserts on `front`
+  (replay-safe — a redelivered id is ignored, never rewritten, so a redacted
+  duplicate cannot overwrite the raw text), `edit` rewrites, `cancel`/`drain`
+  remove. Never resurrects a closed side.
 - `sideClose` action drops per-slot side state.
-- Cleaned up in `deleteSlot.fulfilled`.
+- Cleaned up with the slot's other per-slot state (`evictSlotState` in
+  `store/chat/slotResidue.ts`) on `deleteSlot.fulfilled` and when the slot
+  leaves the authoritative slot list.
 
 ### `useWebSocket.ts`
 

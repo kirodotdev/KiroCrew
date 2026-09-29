@@ -12,7 +12,9 @@ authenticated loopback HTTP; that whole second server (and its copy of the auth
 path) is gone.
 
 Handlers are wrapped by :func:`.._common.route`, which applies the
-deny-by-default enable gate and turns validation failures into 4xx.
+deny-by-default enable gate and turns validation failures into 4xx. The write
+routes that change a meeting or drive its agents are also wrapped by
+:func:`.._common.require_owner`, so only the dashboard owner reaches them.
 """
 
 from __future__ import annotations
@@ -33,7 +35,11 @@ from kiro_crew.apps.builtins.meetings.backend.routes import calendar as calendar
 from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle as lifecycle_routes
 from kiro_crew.apps.builtins.meetings.backend.routes import settings as settings_routes
 from kiro_crew.apps.builtins.meetings.backend.routes import tasks as tasks_routes
-from kiro_crew.apps.builtins.meetings.backend.routes._common import ACTIVE, route
+from kiro_crew.apps.builtins.meetings.backend.routes._common import (
+    ACTIVE,
+    require_owner,
+    route,
+)
 from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger("kirocrew.app.meetings")
@@ -162,7 +168,10 @@ def register_routes(app: web.Application) -> None:
 
     # Config + dictionary
     router.add_get(f"{BASE}/config", route(settings_routes.handle_get_config))
-    router.add_put(f"{BASE}/config", route(settings_routes.handle_put_config))
+    router.add_put(
+        f"{BASE}/config",
+        route(require_owner("meetings.put_config")(settings_routes.handle_put_config)),
+    )
     router.add_get(f"{BASE}/dictionary", route(settings_routes.handle_get_dictionary))
     router.add_post(f"{BASE}/dictionary", route(settings_routes.handle_add_dictionary_term))
     router.add_post(
@@ -184,20 +193,28 @@ def register_routes(app: web.Application) -> None:
     router.add_get(f"{BASE}/meetings", route(lifecycle_routes.handle_list_meetings))
     router.add_get(BASE + "/meetings/{meeting_id}", route(lifecycle_routes.handle_get_meeting))
     router.add_delete(
-        BASE + "/meetings/{meeting_id}", route(lifecycle_routes.handle_delete_meeting)
+        BASE + "/meetings/{meeting_id}",
+        route(require_owner("meetings.delete")(lifecycle_routes.handle_delete_meeting)),
     )
-    router.add_patch(BASE + "/meetings/{meeting_id}", route(lifecycle_routes.handle_patch_meeting))
-    router.add_post(
-        BASE + "/meetings/{meeting_id}/init", route(lifecycle_routes.handle_meeting_init)
-    )
-    router.add_post(
-        BASE + "/meetings/{meeting_id}/start", route(lifecycle_routes.handle_start_meeting)
+    router.add_patch(
+        BASE + "/meetings/{meeting_id}",
+        route(require_owner("meetings.rename")(lifecycle_routes.handle_patch_meeting)),
     )
     router.add_post(
-        BASE + "/meetings/{meeting_id}/status", route(lifecycle_routes.handle_meeting_status)
+        BASE + "/meetings/{meeting_id}/init",
+        route(require_owner("meetings.init")(lifecycle_routes.handle_meeting_init)),
     )
     router.add_post(
-        BASE + "/meetings/{meeting_id}/stop", route(lifecycle_routes.handle_stop_meeting)
+        BASE + "/meetings/{meeting_id}/start",
+        route(require_owner("meetings.start")(lifecycle_routes.handle_start_meeting)),
+    )
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/status",
+        route(require_owner("meetings.status")(lifecycle_routes.handle_meeting_status)),
+    )
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/stop",
+        route(require_owner("meetings.stop")(lifecycle_routes.handle_stop_meeting)),
     )
     router.add_get(
         BASE + "/meetings/{meeting_id}/transcript",
@@ -214,28 +231,39 @@ def register_routes(app: web.Application) -> None:
     # the body — the shape the task routes already use, and the reason there is no
     # `{agent_id}` path segment to validate.
     router.add_put(
-        BASE + "/meetings/{meeting_id}/outputs", route(lifecycle_routes.handle_put_output)
+        BASE + "/meetings/{meeting_id}/outputs",
+        route(require_owner("meetings.put_output")(lifecycle_routes.handle_put_output)),
     )
     router.add_delete(
-        BASE + "/meetings/{meeting_id}/outputs", route(lifecycle_routes.handle_delete_output)
+        BASE + "/meetings/{meeting_id}/outputs",
+        route(require_owner("meetings.delete_output")(lifecycle_routes.handle_delete_output)),
     )
     router.add_post(
         BASE + "/meetings/{meeting_id}/attachments",
-        route(lifecycle_routes.handle_attachments),
+        route(require_owner("meetings.attachments")(lifecycle_routes.handle_attachments)),
     )
 
     # Per-meeting agent control
     router.add_post(
-        BASE + "/meetings/{meeting_id}/agents", route(agents_routes.handle_toggle_agent)
-    )
-    router.add_post(BASE + "/meetings/{meeting_id}/mute", route(agents_routes.handle_mute_agent))
-    router.add_post(
-        BASE + "/meetings/{meeting_id}/dispatch", route(agents_routes.handle_dispatch_text)
+        BASE + "/meetings/{meeting_id}/agents",
+        route(require_owner("meetings.toggle_agent")(agents_routes.handle_toggle_agent)),
     )
     router.add_post(
-        BASE + "/meetings/{meeting_id}/message", route(agents_routes.handle_agent_message)
+        BASE + "/meetings/{meeting_id}/mute",
+        route(require_owner("meetings.mute_agent")(agents_routes.handle_mute_agent)),
     )
-    router.add_post(BASE + "/meetings/{meeting_id}/reset", route(agents_routes.handle_reset_agents))
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/dispatch",
+        route(require_owner("meetings.dispatch")(agents_routes.handle_dispatch_text)),
+    )
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/message",
+        route(require_owner("meetings.message")(agents_routes.handle_agent_message)),
+    )
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/reset",
+        route(require_owner("meetings.reset_agents")(agents_routes.handle_reset_agents)),
+    )
 
     # Import an existing recording. A transcript PRODUCER, like /dispatch — it needs a
     # live meeting for the same reason, and shares `_common.dispatch_line`.
@@ -245,14 +273,25 @@ def register_routes(app: web.Application) -> None:
 
     # Tasks
     router.add_get(BASE + "/meetings/{meeting_id}/tasks", route(tasks_routes.handle_get_tasks))
-    router.add_post(BASE + "/meetings/{meeting_id}/tasks", route(tasks_routes.handle_add_task))
-    router.add_patch(BASE + "/meetings/{meeting_id}/tasks", route(tasks_routes.handle_update_task))
-    router.add_delete(BASE + "/meetings/{meeting_id}/tasks", route(tasks_routes.handle_delete_task))
     router.add_post(
-        BASE + "/meetings/{meeting_id}/tasks/file", route(tasks_routes.handle_file_task)
+        BASE + "/meetings/{meeting_id}/tasks",
+        route(require_owner("meetings.add_task")(tasks_routes.handle_add_task)),
+    )
+    router.add_patch(
+        BASE + "/meetings/{meeting_id}/tasks",
+        route(require_owner("meetings.update_task")(tasks_routes.handle_update_task)),
+    )
+    router.add_delete(
+        BASE + "/meetings/{meeting_id}/tasks",
+        route(require_owner("meetings.delete_task")(tasks_routes.handle_delete_task)),
     )
     router.add_post(
-        BASE + "/meetings/{meeting_id}/tasks/review", route(tasks_routes.handle_review_task)
+        BASE + "/meetings/{meeting_id}/tasks/file",
+        route(require_owner("meetings.file_task")(tasks_routes.handle_file_task)),
+    )
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/tasks/review",
+        route(require_owner("meetings.review_task")(tasks_routes.handle_review_task)),
     )
 
     # register_routes runs before runner.setup() freezes the signal lists, so

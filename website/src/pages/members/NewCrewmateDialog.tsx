@@ -297,7 +297,7 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
     }
   }, [])
   const createMut = useMutation({
-    mutationFn: (body: CreateBody) => api.createKirocrewAgent(body) as Promise<{ error?: string }>,
+    mutationFn: (body: CreateBody) => api.createKirocrewAgent(body) as Promise<{ error?: string; name?: string }>,
     onSuccess: async (r, body) => {
       // A 2xx whose body still carries `error` is a refusal in the server's
       // words; like every other failure it is said in the product's.
@@ -324,7 +324,10 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
       ])
       await Promise.race([warm, new Promise<void>((resolve) => setTimeout(resolve, CACHE_WARM_BOUND_MS))])
       if (!mounted.current) return
-      onCreated({ name: body.name, job: body.description })
+      // The server keys a free-form name by a derived id (the typed name
+      // becomes its display_name), so the crewmate is opened by the id it
+      // answered with, not the text the user typed.
+      onCreated({ name: r?.name || body.name, job: body.description })
     },
     onError: async (e: Error, body) => {
       if (e instanceof ApiError) {

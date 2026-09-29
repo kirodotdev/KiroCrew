@@ -132,14 +132,22 @@ export function filenameFromDisposition(disposition: string, fallback: string): 
   return (plain && plain[1].trim()) || fallback
 }
 
-export function createInstancesEndpoints({ get, post, del, patch, j, sessionKeyHeader: _sk }: ClientTransport) {
+export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesDisabled, sessionKeyHeader: _sk }: ClientTransport) {
   const registryAndTransfer = {
     // Instances (multi-instance management) — owner-only, gated by instances.enabled.
     // listInstances throws ApiError(403) when the feature is disabled; callers
     // should catch and render the enable toggle rather than an error. `active`
     // is true only when the SSH manager is actually running (the flag was on at
     // gateway startup) — enabled-but-not-active means a restart is required.
-    listInstances: () => get('/api/instances').then(j) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; sso: SsoStatus }>,
+    //
+    // `jInstancesDisabled` rather than `j`: because the plane is deny-by-default,
+    // that 403 is the EXPECTED answer on most installs, so journaling it published a
+    // spurious "/api/instances -> HTTP 403" error report on whatever route
+    // mounted the sidebar that runs this probe. The parser is pre-bound to the
+    // gateway's own `instances_disabled` code, not to the status, so this
+    // endpoint's other 403s (a non-owner caller, a Slack-origin request) still
+    // journal — they are real authorization failures and a reader needs them.
+    listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; sso: SsoStatus }>,
     addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
     updateInstance: (id: string, body: Partial<AddInstanceBody>, opts?: { signal?: AbortSignal }) =>
       patch('/api/instances/' + encodeURIComponent(id), body, undefined, opts?.signal).then(j) as Promise<InstanceView>,

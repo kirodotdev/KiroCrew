@@ -39,7 +39,7 @@ def _cron_caller_is_named(named_cron_caller):
 
 
 @pytest.fixture(autouse=True)
-def _crons_dir_tracks_patched_home(monkeypatch):
+def _crons_dir_tracks_patched_home(monkeypatch, tmp_path):
     """Keep ``cron_script.config_dir()`` pointed at ``<patched home>/.kirocrew``.
 
     The data home moved from the top-level ``~/.kirocrew`` to ``~/.kiro/crew``
@@ -53,10 +53,31 @@ def _crons_dir_tracks_patched_home(monkeypatch):
     it tracks whatever ``Path.home()`` each test patches) — preserving the
     existing ``.kirocrew/crons`` layout the tests build. Tests that patch
     ``cron_script.config_dir`` themselves still win (applied later).
+
+    The stub CREATES the directory, because the real resolver does: ``config_dir``
+    runs ``mkdir(parents=True, exist_ok=True)`` on every call, so a path it hands
+    back always exists on disk. A stub that only computes the path models a home
+    that the production code cannot be handed, and a caller that legitimately
+    creates something beside the tree it returns then fails on a missing parent
+    that no real run has.
+
+    Creating means the fallback matters: a test in this module that does NOT patch
+    ``Path.home`` would otherwise have this stub create directories in the
+    OPERATOR's real home, which outlive the run and which the conftest's
+    real-data-home guards cannot see (they inspect ``KIROCREW_HOME`` only). So an
+    unpatched home resolves to a per-test tmp dir instead, the same shape
+    ``test_cron_secret_env.py`` and ``test_cron_apps_secret_mask.py`` use.
     """
-    monkeypatch.setattr(
-        "kiro_crew.cron_script.config_dir", lambda: Path.home() / ".kirocrew"
-    )
+    real_home = Path.home()
+    fallback = tmp_path / "kirocrew-home-fallback"
+
+    def _home_dir() -> Path:
+        home = Path.home()
+        d = fallback if home == real_home else home / ".kirocrew"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    monkeypatch.setattr("kiro_crew.cron_script.config_dir", _home_dir)
 
 
 class TestResolveScriptPath:
@@ -260,10 +281,13 @@ class TestCronSandboxUnavailableIsStructuredNotRaised:
         script = tmp_path / "job.py"
         script.write_text("def run(msg=''):\n    return {'status': 'ok'}\n")
         # resolve_script_path enforces an allowed root; point it at tmp_path so
-        # this test exercises the wrap_argv failure, not the path guard.
+        # this test exercises the wrap_argv failure, not the path guard. The stub
+        # accepts the launcher's keywords (`allow_bundle_roots`) rather than a
+        # bare spec, so a signature change fails at the real call site instead of
+        # inside the stub.
         monkeypatch.setattr(
             "kiro_crew.cron_script.resolve_script_path",
-            lambda spec: (str(script), "run"),
+            lambda spec, **_kw: (str(script), "run"),
         )
         result = run_script_sandboxed(f"{script}:run", "job-id", timeout=10)
         assert result["status"] == "error"

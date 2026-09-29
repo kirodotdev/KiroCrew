@@ -282,6 +282,31 @@ class TestPidRecycleGuard:
             assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
             assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
 
+    def test_a_recycled_mapping_attests_no_membership(self, cfg):
+        """A proven recycle discards the TENANT SECTION too, not just the key.
+
+        The roster belonged to the pid's previous owner. Carried through the
+        refusal it would still satisfy ``shared`` (``tenant_count > 1``), which
+        is one half of ``peer_resolve``'s stop condition (``session_key or
+        shared``) -- so a mapping this very function disproved would become the
+        peer walk's ANSWER, and ``admits`` would then deny a legitimate caller
+        against a stale roster with a ``peer_session_mismatch`` 403.
+        """
+        with self._live_token("111"):
+            session_pid_sig.publish_session_pid(
+                4242, SESSION_KEY, co_tenants=[SESSION_KEY, "dashboard:chat-8-999"]
+            )
+        with self._live_token("222"):
+            mapping = session_pid_sig.read_session_pid_mapping(4242)
+        assert mapping.refusal == session_pid_sig.REFUSAL_RECYCLED
+        assert mapping.session_key == ""
+        # The three membership answers a stale mapping must not give.
+        assert mapping.shared is False
+        assert mapping.membership_complete is False
+        assert mapping.admits(SESSION_KEY) is False
+        assert mapping.tenants == ()
+        assert mapping.tenant_count == 0
+
     def test_legacy_tokenless_file_still_resolves(self, cfg):
         """BACKWARD COMPATIBILITY: a signed mapping written before the
         format change (no token line, MAC over ``"<pid>:<session_key>"``)

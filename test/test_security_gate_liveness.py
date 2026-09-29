@@ -74,12 +74,54 @@ def _url_payload_command(n: int) -> str:
 #: where this machine's address list cannot be read, so a refused agent knows when
 #: to stop retrying and what to use instead.
 #:
+#: Raised again, from 27,766, for the write-protected home entry covering the kiro-cli
+#: global MCP registry (``~/.kiro/settings/mcp.json``) and its ``KIRO_HOME``
+#: re-anchoring: an ``autoApprove`` on an entry there is honoured by default and skips
+#: the tool gate entirely, while the entry that decides it is admitted on its name
+#: shape rather than on who wrote the file -- so an agent-writable registry grants its
+#: own verbs a standing bypass. The reasoning for one leaf is most of the cost, which
+#: is the shape every entry on this tier has.
+#:
+#: Raised again, from 27,814, for resolving the ``$HOME``-rooted form of both kiro-cli
+#: write-tier leaves rather than only their ``KIRO_HOME`` copies. Anchoring them
+#: lexically covered a symlinked ``$HOME`` itself but not one further down the path, so
+#: a dotfile-managed ``~/.kiro`` left the real spec dir and the real MCP registry outside
+#: the fence while their ``~``-spelled paths stayed inside it. The cost is the reasoning
+#: plus one shared tuple, which is what replaces a second per-leaf arm.
+#:
+#: Lowered to 27,851 by SUBTRACTION. An earlier revision of this branch also emitted
+#: every kiro-cli target in a second, all-forward-slash spelling, on the premise that a
+#: Windows root could reach the anchor builder carrying the operator's own separators.
+#: That premise is false: every root arrives through ``_resolve_root_anchors``, which
+#: returns ``_realpath_or_none(expanded) or _lexical_root(expanded)``, and both answer
+#: in the native spelling -- ``_lexical_root``'s ``os.path.normpath`` converts
+#: ``C:/Users/x`` to ``C:\Users\x``. With no input that fails without it, the second
+#: spelling was decoration, and on POSIX it would fence a bogus neighbour for any file
+#: whose name contains a backslash. It is removed together with the two tests that
+#: existed only for it; the ``$HOME``-symlink coverage passes without it, which is what
+#: shows it was never load-bearing.
+#:
+#: Raised again, from 27,851, because the ``KIRO_HOME`` half was two hardcoded
+#: per-leaf arms while the ``$HOME`` half looped the tuple -- so the tuple's own
+#: comment ("a third leaf joins both halves by landing here") was false, and a third
+#: leaf would have been fenced under ``$HOME`` and writable under the override. Both
+#: halves now loop the same tuple, each leaf's tail is spelled once, and a test adds a
+#: probe leaf and asserts BOTH spellings refuse -- it fails on the old code.
+#:
+#: Re-pinned again, on top of every raise above, for the ``panel-dismissals`` leaf
+#: added to ``_CREW_SECRET_LEAVES`` in ``paths.py``: one entry plus the comment
+#: stating why nothing a run can reach may forge or delete the operator's dismissal
+#: records. Ten lines, all of them the fence declaration and its reason -- no new
+#: control logic and no new matching pass. This branch's raise and the ones above it
+#: are independent additions to the same ratchet, so the number below is re-MEASURED
+#: off the tree rather than being the arithmetic sum of the deltas.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_766
+_PACKAGE_LINE_BUDGET = 27_863
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

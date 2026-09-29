@@ -33,6 +33,7 @@ import pytest
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import KiroCrewAgentConfig
+from kiro_crew.mcp_gateway.abort import RuntimeAbortTarget
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session import (
     _MAX_ORIGIN_LINKS,
@@ -892,22 +893,27 @@ class TestStuckTurnCheck:
 
 class TestSendAbortForSession:
     @pytest.mark.asyncio
-    async def test_runtime_info_drives_the_abort(self, mgr) -> None:
-        sess = _Session(provider=_stub_provider(runtime_info=lambda: (4242, "/tmp/gw.sock")))
-        with patch("kiro_crew.session.schedule_abort") as abort:
+    async def test_the_providers_target_drives_the_abort(self, mgr) -> None:
+        target = RuntimeAbortTarget.build(4242, "/tmp/gw.sock")
+        sess = _Session(provider=_stub_provider(runtime_abort_target=lambda: target))
+        with patch("kiro_crew.session.schedule_abort_for") as abort:
             await mgr._send_abort_for_session("d1", sess)
         abort.assert_called_once()
-        assert abort.call_args.args[0] == "/tmp/gw.sock"
-        assert abort.call_args.args[1] == [4242]
+        assert abort.call_args.args[0] is target
 
     @pytest.mark.asyncio
-    async def test_private_client_fields_are_the_fallback(self, mgr) -> None:
-        """For providers that never overrode runtime_info()."""
-        provider = _stub_provider(runtime_info=lambda: (None, None))
-        provider._client = SimpleNamespace(_pid=99, _mcp_gateway_socket="/tmp/b.sock")
-        with patch("kiro_crew.session.schedule_abort") as abort:
-            await mgr._send_abort_for_session("d1", _Session(provider=provider))
-        assert abort.call_args.args[1] == [99]
+    async def test_the_session_layer_passes_the_target_without_opening_it(self, mgr) -> None:
+        """The whole point of the handle: a pid never reaches this layer.
+
+        A double that is not a ``RuntimeAbortTarget`` at all still travels, so the
+        seam is proven to carry whatever the provider minted rather than to read
+        an address out of it.
+        """
+        opaque = object()
+        sess = _Session(provider=_stub_provider(runtime_abort_target=lambda: opaque))
+        with patch("kiro_crew.session.schedule_abort_for") as abort:
+            await mgr._send_abort_for_session("d1", sess)
+        assert abort.call_args.args[0] is opaque
 
     @pytest.mark.asyncio
     async def test_an_unresolvable_runtime_warns_rather_than_failing_silently(
@@ -915,36 +921,58 @@ class TestSendAbortForSession:
     ) -> None:
         """Visible by default: if provider internals get renamed the abort push
         stops firing, and a silent skip would hide the regression."""
-        provider = _stub_provider(runtime_info=lambda: (None, None))
+        provider = _stub_provider(runtime_abort_target=lambda: None)
         with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
-            with patch("kiro_crew.session.schedule_abort") as abort:
+            with patch("kiro_crew.session.schedule_abort_for") as abort:
                 await mgr._send_abort_for_session("d1", _Session(provider=provider))
         abort.assert_not_called()
         assert any("abort-push skipped" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_a_reaped_pid_is_not_aborted(self, mgr) -> None:
-        """pid<=1 would target init, not a kiro-cli process."""
-        sess = _Session(provider=_stub_provider(runtime_info=lambda: (1, "/tmp/gw.sock")))
-        with patch("kiro_crew.session.schedule_abort") as abort:
-            await mgr._send_abort_for_session("d1", sess)
+    async def test_a_reaped_pid_never_becomes_a_target(self, mgr, caplog) -> None:
+        """pid<=1 would address init or a process group, not a kiro-cli runtime.
+
+        Refused at mint time, so the session layer sees only ``None`` and has no
+        pid range of its own to police.
+        """
+        assert RuntimeAbortTarget.build(1, "/tmp/gw.sock") is None
+        assert RuntimeAbortTarget.build(0, "/tmp/gw.sock") is None
+        provider = _stub_provider(
+            runtime_abort_target=lambda: RuntimeAbortTarget.build(1, "/tmp/gw.sock")
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            with patch("kiro_crew.session.schedule_abort_for") as abort:
+                await mgr._send_abort_for_session("d1", _Session(provider=provider))
         abort.assert_not_called()
+        assert any("abort-push skipped" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_a_raising_provider_never_blocks_the_kill_path(self, mgr) -> None:
         def boom():
             raise RuntimeError("provider is gone")
 
-        sess = _Session(provider=_stub_provider(runtime_info=boom))
+        sess = _Session(provider=_stub_provider(runtime_abort_target=boom))
         await mgr._send_abort_for_session("d1", sess)  # best-effort, must not raise
 
     @pytest.mark.asyncio
     async def test_a_failing_audit_does_not_block_the_abort(self, mgr) -> None:
-        sess = _Session(provider=_stub_provider(runtime_info=lambda: (7, "/tmp/gw.sock")))
+        target = RuntimeAbortTarget.build(7, "/tmp/gw.sock")
+        sess = _Session(provider=_stub_provider(runtime_abort_target=lambda: target))
         with patch("kiro_crew.session.sel", side_effect=RuntimeError("sel down")):
-            with patch("kiro_crew.session.schedule_abort") as abort:
+            with patch("kiro_crew.session.schedule_abort_for") as abort:
                 await mgr._send_abort_for_session("d1", sess)
         abort.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_the_audit_record_names_the_runtime_the_target_names(self, mgr) -> None:
+        """The record says which runtime was asked; the target renders that itself."""
+        target = RuntimeAbortTarget.build(4242, "/tmp/gw.sock")
+        sess = _Session(provider=_stub_provider(runtime_abort_target=lambda: target))
+        audit = MagicMock()
+        with patch("kiro_crew.session.sel", return_value=audit):
+            with patch("kiro_crew.session.schedule_abort_for"):
+                await mgr._send_abort_for_session("d1", sess)
+        assert audit.log_api_access.call_args.kwargs["resources"] == "pid=4242 session=d1"
 
 
 # ── Orphan-MCP hook ─────────────────────────────────────────────────────────

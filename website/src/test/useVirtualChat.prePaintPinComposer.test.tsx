@@ -143,17 +143,24 @@ describe('pre-paint bottom pin and the composer', () => {
   })
 
   it('does not re-target the bottom when nothing is running and the reader has moved', () => {
-    // Same growth, but the reader touched the scroller since we last placed
-    // them. With nothing running there is no output to follow, so the gap is
-    // theirs to keep: the idle rule releases rather than yanking them down.
-    const { view, el, state, writes } = mountAtBottom(false, 'idle-moved')
-    const parked = state.scrollTop
-    act(() => { el.dispatchEvent(new Event('wheel')) })
+    // Same growth, but the reader has genuinely LEFT the bottom since we last
+    // placed them: a wheel-up and the scroll event it caused, which moved
+    // scrollTop off our write and released follow. With nothing running there
+    // is no output to follow, so the gap is theirs to keep -- the height commit
+    // must not re-target the bottom under them. (An input that moved nothing is
+    // deliberately NOT a departure any more: see the idlePinGuard suite.)
+    const { view, el, state, writes, bottom } = mountAtBottom(false, 'idle-moved')
+    act(() => { el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })) })
+    const parked = state.scrollTop - 100
+    state.scrollTop = parked
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    expect(view.result.current.getFollow()).toBe(false)
     state.scrollHeight += 300
     landHeightCommit(view)
 
     expect(state.scrollTop).toBe(parked)
-    expect(writes.filter((w) => w > parked)).toEqual([])
+    expect(writes.filter((w) => Math.abs(w - bottom()) < 2)).toEqual([])
+    expect(view.result.current.getFollow()).toBe(false)
   })
 
   it('still re-targets the bottom for a genuine reprice mid-turn', () => {

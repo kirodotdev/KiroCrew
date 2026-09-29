@@ -56,6 +56,44 @@ an unrelated draft. Recovery adds no user row to a busy slot. That notice surviv
 but is not persisted across page unmounts. Creation failure does not re-arm a
 new-session intent for the next manual send.
 
+## Dashboard chat state
+
+The dashboard holds every open session's chat state in one Redux slice, `chat`.
+`website/src/store/chatSlice.ts` is its only `createSlice` call and the one path
+consumers import it through: every action creator, thunk, selector, constant and
+type resolves there, and every action type stays `chat/<name>`. The facade
+composes owners under `website/src/store/chat/`, and the dependency runs one
+way: no owner imports the facade, and no module in `website/src`,
+`website/integration` or `website/capture` outside `website/src/store` imports
+an owner (`website/src/store/chatSlice.ownership.test.ts`).
+
+| Owner | What it owns for a slot |
+|---|---|
+| `website/src/store/chat/state.ts` | `ChatState`, its initial value, and the persisted `mc-activity-open:<slot>` key family |
+| `website/src/store/chat/wire.ts` | the trust boundary: the `__proto__` / `constructor` / `prototype` key guards and the slot-detail read with its normalization |
+| `website/src/store/chat/runState.ts` | the active-slot handover, running / stopping state, the turn-start epoch, and the navigation MRU |
+| `website/src/store/chat/slotSwitch.ts` | `switchSlot`: the bounded slot-detail read, the atomic handover, the unwind when the target is gone, and the pane notice a failed gesture raises |
+| `website/src/store/chat/slotRefresh.ts` | `refreshSlot` and `warmSlotCache`, the re-reads that do not switch |
+| `website/src/store/chat/lifecycle.ts` | `createSlot`, `forkSlot`, `resumeFromHistory`, `fetchHistory` and `deleteHistorySession`, with the notices a failed attempt leaves |
+| `website/src/store/chat/slotResidue.ts` | teardown of slots that left the authoritative list, and the one list of per-slot maps every teardown clears |
+| `website/src/store/chat/activity.ts` | the activity panel and live tool log: the slot's tab and persisted open state, the inline tool-focus signal, and the tool-call / approval / tool-result frames that fill the log |
+| `website/src/store/chat/composerCards.ts` | the cards above the composer, one per slot: the question card, follow-up suggestions and the folder suggestion |
+| `website/src/store/chat/automations.ts` | monitor and goal-loop automations per slot, reconciled from the REST snapshots and upserted from live frames |
+| `website/src/store/chat/workflows.ts` | live dynamic-workflow runs, their reconcile against the authoritative run list, and the sidebar's per-session activity selectors |
+| `website/src/store/chat/selectors.ts` | slot-scoped reads, the composer's busy rule, the Continue predicate that mirrors `_has_conversation` in `dashboard/chat_handlers.py`, and the Resume predicate that mirrors `is_turn_interrupted` in `dashboard/state.py` |
+
+The facade keeps three constructs that a read-only check reads from this file:
+the live `chat_message` frame reducer with the question-retiring role set and the
+chunk-gap marker (`test/test_slot_needs_input_status.py` and the i18n ledger),
+`deleteSlot` with the one `dispatch(switchSlot(` site the call-site oracle counts
+here, and `loadOlderMessages` with the slot capture `chatPins.test.tsx` reads.
+`requestStop` stays too, because it dispatches this slice's own actions. The
+transcript-window and
+history-cache owners are listed in
+[history](history.md#the-dashboard-transcript-window-frontend); Side Chat,
+sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
+[mcp-apps](mcp-apps.md).
+
 ## Implementation Boundaries
 
 `SessionManager` remains the compatibility facade in `session.py`; callers keep
@@ -2171,7 +2209,7 @@ when a switch is detected (stored SID exists AND providers differ).
 4. The new provider's session_id (once obtained) is saved with the correct
    provider label
 5. On the first prompt after the switch, `chat_runner` detects the flag and
-   injects history from `compress_thread_history()` (Kiro Crew's conversation_log)
+   injects history from `build_session_replay()` (Kiro Crew's conversation_log)
 6. The flag remains armed through prompt acceptance and is settled only when the
    replay-bearing turn lands. ACP providers promote a deliberately deferred fresh
    SID before consuming the lease; non-ACP providers already published their SID
@@ -2180,8 +2218,8 @@ when a switch is detected (stored SID exists AND providers differ).
 
 **Replayed content carries no image reference.** `_replay_rows` and
 `_recall_rows` — the two row builders behind every history vehicle
-(`build_session_replay`, the thread-history fallback in `build_session_context`,
-and the transcript `compress_thread_history` hands to the LLM compressor) — hand
+(`build_session_replay` and the thread-history fallback in
+`build_session_context`) — hand
 each row out through
 `kiro_crew.image_refs.strip_image_refs`, which replaces every local image
 reference with `[image not carried into this context]`. Markdown references go
@@ -3369,7 +3407,7 @@ the daemon's `--socket` path. gatewayd creates that socket at bind, so once
 the path is absent from disk no stub can ever connect again — the process is
 provably unreachable regardless of who launched it.
 
-- **Self-exit (primary, in-daemon)**: `gatewayd._socket_liveness_sweeper`
+- **Self-exit (primary, in-daemon)**: `mcp_gateway/daemon/sweepers.py::_socket_liveness_sweeper`
   stats its own socket path on the idle-sweep cadence, armed only after a
   successful bind. Three CONSECUTIVE `ENOENT` observations set `stop_event`,
   taking the same graceful drain as SIGTERM (backends drained and reaped).
@@ -3400,12 +3438,43 @@ a trust root on its own; publication therefore also writes a
 `session_pid_<pid>.sig` sidecar:
 
 - **MAC**: HMAC-SHA256 over `"<pid>:<body>"`, where *body* is the full
-  published `.txt` content — the session key alone (legacy), or
-  `"<session_key>\n<start_token>"` (recycle-guarded, below). The pid is bound
+  published `.txt` content — the session key alone (legacy),
+  `"<session_key>\n<start_token>"` (recycle-guarded, below), or those plus the
+  tenant section (shared-runtime, below). The pid is bound
   into the MAC so one pid's pair cannot be replayed under another pid, and
   covering the whole body signs the start token too — flipping only the token
   invalidates the MAC. A legacy body yields a byte-identical message to the
   pre-token scheme, so mappings signed before the format change still verify.
+- **Tenant section** (shared runtime): one kiro-cli process hosts several ACP
+  sessions — a `spawn_run` subagent on its parent's runtime, a workflow pool
+  worker — while the mapping names ONE. Publication therefore records the set
+  of sessions sharing the pid, inside the same MAC, and the section is written
+  ONLY above one session, so a 1:1 pid produces byte-identical output to the
+  scheme above and an older reader still parses it. The set comes from
+  `SessionManager.runtime_pids()`, filtered to rows carrying `sid`: that
+  snapshot also appends one row per manager-owned companion RUNTIME whose `key`
+  is display text, and a subagent runtime is frequently the runtime a session is
+  already served by, so counting those rows would record two tenants for a pid
+  hosting one session. The section is size-bounded, so a runtime with many
+  sessions records the true count while dropping members — a short membership
+  is INCOMPLETE, never a closed set.
+  Readers ask two different questions of it and must not share an answer:
+  a reader resolving its OWN identity treats a recorded count above one as a
+  refusal (no single key names it), while a reader VERIFYING a key someone else
+  declared checks membership. Absence of the section is UNKNOWN, never
+  "not shared": a manager that cannot answer must not make readers confident
+  about a pid it has no evidence for.
+- **Shared-pid attestation**: membership is necessary but NOT sufficient for a
+  declared key, because the `.txt` is agent-readable — a co-tenant could read a
+  sibling's key out of the roster and declare it. A pid demonstrably hosting
+  several sessions therefore also requires an `X-Session-Token` resolving to
+  exactly the declared key (`dashboard/token_auth.py`); the token's MAC uses the
+  agent-unreadable SEL trust root and names one session, which the kernel's
+  proof of the PROCESS cannot do on a shared runtime. A 1:1 pid requires no
+  token: only one session lives there, so there is no other identity to mistake
+  it for. Both admitted paths record which roster shape they judged, so the SEL
+  trail distinguishes a declaration checked against a full membership from one
+  checked against a short.
 - **PID-recycle guard** (issue #8343): the mapping used to bind only the pid
   *number*, so a recycled pid kept verifying and answered for the new
   process with the previous owner's session key until the next restart's
@@ -3447,7 +3516,7 @@ a trust root on its own; publication therefore also writes a
   `mcp_shared._policy_session_key` (the policy walk, called by
   `_resolve_tool_policy`),
   `mcp_caller.CallerContext.from_env` (host-pid + walk; also serves
-  `mcp_gateway/stub.py`), and `mcp_gateway/gatewayd._resolve_peer_identity`
+  `mcp_gateway/stub.py`), and `mcp_gateway/daemon/identity.py::_resolve_peer_identity`
   (server-side peer walk). The sidecar is additive. All four are pid-keyed and
   therefore answer with the PARENT for a session-sharing subagent, which is why each
   client-side one reads the per-SESSION token (`session_token_sig`) above these
@@ -3778,12 +3847,12 @@ bounded; escalation happens only when the rung below exhausted its attempts:
 | layer | unit | trigger | cleanup deadline | attempts before escalation | action |
 |---|---|---|---|---|---|
 | `L1_tool_call` | slot | JSON-RPC error classed `recoverable_infra`: the MCP stub's `-32001 capacity` (with `retry_after_secs`), backend gone, spawn-queue timeout | -- | 3 | re-issue the call: one continuation on the same session (`chat_runner`, below); task stays running |
-| `L2_backend` | backend key | `BackendGone`, initialize timeout, breaker OPEN | per-backend shutdown budget (`POOL_SHUTDOWN_SECS`) | 2 | `gatewayd._respawn_backend_for_stub` under the spawn gate |
+| `L2_backend` | backend key | `BackendGone`, initialize timeout, breaker OPEN | per-backend shutdown budget (`POOL_SHUTDOWN_SECS`) | 2 | `daemon/replacement.py::_respawn_backend_for_stub` under the spawn gate |
 | `L3_acp_runtime` | runtime | `AcpRuntimeDead`, stall past the idle window, `session/new` abandoned | `TOTAL_SHUTDOWN_BUDGET_SECS` + process-tree kill | 2 | rebuild the runtime, `session/load` if continuable; task `recovering` |
 | `L4_gatewayd` | daemon | liveness ping failed 3x (neither the fast nor the escalated probe answered) AND no backend progress | daemon drain | one respawn per 600s window (the second escalates) | `GatewayManager._run_watchdog` respawn; stubs reconnect within their 600s budget |
 | `L5_gateway` | gateway | none automatic | -- | 0 | ONE notification per escalation; the user restarts. Never a `kirocrew restart`. |
 
-**Where the rungs are recorded.** L1 for the main chat is `chat_runner`'s infra branch (below); for a sub-agent it is `subagent_manager/run.py::_yield_for_infra_retry`, which takes the ladder's delay and parks the run on the dependency coordinator's `mcp_gateway:<class>` scope ([subagent.md](subagent.md)). L2 is `gatewayd._respawn_backend_for_stub`: a completed respawn is `record_restart(L2_backend)` + `observe_success(L2, server)`, a give-up is `observe_failure(L2, server)` (the breaker's OPEN cooldown is the wait between rungs; the ladder counts, it does not sleep there). L3 is counted by the sub-agent run when the parent's shared runtime is unavailable (`observe_failure(L3, runtime:<parent>)`; the dedicated process stays the per-run recovery, the runtime's rebuild belongs to its owning session). L4 is the gatewayd supervisor. Distinct from these per-rung attempt counts is `SESSION_RECOVERY_MAX_ATTEMPTS` (3), the IN-PLACE budget for continuing one ACP session on the same runtime — the main chat's tool-stall / stale_recover nudges and pipe-death re-queues and the sub-agent's stop recovery all read it (`acp.types.STOP_RECOVERY_MAX_RETRIES` is its re-export).
+**Where the rungs are recorded.** L1 for the main chat is `chat_runner`'s infra branch (below); for a sub-agent it is `subagent_manager/run.py::_yield_for_infra_retry`, which takes the ladder's delay and parks the run on the dependency coordinator's `mcp_gateway:<class>` scope ([subagent.md](subagent.md)). L2 is `daemon/replacement.py::_respawn_backend_for_stub`: a completed respawn is `record_restart(L2_backend)` + `observe_success(L2, server)`, a give-up is `observe_failure(L2, server)` (the breaker's OPEN cooldown is the wait between rungs; the ladder counts, it does not sleep there). L3 is counted by the sub-agent run when the parent's shared runtime is unavailable (`observe_failure(L3, runtime:<parent>)`; the dedicated process stays the per-run recovery, the runtime's rebuild belongs to its owning session). L4 is the gatewayd supervisor. Distinct from these per-rung attempt counts is `SESSION_RECOVERY_MAX_ATTEMPTS` (3), the IN-PLACE budget for continuing one ACP session on the same runtime — the main chat's tool-stall / stale_recover nudges and pipe-death re-queues and the sub-agent's stop recovery all read it (`acp.types.STOP_RECOVERY_MAX_RETRIES` is its re-export).
 
 Overload never enters the ladder: pressure lowers caps and pauses admission
 ([adaptive-concurrency](adaptive-concurrency.md)); only a unit that stopped

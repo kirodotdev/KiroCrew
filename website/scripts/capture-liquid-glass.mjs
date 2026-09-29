@@ -5,7 +5,7 @@
  * the transcript scrolling under it) and the mobile Settings bottom search
  * capsule. Photographs the REAL built SPA (website/dist) over a stubbed
  * dashboard API in both polarities, so the frosted --glass-tint, the top/bottom
- * specular band and the composer halo are the shipped ones, not a mock. The
+ * specular band and the neutral glass-shadow are the shipped ones, not a mock. The
  * long-transcript scene also asserts the floating-dock geometry, and the
  * `spawn-flow` scene records the approval band's three-step transition as a
  * GIF (needs ffmpeg on PATH). Nothing in CI runs this file.
@@ -17,6 +17,8 @@ import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { screenshotWithCaret } from './lib/screenshot-with-caret.mjs'
+
 
 const OUT = process.argv[2] || '../temp-screenshots/liquid-glass'
 const SLOT = 'chat-glass'
@@ -152,10 +154,10 @@ async function main() {
   }
 
   async function chat(theme, variant = '') {
-    activeDetail = variant === 'long' || variant === 'question' || variant === 'folder' ? longDetail
+    activeDetail = variant === 'long' || variant === 'reduce-long' || variant === 'question' || variant === 'folder' ? longDetail
       : variant === 'approval' || variant === 'spawn-both' ? approvalDetail
       : variant === 'spawn' || variant === 'tip' ? runningDetail
-      : variant === 'chips' || variant === 'chips-picked' ? chipsDetail
+      : variant === 'chips' || variant === 'chips-picked' || variant === 'reduce' ? chipsDetail
       : variant === 'welcome' || variant === 'incognito' ? welcomeDetail
       : detail
     const context = await browser.newContext({ viewport: { width: 1500, height: 950 }, deviceScaleFactor: 2 })
@@ -175,6 +177,10 @@ async function main() {
     // The collapsed composer is a persisted per-browser choice (ChatInput's
     // COMPOSER_COLLAPSED_LS_KEY); seed it so the dock comes up as the bar.
     if (variant === 'collapsed') await page.addInitScript(() => { localStorage.setItem('mc-composer-collapsed', '1') })
+    // The user's own switch (Settings -> Display -> Reduce glass transparency):
+    // the index.html bootstrap reads this key and sets data-reduce-transparency
+    // before hydration, so the first paint is already solid.
+    if (variant === 'reduce' || variant === 'reduce-long') await page.addInitScript(() => { localStorage.setItem('mc-reduce-transparency', 'on') })
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     // The tip gate is 10s; a multi-frame scene needs its last frame landed and painted.
     await page.waitForTimeout(variant === 'tip' ? 12500 : 2500 + Math.max(0, frames.length - 1) * 900 + 500)
@@ -224,7 +230,43 @@ async function main() {
         await page.waitForTimeout(250)
         console.log(`chat/${theme}/long: dock stops ${gutter.reserved}px short of the scrollbar column; wheel in the ${Math.round(gutter.colLeft - gutter.dockLeft)}px gutter scrolled the transcript ${Math.round(gutter.before - after)}px`)
       }
+      // Scroll up far enough that a message body runs under the WHOLE dock,
+      // the context shelf included: the shelf sits below the glass on the
+      // bare transcript and stands on the `glass-shelf` fade (nothing at the
+      // pane's bottom edge, page colour by 60% of its height), so a chip label
+      // never reads against text scrolling under it. Assert the fade is there,
+      // starts at the pane's edge and does not touch the pane, then photograph
+      // the dock's bottom edge.
+      const shelfGeo = await page.evaluate(() => {
+        const el = document.querySelector('.chat-container'); el.scrollTop = el.scrollHeight - el.clientHeight - 420
+        const shelf = document.querySelector('[data-testid="composer-context-shelf"]')
+        const dock = document.querySelector('[data-testid="composer-dock"]')
+        if (!shelf || !dock) return null
+        const before = getComputedStyle(shelf, '::before')
+        const s = shelf.getBoundingClientRect(), d = dock.getBoundingClientRect()
+        return { bg: before.backgroundImage, z: before.zIndex, top: s.top, dockBottom: d.bottom, dockLeft: d.left, dockWidth: d.width, shelfBottom: s.bottom, dockBg: getComputedStyle(dock, '::before').backgroundImage }
+      })
+      if (!shelfGeo) throw new Error(`chat/${theme}/long: shelf or dock missing`)
+      if (!/linear-gradient\(/.test(shelfGeo.bg) || shelfGeo.z !== '-1') throw new Error(`chat/${theme}/long: shelf has no fade behind it (${shelfGeo.bg} z=${shelfGeo.z})`)
+      if (shelfGeo.top - shelfGeo.dockBottom > 1) throw new Error(`chat/${theme}/long: the fade starts ${shelfGeo.top - shelfGeo.dockBottom}px below the pane, not at its edge`)
+      if (/linear-gradient\(/.test(shelfGeo.dockBg)) throw new Error(`chat/${theme}/long: the pane itself carries a fade (${shelfGeo.dockBg})`)
+      await page.waitForTimeout(600)
+      await page.screenshot({
+        path: `${OUT}/composer-${theme}-long-shelf-crop.png`,
+        clip: { x: Math.max(0, shelfGeo.dockLeft - 40), y: Math.max(0, shelfGeo.dockBottom - 120), width: shelfGeo.dockWidth + 80, height: (shelfGeo.shelfBottom - shelfGeo.dockBottom) + 150 },
+      })
+      console.log('wrote', `${OUT}/composer-${theme}-long-shelf-crop.png`)
+      // The same position, whole page: text under every part of the dock.
+      await page.screenshot({ path: `${OUT}/composer-${theme}-long-under.png` })
+      console.log('wrote', `${OUT}/composer-${theme}-long-under.png`)
       // Now scroll up so a message body, not the tail padding, sits under the glass.
+      await page.evaluate(() => { const el = document.querySelector('.chat-container'); if (el) el.scrollTop = el.scrollHeight - el.clientHeight - 180 })
+      await page.waitForTimeout(600)
+    }
+    if (variant === 'reduce-long') {
+      // The switch's before/after partner to `long`: the same transcript at the
+      // same scroll position, so the pair shows the one difference -- text
+      // refracting through the glass vs. a solid card covering it.
       await page.evaluate(() => { const el = document.querySelector('.chat-container'); if (el) el.scrollTop = el.scrollHeight - el.clientHeight - 180 })
       await page.waitForTimeout(600)
     }
@@ -293,13 +335,30 @@ async function main() {
     }
     const box = await (variant === 'collapsed' ? page.getByTestId('composer-dock') : page.getByTestId('input-wrapper')).first().boundingBox()
     if (!box) throw new Error(`chat/${theme}: ${variant === 'collapsed' ? 'composer-dock' : 'input-wrapper'} missing`)
-    await assertGlass(page, page.getByTestId('composer-dock').first(), `chat/${theme}`)
-    if (variant === 'long') {
+    if (variant === 'reduce' || variant === 'reduce-long') {
+      // Same rules as the OS fallback: every pane a solid --bg-elevated card,
+      // effect layers hidden, no backdrop blur anywhere in the dock.
+      const st = await page.evaluate(() => {
+        const html = document.documentElement.dataset.reduceTransparency
+        const dock = document.querySelector('[data-testid="composer-dock"]')
+        const layers = Array.from(dock.querySelectorAll(':scope > [data-liquid-glass-layer]')).map(l => getComputedStyle(l).display)
+        const chips = Array.from(document.querySelectorAll('[data-testid="composer-dock-root"] .liquid-glass')).map(el => getComputedStyle(el).backgroundColor)
+        return { html, dockBg: getComputedStyle(dock).backgroundColor, layers, chips }
+      })
+      if (st.html !== 'on') throw new Error(`chat/${theme}/reduce: data-reduce-transparency not applied (${st.html})`)
+      if (st.layers.some(d => d !== 'none')) throw new Error(`chat/${theme}/reduce: a glass layer still paints (${st.layers.join(',')})`)
+      if (st.dockBg === 'rgba(0, 0, 0, 0)') throw new Error(`chat/${theme}/reduce: dock has no solid fill`)
+      if (st.chips.some(c => c === 'rgba(0, 0, 0, 0)')) throw new Error(`chat/${theme}/reduce: a pane is still transparent (${st.chips.join(' | ')})`)
+      console.log(`chat/${theme}/${variant}: ${st.chips.length} panes solid (${st.dockBg}), ${st.layers.length} layers hidden`)
+    } else {
+      await assertGlass(page, page.getByTestId('composer-dock').first(), `chat/${theme}`)
+    }
+    if (variant === 'long' || variant === 'reduce-long') {
       const under = await page.evaluate(b => Array.from(document.querySelectorAll('.msg-content p, .msg-content code, .msg-content li'))
         .filter(n => { const r = n.getBoundingClientRect(); return r.height > 0 && r.bottom > b.y && r.top < b.y + b.height && r.right > b.x && r.left < b.x + b.width }).length, box)
-      if (under < 1) throw new Error(`chat/${theme}/long: nothing sits under the glass -- the transcript is not scrolling beneath the dock`)
-      if (!(await page.getByRole('button', { name: /scroll to bottom/i }).count())) throw new Error(`chat/${theme}/long: jump-to-bottom pill missing while scrolled up`)
-      console.log(`chat/${theme}/long: ${under} text node(s) sit under the glass`)
+      if (under < 1) throw new Error(`chat/${theme}/${variant}: nothing sits under the dock -- the transcript is not scrolling beneath it`)
+      if (!(await page.getByRole('button', { name: /scroll to bottom/i }).count())) throw new Error(`chat/${theme}/${variant}: jump-to-bottom pill missing while scrolled up`)
+      console.log(`chat/${theme}/${variant}: ${under} text node(s) sit under the dock`)
     }
     if (!variant) {
       // Rest state first: the composer autofocuses, and a focused frame hides
@@ -310,14 +369,70 @@ async function main() {
         path: `${OUT}/composer-${theme}-rest-crop.png`,
         clip: { x: Math.max(0, box.x - 40), y: Math.max(0, box.y - 140), width: box.width + 80, height: box.height + 180 },
       })
+      const dockEl = page.getByTestId('composer-dock').first()
+      const wrapEl = page.getByTestId('input-wrapper').first()
+      const restDock = await dockEl.evaluate(el => ({ shadow: getComputedStyle(el).boxShadow, tint: getComputedStyle(el).getPropertyValue('--glass-tint').trim(), edge: getComputedStyle(el).getPropertyValue('--glass-edge').trim() }))
+      const restBorder = await wrapEl.evaluate(el => getComputedStyle(el).borderTopColor)
       await page.getByLabel('Message input').first().click()
       await page.waitForTimeout(300)
+      // Focus changes NOTHING on the pane (maintainer decision): same shadow,
+      // same tint, same side lines, and the wrapper border stays transparent --
+      // no accent glow, no accent border, no neutral step either. The caret is
+      // the composer's focus indicator.
+      const focusDock = await dockEl.evaluate(el => ({ shadow: getComputedStyle(el).boxShadow, tint: getComputedStyle(el).getPropertyValue('--glass-tint').trim(), edge: getComputedStyle(el).getPropertyValue('--glass-edge').trim() }))
+      const focusBorder = await wrapEl.evaluate(el => getComputedStyle(el).borderTopColor)
+      if (!/^rgba\(0, 0, 0, [\d.]+\) 0px 0px 18px 0px$/.test(restDock.shadow)) throw new Error(`chat/${theme}: dock shadow is not the neutral glass-shadow: ${restDock.shadow}`)
+      if (focusDock.shadow !== restDock.shadow) throw new Error(`chat/${theme}: dock shadow changed on focus (${restDock.shadow} -> ${focusDock.shadow}); the pane must not change on focus`)
+      if (focusDock.tint !== restDock.tint) throw new Error(`chat/${theme}: dock tint changed on focus (${restDock.tint} -> ${focusDock.tint}); a focused pane is the same glass as a resting one`)
+      if (focusDock.edge !== restDock.edge) throw new Error(`chat/${theme}: dock side line changed on focus (${restDock.edge} -> ${focusDock.edge}); the pane must not change on focus`)
+      if (focusBorder !== restBorder) throw new Error(`chat/${theme}: wrapper border changed on focus (${restBorder} -> ${focusBorder}); the accent focus border is back`)
+      console.log(`chat/${theme}: focus leaves the pane unchanged -- shadow ${focusDock.shadow}; edge ${focusDock.edge}; tint ${focusDock.tint}; border ${focusBorder}`)
+    }
+    if (variant === 'approval') {
+      // A pending decision keeps the warm glow in the shadow slot at rest and
+      // while the textarea has focus; the pane itself does not change on focus.
+      await page.mouse.click(700, 200)
+      await page.waitForTimeout(300)
+      const dockEl = page.getByTestId('composer-dock').first()
+      const read = () => dockEl.evaluate(el => ({ shadow: getComputedStyle(el).boxShadow, tint: getComputedStyle(el).getPropertyValue('--glass-tint').trim(), edge: getComputedStyle(el).getPropertyValue('--glass-edge').trim() }))
+      const rest = await read()
+      await page.getByLabel('Message input').first().click()
+      await page.waitForTimeout(300)
+      const focus = await read()
+      if (/rgba\(0, 0, 0, [\d.]+\) 0px 0px 18px 0px/.test(rest.shadow)) throw new Error(`chat/${theme}/approval: the neutral glass-shadow displaced the approval glow at rest (${rest.shadow})`)
+      if (/rgba\(0, 0, 0, [\d.]+\) 0px 0px 18px 0px/.test(focus.shadow)) throw new Error(`chat/${theme}/approval: the neutral glass-shadow displaced the approval glow on focus (${focus.shadow})`)
+      if (focus.tint !== rest.tint) throw new Error(`chat/${theme}/approval: dock tint changed on focus (${rest.tint} -> ${focus.tint})`)
+      if (focus.edge !== rest.edge) throw new Error(`chat/${theme}/approval: dock edge changed on focus (${rest.edge} -> ${focus.edge}); the pane must not change on focus`)
+      // (The glow pulses, so its two reads differ by design; the two checks above
+      // already pin that neither read is the neutral glass-shadow.)
+      console.log(`chat/${theme}/approval: focus leaves the pane unchanged -- edge ${focus.edge}; tint ${focus.tint}; shadow stays the glow`)
+      // The glow pulses inside this clip, so the caret probe is the textarea
+      // alone. While a decision is pending the textarea may refuse focus (the
+      // approval bar owns the keyboard); then there is no caret to catch and the
+      // frame is taken plain.
+      const approvalClip = { x: Math.max(0, box.x - 40), y: Math.max(0, box.y - 140), width: box.width + 80, height: box.height + 180 }
+      const ta = page.getByLabel('Message input').first()
+      if (await ta.evaluate(el => document.activeElement === el)) {
+        // Best effort here: this frame documents the glow, and the caret is
+        // asserted on the plain composer scene above.
+        if (!(await screenshotWithCaret(page, { path: `${OUT}/composer-${theme}-approval-focused-crop.png`, clip: approvalClip }, ta))) console.log(`chat/${theme}/approval: no caret caught within the attempt window; frame taken without it`)
+      } else {
+        console.log(`chat/${theme}/approval: textarea does not hold focus while a decision is pending; plain frame`)
+        await page.screenshot({ path: `${OUT}/composer-${theme}-approval-focused-crop.png`, clip: approvalClip })
+      }
     }
     await page.screenshot({ path: `${OUT}/composer-${theme}${variant ? '-' + variant : ''}.png` })
-    await page.screenshot({
+    const cropOpts = {
       path: `${OUT}/composer-${theme}${variant ? '-' + variant : ''}-crop.png`,
       clip: { x: Math.max(0, box.x - 40), y: Math.max(0, box.y - 260), width: box.width + 80, height: box.height + 300 },
-    })
+    }
+    if (!variant) {
+      // The textarea holds focus here and the caret is the only indicator, so
+      // the frame must show it.
+      if (!(await screenshotWithCaret(page, cropOpts, page.getByLabel('Message input').first()))) throw new Error(`chat/${theme}: no caret caught in the focused composer frame`)
+    } else {
+      await page.screenshot(cropOpts)
+    }
     console.log('wrote', `${OUT}/composer-${theme}${variant ? '-' + variant : ''}.png`)
     await context.close()
   }
@@ -342,23 +457,31 @@ async function main() {
     const restEdge = await halo.evaluate(el => getComputedStyle(el).getPropertyValue('--glass-edge').trim())
     await page.screenshot({ path: `${OUT}/settings-capsule-${theme}.png` })
     console.log('wrote', `${OUT}/settings-capsule-${theme}.png`)
-    // Focused: the capsule's focus cue is the shadow box deepening (neutral, no
-    // accent — that glow is the composer's alone; the input itself has no
-    // outline), so the shadow must change when the input takes focus.
+    // Focused: the capsule does not change (maintainer decision) -- same
+    // shadow, same side lines, no accent, no outline on the input; the caret is
+    // the indicator. Assert the pane is untouched by focus.
     await search.tap()
     await page.waitForTimeout(400)
     const focused = await search.evaluate(el => document.activeElement === el)
     if (!focused) throw new Error(`settings/${theme}: search input did not take focus`)
     const focusShadow = await halo.evaluate(el => getComputedStyle(el).boxShadow)
-    if (focusShadow === restShadow) throw new Error(`settings/${theme}: halo glow unchanged on focus (${focusShadow})`)
-    console.log(`settings/${theme}: halo ${restShadow} -> ${focusShadow}`)
-    // ... and the side lines step to `--glass-edge-focus` with the tint, so the
-    // focused capsule is told apart from the resting one by its edges too.
+    if (focusShadow !== restShadow) throw new Error(`settings/${theme}: capsule shadow changed on focus (${restShadow} -> ${focusShadow})`)
     const focusEdge = await halo.evaluate(el => getComputedStyle(el).getPropertyValue('--glass-edge').trim())
-    if (focusEdge === restEdge) throw new Error(`settings/${theme}: side line unchanged on focus (${focusEdge})`)
-    console.log(`settings/${theme}: edge ${restEdge} -> ${focusEdge}`)
+    if (focusEdge !== restEdge) throw new Error(`settings/${theme}: side line changed on focus (${restEdge} -> ${focusEdge})`)
+    console.log(`settings/${theme}: focus leaves the capsule unchanged -- shadow ${focusShadow}; edge ${focusEdge}`)
     await page.screenshot({ path: `${OUT}/settings-capsule-${theme}-focused.png` })
     console.log('wrote', `${OUT}/settings-capsule-${theme}-focused.png`)
+    // The capsule up close, rest and focused, so the caret -- the only thing
+    // that differs -- is visible to a reader of the attachment (a 3x phone
+    // frame shrinks it to a hairline).
+    const cbox = await halo.boundingBox()
+    const cclip = { x: Math.max(0, cbox.x - 24), y: Math.max(0, cbox.y - 24), width: cbox.width + 48, height: cbox.height + 48 }
+    if (!(await screenshotWithCaret(page, { path: `${OUT}/settings-capsule-${theme}-focused-crop.png`, clip: cclip }, search))) throw new Error(`settings/${theme}: no caret caught in the focused capsule frame`)
+    console.log('wrote', `${OUT}/settings-capsule-${theme}-focused-crop.png`)
+    await search.evaluate(el => el.blur())
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: `${OUT}/settings-capsule-${theme}-rest-crop.png`, clip: cclip })
+    console.log('wrote', `${OUT}/settings-capsule-${theme}-rest-crop.png`)
     await context.close()
   }
 
@@ -368,12 +491,60 @@ async function main() {
     const page = await context.newPage()
     logPageProblems(page)
     await stubDashboardApi(page, { slots, theme, extra })
-    await page.goto(base + '/settings?tab=display', { waitUntil: 'domcontentloaded' })
+    // The Reduce glass transparency switch lives on the Theme rail item; the
+    // sub-less path resolves to View, where that row never mounts.
+    await page.goto(base + '/settings/display/theme', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
     const dialogs = await page.getByRole('dialog').count()
     if (dialogs) throw new Error(`settings-desktop/${theme}: ${dialogs} unexpected dialog(s) open`)
     await page.screenshot({ path: `${OUT}/settings-desktop-${theme}.png` })
     console.log('wrote', `${OUT}/settings-desktop-${theme}.png`)
+    // The desktop search bar is a boxed input, not a glass pane, so it keeps
+    // a focus ring: the shared `focus-ring` shape, but a darker border and a
+    // soft neutral halo, never the theme accent. Focus via the keyboard so :focus-visible matches
+    // the way it does for a typing affordance, then read the computed ring.
+    const search = page.locator('.settings-search input').first()
+    if (!(await search.count())) throw new Error(`settings-desktop/${theme}: search bar missing`)
+    const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())
+    const restRing = await search.evaluate(el => ({ border: getComputedStyle(el).borderTopColor, shadow: getComputedStyle(el).boxShadow }))
+    await search.focus()
+    await page.waitForTimeout(300)
+    const focusRing = await search.evaluate(el => ({ border: getComputedStyle(el).borderTopColor, shadow: getComputedStyle(el).boxShadow }))
+    const accentRgb = await page.evaluate(c => { const d = document.createElement('div'); d.style.color = c; document.body.appendChild(d); const v = getComputedStyle(d).color; d.remove(); return v }, accent)
+    if (focusRing.border === restRing.border && focusRing.shadow === restRing.shadow) throw new Error(`settings-desktop/${theme}: search bar shows no focus cue`)
+    if (focusRing.border === accentRgb || focusRing.shadow.includes(accentRgb.replace(/^rgb\(([^)]*)\)$/, 'rgba($1'))) throw new Error(`settings-desktop/${theme}: search bar focus is the accent (${focusRing.border}; ${focusRing.shadow})`)
+    console.log(`settings-desktop/${theme}: search focus border ${restRing.border} -> ${focusRing.border}; shadow ${focusRing.shadow}`)
+    const sbox = await search.boundingBox()
+    await page.screenshot({
+      path: `${OUT}/settings-desktop-${theme}-search-focused-crop.png`,
+      clip: { x: Math.max(0, sbox.x - 24), y: Math.max(0, sbox.y - 24), width: sbox.width + 48, height: sbox.height + 48 },
+    })
+    console.log('wrote', `${OUT}/settings-desktop-${theme}-search-focused-crop.png`)
+    // The switch itself (Settings -> Display -> Theme card): photograph the row
+    // off, flip it, assert the root attribute and the stored key follow, and
+    // photograph it on. The switch is the only way a user reaches the solid
+    // rendering without an OS setting, so the row must be findable and work.
+    const row = page.locator('[data-setting-label="Reduce glass transparency"]').first()
+    if (!(await row.count())) throw new Error(`settings-desktop/${theme}: "Reduce glass transparency" row missing`)
+    await row.scrollIntoViewIfNeeded()
+    await page.waitForTimeout(300)
+    const readSwitch = () => page.evaluate(() => ({ html: document.documentElement.dataset.reduceTransparency ?? '', stored: localStorage.getItem('mc-reduce-transparency') }))
+    const off = await readSwitch()
+    if (off.html === 'on' || off.stored === 'on') throw new Error(`settings-desktop/${theme}: switch already on before the click (${JSON.stringify(off)})`)
+    const card = row.locator('xpath=ancestor::*[@data-settings-card][1]')
+    const target = (await card.count()) ? card : row
+    const rbox = await target.boundingBox()
+    const clip = { x: Math.max(0, rbox.x - 16), y: Math.max(0, rbox.y - 16), width: rbox.width + 32, height: rbox.height + 32 }
+    await page.screenshot({ path: `${OUT}/settings-desktop-${theme}-reduce-toggle-off-crop.png`, clip })
+    console.log('wrote', `${OUT}/settings-desktop-${theme}-reduce-toggle-off-crop.png`)
+    await row.getByRole('switch').first().click()
+    await page.waitForTimeout(300)
+    const on = await readSwitch()
+    if (on.html !== 'on') throw new Error(`settings-desktop/${theme}: switch did not set data-reduce-transparency (${on.html})`)
+    if (on.stored !== 'on') throw new Error(`settings-desktop/${theme}: switch did not persist mc-reduce-transparency (${on.stored})`)
+    await page.screenshot({ path: `${OUT}/settings-desktop-${theme}-reduce-toggle-on-crop.png`, clip })
+    console.log(`settings-desktop/${theme}: reduce-transparency switch off -> on (root attribute + stored key follow)`)
+    console.log('wrote', `${OUT}/settings-desktop-${theme}-reduce-toggle-on-crop.png`)
     await context.close()
   }
 
@@ -453,6 +624,8 @@ async function main() {
     await chat(theme, 'spawn-both')
     await chat(theme, 'tip')
     await chat(theme, 'collapsed')
+    await chat(theme, 'reduce')
+    await chat(theme, 'reduce-long')
     await settingsMobile(theme)
     await settingsDesktop(theme)
     await spawnFlow(theme)

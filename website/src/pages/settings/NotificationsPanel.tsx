@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Lock, MonitorCog, Blocks, Check } from 'lucide-react'
+import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
+import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
 import { Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -126,37 +127,12 @@ const CHANNELS_KEY = ['notification-channels'] as const
  *  grouped by source (System first, then apps). Protected channels render
  *  locked. Channels with stored settings but no live registration (app
  *  disabled) stay visible so mutes remain editable. */
-function ChannelsSection() {
-  const qc = useQueryClient()
+function ChannelsSection({ patch }: { patch: (channel: string, settings: ChannelPatch) => void }) {
   const channelsQuery = useQuery<ChannelsData>({
     queryKey: CHANNELS_KEY,
     queryFn: api.notificationChannels,
   })
   const channels = channelsQuery.data?.channels
-
-  const patchMut = useMutation({
-    mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
-      api.updateNotificationChannelSettings(channel, settings),
-    // Optimistic update; the PUT is authoritative — a failure rolls the cache
-    // back to the snapshot and the refetch below re-syncs with the server.
-    onMutate: ({ channel, settings }) => {
-      const snap = qc.getQueryData<ChannelsData>(CHANNELS_KEY)
-      qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
-        ...prev,
-        channels: prev.channels?.map(c => {
-          if (c.channel !== channel) return c
-          const next = { ...c.settings }
-          if (settings.muted !== undefined) { if (settings.muted) next.muted = true; else delete next.muted }
-          if ('priority' in settings) { if (settings.priority) next.priority = settings.priority; else delete next.priority }
-          return { ...c, settings: next }
-        }),
-      })
-      return { snap }
-    },
-    onError: (_err, _vars, ctx) => { if (ctx?.snap) qc.setQueryData(CHANNELS_KEY, ctx.snap) },
-    onSettled: () => qc.invalidateQueries({ queryKey: CHANNELS_KEY }),
-  })
-  const patch = (channel: string, settings: ChannelPatch) => patchMut.mutate({ channel, settings })
 
   if (channelsQuery.isError) {
     return (
@@ -166,7 +142,24 @@ function ChannelsSection() {
       </SettingsSection>
     )
   }
-  if (channels === undefined || channels.length === 0) return null
+  // Never blank: the rail opens on this pane, so the loading gap and the
+  // no-channels case each need a visible surface of their own.
+  if (channels === undefined) {
+    return (
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}>
+        <div aria-busy="true" className="flex flex-col gap-2">
+          {[0, 1, 2].map(i => <div key={i} className="h-12 rounded-md bg-bg-elevated animate-pulse" />)}
+        </div>
+      </SettingsSection>
+    )
+  }
+  if (channels.length === 0) {
+    return (
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}>
+        <div className="text-[13px] text-muted py-3">{i18nT('pages.settings.notificationsPanel.no_channels')}</div>
+      </SettingsSection>
+    )
+  }
 
   const sources = Array.from(new Set(channels.map(c => c.source)))
     .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
@@ -174,16 +167,6 @@ function ChannelsSection() {
   return (
     <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}>
       <div className="text-[12px] text-muted -mt-1 mb-2" data-setting-label={i18nT('pages.settings.notificationsPanel.sources')}>{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}</div>
-      {/* askAgent on: mute/priority are toggle-only and the optimistic value was
-          already rolled back to the persisted one, so nothing is left to lose. */}
-      {patchMut.isError && (
-        <ErrorNotice
-          className="mb-2"
-          message={i18nT('pages.settings.notificationsPanel.failed_to_save_channel_setting')}
-          onDismiss={() => patchMut.reset()}
-          askAgent
-        />
-      )}
       {sources.map((source, i) => (
         <SettingsCard key={source} index={i}>
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">
@@ -285,7 +268,7 @@ function SystemNotificationsRow() {
   )
 }
 
-export function NotificationsPanel() {
+export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
@@ -351,15 +334,69 @@ export function NotificationsPanel() {
 
   const fallback = settings.perCategory.all ?? 'chime'
 
+  // The channel save lives here, not in ChannelsSection: the rail unmounts the
+  // Sources pane on switch, so an in-pane failure notice would vanish silently
+  // while onError rolled the value back. The notice renders in the SubNav
+  // banner slot instead, which stays mounted across rail switches.
+  const qc = useQueryClient()
+  const patchMut = useMutation({
+    mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
+      api.updateNotificationChannelSettings(channel, settings),
+    // Optimistic update; the PUT is authoritative — a failure rolls the cache
+    // back to the snapshot and the refetch below re-syncs with the server.
+    onMutate: ({ channel, settings }) => {
+      const snap = qc.getQueryData<ChannelsData>(CHANNELS_KEY)
+      qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
+        ...prev,
+        channels: prev.channels?.map(c => {
+          if (c.channel !== channel) return c
+          const next = { ...c.settings }
+          if (settings.muted !== undefined) { if (settings.muted) next.muted = true; else delete next.muted }
+          if ('priority' in settings) { if (settings.priority) next.priority = settings.priority; else delete next.priority }
+          return { ...c, settings: next }
+        }),
+      })
+      return { snap }
+    },
+    onError: (_err, _vars, ctx) => { if (ctx?.snap) qc.setQueryData(CHANNELS_KEY, ctx.snap) },
+    onSettled: () => qc.invalidateQueries({ queryKey: CHANNELS_KEY }),
+  })
+  const patchChannel = (channel: string, settings: ChannelPatch) => patchMut.mutate({ channel, settings })
+
+  // askAgent on: mute/priority are toggle-only and the optimistic value was
+  // already rolled back to the persisted one, so nothing is left to lose.
+  const banner = patchMut.isError ? (
+    <ErrorNotice
+      className="mb-2 animate-rise"
+      message={i18nT('pages.settings.notificationsPanel.failed_to_save_channel_setting')}
+      onDismiss={() => patchMut.reset()}
+      askAgent
+    />
+  ) : null
+
+  const railItems: SubNavItem[] = [
+    { key: 'sources', label: i18nT('pages.settings.notificationsPanel.sources'), icon: <RadioTower size={16} /> },
+    { key: 'alerts', label: i18nT('pages.settings.notificationsPanel.desktop_alerts'), icon: <Bell size={16} /> },
+    { key: 'sound', label: i18nT('pages.settings.notificationsPanel.sound'), icon: <Volume2 size={16} /> },
+    { key: 'percategory', label: i18nT('pages.settings.notificationsPanel.per_category_sounds'), icon: <ListMusic size={16} /> },
+  ]
+
   return (
-    <>
-      {/* ChannelsSection resolves its sources from a fetch, so its cards mount
-          in a later commit than the two static cards below: each group runs its
-          own stagger ladder from its own mount paint. Continuing one ladder
-          across the boundary would be wrong in the common case — delays are
-          relative to element mount, so the static cards would wait
-          sources.length steps on nothing while the fetch is still in flight. */}
-      <ChannelsSection />
+    <SettingsSubNav
+      items={railItems}
+      basePath={basePath}
+      railWidth={220}
+      listLabel={i18nT('settings.tabs.notifications.label')}
+      banner={banner}
+    >
+      {active => {
+        switch (active) {
+
+        case 'sources':
+          return <ChannelsSection patch={patchChannel} />
+
+        case 'alerts':
+          return (
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.desktop_alerts')}>
         <SettingsCard>
           <SystemNotificationsRow />
@@ -389,9 +426,12 @@ export function NotificationsPanel() {
           />
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'sound':
+          return (
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.sound')}>
-        <SettingsCard index={1}>
+        <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.play_sound_on_new_notifications')}
             checked={settings.enabled}
@@ -437,9 +477,12 @@ export function NotificationsPanel() {
           </div>
         </SettingsCard>
       </SettingsSection>
+          )
 
+        case 'percategory':
+          return (
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
-        <SettingsCard index={2}>
+        <SettingsCard>
           {CATEGORY_ROWS.map(cat => {
             const hasOverride = cat !== 'all' && settings.perCategory[cat] !== undefined
             // Preview EXACTLY what runtime would play: presetForKind applies the
@@ -489,6 +532,12 @@ export function NotificationsPanel() {
           })}
         </SettingsCard>
       </SettingsSection>
-    </>
+          )
+
+        default:
+          return null
+        }
+      }}
+    </SettingsSubNav>
   )
 }

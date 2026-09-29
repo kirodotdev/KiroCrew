@@ -716,9 +716,13 @@ without an ordering hazard against `extensions.ts`.
 The core's own methods sit on the same helpers. They are defined by domain in
 `api/client/*.ts`, one module per product area (chat, memory, security, …), each
 a `create*Endpoints` factory that `client.ts` hands the transport it owns
-(`ClientTransport`, `api/client/transport.ts`): the five helpers, the two
+(`ClientTransport`, `api/client/transport.ts`): the five helpers, the three
 parsers, the shared `X-Session-Key` header, and the session-expiry hooks a
-method that reads its own response calls. None of them imports a runtime value
+method that reads its own response calls. The third parser
+(`jInstancesDisabled`) is core-only and deliberately absent from `ApiTransport`
+above: it opts one specific benign denial on one core route out of the error
+journal, which is not an edition's decision to make. None of them imports a
+runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there
 as types only), so the transport and its recovery keep one definition.
 `client.ts` spreads their

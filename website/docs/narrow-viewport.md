@@ -46,7 +46,7 @@ the difference is whether the heading can ever have a sibling above it:
   gap depend on it. (A conditionally rendered `Modal` does NOT have this effect: it
   `createPortal`s to `document.body` and never occupies a sibling slot.)
 - **A heading that repeats within one tab** (`SettingsSection`, used many times per
-  Settings tab; `LocalStorageDebug`'s section headings) keeps `mt-4`, because the gap
+  Settings tab; `LocalStorageDebug`'s section headings) keeps `mt-6`, because the gap
   between two sections is real, and pairs it with `first:mt-0`. The fragment adds no DOM
   node, so every section header is a sibling in one parent and only the leading one
   matches — and when a tab renders something of its own above the first section, the
@@ -97,8 +97,22 @@ every completed turn pays for it. The message footers (`ICON_ACTION_ROW_CLS` in
 `touchActions.ts`) are 36 wide x 32 high on touch for that reason, the same shape ChatGPT's
 response-actions row uses (40 x 32); 32 clears the 24px floor. Width is also what keeps a
 row on one line: six actions plus an en-US timestamp fit 390px at 36, and wrapped at 40.
-The rule is for rows of icon-only actions; a lone button, or one carrying a text label, keeps
-`HOVER_NONE_ACTION_BTN_CLS` / `HOVER_NONE_ACTIONS_ROW_CLS` and their 40px square.
+The rule is for rows of icon-only actions; a hover-revealed lone button, or one carrying a
+text label, keeps `HOVER_NONE_ACTION_BTN_CLS` / `HOVER_NONE_ACTIONS_ROW_CLS` and their 40px
+square, and an always-visible icon control takes `mc-touch-hit` (next entry).
+
+**An always-visible icon control gets its 44px from `mc-touch-hit`, not from padding.** The
+`mc-touch-hit` / `mc-touch-hit-y` / `mc-touch-hit-end` classes (`index.css`, the block after
+the `.scrollbar-overlay` coarse rule) add an invisible `::after` that extends only the hit
+area to 44px on each axis where the control is smaller, so drawn size and layout do not
+change; use them on header, top-bar and row kebabs, toggles and split-button segments (`-y`
+for a segment with neighbours on both sides, `-end` for the last segment, which grows away
+from its neighbour). `HOVER_NONE_*` stays the tool for hover-revealed action clusters, which
+must first be forced visible under `hover: none` and then grow their real padding to 40px.
+The predicate is `pointer: coarse` rather than `hover: none` because the hit area is about
+pointer precision, and hover capability is a separate question. The `::after` cannot reach
+past the nearest `overflow: hidden` ancestor, since a clipped part of a box is not
+hit-testable, so a host inside such a wrapper must lift the clip under the same query.
 
 **`overflow: hidden` on ANY ancestor kills `position: sticky` — use `overflow: clip`.**
 Same family: a `transform` on an ancestor re-anchors `position: fixed` children, and

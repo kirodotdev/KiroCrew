@@ -1073,8 +1073,10 @@ segments are trusted module constants.
 `<data-home>/run/gateway-<port>.bin` (the running gateway's own `kirocrew`
 launcher path), `<data-home>/run/gateway-<port>.pid` (its pid) and
 `<data-home>/run/gateway-<port>.start` (that pid's start-time identity, section
-12.2). It has two unrelated consumers, and separating them is the point of the
-module.
+12.2). It also names the two internal-API credential sidecars a serving gateway
+publishes beside those, `<data-home>/run/gateway-<port>.secret` and
+`<data-home>/run/gateway-<port>-<address>.secret` (section 12.1). It has two
+unrelated consumers, and separating them is the point of the module.
 
 ### Consumer 1: remote token mint targets the running gateway's install
 
@@ -1154,13 +1156,68 @@ indistinguishable from the caller. Such a marker still prunes, so markers do not
 accumulate forever -- but the prune removes only the marker and pid sidecar, never
 the credential, because treating False as death would strip a LIVE incumbent's
 credential on every Windows host and push its clients onto a shared file a newcomer
-may have replaced. `clear_marker()` owns credential deletion.
+may have replaced. `clear_marker()` owns credential deletion. It deletes the
+port-keyed credential and the address-keyed entries THIS generation published,
+recorded as they are written (`run_marker.note_published_listener`) and read back
+at shutdown (`run_marker.published_listeners`). Scoping it to its own is what a
+port cannot do: two gateways in one data home can hold the same port on different
+addresses, and deleting by port takes the sibling's credential while it is still
+serving, answering 403 to every client that had already read it. An entry this
+generation did not publish is therefore left in place, which costs one refused
+round trip -- the client that reads it is refused and moves on to the next
+candidate for that family -- against costing a live sibling every client it had.
+Deletion touches the filesystem, so a coroutine offloads `clear_marker()`
+(`asyncio.to_thread`) rather than calling it inline; a repo-wide AST test holds
+that.
 
-### 12.1 The internal-API credential is keyed by port
+### 12.1 The internal-API credential is keyed to one listener
 
 `<data-home>/run/gateway-<port>.secret` holds the internal-API credential of the
-gateway serving that port, written `0600` beside the marker and removed by
-`clear_marker()` with it.
+gateway serving that port, written `0600` beside the marker.
+`<data-home>/run/gateway-<port>-<address>.secret` holds the same credential under
+the address that gateway actually bound, with `:` rewritten to `_` so the name is
+legal on Windows. `clear_marker()` removes both.
+
+**A port names a SET of listeners, not one party.** `KIROCREW_BIND` takes any
+address, so a gateway on `::1:<port>` leaves `127.0.0.1:<port>` unbound and
+seizable -- by an `ssh -L` tunnel's local end, or by a co-resident process -- and a
+credential looked up on the port alone resolves to that other listener's entry.
+The port-keyed file therefore says only "some gateway in this home served this
+port"; the address-keyed file is the one that names the party a client is about to
+dial. A caller that can name its dial address reads the address-keyed entry and
+refuses when it is absent, because an entry that merely shares the port is a
+fail-open wearing a hit's clothing. What the credential buys is a dashboard token,
+and that token is a bearer, so the question is which listeners the name a client
+dials can reach. The answer is made safe at the SOURCE rather than by rewriting
+the destination: a gateway bound to a loopback literal also binds the other
+loopback family on the same port and the same `web.AppRunner`
+(`_start_secondary_loopback_site`), publishing one address-keyed entry per bound
+address. A client about to dial an ambiguous name therefore requires an entry for
+EVERY family that name resolves to, and refuses when one is missing
+(`listenerSecretsFor`); a client dialling a literal requires that address's own
+entry. Refusing costs one explicit sign-in.
+
+Nothing rewrites a destination, and that is deliberate. The document stays on its
+configured origin, because a browser partitions storage by origin -- moving it
+strands every existing user's unsent drafts in the bucket they were written to --
+and because several call sites compare the configured origin string by exact
+equality. The second bind is best-effort and degrades with one log line, in which
+case the coverage requirement simply refuses and the user signs in.
+
+The server's host-canonical 302 (`should_canonicalize_host`) converges the
+loopback names AND literals for the SPA's per-origin settings, since every
+spelling in that set reaches this same gateway. What it never does is move a
+CREDENTIAL: a navigation carrying `?token=` is served where it was addressed
+rather than redirected, because a 302 preserves the query. That gate does not
+depend on which families are bound, which is why it holds even when the second
+bind degraded. A caller that names the loopback ADDRESS it dials reads the
+address-keyed entry and refuses when the family that address reaches is uncovered
+(`config/loader.read_local_secret(port, dial_host=...)`, mirroring the app's
+`listenerSecretsFor`); it falls back to the port-keyed file only for a gateway that
+published NO listener entry for the port at all -- an older gateway, or one that
+could not name its bound address -- because there is then no other listener's
+credential to be confused with. The container runtime, which resolves a port and
+nothing finer, still reads the port-keyed file, which is why it stays published.
 
 The credential is generated per gateway start (`os.urandom(16).hex()`) and kept in
 memory as the value the auth middleware compares against, so it identifies ONE
@@ -1175,29 +1232,67 @@ no warning and no metric.
 
 Two rules keep the two halves paired:
 
-- **The writer** (`dashboard.server._write_instance_credentials`) always writes the
-  per-port file, and writes the shared `.local_secret` only when no other gateway
-  in the home is verifiably alive on a different port. The shared file is still
+- **The writer** (`dashboard.server._write_instance_credentials`) writes the
+  per-port file ALWAYS and FIRST, then one address-keyed file per address this
+  gateway bound, then the shared `.local_secret` only when no other gateway in
+  the home is verifiably alive on a different port. The shared file is still
   written in the single-instance case because pre-per-port readers (an older CLI,
   a cron script from a previous install) know only that path.
+  The order and the error handling are both load-bearing. `_write_secret_file`
+  raises `OSError` on any failure -- a Windows DACL apply that cannot resolve the
+  invoking SID is one -- and `start_dashboard` answers an `OSError` from
+  publication by tearing the runner down, so the port-keyed credential a booting
+  pod waits on is written before anything that could abort. The address-keyed
+  write is therefore CONTAINED: it logs the file NAME and continues, because its
+  absence costs one explicit sign-in while an `OSError` there would cost the whole
+  gateway. An empty bound address suppresses that write rather than filing the
+  credential under a guessed address.
 - **The reader** is ONE shared helper, `config.loader.read_local_secret(port)`: it
   returns the credential for the port the caller is about to dial and falls back to
-  `.local_secret` when no per-port file exists. It lives there rather than in each
-  reader because every surface that implements its own read reintroduces the bug for
-  itself. **`port` is required.** An optional port would resolve the dial target from
-  process context, so a converted call site could read the credential for one gateway
-  while dialing another -- the same desync, reintroduced one call site at a time and
-  invisible in the hunk under review. A caller with no port resolves one explicitly
-  and passes it, where the choice is reviewable. `mcp_core`, `mcp_shared`,
-  `cron_script`, `computer_use/screencast` and the Sage review driver each name their
-  dial target; a test greps for a no-argument call so the shape cannot come back.
+  `.local_secret` when no per-port file exists. It takes an optional `dial_host`, the
+  loopback address the caller is about to send the credential to. When a caller names
+  it, the read is per LISTENER (`run_marker.read_listener_secret`, the Python twin of
+  the app's `listenerSecretsFor`): every loopback family that host reaches must be
+  covered by an entry carrying one shared secret, and the helper FAILS CLOSED --
+  returning `""` with no port-keyed fallback -- when listener entries exist for the
+  port but none covers the dialed family, because that fallback would hand the
+  credential to whatever else holds the address. It falls back to the port-keyed read
+  only when the gateway PROVABLY published NO listener entry for the port at all (a
+  pre-per-listener gateway), where nothing else claims the port;
+  `run_marker.has_listener_entries` is three-valued for exactly this and its `None`
+  (an enumeration error, absence unproven) fails closed like a covered-but-uncovered
+  `True`, never re-opening the fallback over an unreadable `run/`. A caller with no
+  `dial_host` keeps the port-keyed-then-shared read. It lives there rather than in
+  each reader because every surface that implements its own read reintroduces the bug
+  for itself. **`port` is required.** An optional port would resolve the dial target
+  from process context, so a converted call site could read the credential for one
+  gateway while dialing another -- the same desync, reintroduced one call site at a
+  time and invisible in the hunk under review. A caller with no port resolves one
+  explicitly and passes it, where the choice is reviewable. Each TCP-loopback caller
+  names the IPv4 loopback LITERAL (`127.0.0.1`) as its `dial_host` -- `cli_server`
+  (`_CLI_LOOPBACK`), `mcp_core` (derived from the base it dials), `mcp_shared`,
+  `mcp_cron`, `cron_script`, `cron_trigger`, `computer_use/screencast`, `cli_commands`
+  and the Sage review driver -- and dials that same literal in its URL, NOT the
+  ambiguous `localhost`. A literal reaches ONE family, so a gateway that bound only v4,
+  or a wildcard/container bind (`0.0.0.0`) that publishes a single v4-family entry,
+  still authenticates; the ambiguous name would demand BOTH families and refuse such
+  an ordinary single-family deployment even though the dial reaches that very gateway.
+  `app_lifecycle_client` is the one caller that passes NO `dial_host`: its request
+  travels the owner-only UNIX SOCKET, not TCP loopback, so the credential is not paired
+  to a dialed TCP address and a listener lookup would wrongly fail closed on a bind
+  with no v4 counterpart, silently dropping an uninstall to its file-only path while
+  the backend keeps running. A test greps for a no-argument call so an ambient-port
+  shape cannot come back.
 - **The dialed port's own credential outranks any path a caller names.**
-  `cron_trigger.trigger_cron_job` reads the per-port credential for the port it posts
-  to FIRST, and falls back to the `secret_path` its caller named only when that is
-  absent. The order is deliberate and is dictated by the callers: both of them pass
-  `config_dir() / ".local_secret"`, the home-wide file, which is exactly the file a
-  second gateway generation replaces -- so preferring the named path would reinstate
-  the defect this module exists to prevent.
+  `cron_trigger.trigger_cron_job` resolves the credential for the IPv4 loopback
+  listener it posts to FIRST (`run_marker.read_listener_secret`, refusing outright
+  when listener entries exist for the port but none covers that address), then the
+  port-keyed read for a gateway that published none, and only then the `secret_path`
+  its caller named. It does its OWN resolution rather than calling `read_local_secret`
+  because that helper's tail is the home-wide `.local_secret`, and the named path must
+  outrank that file: both callers pass `config_dir() / ".local_secret"`, which is
+  exactly the file a second gateway generation replaces, so preferring it over the
+  named path would reinstate the defect this module exists to prevent.
   The cost of that order, stated rather than hidden: a crash-orphaned
   `run/gateway-<port>.secret` (the prune never deletes credentials, see section 12)
   is preferred over a correct named path, so a caller that genuinely names another
@@ -1856,7 +1951,21 @@ The same bundle, written to a file instead of pushed down a tunnel. Code:
 `src/kiro_crew/dashboard/session_export.py`, with the menu action
 `ExportSessionItem` mounted beside `SendToInstanceSubmenu` in the shared
 `SessionActionsMenu`, and `ImportSessionItem` — the reverse direction — mounted
-directly beside it, because the file this reads is the file that row writes.
+directly beside it, because the file this reads is the file that row writes. The
+same row is also mounted among the create entries of the sidebar's New menu,
+since an import creates a session.
+
+**Import outlives its menu.** A native file picker blurs the window, and Radix
+menus close on window `blur`, so the row unmounts before the user confirms a
+file. The picker therefore opens from an input on `document.body` with a native
+`change` listener, and the upload runs through `useMutation` option-level
+callbacks, which still fire for an unmounted row. On success the slot list is
+refreshed and the imported session is always opened, wherever the user is; a
+failed refresh is not surfaced, because the switch loads the session by key and
+the next slot frame lists it. Only a refused import is reported: the unmounted
+row cannot show it, so `ImportSessionOutcomeNotice`, mounted once above the
+app's layout branch so the dashboard, popout and embed layouts all render it,
+does. An import in flight keeps every mounted import row disabled.
 
 **Why the hop exists.** §14.4's send is a request/response between two live
 gateways, so it needs both machines up at the same moment, reachable from one

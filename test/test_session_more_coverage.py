@@ -859,7 +859,7 @@ class TestStopTurnHooks:
     async def test_a_failing_hard_hook_still_reports_a_hard_stop(self, mgr, no_child_scan) -> None:
         provider = _provider(
             cancel=AsyncMock(return_value="acked"),
-            runtime_info=lambda: (None, None),
+            runtime_abort_target=lambda: None,
         )
         _register(mgr, "dashboard:a", provider=provider)
         outcome = await mgr.stop_turn(

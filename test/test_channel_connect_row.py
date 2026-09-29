@@ -9,6 +9,7 @@ path not actually honouring it, and the wire not reporting it.
 from __future__ import annotations
 
 import ast
+import asyncio
 import contextlib
 import inspect
 import re
@@ -664,7 +665,9 @@ class TestEndpoints:
 
 
 @contextlib.contextmanager
-def _release_a_rebinder_mid_compare(sm: SessionMap, state, accessor: str, rebind):
+def _release_a_rebinder_mid_compare(
+    sm: SessionMap, state, accessor: str, rebind, *, stall_after_release: float = 0.0
+):
     """Wrap the nonce read the compare depends on so a rebinding thread is released INSIDE it.
 
     The wrapper returns what the real accessor returns, then lets *rebind* run
@@ -679,15 +682,24 @@ def _release_a_rebinder_mid_compare(sm: SessionMap, state, accessor: str, rebind
     released it -- a wait that times out, or the release that cleanup sends,
     means the compare never ran, and the thread exits without a write, so no
     ``session_map.json`` flush can land after the test's ``tmp_path`` is gone.
+
+    When the rebind lands after the clear is up to the scheduler: once the
+    compare-and-clear releases the lock, the route and the rebinder race for
+    it. ``seen["landed"]`` is the event a test waits on when it asserts what
+    the route observes after the rebind; ``stall_after_release`` holds the
+    rebinder off for that long after its release (a descheduled thread on a
+    loaded runner) so a test can pin that it does not lean on scheduling order.
     """
     original = getattr(sm, accessor)
     release = threading.Event()
     cancelled = threading.Event()
     landed = threading.Event()
-    seen: dict = {"landed_inside": None}
+    seen: dict = {"landed_inside": None, "landed": landed}
 
     def rebinder() -> None:
         if not release.wait(5) or cancelled.is_set():
+            return
+        if stall_after_release and cancelled.wait(stall_after_release):
             return
         rebind()
         landed.set()
@@ -1068,8 +1080,9 @@ class TestCompareAndClearIsOneStep:
         assert sm.get_mirror_link(key) == before, "the rebinder must not write after the failure"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stall_after_release", [0.0, 0.8], ids=["prompt", "descheduled"])
     async def test_a_slack_relink_cannot_land_between_the_compare_and_the_clear(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, stall_after_release
     ):
         """The Slack twin: a re-link released mid-compare lands after the clear and stands.
 
@@ -1077,6 +1090,12 @@ class TestCompareAndClearIsOneStep:
         durability wait returns, so the answer carries ``relinked: true`` and the
         route leaves the slot's in-process fields to the newer link rather than
         tearing them down after it.
+
+        Once the clear releases the lock, the route and the rebinder race for
+        it, so the durability wait is held until the re-link has landed: the
+        route's post-clear read then sees the newer thread by construction. The
+        ``descheduled`` case holds the rebinder off past the route's own path,
+        which is the ordering a loaded runner produces.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -1090,8 +1109,18 @@ class TestCompareAndClearIsOneStep:
         slot._slack_thread_ts = "ts-old"
         rows = {row["channel"]: row for row in state._slot_links(slot)[0]}
         with _release_a_rebinder_mid_compare(
-            sm, state, "slack_link_nonce", lambda: sm.set_slack_link(key, "ts-new", "D-owner-dm")
+            sm,
+            state,
+            "slack_link_nonce",
+            lambda: sm.set_slack_link(key, "ts-new", "D-owner-dm"),
+            stall_after_release=stall_after_release,
         ) as seen:
+
+            async def flush_once_the_relink_has_landed() -> None:
+                assert await asyncio.to_thread(seen["landed"].wait, 5), "the re-link never landed"
+                await sm.aflush()
+
+            state.sessions.aflush = flush_once_the_relink_has_landed
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
                     "/api/chat/slots/s1/mirror-unlink",

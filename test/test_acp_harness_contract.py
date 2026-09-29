@@ -181,6 +181,7 @@ def test_the_contract_declares_every_seam_this_suite_covers():
         "pod_home_remap",
         "reads_markdown_agent_specs",
         "client_meta_settings",
+        "opens_external_urls",
         "verifies_agent_activation",
         "protocol_version",
         "client_capabilities",
@@ -366,17 +367,21 @@ def test_client_capabilities_are_the_shared_constants():
     assert harness_for(ACP_BACKEND_KAS).client_capabilities == KAS_CLIENT_CAPABILITIES
 
 
-def test_kas_capabilities_open_only_the_settings_channel():
-    """KAS's extra capability is the settings channel and nothing else.
+def test_kas_capabilities_open_only_settings_and_external_urls():
+    """KAS's extra capabilities are the settings channel and ``openExternalUrl``.
 
+    ``openExternalUrl`` is answered by the runtime for an MCP sign-in it started.
     Every other ``_meta.kiro`` capability is a callback Crew does not implement,
-    so declaring one would invite a request with no handler. The channel is
+    so declaring one would invite a request with no handler; ``secretStorage`` in
+    particular would make Crew the store of MCP tokens. The settings channel is
     declared EMPTY here: the runtime fills it at spawn from the operator's
     settings (``client_meta_settings``), so the constant stays the pristine shape
     every host's handshake is compared against.
     """
     kas = harness_for(ACP_BACKEND_KAS).client_capabilities
-    assert kas["_meta"] == {"kiro": {"settings": {}}}
+    assert kas["_meta"] == {"kiro": {"settings": {}, "openExternalUrl": True}}
+    assert harness_for(ACP_BACKEND_KAS).opens_external_urls is True
+    assert harness_for(ACP_BACKEND_KIRO).opens_external_urls is False
     assert {k: v for k, v in kas.items() if k != "_meta"} == ACP_CLIENT_CAPABILITIES
 
 

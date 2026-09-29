@@ -67,7 +67,7 @@ from kiro_crew.constants import (
 from kiro_crew.context import (
     ContextBuilder,
     build_cancelled_turn_preamble,
-    compress_thread_history,
+    build_session_replay,
     session_store_for_turn,
     window_for_provider_client,
 )
@@ -3914,14 +3914,15 @@ async def handle_message(
         # Auto/unknown ⇒ None ⇒ the 1M reference (unchanged default).
         _model_window = window_for_provider_client(client)
         # is_new = new kiro-cli/dashboard process, NOT new conversation.
-        # The Slack thread persists across processes, so we compress its
-        # history to bootstrap the fresh session's context window.
+        # The Slack thread persists across processes, so we replay its history
+        # to bootstrap the fresh session. Same lossless tail-first replay the
+        # dashboard uses: a process death is not a context overflow, so code
+        # and tool output must come back verbatim, not as an LLM summary.
         if is_new and not resumed and context_builder and context_builder.conversation_log:
-            compressed = await compress_thread_history(
+            compressed = await asyncio.to_thread(
+                build_session_replay,
                 context_builder.conversation_log,
                 session_key,
-                text,
-                sessions,
                 model_window=_model_window,
             )
 

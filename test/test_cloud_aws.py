@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -70,6 +71,42 @@ class TestRunAws:
         monkeypatch.setattr(aws, "popen_limited", lambda *a, **k: FakeProc())
 
         assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "out", "err")
+
+    def test_spawn_gets_widened_path_for_credential_process(self, monkeypatch, tmp_path):
+        """A GUI-launched gateway's minimal PATH must not hide ``credential_process``.
+
+        ``run_aws`` hands the child :func:`aws_spawn_env` for the resolved head, so
+        the CLI's own by-name lookups search the AWS bin dirs too.
+        """
+        from kiro_crew.deploy import engine
+
+        bin_dir = tmp_path / "aws-bin"
+        bin_dir.mkdir()
+        head = str(bin_dir / "aws")
+        monkeypatch.setattr(aws, "resolve_aws_bin", lambda: head)
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(bin_dir),))
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
+        monkeypatch.setattr(aws, "cgroup_scope_argv", lambda argv: argv)
+        seen: dict = {}
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, timeout):
+                return "", ""
+
+        def fake_popen(argv, **kwargs):
+            seen["argv"] = argv
+            seen["env"] = kwargs.get("env")
+            return FakeProc()
+
+        monkeypatch.setattr(aws, "popen_limited", fake_popen)
+
+        assert aws.run_aws(["sts", "get-caller-identity"]) == (0, "", "")
+        assert seen["argv"][0] == head
+        assert seen["env"] is not None
+        assert seen["env"]["PATH"].split(os.pathsep) == ["/usr/bin", "/bin", str(bin_dir)]
 
     def test_aws_cli_missing_returns_127_not_traceback(self, monkeypatch):
         monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))

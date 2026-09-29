@@ -67,6 +67,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import ResizeHandle from '../components/ResizeHandle'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../components/SearchFilterBar'
+import { ListDock } from '../components/ListDock'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_META_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../components/listShell'
 import { safeSetItem } from '../utils/safeStorage'
 import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, movePinnedSession, persistPinnedSessionOrder, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
@@ -75,6 +76,7 @@ import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgen
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import MoveUndoBar from '../components/MoveUndoBar'
 import SessionActionsMenu from '../components/SessionActionsMenu'
+import ImportSessionItem from '../components/ImportSessionItem'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
@@ -2004,7 +2006,7 @@ const SessionRow = memo(function SessionRow({
   // memo() bails out of the provider-level repaint, so the row subscribes to
   // catalog loads directly (same contract as the ChatSidebar shell) — its
   // i18nT strings must re-translate even when no prop moves.
-  useLanguageGeneration()
+  const langGen = useLanguageGeneration()
   const dispatch = useAppDispatch()
   // The peer's display name for the runs-elsewhere chip. Read from the SHARED
   // ['instances'] cache and enabled only for a row that is actually bound, so a
@@ -2686,15 +2688,58 @@ const SessionRow = memo(function SessionRow({
     // straight from the store keyed on slotKey (Tags opens the shared popover via
     // the TagPopover context). This row only supplies the one genuinely
     // surface-specific bit — Rename drives this component's inline row-edit state.
-    const rowMenuProps = {
-      slotKey: s.key,
+    //
+    // The menus are built once per change of what they read, not per render. A
+    // row re-renders every time its paint position moves (`orderStamp`, which
+    // drives the layout spring), so a pin or a new chat re-renders the ~45 rows
+    // below it. Building the ⋯ dropdown and the context-menu content on each of
+    // those renders costs ~200 Radix fibers per row, about 90% of a pin's
+    // render work, and none of it depends on position. An unchanged element is
+    // skipped by React, and each menu still re-renders from its own store and
+    // context subscriptions.
+    const rowKey = s.key
+    const rowTitle = s.title
+    const rowMenuProps = useMemo(() => ({
+      slotKey: rowKey,
       mode,
-      onRename: () => onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', true),
-      onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(s.key) : undefined,
+      onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
+      onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
       // A row menu opens from inside this panel, where the folder-order banner
       // (when there is one) sits over the tree -- the menu need not repeat it.
       sidebarOnScreen: true,
-    }
+    }), [rowKey, mode, onRenameStart, scope, rowTitle, onOpenSlotInNewTab])
+    const rowActions = useMemo(() => (void langGen, !renamingHere && !foreignRow ? (isMobile ? (
+      <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" className="mc-touch-hit text-muted/50 active:text-text p-1 cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={14} /></button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    ) : (
+      <IconButtonGroup reveal className="absolute top-1/2 -translate-y-1/2 right-1.5 has-[[data-state=open]]:opacity-100">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><Copy size={12} /></IconButton>
+        <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
+      </IconButtonGroup>
+    )) : null
+    // `langGen` (read with `void` above) because the labels are i18nT strings, which re-translate on a catalog load.
+    ), [renamingHere, foreignRow, isMobile, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, rowKey, langGen])
+    const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
+      <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+        <SessionActionsMenu variant="context" {...rowMenuProps} />
+      </ContextMenuContent>
+    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, langGen])
     return (
       <DndDroppable
         id={`pinned-session:${scope}:${rowIdentity}`}
@@ -3218,36 +3263,10 @@ const SessionRow = memo(function SessionRow({
            *  Omitting beats disabling — the same call `historyRow` makes for its
            *  delete button. A remote-EXECUTED local slot keeps the whole group:
            *  its slot is local, so every one of those operations still applies. */}
-          {!renamingHere && !foreignRow && (isMobile ? (
-            <div className="absolute top-1/2 -translate-y-1/2 right-1.5 flex items-center gap-0.5">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button type="button" className="text-muted/50 active:text-text p-1 cursor-pointer bg-transparent border-none" aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={14} /></button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                  <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          ) : (
-            <IconButtonGroup reveal className="absolute top-1/2 -translate-y-1/2 right-1.5 has-[[data-state=open]]:opacity-100">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <IconButton title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.more_options')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                  <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(s.key) }}><Copy size={12} /></IconButton>
-              <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(s.key) }}><X size={12} /></IconButton>
-            </IconButtonGroup>
-          ))}
+          {rowActions}
         </div>
           </ContextMenuTrigger>
-          {!foreignRow && <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-            <SessionActionsMenu variant="context" {...rowMenuProps} />
-          </ContextMenuContent>}
+          {rowContextMenuContent}
         </ContextMenu>
           )}
         </DndDraggable>
@@ -8762,7 +8781,10 @@ function ChatSidebar({
         min={SIDEBAR_MIN}
         max={SIDEBAR_MAX}
         inset={12}
-        className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-10"
+        // z-40: above the floating search dock (ListDock, z-30). Once a filter
+        // chip or a notice mounts, the dock's opaque shelf spans the card's full
+        // width, and at z-10 it took the inner half of the grip's 6px strip.
+        className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-40"
       />
 
       {/* Header — all elements ("Sessions" title, kebab, New button) centered
@@ -8780,9 +8802,13 @@ function ChatSidebar({
         <div className="flex items-center gap-1.5 shrink-0">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button className="w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:border-border-strong hover:text-text transition-all" title={i18nT('pages.chatSidebar.more_options')} aria-label={i18nT('pages.chatSidebar.more_options')}><MoreVertical size={14} /></button>
+              <button className="mc-touch-hit w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:border-border-strong hover:text-text transition-all" title={i18nT('pages.chatSidebar.more_options')} aria-label={i18nT('pages.chatSidebar.more_options')}><MoreVertical size={14} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[180px]">
+              <DropdownMenuItem onSelect={() => navigate('/session-dashboards')}>
+                <Monitor size={14} className="text-muted" />
+                {i18nT('commandCenter.all_title')}
+              </DropdownMenuItem>
               <DropdownMenuItem disabled={seedStateLanesMutation.isPending} onClick={() => {
                 if (seedStateLanesMutation.isPending) return
                 const isActive = tagColumnsEnabled && rawColumns.length > 0
@@ -8842,10 +8868,10 @@ function ChatSidebar({
            *  folder flyout). Replaces the old standalone New-folder + New-chat
            *  header buttons. Menu is portaled to <body> so the right-side
            *  folder flyout escapes the sidebar's overflow clip. */}
-          <div className="relative flex items-center rounded-md bg-accent text-accent-fg overflow-hidden shrink-0" data-create-menu>
+          <div className="relative flex items-center rounded-md bg-accent text-accent-fg overflow-hidden [@media(pointer:coarse)]:overflow-visible shrink-0" data-create-menu>
             <button
               disabled={creatingSlot}
-              className={`flex items-center h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-accent-hover active:scale-95 transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
+              className={`mc-touch-hit-y flex items-center h-7 rounded-s-md cursor-pointer bg-transparent border-none text-accent-fg hover:bg-accent-hover active:scale-95 transition-all disabled:opacity-70 disabled:cursor-wait disabled:active:scale-100 ${compactHeader ? 'justify-center w-7' : 'gap-1.5 pl-2 pr-2.5 text-[12px] font-semibold'}`}
               // Same three-gesture contract as a session row: plain click
               // creates and switches; Cmd/Ctrl-click and middle-click create the
               // session as a background TAB and leave the user where they are.
@@ -8868,7 +8894,7 @@ function ChatSidebar({
             <DropdownMenu open={newChatMenuOpen} onOpenChange={o => { setNewChatMenuOpen(o); if (!o) setRemoteCrewError('') }}>
               <DropdownMenuTrigger asChild>
                 <button
-                  className="flex items-center justify-center w-6 h-7 cursor-pointer bg-transparent border-none text-accent-fg hover:bg-black/10 active:scale-95 transition-all"
+                  className="mc-touch-hit-end flex items-center justify-center w-6 h-7 rounded-e-md cursor-pointer bg-transparent border-none text-accent-fg hover:bg-black/10 active:scale-95 transition-all"
                   title={i18nT('pages.chatSidebar.create')} aria-label={i18nT('pages.chatSidebar.more_create_options')}><ChevronDown size={13} /></button>
               </DropdownMenuTrigger>
               {/* max-w bounds the menu: the mode descriptions below are full
@@ -8950,6 +8976,10 @@ function ChatSidebar({
                   </DropdownMenuSub>
                   )
                 })()}
+                {/* Import creates a session too, so it sits with the create rows
+                 *  rather than only in a per-session ⋯ menu that has to be opened
+                 *  on some unrelated session first. */}
+                <ImportSessionItem Item={DropdownMenuItem} />
                 {/* Crew Members is a DOOR, not a create action: it navigates to the
                  *  Members page (or, while that page is preview-gated, to the
                  *  Settings card that turns it on — see `openCrewMembers`). It sits
@@ -9250,9 +9280,13 @@ function ChatSidebar({
         </div>
       )}
 
-      {/* Search with inline sort/filter control — the shared list-panel
-          search row (components/SearchFilterBar), also mounted by the Crew
-          Members roster. */}
+      {/* The floating dock (components/ListDock): the glass search capsule, the
+          filter chips and the list-level notices hover over the lanes, and
+          every lane's scroller pads its top by the dock's live height. */}
+      <ListDock field={(
+        // Search with inline sort/filter control — the shared list-panel
+        // search row (components/SearchFilterBar), also mounted by the Crew
+        // Members roster.
       <SearchFilterBar
         placeholder={i18nT('pages.chatSidebar.search_sessions')}
         clearLabel={i18nT('pages.chatSidebar.clear_search')}
@@ -9778,6 +9812,8 @@ function ChatSidebar({
           </>
         )}
       />
+      )} shelf={(
+        <>
       {/* One aggregate chip in its OWN row, never per-tag chips in the row below.
           AUTOSDE max-two-buttons-per-row grandfathers that row's existing filter
           chips but forbids growing it, and per-tag chips grow it without bound.
@@ -9982,7 +10018,6 @@ function ChatSidebar({
         className="mx-2 mt-2 shrink-0"
         testId="rename-error"
       />
-      <LayoutGroup id="chat-slots">
         {/* An instance that is CONNECTED but did not answer contributes no rows.
           *  Saying so is the difference between "that instance has nothing open" and
           *  "we could not ask": without this line the list silently claims a
@@ -10018,10 +10053,14 @@ function ChatSidebar({
             title={remoteSessionsError.title}
             message={remoteSessionsError.message}
             askAgent
+            actionPlacement="below"
             className="mx-2 mt-2 shrink-0"
             testId="instance-sessions-error"
           />
         )}
+        </>
+      )}>
+      <LayoutGroup id="chat-slots">
         {conductorLaneActive ? (
           // Conductor lane: every session nested under the session that OPENED it.
           //
@@ -10385,8 +10424,11 @@ function ChatSidebar({
             </DndContext>
           </motion.div>
         ) : (
-          // Trello-style horizontal column strip
-          <div className="flex-1 min-h-0 flex flex-col">
+          // Trello-style horizontal column strip. The columns scroll on their own
+          // inside the strip, so the lane itself steps below the floating dock
+          // (ListDock) rather than scrolling under it; the hidden-folders line and
+          // the board error above the strip stay reachable that way.
+          <div className="flex-1 min-h-0 flex flex-col pt-[var(--list-dock-h,0.5rem)]">
           {/* Lane-level fallback ownership (exactly one mount ever renders):
            *  - no columnId (New-menu create): no per-column mount exists;
            *  - board-flat: the columnId-scoped mounts are hidden with folders;
@@ -10758,6 +10800,7 @@ function ChatSidebar({
           </div>
         )}
       </LayoutGroup>
+      </ListDock>
 
       {/* Drag-move confirmation + undo. Deliberately a SIBLING of the lanes and
           a sibling ABOVE the separator, so it never covers the row that just

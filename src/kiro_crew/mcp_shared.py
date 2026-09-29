@@ -4,19 +4,14 @@ from __future__ import annotations
 
 import collections
 import contextlib
-import ctypes
 import json
 import logging
 import os
-import platform
 import select
-import struct
-import subprocess
 import sys
 import threading
 import time
 import urllib.request
-from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 from kiro_crew import platform_compat
@@ -28,6 +23,7 @@ from kiro_crew.mcp_caller import (
     CallerContext,
     caller_identity_capability,
     current_caller,
+    resolve_own_identity,
     set_current_caller,
     set_current_tenant_nonce,
     tenant_nonce_from_meta,
@@ -475,132 +471,35 @@ def _policy_session_key() -> str | None:
     policy itself, one level down:
 
     * a session key — ask the gateway for that session's policy, and cache under it;
-    * ``""`` — no identity on this install YET (a startup race) or an identity that
-      was explicitly REFUSED (an invalid protected member record). That is the
-      ``no_session_key`` reason;
-    * ``None`` — resolution itself broke (an unreadable home, a raising probe). That
-      is the ``resolution_failed`` class, kept distinguishable so a broken host is
-      not reported as a benign race and does not inherit the race's short window.
+    * ``""`` — no identity on this install YET (a startup race), or an identity that
+      was explicitly REFUSED (a protected member record that exists and is
+      invalid). That is the ``no_session_key`` reason, which ``tools/call``
+      deliberately PROCEEDS on, so nothing that must deny a call may land here;
+    * ``None`` — the question has no answer this process can act on: resolution
+      itself broke (an unreadable home, a raising probe), a pid names SEVERAL
+      sessions so none of them is singled out, or the ancestor walk ended having
+      passed a mapping it could not use. That is the ``resolution_failed`` class,
+      kept distinguishable so a broken host is not reported as a benign race and
+      does not inherit the race's short window.
       A raising ``protected_member_session_for_pid`` stays in THIS class: the probe
       is not caught here, because the same-uid fence means an unreadable binding
       must never be re-read as identity from token/env. A host override that can
       tell an expected sandbox deny from an induced one returns ``None`` for it.
 
-    Source order. The first three sources and their order match
-    :func:`kiro_crew.mcp_core._resolve_session_key_strict`, so the tool policy is
-    never resolved from a WEAKER source than the tools it gates while a stronger one
-    is present; the tail is the LENIENT one this lookup has always had (an unsigned
-    pid file and the ancestor walk), kept because a policy lookup that refused where
-    the strict gate refuses would hide every tool from a session for its whole life —
-    kiro-cli caches one ``tools/list``:
+    The ladder is :func:`kiro_crew.mcp_caller.resolve_own_identity`, shared with
+    every other client-side resolver so the rungs and their order cannot drift
+    between them. The gateway's per-call identity is NOT part of it: that is exact
+    and stamped per CALL, so :func:`_resolve_tool_policy` uses it directly and
+    never calls this.
 
-    1. The gateway's per-call identity is NOT consulted here: it is exact and stamped
-       per CALL, so :func:`_resolve_tool_policy` uses it directly and never calls this.
-    2. The protected member binding for this process. ``None`` means no private
-       binding; an EMPTY string means a record that exists and is invalid, which is a
-       refusal rather than an absence — it must never fall through to a token, the
-       env var or a pid file, because each of those is writable by the same uid the
-       binding exists to fence.
-    3. The signed per-SESSION token on this process's own element. Above the env var
-       because a warm-pool rekey makes the env stale, and per-session where every
-       source below answers per PROCESS: one kiro-cli process hosts N ACP sessions,
-       so the env var, the pid file and the ancestor walk all name the PARENT for a
-       ``spawn_run`` subagent's server.
-    4. ``KIROCREW_SESSION_KEY``, then the ``KIROCREW_HOST_PID`` mapping, then the
-       ancestor walk — unchanged, and unchanged in what they cost: on an install with
-       no token and no protected binding this resolves exactly as it did before.
+    On an install with no token and no protected binding the ladder resolves
+    through the env var and then the pid mapping, and costs exactly that. It
+    stops short of naming a co-tenant on a shared runtime: a misresolved key
+    applies one session's operator tool exclusions to another, so this lookup
+    refuses there rather than guessing.
     """
-    try:
-        # This is an ordinary MCP identity extension only.  Memory V2 does not
-        # use PID ancestry, namespaces, or proof records to authorize a store.
-        from kiro_crew.member_memory_auth import protected_member_session_for_pid
-
-        protected = protected_member_session_for_pid(os.getpid())
-        if protected is not None:
-            return protected
-        from_token = session_key_from_env_token()
-        if from_token:
-            return from_token
-        session_key = os.environ.get("KIROCREW_SESSION_KEY", "")
-        if session_key:
-            return session_key
-
-        def _ppid_via_libproc(pid: int) -> int:
-            """macOS parent-PID via libproc proc_pidinfo (no exec, sandbox-safe)."""
-            proc_pidtbsdinfo = 3
-            buf_size = 256
-            try:
-                libproc = ctypes.CDLL("libproc.dylib", use_errno=True)
-                libproc.proc_pidinfo.restype = ctypes.c_int
-                libproc.proc_pidinfo.argtypes = [
-                    ctypes.c_int,
-                    ctypes.c_int,
-                    ctypes.c_uint64,
-                    ctypes.c_void_p,
-                    ctypes.c_int,
-                ]
-                buf = ctypes.create_string_buffer(buf_size)
-                n = libproc.proc_pidinfo(pid, proc_pidtbsdinfo, 0, buf, buf_size)
-                if n <= 16:
-                    return 0
-                return int(struct.unpack_from("<5I", buf.raw, 0)[4])
-            except Exception:
-                return 0
-
-        def _get_ppid(pid: int) -> int:
-            system = platform.system()
-            try:
-                if system == "Windows":
-                    # No ``ps`` on Windows: without this the fallback below
-                    # always returned 0 and no session key could resolve.
-                    win_ppid = platform_compat.get_ppid(pid)
-                    return win_ppid if win_ppid > 0 else 0
-                if system == "Linux":
-                    for line in Path(f"/proc/{pid}/status").read_text().splitlines():
-                        if line.startswith("PPid:"):
-                            return int(line.split()[1])
-                elif system == "Darwin":
-                    ppid = _ppid_via_libproc(pid)
-                    if ppid:
-                        return ppid
-                out = subprocess.check_output(
-                    ["ps", "-o", "ppid=", "-p", str(pid)],
-                    # subprocess-encoding: locale — ``ps`` is a system utility that
-                    # writes in the console encoding, and ``-o ppid=`` prints digits
-                    # only, so locale decoding is both correct and lossless here.
-                    text=True,
-                    timeout=2,
-                )
-                return int(out.strip())
-            except Exception:
-                pass
-            return 0
-
-        from kiro_crew.session_pid_sig import read_session_pid_txt
-
-        cfg_dir = config_dir()
-        # Sandbox launcher exports its own HOST pid (the pid the gateway
-        # keys session_pid_<pid>.txt by) — direct lookup works even when
-        # this process's pid view diverges from the host's (PID-namespace
-        # sandboxing), where the ancestor walk below can never match.
-        # Reads go through session_pid_sig's hardened reader (symlink
-        # refusal, regular-file check, size bound) — same read discipline
-        # as the strict verifier, minus the signature requirement.
-        host_pid = os.environ.get("KIROCREW_HOST_PID", "")
-        if host_pid.isdigit():
-            session_key = read_session_pid_txt(host_pid, cfg_dir)
-        if not session_key:
-            pid = os.getppid()
-            seen: set[int] = set()
-            while pid > 1 and pid not in seen:
-                seen.add(pid)
-                session_key = read_session_pid_txt(pid, cfg_dir)
-                if session_key:
-                    break
-                pid = _get_ppid(pid)
-        return session_key
-    except Exception:
-        return None
+    identity = resolve_own_identity()
+    return None if identity.failed else identity.session_key
 
 
 def _http_error_body(exc: urllib.error.HTTPError) -> tuple[str, str]:
@@ -741,14 +640,17 @@ def _resolve_tool_policy(
 
     try:
         port, _source = resolve_client_port_src(None)
-        api_base = f"http://localhost:{port}"
+        api_base = f"http://127.0.0.1:{port}"
 
         # Credential for the port this function DIALS (parsed just above), not for
         # whichever gateway an ambient lookup would name -- those can differ on a
-        # multi-gateway host, which is the desync being closed.
+        # multi-gateway host, which is the desync being closed. The v4 loopback
+        # LITERAL (matching the dial) reaches one family, so a single-family
+        # gateway (v4-only or a wildcard/container bind) still authenticates; the
+        # ambiguous ``localhost`` would demand both families and 403 such a gateway.
         secret = ""
         try:
-            secret = read_local_secret(port)
+            secret = read_local_secret(port, dial_host="127.0.0.1")
         except Exception:
             pass
 

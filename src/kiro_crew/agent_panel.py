@@ -99,7 +99,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from kiro_crew import platform_compat
+from kiro_crew import pipeline_board_contract, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import release_lock, try_acquire_lock
@@ -798,6 +798,21 @@ def publish(
     if not isinstance(data, dict):
         raise PanelError("data_not_object", "panel data must be a JSON object")
     _check_depth(data, _MAX_DATA_DEPTH)
+    # A CONTRACT template validates its payload; every other template keeps the free
+    # shape. Only one template's fields are declared, so only that one can be checked
+    # -- and binding the generic template to a contract would deny every other crew
+    # its own vocabulary, which is the same mistake as having no vocabulary at all,
+    # pointed the other way.
+    #
+    # Refused at PUBLISH, where the caller is still present to fix the call. The
+    # reader cannot refuse anything useful: by then the payload is on disk, the author
+    # is gone, and the only remaining choices are to render a wrong panel or a blank
+    # one.
+    if template == pipeline_board_contract.BOARD_TEMPLATE_ID:
+        try:
+            pipeline_board_contract.validate_judgment(data)
+        except pipeline_board_contract.JudgmentError as exc:
+            raise PanelError("judgment_rejected", f"panel data rejected -- {exc}") from exc
     data_json = _validate_data(_scrub_published(data))
     template_html = resolve_template(template)
     # Composed eagerly and thrown away: this is the validation that the pair
@@ -949,5 +964,13 @@ def render_record(record: dict[str, Any] | None) -> str | None:
     if record is None:
         return None
     template_html = resolve_template(str(record["template"]))
-    data_json = json.dumps(record["data"], ensure_ascii=False, allow_nan=False)
+    # ``board`` when a provider derived one, else ``data`` as published. The two keys
+    # serve the two surfaces: the DOCUMENT renders whatever the provider computed, while
+    # the drawer's native docked card walks ``data`` and prints its leading keys, so a
+    # derived board placed there would headline the reader's least useful numbers. A
+    # record with no ``board`` is every other crew's, and composes exactly as before.
+    island = record.get("board")
+    if not isinstance(island, dict):
+        island = record["data"]
+    data_json = json.dumps(island, ensure_ascii=False, allow_nan=False)
     return compose(template_html, data_json)

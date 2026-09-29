@@ -52,7 +52,9 @@ async function main() {
   })
 
   // ── 1. Settings > Display > Install theme ────────────────────────────────
-  await page.goto(base + '/settings?tab=display', { waitUntil: 'domcontentloaded' })
+  // Theme install lives on the Theme rail item; the sub-less path resolves to
+  // the first item (View), where the Theme source combobox never mounts.
+  await page.goto(base + '/settings/display/theme', { waitUntil: 'domcontentloaded' })
   const themeSource = page.getByRole('combobox', { name: 'Theme source' })
   await themeSource.waitFor({ timeout: 15000 })
   await themeSource.scrollIntoViewIfNeeded()

@@ -2,10 +2,6 @@
 
 Focus areas, all confirmed uncovered before this file existed:
 
-* the parent-PID ladder (``_get_ppid`` / ``_ppid_via_libproc``) — every OS
-  branch is driven with an injected fake, so the macOS libproc path and the
-  ``ps`` last-resort fallback are exercised on any platform without ever
-  spawning a real process or loading a real dylib,
 * the four governance chokepoint helpers (``_deny_channel_agent_messaging``,
   ``_vet_messaging_governance``, ``_vet_channel_governance``,
   ``_vet_memory_writes_governance``) plus ``_audit_governance_deny`` — deny,
@@ -26,8 +22,6 @@ git, or a path outside ``tmp_path``.
 
 from __future__ import annotations
 
-import ctypes
-import struct
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -45,9 +39,7 @@ from kiro_crew.mcp_core import (
     _crew_public_text,
     _deny_channel_agent_dispatch,
     _deny_channel_agent_messaging,
-    _get_ppid,
     _governance_app,
-    _ppid_via_libproc,
     _redact_json_strings,
     _resolve_artifact_folder_id,
     _vet_channel_governance,
@@ -95,128 +87,6 @@ class _FakeClock:
     def sleep(self, secs: float) -> None:
         self.slept.append(secs)
         self.now += secs
-
-
-def _fake_libproc(ppid: int, ret: int = 232, expect_pid: int | None = None):
-    """Build a ``ctypes.CDLL`` replacement whose ``proc_pidinfo`` fills a buffer.
-
-    ``struct proc_bsdinfo`` opens with five uint32s; ``pbi_ppid`` is index 4,
-    which is what the product unpacks.
-    """
-
-    def cdll(name: str, use_errno: bool = False):
-        assert name == "libproc.dylib"
-
-        def proc_pidinfo(pid, flavor, arg, buf, size):
-            if expect_pid is not None:
-                assert pid == expect_pid
-            # flavor 3 == PROC_PIDTBSDINFO
-            assert flavor == 3
-            buf[0:20] = struct.pack("<5I", 0, 0, 0, pid, ppid)
-            return ret
-
-        return SimpleNamespace(proc_pidinfo=proc_pidinfo)
-
-    return cdll
-
-
-# ── _ppid_via_libproc ────────────────────────────────────────────────────
-
-
-class TestPpidViaLibproc:
-    def test_unpacks_pbi_ppid_from_the_libproc_buffer(self) -> None:
-        with patch.object(ctypes, "CDLL", _fake_libproc(4242, expect_pid=1234)):
-            assert _ppid_via_libproc(1234) == 4242
-
-    def test_short_read_is_rejected_rather_than_unpacked(self) -> None:
-        # n <= 16 means pbi_ppid (offset 16..20) was never written; a real
-        # unpack there would return whatever the zeroed buffer held (0) and
-        # look like a legitimate "parent is pid 0".
-        with patch.object(ctypes, "CDLL", _fake_libproc(4242, ret=16)):
-            assert _ppid_via_libproc(1234) == 0
-
-    def test_missing_dylib_returns_zero_so_the_caller_can_fall_back(self) -> None:
-        def boom(*_a: Any, **_kw: Any):
-            raise OSError("libproc.dylib not found")
-
-        with patch.object(ctypes, "CDLL", boom):
-            assert _ppid_via_libproc(1234) == 0
-
-
-# ── _get_ppid ───────────────────────────────────────────────────────────
-
-
-class _FakeProcStatus:
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def read_text(self) -> str:
-        return self._text
-
-
-class TestGetPpid:
-    def test_windows_delegates_to_platform_compat(self) -> None:
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Windows")):
-            with patch.object(mcp_core.platform_compat, "get_ppid", return_value=77) as gp:
-                assert _get_ppid(5) == 77
-        gp.assert_called_once_with(5)
-
-    def test_windows_zero_is_normalized_and_never_falls_through_to_ps(self) -> None:
-        spawned: list[Any] = []
-        fake_sub = SimpleNamespace(check_output=lambda *a, **k: spawned.append(a))
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Windows")):
-            with patch.object(mcp_core.platform_compat, "get_ppid", return_value=0):
-                with patch.object(mcp_core, "subprocess", fake_sub):
-                    assert _get_ppid(5) == 0
-        assert spawned == []
-
-    def test_linux_parses_ppid_out_of_proc_status(self) -> None:
-        status = "Name:\tpython3\nState:\tS (sleeping)\nPPid:\t9931\nTracerPid:\t0\n"
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Linux")):
-            with patch.object(mcp_core, "Path", lambda p: _FakeProcStatus(status)):
-                assert _get_ppid(1) == 9931
-
-    def test_linux_status_without_a_ppid_line_falls_back_to_ps(self) -> None:
-        fake_sub = SimpleNamespace(check_output=lambda *a, **k: " 4004\n")
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Linux")):
-            with patch.object(mcp_core, "Path", lambda p: _FakeProcStatus("Name:\tx\n")):
-                with patch.object(mcp_core, "subprocess", fake_sub):
-                    assert _get_ppid(1) == 4004
-
-    def test_darwin_uses_libproc_when_it_answers(self) -> None:
-        fake_sub = SimpleNamespace(check_output=lambda *a, **k: pytest.fail("ps was spawned"))
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Darwin")):
-            with patch.object(mcp_core, "_ppid_via_libproc", return_value=515):
-                with patch.object(mcp_core, "subprocess", fake_sub):
-                    assert _get_ppid(9) == 515
-
-    def test_darwin_libproc_miss_falls_back_to_ps(self) -> None:
-        calls: list[Any] = []
-
-        def check_output(argv, **kw):
-            calls.append(argv)
-            return "  808 \n"
-
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Darwin")):
-            with patch.object(mcp_core, "_ppid_via_libproc", return_value=0):
-                with patch.object(mcp_core, "subprocess", SimpleNamespace(check_output=check_output)):
-                    assert _get_ppid(9) == 808
-        assert calls == [["ps", "-o", "ppid=", "-p", "9"]]
-
-    def test_blocked_ps_on_an_unknown_platform_returns_zero(self) -> None:
-        def check_output(*_a: Any, **_kw: Any):
-            raise PermissionError("Operation not permitted")
-
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Plan9")):
-            with patch.object(mcp_core, "subprocess", SimpleNamespace(check_output=check_output)):
-                assert _get_ppid(9) == 0
-
-    def test_only_the_first_ppid_line_is_read(self) -> None:
-        # Every OS branch here is driven by injected fakes, so this runs on the
-        # Windows runners too even though /proc is Linux-only in production.
-        with patch.object(mcp_core, "platform", SimpleNamespace(system=lambda: "Linux")):
-            with patch.object(mcp_core, "Path", lambda p: _FakeProcStatus("PPid:\t11\nPPid:\t22\n")):
-                assert _get_ppid(1) == 11
 
 
 # ── channel-agent containment + governance audit ─────────────────────────
@@ -813,7 +683,9 @@ class TestCrewPublicText:
         assert "alice" not in out
 
     def test_a_posix_marker_is_scrubbed_once(self) -> None:
-        with patch.object(mcp_core, "_crew_machine_markers", return_value=[("/home/bob", "<home>")]):
+        with patch.object(
+            mcp_core, "_crew_machine_markers", return_value=[("/home/bob", "<home>")]
+        ):
             with patch.object(mcp_core, "redact", lambda s: s):
                 assert _crew_public_text("cwd=/home/bob/x") == "cwd=<home>/x"
 
@@ -919,9 +791,7 @@ class TestWaitTool:
             # Backend answering about somebody else's wait; we sent no wait_id.
             return {"end_wait": "whatever"}
 
-        out, clock, _rec, _ = self._run(
-            {"seconds": 60, "reason": "x"}, strict_key="", post=post
-        )
+        out, clock, _rec, _ = self._run({"seconds": 60, "reason": "x"}, strict_key="", post=post)
         assert out == "Waited 60s. Resuming: x"
         assert clock.slept == [60.0]
 
@@ -1321,9 +1191,7 @@ class TestOpsMissionControlApiTool:
             out = _call_tool_inner(
                 "ops_mission_control_api", {"method": "GET", "path": "/dispatch"}
             )
-        assert out == (
-            "Error: GET /dispatch is not part of the ops-mission-control agent surface."
-        )
+        assert out == ("Error: GET /dispatch is not part of the ops-mission-control agent surface.")
 
     def test_a_get_is_prefixed_with_the_app_route_and_carries_the_query(self) -> None:
         with patch.object(mcp_core, "_get", return_value={"incidents": []}) as g:
@@ -1371,9 +1239,7 @@ class TestOpsMissionControlApiTool:
 
     def test_an_oversized_response_is_truncated_with_a_narrowing_hint(self) -> None:
         with patch.object(mcp_core, "_get", return_value={"blob": "x" * 70_000}):
-            out = _call_tool_inner(
-                "ops_mission_control_api", {"method": "GET", "path": "/state"}
-            )
+            out = _call_tool_inner("ops_mission_control_api", {"method": "GET", "path": "/state"})
         assert len(out) < 70_000
         assert "truncated (" in out
         assert "Narrow the" in out
@@ -1381,9 +1247,7 @@ class TestOpsMissionControlApiTool:
     def test_the_response_is_redacted_before_truncation(self) -> None:
         payload = {"signal": "creds AKIAIOSFODNN7EXAMPLE here"}
         with patch.object(mcp_core, "_get", return_value=payload):
-            out = _call_tool_inner(
-                "ops_mission_control_api", {"method": "GET", "path": "/signals"}
-            )
+            out = _call_tool_inner("ops_mission_control_api", {"method": "GET", "path": "/signals"})
         assert "AKIAIOSFODNN7EXAMPLE" not in out
 
     def test_a_non_serializable_response_value_still_renders(self) -> None:
@@ -1695,9 +1559,7 @@ class TestIssueRadarRecordInvestigation:
         assert "AKIAIOSFODNN7EXAMPLE" not in findings["suggested_labels"][0]
 
     def test_a_gitlab_merge_request_is_referenced_with_a_bang(self) -> None:
-        args = dict(
-            self._BASE, provider="gitlab", host="gitlab.com", kind="pull", verdict="ok"
-        )
+        args = dict(self._BASE, provider="gitlab", host="gitlab.com", kind="pull", verdict="ok")
         saved = {"investigation": {"findings": {"verdict": "ok"}}}
         with patch.object(mcp_core, "_put", return_value=saved):
             out = _call_tool_inner("issue_radar_record_investigation", args)

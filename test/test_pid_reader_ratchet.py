@@ -68,9 +68,6 @@ _NEEDLES: dict[str, str] = {
     "get" + "_pid()": r"\bget" + r"_pid\(",
     # A provider or runtime handing out the pid it holds.
     "." + "_pid": r"\._" + r"pid\b",
-    # The (runtime_pid, gateway_socket_path) pair a provider exposes about its
-    # backing process.
-    "runtime" + "_info()": r"\bruntime" + r"_info\(",
     # The process-identity string, which is a process fact, not a session fact.
     "process" + "_instance": r"\bprocess" + r"_instance\b",
     # Liveness asked of the process rather than of the session's lease.
@@ -92,6 +89,12 @@ _REFLECTIVE_FUNCS = frozenset({"get" + "attr", "has" + "attr", "set" + "attr"})
 
 #: Reader names worth catching in that string position. Same readers as above; the
 #: sidecar functions are absent because they are module functions, not attributes.
+#: A retired reader keeps its entry here. Unlike ``_NEEDLES``, these names are not
+#: witnessed one by one -- every reflective hit is reported under the single
+#: ``_REFLECTIVE`` key -- so a name that matches nothing cannot make
+#: ``test_every_needle_finds_a_site`` pass vacuously, and keeping it costs nothing
+#: while leaving the arithmetic honest: a reintroduced ``getattr(p, "runtime_info")``
+#: raises the total and fails the exact-count rule.
 _REFLECTIVE_NAMES = frozenset(
     {
         "_" + "pid",
@@ -101,6 +104,20 @@ _REFLECTIVE_NAMES = frozenset(
         "is_process" + "_alive",
     }
 )
+
+#: Spellings that once named a reader and are now gone from ``src``. They cannot
+#: stay in ``_NEEDLES`` -- a needle matching nothing is how a scan passes for the
+#: wrong reason, which ``test_every_needle_finds_a_site`` refuses -- so their
+#: absence is asserted directly instead. That keeps the retirement from quietly
+#: becoming permission to bring the reader back under its old name.
+_RETIRED_READERS: dict[str, str] = {
+    # A provider handed the session layer ``(runtime_pid, gateway_socket_path)``,
+    # which is how every consumer of the abort seam could re-derive a pid. The
+    # provider now mints an opaque abort target and the wire module opens it.
+    "runtime"
+    + "_info": r"\bruntime"
+    + r"_info\b",
+}
 
 #: Test support and in-tree test modules are not product surface.
 _EXCLUDED_PARTS = ("kiro_crew/testing/", "container_tests/")
@@ -120,11 +137,11 @@ _OWNER_MARKER = "pid-owner" + "-ok"
 #: readers silently buys room for ten new ones. A change that removes a site
 #: lowers this number in the same commit. A change that wants a new reader takes
 #: the lease handle instead, or marks the site as the pool's own.
-_BASELINE_SITES = 160
+_BASELINE_SITES = 144
 
 #: Owner-marked sites in ``src``. Pinned for the same reason the total is: marking
 #: an ordinary reader would otherwise move a site out of the total for free.
-_BASELINE_OWNER_MARKED = 0
+_BASELINE_OWNER_MARKED = 2
 
 #: Files that hold sites at the baseline and are not yet migrated. Each must still
 #: be found, so a scanner that matches nothing cannot pass as a clean tree. Drop a
@@ -175,6 +192,39 @@ def _blanked(source: str) -> str:
         return source
     for token in tokens:
         if token.type not in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        (start_row, start_col), (end_row, end_col) = token.start, token.end
+        start = offsets[start_row - 1] + start_col
+        end = min(offsets[end_row - 1] + end_col, len(buffer))
+        for index in range(start, end):
+            if buffer[index] != "\n":
+                buffer[index] = " "
+    return "".join(buffer)
+
+
+def _comments_blanked(source: str) -> str:
+    """``source`` with comments blanked but STRING LITERALS LEFT IN PLACE.
+
+    What the retired-reader scan reads, and the difference matters: a retired name
+    comes back in two spellings, and the reflective one puts it inside a string
+    (``getattr(p, "runtime_info", None)``). ``_blanked`` blanks strings, so a scan
+    built on it sees the attribute spelling only and the reflective spelling
+    returns for free. Comments are still blanked, because a comment naming a
+    retired reader is prose about it, not a reading -- the same line the rest of
+    this file draws.
+    """
+    lines = source.splitlines(keepends=True)
+    offsets, running = [0], 0
+    for line in lines:
+        running += len(line)
+        offsets.append(running)
+    buffer = list(source)
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        return source
+    for token in tokens:
+        if token.type is not tokenize.COMMENT:
             continue
         (start_row, start_col), (end_row, end_col) = token.start, token.end
         start = offsets[start_row - 1] + start_col
@@ -290,6 +340,70 @@ def test_every_needle_finds_a_site() -> None:
         "lower the baseline in the same change -- or the spelling drifted and the "
         "ratchet is measuring an empty set."
     )
+
+
+def test_a_retired_reader_spelling_stays_retired() -> None:
+    """A reader removed from ``src`` must not return under the name it had.
+
+    The needle for it is gone, because a needle that matches nothing is exactly
+    the vacuous pass this file refuses. Without this assertion that removal also
+    removes the guard, so the old spelling could be reintroduced for free and the
+    total would not move.
+
+    Reads ``_comments_blanked``, not ``_blanked``: both spellings of the name must
+    be refused, and the reflective one lives inside a string literal that
+    ``_blanked`` would erase.
+    """
+    offenders: list[str] = []
+    for path in sorted(_SRC.rglob("*.py")):
+        if not _in_scope(path):
+            continue
+        code = _comments_blanked(path.read_text(encoding="utf-8", errors="replace"))
+        for line_no, line in enumerate(code.splitlines(), start=1):
+            for name, pattern in _RETIRED_READERS.items():
+                if re.search(pattern, line):
+                    offenders.append(f"{path.relative_to(_SRC).as_posix()}:{line_no} ({name})")
+    assert not offenders, (
+        "a retired pid-reader spelling is back in src/kiro_crew: "
+        + ", ".join(offenders)
+        + ". Take the opaque handle the owning module mints instead. If the name "
+        "is genuinely wanted for something unrelated to reading a process, drop it "
+        "from _RETIRED_READERS and say why in the same change."
+    )
+
+
+def test_both_spellings_of_a_retired_reader_are_refused(tmp_path: Path) -> None:
+    """The attribute form AND the string form, with prose still allowed.
+
+    A retired name returns in two shapes and only one of them is an attribute, so
+    a guard reading ``_blanked`` would let the reflective shape back in silently
+    while the count stayed put. Exercised against a fixture tree rather than
+    asserted about the scanner, because that is the shape the escape actually had.
+    """
+    retired = "runtime" + "_info"
+    pattern = _RETIRED_READERS[retired]
+
+    attribute_form = f"def f(p):\n    return p.{retired}()\n"
+    reflective_form = f'def f(p):\n    return getattr(p, "{retired}", None)\n'
+    prose_only = (
+        f"def f(p):\n    # the {retired} pair is retired; take the handle\n    return None\n"
+    )
+
+    for label, source in (("attribute", attribute_form), ("reflective", reflective_form)):
+        code = _comments_blanked(source)
+        assert re.search(pattern, code), f"the {label} spelling escaped the retired-reader scan"
+
+    assert not re.search(pattern, _comments_blanked(prose_only)), (
+        "a comment naming a retired reader is prose about it, not a reading, and "
+        "must not be reported as a site"
+    )
+
+    # The reflective shape must ALSO move the count, so the two guards disagree on
+    # nothing: the name stays in _REFLECTIVE_NAMES for exactly this reason.
+    fixture = tmp_path / "kiro_crew"
+    fixture.mkdir()
+    (fixture / "m.py").write_text(reflective_form, encoding="utf-8")
+    assert sum(_scan_tree(fixture).per_needle.values()) == 1
 
 
 def test_known_reader_files_are_still_counted() -> None:

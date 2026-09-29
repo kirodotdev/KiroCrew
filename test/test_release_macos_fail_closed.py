@@ -111,10 +111,30 @@ def _write_valid_dmg(path: Path) -> None:
     path.write_bytes(b"test payload" + b"koly" + bytes(508))
 
 
-def _write_valid_handoff(root: Path, name: str = ARTIFACT_NAME) -> Path:
+#: The two single-arch macOS legs beside the universal one. Their gated files
+#: carry the arch in the NAME (sign-and-notarize.yml's NOTARIZED_ZIP /
+#: ARTIFACT_BASENAME) because a promotion bundle is one flat directory.
+MAC_ARCHES = ("arm64", "x64")
+#: The artifact filename stem, named once: the brand gate exempts a literal
+#: ``KiroCrew.dmg`` but not the templated single-arch spellings below.
+PRODUCT = "KiroCrew"  # brand-ok: artifact filename stem
+
+
+def _write_valid_handoff(root: Path, name: str = ARTIFACT_NAME, *, promoted: bool = False) -> Path:
+    """All three gated macOS handoffs, laid out the way the run holds them.
+
+    Fresh path: each leg attached its own artifact, ``<name>`` for the universal
+    DMG and ``<name>-<arch>`` for a single-arch one. Promotion (``promoted``):
+    every leg's files sit in the ONE resolved bundle under the universal name.
+    Returns the universal artifact directory.
+    """
     artifact = _artifact_dir(root, name)
     _write_valid_zip(artifact / "notarized.zip")
     _write_valid_dmg(artifact / "KiroCrew.dmg")
+    for arch in MAC_ARCHES:
+        leg = artifact if promoted else _artifact_dir(root, f"{name}-{arch}")
+        _write_valid_zip(leg / f"notarized-{arch}.zip")
+        _write_valid_dmg(leg / f"{PRODUCT}-{arch}.dmg")
     return artifact
 
 
@@ -175,22 +195,49 @@ def test_missing_exact_gated_artifact_does_not_fall_back_to_unsigned(tmp_path: P
 
 
 @pytest.mark.parametrize(
-    ("missing_name", "expected_error"),
+    ("leg", "missing_name", "expected_error"),
     (
-        ("notarized.zip", "Required gated macOS ZIP is missing or empty"),
-        ("KiroCrew.dmg", "Required gated macOS DMG is missing or empty"),
+        ("", "notarized.zip", "Required gated macOS ZIP is missing or empty"),
+        ("", "KiroCrew.dmg", "Required gated macOS DMG is missing or empty"),
+        ("-arm64", "notarized-arm64.zip", "Required gated macOS ZIP is missing or empty"),
+        ("-arm64", "KiroCrew-arm64.dmg", "Required gated macOS DMG is missing or empty"),
+        ("-x64", "notarized-x64.zip", "Required gated macOS ZIP is missing or empty"),
+        ("-x64", "KiroCrew-x64.dmg", "Required gated macOS DMG is missing or empty"),
     ),
 )
 def test_incomplete_gated_handoff_fails(
-    tmp_path: Path, missing_name: str, expected_error: str
+    tmp_path: Path, leg: str, missing_name: str, expected_error: str
 ) -> None:
-    artifact = _write_valid_handoff(tmp_path)
-    (artifact / missing_name).unlink()
+    """Every one of the three legs is REQUIRED: the page may not offer two of
+    three DMGs, because an install on the missing arch's feed would then see a
+    version it can never receive."""
+    _write_valid_handoff(tmp_path)
+    (tmp_path / "artifacts" / f"{ARTIFACT_NAME}{leg}" / missing_name).unlink()
 
     result = _run_assembly(tmp_path)
 
     assert result.returncode != 0
     assert expected_error in result.stderr + result.stdout
+
+
+def test_a_single_arch_file_inside_the_universal_artifact_is_not_a_handoff(
+    tmp_path: Path,
+) -> None:
+    """Off the promotion path a single-arch leg's files come from ITS gated
+    artifact (``<name>-<arch>``), never from a same-named file that happens to
+    sit in the universal one: the fresh legs attach separate artifacts, and
+    reading across them would let a stale or misrouted file stand in for a
+    leg that never notarized."""
+    artifact = _write_valid_handoff(tmp_path)
+    for arch in MAC_ARCHES:
+        _write_valid_zip(artifact / f"notarized-{arch}.zip")
+        _write_valid_dmg(artifact / f"{PRODUCT}-{arch}.dmg")
+        (tmp_path / "artifacts" / f"{ARTIFACT_NAME}-{arch}" / f"notarized-{arch}.zip").unlink()
+
+    result = _run_assembly(tmp_path)
+
+    assert result.returncode != 0
+    assert "Required gated macOS ZIP is missing or empty" in result.stderr + result.stdout
 
 
 def test_corrupt_notarized_zip_fails(tmp_path: Path) -> None:
@@ -262,8 +309,44 @@ def test_exact_gated_handoff_is_renamed_for_the_release(tmp_path: Path) -> None:
     release_dmg = release / f"KiroCrew-{VERSION}-universal.dmg"
     assert release_zip.read_bytes() == (gated / "notarized.zip").read_bytes()
     assert release_dmg.read_bytes() == (gated / "KiroCrew.dmg").read_bytes()
+    # The single-arch legs land beside it under the same shape: the arch is
+    # spelled on every mac asset, x64 included (electron-builder's default
+    # would drop it), so the three are told apart at a glance.
+    for arch in MAC_ARCHES:
+        leg = tmp_path / "artifacts" / f"{ARTIFACT_NAME}-{arch}"
+        assert (release / f"{PRODUCT}-{VERSION}-{arch}-mac.zip").read_bytes() == (
+            leg / f"notarized-{arch}.zip"
+        ).read_bytes()
+        assert (release / f"{PRODUCT}-{VERSION}-{arch}.dmg").read_bytes() == (
+            leg / f"{PRODUCT}-{arch}.dmg"
+        ).read_bytes()
+    assert sorted(path.name for path in release.glob("*.dmg")) == sorted(
+        f"{PRODUCT}-{VERSION}-{label}.dmg" for label in ("universal", *MAC_ARCHES)
+    )
     assert not (release / "unsigned-mac.zip").exists()
     assert not (release / "unsigned.dmg").exists()
+
+
+def test_a_promotion_takes_every_mac_leg_from_the_one_bundle(tmp_path: Path) -> None:
+    """On a byte promotion the resolved bundle is the only gated artifact, and
+    it holds all three legs' files side by side -- so the single-arch assets
+    are read from THAT directory, by their arch-carrying names, and a
+    ``<name>-<arch>`` artifact (which a promotion run never has) is not
+    required."""
+    gated = _write_valid_handoff(tmp_path, promoted=True)
+    assert not (tmp_path / "artifacts" / f"{ARTIFACT_NAME}-arm64").exists()
+
+    result = _run_assembly(tmp_path, promote_mode=True)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    release = tmp_path / "release"
+    for arch in MAC_ARCHES:
+        assert (release / f"{PRODUCT}-{VERSION}-{arch}-mac.zip").read_bytes() == (
+            gated / f"notarized-{arch}.zip"
+        ).read_bytes()
+        assert (release / f"{PRODUCT}-{VERSION}-{arch}.dmg").read_bytes() == (
+            gated / f"{PRODUCT}-{arch}.dmg"
+        ).read_bytes()
 
 
 def test_promotion_publishes_the_bundled_installer_and_never_the_rebuild(
@@ -276,7 +359,7 @@ def test_promotion_publishes_the_bundled_installer_and_never_the_rebuild(
     version, so the two filenames differ and a ``*.exe`` glob would attach both
     -- the rebuild looking the more official for carrying the version number.
     """
-    gated = _write_valid_handoff(tmp_path)
+    gated = _write_valid_handoff(tmp_path, promoted=True)
     (gated / "KiroCrew-Setup.exe").write_bytes(b"promoted installer")
     (gated / "KiroCrew-Setup.exe.blockmap").write_bytes(b"promoted blockmap")
     rebuilt = _artifact_dir(tmp_path, "build-windows-x64")

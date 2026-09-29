@@ -17,60 +17,15 @@
  *
  * Usage: node scripts/capture-session-tree-member-anchor.mjs [devBase] [outDir]
  */
-import { chromium } from 'playwright'
-import { mkdirSync } from 'node:fs'
-import { chromiumExecutable } from './lib/chromium-executable.mjs'
-import { stubDashboardApi, logPageProblems } from './lib/stub-dashboard-api.mjs'
+import { openSessionTreeHarness } from './lib/session-tree-harness.mjs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:6181'
 const OUT = process.argv[3] || '../temp-screenshots/session-tree-member-anchor'
 const MEMBER = 'member-kirocrew-pipeline-conductor'
 const WORKERS = ['chat-2124', 'chat-2125', 'chat-2130']
 
-mkdirSync(OUT, { recursive: true })
-
-let failed = false
-const check = (label, ok, detail) => {
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`)
-  if (!ok) failed = true
-}
-
-const browser = await chromium.launch({ executablePath: chromiumExecutable() })
-const context = await browser.newContext({ viewport: { width: 620, height: 640 }, deviceScaleFactor: 2 })
-const page = await context.newPage()
-page.on('pageerror', e => { console.log(`FAIL pageerror — ${e.message}`); failed = true })
-await stubDashboardApi(page, {
-  theme: 'dark',
-  folders: [],
-  extra: async (path, route) => {
-    if (path.startsWith('/api/')) return false
-    await route.continue()
-    return true
-  },
-})
-logPageProblems(page)
-
-const rows = () => page.$$eval('[data-slot-key]', els => els.map(el => ({
-  key: el.getAttribute('data-slot-key'),
-  depth: el.closest('[data-conductor-depth]')?.getAttribute('data-conductor-depth') ?? null,
-  anchor: el.closest('[data-conductor-depth]')?.getAttribute('data-conductor-anchor') ?? null,
-})))
-const keys = async () => (await rows()).map(r => r.key).join(' ')
-const rowOf = async key => (await rows()).find(r => r.key === key)
+const { page, check, keys, rowOf, settleTheme, shot, finish } = await openSessionTreeHarness(OUT)
 const orphanGlyphs = () => page.$$eval('[data-testid^="conductor-orphan-"]', els => els.map(el => el.getAttribute('data-orphan-of')))
-
-async function settleTheme() {
-  let prev = null
-  for (let i = 0; i < 20; i++) {
-    const now = await page.evaluate(() => document.documentElement.getAttribute('data-theme'))
-    if (now && now === prev) return now
-    prev = now
-    await page.waitForTimeout(250)
-  }
-  return prev
-}
-
-const shot = name => page.locator('.sidebar-inner').screenshot({ path: `${OUT}/${name}.png` })
 
 await page.goto(`${BASE}/capture/session-tree-member-anchor.html?theme=dark`)
 await page.waitForSelector('[data-capture-ready]')
@@ -138,6 +93,4 @@ await page.waitForSelector('[data-slot-key="chat-2135"]')
 const w1 = await rowOf('chat-2135')
 check('control: the chat-conductor pair nests once opened', w1?.depth === '1', `depth=${w1?.depth}`)
 
-await browser.close()
-console.log(failed ? 'RESULT: FAIL' : 'RESULT: ok')
-process.exit(failed ? 1 : 0)
+await finish()

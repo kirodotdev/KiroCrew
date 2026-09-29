@@ -222,7 +222,17 @@ or dropped sentinel deactivated, admits it, and the create-only and
 the four answers. When the wake carries a loop id, its `monitor_update`,
 `monitor_stop`, and `autonudge_stop` directives apply only while that id is the
 monitor currently bound to the session; a replacement monitor is never mutated
-by the stale wake.
+by the stale wake. For a legacy loop, the identity, binding, and person-stop
+retention checks are repeated inside the same service transaction that removes
+the row or writes the research tombstone, so a pause landing after the early
+refusal check survives unchanged. When that transaction finds the row missing,
+it checks the slot in the same hold: a slot with no loop means the stop's goal
+already holds and it succeeds, while a slot holding a different loop means a
+concurrent arm replaced it, so the stop is refused and the replacement keeps
+running. A write that never takes the lock is reported as not stopped. A
+structured monitor needs no such repeat: its
+stop already runs under the service lock and returns a row that carries a
+retained outcome untouched.
 
 `autonudge_stop` is deliberately non-confirming at tool-call time because the
 consumer applies it after the turn result is processed. The applier removes an

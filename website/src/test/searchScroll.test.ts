@@ -7,6 +7,7 @@ import {
   pollRowSettled,
   glideOnceStep,
   attachUserScrollIntent,
+  pointerOnScrollbar,
 } from '../utils/searchScroll'
 import { applySearchHighlights, clearSearchHighlights, getCurrentSearchRange } from '../utils/domHighlight'
 import { installHighlightApiStub } from './highlightApiStub'
@@ -517,11 +518,51 @@ describe('attachUserScrollIntent', () => {
     detach()
   })
 
-  it('a scrollbar grab is directionless', () => {
+  it('a pointer with no scrollbar geometry is directionless', () => {
     const { el, onUser, detach } = harness()
     el.dispatchEvent(new Event('pointerdown'))
     expect(onUser).toHaveBeenLastCalledWith()
     detach()
+  })
+
+  describe('a pointer on the scrollbar band is a grab', () => {
+    // `clientWidth` excludes the scrollbar; the box includes it. The band
+    // between the two is the only place a pointerdown means "a scroll is about
+    // to happen": the drag names no direction until its first scroll event, so
+    // the follow guard holds for it. A pointer anywhere else -- on a message,
+    // selecting text -- moves nothing and stays directionless.
+    function scroller(rtl = false) {
+      const { el, onUser, detach } = harness()
+      Object.defineProperty(el, 'clientWidth', { configurable: true, get: () => 385 })
+      el.getBoundingClientRect = (() => ({ top: 0, left: 0, right: 400, bottom: 600, width: 400, height: 600, x: 0, y: 0, toJSON: () => ({}) })) as unknown as typeof el.getBoundingClientRect
+      if (rtl) el.style.direction = 'rtl'
+      return { el, onUser, detach }
+    }
+    it('reports `grab` for a pointer inside the band (LTR: the right edge)', () => {
+      const { el, onUser, detach } = scroller()
+      el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 392 }))
+      expect(onUser).toHaveBeenLastCalledWith('grab')
+      detach()
+    })
+    it('a pointer on the content is not a grab', () => {
+      const { el, onUser, detach } = scroller()
+      el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 120 }))
+      expect(onUser).toHaveBeenLastCalledWith()
+      el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 384 }))
+      expect(onUser).toHaveBeenLastCalledWith()
+      detach()
+    })
+    it('an overlay scrollbar (no band) never reports a grab', () => {
+      const { el, onUser, detach } = harness()
+      Object.defineProperty(el, 'clientWidth', { configurable: true, get: () => 400 })
+      el.getBoundingClientRect = (() => ({ top: 0, left: 0, right: 400, bottom: 600, width: 400, height: 600, x: 0, y: 0, toJSON: () => ({}) })) as unknown as typeof el.getBoundingClientRect
+      el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 399 }))
+      expect(onUser).toHaveBeenLastCalledWith()
+      detach()
+    })
+    it('pointerOnScrollbar answers false for a target that is not an element', () => {
+      expect(pointerOnScrollbar(window, { clientX: 5 })).toBe(false)
+    })
   })
 
   it('derives touch direction from the finger path, anchored on touchstart', () => {

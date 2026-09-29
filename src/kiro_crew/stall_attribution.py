@@ -46,7 +46,11 @@ _FRAME_RE = re.compile(r'^\s*File "(?P<file>[^"]+)", line (?P<line>\d+) in (?P<f
 #: helper, so matching top-down on "slack/" would misname it.
 _SURFACE_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     # label, path fragments, function names -- either kind of hit qualifies
-    ("cron", ("/kiro_crew/cron.py",), ("_cron_callback", "_run_job_isolated")),
+    (
+        "cron",
+        ("/kiro_crew/cron.py", "/kiro_crew/cron_service/"),
+        ("_cron_callback", "_run_job_isolated"),
+    ),
     ("heartbeat", ("/kiro_crew/heartbeat.py",), ()),
     ("task runner", ("/kiro_crew/task_executor.py", "/kiro_crew/task_planner.py"), ()),
     ("subagent", ("/kiro_crew/subagent_manager/",), ()),

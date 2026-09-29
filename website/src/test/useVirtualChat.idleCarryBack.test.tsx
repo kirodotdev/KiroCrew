@@ -16,10 +16,13 @@ import { useVirtualChat, type UseVirtualChatOptions } from '../hooks/virtualizer
  * so an iPhone opened every idle session a viewport or more above its end
  * (measured 1007-1119px on the phone rig with anchoring disabled).
  *
- * The discriminator is not distance but INPUT plus position: a reader who left
- * the bottom has touched the scroller since we last placed them, or is no
- * longer resting where our last write put them. These cases pin the three ways
- * that signal is fed.
+ * The discriminator is not distance but POSITION: a reader who left the bottom
+ * is no longer resting where our last write (or their own recorded return to
+ * the bottom) put them. Hardware input on its own is not a move -- a wheel at
+ * the end that moves nothing must not stop a complete message landing in an
+ * idle chat from being followed. These cases pin the ways that signal is fed,
+ * including a new row appended while nothing runs (a crewmate's or worker's
+ * message arriving in a DM).
  */
 
 interface Item { id: string }
@@ -212,5 +215,80 @@ describe('idle carry-back: a still reader stays at the bottom through content se
     landHeightCommit(t.view, 40)
 
     expect(t.state.scrollTop).toBe(t.bottom())
+  })
+})
+
+describe('idle appends: a complete message lands while nothing runs', () => {
+  /** A new row lands at the tail: the list grows by one and the scroll height
+   *  by its height, then the height commit announces it. */
+  function appendRow(t: ReturnType<typeof mountIdleAtBottom>, key: string, px = 120) {
+    act(() => {
+      t.view.rerender({
+        items: mkItems(61),
+        sessionId: `carry-${key}`,
+        getKey,
+        externalScrollerRef: t.ref,
+        followOutput: true,
+        runActive: false,
+      })
+    })
+    t.state.scrollHeight += px
+    landHeightCommit(t.view, 61)
+  }
+
+  it('a still reader at the bottom is carried to the new message', () => {
+    const t = mountIdleAtBottom('append-still')
+    appendRow(t, 'append-still')
+    expect(t.state.scrollTop).toBe(t.bottom())
+    expect(t.writes).toContain(t.bottom())
+  })
+
+  it('a wheel at the end that moved nothing does not stop the follow', () => {
+    // The report: a crewmate's reply lands in a DM whose turn is over, and the
+    // reader who had wheeled down to the end (moving nothing -- there was
+    // nothing below) is left with the reply under the fold. Input that moved
+    // nothing is not a move; they are still at the bottom, and are carried.
+    const t = mountIdleAtBottom('append-wheel')
+    act(() => { t.el.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 })) })
+    appendRow(t, 'append-wheel')
+    expect(t.state.scrollTop).toBe(t.bottom())
+  })
+
+  it('a reader who scrolled back down to the bottom by hand is followed again', () => {
+    // Read upward, then return: the arrival inside the re-engage band re-arms
+    // follow AND records where the reader chose to stand, so the next message
+    // landing idle carries them from there.
+    const t = mountIdleAtBottom('append-reengage')
+    const bottom = t.bottom()
+    act(() => { t.el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })) })
+    t.state.scrollTop = bottom - 500
+    act(() => { t.el.dispatchEvent(new Event('scroll')) })
+    expect(t.view.result.current.getFollow()).toBe(false)
+    act(() => { vi.advanceTimersByTime(300) })
+    act(() => { t.el.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 })) })
+    t.state.scrollTop = bottom - 250
+    act(() => { t.el.dispatchEvent(new Event('scroll')) })
+    // Lands 10px short of the true bottom: inside FOLLOW_REENGAGE_PX, not a clamp.
+    t.state.scrollTop = bottom - 10
+    act(() => { t.el.dispatchEvent(new Event('scroll')) })
+    expect(t.view.result.current.getFollow()).toBe(true)
+    act(() => { vi.advanceTimersByTime(300) })
+    t.writes.length = 0
+    appendRow(t, 'append-reengage')
+    expect(t.state.scrollTop).toBe(t.bottom())
+  })
+
+  it('a reader who scrolled up to read is left where they are', () => {
+    // A reader who has clearly left the bottom is never pulled back by a
+    // message landing: the jump pill is the way back, and nothing moves them.
+    const t = mountIdleAtBottom('append-away')
+    const parked = t.bottom() - 500
+    act(() => { t.el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 })) })
+    t.state.scrollTop = parked
+    act(() => { t.el.dispatchEvent(new Event('scroll')) })
+    act(() => { vi.advanceTimersByTime(300) })
+    t.writes.length = 0
+    appendRow(t, 'append-away')
+    expect(t.state.scrollTop).toBe(parked)
   })
 })

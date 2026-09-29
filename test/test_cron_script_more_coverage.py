@@ -517,7 +517,7 @@ class TestScriptContextPost:
 
         req = captured["req"]
         # Full-value comparison: a prefix check would also match another host.
-        assert req.full_url == "http://localhost:7788/api/send-message"
+        assert req.full_url == "http://127.0.0.1:7788/api/send-message"
         assert req.get_method() == "POST"
         assert req.get_header("X-internal-secret") == "tok"
         assert req.get_header("X-session-key") == "cron:abc"
@@ -916,12 +916,12 @@ class TestPathAndSecretResolution:
 
     def test_internal_secret_prefers_the_environment(self, monkeypatch):
         monkeypatch.setenv("KIROCREW_INTERNAL_SECRET", "env-secret")
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-secret")
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port, **_kw: "file-secret")
         assert _resolve_internal_secret(5476) == "env-secret"
 
     def test_internal_secret_falls_back_to_the_local_secret_file(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_INTERNAL_SECRET", raising=False)
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-secret")
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port, **_kw: "file-secret")
         assert _resolve_internal_secret(5476) == "file-secret"
 
     def test_internal_secret_reads_the_port_it_is_given(self, monkeypatch):
@@ -932,7 +932,7 @@ class TestPathAndSecretResolution:
         monkeypatch.delenv("KIROCREW_INTERNAL_SECRET", raising=False)
         seen = {}
 
-        def _fake_read(port):
+        def _fake_read(port, **_kw):
             seen["port"] = port
             return "file-secret"
 
@@ -949,14 +949,29 @@ def script_run(monkeypatch, tmp_path):
     """Patch run_script_sandboxed's spawn chain; expose the recorded Popen call."""
     script = tmp_path / "job.py"
     script.write_text("def run(ctx): pass\n", newline="\n")
-    monkeypatch.setattr(cron_script, "resolve_script_path", lambda spec: (str(script), "run"))
+    # Records the keywords the launcher passes, so the stub cannot silently
+    # absorb a signature change: `resolved_kwargs` is asserted below.
+    resolved_kwargs: dict = {}
+
+    def _resolve(spec, **kw):
+        resolved_kwargs.clear()
+        resolved_kwargs.update(kw)
+        return (str(script), "run")
+
+    monkeypatch.setattr(cron_script, "resolve_script_path", _resolve)
     monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
     monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda port: "unit-secret")
     restricted: list[str] = []
     monkeypatch.setattr(cron_script.platform_compat, "restrict_to_owner", restricted.append)
     state = SimpleNamespace(
-        script=script, proc=None, argv=[], env={}, launcher_src="", restricted=restricted
+        script=script,
+        proc=None,
+        argv=[],
+        env={},
+        launcher_src="",
+        restricted=restricted,
+        resolved_kwargs=resolved_kwargs,
     )
 
     def _popen(argv, **kw):
@@ -971,6 +986,20 @@ def script_run(monkeypatch, tmp_path):
 
 
 class TestRunScriptSandboxed:
+    def test_the_launcher_resolves_a_persisted_spec_with_bundle_roots(self, script_run):
+        """The launcher re-resolves a spec that was ALREADY vetted and persisted.
+
+        An app cron's stored spec is an absolute path into the app's bundle, so
+        the launcher must opt into the bundle roots. Authoring paths (`cron_add`,
+        the CLI, the vault-grant sites) pass neither keyword and stay confined to
+        `crons/`; asserting the flag here is what keeps those two apart.
+        """
+        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+
+        run_script_sandboxed("spec:run", "job-roots", "the message")
+
+        assert script_run.resolved_kwargs == {"allow_bundle_roots": True}
+
     def test_the_dial_port_is_resolved_exactly_once(self, script_run, monkeypatch):
         # The credential write and the child's _KIROCREW_DIAL_PORT must come from
         # ONE resolution. Two calls are a TOCTOU: a --port auto gateway binding
@@ -1003,7 +1032,9 @@ class TestRunScriptSandboxed:
         # the boot-time 403 this fix addresses.
         monkeypatch.setenv("KIROCREW_INTERNAL_SECRET", "stale-env-secret")
         monkeypatch.setattr(cron_script, "_resolve_dial_port", lambda: 7788)
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "stale-file-secret")
+        monkeypatch.setattr(
+            cron_script, "read_local_secret", lambda port, **_kw: "stale-file-secret"
+        )
         # Use the real credential path (the fixture stubs it) so the provider
         # actually competes with env/file derivation.
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", _resolve_internal_secret)
@@ -1018,7 +1049,7 @@ class TestRunScriptSandboxed:
         # order. env present -> env wins.
         monkeypatch.setattr(cron_script, "_resolve_dial_port", lambda: 7788)
         monkeypatch.setenv("KIROCREW_INTERNAL_SECRET", "env-wins")
-        monkeypatch.setattr(cron_script, "read_local_secret", lambda port: "file-loses")
+        monkeypatch.setattr(cron_script, "read_local_secret", lambda port, **_kw: "file-loses")
         # Use the real derivation (the fixture stubs it).
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", _resolve_internal_secret)
         script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])

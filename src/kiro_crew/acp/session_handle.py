@@ -97,7 +97,12 @@ from kiro_crew.acp.liveness import (
     consult_offloaded,
     steady_now,
 )
-from kiro_crew.acp.mcp_session_report import KasMcpReadiness, McpSessionReport
+from kiro_crew.acp.mcp_session_report import (
+    BUCKET_CAP,
+    NAME_CAP,
+    KasMcpReadiness,
+    McpSessionReport,
+)
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -130,6 +135,8 @@ from kiro_crew.acp.types import (
     JSONRPC_METHOD_NOT_FOUND,
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
+    METHOD_KAS_MCP_STATUS,
+    METHOD_MCP_OAUTH_REQUEST,
     METHOD_PROMPT,
     METHOD_REQUEST_PERMISSION,
     METHOD_SET_CONFIG_OPTION,
@@ -888,6 +895,10 @@ class AcpRuntimeProtocol(Protocol):
 
     def mark_turn_active(self, session_id: str, active: bool) -> None: ...
 
+    def begin_mcp_sign_in(self, session_id: str, server_name: str) -> bool: ...
+
+    def mcp_sign_in_holds(self, session_id: str, server_name: str) -> bool: ...
+
     def unregister_session(self, session_id: str) -> None: ...
 
     async def terminate_session(self, session_id: str) -> None: ...
@@ -1181,6 +1192,22 @@ class AcpSessionHandle:
         # OAuth requests collected by drain_init(). Dashboard startup drains
         # this list through AcpSessionProvider after create_session returns.
         self._pending_oauth_requests: list[dict[str, str]] = []
+        # Servers whose last ``_kiro/mcp/status`` entry for this session was an
+        # authorization failure and that have not connected since. Kept across a
+        # timed-out sign-in, whose entry reports ``failedAuthorization`` false,
+        # so the next turn offers the sign-in again.
+        self._mcp_sign_in_needed: set[str] = set()
+        self._mcp_sign_in_last_offered = ""
+        # Tracked servers whose status reported ``connected`` and whose
+        # completion the dispatch loop has not yet yielded. KAS sends no
+        # server-initialized frame for a completed sign-in, so the loop yields
+        # ``EVENT_MCP_SERVER_INITIALIZED`` for these itself and the dashboard
+        # closes the Authorize banner.
+        self._mcp_sign_in_completed: set[str] = set()
+        # How many status entries the sign-in tracker last dropped past
+        # ``BUCKET_CAP``; a change is logged once, so a steady overflow does not
+        # repeat the warning on every snapshot.
+        self._mcp_sign_in_dropped = 0
         # What THIS session's MCP servers reported at init — parity with
         # AcpClient._mcp_report. On the shared runtime the frames are staged
         # per sessionId before this handle's queue exists, so the report is
@@ -1592,11 +1619,20 @@ class AcpSessionHandle:
         _stale_terminals = 0
         _stale_reasons: list[str] = []
         _stale_owed: list[JsonRpcMessage] = []
+        _sign_in_holds = getattr(self._runtime, "mcp_sign_in_holds", None)
         while True:
             try:
                 stale = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if stale is not None:
+                # A between-turns MCP status snapshot still tells this session
+                # which servers need a sign-in: a server that connected while
+                # no turn was reading leaves the set here, so the turn-start
+                # offer below never resets a connected server (a reset with
+                # startOAuth invalidates its credentials). Read only, no offer:
+                # the offer is made once, after the drain.
+                self._note_mcp_sign_in_status(stale, offer=False)
             if (
                 stale is not None
                 and stale.method is None
@@ -1605,6 +1641,22 @@ class AcpSessionHandle:
             ):
                 # A live waiter is inside _wait_for_response for this id. Hand
                 # it back instead of counting it: it is not a lost frame.
+                _stale_owed.append(stale)
+                continue
+            if (
+                stale is not None
+                and stale.method is not None
+                and stale.is_method(METHOD_MCP_OAUTH_REQUEST)
+                and self._owns_mcp_frame(stale)
+                and _sign_in_holds is not None
+                and _sign_in_holds(self._session_id, stale.params.get("serverName", ""))
+            ):
+                # The consent URL of a sign-in this session started, delivered
+                # while no turn was reading. It is the one link the user can
+                # complete (the runtime's sign-in slot stays held for it), so
+                # it is kept for the dispatch loop to yield as this turn's
+                # EVENT_MCP_OAUTH_REQUEST rather than destroyed with the
+                # abandoned turn's frames.
                 _stale_owed.append(stale)
                 continue
             if (
@@ -1782,6 +1834,10 @@ class AcpSessionHandle:
         # exception hierarchy. Re-raised unchanged, so cancellation still
         # propagates.
         try:
+            # Offer synchronously after the drain, before request building can yield
+            # and queue a connected status that makes a reset unsafe. The consent link
+            # is consumed by this turn's dispatch loop.
+            self._offer_mcp_sign_in()
             # Build the request FIRST (for prompts, the slow, cancellable
             # image-encoding part — see prompt()'s _build), then mark the turn
             # active immediately before the write: a child permission frame
@@ -4531,6 +4587,24 @@ class AcpSessionHandle:
                     await self._answer_kas_hooks_request(msg)
                     continue
 
+                self._note_mcp_sign_in_status(msg, offer=True)
+                # A server this session was signing in to has connected. The
+                # status snapshot is classified "skip", so its completion is
+                # yielded here, as soon as the snapshot is read; a completion
+                # read by a drain is yielded with the turn's first frame. Popped
+                # before the yield so a consumer that closes the turn mid-yield
+                # does not see the same completion twice.
+                while self._mcp_sign_in_completed:
+                    _done = self._mcp_sign_in_completed.pop()
+                    # Mirrors the mcp_server_initialized branch: a later
+                    # token-expiry retry may surface a new banner.
+                    self._oauth_emitted_servers.discard(_done)
+                    yield AcpEvent(
+                        kind=EVENT_MCP_SERVER_INITIALIZED,
+                        server_name=_done,
+                        runtime_global=False,
+                    )
+
                 # Dispatch by method
                 action = self._classify(msg)
 
@@ -5323,8 +5397,107 @@ class AcpSessionHandle:
         for name in required:
             self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
+    def _note_mcp_sign_in_status(self, msg: JsonRpcMessage, *, offer: bool) -> None:
+        """Track which of this session's servers need an OAuth sign-in.
+
+        Read from this session's own ``_kiro/mcp/status`` snapshots. A server is
+        added on ``failedAuthorization`` and removed once it connects, is
+        disabled, or leaves the snapshot. A tracked server that connects is
+        also recorded as a completed sign-in for the dispatch loop to yield as
+        ``EVENT_MCP_SERVER_INITIALIZED``. With ``offer`` a sign-in is then
+        offered; the dispatch loop passes it, because a link started there
+        arrives while the loop is reading. Session start and the pre-turn drain
+        read without offering: a link they started would land between turns,
+        and a start that fails is torn down.
+
+        Bounded like the session's MCP report reads the same frame: at most
+        ``BUCKET_CAP`` entries, and a name over ``NAME_CAP`` is skipped rather
+        than truncated, because a cut name names a server the engine does not
+        have. The completed set is bounded the same way: it is drained only by
+        the dispatch loop, so a completion that would take it past
+        ``BUCKET_CAP`` is dropped rather than held. Every dropped entry is
+        counted and the count is logged when it changes, so a server that is
+        never offered a sign-in, or whose completion is never yielded, is named
+        as such.
+        """
+        if not msg.is_method(METHOD_KAS_MCP_STATUS) or not self._owns_mcp_frame(msg):
+            return
+        servers = msg.params.get("servers")
+        if not isinstance(servers, list):
+            return
+        present: set[str] = set()
+        dropped = max(0, len(servers) - BUCKET_CAP)
+        for server in servers[:BUCKET_CAP]:
+            if not isinstance(server, dict) or not isinstance(server.get("name"), str):
+                continue
+            name = server["name"]
+            if not name or len(name) > NAME_CAP:
+                dropped += 1
+                continue
+            present.add(name)
+            if server.get("failedAuthorization") is True:
+                self._mcp_sign_in_needed.add(name)
+            elif server.get("status") in ("connected", "disabled"):
+                if server.get("status") == "connected" and name in self._mcp_sign_in_needed:
+                    # Only a server that was being signed in to counts as a
+                    # completion; an ordinary connected server yields nothing.
+                    # A full set refuses the name: between-turn reads never
+                    # drain it, so an unbounded add grows with every snapshot.
+                    if (
+                        name in self._mcp_sign_in_completed
+                        or len(self._mcp_sign_in_completed) < BUCKET_CAP
+                    ):
+                        self._mcp_sign_in_completed.add(name)
+                    else:
+                        dropped += 1
+                self._mcp_sign_in_needed.discard(name)
+        self._mcp_sign_in_needed &= present
+        if dropped != self._mcp_sign_in_dropped:
+            self._mcp_sign_in_dropped = dropped
+            if dropped:
+                logger.warning(
+                    "MCP sign-in tracking skipped %d status entr%s on session %s "
+                    "(over %d servers, a name over %d characters, or %d "
+                    "completions still to yield); those servers are not offered "
+                    "a sign-in or their completion is not yielded",
+                    dropped,
+                    "y" if dropped == 1 else "ies",
+                    self._session_id,
+                    BUCKET_CAP,
+                    NAME_CAP,
+                    BUCKET_CAP,
+                )
+        if offer:
+            self._offer_mcp_sign_in()
+
+    def _offer_mcp_sign_in(self) -> None:
+        """Ask the runtime to start one pending sign-in, if it can take one.
+
+        Called at turn start, after the pre-turn drain, and from the dispatch
+        loop on a status snapshot: both points have a reader for the link the
+        engine sends back. Never called during a session-start drain.
+
+        The server's banner dedupe is cleared first: its earlier link is dead
+        once a new sign-in starts, and the new link must not be dropped as a
+        duplicate.
+        """
+        begin = getattr(self._runtime, "begin_mcp_sign_in", None)
+        if begin is None or not self._session_id:
+            return
+        names = sorted(self._mcp_sign_in_needed)
+        start = next(
+            (i for i, name in enumerate(names) if name > self._mcp_sign_in_last_offered),
+            0,
+        )
+        for name in names[start:] + names[:start]:
+            if begin(self._session_id, name):
+                self._mcp_sign_in_last_offered = name
+                self._oauth_emitted_servers.discard(name)
+                return
+
     def _apply_init_notification(self, msg: JsonRpcMessage, action: str) -> None:
         """Initialization side effects shared by the drain and readiness barrier."""
+        self._note_mcp_sign_in_status(msg, offer=False)
         params = msg.params if isinstance(msg.params, dict) else {}
         if action == "update":
             update = params.get("update") or {}

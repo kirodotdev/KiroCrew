@@ -461,7 +461,7 @@ export default function SkillsTab() {
                     gate only suppresses it while the editor is VISIBLE. */}
                 {isMobile && (
                   <div className="px-4 pt-2.5 shrink-0">
-                    <ListDetailBack label={i18nT('pages.overview.skillsTab.skills')} onBack={() => { if (updateSkill.isPending) return; closeDetail() }} />
+                    <ListDetailBack label={i18nT('pages.overview.skillsTab.skills')} disabled={updateSkill.isPending} onBack={() => { if (updateSkill.isPending) return; closeDetail() }} />
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-2.5 border-b border-border shrink-0">

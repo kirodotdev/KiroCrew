@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         _describe_exception,
         _redact,
         _resolved_model_of,
+        _RunCreditAccounting,
         _subagent_default_effort,
         _subagent_default_model,
         _timeout_context,
@@ -710,10 +711,18 @@ class RunEventCoordinator(ManagerComponent):
                 # supersedes). The run still owns its cost sample, which the
                 # claim branch below would otherwise have recorded; the reap's
                 # own record guard is skipped for a record this arm wrote.
-                info.elapsed = time.time() - info.started
+                #
+                # An abnormal arm that already wrote the tombstone finalized
+                # ``info.elapsed`` there; read that single value so the record
+                # on disk and the terminal event agree. Only sample here when no
+                # writer set it (a run that ended before its folder was seeded
+                # writes no tombstone, so nothing finalized elapsed).
+                if info.elapsed <= 0:
+                    info.elapsed = time.time() - info.started
                 self._manager._record_cost(info)
             elif self._manager._claim_finalize(info):
-                info.elapsed = time.time() - info.started
+                if info.elapsed <= 0:
+                    info.elapsed = time.time() - info.started
                 self._manager._record_cost(info)
                 report_task = self._manager._spawn_terminal_report(
                     info,
@@ -803,16 +812,23 @@ class RunEventCoordinator(ManagerComponent):
             except Exception:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
 
-    def _queued_depth_impl(self, parent_session_key: str) -> int:
+    def _queued_depth_impl(self, parent_session_key: str, *, for_dispatch: bool = False) -> int:
         """Number of spawns currently queued for *parent_session_key* (waiting
-        behind the concurrency cap / stagger gate, not yet started)."""
+        behind the concurrency cap / stagger gate, not yet started).
+
+        *for_dispatch* is the chip's reading: a row the pump has popped and is
+        about to claim is not shown as waiting. Every other caller -- the
+        reset-deferral guards above all -- keeps the default and counts it, since
+        it is still this parent's accepted work until the claim lands."""
         in_window = sum(
             1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
         )
         # Rows queued in the store but outside the in-memory window are still
         # this parent's waiting work; the chip and the reset-deferral guards
         # must see them.
-        return in_window + self._manager._admission.taskq_overflow(parent_session_key)
+        return in_window + self._manager._admission.taskq_overflow(
+            parent_session_key, for_dispatch=for_dispatch
+        )
 
     async def _queued_depth_async_impl(self, parent_session_key: str) -> int:
         """:meth:`_queued_depth_impl` with its store count on the writer thread."""
@@ -954,7 +970,7 @@ class RunEventCoordinator(ManagerComponent):
         admission = manager._admission
         store = admission.taskq_store()
         if store is None or not type(admission).pump_off_loop:
-            depth = manager._queued_depth(parent_session_key)
+            depth = manager._queued_depth(parent_session_key, for_dispatch=True)
             loop.create_task(manager._fire_event("subagent_queued", info, _extra(depth)))
             return
         # The store half of the count (rows outside the window) runs on the
@@ -964,7 +980,7 @@ class RunEventCoordinator(ManagerComponent):
         in_window = sum(
             1 for q in manager._queue if q.get("parent_session_key", "") == parent_session_key
         )
-        exclude_ids = admission.taskq_excluded_ids()
+        exclude_ids = admission.taskq_dispatch_excluded_ids()
         live_store = store
 
         async def _emit() -> None:
@@ -1088,6 +1104,7 @@ class RunEventCoordinator(ManagerComponent):
         self,
         info: SubagentInfo,
         session_key: str,
+        usage: _RunCreditAccounting,
     ) -> None:
         """Inner execution — called within timeout wrapper."""
         setattr(info, "_session_id", "")
@@ -1791,6 +1808,7 @@ class RunEventCoordinator(ManagerComponent):
             _fb_state = FallbackState(configured_fallback_chain())
             msg = full_message
             while True:
+                usage.begin(client)
                 try:
                     if not use_session_sharing:
                         # Publish the live dedicated PID before every prompt,
@@ -1863,6 +1881,9 @@ class RunEventCoordinator(ManagerComponent):
                         yield _ev
                     if _withheld is None:
                         return
+                    # Preserve this turn's billing before recovery can cancel
+                    # or begin another attempt with a fresh usage baseline.
+                    usage.settle(_withheld)
                     if _infra is not None:
                         _nudge = await self._manager._yield_for_infra_retry(info, _infra)
                     else:
@@ -1880,6 +1901,7 @@ class RunEventCoordinator(ManagerComponent):
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    usage.settle()
                     if not acp_error_is_transient(exc):
                         raise
                     # Post-activity: continue instead of re-running. "Activity"
@@ -2129,6 +2151,7 @@ class RunEventCoordinator(ManagerComponent):
                             info.id,
                             child_escalation_limit,
                         )
+                        usage.settle()
                         self._manager._write_tombstone(info, "child_escalation_limit")
                         return
                 # Diagnostic pointer is written for BOTH origins — orphan
@@ -2172,6 +2195,7 @@ class RunEventCoordinator(ManagerComponent):
                     info.done = True
                     Stats().inc_subagent_failed()
                     logger.warning("Subagent %s hit turn limit (%d)", info.id, turn_limit)
+                    usage.settle()
                     self._manager._write_tombstone(info, "turn_limit")
                     return
                 _spec_block = None
@@ -2532,7 +2556,12 @@ class RunEventCoordinator(ManagerComponent):
                         )
             elif event.kind == EVENT_COMPLETE:
                 _complete_event = event
+                usage.settle(event)
                 break
+
+        # A provider may finish without an explicit completion event. Its
+        # current prompt stats are still the authoritative billing record.
+        usage.settle()
 
         # Strip [OPTIONS: ...] tags and redact sensitive content
         cleaned, _ = extract_options(result_text) if result_text else (result_text, [])

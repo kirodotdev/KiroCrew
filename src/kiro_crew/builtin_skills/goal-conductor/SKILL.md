@@ -34,6 +34,19 @@ patrol cycle.
 
 ## What is a work item
 
+### User-visible Dynamic Dashboard
+
+For a long run, load the `artifacts` skill's Dynamic Dashboard contract. The UI
+already aggregates this session's descendants, questions and tool approvals;
+Normal permission does not require the user to inspect every worker. An
+authorized descendant can publish a `task-dashboard` HTML artifact designed
+for this goal, with milestone updates to the same slug. Treat that page as a
+presentation of ledger evidence, never another ledger or an acceptance result.
+Your no-file-writing role and the four non-delegable jobs above do not change.
+Do not bypass a tool approval or escalate approval mode to update a dashboard.
+
+### Work-item qualification
+
 A candidate qualifies only if **all three** hold:
 
 1. **Independent** — it does not consume another candidate's output. Two
@@ -169,6 +182,16 @@ worker will open a pull request, you can add one line to the seed: it may
 read `<crew-home>/skills/kirocrew-dev/prepare-pr/SKILL.md` (`<crew-home>` is
 `KIROCREW_HOME` when set, else `~/.kiro/crew`) and follow its loop to drive
 the PR to review-ready. Optional — the worker's own method is fine too.
+
+**A large item's seed may name `workflow_run`.** You see the item's size
+before the worker does. When it has several dependent phases or many
+independent pieces AND a failed piece should re-run without redoing the rest,
+add one line: run it with `workflow_run` (check `workflow_library_list` for a
+saved one first) and put the run id in `artifacts`. A run's steps do not
+inherit the worker's directory, so for an item in a checkout the line also says
+every step passes that checkout as `ctx.agent(cwd=)`. Leave the line out for a
+single task or a one-shot fan-out; the worker does those itself. This is
+advice to the worker: you still never call `workflow_run` yourself.
 
 **Bind BEFORE you seed.** The opposite order — seed first, record after —
 protects against a ledger row with no session behind it. This one protects

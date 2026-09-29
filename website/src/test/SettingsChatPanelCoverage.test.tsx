@@ -2,7 +2,7 @@
  * Coverage pass over Settings ▸ Chat (`pages/settings/ChatPanel.tsx`).
  *
  * The existing ChatPanel specs pin a handful of rows in depth (default model,
- * About You, link previews, verbosity, knowledge opt-in). What they leave cold
+ * About You, link previews, verbosity). What they leave cold
  * is the long tail: every OTHER row's `onChange`, the per-role model/effort
  * block, the two query-failure banners with their Retry buttons, the save-error
  * banner and its dismiss, and — most importantly — the `onError` arm of each

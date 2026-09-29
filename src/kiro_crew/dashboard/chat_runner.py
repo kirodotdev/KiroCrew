@@ -15502,6 +15502,10 @@ async def _run_chat(
                     "request_id": str(event.request_id),
                     "tool_call_id": event.tool_call_id or "",
                 }
+                if event.tool_purpose:
+                    perm_meta["tool_purpose"] = _redact_tool_field(
+                        event.tool_purpose, limit=_MAX_TOOL_PURPOSE
+                    )
                 if event.tool_input:
                     # Security: scan for exfiltration URLs and credentials
                     sanitized, _ = redact_exfiltration_urls(event.tool_input)
@@ -15590,14 +15594,14 @@ async def _run_chat(
                 # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).
                 if tool_approval_timeout_secs() <= 0:
                     perm_meta["resolved"] = "rejected"
-                slot.append(
+                permission_row = slot.append(
                     "permission",
                     f"{_child_lf_warning}{_safe_title}" if _child_lf_warning else _safe_title,
                     json.dumps(perm_meta),
                 )
                 loop = asyncio.get_running_loop()
                 fut: asyncio.Future[str] = loop.create_future()
-                slot._approval_futures[str(event.request_id)] = fut
+                slot.register_approval(str(event.request_id), fut, permission_row)
                 # Push via global SSE AFTER registering the future, so the
                 # slot dict reflects pending_approval=true and Board cards
                 # move into the Blocked lane without a browser refresh.
@@ -15863,7 +15867,7 @@ async def _run_chat(
                             slot.append("error", _approval_card, "msg msg-err")
                         except Exception:
                             logger.debug("Failed to render approval card", exc_info=True)
-                    slot._approval_futures.pop(str(event.request_id), None)
+                    _owns_approval = slot.unregister_approval(str(event.request_id), fut)
                     # The decision is final here and nowhere earlier: every path
                     # out of the await above converges on this ``finally`` -- the
                     # human's answer, the window expiring, the no-budget decline,
@@ -15935,8 +15939,8 @@ async def _run_chat(
                     # write into the row. The ``approval_resolved`` frame below
                     # is what retires the card on every window for those paths.
                     _approved = outcome in ("approved", "approved_trust_reads")
-                    if _mark_permission_resolved(
-                        slot.messages,
+                    if _owns_approval and _mark_permission_resolved(
+                        [permission_row],
                         str(event.request_id),
                         "approved" if _approved else "rejected",
                         only_if_pending=True,
@@ -15952,7 +15956,7 @@ async def _run_chat(
                             },
                         )
                         state.push_slots_update()
-                    elif "resolved" in perm_meta:
+                    elif _owns_approval and "resolved" in perm_meta:
                         # A row born resolved (the no-budget pre-check at its
                         # append) needs neither the mark nor an
                         # ``approval_resolved`` frame -- but the future it

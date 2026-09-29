@@ -354,17 +354,19 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
-from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
+from kiro_crew.slack.scope_probe import log_probe_failure, warn_unreadable_tracked_channels
 from kiro_crew.slack.transport import SlackTransport
 from kiro_crew.subagent import (
     _TRANSIENT_CONTINUE_MSG,
     DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
     SpawnApprovalUnreachable,
+    SubagentDelivery,
     SubagentInfo,
     SubagentManager,
     ToolApprovalCallback,
     _injection_notice_outcome,
+    format_subagent_usage,
     resolve_max_subagents,
     stage_boundary_owner_for_run,
 )
@@ -8835,7 +8837,8 @@ class GatewayOrchestrator:
         turn has consumed that announce -- including a retry, because a failure
         before the model consumed the prompt re-queues the same text under a newly
         minted queue id, which a debt keyed on the original id could never match. A
-        wave digest carries its held members' ids too: ``_digest_settle_ids`` is
+        wave digest carries its held members' snapshots too:
+        ``_digest_settle_deliveries`` is
         transferred (not copied), so the run loop's ``_settle_digest_holds`` becomes
         a no-op rather than a second writer.
 
@@ -8850,10 +8853,14 @@ class GatewayOrchestrator:
         # nullability idiom reports a user-stopped agent as completed, and a
         # stopped or failed run already carries its own tombstone whose 7-day
         # post-mortem window a "delivered" write would shorten to the result TTL.
-        owed: list[str] = [] if (flush_only or info.outcome != "completed") else [info.id]
-        held = getattr(info, "_digest_settle_ids", None)
+        owed: list[SubagentDelivery] = (
+            []
+            if (flush_only or info.outcome != "completed")
+            else [SubagentDelivery(info.id, info.elapsed, info.credits)]
+        )
+        held = getattr(info, "_digest_settle_deliveries", None)
         if isinstance(held, list):
-            owed.extend(str(h) for h in held)
+            owed.extend(held)
         try:
             slot.note_pending_subagent_delivery(announce, owed)
         except Exception:
@@ -8863,7 +8870,7 @@ class GatewayOrchestrator:
             return
         info._delivery_queued = True
         if isinstance(held, list):
-            info._digest_settle_ids = []
+            info._digest_settle_deliveries = []
 
     @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:
@@ -9625,7 +9632,8 @@ class GatewayOrchestrator:
             task_text, _ = redact_exfiltration_urls(info.task)
             task_text, _ = redact_credentials(task_text)
             task_text = task_text[:100]
-            body = f"{task_text}\n\n{detail}"
+            usage = format_subagent_usage(info.credits, info.elapsed)
+            body = f"{task_text}\n\nUsage: {usage}\n\n{detail}"
             title, _ = redact_exfiltration_urls(title)
             title, _ = redact_credentials(title)
 
@@ -9635,6 +9643,7 @@ class GatewayOrchestrator:
                 f"{f' ({info.agent})' if info.agent else ''}"
                 f" {status} {emoji}\n"
                 f"Task: {task_text}\n\n"
+                f"Usage: {usage}\n\n"
                 f"{detail}"
                 f"{guard_msg}"
             )
@@ -9705,7 +9714,7 @@ class GatewayOrchestrator:
                             "fail_lines": [],
                             "ok_lines": [],
                             "guard_msgs": [],
-                            "held_ok_ids": [],
+                            "held_ok_deliveries": [],
                             # Members whose delivery is currently held, so the
                             # hold-deadline sweep's timestamps can be cleared
                             # when their chunk finally fires.
@@ -9760,12 +9769,13 @@ class GatewayOrchestrator:
                 # successes are one pointer line (full output stays on disk).
                 if _oc == "completed":
                     bp["ok_lines"].append(
-                        f"— `{info.id}` ✅ {task_text[:80]}{_model_tag}"
+                        f"— `{info.id}` ✅ {task_text[:80]}{_model_tag} · {usage}"
                         + (f"\n  → {result_path}" if result_path else "")
                     )
                 else:
                     bp["fail_lines"].append(
                         f"— `{info.id}` {status} {emoji} · {task_text[:80]}{_model_tag}\n"
+                        f"  Usage: {usage}\n"
                         f"  {detail[:400]}{'…' if len(detail) > 400 else ''}"
                     )
                 _last = bp["total"] > 0 and bp["done"] >= bp["total"]
@@ -9856,7 +9866,9 @@ class GatewayOrchestrator:
                         info._digest_held_at = time.time()
                         bp.setdefault("held_infos", []).append(info)
                         if _oc == "completed":
-                            bp["held_ok_ids"].append(info.id)
+                            bp["held_ok_deliveries"].append(
+                                SubagentDelivery(info.id, info.elapsed, info.credits)
+                            )
                         logger.info(
                             "Subagent %s: completion held for digest chunk (%d/%d done)",
                             info.id,
@@ -9871,7 +9883,7 @@ class GatewayOrchestrator:
                     # Stash the ids on the flushing member: the run loop
                     # settles them only after _on_done (which includes the
                     # routing below) returns without raising.
-                    info._digest_settle_ids = list(bp.get("held_ok_ids", []))
+                    info._digest_settle_deliveries = list(bp.get("held_ok_deliveries", []))
                     # These members are no longer held: stop the hold clock so
                     # the reaper's deadline sweep does not force a second flush
                     # for results this chunk already carries.
@@ -10015,7 +10027,7 @@ class GatewayOrchestrator:
                         bp["fail_lines"] = []
                         bp["ok_lines"] = []
                         bp["guard_msgs"] = []
-                        bp["held_ok_ids"] = []
+                        bp["held_ok_deliveries"] = []
 
             # ── Route completion back to the originating session ──
             # Tab open        → that tab (a channel-born tab mirrors on to its channel)
@@ -10242,7 +10254,7 @@ class GatewayOrchestrator:
                         # ids); stays False when there is nothing to owe — a
                         # failed or stopped solo member settles through its own
                         # failure tombstone, not this ledger.
-                        _owes_delivery = bool(info._digest_settle_ids) or (
+                        _owes_delivery = bool(info._digest_settle_deliveries) or (
                             not _flush_only and info.outcome == "completed"
                         )
                         self._defer_queued_delivery(
@@ -10829,11 +10841,13 @@ class GatewayOrchestrator:
                     # every terminal state whose report could not be injected,
                     # not only successful completions.
                     outcome_line = _injection_notice_outcome(info)
+                    usage = format_subagent_usage(info.credits, info.elapsed)
                     slot.append(
                         "assistant",
                         f"{SUBAGENT_COMPLETION_PREFIX}\n"
                         f"Agent `{info.id}` ❌\n"
                         f"Task: {task_preview}\n\n"
+                        f"Usage: {usage}\n\n"
                         f"Error: {error_text}\n"
                         f"⚠️ Result delivery failed — {outcome_line}",
                         "msg msg-a",
@@ -14069,13 +14083,31 @@ class GatewayOrchestrator:
         thread re-clears its own late write. The clear lives in the same
         thread as the write (not an event-loop callback) because
         ``os._exit`` can beat any callback still queued on the loop.
+
+        The clear here is ``clear_late_marker_write``, not ``clear_marker``,
+        and the difference is what makes this thread safe to run at an
+        arbitrary time. The shutdown-side clear holds the listener while it
+        runs, so a location still identifies its owner; this thread may run
+        after the listener is free and a replacement gateway has bound the
+        port, where it does not. ``clear_late_marker_write`` therefore deletes
+        no credential at all, so a replacement gateway's clients keep
+        authenticating whatever this thread does, and it declines the marker
+        files outright when the pid record names another process. Its own
+        docstring states what that second scope does not reach: a late write
+        of this generation rewrites the pid record, so marker files a landed
+        late write produced are always removable.
         """
         try:
             run_marker.write_marker(port)
         finally:
             if self._marker_clear_pending.is_set():
                 try:
-                    run_marker.clear_marker(port)
+                    if not run_marker.clear_late_marker_write(port):
+                        logger.debug(
+                            "Late run-marker self-clear declined for port %s: "
+                            "the pid record names another gateway",
+                            port,
+                        )
                 except Exception:
                     logger.debug("Late run-marker self-clear skipped", exc_info=True)
 
@@ -14646,6 +14678,7 @@ class GatewayOrchestrator:
             )
             self._background_tasks.add(_scope_task)
             _scope_task.add_done_callback(self._background_tasks.discard)
+            _scope_task.add_done_callback(log_probe_failure)
 
         # Block until shutdown
         await shutdown_event.wait()
@@ -14743,8 +14776,18 @@ class GatewayOrchestrator:
         # event because the TCP listener died and could not be rebound, so the
         # process was alive but unreachable. That state must never be an
         # exit 0 either -- the supervisor has to relaunch it.
-        exit_code = shutdown_exit_code(watchdog) or listener_guard_exit_code(
-            getattr(self.dashboard_state, "_listener_guard", None)
+        # BOTH guards, because either can be the one that gave up. The second
+        # loopback family's guard normally degrades instead of exiting, but it
+        # escalates to this exit when its sidecar can be neither removed nor
+        # blanked -- a live credential readable for an address nothing holds --
+        # and reading only the primary would turn that escalation into an exit 0
+        # the supervisor does not relaunch.
+        exit_code = (
+            shutdown_exit_code(watchdog)
+            or listener_guard_exit_code(getattr(self.dashboard_state, "_listener_guard", None))
+            or listener_guard_exit_code(
+                getattr(self.dashboard_state, "_secondary_listener_guard", None)
+            )
         )
 
         # Drop this gateway's run-marker BEFORE _shutdown() releases the
@@ -14763,6 +14806,12 @@ class GatewayOrchestrator:
         # os._exit could beat. TimeoutError and a failed write are both
         # caught HERE (not by the outer except) so they still fall through
         # to the clear.
+        # The clear itself is filesystem work -- unlinking the marker, the pid and
+        # start sidecars, and every credential sidecar the listeners published --
+        # so it is offloaded rather than run on the loop. It is AWAITED, not
+        # queued, because the ordering above is the point: the clear has to land
+        # before _shutdown() frees the listener. An awaited thread also cannot be
+        # beaten by os._exit the way a loop callback can.
         try:
             from kiro_crew.instances import run_marker
 
@@ -14785,7 +14834,7 @@ class GatewayOrchestrator:
                             "Run-marker write failed; clearing anyway",
                             exc_info=True,
                         )
-                run_marker.clear_marker(self._dashboard_port)
+                await asyncio.to_thread(run_marker.clear_marker, self._dashboard_port)
         except Exception:
             logger.debug("Gateway run-marker clear skipped", exc_info=True)
 

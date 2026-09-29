@@ -418,6 +418,56 @@ describe('command bar — folders view', () => {
     )
   })
 
+  it('refuses a STALE Enter, so a fast typist never reveals the wrong folder', async () => {
+    // This view ranks from the DEBOUNCED query like every other scoped one, so for one
+    // debounce interval after a keystroke its rows answer the previous query — and an
+    // Enter in that window acts on the row that was selected against it. Reported first
+    // in the crewmates view; the guard is on the activation path all four share.
+    await openFoldersView()
+    type('sydney')
+    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
+    dispatch.mockClear()
+    navigate.mockClear()
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: 'trading' } })
+    // No debounce tick: the row on screen is still Sydney Property.
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(navigate).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalledWith({
+      type: 'requestFolderReveal',
+      folderId: 'f-syd',
+    })
+    // Once the rows catch up, the same Enter reveals what was typed. BOTH halves are
+    // waited on: `Trading Desk` alone is in the unfiltered listing too, so it is already
+    // true before the debounce flushes, and `Sydney Property` alone is false during the
+    // blank frame while the new query fetches — where there is no row to press at all.
+    await waitFor(() => {
+      expect(hasRow('Trading Desk')).toBe(true)
+      expect(hasRow('Sydney Property')).toBe(false)
+    })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith({ type: 'requestFolderReveal', folderId: 'f-trade' }),
+    )
+  })
+
+  it('still opens the row a POINTER pressed inside that same window', async () => {
+    // A pointer names its own target: the reader pressed the row they could read, and
+    // that row reveals what it says. Only Enter names an index, and only an index means
+    // a different folder once the rows move under it — so the guard is on the keyboard
+    // path alone. Blocking the click instead made a visible row simply not respond.
+    await openFoldersView()
+    type('sydney')
+    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
+    dispatch.mockClear()
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: 'trading' } })
+    fireEvent.mouseDown(rowByText('Sydney Property'))
+    await waitFor(() =>
+      expect(dispatch).toHaveBeenCalledWith({ type: 'requestFolderReveal', folderId: 'f-syd' }),
+    )
+  })
+
   it('names the Enter action "Open" on a folder row, not "Open Session"', async () => {
     // The footer's job is to say what Enter does, and what it does here is reveal a
     // folder. The sessions view's own verb would promise a conversation.

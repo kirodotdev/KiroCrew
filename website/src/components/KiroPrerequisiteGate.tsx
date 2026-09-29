@@ -20,6 +20,7 @@ import {
 } from '../api/client'
 import {
   PANEL_CLASS,
+  PINNED_FOOTER_CLASS,
   SCRIM_CLASS,
   SECTION_CLASS,
   ShellAside,
@@ -155,7 +156,7 @@ function SetupShell({
             )}
           </div>
           {footer ? (
-            <div className="shrink-0 border-t border-border px-6 py-4 sm:px-10">{footer}</div>
+            <div data-testid="gate-footer" className={`${PINNED_FOOTER_CLASS} shrink-0 border-t border-border px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-10 sm:pb-4`}>{footer}</div>
           ) : null}
         </section>
       </div>

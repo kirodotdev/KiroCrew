@@ -750,7 +750,7 @@ class TestSameBaseRefusalRetry:
         # by the caller before this test could reach it, so the property under test
         # is that the retry re-reads rather than replays -- not a literal for a
         # value this test never supplied.
-        monkeypatch.setattr(mcp, "read_local_secret", lambda port: "regenerated-secret")
+        monkeypatch.setattr(mcp, "read_local_secret", lambda port, **_kw: "regenerated-secret")
         sent: list[str | None] = []
 
         def fake_open(req, timeout=None, unix_socket_path=None):
@@ -777,7 +777,7 @@ class TestSameBaseRefusalRetry:
         """
         mcp = unchanged_base
 
-        def boom(port):
+        def boom(port, **_kw):
             raise OSError("unreadable")
 
         monkeypatch.setattr(mcp, "read_local_secret", boom)

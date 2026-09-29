@@ -968,8 +968,13 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // walked a stack the visible UI does not reflect is the same wrong in
         // native form. Only the text-field gate unclaims (see the hit-null
         // above): the field consumes the caret chord and never navigates.
-        'history-back': () => { if (!isNarrowViewport() && canGoBack()) guardedHistoryStep(-1) },
-        'history-forward': () => { if (!isNarrowViewport() && canGoForward()) guardedHistoryStep(1) },
+        // An allowed step arms the composer release (after the draft ask, so
+        // the one-shot's clock starts when the step commits), so the
+        // destination's autofocus skips once and the NEXT press is not eaten
+        // by the text field. Not Mac-gated: the text-field unclaim is
+        // platform-wide.
+        'history-back': () => { if (!isNarrowViewport() && canGoBack()) guardedHistoryStep(-1, releaseComposerForKeyboardSwitch) },
+        'history-forward': () => { if (!isNarrowViewport() && canGoForward()) guardedHistoryStep(1, releaseComposerForKeyboardSwitch) },
         'cycle-agent': () => onCycleAgent?.(),
         'cycle-prev-agent': () => onCyclePrevAgent?.(),
         'cycle-reasoning': () => onCycleReasoningEffort?.(),

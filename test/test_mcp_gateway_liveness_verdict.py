@@ -141,7 +141,7 @@ async def test_one_escalated_miss_replaces_an_adopted_daemon(tmp_path, monkeypat
     m._process = None
     steps = []
 
-    async def _never_answers():
+    async def _never_answers(**_kwargs):
         steps.append("probed")
         return None
 

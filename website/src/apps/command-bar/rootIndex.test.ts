@@ -161,6 +161,73 @@ describe('rankRootRows', () => {
     expect(out.some(r => r.id === 'cmd')).toBe(true)
   })
 
+  it('leaves the commands group room for contributed rows beyond its builtins', () => {
+    // The group holds the product's own builtins AND whatever an installed app
+    // declares. Under one shared cap the six builtins fill it, and an app's row is
+    // dropped with nothing on screen saying so — the app installed fine, its
+    // manifest was accepted, its row is simply absent. This is the regression adding
+    // the crewmates row produced, and the reason the group has a cap of its own.
+    const builtins = [
+      'New Session',
+      'Toggle Theme',
+      'Search Sessions',
+      'Search Artifacts',
+      'Search Folders',
+      'Search Crewmates',
+    ].map((title, i) => row({ id: `builtin${i}`, title, group: 'commands' }))
+    // Demoted, the way `CommandBarOverlay` marks an argument-taking contribution: it
+    // sorts last on an empty query, which is exactly where a tight cap removes it.
+    const contributed = [
+      row({ id: 'app-cmd-a', title: 'Approve all PRs', group: 'commands', idleDemote: true, contributed: true }),
+      row({ id: 'app-cmd-b', title: 'Merge all PRs', group: 'commands', idleDemote: true, contributed: true }),
+    ]
+    const ids = rankRootRows([...builtins, ...contributed], '', {}, 0).map(r => r.id)
+    for (const b of builtins) expect(ids).toContain(b.id)
+    expect(ids).toContain('app-cmd-a')
+    expect(ids).toContain('app-cmd-b')
+  })
+
+  it('keeps every contributed row no matter how many builtins the product adds', () => {
+    // The boundary itself, stated as a rule rather than as a number: a builtin is not
+    // counted, so there is no builtin count at which an app's row starts being dropped.
+    // A cap that counted both populations made "we added a row" and "your app lost a
+    // row" the same event, and an earlier fix for it -- a wider cap of 8 -- only moved
+    // that boundary from six builtins to eight.
+    const builtins = Array.from({ length: 30 }, (_, i) =>
+      row({ id: `builtin${i}`, title: `Builtin ${i}`, group: 'commands' }),
+    )
+    const contributed = row({
+      id: 'app-cmd',
+      title: 'Approve all PRs',
+      group: 'commands',
+      idleDemote: true,
+      contributed: true,
+    })
+    const ids = rankRootRows([...builtins, contributed], '', {}, 0).map(r => r.id)
+    expect(ids).toContain('app-cmd')
+  })
+
+  it('still caps CONTRIBUTED command rows, so one app cannot become an index', () => {
+    // The cap is not removed, it is pointed at the population it was written for: a
+    // page nobody has typed into stays short, and the rest of an app's twenty rows are
+    // one keystroke away, because a typed query ranks every row on its match.
+    const many = Array.from({ length: 20 }, (_, i) =>
+      row({ id: `cmd${i}`, title: `Command ${i}`, group: 'commands', contributed: true }),
+    )
+    expect(rankRootRows(many, '', {}, 0)).toHaveLength(6)
+  })
+
+  it('leaves the product\'s own command list uncapped, which is where it is reviewable', () => {
+    // The deliberate consequence of not counting builtins, pinned so it is a decision
+    // rather than a discovery. A builtin list long enough to fill the first page is a
+    // change in this repository, where the page it lands on is reviewed; an app's rows
+    // arrive from a manifest nobody here reads, which is why only those are capped.
+    const many = Array.from({ length: 12 }, (_, i) =>
+      row({ id: `builtin${i}`, title: `Builtin ${i}`, group: 'commands' }),
+    )
+    expect(rankRootRows(many, '', {}, 0)).toHaveLength(12)
+  })
+
   it('returns group blocks in launcher order, not in score order', () => {
     // What a launcher leads with is a product decision, so it must not depend on
     // which row happens to score highest — with no usage every score ties and the

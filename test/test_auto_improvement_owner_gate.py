@@ -2,7 +2,9 @@
 
 Each route here either turns the owner's agents loose on a repository (clone,
 config, run, calibrate, PR watcher) or publishes under the owner's identity
-(one-click commit push, draft pull request). Every case drives the real handler
+(one-click commit push, draft pull request), or destroys or redirects the owner's
+work (forget, purge, stop, session links), or spends the owner's forge credential
+(PR status). Every case drives the real handler
 and replaces the first thing its body does with a recorder, so a refused caller
 is proven to stop at the gate, before any request parsing or disk read.
 
@@ -40,7 +42,23 @@ _PUBLISH_ROUTES = [
     ("POST", "_handle_draft_pr", "auto_improvement.draft_pr"),
 ]
 
-_ALL_ROUTES = _AGENT_ROUTES + _PUBLISH_ROUTES
+#: Routes that erase, stop or re-point the owner's work.
+_OWNER_WORK_ROUTES = [
+    ("POST", "_handle_forget", "auto_improvement.forget"),
+    ("POST", "_handle_purge", "auto_improvement.purge"),
+    ("POST", "_handle_purge_dead", "auto_improvement.purge_dead"),
+    ("POST", "_handle_run_stop", "auto_improvement.run_stop"),
+    ("POST", "_handle_watcher_stop", "auto_improvement.watcher_stop"),
+    ("PUT", "_handle_save_session", "auto_improvement.session_save"),
+    ("DELETE", "_handle_delete_session", "auto_improvement.session_delete"),
+]
+
+#: A read that fetches a pull request with the owner's forge credential.
+_CREDENTIAL_ROUTES = [
+    ("GET", "_handle_pr_status", "auto_improvement.pr_status"),
+]
+
+_ALL_ROUTES = _AGENT_ROUTES + _PUBLISH_ROUTES + _OWNER_WORK_ROUTES + _CREDENTIAL_ROUTES
 
 
 class _Reached(Exception):
@@ -51,7 +69,10 @@ def _request(method: str, *, user: str, app_claim: str) -> web.Request:
     app = web.Application()
     app["state"] = mock.MagicMock(owner_id=OWNER)
     request = make_mocked_request(
-        method, "/api/apps/auto-improvement/x", match_info={"fp": "abc123"}, app=app
+        method,
+        "/api/apps/auto-improvement/x?url=https://github.com/o/r/pull/1",
+        match_info={"fp": "abc123", "key": "pr-o_r-1"},
+        app=app,
     )
     request["app"] = app_claim
     request["user"] = user
@@ -83,6 +104,22 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
         raise _Reached
 
     monkeypatch.setattr(routes.pr_watchers, "get_registry", _get_registry)
+
+    def _sync_sink(label: str) -> Any:
+        def _sink(*_a: Any, **_k: Any) -> None:
+            seen["body"].append(label)
+            raise _Reached
+
+        return _sink
+
+    async def _fetch_pr_status(*_a: Any, **_k: Any) -> dict:
+        seen["body"].append("fetch_pr_status")
+        raise _Reached
+
+    monkeypatch.setattr(routes.ledger_admin, "purge_dead", _sync_sink("purge_dead"))
+    monkeypatch.setattr(routes.runner, "get_supervisor", _sync_sink("supervisor"))
+    monkeypatch.setattr(store, "delete_session", _sync_sink("delete_session"))
+    monkeypatch.setattr(routes.pr_checks, "fetch_pr_status", _fetch_pr_status)
     monkeypatch.setattr(store, "read_json", _read_json)
     monkeypatch.setattr(
         routes,

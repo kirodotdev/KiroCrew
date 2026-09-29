@@ -3963,6 +3963,51 @@ class TestTheReadingHappensBeforeTheJudge:
         finally:
             service.stop()
 
+    @staticmethod
+    def _stored_baseline(tmp_path: Any, loop_id: str) -> dict:
+        """What the record on disk holds for this loop's baseline."""
+        import json
+
+        rows = json.loads((tmp_path / "autonudge.json").read_text())["loops"]
+        return next(row for row in rows if row["id"] == loop_id)["judge_pr_seen"]
+
+    @staticmethod
+    def _tap_commit_writes(
+        service: AutoNudgeService,
+        loop: NudgeLoop,
+        answers: list[bool],
+        *,
+        on_refuse: Any = None,
+    ) -> list[tuple[dict, dict]]:
+        """Intercept the writes that CARRY a baseline memory does not yet hold.
+
+        Every store write goes through ``_write_monitor_snapshot_locked`` on this path,
+        and the reading's own write carries whatever baseline memory already has. A
+        write whose row disagrees with memory is therefore a commit, and that is the
+        property under test -- the baseline reaches disk before it reaches memory. Each
+        commit pops one answer: ``True`` lets the real write through, ``False`` refuses
+        it after calling *on_refuse*. Returns ``(written, in_memory)`` per commit.
+        """
+        real = service._write_monitor_snapshot_locked
+        seen: list[tuple[dict, dict]] = []
+
+        async def _write(payload: dict | None = None) -> None:
+            # A payload-less call serializes live state, which by definition carries the
+            # baseline memory already holds; only a staged payload can be a commit.
+            row = None
+            if payload is not None:
+                row = next((r for r in payload["loops"] if r["id"] == loop.id), None)
+            if row is not None and row["judge_pr_seen"] != loop.judge_pr_seen:
+                seen.append((dict(row["judge_pr_seen"]), dict(loop.judge_pr_seen or {})))
+                if not answers.pop(0):
+                    if on_refuse is not None:
+                        on_refuse()
+                    raise OSError("disk went away")
+            await real(payload)
+
+        service._write_monitor_snapshot_locked = _write  # type: ignore[method-assign]
+        return seen
+
     def test_the_baseline_is_committed_with_an_awaited_write(self, tmp_path, monkeypatch) -> None:
         """The stored record is this baseline's authority, so memory may not run ahead of it.
 
@@ -3974,8 +4019,9 @@ class TestTheReadingHappensBeforeTheJudge:
 
         Pinned by WHAT THE WRITE SEES rather than by counting calls: the judge call makes
         awaited writes of its own, so a call count cannot tell them from this one. A
-        write that observes the committed baseline can only have happened after the
-        commit, which is exactly the ordering at issue.
+        write that carries the committed baseline while memory still holds the old one
+        can only be the commit, and that ordering -- disk first -- is exactly what is at
+        issue.
         """
         import kiro_crew.autonudge as _an
 
@@ -3993,38 +4039,32 @@ class TestTheReadingHappensBeforeTheJudge:
         loop = self._judged_pr_loop()
         service._loops[loop.id] = loop
 
-        seen_baselines: list[dict] = []
-
-        async def _spy_persist(inner: NudgeLoop) -> bool:
-            seen_baselines.append(dict(inner.judge_pr_seen or {}))
-            return True
-
         async def _answer(inner: NudgeLoop) -> bool | None:
             return None
 
-        service._persist_judge_state = _spy_persist  # type: ignore[method-assign]
         service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        commits = self._tap_commit_writes(service, loop, [True])
         try:
             asyncio.run(service._monitor_tick_is_quiet(loop))
             assert loop.judge_pr_seen, "the tick staged a baseline to commit"
-            assert any(seen for seen in seen_baselines), (
-                "a durable write must have been AWAITED while the committed baseline was "
-                "in place -- a scheduled write leaves the old baseline on disk"
-            )
-            assert (
-                seen_baselines[-1] == loop.judge_pr_seen
-            ), "and the write that saw it carries exactly what memory holds"
+            assert len(commits) == 1, "exactly one write carried the new baseline"
+            written, in_memory = commits[0]
+            assert written == loop.judge_pr_seen, "the write carries what memory now holds"
+            assert in_memory == {}, "and memory still held the old baseline while it was written"
+            assert self._stored_baseline(tmp_path, loop.id) == loop.judge_pr_seen
         finally:
             service.stop()
 
-    def test_a_baseline_whose_write_does_not_land_is_dropped(self, tmp_path, monkeypatch) -> None:
+    def test_a_baseline_whose_write_does_not_land_is_never_published(
+        self, tmp_path, monkeypatch
+    ) -> None:
         """Memory may not claim what disk does not.
 
-        Keeping the commit after a refused write is the same defect from the other side:
-        this tick screened against a baseline the record does not hold, so a restart
-        re-reads the remarks it passed on -- except nothing ever fires to reveal it,
-        because memory believes they are seen. Dropping the commit costs a turn and
-        withholds nothing, which is the only safe direction.
+        Publishing before the write would let this tick screen against a baseline the
+        record does not hold, so a restart re-reads the remarks it passed on -- except
+        nothing ever fires to reveal it, because memory believes they are seen. So the
+        commit reaches memory only once it has reached disk, and a refused write leaves
+        both exactly as they were.
         """
         import kiro_crew.autonudge as _an
 
@@ -4042,19 +4082,284 @@ class TestTheReadingHappensBeforeTheJudge:
         loop = self._judged_pr_loop()
         service._loops[loop.id] = loop
 
-        async def _refuse(inner: NudgeLoop) -> bool:
-            return False
+        async def _answer(inner: NudgeLoop) -> bool | None:
+            return None
+
+        service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        commits = self._tap_commit_writes(service, loop, [False])
+        try:
+            asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert len(commits) == 1, "the commit was attempted"
+            assert (
+                loop.judge_pr_seen == {}
+            ), "a baseline whose write was refused must never reach memory"
+            assert self._stored_baseline(tmp_path, loop.id) == {}
+        finally:
+            service.stop()
+
+    def test_a_refused_write_leaves_the_prior_baseline_in_place(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Refusing the commit means keeping what the record holds, not emptying it.
+
+        The awaited judge write inside the judge call has already landed a snapshot
+        holding the PRIOR baseline, so that is the value memory must still carry once
+        this tick's write is refused. An empty one matches nothing on disk: the next tick
+        would call every remark in the horizon new, spend a turn on remarks the record
+        already knows, and keep doing so until a write lands.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        prior = {"digest": "earlier-reading", "remarks": ["review:R0"]}
+        loop.judge_pr_seen = dict(prior)
+        service._loops[loop.id] = loop
 
         async def _answer(inner: NudgeLoop) -> bool | None:
             return None
 
-        service._persist_judge_state = _refuse  # type: ignore[method-assign]
         service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        commits = self._tap_commit_writes(service, loop, [False])
         try:
             asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert len(commits) == 1, "the commit was attempted"
             assert (
-                loop.judge_pr_seen == {}
-            ), "a baseline whose write was refused must not stay in memory"
+                loop.judge_pr_seen == prior
+            ), "a refused write must leave the baseline the stored record holds, not an empty one"
+            assert self._stored_baseline(tmp_path, loop.id) == prior
+        finally:
+            service.stop()
+
+    def test_memory_and_disk_agree_however_a_refusal_interleaves(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The invariant a rollback cannot give: no writer ever sees a half-committed baseline.
+
+        A commit that published to memory first and rolled back on refusal would leave a
+        window in which another writer -- an update, a delivery label, a scheduled
+        write -- serializes the loop with the NEW baseline and lands it, after which the
+        rollback rewinds memory alone and the two disagree. Here the commit is the only
+        thing that changes memory and it does so after the write, so the latest snapshot
+        any other writer can take before the refusal still carries the prior baseline,
+        and memory, that snapshot, and the record all agree afterwards.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        prior = {"digest": "earlier-reading", "remarks": ["review:R0"]}
+        loop.judge_pr_seen = dict(prior)
+        service._loops[loop.id] = loop
+
+        async def _answer(inner: NudgeLoop) -> bool | None:
+            return None
+
+        concurrent: list[dict] = []
+
+        def _another_writer_snapshots() -> None:
+            # What any other writer serializes at the last instant before the refusal.
+            rows = service._serialize_state()["loops"]
+            concurrent.append(next(r for r in rows if r["id"] == loop.id)["judge_pr_seen"])
+
+        service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        self._tap_commit_writes(service, loop, [False], on_refuse=_another_writer_snapshots)
+        try:
+            asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert concurrent == [prior], "no other writer can ever snapshot the new baseline"
+            assert loop.judge_pr_seen == prior
+            assert self._stored_baseline(tmp_path, loop.id) == prior
+        finally:
+            service.stop()
+
+    def test_a_streak_cleared_during_the_commit_write_stays_cleared(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The commit publishes ONE field, so it cannot revert another writer's change.
+
+        ``notify_cycle_landed`` clears the start-failure streak on the live loop
+        synchronously and without the lock, from the turn-completion path, so it can
+        land while the baseline write is in flight. A commit that copied the whole
+        staged snapshot back over the live loop would put the streak back silently, and
+        the loop would back off or stand down on a failure a completed turn had just
+        disproved.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        loop.consecutive_start_failures = 3
+        service._loops[loop.id] = loop
+
+        async def _answer(inner: NudgeLoop) -> bool | None:
+            return None
+
+        real = service._write_monitor_snapshot_locked
+
+        async def _turn_lands_mid_write(payload: dict | None = None) -> None:
+            await real(payload)
+            if payload is None:
+                return
+            row = next(r for r in payload["loops"] if r["id"] == loop.id)
+            if row["judge_pr_seen"] != loop.judge_pr_seen:
+                # What the turn-completion hook does, at the point it really can: after
+                # the commit's snapshot was taken and before the commit publishes.
+                service.notify_cycle_landed(loop.slot_key)
+
+        service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        service._write_monitor_snapshot_locked = _turn_lands_mid_write  # type: ignore[method-assign]
+        try:
+            asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert loop.judge_pr_seen, "the baseline was committed"
+            assert (
+                loop.consecutive_start_failures == 0
+            ), "a streak cleared while the baseline was written must stay cleared"
+        finally:
+            service.stop()
+
+    def test_a_commit_write_that_lands_and_is_then_cancelled_still_publishes(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Disk holds the new baseline, so memory must match it before the cancel goes on.
+
+        The snapshot writer absorbs cancellation until the executor write settles and
+        raises it only afterwards, so at that point the record already carries the
+        committed baseline. Leaving memory on the old one would hand the next tick a
+        record it does not match, which is the disagreement this whole commit exists to
+        rule out.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+
+        async def _answer(inner: NudgeLoop) -> bool | None:
+            return None
+
+        real = service._write_monitor_snapshot_locked
+
+        async def _lands_then_cancelled(payload: dict | None = None) -> None:
+            await real(payload)
+            # A payload-less write serializes live state; the reading's own write stages
+            # a payload too. The commit is the one whose row carries a baseline memory
+            # does not yet hold.
+            if payload is None:
+                return
+            row = next(r for r in payload["loops"] if r["id"] == loop.id)
+            if row["judge_pr_seen"] != loop.judge_pr_seen:
+                raise asyncio.CancelledError()
+
+        service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        service._write_monitor_snapshot_locked = _lands_then_cancelled  # type: ignore[method-assign]
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert loop.judge_pr_seen, "a write that landed is published before the cancel goes on"
+            assert self._stored_baseline(tmp_path, loop.id) == loop.judge_pr_seen
+        finally:
+            service.stop()
+
+    def test_the_tick_after_a_refused_write_stamps_only_the_new_remark(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """What keeping the prior baseline is FOR: the next reading is screened against it.
+
+        Three ticks on one service. The first commits a baseline holding one remark. The
+        second reads a new remark beside it but its write is refused. The third reads
+        the same pair and must stamp ``first_seen_this_tick`` only on the remark the
+        stored baseline has never held -- an emptied baseline would stamp both.
+        """
+        import kiro_crew.autonudge as _an
+        from kiro_crew.probes import gh_pr
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        def _remark(ident: str) -> Any:
+            return gh_pr.Remark(
+                kind="comment",
+                ident=ident,
+                author="a-reviewer",
+                at="2026-09-25T06:00:00Z",
+                age_s=120.0,
+                verdict="",
+                body="please guard the windows branch",
+            )
+
+        first_only = self._observation(remarks=(_remark("comment:C1"),), remarks_total=1)
+        both = self._observation(
+            remarks=(_remark("comment:C1"), _remark("comment:C2")), remarks_total=2
+        )
+        readings = [first_only, both, both]
+
+        def _poll(identity, message, probe):
+            probe.observation = readings.pop(0)
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+
+        async def _answer(inner: NudgeLoop) -> bool | None:
+            return None
+
+        service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        commits = self._tap_commit_writes(service, loop, [True, False, True])
+        try:
+            for _ in range(3):
+                asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert len(commits) == 3, "every tick reached a verdict and tried to commit"
+            assert loop.monitor is not None
+            remarks = loop.monitor.last_observation["remarks"]
+            assert isinstance(remarks, list)
+            stamped = {row["id"]: row["first_seen_this_tick"] for row in remarks}
+            assert stamped == {
+                "comment:C1": False,
+                "comment:C2": True,
+            }, "only the remark the stored baseline never held reads as new"
+            assert self._stored_baseline(tmp_path, loop.id) == loop.judge_pr_seen
         finally:
             service.stop()
 

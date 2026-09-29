@@ -2601,6 +2601,18 @@ def rewrite_agents(
         if wrapped:
             results[overlay_name] = wrapped
 
+    if approvals is not None and notes.sidecar_write_failed:
+        approvals.rebind_incomplete = True
+
+    if approvals is not None and transient_keep:
+        # A kept overlay's launches were never admitted this pass -- the keep
+        # paths above skip the spec read, or abandon the agent after it -- so
+        # the approval snapshot's live set is missing them. Say so, or a
+        # ``${VAR}`` rebind by another agent declaring the same command would
+        # retire the kept agent's own approved pair as unseen, and its kept
+        # sidecar would fail the approval check at spawn time.
+        approvals.live_incomplete = True
+
     # Prune stale overlay entries (user deleted or renamed an agent). The
     # keep-set answers "does this overlay's source still exist and did we
     # either refresh it or fail TRANSIENTLY?" — never bare write success,

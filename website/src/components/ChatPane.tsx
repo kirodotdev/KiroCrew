@@ -24,6 +24,7 @@ export type PaneLeading = { inset?: boolean; control?: React.ReactNode }
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
+import CommandCenterDock from '../pages/chat/command-center/CommandCenterDock'
 import ChatFooter from '../pages/chat/ChatFooter'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
@@ -96,6 +97,10 @@ import { i18nT } from '../i18n/t'
  * s.dashboard.slots. Server reads/writes go through React Query + the api client.
  */
 
+/** Delay before the post-send bottom pin, so the optimistic bubble's commit has
+ *  landed in the tail window the pin mounts (ChatPage uses the same figure). */
+const SCROLL_AFTER_RENDER_MS = 100
+
 /** Variables of the composer upload mutation: the files, the slot they were
  *  picked in, and the AbortController that can end the request. */
 type UploadVars = { files: File[]; forSlot: string; controller: AbortController }
@@ -114,12 +119,15 @@ export default function ChatPane({
   hideEmptyHint,
   openSideChat,
   leading,
+  onFileOpen,
   busyMode = 'split',
   crewmate,
   onOpenCrewWorkLog,
+  onOpenCommandCenter,
   threads,
 }: {
   slotKey: string
+  onOpenCommandCenter?: () => void
   focused?: boolean
   onFocus?: () => void
   onRemove?: () => void
@@ -164,6 +172,11 @@ export default function ChatPane({
    *  split view's lives in the chat page's activity panel, the Members page's
    *  in its detail drawer. Capability by omission, like `onOpenFull`. */
   openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
+  /** Open a file in the host's file viewer, the way the main chat does.
+   *  Without it an attachment card / @mention chip renders without an opener:
+   *  the pane shows every attachment but cannot open one. Capability by
+   *  omission, like `openSideChat`. */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** What the composer's send does while the slot is busy. Defaults to
    *  `'split'` — the same Steer/Queue split button as the main chat, which
    *  split-view (⌘D) panes keep: they are the main chat's own sessions seen
@@ -1065,6 +1078,15 @@ export default function ChatPane({
         message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
       }))
     }
+    // Sending is explicit intent to be at the end, so the pane force-pins the
+    // transcript exactly as ChatPage does after its own optimistic append: the
+    // reader lands on the bubble they just sent, and follow is re-armed for the
+    // reply — including a reader who had scrolled up to read and sends from
+    // there, whom no automatic pin may move (see evaluateAutoPin). Without this
+    // a crewmate DM sent from mid-history streamed its answer below the fold.
+    // Through the virtualizer's own handle, not a raw scrollTop write, so the
+    // follow guard accounts for the move (followPolicy's write invariant).
+    setTimeout(scrollToBottom, SCROLL_AFTER_RENDER_MS)
     // A failed send has to say so on the pane it was typed into. This path
     // reported nothing at all: the composer had already cleared and a rejected
     // fetch was swallowed by `.catch(() => undefined)`, so an undelivered
@@ -1152,7 +1174,7 @@ export default function ChatPane({
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
-  }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
+  }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom])
   // The endpointer auto-submit (handed to the Voice atom above) reads the
   // latest send through this ref.
   doSendRef.current = doSend
@@ -1434,10 +1456,13 @@ export default function ChatPane({
       // A steer-only surface has no steer/queue concept to explain, so a
       // confirmed steer draws as an ordinary message: no badge, no tint.
       hideSteerBadge: busyMode === 'steer-only',
+      // Attachment cards / @mention chips open through the host's file viewer
+      // (#9487); without it they render without an opener.
+      onFileOpen,
       crewmate,
       crewmateTranscript,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, crewmate, crewmateTranscript],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main
@@ -1602,6 +1627,7 @@ export default function ChatPane({
           onQuote={onQuote}
           onAsk={onAsk}
           threads={threads}
+          onFileOpen={onFileOpen}
           transcript={{
             sessionId: `pane:${slotKey}`,
             scrollerRef,
@@ -1698,6 +1724,7 @@ export default function ChatPane({
         <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} />
 
         <SubagentProgressBar slot={slotKey} />
+        {onOpenCommandCenter && <CommandCenterDock slot={slotKey} onOpen={onOpenCommandCenter} />}
 
         <SubagentDeliveryProgress count={systemDeliveryCount} />
         {/* Rendered on server state only. A `steer-only` host never ASKS for a

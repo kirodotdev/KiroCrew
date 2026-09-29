@@ -282,6 +282,47 @@ class TestSkillsLoader:
         assert skills[0]["name"] == "weather"
         assert skills[0]["description"] == "Get weather info"
 
+    def test_html_shaped_skill_is_skipped_and_warned_once(self, tmp_path, caplog):
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "page", "\n  <!DOCTYPE html>\n<html><body>x</body></html>")
+        _create_skill(skills_dir, "framed", "---\nname: framed\n---\n<HTML><p>x</p></HTML>")
+        (skills_dir / "bom").mkdir()
+        (skills_dir / "bom" / "SKILL.md").write_bytes(b"\xef\xbb\xbf<!doctype html><p>x</p>")
+        _create_skill(skills_dir, "tagged", "<html-guide> is a markdown skill\n")
+        _create_skill(skills_dir, "weather", "---\n_html: body\n---\n# Weather\n")
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        with caplog.at_level("WARNING", logger="kiro_crew.skills"):
+            assert sorted(s["key"] for s in loader.list_skills()) == ["tagged", "weather"]
+            loader.list_skills()
+        warned = [r.getMessage() for r in caplog.records if "body is HTML" in r.getMessage()]
+        assert len(warned) == 3
+        assert any("page" in m for m in warned) and any("framed" in m for m in warned)
+        assert loader.read_scoped_skill("page") is None
+        assert loader.load_skill("framed") is None
+        assert "Weather" in loader.read_scoped_skill("weather")
+
+    def test_html_skill_in_an_index_warmed_before_the_marker_is_dropped(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import skill_search_index
+        from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "page", "<!doctype html><p>x</p>")
+        _create_skill(skills_dir, "notes", "# Notes\nplain markdown\n")
+        with monkeypatch.context() as old:
+            # Schema 5 and its parser are what shipped before the HTML marker.
+            old.setattr(skill_search_index, "_SCHEMA_VERSION", 5)
+            old.setattr(
+                SkillsLoader,
+                "_parse_frontmatter_text",
+                staticmethod(lambda content: parse_frontmatter(content, SKILL_LOADER)),
+            )
+            warm = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+            assert sorted(s["key"] for s in warm.list_skills()) == ["notes", "page"]
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        assert [s["key"] for s in loader.list_skills()] == ["notes"]
+
     def test_load_skill(self, tmp_path):
         skills_dir = tmp_path / "skills"
         _create_skill(skills_dir, "test", "---\nname: test\n---\n# Test Skill\nDo stuff.")

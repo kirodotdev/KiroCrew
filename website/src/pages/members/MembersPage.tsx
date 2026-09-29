@@ -46,11 +46,10 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Cloud, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
-import DeployMyCrewDialog from './DeployMyCrew'
 import NewCrewmateDialog, { type CreatedCrewmate } from './NewCrewmateDialog'
 import { sendTurn } from '../../chat-core/transport/sendTurn'
 import { useTranslation } from 'react-i18next'
@@ -89,9 +88,10 @@ import { threadsApi, threadsQueryKey } from '../../api/threads'
 import ThreadPanel from './ThreadPanel'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewWebview from './CrewWebview'
+import CommandCenterPanel from '../chat/command-center/CommandCenterPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
-import { START_MEET_CREWMATES_EVENT } from '../../components/MeetCrewmatesFlow'
+import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../../components/MeetCrewmatesFlow'
 import { hasNoCrewmates } from '../../hooks/useMeetCrewmatesGate'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import CrewNotesTab from './CrewNotesTab'
@@ -114,6 +114,7 @@ import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import ResizeHandle from '../../components/ResizeHandle'
 import { cn } from '../../lib/utils'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../../components/listShell'
+import { ListDock } from '../../components/ListDock'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
@@ -229,15 +230,16 @@ export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_NOTES_TAB_ID, CREW_WO
  *  chip on the crewmate panel, the chat page's "Summary" view would be a second,
  *  unrelated summary of this same thread. Exported so the test pins the set. */
 export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEWS, 'summary']
-/** Everything this page withholds once the thread is confirmed. Today that is
- *  exactly the unfed set: Side chat IS offered — its composer draft lives in
+/** Everything this page withholds once the thread is confirmed. The task
+ *  dashboard lives in the permanent Dashboard tab, not a second chat view.
+ *  Side chat IS offered — its composer draft lives in
  *  the chat-core store (`sideChatDrafts`, per slot, persisted), so `SidePanel`
  *  unmounting the body on a tab or member switch loses nothing, and the
  *  selection toolbar's "Ask about this" needs the tab as its landing
  *  (`openMemberSideChat`). Kept as its own name so the "withheld" and "unfed"
  *  reasons stay separable if they diverge again. Exported so the test pins
  *  the set. */
-export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS]
+export const MEMBERS_WITHHELD_VIEWS: readonly SidePanelWithholdable[] = [...MEMBERS_UNFED_VIEWS, 'command-center']
 /** Everything the panel withholds while the thread is UNCONFIRMED: every
  *  classified view, plus Terminal and app tabs. Derived from
  *  `VIEW_DATA_SOURCE` (the exhaustive `Record<ViewKind, …>`) rather than
@@ -692,11 +694,23 @@ export default function MembersPage() {
   // error after a good read keeps showing the last roster.
   const rosterQuery = useQuery(membersRosterQuery)
   const rows = rosterQuery.data ?? EMPTY_ROSTER
-  // The raw roster's names (not the filtered/projected list): what the create
-  // dialog refuses up front, and the premise of its post-failure reconcile.
-  const existingNames = useMemo(() => rows.map((r) => r.name), [rows])
+  // The raw roster's keys and shown names (not the filtered/projected list):
+  // what the create dialog refuses up front, and the premise of its
+  // post-failure reconcile. The server refuses a name another crewmate shows
+  // as well as a taken key (`members.key_new_crew`).
+  const existingNames = useMemo(
+    () => rows.flatMap((r) => (r.display_name ? [r.name, r.display_name] : [r.name])),
+    [rows],
+  )
   const loaded = rosterQuery.data !== undefined || rosterQuery.isError
   const loadError = rosterQuery.data === undefined && rosterQuery.isError
+  // Ask the host to show Meet CrewMates on the first visit. The host decides
+  // whether it is still due (whether this workspace has seen it, nothing
+  // else), so announcing on every mount is safe; the empty-state button stays
+  // the on-demand entry.
+  useEffect(() => {
+    window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT))
+  }, [])
   // ONE source of truth for the roster fields the page derives from (starred
   // count, the Starred filter, search, sort, source chips): the react-query
   // rows merged with each member's pushed `roster` projection, projection
@@ -825,9 +839,6 @@ export default function MembersPage() {
   // '' — no thread opened). The remembered-member fallback never sets it —
   // there the user named nobody. Cleared once a different member opens.
   const [gone, setGone] = useState<{ name: string; shown: string } | null>(null)
-  // Deploy my crew. Page-level because a launch is crew-wide, and the panel's
-  // own read is gated on this, so it stays false until someone asks for it.
-  const [deployOpen, setDeployOpen] = useState(false)
   // New crewmate dialog (header "+" and the empty-state hero open it).
   const [createOpen, setCreateOpen] = useState(false)
   // The crewmate just created here, until its chat has opened and its greeting has
@@ -1344,9 +1355,13 @@ export default function MembersPage() {
       if (greet && !postCreateErrorRef.current && !otherFollowUp) {
         pendingGreets.current.delete(m.name)
         if (pageMounted.current) {
+          // Greet the crewmate by the name it shows: a crewmate made from a
+          // free-form name is keyed by a derived id (`launch-notes`) and shows
+          // the typed text as its label.
+          const shown = m.display_name?.trim() || greet.name
           const message = greet.job
-            ? t('pages.membersPage.greeting_seed_with_job', { name: greet.name, job: greet.job })
-            : t('pages.membersPage.greeting_seed', { name: greet.name })
+            ? t('pages.membersPage.greeting_seed_with_job', { name: shown, job: greet.job })
+            : t('pages.membersPage.greeting_seed', { name: shown })
           void seedGreeting(greet, r.slot_key, message)
         }
       }
@@ -1579,6 +1594,11 @@ export default function MembersPage() {
   const activeTabId = shownTabId ?? tabsCtl.activeId
   const notesVisible = panelVisible && activeTabId === CREW_NOTES_TAB_ID
   const workLogVisible = panelVisible && activeTabId === CREW_WORK_LOG_TAB_ID
+  const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
+  const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
+  useEffect(() => {
+    if (dashboardVisible) setDashboardVisitedFor(activeMemberKey)
+  }, [dashboardVisible, activeMemberKey])
   const closeOverlay = useCallback(() => setOverlayOpen(false), [])
   // Mount continuity — the chat page's rule, verbatim: a live Browser tab (its
   // WebContentsView) or a body-owning app tab (any slot's) cannot survive a
@@ -1586,7 +1606,8 @@ export default function MembersPage() {
   // rather than unmounted. There is no find pane on this page.
   const hasLiveAppTab = useAnyLiveAppTab()
   const hasBrowserTab = tabsCtl.tabs.some((tab) => tab.kind === 'browser')
-  const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, searchOpen: false }
+  const hasTaskDashboard = dashboardVisible || dashboardVisitedFor === activeMemberKey || tabsCtl.tabs.some(tab => tab.kind === 'command-center')
+  const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: false }
   const panelMounted = shouldMountSidePanel(mountInput)
   const panelHidden = isSidePanelHidden(mountInput)
   // File / artifact / save for the panel's Files, Artifacts and document tabs —
@@ -2422,29 +2443,6 @@ export default function MembersPage() {
             <CrewMemberMark size={15} className="inline-block text-muted shrink-0" />
             <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
           </div>
-          {/* Crew-WIDE, so it sits in the page header rather than in a member's
-              own drawer: one launch ships the whole checkout to one machine and
-              names one stack, so there is no per-member deployment and a
-              per-row placement would draw the same one under every member.
-              Labelled, not icon-only: a bare cloud glyph names nothing a
-              first-time reader can guess, and this is the feature's only
-              entry. A plain `Cloud` glyph, not `CloudUpload`: the arrow-into-cloud
-              reads as "send something up", and a reader who takes the button for
-              an action never opens the read-only panel behind it. Bordered like
-              the secondary `Btn`, unlike its ghost `+`
-              sibling: an icon-plus-word with no edge reads as a status chip,
-              and a reader who takes it for a label never opens the panel.
-              The panel's actions lead into Settings > Remote Crew,
-              which owns the set-up flow. */}
-          <button
-            onClick={() => setDeployOpen(true)}
-            className="flex items-center gap-1 h-7 px-2 rounded-md transition-colors bg-transparent border border-border shrink-0 text-[12px] text-muted hover:text-text hover:border-border-strong hover:bg-bg-hover cursor-pointer"
-            title={t('pages.membersPage.deploy_title')}
-            data-testid="member-deploy-open"
-          >
-            <Cloud size={15} />
-            {t('pages.membersPage.deploy_trigger')}
-          </button>
           {/* Two things can be added here, so the "+" opens a menu: a crewmate
               or a team (the dialogs below). The trigger keeps the bare Plus
               and its label. */}
@@ -2562,14 +2560,17 @@ export default function MembersPage() {
             />
           </div>
         )}
-        {/* The Sessions sidebar's search row (components/SearchFilterBar): the
-            same field, clear button and inline sort/filter menu. The menu holds
-            what the sidebar's holds for sessions, in the roster's terms — a
-            star toggle, the member's live state, its origin, and the sort.
-            Menu rows keep the menu open (preventDefault) so several can be
-            toggled in one visit, as the sidebar's do. */}
+        {/* The floating dock (components/ListDock): the glass search capsule and
+            the filter chip hover over the roster, which scrolls under them. */}
+        <ListDock field={(
+          // The Sessions sidebar's search row (components/SearchFilterBar): the
+          // same field, clear button and inline sort/filter menu. The menu holds
+          // what the sidebar's holds for sessions, in the roster's terms — a
+          // star toggle, the member's live state, its origin, and the sort.
+          // Menu rows keep the menu open (preventDefault) so several can be
+          // toggled in one visit, as the sidebar's do.
         <SearchFilterBar
-          className="px-2 pb-1"
+          className="px-2"
           placeholder={t('pages.membersPage.search_members')}
           clearLabel={t('pages.chatSidebar.clear_search')}
           value={filter}
@@ -2660,6 +2661,8 @@ export default function MembersPage() {
             </DropdownMenu>
           )}
         />
+        )} shelf={(
+          <>
         {/* The at-rest marker that the list is narrowed: ONE aggregate chip in
             the sidebar's chip recipe (components/SearchFilterBar), naming every
             active filter, so a returning user sees WHY the roster is short and
@@ -2688,16 +2691,22 @@ export default function MembersPage() {
         {/* Star-write failure. Falsy message renders nothing. askAgent is ON:
             the roster holds no unsaved draft, so the hand-off's navigation
             destroys nothing (AUTOSDE errors-use-error-notice). */}
-        <div className="px-2">
-          <ErrorNotice
-            message={starError?.message}
-            report={starError?.report}
-            title={t('pages.membersPage.star_failed_title')}
-            onDismiss={() => setStarError(null)}
-            askAgent
-            testId="member-star-error"
-          />
-        </div>
+        {/* Mounted only while there IS an error: the wrapper sits on the dock's
+            shelf, and an empty wrapper would keep the shelf (and its 4px scrim)
+            open under a bare field. */}
+        {starError && (
+          <div className="px-2">
+            <ErrorNotice
+              message={starError.message}
+              report={starError.report}
+              title={t('pages.membersPage.star_failed_title')}
+              onDismiss={() => setStarError(null)}
+              askAgent
+              actionPlacement="below"
+              testId="member-star-error"
+            />
+          </div>
+        )}
         {gone && gone.shown === '' && (
           /* The roster is the answer surface when there is no thread to stand
              in the gone member's place: below md a stale link always lands
@@ -2709,6 +2718,8 @@ export default function MembersPage() {
             {t('pages.membersPage.member_gone_roster', { name: gone.name })}
           </div>
         )}
+          </>
+        )}>
         <ul
           className={`${LIST_BODY_CLS} list-none m-0`}
           style={{ scrollbarWidth: 'none' }}
@@ -2723,11 +2734,10 @@ export default function MembersPage() {
             </li>
           )}
           {loaded && !loadError && hasNoCrewmates(members) && (
-            /* The Meet CrewMates entry point: `hasNoCrewmates` is the gate's own
-               predicate (the built-in `default` row is the main assistant), so the
-               page and the auto-fire can never disagree on "no crewmate yet".
-               Re-opens the first-run flow (App hosts it) — the user asked, so
-               no eligibility check applies. */
+            /* The on-demand Meet CrewMates entry, beside the empty state
+               (the built-in `default` row is the main assistant, not a
+               crewmate). Re-opens the first-run flow (App hosts it) — the user
+               asked, so no check applies. */
             <li className="px-4 py-2">
               <button
                 onClick={() => window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT))}
@@ -2824,6 +2834,7 @@ export default function MembersPage() {
             )
           })}
         </ul>
+        </ListDock>
         {/* Window-splitter between roster and thread: the same component as the
             Sessions sidebar's grip, sitting on the card's right border the same
             way (absolute, 12px rounded-xl corner inset), so the two pages' edges
@@ -2838,7 +2849,9 @@ export default function MembersPage() {
             min={ROSTER_MIN}
             max={ROSTER_MAX}
             inset={12}
-            className="absolute top-0 -right-[3px] h-full z-10"
+            // z-40: above the floating search dock (ListDock, z-30), whose
+            // opaque shelf would otherwise take the inner half of the grip.
+            className="absolute top-0 -right-[3px] h-full z-40"
           />
         </div>
       </aside>
@@ -3171,7 +3184,13 @@ export default function MembersPage() {
                     openSideChat={openMemberSideChat}
                     crewmate={crewmateIdentity}
                     onOpenCrewWorkLog={openCrewWorkLog}
+                    onOpenCommandCenter={() => {
+                      tabsCtl.setActive(CREW_DASHBOARD_TAB_ID)
+                      if (beside) setDockedOpen(true)
+                      else setOverlayOpen(true)
+                    }}
                     threads={threadHooks}
+                    onFileOpen={openFile}
                   />
                 </ErrorBoundary>
               </div>
@@ -3657,23 +3676,29 @@ export default function MembersPage() {
               visible={notesVisible}
             />
           ) : null
-          // Dashboard — the page the crewmate publishes itself (CrewWebview,
-          // the shipped component: docked summary, expandable to full window).
-          // Its empty state's one action jumps to the crewmate's detail page,
-          // which is where setup lives.
+          // One Dashboard: the existing crew publication is one task view.
+          // Preserve its renderer and exact member identity, while the host
+          // owns live task summaries, questions and approval controls.
           const dashboardBody = (
-            <div className="px-3 py-3" data-testid="member-dashboard" aria-label={t('pages.membersPage.dashboard_tab')}>
-              {identityRow}
-              {activeSlug && activeMemberName ? (
-                <CrewWebview
+            <div className="h-full min-h-0 flex flex-col" data-testid="member-dashboard" aria-label={t('pages.membersPage.dashboard_tab')}>
+              <div className="px-3 pt-3 shrink-0">{identityRow}</div>
+              {!confirmedSlot && !activeThreadFailed && <p role="status" className="px-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>}
+              <div className="flex-1 min-h-0">
+                <CommandCenterPanel
+                  key={activeMemberKey}
+                  slot={activeSlot || null}
+                  active={dashboardVisible && !!confirmedSlot}
+                  sessionReady={!!confirmedSlot}
+                  publishedView={activeSlug && activeMemberName ? { title: crewDisplayName(activeView ?? active), content: <CrewWebview
                   slug={activeSlug}
                   member={activeMemberName}
                   onSetUp={() => {
                     const destination = crewEditPath(activeMemberName)
                     leave(() => navigate(destination), destination)
                   }}
+                /> } : undefined}
                 />
-              ) : null}
+              </div>
             </div>
           )
           // The panel's three host tabs, in strip order. Kind glyphs, not the
@@ -3696,6 +3721,7 @@ export default function MembersPage() {
               id: CREW_DASHBOARD_TAB_ID,
               title: t('pages.membersPage.dashboard_tab'),
               icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />,
+              keepMounted: dashboardVisitedFor === activeMemberKey,
               render: () => dashboardBody,
             },
           ]
@@ -3843,9 +3869,6 @@ export default function MembersPage() {
             </AnimatePresence>
           )
         })()}
-      {/* Crew-wide and read-only. It owns its own Dialog, and its launch read is
-          gated on `open`, so a visit that never opens it costs no request. */}
-      <DeployMyCrewDialog open={deployOpen} onClose={() => setDeployOpen(false)} members={members} />
       {/* New team / Edit team. A saved team opens its team view; a deleted one
           that was open drops `?team=` and the bare URL falls to the page's
           default (the remembered or most recently used crewmate, or the hero

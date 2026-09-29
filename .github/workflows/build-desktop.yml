@@ -11,13 +11,12 @@ name: Build Desktop (reusable)
 #   - macOS universal (arm64 + x86_64): shipped (one desktop DMG)
 #   - Linux x64:    shipped (AppImage + deb + rpm)
 #   - Linux arm64:  shipped (AppImage + deb + rpm — Graviton, Raspberry Pi, ARM laptops)
-#   - macOS arm64-only / x86_64-only: BUILD-ONLY, opt-in (`mac_single_arch`).
+#   - macOS arm64-only / x86_64-only: shipped, opt-in (`mac_single_arch`).
 #     Two extra DMGs beside the universal one, each about half its size.
-#     nightly.yml turns it on; release.yml does not. Not signed, not
-#     published, on no feed: sign-and-notarize.yml takes the first "*-mac.zip"
-#     it finds and asserts exactly one DMG, so it excludes these two artifacts
-#     by name and the universal build stays the only mac bytes it signs. They
-#     get a lane of their own when they get names and feeds of their own
+#     nightly.yml and release.yml both turn it on. Each is signed, notarized
+#     and fed by its OWN sign-and-notarize.yml call (`mac_variant`), under
+#     feed/<channel>/<arch>/; the universal call excludes these two artifacts
+#     by name, so the universal DMG stays the only mac bytes it signs
 #     (`build-desktop-mac-single-arch` below).
 #
 # Linux is built NATIVELY per arch, never cross-compiled: build-desktop.sh
@@ -62,10 +61,26 @@ on:
       mac_single_arch:
         description: >-
           Also build the two single-arch macOS DMGs (arm64-only and
-          x86_64-only) as build-only artifacts. nightly.yml passes true.
-          Default false, which is what release.yml keeps: nothing downstream
-          can sign or publish them yet (see the platform matrix note at the
-          top).
+          x86_64-only), unsigned-build-darwin-arm64 / -x64. nightly.yml and
+          release.yml both pass true and sign, publish and feed each with its
+          own sign-and-notarize.yml call (see the platform matrix note at the
+          top). Default false keeps a bare probe cheap.
+        required: false
+        default: false
+        type: boolean
+      soft_fail_mac_single_arch:
+        description: >-
+          Mark the single-arch macOS build job continue-on-error, so a failed
+          arm64-only or x86_64-only build no longer fails this workflow's
+          caller job and skips the universal signing and every Linux publisher
+          with it. nightly.yml passes true: its single-arch legs are
+          best-effort and it records no cross-arch completeness claim.
+          Default false, which is what release.yml keeps: there both
+          single-arch DMGs are REQUIRED promotion-bundle roles
+          (scripts/release_promotion.py), so a failed single-arch build must
+          fail the aggregate BEFORE any publisher writes a versioned key --
+          otherwise the version is burned on a release that can never
+          complete.
         required: false
         default: false
         type: boolean
@@ -102,9 +117,21 @@ on:
       mac_single_arch:
         description: >-
           Also build the two single-arch macOS DMGs (arm64-only and
-          x86_64-only). Build-only artifacts; nothing is signed or published.
+          x86_64-only). A manual probe only builds them; nightly.yml and
+          release.yml also sign, publish and feed them per arch.
           Declared on BOTH triggers for the same reason as soft_fail_arm64:
           the job-level `if` below reads it on both paths.
+        required: false
+        default: false
+        type: boolean
+      soft_fail_mac_single_arch:
+        description: >-
+          Mark the single-arch macOS build job continue-on-error (default
+          false: a probe SHOULD fail loudly). Declared on BOTH triggers for the
+          same reason as soft_fail_arm64: the job-level continue-on-error
+          expression below reads it on both paths, and an undeclared input
+          makes that key non-boolean, which rejects the whole workflow at
+          startup.
         required: false
         default: false
         type: boolean
@@ -307,7 +334,7 @@ jobs:
           retention-days: 14
 
   # The two single-arch macOS DMGs. Opt-in and build-only: see the platform
-  # matrix note at the top for why the release/nightly callers leave it off.
+  # matrix note at the top; nightly.yml and release.yml both turn it on.
   #
   # A SEPARATE job rather than two more rows in build-desktop's matrix: a
   # matrix row cannot be switched off by an input (the include list is
@@ -326,14 +353,20 @@ jobs:
     # `== true`: same load-bearing comparison as build-desktop's
     # continue-on-error, for the same startup-rejection reason.
     if: ${{ inputs.mac_single_arch == true }}
-    # Build-only artifacts must never hold a publisher: this job's result
-    # feeds the caller's aggregate `build-desktop` job, which sign-and-notarize
-    # and every publish-linux job `needs`. Without this, an x86_64-only leg
-    # failing (say, a dependency dropping its macOS Intel wheel) would skip
-    # the universal signing and every Linux publish on that nightly. Nothing
-    # downstream consumes these artifacts, so soft-fail is unconditional. A
-    # probe reads the job's own steps, not the aggregate, for its verdict.
-    continue-on-error: true
+    # Caller-scoped soft-fail. This job's result feeds the caller's aggregate
+    # `build-desktop` job, which the universal sign-and-notarize and every
+    # publish-linux job `needs`. On nightly (soft_fail_mac_single_arch: true)
+    # one arch's build must never hold the OTHER lanes: an x86_64-only leg
+    # failing (say, a dependency dropping its macOS Intel wheel) still lets
+    # the universal signing and every Linux publish run, and the failure is
+    # not lost -- the arch's own sign-and-notarize caller fails at
+    # download-artifact. On release.yml (default false) the OPPOSITE holds:
+    # both single-arch DMGs are REQUIRED promotion-bundle roles, and every
+    # publisher writes immutable versioned keys, so a failed single-arch
+    # build must fail the aggregate and skip every publisher before any key
+    # is written -- a soft-failed release would burn the version string on a
+    # release that can never complete. A probe reads the job's own steps.
+    continue-on-error: ${{ inputs.soft_fail_mac_single_arch == true }}
     runs-on: macos-15
     timeout-minutes: 60
     strategy:

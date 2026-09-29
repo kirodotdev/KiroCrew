@@ -67,7 +67,7 @@ function lifecycleFor({ platform, sender, frameless = false }) {
     store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
     backendUrl: "http://localhost:5476",
     port: 5476,
-    fetchLocalToken: async () => "",
+    mintLocalToken: async () => "",
     fetchRemoteToken: async () => ({ token: "" }),
     requestQuit: () => {},
     connectWindow: async () => {},

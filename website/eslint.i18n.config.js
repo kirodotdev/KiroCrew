@@ -198,6 +198,13 @@ export default [
       // keep both modules parser-facing only.
       'src/lib/widgetSrcdoc.ts',
       'src/lib/mcpAppSrcdoc.ts',
+      // Same parser-only boundary as the srcdoc builders above: this module
+      // sanitizes model markup and injects CSP, a DOCTYPE and theme CSS. None
+      // of its literals are human-facing copy; translating them breaks the
+      // policy or the frame. TaskDashboardFrame.tsx stays fully gated.
+      // False-negative class: copy added here would not be checked. Keep this
+      // exact module parser-only, with all host text in its translated consumer.
+      'src/pages/chat/command-center/dashboardDocument.ts',
       // Per-app scoped CSS, injected as `<style>{APP_CSS}</style>`. Each module is
       // ONE template literal of stylesheet text handed to the CSS parser -- selectors,
       // lengths and `var(--…)` references. None of it is read as words, and the

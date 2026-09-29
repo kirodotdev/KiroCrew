@@ -101,6 +101,22 @@ _STEPERR_READ_CAP = (_GATEWAY_LINE_BYTES - 1) // 4
 _STEPERR_LINE_CHARS = 500
 
 
+def is_junction(path: str) -> bool:
+    """True for a Windows directory junction, False everywhere else.
+
+    ``platform_compat`` owns this predicate for the rest of the package, and this
+    module cannot import it -- the stdlib-only rule at the top of this file is an
+    invariant, so ``os.path.isjunction`` is called directly here instead. It
+    exists on every interpreter this runs on: the project floors at Python 3.12
+    (``pyproject.toml`` ``requires-python = ">=3.12"``), where ``isjunction`` is
+    always present, and returns False off Windows where junctions do not exist.
+    """
+    try:
+        return bool(os.path.isjunction(path))
+    except (OSError, ValueError):
+        return False
+
+
 def gone(path: str) -> bool:
     """Remove *path* and report whether it is now absent.
 
@@ -119,6 +135,15 @@ def gone(path: str) -> bool:
     and every Pull + Build from then on refused as ambiguous: a permanent wedge
     escapable only by hand. So unlink the link, and ``rmtree`` only real trees.
 
+    A Windows JUNCTION reaches that same wedge and needs the same treatment.
+    ``os.path.islink`` reports False for one, so it fell through to ``rmtree``,
+    which refuses a junction exactly as it refuses a symlink -- the refusal is
+    swallowed, the backup survives, and every later Pull + Build sees both paths
+    and stops as ambiguous. A junction is the ordinary Windows spelling of the
+    shared-store layout the paragraph above describes, because a directory
+    symlink there needs a privilege a junction does not. It is removed with
+    ``rmdir``, which unlinks the reparse point and never the target.
+
     ``lexists``, not ``exists``: a DANGLING symlink is still something at this
     path, and reporting it as gone would let the runner proceed as though the
     slot were clear.
@@ -126,6 +151,11 @@ def gone(path: str) -> bool:
     if os.path.islink(path):
         try:
             os.unlink(path)
+        except OSError:
+            pass
+    elif is_junction(path):
+        try:
+            os.rmdir(path)
         except OSError:
             pass
     else:

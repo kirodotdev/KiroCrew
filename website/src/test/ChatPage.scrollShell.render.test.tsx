@@ -42,7 +42,7 @@ function mount(loadingOlder: boolean) {
 }
 
 describe('TranscriptScrollShell DOM contract', () => {
-  it('renders the skeleton in order: header spacer, aboveRows, top sentinel, top spacer, rows, bottom spacer, bottom sentinel, belowRows', () => {
+  it('renders the skeleton in order: header spacer, aboveRows, top sentinel, top spacer, rows, bottom spacer, bottom sentinel, trailing wrapper (belowRows)', () => {
     const { scrollerRef, virt } = mount(false)
     const scroller = scrollerRef.current!
     expect(scroller).toBeTruthy()
@@ -54,19 +54,43 @@ describe('TranscriptScrollShell DOM contract', () => {
     const topSentinel = virt.topSentinelRef.current!
     const rows = screen.getByTestId('slot-rows')
     const bottomSentinel = virt.bottomSentinelRef.current!
-    const below = screen.getByTestId('slot-below')
+    // belowRows is not a direct child any more: it sits inside the trailing
+    // wrapper the virtualizer observes (chrome below the rows must be seen by
+    // the resize observer, and only one block can be handed to it). The wrapper
+    // is the direct child whose place in the order is pinned here.
+    const trailing = scroller.querySelector('[data-vc-trailing]') as HTMLElement
+    expect(trailing).toBeTruthy()
+    expect(trailing.contains(screen.getByTestId('slot-below'))).toBe(true)
     const topSpacer = kids.find(k => (k as HTMLElement).style.height === '123px')!
     const bottomSpacer = kids.find(k => (k as HTMLElement).style.height === '456px')!
 
     // Every piece must be a DIRECT child of the scroller...
-    for (const el of [headerSpacer, above, topSentinel, topSpacer, rows, bottomSpacer, bottomSentinel, below]) {
+    for (const el of [headerSpacer, above, topSentinel, topSpacer, rows, bottomSpacer, bottomSentinel, trailing]) {
       expect(at(el)).toBeGreaterThanOrEqual(0)
     }
     // ...in exactly this order. This is the invariant the virtualizer's
     // sentinel/spacer geometry depends on, and the one a slot swap breaks.
-    const order = [headerSpacer, above, topSentinel, topSpacer, rows, bottomSpacer, bottomSentinel, below].map(at)
+    const order = [headerSpacer, above, topSentinel, topSpacer, rows, bottomSpacer, bottomSentinel, trailing].map(at)
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(new Set(order).size).toBe(order.length)
+  })
+
+  it('hands the trailing wrapper to the virtualizer through virt.trailingRef', () => {
+    const scrollerRef = ref()
+    const trailingRef = ref()
+    render(
+      <TranscriptScrollShell
+        scrollerRef={scrollerRef}
+        onScroll={() => {}}
+        virt={{ topSentinelRef: ref(), bottomSentinelRef: ref(), trailingRef, offsetBefore: 0, offsetAfter: 0 }}
+        loadingOlder={false}
+        belowRows={<div data-testid="slot-below" />}
+      >
+        <div />
+      </TranscriptScrollShell>,
+    )
+    expect(trailingRef.current).toBe(scrollerRef.current!.querySelector('[data-vc-trailing]'))
+    expect(trailingRef.current!.contains(screen.getByTestId('slot-below'))).toBe(true)
   })
 
   it('mounts the older-messages spinner between the top sentinel and the top spacer only while loadingOlder', () => {

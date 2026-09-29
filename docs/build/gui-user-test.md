@@ -22,9 +22,9 @@ while the code holding credentials is not. `pr-readiness.yml` does not read this
 | Path | Role |
 |---|---|
 | `.github/workflows/gui-user-test.yml` | Triggers, boot, run, artifact, run summary, nightly issue, lane status. |
-| `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin + one-time token, mode 0600) and `pids`. Also stages the sample notes folder at a fixed path (see "Seeds" below). |
-| `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed` and adds `config.agents.<slug>` for each `--member` so the Crew Members page has a roster. |
-| `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home, the browser profile and the sample notes folder. |
+| `scripts/gui-user-test/boot.sh` | Xvfb -> `seed_home.py` -> `python -m kiro_crew gateway --test-mode --approval yolo --no-crons` on the packaged fake ACP backend -> Chromium at the dashboard URL. Writes `target.env` (origin + one-time token, mode 0600) and `pids`. Also stages the sample notes folder and the sample project at a fixed path (see "Seeds" below). |
+| `scripts/gui-user-test/seed_home.py` | Copies a fixture into `$KIROCREW_HOME` through `kiro_crew.seed` adds `config.agents.<slug>` for each `--member` so the Crew Members page has a roster, and with `--project` gives the pinned starter session (`dashboard_starter.jsonl`) the staged sample project. |
+| `scripts/gui-user-test/teardown.sh` | Kills the three process groups and removes the scratch home, the browser profile and the staged sample folders. |
 | `test/gui_user/harness.py` | The screenshot -> Bedrock Messages API -> action loop with the step, time and budget gates. |
 | `test/gui_user/x11.py` | Screenshots (Pillow `ImageGrab`) and input (`xdotool`); coordinate scaling, key aliases and argv building are pure and unit-tested. |
 | `test/gui_user/scenarios.py` + `scenarios/*.yaml` | The scenario DSL (including the `FEATURES` registry) and the shipped scenarios. |
@@ -206,6 +206,23 @@ exactly three items -- the count that scenario asserts, and
 `test_scenarios_and_report.py` pins the note count and word length to it, so a note
 added without moving the scenario fails a unit test rather than a paid nightly run.
 
+The same owned root holds a second staged tree, `sample-project` (a `README.md` beside
+a `docs/` folder with copies of the three notes), and `boot.sh` runs `seed_home.py`
+AFTER staging it with `--project <that path>`: the seed writes the path into the
+metadata line of the pinned starter transcript (`dashboard_starter.jsonl`), the same `project` key a
+live slot persists, so the chat's Files view lists a real tree for that one session.
+The fixture cannot carry a project itself (the path exists only on the machine the seed
+runs on), and the other seeded chats stay project-less on purpose, so
+`chat-files-side-panel-browse` opens that session by name first. `teardown.sh` removes
+the whole root, sample project included.
+
+One boot also means one roster: every scenario meets the members `GUI_MEMBERS` seeded
+plus whatever an earlier scenario created, so a flow that exists only for an EMPTY
+roster -- the "Meet CrewMates" first-run chapter, offered while `config.agents` holds
+nothing beyond `default` -- cannot be reached in this lane and has no scenario. Giving
+it one needs a second gateway boot per run (a scenario-level reseed), which is
+per-scenario isolation work for the tracking issue, not a YAML change.
+
 That one boot also serves a failed scenario's retry: the harness runs attempt 2 against
 the same live gateway, with nothing re-seeded in between. A scenario must therefore
 hold on a target its own first attempt already touched -- more bubbles in the same
@@ -331,7 +348,7 @@ logged, or fail with none.
   or through a lane-scoped role that trusts the branch.
 - **On a PR**: not yet -- see the note at the top and phase 2 of the tracking issue.
 - **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 32 smoke plus
-  4 nightly-only scenarios). A non-PASS night opens or updates the single open
+  8 nightly-only scenarios). A non-PASS night opens or updates the single open
   issue labelled `gui-test-report`.
 
 ### Locally
@@ -370,7 +387,7 @@ owning server is not a virtual one.
   scenario on Opus and the smoke tier at about $0.80. The run stops at
   `--budget-usd` (default $60 everywhere: the `budget_usd` dispatch input, the
   nightly schedule's fixed value, and the harness's own fallback when the flag is
-  omitted -- the 41-scenario nightly tier on Opus spends about $45 with retries;
+  omitted -- the 40-scenario nightly tier on Opus spends about $45 with retries;
   the earlier $5 / $8 / $20 / $40 caps all tripped mid-run and skipped the tail
   of the tier) and
   marks the remaining scenarios `SKIPPED`; the job's 90-minute timeout is the

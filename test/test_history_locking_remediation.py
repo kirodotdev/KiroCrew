@@ -1304,6 +1304,145 @@ class TestOnLoopCallersOffload:
         assert not log._path("gone").exists()
 
 
+class TestMetadataRenameRetryNeedsTheOffload:
+    """The offload is what earns a mutation the Windows rename retry.
+
+    A one-line metadata rewrite publishes through ``replace_with_retry``. On
+    Windows that rename is refused with ``PermissionError`` while any other
+    handle is open on the destination -- a concurrent transcript reader, an
+    indexer, an AV scanner. ``replace_with_retry`` absorbs that window, but only
+    OFF the event loop: on the loop it makes exactly ONE attempt and re-raises
+    rather than sleeping the sole loop (``no-blocking-call-on-event-loop``).
+
+    So an async caller that invokes a sync mutator directly gets no retry at all,
+    and a single transient reader is enough to fail its write on Windows. Every
+    production caller offloads; an async TEST that mutates as a setup convenience
+    has to do the same, or it inherits a Windows-only flake that no Linux run
+    reproduces. These tests pin both halves of that asymmetry.
+    """
+
+    KEY = "dashboard:resume-private"
+
+    def _seeded(self, tmp_path: Path) -> ConversationLog:
+        """A transcript with a metadata line, created off the loop."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append(self.KEY, "user", "seed")
+        return log
+
+    @staticmethod
+    def _windows_without_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        # Pin the discipline check to warn-and-proceed so these tests measure the
+        # rename, not an ambient strict-mode raise from the surrounding harness.
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_PERSIST", "0")
+
+    def test_off_loop_metadata_write_retries_past_one_violation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from windows_sim import replace_sharing_violation
+
+        self._windows_without_strict(monkeypatch)
+        log = self._seeded(tmp_path)
+        destination = log._path(self.KEY).name
+
+        async def _body() -> dict:
+            with replace_sharing_violation(match=destination, times=1) as seen:
+                await asyncio.to_thread(log.update_metadata, self.KEY, {"agent": "writer"})
+            return seen
+
+        seen = asyncio.run(_body())
+        assert seen["n"] >= 2, (
+            f"the rename was not retried past the violation (attempts={seen['n']}); "
+            f"one attempt means the write did not take the off-loop path"
+        )
+        assert log.get_metadata(self.KEY).get("agent") == "writer", (
+            "the retried rename did not publish the metadata"
+        )
+
+    def test_on_loop_metadata_write_is_refused_by_the_same_violation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control: identical contention, no offload, no retry.
+
+        This is the asymmetry the offload exists for. If this ever stops raising,
+        the on-loop branch of ``replace_with_retry`` changed and the reason an
+        async caller must offload needs re-deriving.
+        """
+        from windows_sim import replace_sharing_violation
+
+        self._windows_without_strict(monkeypatch)
+        log = self._seeded(tmp_path)
+        destination = log._path(self.KEY).name
+
+        async def _body() -> None:
+            with replace_sharing_violation(match=destination, times=1):
+                log.update_metadata(self.KEY, {"agent": "writer"})
+
+        with pytest.raises(PermissionError):
+            asyncio.run(_body())
+
+    def test_the_private_resume_test_offloads_its_transcript_setup(self) -> None:
+        """Pin the async caller whose un-offloaded setup flaked on Windows.
+
+        A direct ``state.conversation_log.<mutator>(...)`` in an async test body
+        runs on the loop and so opts out of the rename retry the two tests above
+        measure. The control on the offloaded form keeps an empty offender list
+        meaning "converted" rather than "the calls were deleted".
+        """
+        import ast
+
+        target = "test_http_resume_cannot_authorize_private_transcript"
+        mutators = {
+            "append",
+            "append_if_absent",
+            "delete_session",
+            "save_slot",
+            "set_title",
+            "update_metadata",
+        }
+        source = (Path(__file__).resolve().parent / "test_member_memory_runtime.py").read_text(
+            encoding="utf-8"
+        )
+        node = next(
+            (
+                n
+                for n in ast.walk(ast.parse(source))
+                if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == target
+            ),
+            None,
+        )
+        assert node is not None, (
+            f"{target} is gone from test_member_memory_runtime.py; move this guard "
+            f"to whatever replaced it rather than deleting it"
+        )
+
+        calls = [c for c in ast.walk(node) if isinstance(c, ast.Call)]
+        direct = sorted(
+            c.lineno
+            for c in calls
+            if isinstance(c.func, ast.Attribute)
+            and c.func.attr in mutators
+            and "conversation_log" in ast.unparse(c.func)
+        )
+        offloaded = [
+            c
+            for c in calls
+            if "to_thread" in ast.unparse(c.func)
+            and any("conversation_log" in ast.unparse(a) for a in c.args)
+        ]
+
+        assert direct == [], (
+            f"{target} mutates the conversation log ON the event loop at line(s) "
+            f"{direct}: that write gets a single rename attempt, so one transient "
+            f"reader handle fails it on Windows. Wrap it in asyncio.to_thread."
+        )
+        assert len(offloaded) >= 2, (
+            f"expected {target} to still drive its transcript setup through "
+            f"asyncio.to_thread; found {len(offloaded)} offloaded mutation(s), so the "
+            f"empty on-loop list above may just mean the setup was removed"
+        )
+
+
 # ── Bug 6: reduced lock hold — no fsync under lock for one-line metadata ──────
 class TestReducedLockHold:
     def test_update_metadata_does_not_fsync(

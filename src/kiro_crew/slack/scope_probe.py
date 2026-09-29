@@ -19,6 +19,7 @@ never produces a false "reinstall your app" alarm.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Callable, Iterable
 
@@ -40,6 +41,17 @@ _REINSTALL_HINT = (
     "(groups:history / message.groups) — reinstall the Slack app from the "
     "bundled manifest to restore private-channel message delivery."
 )
+
+
+def log_probe_failure(task: asyncio.Task[dict[str, str]]) -> None:
+    """Done-callback for a dispatched probe task: retrieve and log its failure.
+
+    A callback that only discards the task leaves a raised exception
+    unretrieved, and asyncio then reports it from the task's finalizer at
+    whatever later moment the garbage collector runs.
+    """
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("Tracked-channel scope probe failed", exc_info=task.exception())
 
 
 async def warn_unreadable_tracked_channels(

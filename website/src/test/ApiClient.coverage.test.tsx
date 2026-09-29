@@ -355,7 +355,16 @@ describe('client response handling', () => {
   })
 
   it('jNullable returns null on 204 rather than exploding on an empty body', async () => {
-    fetchMock.mockResolvedValue(res(204, null, { text: '' }))
+    // The fixture's `json()` must REJECT, as a real 204 `Response` does: there is no
+    // body to parse. With the lenient `res()` default (`json: async () => null` for a
+    // null body) this test passed even with the 204 branch removed entirely, so it
+    // could not fail and was not guarding the behaviour its name claims. Verified by
+    // removing the branch: lenient fixture green, this one red.
+    const noContent = {
+      ...res(204, null, { text: '' }),
+      json: async () => { throw new SyntaxError('Unexpected end of JSON input') },
+    } as unknown as Response
+    fetchMock.mockResolvedValue(noContent)
     await expect(api.tipsNext()).resolves.toBeNull()
     await expect(api.onboardingImportState({ completed: true })).resolves.toBeNull()
   })

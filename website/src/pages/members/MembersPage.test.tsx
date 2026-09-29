@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { CREWMATES_PAGE_ENTERED_EVENT } from '../../components/MeetCrewmatesFlow'
 import { Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
@@ -58,6 +59,11 @@ vi.mock('../../api/client', () => ({
     // tab raises a red alert, so a silent fallback (a remembered crew that
     // was renamed away) would read as an error on a page that is behaving.
     memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
+    pendingQuestions: vi.fn(() => Promise.resolve([])),
+    approvals: vi.fn(() => Promise.resolve([])),
+    workflowRuns: vi.fn(() => Promise.resolve({ runs: [] })),
+    sessionWorkProjection: vi.fn(() => Promise.resolve({ value: { items: [] } })),
+    artifacts: vi.fn(() => Promise.resolve({ artifacts: [] })),
     // `dashboard.crewmate_threads` (reply threads) is read from the shared config
     // query; an empty config is the default -- the flag is OFF.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
@@ -128,9 +134,10 @@ vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked, followContentWidth, busyMode }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string }) => (
+  default: ({ slotKey, agentLocked, followContentWidth, busyMode, onOpenCommandCenter }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; onOpenCommandCenter?: () => void }) => (
     <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'}>
       {slotKey}
+      <button onClick={onOpenCommandCenter}>Open task dashboard</button>
     </div>
   ),
 }))
@@ -459,6 +466,27 @@ describe('MembersPage roster', () => {
     expect(api.memberThread).not.toHaveBeenCalledWith('default')
   })
 
+  it('announces the visit so the host can show Meet CrewMates', async () => {
+    const entered = vi.fn()
+    window.addEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
+    try {
+      await renderPage([row({ name: 'default', slug: 'default' })])
+      await waitFor(() => expect(entered).toHaveBeenCalledTimes(1))
+    } finally {
+      window.removeEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
+    }
+  })
+
+  it('announces the visit even when a crewmate already exists (the host decides, on whether it was seen)', async () => {
+    const entered = vi.fn()
+    window.addEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
+    try {
+      await renderPage([row()])
+      await waitFor(() => expect(entered).toHaveBeenCalledTimes(1))
+    } finally {
+      window.removeEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
+    }
+  })
 
   it('shows the load-failure state when the roster call rejects', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
@@ -950,7 +978,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(screen.getByTestId('side-panel-leading-tab-crew-dashboard'))
     const dashboard = await screen.findByTestId('member-dashboard')
     expect(await within(dashboard).findByTestId('crew-webview-empty')).toHaveTextContent(
-      'This crewmate has not published a dashboard yet.',
+      'This crewmate has not published a view yet.',
     )
     expect(screen.queryByTestId('member-work-log')).toBeNull()
   })
@@ -971,6 +999,44 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
       expect(body).not.toHaveTextContent(/Agent template/i)
       expect(body).not.toHaveTextContent(/Edit in crew manager/i)
     }
+  })
+  it('the task entrance opens the existing Crew Dashboard, never a parallel dynamic tab', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open task dashboard' }))
+    expect(screen.getByTestId('side-panel-leading-tab-crew-dashboard')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: /Dynamic Dashboard/ })).not.toBeInTheDocument()
+    const dashboard = await screen.findByTestId('member-dashboard')
+    expect(await within(dashboard).findByTestId('crew-webview-empty')).toBeVisible()
+    expect(within(dashboard).getByTestId('command-center-panel')).toBeVisible()
+    expect(within(dashboard).queryByRole('button', { name: 'Create published view' })).not.toBeInTheDocument()
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Open side panel tab' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: /Dynamic Dashboard/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the unified dashboard body across Notes and panel hide/show', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValueOnce([{ slot: 'member-oncall', ask_id: 'scope', questions: [{ question: 'Which release?', options: [{ label: 'Core release' }] }] }])
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    act(() => {
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, messages: 0 }] as never))
+    })
+    fireEvent.click(await rosterRow('oncall'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open task dashboard' }))
+    const dashboard = await screen.findByTestId('command-center-panel')
+    // Section names stay visible, wrapping rather than collapsing to icons.
+    fireEvent.click(within(dashboard).getByRole('radio', { name: /Questions/ }))
+    fireEvent.click(await within(dashboard).findByText('Core release'))
+    expect(within(dashboard).getByRole('button', { name: 'Send answer' })).toBeEnabled()
+    fireEvent.click(screen.getByTestId('side-panel-leading-tab-crew-notes'))
+    expect(dashboard).toBeInTheDocument()
+    expect(dashboard).not.toBeVisible()
+    fireEvent.click(screen.getByTestId('side-panel-leading-tab-crew-dashboard'))
+    expect(screen.getByTestId('command-center-panel')).toBe(dashboard)
+    fireEvent(window, new Event('toggle-activity-panel'))
+    expect(dashboard).toBeInTheDocument()
+    fireEvent(window, new Event('toggle-activity-panel'))
+    expect(screen.getByTestId('command-center-panel')).toBe(dashboard)
+    expect(within(dashboard).getByRole('button', { name: 'Send answer' })).toBeEnabled()
   })
   it('the + menu offers the chat panel\'s per-chat Terminal on a member DM (a member thread is a chat slot)', async () => {
     const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
@@ -1001,7 +1067,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     // Nothing else is withheld once the thread is confirmed: Side chat is
     // offered (its draft persists in the chat-core store, and the selection
     // toolbar's Ask lands in it — MembersPage.sideChat.test.tsx).
-    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS].sort())
+    expect([...MEMBERS_WITHHELD_VIEWS].sort()).toEqual([...MEMBERS_UNFED_VIEWS, 'command-center'].sort())
     // While the thread is unconfirmed EVERY classified view is withheld, plus
     // Terminal and app tabs — derived from the classification, so a new
     // ViewKind lands in this set without anyone listing it.
@@ -3228,6 +3294,36 @@ describe('New crewmate dialog', () => {
     expect(message).toContain('Triage new issues')
     // The dialog is gone (after its exit motion).
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
+  })
+
+  it('a free-form name opens the crewmate under the id the server answered and greets it by the name it shows', async () => {
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Launch Notes' } })
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, name: 'launch-notes' })
+    membersMock.mockResolvedValue({
+      members: [row(), row({ name: 'launch-notes', slug: 'launch-notes', display_name: 'Launch Notes' })],
+      default_agent: 'kirocrew',
+    })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('launch-notes'))
+    await waitFor(() => expect(currentUrl()).toBe('/members?member=launch-notes'))
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [message] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(message).toContain('Launch Notes')
+    expect(message).not.toContain('launch-notes')
+  })
+
+  it('a name another crewmate shows is refused up front, like a taken key', async () => {
+    await renderPage([row({ display_name: 'Oncall Sentinel' })])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Oncall Sentinel' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Oncall Sentinel')
+    expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
 
   it('while the create is in flight every control locks — the Advanced toggle and its fields included', async () => {

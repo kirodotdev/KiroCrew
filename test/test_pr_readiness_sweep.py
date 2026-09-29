@@ -37,20 +37,6 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-readiness-sweep.yml"
 SCANNER = REPO_ROOT / ".github" / "scripts" / "readiness_sweep_scan.py"
 
 
-def _ago(seconds: int) -> str:
-    """A GitHub-shaped UTC stamp `seconds` before now.
-
-    The disposition arm (mode 5) reads comments only for a pull request active
-    inside ACTIVITY_WINDOW_MINUTES, so a fixture that models "an edit after the
-    verdict" must place both inside the window; a stamp from a month ago models
-    the OTHER case, a pull request nobody has touched since, and is used for
-    that on purpose.
-    """
-    from datetime import datetime, timedelta, timezone
-
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _gnu_date() -> bool:
     """GNU `date -d` is required; BSD date uses -j -f and would silently differ."""
     return (
@@ -216,7 +202,7 @@ def _contexts(nodes, offset):
     }
 
 
-def _commit(pr, *, light=False):
+def _commit(pr):
     sha = str(pr.get("headRefOid", ""))
     contexts = [
         {
@@ -226,45 +212,23 @@ def _commit(pr, *, light=False):
         }
         for entry in _statuses(sha)
     ]
-    checks = _check_nodes()
-    if light:
-        # The light page carries the rollup's one-word aggregate, which GitHub
-        # derives from every status and check-run on the commit: red if any is
-        # red, pending if any is unfinished, green otherwise.
-        red = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE", "ERROR"}
-        states = [c["state"] for c in contexts] + [
-            (n.get("conclusion") or "") if n.get("status") == "COMPLETED" else "PENDING" for n in checks
-        ]
-        if any(s in red for s in states):
-            state = "FAILURE"
-        elif any(s == "PENDING" for s in states):
-            state = "PENDING"
-        else:
-            state = "SUCCESS"
-        return {"status": {"contexts": contexts}, "statusCheckRollup": {"state": state}}
     return {
         "status": {"contexts": contexts},
-        "statusCheckRollup": {"contexts": _contexts(checks, 0)},
+        "statusCheckRollup": {"contexts": _contexts(_check_nodes(), 0)},
     }
 
 
-def _record(kind):
-    with (FIXTURES / "graphql_calls.txt").open("a") as fh:
-        fh.write(kind + "\\n")
-
-
-def _pr_page(args, *, light=False):
+def _pr_page(args):
     prs = _read("prs.json", [])
-    page = int(args.get("first", PR_PAGE))
     offset = int(args["cursor"].split("-")[-1]) if "cursor" in args else 0
-    window = prs[offset : offset + page]
+    window = prs[offset : offset + PR_PAGE]
     end = offset + len(window)
     nodes = [
         {
             "number": pr.get("number"),
             "updatedAt": pr.get("updatedAt"),
             "headRefOid": pr.get("headRefOid"),
-            "commits": {"nodes": [{"commit": _commit(pr, light=light)}]},
+            "commits": {"nodes": [{"commit": _commit(pr)}]},
         }
         for pr in window
     ]
@@ -283,23 +247,6 @@ def _pr_page(args, *, light=False):
     }
 
 
-def _evidence(query):
-    """The aliased by-number read: `pN: pullRequest(number: M)` for each candidate."""
-    import re
-
-    by_number = {pr.get("number"): pr for pr in _read("prs.json", [])}
-    repository = {}
-    for alias, number in re.findall(r"(p\\d+): pullRequest\\(number: (\\d+)\\)", query):
-        pr = by_number.get(int(number))
-        repository[alias] = None if pr is None else {
-            "number": pr.get("number"),
-            "updatedAt": pr.get("updatedAt"),
-            "headRefOid": pr.get("headRefOid"),
-            "commits": {"nodes": [{"commit": _commit(pr)}]},
-        }
-    return {"data": {"repository": repository}}
-
-
 def _contexts_page(args):
     offset = int(args.get("after", "ctx-0").split("-")[-1])
     rollup = {"contexts": _contexts(_check_nodes(), offset)}
@@ -312,18 +259,7 @@ def main() -> int:
         return 1
     args = _args()
     query = args.get("query", "")
-    if "pullRequest(number:" in query:
-        _record("evidence")
-        payload = _evidence(query)
-    elif "pullRequests(" in query and "statusCheckRollup { state }" in query:
-        _record("light")
-        payload = _pr_page(args, light=True)
-    elif "pullRequests(" in query:
-        _record("heavy")
-        payload = _pr_page(args)
-    else:
-        _record("contexts")
-        payload = _contexts_page(args)
+    payload = _pr_page(args) if "pullRequests(" in query else _contexts_page(args)
     json.dump(payload, sys.stdout)
     return 0
 
@@ -384,12 +320,6 @@ class Runner:
             "STATUS_CONTEXT": "PR Readiness",
             "STALE_MINUTES": "15",
             "MAX_DISPATCH": "10",
-            "ACTIVITY_WINDOW_MINUTES": "360",
-            # The complete walk by default: it reads every pull request's
-            # evidence, so a decision test is about the decision and not about
-            # whether the delivery scan asked. Tests of the delivery scope pass
-            # scan_mode="delivery".
-            "SCAN_MODE": "full",
         }
 
     def sweep(
@@ -411,7 +341,6 @@ class Runner:
         other_comments: list[dict] | None = None,
         description: str = "11 readiness check(s) still pending; waiting on CI (not started)",
         status_read_fails: bool = False,
-        scan_mode: str = "full",
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
 
@@ -526,15 +455,11 @@ class Runner:
         self.comments_read.unlink(missing_ok=True)
         self.status_read = self.fixtures / "status_read.txt"
         self.status_read.unlink(missing_ok=True)
-        # Every GraphQL request the scanner made, by kind (light / heavy /
-        # evidence / contexts), so a test can assert which reads a scope pays.
-        self.graphql_calls = self.fixtures / "graphql_calls.txt"
-        self.graphql_calls.unlink(missing_ok=True)
 
         proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
             ["bash", "-c", self.script],
             cwd=self.work,
-            env={**self.env, "MAX_DISPATCH": max_dispatch, "SCAN_MODE": scan_mode},
+            env={**self.env, "MAX_DISPATCH": max_dispatch},
             text=True,
             encoding="utf-8",
             capture_output=True,
@@ -751,62 +676,8 @@ def test_the_pending_minimum_age_is_the_publish_lag() -> None:
     sweep = WORKFLOW.read_text(encoding="utf-8")
     assert "publish_lag_seconds=%d" % PUBLISH_LAG_SECONDS in sweep
     assert 'pending_min_age_seconds="$publish_lag_seconds"' in sweep
-    # Both constants are handed to the one classification program, which
-    # applies them as the pending arm's minimum age and evidence floor.
-    assert '--argjson lag "$publish_lag_seconds"' in sweep
-    assert '--argjson min_age "$pending_min_age_seconds"' in sweep
-    assert "$age < $min_age" in sweep
-    assert "$newest > ($updated - $lag)" in sweep
-
-
-def test_the_classification_is_one_jq_process_over_the_whole_scan() -> None:
-    """The scan is classified in ONE pass, not a bash loop over every row.
-
-    Six hundred and fifty rows through ~10 `jq` and `date -d` processes each
-    came to 480 seconds -- longer than the five-minute cadence, so every tick
-    queued behind the last, on the one job that delivers every verdict. The
-    decision logic is in the program; bash keeps only the two REST reads a few
-    candidates need, after the program has named them.
-    """
-    sweep = WORKFLOW.read_text(encoding="utf-8")
-    assert 'classified="$(jq -rs' in sweep
-    assert 'done <<<"$classified"' in sweep
-    # No per-row jq or date invocation survives inside the loop.
-    body = sweep.split('done <<<"$classified"')[0].split('classified="$(jq -rs')[1]
-    loop = body.split('\' <<<"$scan")"')[1]
-    assert "jq -r" not in loop
-    assert 'date -u -d "$' not in loop.replace('date -u -d "@$disposition_epoch"', "")
-
-
-def test_no_middle_column_of_the_classification_can_be_empty() -> None:
-    """bash `read` on a tab IFS collapses an EMPTY field into its neighbour and
-    shifts every later column left -- which silently emptied the dispatch
-    reason and put the stamp where the evidence flag belonged. Every middle
-    column is therefore non-empty by construction: the evidence flag is a word
-    either way, and a missing stamp is written as "-"."""
-    sweep = WORKFLOW.read_text(encoding="utf-8")
-    assert 'else "partial" end) as $evidence' in sweep
-    assert 'if .checks_requested == false then "unread"' in sweep
-    assert '($updated_at // "-")' in sweep
-    assert "read -r verdict updated_epoch number sha state evidence updated_at note" in sweep
-
-
-def test_a_fast_gate_completion_pulls_the_sweep_in() -> None:
-    """The sweep is the only path a completed lane has to the verdict, and the
-    scheduler is late under load; Fast Gate completing on a head is one event
-    per head update that lands while its other lanes are still finishing."""
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    on = doc[True] if True in doc else doc["on"]
-    assert on["workflow_run"]["workflows"] == ["Fast Gate"]
-    assert on["workflow_run"]["types"] == ["completed"]
-    assert on["schedule"] == [{"cron": "*/5 * * * *"}]
-    # One group per scope, never cancelling the incumbent: a burst of
-    # completions is one queued delivery sweep, not a queue of them, and a
-    # scheduled full scan in flight does not hold it back.
-    assert doc["concurrency"]["cancel-in-progress"] is False
-    assert doc["concurrency"]["group"] == (
-        "pr-readiness-sweep-${{ github.event_name == 'workflow_run' && 'delivery' || 'full' }}"
-    )
+    assert '[ "$age" -lt "$pending_min_age_seconds" ]' in sweep
+    assert "$(( updated_epoch - publish_lag_seconds ))" in sweep
 
 
 def test_the_sweep_runs_at_the_shortest_schedule_github_offers() -> None:
@@ -1308,8 +1179,6 @@ def test_every_open_pull_request_is_scanned_across_pages(tmp_path: Path, script:
             "STATUS_CONTEXT": "PR Readiness",
             "STALE_MINUTES": "15",
             "MAX_DISPATCH": "200",
-            "ACTIVITY_WINDOW_MINUTES": "360",
-            "SCAN_MODE": "full",
         },
         text=True,
         encoding="utf-8",
@@ -1467,8 +1336,6 @@ def test_dispatch_is_oldest_stale_first(tmp_path: Path, script: str) -> None:
             "STATUS_CONTEXT": "PR Readiness",
             "STALE_MINUTES": "15",
             "MAX_DISPATCH": "200",
-            "ACTIVITY_WINDOW_MINUTES": "360",
-            "SCAN_MODE": "full",
         },
         text=True,
         encoding="utf-8",
@@ -1562,9 +1429,9 @@ def test_failure_with_a_later_disposition_edit_is_refired(runner: Runner) -> Non
     without this mode the red freezes on an unchanged commit."""
     dispatched = runner.sweep(
         state="failure",
-        status_at=_ago(1800),
-        check_completed_at=_ago(2184),
-        disposition_at=_ago(684),
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:55:00Z",
+        disposition_at="2026-08-30T19:20:00Z",
     )
     assert len(dispatched) == 1
     assert "pr=2064" in dispatched[0]
@@ -1657,9 +1524,9 @@ def test_failure_with_no_checks_and_a_later_disposition_is_still_refired(
     it, since a disposition violation can be the ONLY reason readiness is red."""
     dispatched = runner.sweep(
         state="failure",
-        status_at=_ago(1800),
+        status_at="2026-08-30T19:01:24Z",
         check_completed_at=None,
-        disposition_at=_ago(684),
+        disposition_at="2026-08-30T19:20:00Z",
     )
     assert len(dispatched) == 1
     assert "disposition record changed later" in runner.last_stdout
@@ -1673,9 +1540,9 @@ def test_green_verdict_with_a_later_disposition_is_refired(runner: Runner) -> No
     revision that should be red, which permits a merge."""
     dispatched = runner.sweep(
         state="success",
-        status_at=_ago(1800),
-        check_completed_at=_ago(2184),
-        disposition_at=_ago(684),
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:55:00Z",
+        disposition_at="2026-08-30T19:20:00Z",
     )
     assert len(dispatched) == 1
     assert "disposition record changed later" in runner.last_stdout
@@ -1745,9 +1612,9 @@ def test_a_disposition_three_seconds_after_a_red_verdict_is_evidence(runner: Run
     comments, so that window was permanent."""
     dispatched = runner.sweep(
         state="failure",
-        status_at=_ago(1800),
-        check_completed_at=_ago(2184),
-        disposition_at=_ago(1797),
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:55:00Z",
+        disposition_at="2026-08-30T19:01:27Z",
     )
     assert len(dispatched) == 1
 
@@ -1757,8 +1624,8 @@ def test_a_disposition_three_seconds_after_a_green_verdict_is_evidence(
 ) -> None:
     dispatched = runner.sweep(
         state="success",
-        status_at=_ago(1800),
-        disposition_at=_ago(1797),
+        status_at="2026-08-30T19:01:24Z",
+        disposition_at="2026-08-30T19:01:27Z",
     )
     assert len(dispatched) == 1
 
@@ -1802,151 +1669,3 @@ def test_comments_are_not_read_when_the_pr_is_untouched_since_the_verdict(
         == []
     )
     assert not runner.comments_read.exists()
-
-
-def test_a_disposition_edit_older_than_the_activity_window_is_not_read(runner: Runner) -> None:
-    """Mode 5's gate was "the pull request moved since the verdict", which is
-    true of nearly every old red PR -- anything bumps `updatedAt` -- and was
-    measured true for 478 of 566 terminal verdicts at once, each a paginated
-    REST comment read on the shared pool, every sweep. The edit IS the activity
-    that bumps `updatedAt`, so a sweep inside the window sees it and the first
-    one dispatches; a pull request quiet for longer than the window has had the
-    whole window of sweeps to be read, and is not read again."""
-    assert (
-        runner.sweep(
-            state="failure",
-            status_at="2026-08-30T19:01:24Z",
-            check_completed_at="2026-08-30T18:55:00Z",
-            disposition_at="2026-08-30T19:20:00Z",
-        )
-        == []
-    )
-    assert not runner.comments_read.exists()
-
-
-def test_the_activity_window_is_the_same_number_in_the_scanner_and_the_program() -> None:
-    """The scanner picks its evidence candidates on the window and the jq program
-    gates the comment read on it; two numbers would let one say "read" for a
-    pull request the other left unread."""
-    sweep = WORKFLOW.read_text(encoding="utf-8")
-    assert 'ACTIVITY_WINDOW_MINUTES: "360"' in sweep
-    assert "activity_window_seconds=$(( ACTIVITY_WINDOW_MINUTES * 60 ))" in sweep
-    assert '--activity-window-seconds "$activity_window_seconds"' in sweep
-    assert '--argjson window "$activity_window_seconds"' in sweep
-    assert "($pr_updated > $updated and $pr_updated >= ($now - $window)) as $moved" in sweep
-    assert sweep.count('elif $moved then {v: "rest:disposition", n: ""}') == 2
-
-
-def test_the_two_scopes_are_picked_by_trigger_and_run_in_their_own_groups() -> None:
-    """Fast Gate completing is the delivery path and the majority of ticks; the
-    schedule is the full scan; a manual dispatch is a rescue and reads
-    everything. The scopes share no concurrency group, so a full scan in flight
-    never queues a delivery tick behind it."""
-    sweep = WORKFLOW.read_text(encoding="utf-8")
-    mode = "${{ github.event_name == 'workflow_run' && 'delivery' || 'full' }}"
-    assert f"SCAN_MODE: {mode}" in sweep
-    assert f"group: pr-readiness-sweep-{mode}" in sweep
-    assert '--mode "$SCAN_MODE"' in sweep
-
-
-def test_delivery_delivers_a_stale_pending_without_a_heavy_page(runner: Runner) -> None:
-    """The ordinary case in the delivery scope: the pending is read for evidence
-    (it always is) and dispatched, and no heavy page was paid for."""
-    dispatched = runner.sweep(
-        state="pending",
-        status_at="2026-08-30T19:01:24Z",
-        check_completed_at="2026-08-30T19:05:00Z",
-        scan_mode="delivery",
-    )
-    assert len(dispatched) == 1
-    assert "pr=2064" in dispatched[0]
-    calls = runner.graphql_calls.read_text().split()
-    assert calls == ["light", "evidence"], calls
-
-
-def test_delivery_leaves_a_quiet_terminal_verdict_unread(runner: Runner) -> None:
-    """The saving, and its one cost, side by side. A red verdict on a pull
-    request nobody has touched inside the window is emitted from the light page
-    with no evidence read, so its later check (mode 2, a re-run whose
-    `in_progress` event was also dropped) is not seen by THIS scope. The full
-    scope reads it and dispatches. Unread is not partial: nothing was asked
-    for, so nothing is reported missing."""
-    full = runner.sweep(
-        state="failure",
-        status_at="2026-08-30T19:01:24Z",
-        check_completed_at="2026-08-30T19:16:13Z",
-        pr_updated_at="2026-08-30T19:00:00Z",
-    )
-    assert len(full) == 1
-    delivery = runner.sweep(
-        state="failure",
-        status_at="2026-08-30T19:01:24Z",
-        check_completed_at="2026-08-30T19:16:13Z",
-        pr_updated_at="2026-08-30T19:00:00Z",
-        scan_mode="delivery",
-    )
-    assert delivery == []
-    assert runner.graphql_calls.read_text().split() == ["light"]
-    assert "partial" not in runner.last_stdout
-    assert not runner.comments_read.exists()
-
-
-def test_delivery_reads_an_active_terminal_verdict(runner: Runner) -> None:
-    """A pull request touched inside the window is where a re-run is likeliest,
-    so its evidence is read while it is warm: the same fixture as above, moved
-    into the window, is delivered by the delivery scope."""
-    dispatched = runner.sweep(
-        state="failure",
-        status_at=_ago(1800),
-        check_completed_at=_ago(900),
-        pr_updated_at=_ago(600),
-        scan_mode="delivery",
-    )
-    assert len(dispatched) == 1
-    assert "a check completed later" in runner.last_stdout
-    assert runner.graphql_calls.read_text().split() == ["light", "evidence"]
-
-
-def test_delivery_reads_a_green_verdict_whose_rollup_is_red(runner: Runner) -> None:
-    """Mode 4 by its cheapest symptom. The light page carries the rollup's
-    aggregate state; a green verdict over a red aggregate says some check went
-    red under a verdict that says none did, on a pull request nobody touched --
-    exactly the permitting freeze, read for evidence and delivered."""
-    dispatched = runner.sweep(
-        state="success",
-        status_at="2026-08-30T19:01:24Z",
-        check_completed_at="2026-08-30T19:16:13Z",
-        check_conclusion="failure",
-        pr_updated_at="2026-08-30T19:00:00Z",
-        scan_mode="delivery",
-    )
-    assert len(dispatched) == 1
-    assert "a check FAILED later" in runner.last_stdout
-    assert runner.graphql_calls.read_text().split() == ["light", "evidence"]
-
-
-def test_delivery_leaves_a_green_verdict_over_a_green_rollup_unread(runner: Runner) -> None:
-    """The negative of the arm above: a green verdict whose aggregate is green
-    on a quiet pull request has nothing to be read for."""
-    assert (
-        runner.sweep(
-            state="success",
-            status_at="2026-08-30T19:01:24Z",
-            check_completed_at="2026-08-30T18:55:00Z",
-            pr_updated_at="2026-08-30T19:00:00Z",
-            scan_mode="delivery",
-        )
-        == []
-    )
-    assert runner.graphql_calls.read_text().split() == ["light"]
-
-
-def test_delivery_decides_an_unpublished_verdict_on_the_light_page(runner: Runner) -> None:
-    """Mode 3 needs no evidence -- it is decided on the pull request's own age --
-    so an unpublished verdict is dispatched from the light page alone."""
-    dispatched = runner.sweep(
-        state=None, pr_updated_at="2026-08-30T19:00:00Z", scan_mode="delivery"
-    )
-    assert len(dispatched) == 1
-    assert "no readiness status published" in runner.last_stdout
-    assert runner.graphql_calls.read_text().split() == ["light"]

@@ -43,8 +43,20 @@ from kiro_crew.apps.backend import AppProcess
 
 
 def test_lifecycle_mutation_is_confined_to_declared_owners() -> None:
-    source_path = Path(bmod.__file__)
-    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    # The facade and every owner it composes: the rule is about which FUNCTIONS
+    # mutate the process table, wherever each one lives.
+    sources = [Path(bmod.__file__)] + [
+        Path(sys.modules[name].__file__) for name in bmod._PART_MODULES
+    ]
+    module_functions = [
+        node
+        for source_path in sources
+        for node in ast.parse(
+            source_path.read_text(encoding="utf-8"), filename=str(source_path)
+        ).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert len(module_functions) > 80
     mutations: dict[str, set[str]] = {
         "_processes": set(),
         "_lifecycle_generation": set(),
@@ -57,9 +69,6 @@ def test_lifecycle_mutation_is_confined_to_declared_owners() -> None:
             return target.value.id
         return None
 
-    module_functions = (
-        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    )
     for owner in module_functions:
         for node in ast.walk(owner):
             targets: list[ast.AST] = []

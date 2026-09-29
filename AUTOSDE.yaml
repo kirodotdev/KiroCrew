@@ -411,6 +411,7 @@ custom-rules:
       - "src/kiro_crew/context.py"
       - "src/kiro_crew/memory.py"
       - "src/kiro_crew/vector_memory.py"
+      - "src/kiro_crew/vector_memory_runtime/**/*.py"
       - "src/kiro_crew/suggestions.py"
       - "src/kiro_crew/tips.py"
       - "src/kiro_crew/task_executor.py"

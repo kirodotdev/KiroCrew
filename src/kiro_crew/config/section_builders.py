@@ -102,6 +102,7 @@ from kiro_crew.config.sections import (
     _validate_tracking_channels,
     _validated_stt_model,
     _validated_stt_provider,
+    coerce_effort,
 )
 from kiro_crew.config.service_sections import (
     DEFAULT_MAX_PARALLEL_STEPS,
@@ -338,6 +339,7 @@ def _build_knowledge_config(knowledge_data: dict) -> KnowledgeConfig:
                 _safe_nonnegative_int(knowledge_data.get("extraction_pool_size", 3), 3),
             ),
         ),
+        extraction_effort=coerce_effort(knowledge_data.get("extraction_effort", "")),
     )
 
 

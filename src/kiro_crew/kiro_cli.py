@@ -54,6 +54,49 @@ def bundled_kiro_cli_entry(platform_name: str) -> str:
     return BUNDLED_KIRO_CLI_ENTRY
 
 
+def chat_sibling(binary: str, platform_name: str | None = None) -> str | None:
+    """The ``kiro-cli-chat`` beside a resolved ``kiro-cli`` launcher, or ``None``.
+
+    The POSIX ``kiro-cli`` is the q_cli launcher (install, update, doctor,
+    login, shell completion). It ``exec``s ``kiro-cli-chat`` for ``chat`` and
+    ``acp`` -- but only after checking ITS OWN sign-in, so ``kiro-cli acp
+    --agent-engine v3`` with no ``--auth-method cli`` exits ``You are not logged
+    in`` on a host where kiro-cli is signed out, even though that mode leaves the
+    credential to the ACP client and ``kiro-cli-chat acp --agent-engine v3`` runs
+    (verified on 2.25.0: the chat binary starts KAS in ``--auth=acp-callback``
+    and asks the host). A KAS spawn that Crew's vault is about to authenticate
+    therefore has to enter through the chat binary, which is what the desktop
+    bundle already does (:data:`BUNDLED_KIRO_CLI_ENTRY`).
+
+    ``None`` whenever the swap does not apply, so callers fall back to *binary*
+    unchanged: on Windows (one self-contained ``kiro-cli.exe``), when *binary*
+    is not named ``kiro-cli`` (the operator's ``KIROCREW_KIRO_BIN`` may name
+    anything; the bundled entry is already the chat binary), or when no
+    non-empty executable ``kiro-cli-chat`` sits in the SAME directory. The directory is the
+    resolved path's own, never its ``realpath``: the launch-in-place rule
+    (acp-client spec) means a symlinked ``~/.local/bin/kiro-cli`` is joined by
+    ``~/.local/bin/kiro-cli-chat`` when the install shipped both, and a wrapper
+    directory without one keeps the wrapper. Pure ``stat`` work, no spawn.
+    """
+    resolved_platform = platform_name or sys.platform
+    if resolved_platform == "win32" or not binary:
+        return None
+    if os.path.basename(binary) != KIRO_CLI_NAME:
+        return None
+    sibling = os.path.join(os.path.dirname(binary), BUNDLED_KIRO_CLI_ENTRY)
+    if not platform_compat.is_executable_file(sibling, platform_name=resolved_platform):
+        return None
+    # An executable that is empty cannot be exec'd (ENOEXEC) and would fail the
+    # spawn loudly where the launcher might still have run; the same guard the
+    # win32 candidate walk applies to App-Execution-Alias stubs.
+    try:
+        if os.path.getsize(sibling) == 0:
+            return None
+    except OSError:
+        return None
+    return sibling
+
+
 # kiro-cli's own local state database. Holds identity-describing rows next to
 # credential rows, so every reader here is read-only and key-scoped. Alias of
 # the single canonical filename constant so the six former copies cannot drift.

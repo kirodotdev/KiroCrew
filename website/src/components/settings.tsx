@@ -316,6 +316,8 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
 /* ── Section header (sits outside the Card) ── */
 
 interface SettingsSectionProps {
+  /** Section heading. Required: every SettingsSection in the app is titled, so
+   *  the header always renders (no title-less caller to guard for). */
   title: string
   /**
    * Optional node rendered inline after the title — a platform/status tag such
@@ -342,7 +344,7 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
   const bodyId = React.useId()
   return (
     <>
-      {/* `mt-4` separates one section from the previous section's controls, so it
+      {/* `mt-6` separates one section from the previous section's controls, so it
         * is load-bearing between sections — but the FIRST section on a tab has
         * nothing above it except the pane, which already owns the gap under the
         * narrow tab strip (SidePanelLayout's `pt-3`) and under the desktop header
@@ -351,7 +353,7 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
         * only the leading one matches. When a tab renders something of its own
         * above the first section, the header is no longer first and keeps the
         * margin — which is what it should do, because now something IS above it. */}
-      <div className="flex items-center gap-2 mt-4 mb-2 first:mt-0">
+      <div className="flex items-center gap-2 mt-6 mb-1 first:mt-0">
         {collapsible ? (
           /* The whole header is the control, not a chevron beside it: a 14px
              target next to a clickable-looking title is the classic near-miss.
@@ -368,10 +370,10 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
               size={14}
               className={`text-muted transition-transform group-hover:text-text ${open ? 'rotate-90' : ''}`}
             />
-            <h4 className="text-sm font-semibold text-text-strong">{title}</h4>
+            <h4 className="text-base font-semibold text-text-strong">{title}</h4>
           </button>
         ) : (
-          <h4 className="text-sm font-semibold text-text-strong">{title}</h4>
+          <h4 className="text-base font-semibold text-text-strong">{title}</h4>
         )}
         {badge}
       </div>
@@ -383,7 +385,7 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
   )
 }
 
-/* ── Settings Card (thin wrapper around Card with vertical gap) ── */
+/* ── Settings Card (borderless group of controls with vertical gap) ── */
 
 /**
  * Delay step between successive settings cards' entrance animations, in ms.
@@ -393,7 +395,7 @@ export function SettingsSection({ title, badge, collapsible, children }: Setting
  */
 export const SETTINGS_CARD_STAGGER_MS = 60
 
-export function SettingsCard({ index, plain, children }: {
+export function SettingsCard({ index, children }: {
   /**
    * Ordinal of this card within its panel (0-based). Maps onto the shared
    * entrance-stagger ladder: the card's `animate-rise` entrance is delayed by
@@ -406,24 +408,19 @@ export function SettingsCard({ index, plain, children }: {
    * invisible for its whole delay).
    */
   index?: number
-  /**
-   * Borderless variant: no box, no fill — controls sit directly on the page,
-   * one per row, separated by spacing alone. Used only where a SubNav already
-   * puts one group per page (Chat's rail), so the box would be a container
-   * inside a container. The default (boxed) is unchanged for every panel that
-   * still stacks several groups on one scroll.
-   */
-  plain?: boolean
   children: React.ReactNode
 }) {
   return (
+    // Borderless: the section heading and spacing mark the group, so a box
+    // around it would only add a second frame inside the settings pane.
+    // `data-settings-card` is a stable, nonvisual crop anchor for the capture
+    // scripts (the visual `.card-glow` frame is gone).
     <div
-      className={plain
-        ? 'mb-2 animate-rise'
-        : 'card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all'}
+      data-settings-card=""
+      className="mb-2 animate-rise"
       style={index ? { animationDelay: `${index * SETTINGS_CARD_STAGGER_MS}ms` } : undefined}
     >
-      <div className={plain ? 'flex flex-col gap-2.5' : 'flex flex-col gap-1'}>
+      <div className="flex flex-col gap-2.5">
         {children}
       </div>
     </div>

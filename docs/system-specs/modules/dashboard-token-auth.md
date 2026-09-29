@@ -590,6 +590,56 @@ either auth flavor can grant (see `_verify_unix_peer`):
    Unresolvable (warm-pool runtime before claim, cron scripts, pooled MCP
    backends — no pidfile in the ancestry; or a mapping published unsigned) →
    proceed under today's semantics.
+5. Peer pid hosts **several** sessions (the mapping's tenant section records a
+   count above one; see the sidecar contract in `session.md`) → the resolved
+   key cannot be compared, because step 3 answers per PROCESS and the question
+   is which of that process's sessions is calling. Membership in the roster is
+   necessary but NOT sufficient: the `.txt` is agent-readable, so a co-tenant
+   could read a sibling's key out of it and declare that. Such a request
+   additionally requires an `X-Session-Token` that
+   `session_token_sig.verify_session_token` resolves to exactly the declared
+   key — the token's MAC is keyed by the agent-unreadable SEL trust root and
+   names ONE session, which peer credentials cannot distinguish on a shared
+   runtime. No token, or a token naming another session → **403**
+   `peer_session_unattested`. A truncated roster does not weaken this: a
+   recorded count above one is the evidence the token is required, so a
+   declared key absent from a SHORT membership is still challenged rather than
+   admitted as "membership unknown". Both outcomes are SEL-recorded, including
+   the admitted one, and each names the roster shape it judged so the trail
+   distinguishes a full membership from a short one. A 1:1 pid is unchanged and
+   requires no token.
+6. A mapping exists in the ancestry and its **MAC does not verify** → the same
+   token demand as step 5, `peer_session_unattested` on failure. The pair is two
+   files replaced separately, so a body-changing republication is briefly visible
+   as a new `.txt` beside the previous `.sig`; that reads as a mismatch for a
+   body nobody forged, and it is indistinguishable from forgery. Because a
+   tenancy-changing claim is exactly when the body changes, treating it as step 7
+   would make the window a BYPASS rather than a degradation — a same-uid
+   co-tenant can read both files, watch `.txt` move ahead of `.sig`, and drive
+   its declaration into the gap to skip the demand the resolved mapping would
+   have made. Attestation rather than denial, because the caller that owns the
+   declared key holds a token naming it and a routine republication must not take
+   its calls down. A proven RECYCLE is explicitly NOT this case: it is reported
+   only after the signature verifies, so it is the publisher's attested statement
+   that the pid moved on rather than ambiguity about who is calling, an agent
+   cannot plant a signed one, and the orphan sweep leaves one for every live
+   recycled pid — so it goes to step 7.
+7. Nothing resolved on disk, but the **live session manager** reports the peer's
+   ancestry hosting several sessions → the same token demand as step 5. Disk
+   absence is not evidence here: the pair lives in the data-home root, which is
+   writable inside the agent sandbox, so a co-tenant reaches this arm with one
+   `unlink` — and the roster it read before deleting tells it which sibling key to
+   declare. Per-turn republication bounds that window without closing it, because
+   the deleter picks its moment. The manager answers from memory, in this process,
+   about runtimes it owns, so it is the one account of a pid's tenancy an agent
+   cannot edit. Its rows are filtered to sessions (`sid` present) for the same
+   reason the publisher filters them, and the demand is keyed on a count ABOVE
+   ONE: one session is not evidence of sharing, and an unreachable manager answers
+   zero, which is no evidence rather than a verdict.
+8. Nothing resolved and no evidence of sharing from either source — no mapping in
+   the ancestry, or only a proven recycle, and a manager that knows of none or
+   cannot answer → proceed under today's semantics (a warm-pool runtime before
+   claim, a cron script, a pooled MCP backend outside this manager).
 
 CSRF interplay: `check_origin`'s no-Origin branch trusts the unix transport
 (`origin.request_is_unix_socket`) exactly as it trusts loopback TCP — a
@@ -612,6 +662,20 @@ at connect time (`FileNotFoundError` / `ConnectionRefusedError` — cases that
 provably never delivered the request, so the retry cannot double-send). HTTP
 error statuses and read timeouts propagate unchanged, keeping every caller's
 error shape identical.
+
+**A declaration on a shared pid passes when it carries a token**, so every
+internal sender that sets `X-Session-Key` also attaches `X-Session-Token`
+(`mcp_core._session_token_header`, empty when the environment holds no token).
+The two agree by construction rather than by discipline: on such a pid the
+identity ladder resolves the key FROM that token, so the header it declares and
+the session the token attests to are the same value. The pair must not be
+separated in either direction — a key without its token is refused on a shared
+pid, and a token without a key would offer the gateway an identity the caller
+deliberately withheld (the `unresolved:` placeholder rides in the request BODY
+only). On a 1:1 pid the helper contributes no header and the request is
+byte-identical to the pre-token scheme. The senders are `mcp_core`'s own
+`_send` family, `mcp_tools/browser.py`'s panel command, and
+`mcp_computer.py`'s tool invoke.
 
 ### 6. `gateway.py` Integration
 

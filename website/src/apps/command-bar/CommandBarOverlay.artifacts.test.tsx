@@ -240,6 +240,52 @@ describe('command bar — artifacts view', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
+  it('refuses a STALE Enter, so a fast typist never opens the wrong artifact', async () => {
+    // Every scoped view ranks from the DEBOUNCED query, so for one debounce interval
+    // after a keystroke its rows answer the previous query, and an Enter in that window
+    // acts on the row selected against it. Reported in the crewmates view; the guard is
+    // on the activation path all four views share, so each one pins it.
+    // The narrowing happens server-side, so each query's result set is the mock's next
+    // answer rather than a filter over one fixture.
+    artifacts.mockResolvedValue({ artifacts: ARTIFACTS })
+    mount()
+    await enterView()
+    artifacts.mockResolvedValue({ artifacts: [ARTIFACTS[1]] })
+    type('runbook')
+    await waitFor(() => {
+      expect(hasRow('Onboarding Runbook')).toBe(true)
+      expect(hasRow('Q3 Revenue Chart')).toBe(false)
+    })
+    navigate.mockClear()
+    artifacts.mockResolvedValue({ artifacts: [ARTIFACTS[0]] })
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: 'revenue' } })
+    // No debounce tick: the row on screen is still the runbook.
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(navigate).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(hasRow('Q3 Revenue Chart')).toBe(true)
+      expect(hasRow('Onboarding Runbook')).toBe(false)
+    })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(navigate).toHaveBeenCalledWith('/artifacts/q3-revenue-chart')
+  })
+
+  it('still opens on Enter while a query sits BELOW the search floor', async () => {
+    // The guard compares what the view would ASK for the live query against what it did
+    // ask, not the two query strings. Below ARTIFACTS_MIN_CHARS every query asks for the
+    // same listing, so those rows answer a one-character query too — and a string
+    // comparison would have frozen Enter on rows that were the correct answer to it.
+    artifacts.mockResolvedValue({ artifacts: ARTIFACTS })
+    mount()
+    await enterView()
+    await waitFor(() => expect(hasRow('Q3 Revenue Chart')).toBe(true))
+    const input = screen.getByRole('combobox')
+    fireEvent.change(input, { target: { value: 'q' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(navigate).toHaveBeenCalledWith('/artifacts/q3-revenue-chart')
+  })
+
   it('names the Enter action "Open Artifact", not "Open Session"', async () => {
     // The row shape is shared with the sessions view, so the footer is the only
     // thing that says which of the two this Enter does.

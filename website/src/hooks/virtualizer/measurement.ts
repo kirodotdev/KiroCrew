@@ -8,7 +8,7 @@
 // renamed by a list change is planned by the shift capture
 // (shiftCompensation.ts, via planHeightRetirement) and drained here.
 
-import { useCallback, useMemo, useRef, useSyncExternalStore, type MutableRefObject } from 'react'
+import { useCallback, useMemo, useRef, useSyncExternalStore, type MutableRefObject, type RefObject } from 'react'
 import { isRailSettling } from '../useRailWidth'
 import { inPlaceDeltaAbove, resizedInPlaceBelow } from './inPlaceResize'
 import { HeightIndex } from './HeightIndex'
@@ -235,6 +235,10 @@ export interface ResizeBatch {
   viewportResized: boolean
   /** A resized row is the tail, the streaming row, or the row in its post-stream grace. */
   tailRowResized: boolean
+  /** The trailing-chrome wrapper (the host's `belowRows`) changed height: the
+   *  working footer mounting under a quiet reply, a survey card, a tail spacer.
+   *  Content below the last row, so growth there is tail growth for follow. */
+  trailingChromeResized: boolean
   /** The caller-designated streaming row (or the row in its grace) resized. */
   streamingRowResized: boolean
   /** Net reprice, in px, of rows above the fold in this fire. */
@@ -257,6 +261,7 @@ export function useRowMeasurement<T>(ctx: {
   eagerFirstMeasureRef: Ref<boolean>
   elIndexRef: Ref<Map<Element, number>>
   resizeObserverRef: Ref<ResizeObserver | null>
+  trailingRef: RefObject<HTMLDivElement>
   heightIndexRef: Ref<HeightIndex | null>
   windowRangeRef: Ref<WindowRange>
   grace: Pick<StreamingGrace, 'graceIndexRef'>
@@ -264,7 +269,7 @@ export function useRowMeasurement<T>(ctx: {
 }): RowMeasurement {
   const {
     itemsRef, getKeyRef, streamingIndexRef, eagerFirstMeasureRef, elIndexRef, resizeObserverRef,
-    heightIndexRef, windowRangeRef,
+    trailingRef, heightIndexRef, windowRangeRef,
   } = ctx
   const { graceIndexRef } = ctx.grace
   const { scheduleHeightSync } = ctx.sync
@@ -287,6 +292,12 @@ export function useRowMeasurement<T>(ctx: {
     // True when one of the resized entries is the caller-designated
     // streaming row (see `streamingIndex` option / syncHeightsNow's doc).
     let streamingRowResized = false
+    // True when the trailing-chrome wrapper resized. It holds no row, so it
+    // feeds no height into the cache; it only tells follow that content grew
+    // BELOW the tail. A footer mounting there is what a reader parked at the
+    // bottom is waiting to see, and no engine carries anyone down to it (see
+    // the observer in observers.ts).
+    let trailingChromeResized = false
     // True when the SCROLLER's own box resized (the observer watches it
     // alongside the rows). Chrome around the transcript changes the viewport
     // height with no scroll event and no row resize — the composer autosizes
@@ -331,6 +342,10 @@ export function useRowMeasurement<T>(ctx: {
         if (prevCh > 0 && el.clientHeight > prevCh) continue
         if (composerExplainsViewportChange()) continue
         viewportResized = true
+        continue
+      }
+      if (trailingRef.current !== null && entry.target === trailingRef.current) {
+        trailingChromeResized = true
         continue
       }
       const idx = elIndexRef.current.get(entry.target)
@@ -432,8 +447,8 @@ export function useRowMeasurement<T>(ctx: {
         }
       }
     }
-    return { genuineResize, firstMount, viewportResized, tailRowResized, streamingRowResized, aboveFoldReprice }
-  }, [elIndexRef, itemsRef, heightIndexRef, streamingIndexRef, graceIndexRef])
+    return { genuineResize, firstMount, viewportResized, tailRowResized, trailingChromeResized, streamingRowResized, aboveFoldReprice }
+  }, [elIndexRef, itemsRef, heightIndexRef, streamingIndexRef, graceIndexRef, trailingRef])
 
   // ---- measureRef: per-item ref callback (memoized per index) ----
   //

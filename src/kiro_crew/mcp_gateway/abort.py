@@ -13,6 +13,17 @@ This stops tool work that was executing inside pooled backends.
 Trust model: same uid-gated 0700 unix socket as Register/Claim — the gateway
 is the authority. A valid abort frame always takes effect.
 
+Who may name a process
+----------------------
+The frame is pid-keyed because gatewayd's connection index is, so a pid reaches
+the wire from here and nowhere else. The session layer asks its provider for a
+:class:`RuntimeAbortTarget` and hands that straight to :func:`schedule_abort_for`
+without opening it: a runtime is one process that may serve several sessions, so
+a session that could read a pid off its provider could also attribute that
+process to itself, which is the reading this module exists to make unnecessary.
+The target renders its own audit label for the same reason -- the caller records
+what it asked for without deriving it.
+
 Import-light on purpose: imported from ``session.py`` hot paths. The only
 non-stdlib import is ``mcp_gateway.transport`` (chain: ``transport ->
 platform_compat -> executors``, no config loader), needed because the
@@ -24,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 from kiro_crew.mcp_gateway import transport
@@ -36,6 +48,65 @@ _ABORT_TIMEOUT_SECS = 5.0
 #: Strong refs to fire-and-forget abort tasks (the event loop holds only
 #: weak refs, so without this set a GC pass could cancel an in-flight push).
 _PENDING: set["asyncio.Task[dict]"] = set()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeAbortTarget:
+    """One runtime's abort address, opaque to everyone but this module.
+
+    A provider mints one for the runtime serving it and hands it out; the session
+    layer carries it to :func:`schedule_abort_for` and never opens it. Minted only
+    when the address is complete and routable, so holding one IS the answer to
+    "can this runtime be aborted" and a caller has no validation of its own to do.
+
+    One pid, not a tuple: a target addresses ONE runtime, and a runtime is one
+    process. The frame is plural because gatewayd accepts several pids in a single
+    push, which is the wire's business and not this address's.
+
+    ``audit_label`` exists so the caller can record WHICH runtime it asked about
+    without deriving that answer: the target names itself.
+    """
+
+    _wire_pid: int
+    _socket_path: str
+
+    @classmethod
+    def build(cls, pid: object, socket_path: object) -> "RuntimeAbortTarget | None":
+        """A target for ``pid`` on ``socket_path``, or ``None`` when unroutable.
+
+        The only constructor, and the only predicate any caller of this module
+        needs: ``None`` for a missing socket, a non-integer pid, and any pid at or
+        below 1, since pid 1 is init and 0 addresses a process group, so neither
+        names a runtime this gateway spawned.
+
+        :func:`schedule_abort` keeps a filter of its own because it guards the WIRE
+        for any caller, including one that never held a target. That is a different
+        boundary, not a second copy of this decision.
+        """
+        if not socket_path or not isinstance(socket_path, str):
+            return None
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+            return None
+        return cls(pid, socket_path)
+
+    @property
+    def audit_label(self) -> str:
+        """How this runtime is named in an audit record."""
+        return f"pid={self._wire_pid}"
+
+
+def schedule_abort_for(
+    target: Optional[RuntimeAbortTarget],
+    reason: str = "session hard-stop",
+) -> None:
+    """Fire-and-forget abort push at a runtime named by an opaque target.
+
+    The seam the session layer uses. No-ops on ``None``, which is what a provider
+    answers when no runtime of its own is reachable.
+    """
+    if target is None:
+        return
+    schedule_abort(target._socket_path, [target._wire_pid], reason)
 
 
 def build_abort_frame(pids: list[int], reason: str) -> dict:
@@ -63,12 +134,15 @@ async def _send_abort_inner(
         if isinstance(resp, dict) and resp.get("type") == "aborted":
             logger.info(
                 "abort-push acknowledged: pids=%r cancelled=%s reason=%s",
-                pids, resp.get("cancelled"), reason,
+                pids,
+                resp.get("cancelled"),
+                reason,
             )
         else:
             logger.warning(
                 "abort-push not acknowledged: pids=%r resp=%r",
-                pids, resp,
+                pids,
+                resp,
             )
         return resp if isinstance(resp, dict) else {}
     finally:
@@ -99,7 +173,10 @@ async def send_abort(
         )
     except (OSError, asyncio.TimeoutError, ValueError) as exc:
         logger.warning(
-            "abort-push failed: pids=%r reason=%s: %s", pids, reason, exc,
+            "abort-push failed: pids=%r reason=%s: %s",
+            pids,
+            reason,
+            exc,
         )
         return {}
 

@@ -138,7 +138,7 @@ from kiro_crew.executors import discovery_executor, maintenance_executor, subpro
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.members import MemberNameError, validate_member_name
+from kiro_crew.members import MemberNameError, key_new_crew, validate_member_name
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     MemberAlreadyExists,
@@ -5071,10 +5071,15 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
-        if name in cfg.agents:
+        # The config key is an id and the name the user typed is its label
+        # (`members.key_new_crew`, shared with `kirocrew agent create`).
+        keyed = key_new_crew(name, display_name, cfg.agents)
+        if keyed.taken:
             return web.json_response(
-                {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
+                {"error": f"Agent '{keyed.taken}' already exists", "code": "agent_exists"},
+                status=409,
             )
+        name, display_name = keyed.key, keyed.display_name
         model_reason = _model_pin_rejected(
             model, request, cfg.agent.provider, backend=_pin_entitlement_backend(cfg)
         )

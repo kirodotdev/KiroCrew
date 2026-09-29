@@ -7,14 +7,16 @@
 //   1. both edge fades render (top under the header, bottom above the bars),
 //   2. the jump-to-bottom pill appears once the user scrolls up and jumping
 //      lands back at the bottom,
-//   3. the scroller's scroll events drive the pill state.
+//   3. the scroller's scroll events drive the pill state,
+//   4. sending a message force-pins the transcript and re-arms follow, as
+//      ChatPage does — a Crewmate DM sent from mid-history lands on the bubble.
 //
 // The follow DECISIONS themselves (release/re-engage/shrink re-pin) are pinned
 // by FollowController.test.ts and the virtualizer's own tests; duplicating them
 // here would test the hook twice through a heavier harness.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, act, screen } from '@testing-library/react'
+import { render, act, screen, fireEvent } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -168,6 +170,32 @@ describe('ChatPane shared scroll chrome', () => {
     flushFrames()
     expect(state.scrollTop).toBe(600)
     // The browser reports the programmatic scroll back as a scroll event.
+    act(() => { scroller.dispatchEvent(new Event('scroll')) })
+    expect(screen.queryByLabelText('Scroll to bottom')).toBeNull()
+  })
+
+  it('sending from a scrolled-up reader lands at the bottom and re-arms follow', async () => {
+    const { container, store } = renderPane()
+    act(() => {
+      store.dispatch(appendSlotMessage({ slot: SLOT, message: { role: 'assistant', content: 'earlier', cls: '', ts: '2026-01-01T00:00:00Z' } }))
+    })
+    const scroller = container.querySelector('.chat-container') as HTMLElement
+    const state = fakeGeom(scroller, { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 })
+    act(() => { scroller.dispatchEvent(new Event('scroll')) })
+    // Reading history: follow released, pill shown.
+    act(() => { state.scrollTop = 100; scroller.dispatchEvent(new Event('scroll')) })
+    expect(screen.getByLabelText('Scroll to bottom')).not.toBeNull()
+
+    const box = screen.getAllByRole('textbox')[0]
+    await act(async () => {
+      fireEvent.change(box, { target: { value: 'are you there?' } })
+      fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    })
+    // The pin is deferred past the bubble's commit (SCROLL_AFTER_RENDER_MS),
+    // then applied on the next frame by the virtualizer.
+    await act(async () => { await new Promise((r) => setTimeout(r, 150)) })
+    flushFrames()
+    expect(state.scrollTop).toBe(600)
     act(() => { scroller.dispatchEvent(new Event('scroll')) })
     expect(screen.queryByLabelText('Scroll to bottom')).toBeNull()
   })

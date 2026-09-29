@@ -32,6 +32,8 @@ export interface SidePanelMountInput {
    *  destroyed on unmount, so — like an app tab — closing the panel must hide,
    *  not unmount, or the loaded page is lost. */
   hasBrowserTab: boolean
+  /** Authored dashboard document and answer drafts survive hiding the panel. */
+  hasTaskDashboard?: boolean
   /** The find pane takes the dock slot exclusively. */
   searchOpen: boolean
 }
@@ -47,8 +49,8 @@ export interface SidePanelMountInput {
  *
  *  With no app tab, behaviour is exactly as before: the find pane takes the dock
  *  exclusively and closing the panel unmounts it, preserving the exit animation. */
-export function shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen }: SidePanelMountInput): boolean {
-  if (hasLiveAppTab || hasBrowserTab) return true
+export function shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen }: SidePanelMountInput): boolean {
+  if (hasLiveAppTab || hasBrowserTab || hasTaskDashboard) return true
   if (searchOpen) return false
   return activityOpen
 }

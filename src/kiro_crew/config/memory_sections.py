@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass, field
 
 from kiro_crew.config.fields import _meta
+from kiro_crew.effort import EFFORT_LEVELS
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -474,6 +475,16 @@ class KnowledgeConfig:
             "a long-lived session. A change applies at the next idle boundary: "
             "the pool keeps its current width until it scales to zero, so an "
             "ingest already running is never resized under it.",
+        ),
+    )
+    extraction_effort: str = field(
+        default="",
+        metadata=_meta(
+            "Extraction Effort",
+            "Reasoning effort for the document-extraction LLM pool. Empty "
+            "runs the default high. Only applies on reasoning-capable models.",
+            enum=["", *EFFORT_LEVELS],
+            restart=True,
         ),
     )
 

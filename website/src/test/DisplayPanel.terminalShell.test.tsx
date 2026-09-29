@@ -113,13 +113,13 @@ describe('DisplayPanel → Terminal default shell', () => {
 
   it('renders the field seeded from the server config', async () => {
     seed('/usr/bin/fish')
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
     await waitFor(() => expect(input.value).toBe('/usr/bin/fish'))
   })
 
   it('PATCHes the trimmed value on blur, and not per keystroke', async () => {
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
     fireEvent.change(input, { target: { value: '  /usr/bin/fish ' } })
     expect(patchConfigMock).not.toHaveBeenCalled()
@@ -131,7 +131,7 @@ describe('DisplayPanel → Terminal default shell', () => {
 
   it('does not PATCH on blur when the value is unchanged', async () => {
     seed('/usr/bin/fish')
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
     await waitFor(() => expect(input.value).toBe('/usr/bin/fish'))
     fireEvent.blur(input)
@@ -150,7 +150,7 @@ describe('DisplayPanel → Terminal default shell', () => {
         ),
       ),
     )
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
     fireEvent.change(input, { target: { value: '/opt/typo' } })
     fireEvent.blur(input)
@@ -166,7 +166,7 @@ describe('DisplayPanel → Terminal default shell', () => {
 
   it('falls back to the generic catalog message when no code is present', async () => {
     patchConfigMock.mockImplementation(() => Promise.reject(new Error('boom')))
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
     fireEvent.change(input, { target: { value: '/opt/typo' } })
     fireEvent.blur(input)
@@ -187,7 +187,7 @@ describe('DisplayPanel → Terminal default shell', () => {
     kirocrewConfigMock.mockImplementation(() =>
       Promise.resolve({ dashboard: { terminal: { shell: stored } } }),
     )
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const input = (await screen.findByLabelText('Default shell')) as HTMLInputElement
     fireEvent.change(input, { target: { value: '/usr/bin/fish' } })
     fireEvent.blur(input)

@@ -163,6 +163,49 @@ bucket), and `ScrollAnchorCache.ts` persists reading anchors under
 `inPlaceResize.ts` the in-place resize notes. Browser storage holds measurements
 and reading positions only, never message content.
 
+Follow (`followPolicy.ts` over the pure `FollowController.evaluateAutoPin`) keeps
+a reader at the end of the transcript, and decides "is the reader still at the
+end" by position alone. A reader resting on follow's own last write — the pixel a
+pin, a layout clamp, or the reader's own return to the bottom left them on — is
+carried to the new bottom whenever content opens a gap under them, whether or not
+a turn is running: a complete message landing in an idle chat (a crewmate's or
+worker's report arriving in a DM, a notice, a cron row) follows without the
+reader touching anything. Hardware input on its own never counts as leaving; a
+wheel at the end that moves nothing is not a move. The one exception is scroll
+intent whose scroll event has not dispatched yet — an UPWARD input, or a pointer
+that grabbed the scrollbar (`scrollIntentPending`): the automatic pin is held
+until that scroll event decides, and retried once when the intent expires
+without one (a click on the thumb, a wheel-up on an unscrollable transcript). A
+reader whose scroll took them off that write has left: follow releases, an idle
+append leaves them where
+they are, and only their return to the bottom, the jump pill, or sending a message
+(every chat host force-pins on send) re-arms it. Growth is followed wherever it
+lands at the end: a tail row streaming, and the host's chrome below the rows
+(`TranscriptScrollShell` wraps `belowRows` in one block the resize observer
+watches, so the working footer mounting under a reply that went quiet carries a
+followed reader down to it instead of leaving them its height short of the end).
+
+The rows themselves come from the chat store, not the hook.
+`website/src/store/chatSlice.ts` is the facade of the one `chat` slice (the
+slot-lifecycle and UI-state owners are in
+[session](session.md#dashboard-chat-state)); the transcript and history-cache
+owners behind it are:
+
+| Owner (`website/src/store/chat/`) | Owns |
+|---|---|
+| `transcript.ts` | message identity (the client id, the server `meta.mid`, the one-shot `sendId`), redelivery and duplicate detection, echo reconciliation, the chunk-seq floor a snapshot vouches for, and the bounded-page identity rules every slot-detail merge cuts by. Pure: callers pass the arrays in |
+| `paging.ts` | page sizes and limits, the switch and count-matched fetch limits, the coverage shortfall, the paging-cursor shift after a kept head, and the abort handle of the one older page in flight |
+| `slotCache.ts` | what a slot-detail page writes besides its rows: the active paging cursor (`has_more` and `next_before` become `slotHasMore` and `slotOldestIndex`), a background pane's page with its has-more and bounded markers, the retained server `total` baseline, and the context meter |
+| `messages.ts` | edits to a cached transcript outside the live frame: the optimistic send and its confirmation, streaming and final text, patches by tool-call id / `mid` / `ts`, and a background pane's one-time hydrate |
+| `thinking.ts` | client-only reasoning rows, re-seated after every server replace or parked until their anchor pages in |
+| `queue.ts` | queued rows, hydrated from a slot-detail `queue` field |
+| `lifecycle.ts` | the Older-sessions list (`fetchHistory`) and its paging, and resume and delete of a history row |
+
+`loadOlderMessages` stays in the facade. The chat host answers the hook's
+older-page request with it; it reads the page before `slotOldestIndex` and lands
+it only while the slot it was read for is still active. None of these owners filters rows by memory
+mode, so a restricted transcript is cached and paged like any other.
+
 ## ConversationLog (`history.py` facade)
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).

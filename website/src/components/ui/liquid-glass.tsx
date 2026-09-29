@@ -146,7 +146,38 @@ function roundRectPath(w: number, h: number, radius: number): string {
  * is capped at MAP_MAX on the long side and only the band pixels do the trig,
  * so a rebuild at the composer's sizes is a few milliseconds — well inside one
  * frame even when it does land mid-interaction.
+ *
+ * The map is a pure function of (size, radius, band), and a LIST of panes — the
+ * bell popover's rows, a row of follow-up chips — mounts many at the same size
+ * in one commit, so the rasterised data URL is memoised across instances in a
+ * small bounded cache (`MAP_CACHE_MAX`, oldest key evicted): N equal rows cost
+ * one canvas encode, not N.
  */
+const MAP_CACHE_MAX = 64;
+const mapCache = new Map<string, string>();
+
+function displacementMapFor(width: number, height: number, radius: number, band: number): string {
+  const key = `${width}x${height}r${radius}b${band}`;
+  const hit = mapCache.get(key);
+  if (hit !== undefined) return hit;
+  const map = buildDisplacementMap(width, height, radius, band);
+  // No 2D context yields "" (the pane renders without its bend); that is a
+  // property of the host, not of the size, so it is never remembered.
+  if (map === "") return map;
+  if (mapCache.size >= MAP_CACHE_MAX) {
+    const oldest = mapCache.keys().next().value;
+    if (oldest !== undefined) mapCache.delete(oldest);
+  }
+  mapCache.set(key, map);
+  return map;
+}
+
+/** Test seam: the cache outlives a render, so a test counting rasterisations
+ *  starts from an empty one. */
+export function resetDisplacementMapCache(): void {
+  mapCache.clear();
+}
+
 function buildDisplacementMap(width: number, height: number, radius: number, band: number): string {
   const fit = Math.min(1, MAP_MAX / Math.max(width, height));
   const w = Math.max(2, Math.round(width * fit));
@@ -239,7 +270,11 @@ function specularRing(lightIntensity: number, radius: number): string {
     `color-mix(in srgb, var(--glass-band) ${Math.round(share * k)}%, transparent)`;
   const r1 = (radius * 0.7).toFixed(1);
   const r2 = (radius * 1.5).toFixed(1);
-  return `linear-gradient(to bottom, ${a(1)} 0px, ${a(0.35)} ${r1}px, transparent ${r2}px, transparent calc(100% - ${r2}px), ${a(0.35)} calc(100% - ${r1}px), ${a(1)} 100%)`;
+  // A 2px plateau at full strength before the fall-off: on a light page the
+  // band is white on near-white, and a single-pixel peak read as no band at
+  // all; two pixels of #ffffff inside the hairline is what the maintainer
+  // measured the reference at.
+  return `linear-gradient(to bottom, ${a(1)} 0px, ${a(1)} 2px, ${a(0.35)} ${r1}px, transparent ${r2}px, transparent calc(100% - ${r2}px), ${a(0.35)} calc(100% - ${r1}px), ${a(1)} calc(100% - 2px), ${a(1)} 100%)`;
 }
 
 type Size = { width: number; height: number };
@@ -319,7 +354,7 @@ function LiquidGlassImpl(
   const map = useMemo(
     () =>
       mapSize.width > 1 && mapSize.height > 1
-        ? buildDisplacementMap(mapSize.width, mapSize.height, cornerRadius, bandFor(mapSize))
+        ? displacementMapFor(mapSize.width, mapSize.height, cornerRadius, bandFor(mapSize))
         : "",
     [mapSize, cornerRadius]
   );
@@ -417,7 +452,11 @@ function LiquidGlassImpl(
           third of their contrast while the top edge was flat, and a bare div did
           the same, so it is the engine, not this composition. The blurring box
           is therefore two blur radii larger than the pane on every side and the
-          pane clips it, so the under-blurred band lies outside what is shown. */}
+          pane clips it, so the under-blurred band lies outside what is shown.
+          saturate(1.55): a blurred backdrop reads foggy because blur averages
+          hues toward grey; the lift gives what shows through its colour back
+          (a white page is unchanged, an image or a colour block under the pane
+          keeps its life). */}
       <span aria-hidden="true" data-liquid-glass-layer="" style={{ ...layer, overflow: "hidden" }}>
         <span
           style={{
@@ -425,7 +464,7 @@ function LiquidGlassImpl(
             inset: -frost * 2,
             display: "block",
             background: TINT,
-            // `--glass-tint` steps on hover / focus / accent (index.css); ease it.
+            // `--glass-tint` steps on hover / accent (index.css); ease it.
             transition: "background-color 0.15s ease",
             backdropFilter: `blur(${frost}px) saturate(1.55)`,
             WebkitBackdropFilter: `blur(${frost}px) saturate(1.55)`,
@@ -453,6 +492,15 @@ function LiquidGlassImpl(
           boxShadow: [
             `inset 1px 0 0 var(--glass-edge)`,
             `inset -1px 0 0 var(--glass-edge)`,
+            // The lit edges' crisp core: one full-strength pixel of the band
+            // colour just inside each hairline, top and bottom. The soft band
+            // below is masked to hug the outline and never reaches full
+            // strength at the very edge (a light page measured 252, not 255);
+            // this pixel does, so the edge inside the hairline IS the band
+            // colour -- #ffffff on a light page. Thins through the arcs like the
+            // side lines, so it never closes into a ring.
+            `inset 0 1px 0 var(--glass-band)`,
+            `inset 0 -1px 0 var(--glass-band)`,
             `0 -0.5px 0 0 var(--glass-hairline)`,
             `0 0.5px 0 0 var(--glass-hairline)`,
             `inset 0px ${bevel.toFixed(2)}px ${(bevel * 1.15).toFixed(2)}px ${(-bevel * 0.5).toFixed(

@@ -92,7 +92,7 @@ def _make_app(store, *, embedder=None, pipeline=None):
         app["knowledge_embedder"] = embedder
     if pipeline is not None:
         app["knowledge_pipeline"] = pipeline
-    app["knowledge_llm_pool"] = MagicMock(shutdown=AsyncMock())
+    app["knowledge_fetch_pool"] = MagicMock(shutdown=AsyncMock())
     # No connector for any type, so add_source takes its generic https branch.
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
 

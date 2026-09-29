@@ -94,9 +94,40 @@ def _contained_join(root: Path, subdir: str) -> Path | None:
     try:
         base = root.resolve()
         target = (root / subdir).resolve()
-    except OSError:
+    except (OSError, RuntimeError):
+        # What non-strict ``Path.resolve`` raises: ``OSError`` for a path it
+        # cannot walk, ``RuntimeError`` for a symlink loop (POSIX re-raises ELOOP
+        # as one). A loop is an escape that resolves nowhere, so it fails closed
+        # like every other escape -- the callers that re-check containment after
+        # a third-party script wrote to the checkout depend on this returning
+        # rather than raising.
         return None
-    return target if target.is_relative_to(base) else None
+    if target.is_relative_to(base):
+        # ``target`` is textually contained, but on Windows a self-pointing
+        # reparse point (``pkg -> pkg``) is collapsed LEXICALLY by non-strict
+        # ``resolve`` -- it never walks the link, so a loop slips through here as
+        # a contained-looking path that a caller would then read/write THROUGH.
+        # POSIX already raised above; Windows does not, so re-resolve strictly to
+        # force the OS to walk the target. The distinction that matters:
+        #   - ``FileNotFoundError`` -- the path simply does not exist. That is a
+        #     legitimate state some callers rely on (the rollback path re-checks
+        #     containment of ``app.json`` after it has been removed, and needs a
+        #     contained path back so the restore proceeds), so preserve the
+        #     pre-existing contract of returning the contained path; every caller
+        #     does its own existence check downstream.
+        #   - any OTHER resolution error -- a loop, a component that is not a
+        #     directory, a permission wall -- is a path that does not truly
+        #     resolve, so fail closed. A self-pointing loop is exactly this case:
+        #     the link exists, so it is not FileNotFoundError, and walking it
+        #     raises on both platforms.
+        try:
+            target.resolve(strict=True)
+        except FileNotFoundError:
+            return target
+        except (OSError, RuntimeError):
+            return None
+        return target
+    return None
 
 
 async def _fetch_app_manifest(

@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, fireEvent, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
 import { __resetForTests } from '../hooks/useNotificationSound'
 import type { NotificationChannel } from '../types'
 
 /** The channels section reads/writes through React Query, so the panel needs
- *  a client. `retry: false` so the "API fails" case settles in one round. */
+ *  a client. `retry: false` so the "API fails" case settles in one round.
+ *  Rendered on the Sources rail item, which is where the channels list lives. */
 function renderPanel() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}><NotificationsPanel /></QueryClientProvider>)
+  return render(<MemoryRouter initialEntries={['/settings?tab=notifications&sub=sources']}><QueryClientProvider client={qc}><NotificationsPanel /></QueryClientProvider></MemoryRouter>)
 }
 
 const CHANNELS: NotificationChannel[] = [

@@ -2355,7 +2355,8 @@
         "import_chunk_budget": 0,
         "embed_rate_limit": 120,
         "extraction_model": "",
-        "extraction_pool_size": 3
+        "extraction_pool_size": 3,
+        "extraction_effort": ""
       }
     },
     {
@@ -2600,6 +2601,28 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
+    },
+    {
+      "path": "knowledge.extraction_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Extraction Effort",
+      "help": "Reasoning effort for the document-extraction LLM pool. Empty runs the default high. Only applies on reasoning-capable models.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "defaultValue": "",
+      "requiresRestart": true
     },
     {
       "path": "skills",
@@ -6969,6 +6992,7 @@
           "keep_awake": true
         },
         "restore_sessions": false,
+        "dynamic_dashboard_cards": false,
         "crewmate_threads": false,
         "qr_session_until_restart": true,
         "qr_session_persist_across_restart": false,
@@ -7185,6 +7209,20 @@
       "enumValues": null,
       "defaultValue": false,
       "requiresRestart": true
+    },
+    {
+      "path": "dashboard.dynamic_dashboard_cards",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Automatic session cards",
+      "help": "Use the background model to update session-owned HTML cards after activity. Off by default. One call at a time, at most one per session every two minutes and 60 per gateway hour. Live status and native decisions work without it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "dashboard.crewmate_threads",

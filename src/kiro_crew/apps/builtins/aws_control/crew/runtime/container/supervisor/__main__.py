@@ -46,6 +46,7 @@ from .. import common
 from ..common import Settings
 from . import backend as backend_mod
 from . import bundle as bundle_mod
+from . import kiro_login as kiro_login_mod
 from .process import ProcessGroup, spawn_process_group
 
 log = logging.getLogger("container.supervisor")
@@ -142,6 +143,21 @@ def _our_live_children(exclude: set[int]) -> list[int]:
     backend spawns its workers and tells nobody. Linux-only, which ``crew/runtime/**`` already
     is; a missing ``/proc`` yields an empty list rather than an error, so a host without it
     degrades to the previous behaviour instead of failing the shutdown.
+
+    A child in OUR OWN process group is NOT one of these, and is excluded here rather than in
+    the caller. The subject is a process whose REAPER is gone; a process sharing our group
+    still has us, and the caller's remedy is a group signal, which on our own group SIGKILLs
+    this process -- so the sweep's remaining rounds never run and every real orphan is left
+    alive. One such child is enough, and it is a reachable shape rather than a theoretical
+    one: a library this process uses can hold a pool of helper children (the sensitive-path
+    resolver keeps several), and those sit in our group. Nothing the sweep exists to reach is
+    lost, because every one of those is in a group of its own -- an escaped worker by
+    ``start_new_session``, the front and backend by being spawned into theirs -- and a
+    same-group child dies with us when this process exits, which is the next thing to happen.
+
+    The group comes from the SAME ``/proc`` line the parent does (``pgrp`` is the field after
+    ``ppid``), so it is one read rather than a second syscall on a pid that may already be
+    gone, and this function keeps its one source of truth about a candidate.
     """
     mine = os.getpid()
     found: list[int] = []
@@ -149,6 +165,7 @@ def _our_live_children(exclude: set[int]) -> list[int]:
         entries = os.listdir("/proc")
     except OSError:
         return found
+    my_group = _own_process_group()
     for name in entries:
         if not name.isdigit():
             continue
@@ -165,19 +182,43 @@ def _our_live_children(exclude: set[int]) -> list[int]:
             # pid exiting mid-scan. Failing the whole teardown over one alien pid would be
             # worse than missing it.
             continue
-        # After the ')' closing comm: state, ppid. Split this way because comm can contain
-        # spaces and parentheses, which is why the naive field index is wrong.
-        if len(fields) < 2:
+        # After the ')' closing comm: state, ppid, pgrp. Split this way because comm can
+        # contain spaces and parentheses, which is why the naive field index is wrong.
+        if len(fields) < 3:
             continue
         if fields[0] == "Z":
             # Already dead and waiting to be reaped; the wait below collects it.
             continue
         try:
-            if int(fields[1]) == mine:
-                found.append(pid)
+            if int(fields[1]) != mine:
+                continue
+            if my_group is not None and int(fields[2]) == my_group:
+                continue
         except ValueError:
             continue
+        found.append(pid)
     return found
+
+
+def _own_process_group() -> int | None:
+    """This process's group, from ``/proc/self/stat``, or ``None`` when unreadable.
+
+    Read the same way and from the same field as every candidate's, so the comparison in
+    :func:`_our_live_children` is between two values of one kind. ``None`` means the question
+    could not be answered, and the caller then excludes nothing -- the previous behaviour,
+    rather than a guess that could either skip a real orphan or keep a self-kill.
+    """
+    try:
+        with open("/proc/self/stat", encoding="utf-8", errors="replace") as fh:
+            fields = fh.read().rsplit(")", 1)[1].split()
+    except OSError:
+        return None
+    if len(fields) < 3:
+        return None
+    try:
+        return int(fields[2])
+    except ValueError:
+        return None
 
 
 def _sweep_orphans_the_backend_cannot_reap(exclude: set[int]) -> None:
@@ -219,7 +260,10 @@ def _sweep_orphans_the_backend_cannot_reap(exclude: set[int]) -> None:
             break
         for pid in live:
             # Group first: reaches the worker's whole session in one signal. A pid whose
-            # group cannot be resolved (already gone) falls back to a direct kill.
+            # group cannot be resolved (already gone) falls back to a direct kill. Safe on
+            # every pid that reaches here because ``_our_live_children`` has already
+            # withheld anything in THIS process's group -- see its docstring for why a
+            # group signal there is a self-kill.
             try:
                 os.killpg(os.getpgid(pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -323,6 +367,112 @@ def verify_layout(settings: Settings) -> None:
             "Container path layout disagrees with Kiro Crew's resolved paths; "
             "refusing to start rather than silently lose state:\n  - " + "\n  - ".join(problems)
         )
+
+
+def export_kiro_home(settings: Settings) -> Path:
+    """Point this task's kiro home at ``<data home>/kiro``. Returns the agents dir.
+
+    Exported into THIS process's environment, not just handed to the backend, because
+    the bundle installer resolves the agents directory from ``os.environ``
+    (``bundle.default_kiro_agents_dir``, which mirrors kiro-cli's own
+    ``$KIRO_HOME``-or-``~/.kiro`` rule and imports no ``kiro_crew``). One export is
+    therefore what makes the installer and the backend agree on one directory; the
+    backend additionally gets the value from ``settings`` (``build_backend_env``), so
+    neither side depends on the other having run first.
+
+    WHY the default is wrong here, which is the whole reason this exists. With no
+    ``KIRO_HOME`` the agents directory is the process HOME's ``~/.kiro/agents``, which
+    every instance under that ``$HOME`` shares. The backend runs on a non-default data
+    home (``KIROCREW_HOME=<data home>``) and Kiro Crew REFUSES to rewrite a shared
+    agents dir from one: the specs it writes pin the writer's data home into every
+    managed MCP server entry, which fails strict session identity for a default-home
+    gateway (kirodotdev/KiroCrew#9690). Measured consequence in the container: the
+    supervisor's crew spec landed in the shared dir with no ownership provenance, the
+    backend read it as another home's, declined to write, and every turn died with
+    ``DerivedSpecStale: the default agent spec .../kirocrew.json is missing``.
+
+    ``<data home>/kiro`` is that guard's own documented private-target case (see
+    ``Settings.kiro_home``), so this fixes the refusal by giving the task a directory
+    it owns -- NOT by relaxing the guard, which protects a real poisoning bug.
+
+    Fails CLOSED on four things, because every one of them is silent otherwise:
+
+    * A SYMLINK at either path this function owns. The privacy exemption is decided on
+      RESOLVED paths on both sides, so a link at ``<data home>/kiro`` or at its
+      ``agents`` child pointing into the shared tree makes the shared directory itself
+      test as "provably private" -- and the backend then rewrites the specs the guard
+      exists to protect, which is worse than the failure this function fixes. The
+      reachable planter is a previous task's model worker: it runs unsandboxed under
+      this uid with the volume writable, so a link it leaves behind survives into the
+      next boot. Refused with ``is_symlink``, which does NOT follow, and refused BEFORE
+      the export so a poisoned layout never reaches the backend's environment.
+    * A path that resolves outside ``<data home>/kiro/agents``. The check above reads the
+      path and the ``mkdir`` below uses it, so a link appearing in that window is
+      followed rather than refused; this closes the window by stating the guard's own
+      equation on what actually landed. The guard compares
+      ``resolve(<kiro home>/agents)`` against ``resolve(<data home>)/kiro/agents``, so an
+      equality here means the exemption the backend will take is genuine rather than
+      forged. Cheap, and it needs no assumption about where a link could be planted.
+    * A directory that cannot be created. The backend would then decline for a second
+      reason and the turn would die the same way, several minutes later and with the
+      refusal attributed to the guard instead of to the filesystem.
+    * The two resolvers disagreeing. This asserts that the installer's own resolver,
+      read back after the export, answers ``<kiro home>/agents``. That is the single
+      invariant the fix rests on, and a future change to either spelling breaks it
+      quietly -- the deployment would boot, install the crew in one directory and
+      serve agents out of another. It is checked SEPARATELY from the resolved-location
+      check above because the installer's resolver deliberately does not resolve, so a
+      symlinked home passes it while pointing somewhere else entirely.
+    """
+    agents = settings.kiro_home / "agents"
+    for path, what in ((settings.kiro_home, "kiro home"), (agents, "agent-spec directory")):
+        if path.is_symlink():
+            raise common.ConfigError(
+                f"the task's {what} {path} is a symlink, and the container refuses to "
+                f"start on it. Whether this directory is private is decided on the "
+                f"RESOLVED path, so a link pointing into a shared agents tree would make "
+                f"that tree test as this task's own and let the backend rewrite specs "
+                f"belonging to another data home. Remove it, or start on a clean data "
+                f"home."
+            )
+    try:
+        agents.mkdir(parents=True, exist_ok=True)
+    except FileExistsError as exc:
+        raise common.ConfigError(
+            f"the task's agent-spec directory cannot be created: {agents} exists and is "
+            f"not a directory. The container refuses to start rather than crash on it "
+            f"every time the task restarts. Remove it, or start on a clean data home."
+        ) from exc
+    except OSError as exc:
+        raise common.ConfigError(
+            f"could not create the task's agent-spec directory {agents} ({exc}). This is "
+            f"where both the crew's spec and Kiro Crew's own default spec must live; "
+            f"refusing to start rather than letting the backend fall back to the shared "
+            f"agents directory under the process home, which it is not allowed to rewrite "
+            f"from a non-default data home and which would kill every turn at "
+            f"DerivedSpecStale."
+        ) from exc
+    expected = settings.data_home.resolve() / "kiro" / "agents"
+    landed = agents.resolve()
+    if landed != expected:
+        raise common.ConfigError(
+            f"the task's agent-spec directory {agents} resolves to {landed}, not to "
+            f"{expected}. Something along that path redirects it out of the data home, "
+            f"and the privacy the backend's write depends on is decided on the resolved "
+            f"path -- so this would hand it a directory it must not rewrite. Refusing to "
+            f"start."
+        )
+    os.environ[backend_mod.ENV_KIRO_HOME] = str(settings.kiro_home)
+    resolved = bundle_mod.default_kiro_agents_dir()
+    if resolved != agents:
+        raise common.ConfigError(
+            f"the crew installer resolves the agents directory as {resolved}, but this "
+            f"task owns {agents}. The installer reads $KIRO_HOME the way kiro-cli does "
+            f"and the backend reads it through Kiro Crew's own resolver; if the two "
+            f"disagree the crew is installed where nothing serves it. Refusing to start."
+        )
+    log.info("kiro home: %s (agent specs in %s)", settings.kiro_home, agents)
+    return agents
 
 
 #: The three things the sandbox probe can conclude. A verdict is a string rather
@@ -590,6 +740,12 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
     #    turn: bad path layout, no model identity, a sandbox absent where one is
     #    required, or a bundle that is absent or names a different crew.
     verify_layout(settings)
+    # Before anything reads or writes an agent spec: give this task its OWN kiro home,
+    # so the crew's spec and Kiro Crew's default spec share one directory that the
+    # backend is allowed to write. Ahead of `build_backend_env` only for readability --
+    # that function takes the value from the settings, not from this export -- but it
+    # MUST precede `install_bundle`, which resolves its destination from the environment.
+    export_kiro_home(settings)
     env = backend_mod.build_backend_env(settings)
     # The identity is delivered in the SUPERVISOR's environment and moved into the
     # vault here, which is where the backend's auth callback reads it.
@@ -608,6 +764,32 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
             "which would authenticate the task as another account without saying so."
         )
     backend_mod.require_model_identity(settings)
+    # Then satisfy kiro-cli's OWN login check, which is a separate question from
+    # whether this task has an identity.
+    #
+    # `kiro-cli acp` validates its own credential store before it offers an ACP
+    # handshake, so on a store it has never signed into it exits rc=1 "You are not
+    # logged in" and the `_kiro/auth/getAccessToken` request the vault answers is
+    # never reached: the container serves /health 200 and answers every dashboard
+    # turn with a 503. The row written here is a NON-SECRET sentinel, not a copy of
+    # the credential -- Crew is the auth owner and the engine asks the host for the
+    # token it uses, so what the store needs is the answer to "has this been signed
+    # into", which carries nothing worth reading.
+    #
+    # AFTER the vault check, because the order is what makes each refusal say the
+    # right thing: no identity is that check's verdict, and this one's is that
+    # kiro-cli would refuse to start. Both are startup refusals, because the thing
+    # they prevent is a container that starts and then 503s every turn.
+    #
+    # Handed `env`, NOT this process's own environment. The step runs kiro-cli to ask
+    # its login check a question, and this process still holds the delivered
+    # credential in its environment at this point -- the pop below has not run yet,
+    # and cannot run earlier because `build_backend_env` above is what reads it. An
+    # inherited copy would put the credential in a child that kiro-cli may outlive
+    # through a helper, readable by the later same-uid model worker. `env` is the
+    # dictionary `build_backend_env` already scrubbed of both credential shapes, and
+    # it carries the same HOME, so the store resolves to the same path either way.
+    kiro_login_mod.seed_kiro_cli_login(env=env)
     # Now drop BOTH credential shapes from this process's own environment. The front is
     # spawned with no env argument and so inherits this one whole, and
     # `build_backend_env` only ever cleaned the COPY handed to the backend -- so without

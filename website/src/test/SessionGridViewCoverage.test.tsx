@@ -43,6 +43,7 @@ vi.mock('../components/ChatPane', () => ({
     onSplitRight,
     onSplitDown,
     leading,
+    onFileOpen,
   }: {
     slotKey: string
     focused?: boolean
@@ -51,6 +52,7 @@ vi.mock('../components/ChatPane', () => ({
     onSplitRight?: () => void
     onSplitDown?: () => void
     leading?: { inset?: boolean; control?: React.ReactNode }
+    onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   }) => (
     <div data-testid={`pane-${slotKey}`} data-focused={focused ? 'yes' : 'no'} data-leading={leading ? (leading.inset ? 'inset' : 'control') : 'none'}>
       {leading?.control}
@@ -59,6 +61,7 @@ vi.mock('../components/ChatPane', () => ({
       <button type="button" aria-label={`remove ${slotKey}`} onClick={onRemove} />
       <button type="button" aria-label={`right ${slotKey}`} onClick={onSplitRight} />
       <button type="button" aria-label={`down ${slotKey}`} onClick={onSplitDown} />
+      <button type="button" aria-label={`open file ${slotKey}`} onClick={() => onFileOpen?.('/tmp/report.pdf')} />
     </div>
   ),
 }))
@@ -101,11 +104,11 @@ function seedApi(slots: Slot[] = []) {
   return m
 }
 
-function renderGrid(seedSlot?: string | null, leading?: { inset?: boolean; control?: React.ReactNode }) {
+function renderGrid(seedSlot?: string | null, leading?: { inset?: boolean; control?: React.ReactNode }, onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void) {
   const onClose = vi.fn()
   const onCollapse = vi.fn()
   const utils = renderWithProviders(
-    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} leading={leading} />,
+    <SessionGridView onClose={onClose} onCollapse={onCollapse} seedSlot={seedSlot} leading={leading} onFileOpen={onFileOpen} />,
   )
   return { ...utils, onClose, onCollapse }
 }
@@ -442,6 +445,47 @@ describe('SessionGridView — leaf rendering', () => {
 
     fireEvent.click(screen.getByLabelText('down a'))
     await waitFor(() => expect(pickers()).toHaveLength(3))
+  })
+})
+
+describe('SessionGridView — per-pane file opener (#9921)', () => {
+  // Every pane shares ONE host opener, but each pane owns a different session.
+  // The view must stamp the opened tab with the pane's OWN slot so a file opened
+  // from a non-focused pane binds to that pane's chat, not the host's active one.
+  it('stamps a file opened in a pane with that pane\'s slot', async () => {
+    seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
+    seedApi([{ key: 'a' }, { key: 'b' }])
+    const onFileOpen = vi.fn()
+    renderGrid('a', undefined, onFileOpen)
+    await screen.findByTestId('pane-b')
+
+    fireEvent.click(screen.getByLabelText('open file b'))
+
+    expect(onFileOpen).toHaveBeenCalledWith('/tmp/report.pdf', { slot: 'b' })
+  })
+
+  it('binds each pane to its own slot, not a shared one', async () => {
+    seedStore('a', splitOf([leaf('l-a', 'a'), leaf('l-b', 'b')]))
+    seedApi([{ key: 'a' }, { key: 'b' }])
+    const onFileOpen = vi.fn()
+    renderGrid('a', undefined, onFileOpen)
+    await screen.findByTestId('pane-b')
+
+    fireEvent.click(screen.getByLabelText('open file a'))
+    fireEvent.click(screen.getByLabelText('open file b'))
+
+    expect(onFileOpen).toHaveBeenNthCalledWith(1, '/tmp/report.pdf', { slot: 'a' })
+    expect(onFileOpen).toHaveBeenNthCalledWith(2, '/tmp/report.pdf', { slot: 'b' })
+  })
+
+  it('renders a pane without an opener when the host supplies none', async () => {
+    seedApi([{ key: 'a' }])
+    renderGrid('a')
+    const pane = await screen.findByTestId('pane-a')
+    // The stub's open-file button is inert (onFileOpen undefined); clicking it
+    // must not throw. Pinning that the pane still renders is enough.
+    fireEvent.click(within(pane).getByLabelText('open file a'))
+    expect(pane).toBeTruthy()
   })
 })
 

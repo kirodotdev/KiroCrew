@@ -20,6 +20,7 @@ agent loads only the one it needs.
 | [harness-onboarding.md](harness-onboarding.md) | The sequence a new ACP harness walks to land: vocabulary, capability decisions, spawn path, handshake, install probe, selectability, and what a live harness additionally touches. |
 | [model-fallback.md](model-fallback.md) | The throttle-exhaustion model fallback (`agent.fallback_model`): trigger, shared walk, sticky restore, visibility — plus the single-message content-filter refusal fallback (`agent.refusal_fallback_model`). |
 | [session.md](session.md) | Sessions, slots, session keys, the warm pool, and PID tracking. |
+| [runtime-ownership.md](runtime-ownership.md) | Who owns an agent process: the lease and tenancy tables, the one kill gate, death classification, the kernel-versus-registry reconciler, and the pid-reader guards. |
 | [history.md](history.md) | Conversation persistence, JSONL rotation, and transcript search. |
 | [session-summary.md](session-summary.md) | Intent-level session summaries: the sidecar cache, extraction, and the turn-end pass. |
 | [member-event-log.md](member-event-log.md) | Per-member append-only event log, its four projections, the whole-value push frames, and load-time closers behind the Members page. |

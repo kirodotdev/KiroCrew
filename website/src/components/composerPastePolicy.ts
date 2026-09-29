@@ -35,6 +35,17 @@ export function clipboardFiles(data: DataTransfer): File[] {
     })
 }
 
+type ChordEvent = Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'key' | 'code'>
+
+/** Keydown that arms the next paste as raw: Ctrl/Cmd+Shift+V, or macOS's
+ *  Cmd+Option+Shift+V. Option rewrites event.key (to '◊' on a US layout), so
+ *  the mac arm reads the physical key instead. */
+export function isRawPasteChord(event: ChordEvent): boolean {
+  const macChord = event.metaKey && event.altKey && event.code === 'KeyV'
+  return event.shiftKey && (macChord ||
+    ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'v'))
+}
+
 export function hasPlainClipboardText(data: DataTransfer): boolean {
   return Array.from(data.types || []).includes('text/plain')
 }

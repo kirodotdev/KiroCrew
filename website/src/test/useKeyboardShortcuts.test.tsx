@@ -8,6 +8,8 @@ import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
 import { matchShortcutEvent, resolveShortcuts } from '../lib/shortcutRegistry'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
+import { recordRouteNavigation, _resetRouteHistoryPositionForTest } from '../lib/routeHistoryPosition'
+import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import ShortcutsModal from '../components/ShortcutsModal'
@@ -364,6 +366,97 @@ describe('useKeyboardShortcuts — route-history chord', () => {
     act(() => { document.dispatchEvent(event) })
     expect(event.defaultPrevented).toBe(true)
     expect(screen.getByTestId('hist-loc').textContent).toBe('/chat')
+  })
+
+  it('Ctrl+← arms the composer release, so the next press is not eaten by autofocus', () => {
+    // Non-Mac on purpose: the text-field unclaim is platform-wide, so the
+    // arming must be too.
+    consumeComposerRelease()
+    setupAt(['/chat', '/settings'])
+    window.history.replaceState({ idx: 1 }, '', '/settings')
+    const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+    act(() => { document.dispatchEvent(event) })
+    expect(screen.getByTestId('hist-loc').textContent).toBe('/chat')
+    expect(consumeComposerRelease()).toBe(true)
+  })
+
+  it('Ctrl+→ arms the composer release too', () => {
+    consumeComposerRelease()
+    try {
+      setupAt(['/chat', '/settings'])
+      // Seed a forward frontier: an entry at idx 1 was seen, we now stand at 0.
+      window.history.replaceState({ idx: 1 }, '', '/settings')
+      recordRouteNavigation('PUSH')
+      window.history.replaceState({ idx: 0 }, '', '/chat')
+      const event = new KeyboardEvent('keydown', { code: 'ArrowRight', key: 'ArrowRight', ctrlKey: true, cancelable: true, bubbles: true })
+      act(() => { document.dispatchEvent(event) })
+      expect(event.defaultPrevented).toBe(true)
+      expect(consumeComposerRelease()).toBe(true)
+    } finally {
+      _resetRouteHistoryPositionForTest()
+    }
+  })
+
+  describe('behind the draft ask', () => {
+    function GuardedProbe({ guard }: { guard: () => boolean }) {
+      useRegisterNavigationLeaveGuard(guard)
+      return <Probe />
+    }
+
+    const setupGuarded = (guard: () => boolean) => {
+      const store = createTestStore({
+        dashboard: { slots: [] } as unknown as RootState['dashboard'],
+        chat: { activeSlot: null, slotHistory: [] } as unknown as RootState['chat'],
+      })
+      render(
+        <Provider store={store}>
+          <NavigationLeaveGuardProvider>
+            <MemoryRouter initialEntries={['/chat', '/settings']} initialIndex={1}>
+              <GuardedProbe guard={guard} />
+            </MemoryRouter>
+          </NavigationLeaveGuardProvider>
+        </Provider>,
+      )
+      window.history.replaceState({ idx: 1 }, '', '/settings')
+    }
+
+    const pressBack = () => {
+      const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+      act(() => { document.dispatchEvent(event) })
+    }
+
+    it('a vetoed step leaves the release unarmed', () => {
+      consumeComposerRelease()
+      setupGuarded(() => false)
+      pressBack()
+      expect(screen.getByTestId('hist-loc').textContent).toBe('/settings')
+      expect(consumeComposerRelease()).toBe(false)
+    })
+
+    it('arms after the ask, so a slow confirm does not expire the one-shot', () => {
+      consumeComposerRelease()
+      const t0 = 1_000_000
+      const now = vi.spyOn(Date, 'now').mockReturnValue(t0)
+      try {
+        // The user takes longer than the one-shot's lifetime to answer.
+        setupGuarded(() => { now.mockReturnValue(t0 + 5000); return true })
+        pressBack()
+        expect(screen.getByTestId('hist-loc').textContent).toBe('/chat')
+        expect(consumeComposerRelease()).toBe(true)
+      } finally {
+        now.mockRestore()
+      }
+    })
+  })
+
+  it('does not arm the release when there is nowhere to go', () => {
+    consumeComposerRelease()
+    setupAt(['/chat'])
+    window.history.replaceState({ idx: 0 }, '', '/chat')
+    const event = new KeyboardEvent('keydown', { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, cancelable: true, bubbles: true })
+    act(() => { document.dispatchEvent(event) })
+    expect(event.defaultPrevented).toBe(true)
+    expect(consumeComposerRelease()).toBe(false)
   })
 
   it('claims the chord even at the bottom of the stack, so the two affordances agree', () => {

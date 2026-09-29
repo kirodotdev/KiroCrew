@@ -79,6 +79,8 @@ single completion path that serves every terminal outcome:
 Agent `<id>` (<agent name>) <status> <emoji>
 Task: <first 100 chars of the task>
 
+Usage: <credits> credits · <elapsed>
+
 <result detail>
 ```
 
@@ -92,6 +94,17 @@ Task: <first 100 chars of the task>
   content, or in orchestrator mode, it is a summary plus a `result_path` pointer, so
   the parent reads the full transcript on demand (`read`, `grep`, `spawn_status`)
   instead of re-running the sub-agent.
+- Usage is cumulative across all attempted turns in the run, including billed
+  retries that failed before the final turn. Providers that do not report credit
+  billing render this line as `Usage: <elapsed>`; the missing credit label is
+  intentional, and zero is not a claim that the run was free. Reported credits
+  use two decimals below 10 and one decimal at or above 10, matching the
+  dashboard's precision.
+- The same charge is written into the PARENT's crew log as `credits` on
+  `subagent/completed` or `subagent/failed`, and `usage.credits_by_source.subagent`
+  folds it. This line and that entry read the one accumulator, so they cannot
+  disagree; the entry drops an unbilled zero rather than writing it, which is the
+  same posture as this line omitting the credit label.
 - A user-stopped agent says so explicitly and instructs the parent not to treat the
   partial output as a finished result or retry it unprompted.
 - A wide wave is delivered in chunks under a sibling prefix,
@@ -134,6 +147,7 @@ session failed (most commonly a delivery timeout). `subagent.py` builds:
 [Subagent completion event]
 Agent `<id>` ❌ <reason>
 Task: <first 100 chars of the task>
+Usage: <credits> credits · <elapsed>
 <outcome line>
 Result saved at: <path> (<n> bytes)
 Use the read tool to retrieve it if needed.
@@ -159,6 +173,8 @@ The result-path lines are present only when a result file exists. **The result i
 on disk**, so use the `read` tool to retrieve it rather than re-running the work.
 
 Three adjacent variants exist for a gateway restart, same prefix:
+These notices omit usage because an interrupted run has no settled terminal
+billing record:
 
 - `⚠️ orphaned by gateway restart` plus `Result saved at: <path>` and
   `Use the read tool to retrieve it.` — only when the run recorded
@@ -284,6 +300,40 @@ was never judged and to state the permission it needs). All three are steered
 once, at the shared reject branch, gated on the host-recorded provenance; a
 genuine user refusal records no cause, so kiro-cli's generic denial stays the
 true attribution there and no notice is sent.
+
+**The headless funnel steers the same notice.** `llm_helpers._resolve_permission`
+answers permissions for every surface without a dashboard slot — cron, Slack and
+channel turns driven through `stream_and_collect`, workflows, heartbeat, Meetings
+transcript turns — and `llm_helpers.run_bg_oneliner` answers them for the
+tool-free background one-liners (titles, labels, summaries). Each host deny there
+awaits `deny_notice.steer_refusal_notice` through the module's
+`_steer_host_deny` immediately before `reject_tool`, naming its cause per site:
+
+- `policy` — a safety rule judged the call itself: an always-deny pattern hit, a
+  hook `deny`, the shared permission floor refusing an `AUTO_APPROVE` call.
+  Carries the class remediation.
+- `surface_policy` — the SURFACE refused the call, not a rule about the call:
+  the reject-all and read-only tool policies, the tool-free one-liner, and a
+  name-based grant withheld on a surface with no approver to fall back to. No
+  remediation, because it is keyed off the reason and the model's own title, and
+  on a surface where no tool can run (or no one can approve) it would name a
+  sanctioned command the model cannot run there; the withheld-grant reason is
+  host-authored and carries no rule identity, so the title would be the only
+  anchor.
+- `invalid_name` — the call carried no title, the one deny the model can fix.
+
+The one genuine user rejection on that funnel (the interactive approver said no)
+sends no notice. Two orderings are load-bearing at every site and are pinned by
+a source-walking test (`test_llm_helpers_deny_notice.py`): the SEL audit row is
+written BEFORE the steer and the reject (both await the ACP pipe, and a stalled
+pipe cancels the coroutine at the turn deadline — an audit sequenced after them
+never runs), and an audit that cannot be written raises before the wire, so a
+deny never proceeds unaudited — the request stays unanswered and the caller's
+own deadline bounds it, exactly as an approval whose audit fails after the wire
+keeps raising. A cancellation that lands inside the
+steer still answers the wire: the reject is scheduled as a strongly referenced
+task whose outcome is read when it settles, and the cancellation re-raises at
+once — the cancellation is the caller's deadline, so nothing waits past it.
 
 The recovery classification for the last two rows of the marker table above
 is **structural**: the queue entry
@@ -513,7 +563,7 @@ speech rather than as the user.
 |---|---|---|
 | `[work ledger — …]` | `session_ledger.py` snapshot builder, composed into a nudge by `dashboard/handlers/autonudge.py` | Durable per-session state that outranks the model's recollection of earlier cycles. |
 | `[Hook context:]` … `[End of hook context]` | `context.py` hook-context assembly | Context supplied by a configured hook whose action is `HOOK_INJECT_CONTEXT`; webhook-restored workflow state is one producer, not the envelope's only meaning. The payload is untrusted third-party data. |
-| `[Previous run result — do NOT repeat the same content]` | `cron.py` | A recurring cron's own last output, so the turn reports only what changed. |
+| `[Previous run result — do NOT repeat the same content]` | `cron_service/identity.py` (`build_cron_session_context`) | A recurring cron's own last output, so the turn reports only what changed. |
 | `[RESOURCES]` | `resource_status.py` advisory builder | Host memory crossed the tight/critical threshold, **or** the agent slice sits within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`; take the lighter path this turn. |
 | `[Relevant skills for this message]` | `skills.py` pointer renderer | Skill candidates named by path instead of by injected body. The body must be read before use unless that skill already appears earlier in the conversation, where native history still carries its instructions. |
 | `[INCOGNITO SESSION]` / `[TEMPORARY SESSION]` | `dashboard/chat_utils.py` ephemeral-session prefixes | An instruction, not a tool-level gate: it forbids memory tools (writes in incognito, reads as well in temporary) and learns nothing from the chat — the transcript itself is kept in History for the user, but no lesson, memory or summary is derived from it. `learn_remove` and the cron tools stay permitted as active user actions, and a cron change persists outside the transcript. |

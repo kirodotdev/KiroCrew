@@ -16,6 +16,7 @@
  *
  * @module hooks/useSessionControls
  */
+import { useRef } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
@@ -225,10 +226,7 @@ export function useSessionControls(): SessionControlsResult {
     // trimmed api surface) mock `api` partially, and a missing method would
     // throw synchronously — taking the whole composer down with it.
     queryFn: () => (typeof api?.listApps === 'function' ? api.listApps() : []),
-    select: (d: unknown): ResolvedSessionControl[] => {
-      const apps = Array.isArray(d) ? d : (d as { apps?: unknown[] })?.apps
-      return resolveSessionControls((apps as AppLike[]) || [])
-    },
+    select: selectSessionControls,
   })
   // The controls still fail closed — an error leaves `data` undefined, so the
   // composer renders without chips rather than breaking. But the error is
@@ -236,8 +234,16 @@ export function useSessionControls(): SessionControlsResult {
   // from "no app declares a control" unless the failure is surfaced, so the
   // caller owes the user an error surface. `errors-use-error-notice` names a
   // `useQuery` error as an error for exactly this reason.
-  return { controls: data ?? [], error: (error as Error | null) ?? null }
+  return { controls: data ?? NO_CONTROLS, error: (error as Error | null) ?? null }
 }
+/** Module-level, so React Query re-runs it only when the app list changes: an
+ *  inline `select` is a new function per render and re-resolves every time. */
+function selectSessionControls(d: unknown): ResolvedSessionControl[] {
+  const apps = Array.isArray(d) ? d : (d as { apps?: unknown[] })?.apps
+  return resolveSessionControls((apps as AppLike[]) || [])
+}
+/** Shared so a failed or pending app list keeps one identity across renders. */
+const NO_CONTROLS: ResolvedSessionControl[] = []
 
 /**
  * Normalize one status payload into a chip state.
@@ -353,5 +359,17 @@ export function useSessionControlStatuses(
   // one row. Statuses still fail closed — a chip whose probe failed is simply
   // stateless — but the failure is reported rather than hidden.
   const failed = results.find(r => !!r.error)
-  return { statuses, error: (failed?.error as Error | undefined) ?? null }
+  // Same identity while no status changed: the map is rebuilt every render, and
+  // a fresh `{}` each time kept every memo downstream of it (the composer's
+  // chip list) from ever holding. Each entry is react-query data, which keeps
+  // its identity until the probe's answer changes.
+  const stableRef = useRef(statuses)
+  if (!sameEntries(stableRef.current, statuses)) stableRef.current = statuses
+  return { statuses: stableRef.current, error: (failed?.error as Error | undefined) ?? null }
+}
+
+function sameEntries(a: Record<string, SessionControlStatus>, b: Record<string, SessionControlStatus>): boolean {
+  const ka = Object.keys(a)
+  if (ka.length !== Object.keys(b).length) return false
+  return ka.every(k => Object.prototype.hasOwnProperty.call(b, k) && a[k] === b[k])
 }

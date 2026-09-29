@@ -120,27 +120,46 @@ name: CI Runner Watchdog
 # runs would only add to the contention. The script tells the two apart by what
 # the OTHER routed jobs are doing, counting only starts AFTER the orphaned job
 # queued (a fleet that was fine before the orphan queued says nothing about the
-# fleet it is waiting on): if a CodeBuild job that did get a runner started in
-# that window, inside the last 30 minutes, after waiting a third of the orphan
-# threshold or more, CodeBuild is queueing, every queued job is presumed alive, and
-# the tick reports the runs as `skipped-saturated` and heals nothing. That line is
-# deliberately low because this evidence is label-blind: a start served quickly on
-# another CodeBuild label says nothing about the queue the orphaned job is in, so
-# raising the line would widen the window in which a queued-but-alive job is
-# cancelled. A tick that observed any served CodeBuild start logs the slowest of
-# them against the line, which is the drift a raise has to be calibrated from
-# (#13644); a tick that saw none has nothing to measure and logs nothing. And when NOTHING has started
+# fleet it is waiting on). The orphaned job's OWN queue is asked first: a routed
+# label is `codebuild-<project>-<run>-<attempt>`, optionally with an `instance-size`
+# override, and the project plus override name the queue while the run and attempt
+# are only there because CodeBuild requires them. A start served by that same queue
+# after the orphan queued stood in the same line and got out of it. One that waited
+# a third of the orphan threshold or more, inside the last 30 minutes, means that
+# queue is saturated and the tick holds; prompt ones and nothing slow mean the queue
+# is being served and the orphan was never in it, whatever another label's queue is
+# doing -- the usual carrier is the run's own siblings, and thirteen of fourteen
+# fast-gate jobs starting in under a minute while one sits for an hour and a half is
+# the dropped-dispatch shape exactly. Old prompt starts count for that reading (the
+# orphan's place in line does not age); an old slow start with nothing recent counts
+# for nothing, and the fleet-wide reading below decides. Only when the orphan's own
+# queue served nothing usable is the fleet-wide, label-blind reading used: if a
+# CodeBuild job that did get a runner started in that window, inside the last 30
+# minutes, after waiting a third of the orphan threshold or more, CodeBuild is
+# queueing, every queued job is presumed alive, and the tick reports the runs as
+# `skipped-saturated` and heals nothing. That line is deliberately low because the
+# fleet-wide reading is label-blind: a start served quickly on another CodeBuild
+# label says nothing about the queue the orphaned job is in, so raising the line
+# would widen the window in which a queued-but-alive job is cancelled. A tick that
+# observed any served CodeBuild start logs the slowest of them against the line,
+# which is the drift a raise has to be calibrated from (#13644); a tick that saw
+# none has nothing to measure and logs nothing. And when NOTHING has started
 # on CodeBuild in that window (live runs first, then the ten newest completed runs),
 # the evidence is inconclusive: a total fleet outage looks exactly like an orphan
 # from the queued side, and re-running into an outage only discards finished
 # work, so the tick reports `skipped-no-dispatch-evidence`, heals nothing, and
-# points at the documented rollback. A sweep that left a run old enough to hold a
+# points at the documented rollback. That outage hold applies even when the orphan's
+# own queue read as dispatching: the own-queue reading settles the orphan's place in
+# line, not whether the fleet is up now. A sweep that left a run old enough to hold a
 # served start past the threshold unread reports `skipped-partial-dispatch-evidence`
 # rather than acting: the completed-run sample cannot close that gap, since it reads
 # the newest completions and a fleet serving some jobs promptly while queueing others
 # past the threshold puts a prompt start there. The premise is the unread
 # saturation-capable runs, not that the bound was reached, so a sweep whose unread
-# band is all too young to have carried such a start may still act. Those unread runs
+# band is all too young to have carried such a start may still act. An own-queue
+# dispatching reading does not lift this hold: it is read off the starts this sweep
+# read, and the slow same-queue start that would refute it can sit in a run nobody
+# read. Those unread runs
 # are retained with their creation times and re-judged on age at each cancel rather
 # than counted once, since the cancel phase re-reads the listing once and then judges
 # several cancels against it.

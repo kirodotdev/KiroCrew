@@ -65,7 +65,7 @@ legacy metadata do not override a canonical execution.
 | `messaging/driver.py` deny cause | A decider MAY carry `last_deny_cause` (`""` for a human's own answer, `constants.DENY_CAUSE_APPROVAL_TIMEOUT` when its prompt expired). After a denial the driver reads it and, for the timeout cause, awaits `deny_notice.steer_refusal_notice` BEFORE `reject_tool` (capability-gated on `provider.supports_refusal_steer`, bounded by `STEER_NOTICE_BOUND_SECS`, best-effort), so the model is told the prompt expired unanswered instead of reading kiro-cli's generic "User denied tool execution" as a human refusal. Cancellation mid-steer still answers the wire through a shielded, strongly referenced orphan reject. Every shipped decider records the cause: `TextReplyApprovalDecider`, `SessionApprovalDecider` (via `PendingApprovals.decide_with_cause`), `DiscordApprovalDecider`, `SlackApprovalDecider`, `TelegramApprovalDecider`, `TeamsApprovalDecider`. A plain callable without the attribute is a causeless denial, as before |
 | `messaging/driver.py` `deny_all_tools` | Rejects EVERY permission request ahead of every approve path. The approval ladder cannot express "this sender is not the operator" on its own: the PreToolUse hook may answer `auto_approve` and the Trust/YOLO predicates approve and short-circuit, both BEFORE the ladder is consulted, so setting the mode to `interactive` without a decider is not sufficient. Not the whole enforcement: see `dispatch.TOOLLESS_TURN_AGENT` below. Defaults False |
 | `messaging/dispatch.py` `TOOLLESS_TURN_AGENT` | `"kirocrew-guest"`: the agent a `deny_all_tools` turn is driven on. Its spec (`agent._install_guest_agent`, written beside the background `kirocrew-lite` on every rebuild) mounts `tools: []`, no MCP servers and `includeMcpJson: false` (so the user-level mcp.json is not mounted either), and carries a short conversational prompt of its own because a person is on the other end. Needed because a permission request is not guaranteed at all: a tool the operator's agent lists in `allowedTools` runs on the kiro backend without raising one, so the driver's refusal never sees it. `drive_turn` acquires the session under this agent when the flag is set and refuses the turn (`ToollessTurnUnavailable`, SEL `turn_agent` denied) when the session key handed in is already bound to another agent, since `get_or_create` keeps an existing session's agent, and when the provider's backend routing is not `Routing.AGENT_SPEC` (`agent_sdk.backends.routing_for`): only a harness that mounts what the spec names honours `tools: []`; one that reads no agent spec keeps its native tools and a project-preapproved one raises no permission request, so the turn is refused rather than run |
-| `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel. Also the cut-safety oracle: `joins_to_a_credential` for one boundary, `severs_a_credential` for the n-piece sequence a rotation delivers, and `safe_split_offset` for "where may I cut instead". Each takes an optional `present` mapping a piece to the form the sink actually DELIVERS, and grades BOTH forms — trimming reveals a join where whitespace kept the halves apart, and CONCEALS one where the pattern needs that whitespace (`-----BEGIN ` + `RSA PRIVATE KEY-----`), so neither form dominates and grading only the delivered one is not the safe direction |
+| `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` scan the literal bytes and five display forms: the canonical one-level link grammar shared with Slack, Telegram, WhatsApp and iMessage; Telegram's plain fallback; a depth-unbounded CommonMark balanced close; a lazy first-`)` close; and a link-free reading that leaves every url visible while consuming native links, emphasis and format characters. The extra readings only add redaction and do not widen renderer link syntax. Emitted text settles under every reading or loses display markup outside exact redactor-owned credential tags and safe-domain suspicious-URL tags. `joins_to_a_credential`, `severs_a_credential`, and `safe_split_offset` grade one boundary, an n-piece delivery, and candidate cuts; `present` maps pieces to the sink-delivered form and both raw and presented forms are graded because neither dominates. |
 | `messaging/markup.py` | `strip_thinking_tags` / `flatten_pipe_tables` / `flatten_mermaid_body`: Markdown reductions for a surface that renders none of the source form (a `<thinking>` block, a pipe table needing a monospace grid, a `mermaid` fence needing an image). Emits Markdown, never a channel dialect, so each channel's own inline converter finishes the job. Stdlib-only leaf |
 | `messaging/split.py` | `split_markdown_safe` — the shared fence-safe markdown splitter (stdlib-only, pure). Prefix-stable so streaming callers can send sealed chunks and keep only the last as a live buffer. `split_markdown_bytes` wraps it for a byte-capped platform, measuring the produced chunks and shrinking the character budget until they fit, with the `chunk_utf8_bytes` primitive as the floor. Also exports `iter_fence_spans`, the same fence machine viewed as character spans over a whole message, and `split_markdown_safe_with_tier`, which additionally declares whether the split entered the context-degrading tier (a cut that leaves a dirty remainder, so the deferred text can read as a delimiter the source line never contained). |
 | `messaging/outbound_files.py` | `extract_local_refs` (+ `extract_local_refs_off_loop`) — pulls local markdown image references out of an outbound reply into `OutboundFile` payloads carrying the validated bytes, with `Rejection` reasons for everything refused. Also `iter_local_refs` / `hide_local_refs`, the text-only scan a streaming channel uses to keep the markup off live frames. Channel-neutral; the upload stays per-transport |
@@ -3359,6 +3359,36 @@ branches alike. A redaction can push text past the budget that sized it; the sea
 re-measures and re-splits, and losing formatting to keep a rendered secret
 redacted is the intended direction of that trade.
 
+The screen also reads the text as `_strip_md`, the plain-text fallback, shows it:
+code fences, inline code, heading markers, `**` and `__` removed and then every
+link flattened to `label (url)`, in that order. Those six passes are ONE set of
+pattern objects and replacements, the `TELEGRAM_FALLBACK_*` patterns and
+`TELEGRAM_FALLBACK_PASSES` that `display_safety` defines and this renderer imports
+(the screen is a leaf, so the definition lives on its side); `_strip_md` and the
+HTML translation apply the same objects, and `test_markdown_link_parentheses`
+fails on a second spelling of any of them in either module, on a pass added,
+dropped or reordered, and on any placement of `[`, `]`, a delimiter pair and
+`(https://x)` around a split key where the screen and the fallback disagree. The
+heading pass is shared because removing `# ` can expose a named credential
+assignment. The bullet pass writes a visible bullet in place of its marker, so it
+leaves a separator and stays the renderer's own. That reading matters here for two shapes.
+The fallback prints a link's url beside its label, where the rendered form hides
+it, so a key split by `**` inside a url is whole only in that reading. And the
+fallback links AFTER it drops delimiters, where the screen's rendered form links
+first: `AKIA[IOSF...]**(https://x)**` is text to the rendered form's link pass and
+a link to the fallback once the `**` is gone, so the fallback shows
+`AKIAIOSFODNN7EXAMPLE (https://x)`. The screen answers both with the rendered
+form, which drops the url, and whose settling passes collapse and redact the
+link the delimiters closed. `TELEGRAM_FALLBACK_LINK` reads a link with the
+screen's grammar: the shared `constants.md_link_destination` url pattern (one
+level of balanced parentheses, a backslash escape read as one token, a `[label](`
+inside the url ending the link), an `https?://` scheme, no whitespace in the url,
+and a label holding no `[`, `]` or line break, so the HTML and plaintext branches
+link exactly what the screen collapsed. An emitted form is rendered and redacted
+again until the text stops changing, at most `DISPLAY_SETTLING_PASSES` (4)
+times; past that, every markup character outside a redaction tag is removed
+before the final redaction.
+
 ### Telegram's stall marks, and why it has no phase reactions
 
 Slack tracks turn phase with a debounced reaction on the user's own message. That
@@ -4048,7 +4078,25 @@ will apply and then reduces both to what the platform SHOWS, and it reads the pa
 ways, because neither reading contains the other: canonicalising the concatenation is
 wider for a run of delimiters, which concatenation can only extend, while canonicalising
 each side first is wider wherever canonicalising DROPS text, which is what a link does to
-its target. A character class or a fixed search window cannot be closed here -- the next
+its target. The further readings `redact_for_display` scans are taken both ways as well,
+because a pair is graded under every reading a single message is: Telegram's fallback and
+its HTML seal both drop a heading marker, so a field name closing one message and
+`#   : <value>` opening the next read as the assignment on screen while the `#` keeps them
+apart in the literal join and in the canonical form. The splitter's whole-sequence grade
+(`_rejoins_a_key`) takes the same readings, for the hard cut that opens a chunk with a
+marker the whole text held mid-line. The repair a capped caller runs on a chunk it slices
+again (`repaired_for_delivery`, behind `bounded_for_delivery` and the Slack and Telegram
+bounding paths) is judged by that same grade on the caller's own re-cut: the caller passes
+its cutter, each candidate repair is cut by it and the pieces graded by `_rejoins_a_key`,
+and the first whose pieces read clean is delivered. A repair judged by a narrower reading
+answers a refusal made on another with nothing; a link whose parenthesised url hides a key
+behind a `~~` pair collapses clean under the canonical grammar while the no-parenthesis
+reading joins the key, and the heading seam above is visible only in the reading of the
+piece the cut opens. The candidates run least destructive first: the key-hiding span closed
+up and redacted, then the canonical redacted collapse fixed point, then a last resort
+(`_flattened_for_any_cut`) that collapses links to labels, strips every markup character
+outside a redaction tag, removes every whitespace run and redacts, so every reading is the
+identity on every substring and no cut of it can render a key. A character class or a fixed search window cannot be closed here -- the next
 character the set does not know about is one more place a split can hide, and the check
 then runs on a span the credential was never inside and passes vacuously.
 
@@ -5505,7 +5553,10 @@ caption, and the approval prompt (whose tool title is model-authored and is
 interpolated verbatim by `build_approval_prompt`). A screen on the chunk path alone
 would leave all four as the bypass. The streaming and final paths are two more, and
 both reach `render_chunks` through `_rendered_chunks`, which is why one screen
-covers them.
+covers them. The link rewrite (`[label](url)` to `label (url)`) reads a link with
+the screen's grammar, the shared `constants.md_link_destination` url pattern (one
+level of balanced parentheses) and a label holding no `[`, `]` or line break, so a
+link this converter names whole is one the screen collapsed to its label.
 
 **Inline code is byte-exact through the conversion**
 (`renderer._sub_outside_code`). The dialect has no escape character, so a backtick

@@ -342,8 +342,9 @@ asyncio.run(main())
 
 The source-only `kirocrew-client` package is async (uses `aiohttp`) and
 standalone, with no dependency on the Kiro Crew main package. It is not published
-to PyPI or included in the main wheel, covers only part of the REST API, and has
-no WebSocket client. See the method table before depending on a wrapper.
+to PyPI or included in the main wheel, covers most but not all of the REST API,
+and includes a WebSocket client (`create_ws()`). See the method table before
+depending on a wrapper.
 
 See [API Reference](api-reference.md) for the full method list.
 

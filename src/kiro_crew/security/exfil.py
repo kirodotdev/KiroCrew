@@ -90,7 +90,7 @@ _EXFIL_QUERY_MIN_LEN = 200
 # Patterns that indicate secrets or encoded data in query params
 _EXFIL_PATTERNS = re.compile(
     r"(?:"
-    r"[A-Za-z0-9+/=]{40,}"  # base64-like blob (40+ chars)
+    r"[A-Za-z0-9+/]{40,}={0,2}|[A-Za-z0-9+/]{39}=|[A-Za-z0-9+/]{38}=="  # base64, "=" is padding
     r"|%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}"  # heavy URL-encoding (20+ encoded chars)
     f"|{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
     r"|(?:ssh-rsa|ssh-ed25519)[\s+%]"  # SSH public key

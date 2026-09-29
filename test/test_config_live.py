@@ -972,6 +972,7 @@ class TestServerAppliers:
         from kiro_crew.dashboard.server import _register_config_watch
 
         app = web.Application()
+        state.set_dynamic_cards_enabled = MagicMock()
         _register_config_watch(app, state, None)
         return {s.name: s for s in app["config_watch_subscriptions"]}
 
@@ -1357,7 +1358,9 @@ class TestServerAppliers:
         from kiro_crew.dashboard.server import _register_config_watch
 
         app = web.Application()
-        _register_config_watch(app, SimpleNamespace(workflow_service=None), None)
+        _register_config_watch(
+            app, SimpleNamespace(workflow_service=None, set_dynamic_cards_enabled=MagicMock()), None
+        )
         assert not any("config_watch" in cb.__name__ for cb in app.on_startup)
         assert any(cb.__name__ == "_config_watch_shutdown" for cb in app.on_cleanup)
 
@@ -1371,8 +1374,10 @@ class TestServerAppliers:
 
         app = web.Application()
         initial = KiroCrewConfig.load()
-        _register_config_watch(app, SimpleNamespace(workflow_service=None), initial)
-        state = SimpleNamespace(_background_tasks=set())
+        state = SimpleNamespace(
+            workflow_service=None, _background_tasks=set(), set_dynamic_cards_enabled=MagicMock()
+        )
+        _register_config_watch(app, state, initial)
         _kick_config_watch(app, state)
         assert len(state._background_tasks) == 1
         await asyncio.gather(*state._background_tasks)
@@ -1394,8 +1399,10 @@ class TestServerAppliers:
 
         app = web.Application()
         initial = KiroCrewConfig.load()
-        _register_config_watch(app, SimpleNamespace(workflow_service=None), initial)
-        state = SimpleNamespace(_background_tasks=set())
+        state = SimpleNamespace(
+            workflow_service=None, _background_tasks=set(), set_dynamic_cards_enabled=MagicMock()
+        )
+        _register_config_watch(app, state, initial)
         _kick_config_watch(app, state)
         try:
             # No await between the kick and this read: the task has not run yet.

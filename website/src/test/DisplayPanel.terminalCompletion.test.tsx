@@ -115,19 +115,19 @@ describe('DisplayPanel → Terminal command completion', () => {
   })
 
   it('reads as ON when the key is absent (the backend default)', async () => {
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     expect(await toggle()).toHaveAttribute('aria-checked', 'true')
   })
 
   it('reads as OFF only for a literal false', async () => {
     seed({ enabled: false })
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     await waitFor(async () => expect(await toggle()).toHaveAttribute('aria-checked', 'false'))
   })
 
   it('does not read a hand-edited "false" string as off — the backend does not either', async () => {
     seed({ enabled: 'false' })
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     expect(await toggle()).toHaveAttribute('aria-checked', 'true')
   })
 
@@ -135,7 +135,7 @@ describe('DisplayPanel → Terminal command completion', () => {
     // A PATCH that never settles: the flip below can only come from the
     // per-path overlay, not from a refetch of the (stateless) config mock.
     patchConfigMock.mockImplementation(() => new Promise(() => {}))
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const sw = await toggle()
     await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
     fireEvent.click(sw)
@@ -145,7 +145,7 @@ describe('DisplayPanel → Terminal command completion', () => {
 
   it('surfaces a catalog message and rolls back when the save fails', async () => {
     patchConfigMock.mockImplementation(() => Promise.reject(new Error('boom')))
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const sw = await toggle()
     await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
     fireEvent.click(sw)
@@ -166,7 +166,7 @@ describe('DisplayPanel → Terminal command completion', () => {
         dashboard: { terminal: stored === undefined ? {} : { completion: { enabled: stored } } },
       }),
     )
-    renderWithProviders(<DisplayPanel />)
+    renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
     const sw = await toggle()
     await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
     fireEvent.click(sw)

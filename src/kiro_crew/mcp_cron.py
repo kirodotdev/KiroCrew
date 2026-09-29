@@ -1057,7 +1057,10 @@ def vet_job_at_fire_time(job: CronJob) -> str | None:
         # shows every permission decision that authorized this execution.
         _audit_fire_time_decision(job.id, "commands", "allowed")
     elif job.script:
-        script_path, _ = resolve_script_path(job.script)
+        # A PERSISTED spec, already vetted at authoring time, so a stored
+        # absolute app-bundle path is legitimate here; authoring paths stay
+        # confined to crons/ because they pass neither keyword.
+        script_path, _ = resolve_script_path(job.script, allow_bundle_roots=True)
         reason = _vet_script_file(script_path)
         if reason:
             _audit_fire_time_decision(job.id, "cron_script_body", "denied", reason)
@@ -1696,7 +1699,7 @@ def _fetch_history_stats(job_ids: list[str]) -> tuple[dict[str, dict[str, Any]],
         port = resolve_serving_port()
     except Exception as exc:  # pragma: no cover - resolver is defensive already
         return {}, f"cannot resolve the gateway port ({type(exc).__name__})"
-    secret = read_local_secret(port)
+    secret = read_local_secret(port, dial_host="127.0.0.1")
     if not secret:
         return {}, "no gateway credential on this host, so run history cannot be read"
 

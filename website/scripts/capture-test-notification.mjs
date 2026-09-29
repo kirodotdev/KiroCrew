@@ -49,7 +49,7 @@ async function capture(viewport, name) {
     localStorage.setItem('mc-theme', 'dark')
     localStorage.setItem('mc-onboarded', '1')
   })
-  await page.goto(`${base}/settings?tab=notifications`, { waitUntil: 'domcontentloaded' })
+  await page.goto(`${base}/settings/notifications/sound`, { waitUntil: 'domcontentloaded' })
   await page.getByRole('switch', { name: /play sound on new notifications/i }).waitFor({ timeout: 20000 })
   await page.waitForTimeout(800) // let the card entrance stagger settle
   await page.screenshot({ path: `${OUT}/${name}.png`, fullPage: false })

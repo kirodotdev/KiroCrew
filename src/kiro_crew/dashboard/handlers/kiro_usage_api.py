@@ -493,7 +493,8 @@ class _Candidate(NamedTuple):
 
 
 def _candidate_tokens() -> list[_Candidate]:
-    """Return all unexpired candidates to try, freshest expiry first (deduped).
+    """Return all unexpired candidates to try, kiro-cli's own store first, then
+    freshest expiry (deduped).
 
     Path order is deliberately NOT the ranking. Every enumerated source can hold
     a valid credential at the same time, so ordering by path meant a leftover
@@ -507,6 +508,13 @@ def _candidate_tokens() -> list[_Candidate]:
     only decides which proven candidate is tried first —
     ``fetch_usage_limits`` establishes ownership itself, by matching ARN or by
     provenance. Ties keep the original path precedence (``sorted`` is stable).
+
+    Provenance ranks above expiry. Two accounts entitled to one shared IdC
+    profile report the same ARN, so the ARN proof cannot tell them apart and
+    the first candidate to clear it wins. A token in kiro-cli's own store is
+    the signed-in account's credential by construction, so it goes first; a
+    fresher leftover in an SSO cache must not outrank it. Expiry breaks ties
+    within each provenance class.
 
     Multiple candidates are returned (not just the first) because "unexpired" is
     not the same as "accepted": an unexpired-but-rejected token must not shadow a
@@ -535,15 +543,16 @@ def _candidate_tokens() -> list[_Candidate]:
         _add(_token_from_sqlite(db, now), from_cli_store=True)
     for db in _OTHER_SQLITE_DBS:
         _add(_token_from_sqlite(db, now), from_cli_store=False)
-    ranked = sorted(freshest.items(), key=lambda kv: kv[1][0], reverse=True)
+    # (from_cli_store, expiry) descending: own-store tokens first, freshest first.
+    ranked = sorted(freshest.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)
     return [_Candidate(tok, exp, own) for tok, (exp, own) in ranked]
 
 
 def _load_bearer_token() -> str | None:
-    """Return the single freshest available bearer token, or None.
+    """Return the first-ranked available bearer token, or None.
 
-    Thin convenience wrapper over :func:`_candidate_tokens` (first candidate,
-    which is the freshest-expiry one). It discards provenance and applies NO
+    Thin convenience wrapper over :func:`_candidate_tokens` (first candidate:
+    kiro-cli's own store first, then freshest expiry). It discards provenance and applies NO
     ownership proof, so it must not be used to choose the credential a request is
     made with — ``fetch_usage_limits`` uses :func:`_candidate_tokens` directly so
     it can check each candidate's account (by ARN or by provenance) and fall

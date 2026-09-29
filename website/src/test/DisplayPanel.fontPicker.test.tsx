@@ -105,7 +105,7 @@ beforeEach(() => {
 })
 
 async function openFontPicker() {
-  renderWithProviders(<DisplayPanel />)
+  renderWithProviders(<DisplayPanel />, { route: '/settings?tab=display&sub=terminal' })
   const trigger = screen.getByRole('button', { name: 'Font' })
   fireEvent.click(trigger)
   await screen.findByRole('listbox', { name: 'Font' })

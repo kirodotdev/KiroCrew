@@ -55,7 +55,7 @@ import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCir
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Btn, Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
-import MeetCrewmatesFlow, { MeetCrewmatesEligibilityNotice } from './components/MeetCrewmatesFlow'
+import MeetCrewmatesFlow from './components/MeetCrewmatesFlow'
 import { useMeetCrewmatesGate } from './hooks/useMeetCrewmatesGate'
 import AgentImportFlow from './components/AgentImportFlow'
 import ErrorNotice from './components/ErrorNotice'
@@ -112,6 +112,10 @@ import LogsPage from './pages/LogsPage'
 // chunk sits at its size budget — the import() boundary keeps the page (and
 // its drawer/roster tree) out of the initial bundle.
 const MembersPage = lazy(() => import('./pages/members/MembersPage'))
+// Lazy for the same reason: the crew work-item board is opened from a conductor
+// session or the Crew page, never at startup.
+const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
+const SessionDashboardsPage = lazy(() => import('./pages/chat/command-center/SessionDashboardsPage'))
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import { InAppUpdateFlow } from './pages/settings/AboutPanel'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
@@ -134,6 +138,7 @@ import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './util
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
+import { ImportSessionOutcomeNotice } from './components/ImportSessionItem'
 import BuiltinAppRoute from './apps/BuiltinAppRoute'
 import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
@@ -3875,6 +3880,9 @@ export default function App() {
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
+    {/* Above the layout branch, so every layout that can host the import row
+        also hosts its outcome: the row's menu has closed by the time it lands. */}
+    <ImportSessionOutcomeNotice />
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
@@ -4788,16 +4796,11 @@ export default function App() {
           onComplete={endFirstRun}
           onSkipAll={endFirstRun}
         />
-        {/* First-run chapter 4 — Meet CrewMates. Fires once, after the tour,
-            only for a user with no crewmates and no custom agents; also
-            reopened from the Crewmates page (mc-start-meet-crewmates). */}
+        {/* First-run chapter 4 — Meet CrewMates. Fires once per workspace:
+            after the tour for a new user, or on the first Crewmates page
+            visit; also reopened from that page (mc-start-meet-crewmates). */}
         <MeetCrewmatesFlow open={meetCrewmates.open} onDone={meetCrewmates.onDone} onCreated={meetCrewmates.onCreated} persistFailed={meetCrewmates.persistFailed} />
       </OnboardingShellHost>
-      {meetCrewmates.eligibilityError && !meetCrewmates.open && (
-        /* The Meet CrewMates eligibility read failed, so the chapter cannot
-           decide whether to fire. Said here rather than swallowed. */
-        <MeetCrewmatesEligibilityNotice onDismiss={meetCrewmates.dismissEligibilityError} />
-      )}
 
       {/* Mobile backdrop — opacity is animated by animateDrawer in lockstep
           with the panel (compositor), so there is no framer fade here; it
@@ -5349,11 +5352,13 @@ export default function App() {
             {/* Bookmarkable session chooser: neutral list, no auto-select; rows
                 open the full /chat/<key> experience inside this same shell. */}
             <Route path="/sessions" element={<ErrorBoundary><Suspense fallback={null}><SessionsPage /></Suspense></ErrorBoundary>} />
+            <Route path="/session-dashboards" element={<ErrorBoundary><Suspense fallback={null}><SessionDashboardsPage /></Suspense></ErrorBoundary>} />
             {/* Knowledge moved into Agent Capabilities; old bookmarks land on its tab. */}
             <Route path="/knowledge" element={<Navigate to="/capabilities?tab=knowledge" replace />} />
 
             <Route path="/members" element={<ErrorBoundary><Suspense fallback={null}><MembersPage /></Suspense></ErrorBoundary>} />
             <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
+            <Route path="/crew-board" element={<ErrorBoundary><Suspense fallback={null}><CrewBoardPage /></Suspense></ErrorBoundary>} />
             <Route path="/schedule" element={<SchedulePage />} />
             {/* Agents and Connections live in the Agent Capabilities panel. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />

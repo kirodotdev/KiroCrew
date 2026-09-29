@@ -40,6 +40,7 @@ from kiro_crew.constants import (  # noqa: F401 -- DENY_CAUSE_* / STEER_NOTICE_B
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
     OPTIONS_RE_LINE,
     STEER_NOTICE_BOUND_SECS,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
@@ -138,6 +139,7 @@ if TYPE_CHECKING:
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
     from kiro_crew.power import SleepInhibitor  # noqa: F401
     from kiro_crew.slack.outbound import PostedOptions  # noqa: F401
+    from kiro_crew.subagent import SubagentDelivery
 
 logger = logging.getLogger(__name__)
 
@@ -833,6 +835,33 @@ NATIVE_SUBAGENT_DONE_RESULT_CAP = 8_000
 NATIVE_SUBAGENT_DONE_TRUNC_MARKER = "…(earlier output truncated)\n"
 NATIVE_SUBAGENT_TERMINAL_KEEP = 50
 NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
+
+# Bounds on the persisted-record fallback the subagent panel rebuilds from when
+# the in-memory manager does not know a run. Two numbers rather than one
+# retention knob, because each defends a different failure:
+#
+# ``PERSISTED_SUBAGENT_REPLAY_KEEP`` bounds the BURST. Run folders accumulate
+# faster than they are reclaimed, so an unbounded rebuild delivers one frame per
+# folder the instant a client connects -- the cost
+# ``SUBAGENT_REPLAY_BATCH_THRESHOLD`` absorbs downstream, met here at the source.
+#
+# ``PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS`` bounds RELEVANCE, and is
+# deliberately wider than the native terminal TTL above rather than sharing it.
+# That TTL bounds cards inside one live session, where an hour is generous. This
+# bound has to answer after the gateway process is replaced, and the gap between
+# that restart and someone opening the tab is routinely longer than an hour --
+# an hour here would leave the panel empty in the exact case the fallback exists
+# to serve.
+#
+# It caps how far back the rebuild REACHES; what is still there to reach is the
+# pruner's decision, not this one. ``prune_stale_tombstones`` keeps an abnormal
+# ending for its ``max_age_days`` (a week) but reclaims a ``delivered`` folder
+# after ``agent.subagent_result_ttl_secs`` (an hour by default). So a day covers
+# the interrupted runs a restart leaves behind, which is this fallback's own
+# case, while successes delivered longer ago have aged off disk by design and no
+# bound here would bring them back.
+PERSISTED_SUBAGENT_REPLAY_KEEP = 50
+PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS = 86_400.0
 
 # Cap on a slot's queued-completion delivery ledger (see
 # ``_ChatSlot.note_pending_subagent_delivery``). Well above any legitimate
@@ -2611,6 +2640,7 @@ class _ChatSlot:
         "_queue_persist_owed",
         "_last_enqueue_ts",
         "_approval_futures",
+        "_approval_instances",
         "_approval_stopped",
         "_trust",
         "_trust_scope",
@@ -2640,6 +2670,8 @@ class _ChatSlot:
         "_mcp_report",
         "_mcp_report_session_id",
         "_on_message",
+        "_on_card_event",
+        "_dashboard_card_identity",
         "_on_question_retired",
         "_coordinator_approvals",
         "_has_reader_flag",
@@ -3014,6 +3046,9 @@ class _ChatSlot:
         # ``_note_enqueue``.
         self._last_enqueue_ts: str = ""
         self._approval_futures: dict[str, asyncio.Future[str]] = {}  # type: ignore[type-arg]
+        # Bind the host permission-row identity to the exact future, not the
+        # connection-scoped request id that a reconnect can reuse.
+        self._approval_instances: dict[str, tuple[asyncio.Future[str], str]] = {}
         # Approval ids a STOP rejected, rather than a person. A stop resolves the
         # future with an ordinary "rejected", so the runner cannot tell the two
         # apart at the point it records the decision, and its ledger entry would
@@ -3159,6 +3194,8 @@ class _ChatSlot:
         self._mcp_report_session_id: str = ""
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
+        self._on_card_event: object | None = None
+        self._dashboard_card_identity = uuid.uuid4().hex
         # Announce stateless question cards this slot retires, so every client
         # drops them: Callable[[str, list[str]], None] | None, wired by
         # DashboardState like _on_message. A retirement that only mutates state
@@ -3315,7 +3352,7 @@ class _ChatSlot:
         # its own ``mark_delivered`` and the drain settles these instead, so the
         # retention TTL is measured from consumption rather than from run
         # completion. See ``take_pending_subagent_deliveries``.
-        self._subagent_delivery_pending: dict[str, list[str]] = {}
+        self._subagent_delivery_pending: dict[str, list[SubagentDelivery]] = {}
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
         # Auto-recovery of a genuinely-wedged (stale) turn: bumped when the ACP
@@ -4247,6 +4284,8 @@ class _ChatSlot:
         self._dirty = True
         self._pending.append(msg)
         self.event.set()
+        if broadcast and self._on_card_event and role in {"user", "assistant", "error", "done"}:
+            self._on_card_event(self, role)  # type: ignore[operator]
         # Broadcast via global SSE when no HTTP stream reader is active
         # Skip: chunk (too noisy), done (internal). A "user" row is skipped by
         # DEFAULT because the composer that submitted it already rendered it
@@ -4387,6 +4426,35 @@ class _ChatSlot:
         """Flush held notes in order, restoring the unwritten suffix on failure."""
         return self._buffers.flush_deferred_notes(self, logger=logger)
 
+    def register_approval(
+        self, request_id: str, future: asyncio.Future[str], permission_row: dict
+    ) -> None:
+        self._approval_futures[request_id] = future
+        self._approval_instances.pop(request_id, None)
+        mid = row_mid(permission_row)
+        if mid:
+            self._approval_instances[request_id] = (future, mid)
+
+    def approval_instance(self, request_id: str, message: dict | None = None) -> str | None:
+        instance = self._approval_instances.get(request_id)
+        if (
+            instance is not None
+            and self._approval_futures.get(request_id) is instance[0]
+            and not instance[0].done()
+            and (message is None or row_mid(message) == instance[1])
+        ):
+            return instance[1]
+        return None
+
+    def unregister_approval(self, request_id: str, future: asyncio.Future[str]) -> bool:
+        owned = self._approval_futures.get(request_id) is future
+        if owned:
+            self._approval_futures.pop(request_id)
+        instance = self._approval_instances.get(request_id)
+        if instance is not None and instance[0] is future:
+            self._approval_instances.pop(request_id)
+        return owned
+
     def mark_permission_resolved(self, approval_id: str, decision: str = "approved") -> None:
         """Update the matching stored permission row without marking it dirty."""
         self._buffers.mark_permission_resolved(self, approval_id, decision)
@@ -4465,13 +4533,15 @@ class _ChatSlot:
     def queue_pop(self, index: int = 0) -> dict[str, Any]:
         return self._queue_repository.queue_pop(self, index)
 
-    def note_pending_subagent_delivery(self, content: str, agent_ids: list[str]) -> None:
-        self._queue_repository.note_pending_subagent_delivery(self, content, agent_ids)
+    def note_pending_subagent_delivery(
+        self, content: str, deliveries: list[SubagentDelivery]
+    ) -> None:
+        self._queue_repository.note_pending_subagent_delivery(self, content, deliveries)
 
     def owes_subagent_delivery(self, contents: list[str]) -> bool:
         return self._queue_repository.owes_subagent_delivery(self, contents)
 
-    def take_pending_subagent_deliveries(self, contents: list[str]) -> list[str]:
+    def take_pending_subagent_deliveries(self, contents: list[str]) -> list[SubagentDelivery]:
         return self._queue_repository.take_pending_subagent_deliveries(self, contents)
 
     def queue_remove_by_id(self, queue_id: str) -> str | None:
@@ -5440,6 +5510,7 @@ class DashboardState:
         # hand-edited-but-typo'd column.
         self._unparsed_tag_board_entries: list[Any] = []
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        self._dynamic_cards: Any = None
         # Gateway replacement is process-wide, not an ordinary repeatable
         # background mutation.  The task latch coalesces duplicate /api/restart
         # clicks during the response-drain window; the in-progress latch also
@@ -5481,6 +5552,17 @@ class DashboardState:
         # status the gateway uses when it cannot. Armed after the site binds,
         # detached on cleanup; annotated here for mypy.
         self._listener_guard: "ListenerGuard | None" = None
+        # Guard for the SECOND loopback family's listener (see
+        # server._arm_secondary_listener_guard). Its own slot rather than sharing
+        # the one above: guards chain on the loop's exception handler, so both
+        # must be held, and both must be detached in the reverse of the order
+        # they were armed.
+        self._secondary_listener_guard: "ListenerGuard | None" = None
+        # Which listener sidecar each guarded listener owns, keyed "primary" /
+        # "secondary", as (port, address, secret). Written after publication and
+        # read by the guards' lifecycle hooks, which withdraw the claim while the
+        # address is not held and re-publish it once a rebind lands.
+        self._listener_sidecars: dict[str, tuple[int, str, str]] = {}
         # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
         # released/cancelled on shutdown; annotated here so the assignments in
         # start_dashboard type-check under mypy.
@@ -6567,6 +6649,9 @@ class DashboardState:
             questions=questions,
             native=native,
         )
+        slot = self._slots.get(slot_key)
+        if slot is not None:
+            self.notify_dashboard_card(slot, "question")
 
     def clear_question_pending(
         self,
@@ -6954,6 +7039,7 @@ class DashboardState:
             slot.title = pretty_title
         slot._tab_id = uuid.uuid4().hex[:12]
         slot._on_message = self._broadcast_chat_message
+        slot._on_card_event = self.notify_dashboard_card
         slot._on_question_retired = self._broadcast_question_retired
         slot._coordinator_approvals = self.pending_coordinator_approvals
         slot._app = app
@@ -9203,11 +9289,24 @@ class DashboardState:
         gets the full list, as with :meth:`push_slot_patch`.
 
         A key that is registered again (a same-name replacement landed while the
-        close was tearing down) is not removed: the full push describes it.
+        close was tearing down) is not removed: the full push describes it. The
+        closed slot's dashboard card is still evicted, so the replacement never
+        presents a card generated for another transcript.
         """
         if key in self._slots:
+            # The replacement's own card, if it has one, is its own; a card whose
+            # owner is not the live slot's identity was generated for the closed
+            # transcript and goes with it, so a replacement never presents its
+            # predecessor's card while it has none of its own.
+            if self._dynamic_cards is not None:
+                entry = self._dynamic_cards.publisher.entries.get(key)
+                live = getattr(self._slots[key], "_dashboard_card_identity", None)
+                if entry is not None and entry.owner != live:
+                    self._dynamic_cards.publisher.forget(key)
             self.push_slots_update()
             return
+        if self._dynamic_cards is not None:
+            self._dynamic_cards.publisher.forget(key)
         if self._has_legacy_slots_audience():
             self.push_slots_update(legacy_only=True)
         if self._has_slot_patch_clients():
@@ -9235,6 +9334,30 @@ class DashboardState:
     def _send_slot_patch(self, data: dict[str, Any]) -> None:
         """Serialize one ``slot_patch`` frame and hand it to patch-capable sockets."""
         _websocket_for(self).send_ws_slot_patch(json.dumps({"type": "slot_patch", "data": data}))
+
+    def set_dynamic_cards_enabled(self, enabled: bool) -> None:
+        """Post-bind activation; retain the producer and its budgets across toggles."""
+        if self._dynamic_cards is None:
+            if not enabled:
+                return
+            from kiro_crew.dashboard.card_lifecycle import CardLifecycle
+
+            self._dynamic_cards = CardLifecycle(self)
+        self._dynamic_cards.set_enabled(enabled)
+
+    def notify_dashboard_card(self, slot: "_ChatSlot", reason: str) -> None:
+        """Queue semantic work from a real event, never from a read/serialize."""
+        loop = self.serving_loop
+        if loop is None or loop.is_closed():
+            return
+        if loop is not self._running_loop():
+            loop.call_soon_threadsafe(self.notify_dashboard_card, slot, reason)
+            return
+        try:
+            if self._dynamic_cards is not None:
+                self._dynamic_cards.notify(slot, reason)
+        except Exception:
+            logger.debug("Dashboard card event skipped", exc_info=True)
 
     def push_session_summary(self, key: str) -> None:
         """Broadcast that a session's intent summary was regenerated.

@@ -167,6 +167,9 @@ with no row here.
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
+   * - ``ACP_BACKENDS_OPEN_EXTERNAL_URL``
+     - driver-internal (whether the reader loop answers ``_kiro/openExternalUrl``
+       and a session starts MCP sign-ins with ``_kiro/mcp/resetServer``)
    * - ``ACP_BACKENDS_SIDE_READONLY``
      - pre-session registry query (whether a side-chat turn may execute
        read-only tools under the derived ``<agent>--readonly`` spec; asked
@@ -2114,6 +2117,18 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # returns immediate success, so the ACP layer authenticates nothing at all and the
 # provider key it needs is resolved inside the harness from its own credential store.
 ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
+
+#: Backends whose engine sends an MCP OAuth consent URL to its client as a
+#: ``_kiro/openExternalUrl`` request, after the client starts a sign-in with
+#: ``_kiro/mcp/resetServer``. Membership makes the handshake-declared channel
+#: live: the reader loop answers that request and the session starts sign-ins.
+#: KAS is the only member; it declares ``openExternalUrl`` in
+#: ``KAS_CLIENT_CAPABILITIES``.
+#: kiro-cli is not a member: its engine runs the OAuth flow itself and reports the
+#: URL as ``_kiro.dev/mcp/oauth_request``.
+#: claude, codex, opencode, pi, goose and deepseek are not members: none of them
+#: defines either method.
+ACP_BACKENDS_OPEN_EXTERNAL_URL = frozenset({ACP_BACKEND_KAS})
 
 #: Backends whose agent asks its CLIENT for the hooks matching a trigger, and to
 #: run one, over ``_kiro/hooks/list``, ``_kiro/hooks/sessionStart`` and

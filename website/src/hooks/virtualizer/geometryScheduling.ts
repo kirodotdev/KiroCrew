@@ -255,8 +255,8 @@ export function useGeometrySync<T>(ctx: {
   // scroller's box on every frame, and a per-frame viewport pin is exactly
   // the write storm this window exists to hold back.
   const deferForRailSettle = useCallback((batch: ResizeBatch): boolean => {
-    const { genuineResize, firstMount, viewportResized, streamingRowResized } = batch
-    if ((genuineResize || firstMount || viewportResized) && !streamingRowResized && isRailSettling()) {
+    const { genuineResize, firstMount, viewportResized, trailingChromeResized, streamingRowResized } = batch
+    if ((genuineResize || firstMount || viewportResized || trailingChromeResized) && !streamingRowResized && isRailSettling()) {
       railSettleFollowRef.current = railSettleFollowRef.current || stickRef.current
       if (railSettleTimerRef.current === null) {
         railSettleTimerRef.current = setTimeout(() => {

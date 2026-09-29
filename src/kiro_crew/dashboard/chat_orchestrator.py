@@ -6,6 +6,8 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,6 +69,12 @@ _SA_FALLBACK_SECS = 5.0
 _SA_MAX_WAIT_SECS = 900
 # How often the "waiting for N subagent(s)" status line is re-broadcast.
 _SA_STATUS_EVERY_SECS = 20.0
+# How long a halt waits for its own cancel of the stage's children. Cancelling a
+# live child ends by awaiting that child's report delivery to the parent, which
+# only the subagent layer's ``_ON_DONE_TIMEOUT`` (20 minutes) caps; the halt must
+# not stand behind it. Past this bound the cancel keeps running on a tracked
+# background task and the halt is published at once.
+_HALT_CANCEL_BUDGET_SECS = 60.0
 
 
 async def _build_stage_context(
@@ -766,6 +774,81 @@ def _reserve_stage_cancellation_scopes(
     return reservation if isinstance(reservation, str) else ""
 
 
+@dataclass
+class _ParentCancelProgress:
+    """Running tally of one per-parent boundary-cancel sweep.
+
+    Mutated in place so a caller that stops waiting mid-sweep (a halt past its
+    budget) can still read how far the sweep got.
+    """
+
+    stopped: int = 0
+    failed: int = 0
+    done: int = 0
+    pending: list[str] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
+
+
+async def _cancel_boundary_parents(
+    manager: object,
+    owner: str,
+    parent_keys: tuple[str, ...],
+    *,
+    retain_scope: bool,
+    progress: _ParentCancelProgress,
+    guarded: bool,
+) -> None:
+    """Cancel one stage scope parent by parent, then probe what each cancel left.
+
+    The one per-parent sequence shared by explicit Cancel and the auto-run halts:
+    cancel under the boundary owner -- keeping the reserved hold (the manager's
+    default) unless the reservation was refused -- then read the pending
+    durable-queue reason and the refused-hold flag. With ``guarded`` false any
+    manager error propagates (explicit Cancel); with it true each failure is
+    logged and counted in ``progress.failed`` so the halt that called it still
+    lands.
+    """
+    pending_reason = getattr(manager, "boundary_cancellation_pending_reason", None)
+    refused_probe = getattr(manager, "boundary_cancellation_refused", None)
+    for parent_key in parent_keys:
+        try:
+            if retain_scope:
+                cancellation = manager.cancel_for_boundary(  # type: ignore[attr-defined]
+                    parent_key, owner
+                )
+            else:
+                cancellation = manager.cancel_for_boundary(  # type: ignore[attr-defined]
+                    parent_key, owner, retain_scope=False
+                )
+            result = await cancellation if asyncio.iscoroutine(cancellation) else cancellation
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if not guarded:
+                raise
+            logger.exception("Stage halt: cancelling children of %s failed", parent_key)
+            progress.failed += 1
+            progress.done += 1
+            continue
+        if isinstance(result, tuple):
+            progress.stopped += sum(n for n in result if isinstance(n, int))
+        try:
+            reason = ""
+            if callable(pending_reason):
+                current = pending_reason(parent_key, owner)
+                if isinstance(current, str) and current:
+                    reason = current
+                    progress.pending.append(parent_key)
+            if callable(refused_probe) and refused_probe(parent_key, owner) is True:
+                progress.refused.append(reason)
+        except Exception:
+            if not guarded:
+                raise
+            logger.exception("Stage halt: reading the cancel state of %s failed", parent_key)
+            progress.failed += 1
+        progress.done += 1
+
+
 async def _cancel_stage_subagents(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -778,33 +861,19 @@ async def _cancel_stage_subagents(
     if manager is None or scope is None:
         return True
     owner, parent_keys, stage_num = scope
-    pending: list[str] = []
-    overflow: list[str] = []
-    pending_reason = getattr(manager, "boundary_cancellation_pending_reason", None)
-    refused = getattr(manager, "boundary_cancellation_refused", None)
     if reservation_reason is None:
         reservation_reason = _reserve_stage_cancellation_scopes(state, scope)
-    if reservation_reason:
-        overflow.append(reservation_reason)
-    for parent_key in parent_keys:
-        if reservation_reason:
-            cancellation = manager.cancel_for_boundary(
-                parent_key,
-                owner,
-                retain_scope=False,
-            )
-        else:
-            cancellation = manager.cancel_for_boundary(parent_key, owner)
-        if asyncio.iscoroutine(cancellation):
-            await cancellation
-        reason = ""
-        if callable(pending_reason):
-            current = pending_reason(parent_key, owner)
-            if isinstance(current, str) and current:
-                reason = current
-                pending.append(parent_key)
-        if callable(refused) and refused(parent_key, owner) is True:
-            overflow.append(reason)
+    progress = _ParentCancelProgress(refused=[reservation_reason] if reservation_reason else [])
+    await _cancel_boundary_parents(
+        manager,
+        owner,
+        parent_keys,
+        retain_scope=not reservation_reason,
+        progress=progress,
+        guarded=False,
+    )
+    pending = progress.pending
+    overflow = progress.refused
     if pending or overflow:
         if overflow:
             latest = next((reason for reason in reversed(overflow) if reason), "scope cap reached")
@@ -856,6 +925,207 @@ async def _queued_stage_work_pending(manager: object, slot: "_ChatSlot") -> bool
             )
             return None
     return False
+
+
+@dataclass(frozen=True)
+class _HaltCancelOutcome:
+    """What cancelling a halted stage's children actually achieved.
+
+    ``attempted`` is false when there was no armed boundary or no manager, so
+    there was nothing to cancel. ``pending`` names parents whose durable-queue
+    cancel is still retrying; ``refused`` names parents (or the reservation)
+    that could not enter the bounded cancellation hold, so their queued work
+    may still start. ``failed`` counts parents whose cancel raised.
+    ``still_cancelling`` counts parents whose cancel outlived the halt's budget
+    and is still finishing on a background task.
+    """
+
+    attempted: bool = False
+    stopped: int = 0
+    pending: tuple[str, ...] = ()
+    refused: tuple[str, ...] = ()
+    failed: int = 0
+    still_cancelling: int = 0
+
+
+def _halt_cancel_notice(outcome: _HaltCancelOutcome) -> str:
+    """One sentence for the halt message, worded from what really happened."""
+    if not outcome.attempted:
+        return ""
+    if outcome.refused:
+        reason = next((r for r in reversed(outcome.refused) if r), "scope cap reached")
+        return (
+            f" Stopped {outcome.stopped} of this stage's subagent run(s), but "
+            f"cancellation could not enter the bounded durable-queue hold ({reason}), "
+            "so some queued stage work may still start."
+        )
+    if outcome.still_cancelling:
+        return (
+            f" Stopped {outcome.stopped} of this stage's subagent run(s) so far; "
+            "cancellation is still finishing in the background for "
+            f"{outcome.still_cancelling} parent session(s)."
+        )
+    if outcome.failed:
+        return (
+            f" Stopped {outcome.stopped} of this stage's subagent run(s); cancelling "
+            f"the rest failed for {outcome.failed} parent session(s) (see the log), "
+            "so some may still be running."
+        )
+    if outcome.pending:
+        return (
+            f" Stopped {outcome.stopped} of this stage's subagent run(s); its queued "
+            "work stays blocked while cancellation finishes writing to the durable "
+            "task queue, and that retries automatically."
+        )
+    if outcome.stopped:
+        return f" Stopped {outcome.stopped} unfinished subagent run(s) from this stage."
+    return " No unfinished subagents from this stage were left to stop."
+
+
+def _halt_cancel_left_work(outcome: _HaltCancelOutcome) -> bool:
+    """Whether the halt could not confirm this stage's children are all stopped."""
+    return bool(outcome.pending or outcome.refused or outcome.failed or outcome.still_cancelling)
+
+
+def _halt_residual_warning(outcome: _HaltCancelOutcome) -> str:
+    """Warn that Go can wait again when the halt left this stage's work unstopped."""
+    if not _halt_cancel_left_work(outcome):
+        return ""
+    return (
+        " Stop this stage's remaining subagents from the subagent panel "
+        "before sending Go: until they stop, Go can wait on them again."
+    )
+
+
+def _halt_go_guidance(outcome: _HaltCancelOutcome) -> str:
+    """What Go does after a wait-exhausted halt, worded from the cancel outcome."""
+    if _halt_cancel_left_work(outcome):
+        return (
+            " Stop this stage's remaining subagents from the subagent panel "
+            "before sending Go: until they stop, Go can wait on them again. Go "
+            "then continues to the next stage with this stage's partial "
+            "results; subagent results that had finished but not yet been "
+            "delivered are discarded."
+        )
+    return (
+        " Send Go to continue to the next stage with this stage's partial "
+        "results; subagent results that had finished but not yet been "
+        "delivered are discarded."
+    )
+
+
+async def _cancel_exhausted_stage_subagents(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    *,
+    publish: Callable[[_HaltCancelOutcome], None] | None = None,
+) -> _HaltCancelOutcome:
+    """Cancel a halted stage's children instead of leaving them to their deadline.
+
+    Called when auto-run halts a stage it will not settle: the subagent wait is
+    exhausted, the stage turn hits its ceiling, or the stage turn errors.
+    Without it the children keep running until their own
+    ``subagent_timeout_secs`` deadline (three hours by default): the plan says
+    it stopped while the slot still carries live work whose completions land in
+    a plan that has stopped.
+
+    The scope is the one explicit Cancel uses, and so is the ordering: every
+    captured parent is RESERVED before any cancel runs, and each cancel keeps
+    its hold (``retain_scope=True``). The hold is what stops the dispatcher
+    starting a queued stage row while the durable-queue cancel is suspended in
+    its store write; without it such a row escapes the cancel and runs to its
+    own deadline. A settled cancel releases its hold, so a later Go is not
+    blocked. When the reservation itself is refused (scope cap reached), fall
+    back to ``retain_scope=False`` exactly as explicit Cancel does.
+
+    Best-effort: every manager call -- the scope capture, the reservation, each
+    cancel and each pending / refused probe -- is guarded, so a failure is
+    logged and counted and never raises into the halt that called this. The
+    returned outcome carries the stopped count and any pending / refused /
+    failed parents, so the halt message can say what really happened -- the
+    same signals ``_cancel_stage_subagents`` surfaces for explicit Cancel.
+
+    ``publish`` is the halt's own notice + audit, called exactly once with the
+    outcome. It runs here rather than after the return because the bounded wait
+    below is the one await on the halt path: when the controller is cancelled
+    during it, ``publish`` still runs with the incomplete outcome before the
+    ``CancelledError`` is re-raised, so a Stop never swallows the halt notice.
+    """
+    manager = state.subagents
+    try:
+        scope = _capture_stage_cancellation_scope(slot)
+    except Exception:
+        logger.exception("Stage halt: capturing the cancellation scope failed")
+        outcome = _HaltCancelOutcome(attempted=True, failed=1)
+        if publish is not None:
+            publish(outcome)
+        return outcome
+    cancel = getattr(manager, "cancel_for_boundary", None)
+    if scope is None or not callable(cancel):
+        outcome = _HaltCancelOutcome()
+        if publish is not None:
+            publish(outcome)
+        return outcome
+    owner, parent_keys, _stage_num = scope
+    try:
+        reservation_reason = _reserve_stage_cancellation_scopes(state, scope)
+    except Exception:
+        logger.exception("Stage halt: reserving the cancellation scope failed")
+        reservation_reason = "cancellation reservation failed"
+    progress = _ParentCancelProgress(refused=[reservation_reason] if reservation_reason else [])
+
+    def _outcome(task: "asyncio.Future[None]") -> _HaltCancelOutcome:
+        return _HaltCancelOutcome(
+            attempted=True,
+            stopped=progress.stopped,
+            pending=tuple(progress.pending),
+            refused=tuple(progress.refused),
+            failed=progress.failed,
+            still_cancelling=0 if task.done() else len(parent_keys) - progress.done,
+        )
+
+    # Tracked, waited on with a bound, and never cancelled at the bound: a cancel
+    # cut mid-reap would abandon the kill it started, so a slow one finishes in
+    # the background while the halt is published now.
+    task = asyncio.ensure_future(
+        _cancel_boundary_parents(
+            manager,
+            owner,
+            parent_keys,
+            retain_scope=not reservation_reason,
+            progress=progress,
+            guarded=True,
+        )
+    )
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+    task.add_done_callback(_log_task_exception)
+    try:
+        await asyncio.wait({task}, timeout=_HALT_CANCEL_BUDGET_SECS)
+    except asyncio.CancelledError:
+        # The controller is being torn down (Stop / slot close) mid-wait. The
+        # halt notice and its audit event were unconditional before this wait
+        # existed, so they still land -- worded from the unfinished outcome --
+        # and the cancellation then propagates. ``asyncio.wait`` never cancels
+        # the tracked cancel task, so it keeps running in the background.
+        outcome = _outcome(task)
+        if publish is not None:
+            try:
+                publish(outcome)
+            except Exception:
+                logger.exception("Stage halt: publishing the interrupted halt failed")
+        raise
+    outcome = _outcome(task)
+    if outcome.still_cancelling:
+        logger.warning(
+            "Stage halt: cancelling %d parent session(s) outlived %.0fs; it "
+            "continues in the background",
+            outcome.still_cancelling,
+            _HALT_CANCEL_BUDGET_SECS,
+        )
+    if publish is not None:
+        publish(outcome)
+    return outcome
 
 
 async def _settle_stage_delivery(
@@ -944,16 +1214,28 @@ async def _settle_stage_delivery(
             now = time.monotonic()
             elapsed = now - wait_started
             if elapsed >= max_wait:
-                _halt_plan(
-                    state,
-                    slot,
-                    f"⚠️ Stage {stage_num}: subagent wait exhausted after "
-                    f"{int(elapsed) // 60} minutes. Auto-run stopped — some "
-                    "results may be incomplete.",
-                    event_type="auto_run_subagent_timeout",
-                    operation="subagent_wait_exhausted",
-                    stage_num=stage_num,
-                )
+                # Stop auto-run BEFORE the cancel awaits, so nothing advances the
+                # plan while it runs. Cancel FIRST so the notice states what
+                # actually happened.
+                slot._auto_run = False
+                exhausted_minutes = int(elapsed) // 60
+
+                def _publish_exhausted(outcome: _HaltCancelOutcome) -> None:
+                    # An explicit Cancel pressed while the cancel was running has
+                    # revoked the plan; offering Go would contradict it.
+                    go_guidance = "" if slot._plan_cancelled else _halt_go_guidance(outcome)
+                    _halt_plan(
+                        state,
+                        slot,
+                        f"⚠️ Stage {stage_num}: subagent wait exhausted after "
+                        f"{exhausted_minutes} minutes. Auto-run stopped."
+                        f"{_halt_cancel_notice(outcome)}{go_guidance}",
+                        event_type="auto_run_subagent_timeout",
+                        operation="subagent_wait_exhausted",
+                        stage_num=stage_num,
+                    )
+
+                await _cancel_exhausted_stage_subagents(state, slot, publish=_publish_exhausted)
                 return False
             if last_status_at is None or now - last_status_at >= _SA_STATUS_EVERY_SECS:
                 last_status_at = now
@@ -1580,59 +1862,74 @@ async def _stage_loop(
                     tracker.stage_timeout_seconds,
                     slot.key,
                 )
-                _timeout_msg = (
-                    f"⏱️ Stage {stage_num} timed out after {tracker.timeout_human}. "
-                    "Auto-run stopped."
-                )
                 slot._auto_run = False
-                slot.append("assistant", _timeout_msg, "msg msg-a")
-                state.broadcast_ws(
-                    "chat_append",
-                    {"slot": slot.key, "html": _timeout_msg, "cls": "msg msg-a"},
-                )
-                sel().log(
-                    SecurityEvent(
-                        event_id=uuid.uuid4().hex,
-                        timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                        event_type="auto_run_timeout",
-                        caller_identity=f"dashboard:{slot.key}",
-                        agent=getattr(slot, "agent", ""),
-                        source="dashboard",
-                        operation="stage_turn_ceiling",
-                        outcome="stopped",
-                        resources=f"slot={slot.key},stage={stage_num}",
+
+                # Cancel FIRST (the scope is read off the still-armed boundary,
+                # before preserve) so the notice states what actually happened.
+                # The notice, audit and preserve run inside the cancel helper so
+                # a Stop landing during its bounded wait cannot skip them.
+                def _publish_turn_timeout(outcome: _HaltCancelOutcome) -> None:
+                    _timeout_msg = (
+                        f"⏱️ Stage {stage_num} timed out after {tracker.timeout_human}. "
+                        f"Auto-run stopped.{_halt_cancel_notice(outcome)}"
+                        f"{_halt_residual_warning(outcome)}"
                     )
-                )
-                _preserve_interrupted_stage()
+                    slot.append("assistant", _timeout_msg, "msg msg-a")
+                    state.broadcast_ws(
+                        "chat_append",
+                        {"slot": slot.key, "html": _timeout_msg, "cls": "msg msg-a"},
+                    )
+                    sel().log(
+                        SecurityEvent(
+                            event_id=uuid.uuid4().hex,
+                            timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                            event_type="auto_run_timeout",
+                            caller_identity=f"dashboard:{slot.key}",
+                            agent=getattr(slot, "agent", ""),
+                            source="dashboard",
+                            operation="stage_turn_ceiling",
+                            outcome="stopped",
+                            resources=f"slot={slot.key},stage={stage_num}",
+                        )
+                    )
+                    _preserve_interrupted_stage()
+
+                await _cancel_exhausted_stage_subagents(state, slot, publish=_publish_turn_timeout)
                 # stage-boundary-exit: stage-turn-timeout owned
                 break
             except Exception:
                 logger.exception(
                     "_run_chat failed during stage %d for slot %s", stage_num, slot.key
                 )
-                _err_msg = (
-                    f"❌ Stage {stage_num} failed due to an internal error. Auto-run stopped."
-                )
                 slot._auto_run = False
-                slot.append("assistant", _err_msg, "msg msg-a")
-                state.broadcast_ws(
-                    "chat_append",
-                    {"slot": slot.key, "html": _err_msg, "cls": "msg msg-a"},
-                )
-                sel().log(
-                    SecurityEvent(
-                        event_id=uuid.uuid4().hex,
-                        timestamp=datetime.now(tz=timezone.utc).isoformat(),
-                        event_type="auto_run_stage_error",
-                        caller_identity=f"dashboard:{slot.key}",
-                        agent=getattr(slot, "agent", ""),
-                        source="dashboard",
-                        operation="stage_error",
-                        outcome="error",
-                        resources=f"slot={slot.key},stage={stage_num}",
+
+                def _publish_turn_error(outcome: _HaltCancelOutcome) -> None:
+                    _err_msg = (
+                        f"❌ Stage {stage_num} failed due to an internal error. "
+                        f"Auto-run stopped.{_halt_cancel_notice(outcome)}"
+                        f"{_halt_residual_warning(outcome)}"
                     )
-                )
-                _preserve_interrupted_stage()
+                    slot.append("assistant", _err_msg, "msg msg-a")
+                    state.broadcast_ws(
+                        "chat_append",
+                        {"slot": slot.key, "html": _err_msg, "cls": "msg msg-a"},
+                    )
+                    sel().log(
+                        SecurityEvent(
+                            event_id=uuid.uuid4().hex,
+                            timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                            event_type="auto_run_stage_error",
+                            caller_identity=f"dashboard:{slot.key}",
+                            agent=getattr(slot, "agent", ""),
+                            source="dashboard",
+                            operation="stage_error",
+                            outcome="error",
+                            resources=f"slot={slot.key},stage={stage_num}",
+                        )
+                    )
+                    _preserve_interrupted_stage()
+
+                await _cancel_exhausted_stage_subagents(state, slot, publish=_publish_turn_error)
                 # stage-boundary-exit: stage-turn-error owned
                 break
 

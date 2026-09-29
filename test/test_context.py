@@ -293,6 +293,178 @@ class TestContextBuilder:
             assert "ask_question" not in other, f"{sk!r} must NOT get the question nudge"
             assert "suggest_followup" not in other, f"{sk!r} must NOT get the follow-up nudge"
 
+    @pytest.mark.parametrize("provider_type", ["acp", "claude_code"])
+    @pytest.mark.parametrize(
+        "lifecycle",
+        [
+            {"is_new_session": True},
+            {"is_new_session": False},
+            {"is_new_session": True, "resumed": True},
+            {"is_new_session": False, "needs_reinjection": True},
+        ],
+    )
+    def test_dashboard_capability_survives_context_lifecycle(
+        self, tmp_path, lifecycle, provider_type
+    ):
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        request = "Verify the release"
+        with patch.object(builder, "build_session_context", return_value="Session context\n\n"):
+            msg, _ = builder.build_message(
+                request, session_key="dashboard:card-hint", provider_type=provider_type, **lifecycle
+            )
+        assert "Dynamic Dashboard:" not in msg
+        assert msg.endswith(request)
+        assert "load the artifacts skill on demand" not in msg
+        assert "Automatic cards:" not in msg
+
+    @pytest.mark.parametrize("density", ["more", "less"])
+    def test_dashboard_artifacts_discovery_uses_existing_system_pointer(self, density, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.dashboard.widget_density = density
+        monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+        prompt = ContextBuilder._resolve_prompt_templates("{{WIDGET_BLOCK}}", "dashboard:card-hint")
+        assert "Load the `artifacts` skill" in prompt
+        assert "{{WIDGET_BLOCK}}" not in prompt
+
+    def test_dashboard_capability_tracks_a_channel_tabs_presence(self, tmp_path, monkeypatch):
+        from kiro_crew import session_surface
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.dashboard.dynamic_dashboard_cards = True
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset({"slack:thread"}))
+        opened, _ = builder.build_message(
+            "Continue", is_new_session=False, session_key="slack:thread"
+        )
+        assert opened.count("Automatic cards:") == 1
+        monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset())
+        closed, _ = builder.build_message(
+            "Continue", is_new_session=False, session_key="slack:thread"
+        )
+        assert "Automatic cards:" not in closed
+
+    @pytest.mark.parametrize("memory_mode", ["persistent", "incognito", "temporary"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_dashboard_hint_is_not_a_generation_or_persistence_grant(
+        self, tmp_path, memory_mode, enabled
+    ):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.dashboard.dynamic_dashboard_cards = enabled
+        cfg.save()
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        builder._session_memory_modes["dashboard:card-hint"] = memory_mode
+        msg, _ = builder.build_message(
+            "Continue", is_new_session=False, session_key="dashboard:card-hint"
+        )
+        assert "Dynamic Dashboard:" not in msg
+        assert ("Automatic cards:" in msg) is enabled
+        if enabled:
+            hint = msg.split("Automatic cards:", 1)[1].split("\n\n", 1)[0]
+            assert len(hint) < 400
+            assert "Do not enable generation, spawn a builder" in hint
+        assert KiroCrewConfig.load().dashboard.dynamic_dashboard_cards is enabled
+
+    @pytest.mark.parametrize(
+        "lifecycle",
+        [
+            {"is_new_session": False},
+            {"is_new_session": True, "resumed": True},
+            {"is_new_session": False, "needs_reinjection": True},
+        ],
+    )
+    def test_dashboard_milestone_guidance_reads_current_live_toggle(
+        self, tmp_path, monkeypatch, lifecycle
+    ):
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        for enabled in [False, True, False]:
+            cfg.dashboard.dynamic_dashboard_cards = enabled
+            with patch.object(builder, "build_session_context", return_value="Context\n\n"):
+                msg, _ = builder.build_message(
+                    "Continue", session_key="dashboard:toggle", **lifecycle
+                )
+            assert "Dynamic Dashboard:" not in msg
+            assert ("Automatic cards:" in msg) is enabled
+            if enabled:
+                assert "evidence, result and next step" in msg
+                assert "Do not enable generation" in msg
+                assert "duplicate" in msg
+            assert msg.endswith("Continue")
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"session_key": "subagent:worker"},
+            {"session_key": "slack:unattached"},
+            {"session_key": "dashboard:card-hint", "interactive": False},
+            {"session_key": "dashboard:card-hint", "minimal_context": True},
+        ],
+    )
+    def test_dashboard_capability_does_not_expand_other_surfaces(
+        self, tmp_path, kwargs, monkeypatch
+    ):
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.dashboard.dynamic_dashboard_cards = True
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        msg, _ = builder.build_message("Continue", is_new_session=False, **kwargs)
+        assert "Dynamic Dashboard:" not in msg
+        assert "Automatic cards:" not in msg
+
+    def test_dashboard_capability_respects_custom_agent_opt_out(self, tmp_path, monkeypatch):
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.dashboard.dynamic_dashboard_cards = True
+        monkeypatch.setattr(live, "snapshot", lambda: cfg)
+        monkeypatch.setattr("kiro_crew.context._agent_includes_crew_context", lambda _: False)
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        msg, _ = builder.build_message(
+            "Continue", is_new_session=False, session_key="dashboard:card-hint", agent="custom"
+        )
+        assert "Dynamic Dashboard:" not in msg
+        assert "Automatic cards:" not in msg
+
     def test_interactive_guidance_precedes_current_request(self, tmp_path):
         """The request, not generic UI guidance, owns the prompt's recency edge.
 
@@ -1096,91 +1268,7 @@ class TestDocsSection:
         assert "[DOCUMENTATION]" not in ctx
 
 
-class TestCompressThreadHistory:
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_history(self, tmp_path):
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        sessions = Mock(spec=[])  # unused — no messages to compress
-        result = await compress_thread_history(conv_log, "no-thread", "hi", sessions)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_short_transcript_returned_without_llm(self, tmp_path):
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        conv_log.append("t1", "user", "hello")
-        conv_log.append("t1", "assistant", "hi there")
-        sessions = Mock(spec=[])  # unused — transcript is short
-        result = await compress_thread_history(conv_log, "t1", "hello", sessions)
-        assert result is not None
-        assert "hello" in result
-        assert "hi there" in result
-
-    @pytest.mark.asyncio
-    async def test_long_transcript_calls_llm(self, tmp_path, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        for i in range(50):
-            conv_log.append("t1", "user", f"msg {i} " + "x" * 1400)
-            conv_log.append("t1", "assistant", f"reply {i} " + "y" * 1400)
-
-        mock_client = MagicMock()
-        mock_sessions = MagicMock()
-        mock_sessions.get_pid = MagicMock(return_value=None)
-        mock_sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
-        mock_sessions.release = MagicMock()
-        mock_sessions.recycle_background = AsyncMock()
-
-        monkeypatch.setattr(
-            "kiro_crew.llm_helpers.stream_and_collect",
-            AsyncMock(return_value="compressed summary here"),
-        )
-
-        result = await compress_thread_history(conv_log, "t1", "latest q", mock_sessions)
-        assert result is not None
-        assert "compressed summary here" in result
-        assert "Thread start (verbatim)" in result
-        assert "Compressed history" in result
-        assert "Recent exchanges (verbatim)" in result
-        mock_sessions.release.assert_called_once()
-        mock_sessions.recycle_background.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_llm_failure_returns_none(self, tmp_path, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        for i in range(50):
-            conv_log.append("t1", "user", f"msg {i} " + "x" * 1400)
-            conv_log.append("t1", "assistant", f"reply {i} " + "y" * 1400)
-
-        mock_sessions = MagicMock()
-        mock_sessions.get_pid = MagicMock(return_value=None)
-        mock_sessions.get_or_create = AsyncMock(side_effect=RuntimeError("boom"))
-        mock_sessions.release = MagicMock()
-        mock_sessions.recycle_background = AsyncMock()
-
-        result = await compress_thread_history(conv_log, "t1", "q", mock_sessions)
-        assert result is None
-        mock_sessions.release.assert_not_called()
-        mock_sessions.recycle_background.assert_not_awaited()
-
+class TestCompressedHistory:
     def test_build_session_context_uses_compressed_history(self, tmp_path):
         """When compressed_history is passed, it replaces naive truncation."""
         from kiro_crew.history import ConversationLog
@@ -1227,36 +1315,6 @@ class TestCompressThreadHistory:
 
         assert "OPENING CONTEXT LINE" in ctx
         assert "[Older thread history omitted]" not in ctx
-
-    @pytest.mark.asyncio
-    async def test_compressed_output_redacts_credentials(self, tmp_path, monkeypatch):
-        """Credentials in LLM compression output must be scrubbed."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        for i in range(50):
-            conv_log.append("t1", "user", f"msg {i} " + "x" * 500)
-            conv_log.append("t1", "assistant", f"reply {i} " + "y" * 500)
-
-        mock_sessions = MagicMock()
-        mock_sessions.get_pid = MagicMock(return_value=None)
-        mock_sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
-        mock_sessions.release = MagicMock()
-        mock_sessions.recycle_background = AsyncMock()
-
-        fake_key = "AKIAIOSFODNN7EXAMPLE"
-        monkeypatch.setattr(
-            "kiro_crew.llm_helpers.stream_and_collect",
-            AsyncMock(return_value=f"summary with {fake_key} leaked"),
-        )
-
-        result = await compress_thread_history(conv_log, "t1", "q", mock_sessions)
-        assert result is not None
-        assert fake_key not in result
 
 
 class TestLoadAgentPrompt:
@@ -1503,23 +1561,6 @@ class TestMultibyteSanitization:
         sample = "\u2014 \u2013 \u2018 \u2019 \u201c \u201d \u2026 \u00a0 \u2022"
         result = sample.translate(_MULTIBYTE_TABLE)
         assert result == "-- - ' ' \" \" ...   -"
-
-    @pytest.mark.asyncio
-    async def test_compress_thread_history_strips_multibyte(self, tmp_path):
-        """Short transcript with multi-byte chars gets sanitized."""
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        conv_log.append("t1", "user", "what\u2019s the status \u2014 any update?")
-        conv_log.append("t1", "assistant", "All good \u2026 no issues.")
-        sessions = Mock(spec=[])
-        result = await compress_thread_history(conv_log, "t1", "hello", sessions)
-        assert result is not None
-        assert "\u2019" not in result
-        assert "\u2014" not in result
-        assert "\u2026" not in result
 
 
 class TestCurrentDateTimezone:

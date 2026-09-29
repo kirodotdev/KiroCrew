@@ -298,7 +298,7 @@ one file describes the pair, whichever end asks about it. The conductor is the o
 writer, exactly like `bindings/`, so the file needs no lock discipline beyond the
 atomic write itself.
 
-Caps: 32 items per conductor, 200 events per item with oldest-dropped, `depth` ≤ 2,
+Caps: 32 open items per conductor (closed items do not count toward the open cap and stay on the board) and 256 items stored per conductor in total, open and closed together, measured against `created_total`, a monotonic per-conductor create counter in the header that every create bumps under the conductor lock and that a deleted or lost item record does not lower (the crew log fold's per-board ceiling, so a board is always folded whole; a board at it refuses further creates with `item_store_full` until the finished ledger is purged; a create finding the header unreadable under the lock is refused rather than counted against a pre-lock snapshot), 200 events per item with oldest-dropped, `depth` ≤ 2,
 16 channel files per conductor, a channel TTL of at most 86400 seconds and at most 50
 messages over a channel's life. Every cap refuses rather than truncates, because a
 silent truncation leaves the worker believing its report landed whole. `message`
@@ -374,7 +374,10 @@ Items created before a board's first recorded entry -- a board from before this
 change -- are legacy: the record cannot judge them, so a rebuild neither rewrites
 nor removes them, keeps their bindings, and keeps the header fields the record never
 set (a goal set before the first entry, the original creation stamp). Everything
-recorded is rebuilt around them. The first recorded mutation of such an item carries
+recorded is rebuilt around them, and the rebuilt header's `created_total` is the
+number of records the rebuilt board holds -- every item the fold retained plus every
+legacy record kept -- so the stored bound afterwards agrees with the record rather
+than with whatever the cache's header held. The first recorded mutation of such an item carries
 the whole committed item as a `baseline` -- its fields and stamps (`last_report_at`,
 `closed_at`) and the board's own round and creation stamp under their own names
 (`board_round`, `board_created_at`), so a board whose header the record never saw set
@@ -578,7 +581,7 @@ which is checked against the derived item list rather than trusted from the argu
 `ttl_secs` and `max_messages` default to the caps rather than to unbounded, so a
 conductor that grants a channel carelessly still grants a channel that ends.
 
-Errors: `identity_unresolved` (403), `no_ledger` (404), `unknown_item` (404), `already_bound` (409), `item_closed` (409), `item_cap_exceeded` (409), `depth_exceeded` (409), `channel_cap_exceeded` (409), `field_too_long` (400), `invalid_action` (400), `invalid_value` (400).
+Errors: `identity_unresolved` (403), `no_ledger` (404), `unknown_item` (404), `already_bound` (409), `item_closed` (409), `item_cap_exceeded` (409), `item_store_full` (409), `depth_exceeded` (409), `channel_cap_exceeded` (409), `field_too_long` (400), `invalid_action` (400), `invalid_value` (400).
 
 ### Worker-to-worker communication
 
@@ -785,7 +788,7 @@ rather than noise.
 
 **Oversized payload.** Every string and collection is capped, and a cap refuses with `field_too_long` naming the field. Refusal rather than truncation, because a truncated summary that the worker believes landed whole is a silent data loss the worker cannot detect.
 
-**Unbounded growth.** 32 items per conductor, 200 events per item with oldest-dropped, 16 channels per conductor, one directory per conductor. A ledger cannot grow without bound and cannot grow into another conductor's space.
+**Unbounded growth.** 32 open items per conductor and 256 items stored per conductor in total, open and closed together, measured against a monotonic per-conductor create counter kept in the header rather than against the records in the directory, so a deleted or lost record reclaims no capacity and the count can never fall below the creates the crew log holds (closed items stay on the board until that stored bound; a board at it refuses further creates, and the ledger sweep removes a finished ledger whole), 200 events per item with oldest-dropped, 16 channels per conductor, one directory per conductor. A ledger cannot grow without bound and cannot grow into another conductor's space.
 
 **Path traversal.** `item_id` is server-minted `it_<8 hex>`, a channel's pair id is two such ids sorted and joined, and the conductor directory name is derived from a hashed session key. No model-supplied string reaches a path component — which is what lets `work_request` and `work_message` take an `item_id` argument at all: the value is validated against the derived item list, and a value that is not a minted id of this ledger never becomes a filename.
 

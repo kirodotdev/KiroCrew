@@ -48,6 +48,7 @@ in the **same commit** when you change what it documents.
 | an agent spec: `agent_discovery.py`, `agent_spec_format.py`, `agent.py`'s spec writers, `acp/kas_agents.py`, or any field a spec carries | [agent-spec-fields](src/kiro_crew/docs/agent-spec-fields.md) (what each field does, per backend) + [agent-host-contract](docs/system-specs/modules/agent-host-contract.md) (the per-harness table) |
 | the publicly selectable Claude backend | [claude-code-provider](docs/system-specs/modules/claude-code-provider.md) |
 | sessions, slots, session keys, PIDs | [session](docs/system-specs/modules/session.md) + [history](docs/system-specs/modules/history.md) |
+| killing a runtime, leases and tenancies, sweeps and reapers, `runtime_ownership.py`, `runtime_reconcile.py`, `session_pid.py`'s kill paths | [runtime-ownership](docs/system-specs/modules/runtime-ownership.md) |
 | session summaries, the chat summary panel, intent extraction | [session-summary](docs/system-specs/modules/session-summary.md) |
 | memory, embeddings, vectors, lessons, skills, hooks | [memory-skills-hooks](docs/system-specs/modules/memory-skills-hooks.md) |
 | `context.py`, `context_blocks.py`, what reaches the model's context | [context-management](docs/architecture/context-management.md) |

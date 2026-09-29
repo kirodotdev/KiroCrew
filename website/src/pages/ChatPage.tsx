@@ -254,6 +254,8 @@ import InboundLinkChip from '../components/InboundLinkChip'
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
 
 import ChatInput from '../components/ChatInput'
+import { useStableCallbackProps } from './chat/useStableCallbackProps'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import SessionControlHost from '../components/SessionControlHost'
 import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
 import type { ChatFolder } from '../types'
@@ -287,6 +289,7 @@ import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiv
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
+import { createComposerDraftStore, useComposerDraft, useComposerDraftSelector, type ComposerDraftStore } from '../chat-core/composer/draftStore'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
 import { useStreamIdle } from './chat/ChatFooter'
 import type { TurnStats } from './chat/AssistantMessage'
@@ -300,6 +303,7 @@ import SessionTitleControl from './chat/SessionTitleControl'
 import { useChatNavigation } from '../hooks/useChatNavigation'
 import { useChatPins } from '../hooks/useChatPins'
 import SubagentProgressBar from './chat/SubagentProgressBar'
+import CommandCenterDock from './chat/command-center/CommandCenterDock'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
@@ -499,6 +503,43 @@ const stagedIdentity = (files: readonly string[] | undefined, sessions: readonly
   JSON.stringify([files ?? [], (sessions ?? []).map(r => r.key)])
 const NOTHING_STAGED = stagedIdentity(undefined, undefined)
 
+/**
+ * The main composer, with its callback props held at stable identities. This
+ * page builds most of them inline on every render; the forwarders let
+ * `memo(ChatInput)` skip a page render (a pin, a streamed frame) that changes
+ * nothing the composer shows.
+ */
+function StableChatInput(props: React.ComponentProps<typeof ChatInput>) {
+  return <ChatInput {...useStableCallbackProps(props)} />
+}
+
+/** One shared empty list, so an absent folder cache keeps a stable identity. */
+const NO_CHAT_FOLDERS: ChatFolder[] = []
+
+/** Draft facts ChatPage renders from; each re-renders the page only when it flips. */
+const isNonBlank = (text: string) => text.trim() !== ''
+/** The staged folder refs as one string, so an unchanged set compares equal. */
+const dirTokensKey = (text: string) => parseDirTokens(text).map(t => t.rel).join('\0')
+
+/**
+ * The per-commit side of the composer draft: mirrors the committed text into
+ * ChatPage's `inputRef` during render and
+ * hands each committed change to `onCommit` (persist the slot draft, feed the
+ * history suggestions). A child of ChatPage, so its effect runs before the
+ * page's own effects in the same commit. Renders nothing, and it is the only
+ * part of the page that re-renders on a keystroke.
+ */
+function ComposerDraftSync({ store, inputRef, onCommit }: {
+  store: ComposerDraftStore
+  inputRef: React.MutableRefObject<string>
+  onCommit: (text: string) => void
+}) {
+  const text = useComposerDraft(store)
+  inputRef.current = text
+  useEffect(() => { onCommit(text) }, [text, onCommit])
+  return null
+}
+
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const moveSlotToFolder = useMoveSlotToFolder()
@@ -546,6 +587,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    * inline toggle all key off this same flag so none of them doubles up.
    */
   const titleInTopbar = topbarSlot !== null
+  // The memoized composer props below hold i18nT labels; their memo re-keys on a catalog load.
+  const langGen = useLanguageGeneration()
   // The mobile sessions drawer and its scrim are `fixed` overlays that autofocus
   // a search input, so a software keyboard is open whenever they are. iOS Safari
   // shrinks only the VISUAL viewport for the keyboard (`interactive-widget`
@@ -873,19 +916,38 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // declared AFTER those effects so a batched keystroke+switch can't smear one
   // slot's draft onto another. See that advance effect for the full rationale.
   const composerSlotRef = useRef(activeSlot)
-  const [input, setInput] = useState(() => activeSlot ? drafts.current[activeSlot] ?? '' : '')
+  // The composer text lives in a store, not in this component's state: a
+  // keystroke re-renders the composer that subscribes to it (`ChatInput` under
+  // `<Composer draft>`), not this page. `setInput` keeps the `useState` setter
+  // shape; code that acts on the text reads `inputRef`, and render-time facts
+  // (blank or not, staged `@dir/` tokens) are selected below so the page
+  // re-renders only when that fact changes.
+  const composerDraft = useState(() => createComposerDraftStore(activeSlot ? drafts.current[activeSlot] ?? '' : ''))[0]
+  const setInput = composerDraft.set
+  const inputNonBlank = useComposerDraftSelector(composerDraft, isNonBlank)
 
   // History suggestions ("Continue a previous chat?") shown above the input on the welcome screen.
   const sendingRef = useRef(false)
   const [historyQuery, setHistoryQuery] = useState('')
   const [historyDismissed, setHistoryDismissed] = useState(false)
-  useEffect(() => {
-    const q = input.trim()
-    if (!q) { setHistoryQuery(''); setHistoryDismissed(false); return }
-    setHistoryDismissed(false)
-    const t = setTimeout(() => setHistoryQuery(q.toLowerCase()), 300)
-    return () => clearTimeout(t)
-  }, [input])
+  // Fed from the composer-draft commit below (`onComposerDraftCommit`), once per
+  // committed text change. The refs keep a keystroke from calling a setter with
+  // the value it already holds, which is what keeps typing off this page.
+  const historyQueryRef = useRef(historyQuery); historyQueryRef.current = historyQuery
+  const historyDismissedRef = useRef(historyDismissed); historyDismissedRef.current = historyDismissed
+  const historyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const updateHistoryQuery = useCallback((text: string) => {
+    if (historyTimerRef.current) { clearTimeout(historyTimerRef.current); historyTimerRef.current = null }
+    if (historyDismissedRef.current) setHistoryDismissed(false)
+    const q = text.trim()
+    if (!q) { if (historyQueryRef.current) setHistoryQuery(''); return }
+    const next = q.toLowerCase()
+    historyTimerRef.current = setTimeout(() => {
+      historyTimerRef.current = null
+      if (historyQueryRef.current !== next) setHistoryQuery(next)
+    }, 300)
+  }, [])
+  useEffect(() => () => { if (historyTimerRef.current) clearTimeout(historyTimerRef.current) }, [])
   const historySuggestions = useMemo(() =>
     historyQuery && history.length
       ? history.filter(s => (s.title || '').toLowerCase().includes(historyQuery) || s.key.toLowerCase().includes(historyQuery)).slice(0, 5)
@@ -1365,8 +1427,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const tokenConsumingRef = useRef(
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('token'),
   )
-  const inputRef = useRef(input)
-  inputRef.current = input
+  // The composer text as of the last committed draft render. `ComposerDraftSync`
+  // (rendered below) advances it; the mid-switch guards below write it
+  // directly, and the next draft commit overwrites them.
+  const inputRef = useRef(composerDraft.get())
   // Holds the exact text a widget action pre-filled into the composer, so the
   // eventual user-initiated send can be tagged meta.origin='widget' for
  // forensic attribution. Set on widget pre-fill, consumed
@@ -1646,7 +1710,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         raisePrefillHint()
       }
     }
-  }, [pendingInput, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint])
+  }, [pendingInput, activeSlot, dispatch, searchParams, setSearchParams, saveDraftsDebounced, embedded, raisePrefillHint, setInput])
 
   // Consume ?prefill= — the no-main-window fallback path for navigation
   // intents forwarded from a popout (see utils/popoutController.ts). The
@@ -1751,7 +1815,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           JSON.stringify({ slotKey, prompt, ts: Date.now() }),
         )
       }
-      setInput(prompt)
+      // While the switch to `slotKey` has not committed yet, the composer still
+      // belongs to the old session and a write here would persist the prompt
+      // into ITS draft. The slot-change effect restores the prompt from the
+      // prefill hand-off written above, so only write when the composer is
+      // already on the target (or there is no target to switch to).
+      if (!slotKey || composerSlotRef.current === slotKey) setInput(prompt)
       raisePrefillHint()
       autoSendRef.current = prompt
       setAutoSendTick(t => t + 1)
@@ -1767,7 +1836,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // not the live activeSlot (see the composerSlotRef note above).
   // The draft key is composerSlotRef, which a ref does not need to be a
   // dependency of; the slot-change effect below handles the transition.
-  useEffect(() => { inputRef.current = input; const s = composerSlotRef.current; if (s) { setDraft(drafts.current, s, input); saveDraftsDebounced() } }, [input, saveDraftsDebounced])
+  // Runs from `ComposerDraftSync`'s effect, a child of this page, so it lands
+  // before this page's own effects in the same commit: ahead of the slot-change
+  // and composerSlotRef-advance effects, which is what keeps a keystroke batched
+  // with a switch on the slot it was typed in.
+  // Set where the file-chip reconciliation is defined (further down, after
+  // the helpers it needs); called on every committed draft text.
+  const reconcileFileChipsRef = useRef<((text: string) => void) | null>(null)
+  const onComposerDraftCommit = useCallback((text: string) => {
+    inputRef.current = text
+    const s = composerSlotRef.current
+    if (s) { setDraft(drafts.current, s, text); saveDraftsDebounced() }
+    updateHistoryQuery(text)
+    reconcileFileChipsRef.current?.(text)
+  }, [saveDraftsDebounced, updateHistoryQuery])
   // Create-carry. The composer stays bound to the old slot until a create
   // resolves, so anything typed in that window (a fast typist after the new-chat
   // shortcut, or a click into the composer while the POST is slow) lands in the
@@ -1932,7 +2014,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // the slot it happened in; carried over, it reads as the new slot's.
     setActionError(prev => prev?.preserveOnSwitch ? prev : null)
     flushDrafts()
-  }, [activeSlot, flushDrafts, raisePrefillHint])
+  }, [activeSlot, flushDrafts, raisePrefillHint, setInput])
   // Persist drafts on unmount (navigating away from chat page)
   useEffect(() => () => {
     if (saveDraftsTimer.current) { clearTimeout(saveDraftsTimer.current); saveDraftsTimer.current = null }
@@ -1983,7 +2065,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // slots, clear on send, or sync against hand-edits — inserting the token
   // stages the chip, deleting the token (by any means) unstages it, and the
   // per-slot text draft persists the reference across slot switches for free.
-  const pendingDirs = useMemo(() => parseDirTokens(input).map(t => t.rel), [input])
+  const pendingDirsKey = useComposerDraftSelector(composerDraft, dirTokensKey)
+  const pendingDirs = useMemo(() => (pendingDirsKey ? pendingDirsKey.split('\0') : []), [pendingDirsKey])
   // Exact `@rel` composer token recorded per PICKER-PICKED file, so the file
   // chip's remove control can strip precisely the token the pick inserted —
   // the same remove contract folder chips have. Uploaded/dropped files never
@@ -2387,7 +2470,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     filteredSlots,
     filteredSlotsRef,
     history,
-    input,
+    inputNonBlank,
     isMobile,
     locationKey: location.key,
     locationPathname: location.pathname,
@@ -2471,7 +2554,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       newSessionRef.current = !intent.slotKey
       setAutoSendTick(t => t + 1)
     }
-  }, [embedded, connected, activeSlot, slotLoading, location.key, appSlotLaunch, setAppSlotLaunch, saveDraftsDebounced, raisePrefillHint, setPendingAgent])
+  }, [embedded, connected, activeSlot, slotLoading, location.key, appSlotLaunch, setAppSlotLaunch, saveDraftsDebounced, raisePrefillHint, setPendingAgent, setInput])
 
   // Auto-scroll during streaming — only when pinned to bottom
   const lastMsg = messages[messages.length - 1]
@@ -2507,6 +2590,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // append/remove set the ref themselves and call setInput directly, bypassing
   // this handler, so they are unaffected.
   const clearFollowUpOwnership = useCallback(() => { followUpInsertedRef.current = null }, [])
+  // Stable identities for the composer's change handlers. An inline arrow is a
+  // new `onChange` on every page render, which re-keys the Composer root's
+  // context and re-renders every atom under it.
+  const composerRootChange = useCallback((v: string) => { clearFollowUpOwnership(); setInput(v) }, [clearFollowUpOwnership, setInput])
+  const prefillEditedRef = useRef(prefillEdited); prefillEditedRef.current = prefillEdited
+  const composerUserEdit = useCallback((v: string) => {
+    clearFollowUpOwnership(); setInput(v)
+    if (!prefillEditedRef.current) setPrefillEdited(true)
+  }, [clearFollowUpOwnership, setInput])
   const followUpOptionsKey = followUpOptions.join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()); followUpInsertedRef.current = null }, [followUpOptionsKey, activeSlot])
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean; social_share_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
@@ -3251,7 +3343,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     window.addEventListener('mc-widget-send', handler)
     return () => window.removeEventListener('mc-widget-send', handler)
-  }, [raisePrefillHint])
+  }, [raisePrefillHint, setInput])
 
   const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
   // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
@@ -3451,7 +3543,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Normalize the shape, not just the absence: a generic fetch mock (or a
   // future payload change) can resolve to a non-array, and `= []` only covers
   // undefined — which crashed the whole chat page on `.find`.
-  const chatFolders: ChatFolder[] = Array.isArray(chatFoldersRaw) ? chatFoldersRaw : []
+  const chatFolders: ChatFolder[] = Array.isArray(chatFoldersRaw) ? chatFoldersRaw : NO_CHAT_FOLDERS
   // The sidebar's folder sort mode, for the folder-suggestion card's option list:
   // the card draws the same tree the sidebar draws and must list it in the same
   // order. Read here (shared kirocrewConfig query) so the card stays pure. The
@@ -3628,7 +3720,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return at
   }, [currentSlotTokens])
 
-  const handleAddToContext = useCallback((absPath: string, kind: 'file' | 'dir') => {
+  const handleAddToContext = useCallback((absPath: string, kind: 'file' | 'dir', dropAt?: number | null) => {
+    // `dropAt` is the text offset under a file-tree drop (useComposerTreeDrop);
+    // the context menu passes none and the mention goes in at the caret.
+    const insertAt = (): number | null => dropAt ?? voiceCaretRef.current?.start ?? null
     // `absPath` arrives from the tree with a forward-slash-normalized Windows
     // root; normalize the project root the same way (Windows-shaped roots
     // only — normalizeWindowsPath leaves POSIX paths, where `\` is a legal
@@ -3660,7 +3755,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (!dup) {
         // Insert at the last known caret, same as a dir-token drop (line ~3130)
         // -- both go through spliceDirTokens, so they share its caret contract.
-        const dirCaret = voiceCaretRef.current?.start ?? null
+        const dirCaret = insertAt()
         const spliced = spliceDirTokens(
           inputRef.current,
           dirCaret == null ? null : clampOutOfTokens(inputRef.current, Math.max(0, Math.min(dirCaret, inputRef.current.length))),
@@ -3704,7 +3799,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // "please check @README.md for bugs" stays possible when the file is
         // added mid-sentence instead of the token always landing at the end.
         const prev = inputRef.current
-        const caret = voiceCaretRef.current?.start ?? null
+        const caret = insertAt()
         let at = caret == null ? prev.length : Math.max(0, Math.min(caret, prev.length))
         // The caret can legally be parked INSIDE a token: vertical arrows
         // are only intercepted for prompt history at the text edges, the
@@ -3751,7 +3846,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setPendingFiles(prev => addPendingFile(prev, absPath))
     }
     revealComposer()
-  }, [recordSlotToken, clampOutOfTokens, currentSlotTokens, relMentionedHere])
+  }, [recordSlotToken, clampOutOfTokens, currentSlotTokens, relMentionedHere, setInput])
 
   // pickedFileTokens reconciliation -- keeps a file chip in sync with its
   // `@rel` alias(es) in BOTH directions, the same way a folder chip (line
@@ -3806,10 +3901,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // ("the ref is in-memory only: a restored draft ... re-stages the file
   // without it"). Not fixed here: it would mean persisting the aliases
   // alongside the draft too, a separate change from this reconciliation.
-  useEffect(() => {
+  //
+  // Runs from the composer-draft commit (`onComposerDraftCommit`, via
+  // `reconcileFileChipsRef`) rather than an `[input]` effect: the text lives
+  // in the draft store, so it fires once per committed text change without
+  // re-rendering this page on a keystroke.
+  const reconcileFileChips = useCallback((input: string) => {
     const known = currentSlotTokens()
     if (!known) return
-    const staged = new Set(pendingFilesRef.current)
+    const staged = new Set(pendingFiles)
     const sameSlash = (a: string, b: string) => a.replace(/\\/g, '/') === b.replace(/\\/g, '/')
     // Deliberately NOT a general boundary-checked path-SUFFIX fallback (tried
     // and reverted -- fork GPT review, two rounds): recognizing "any suffix of
@@ -3860,7 +3960,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       }
       return others
     }
-    const stale = pendingFilesRef.current.filter(p => {
+    const stale = pendingFiles.filter(p => {
       const aliases = known[p]
       if (aliases == null || aliases.length === 0) return false
       return !aliases.some(token => relMentionedHere(input, token.slice(1), otherAliasesFor(p)))
@@ -3918,7 +4018,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const next = prev.filter(p => !stale.includes(p))
       return revived.reduce((acc, p) => addPendingFile(acc, p), next)
     })
-  }, [input, currentSlotTokens, relMentionedHere])
+  }, [currentSlotTokens, relMentionedHere, pendingFiles])
+  reconcileFileChipsRef.current = reconcileFileChips
 
   // ── Follow-up card actions (suggest_followup MCP tool) ───────────────────
   // Both routes PRE-FILL a composer and stop; neither sends. `setPendingInput`
@@ -5958,7 +6059,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, slotRunning, send, steerMutation, saveDrafts, dispatch])
+  }, [activeSlot, slotRunning, send, steerMutation, saveDrafts, dispatch, setInput])
 
   // The queue-card recipe is shared with every other host that draws a
   // QueueStack over this slot queue (#5891) — see useQueuedMessageActions for
@@ -5985,7 +6086,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         if (slot) mergeSlotTokens(slot, aliases)
       }
     },
-    [mergeSlotTokens],
+    [mergeSlotTokens, setInput],
   )
   const {
     onCancel: handleCancelQueued,
@@ -6928,8 +7029,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode)
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and the render below so the two cannot disagree. */
-  const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
-    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
+  const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
+  const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
+    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
   // Mobile right-panel overlay: slide in when the panel wants the screen,
   // slide out (keeping it mounted for the travel) when it stops wanting it.
   useEffect(() => {
@@ -6985,8 +7087,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    *  live app or browser tab keeps the panel mounted through a close, and the
    *  find pane hides it while owning the dock). */
   const inlineSidePanelShowing = !activitySlot
-    && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
-    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
+    && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
+    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
   // ONE binding per panel, each covering both of ITS directions: a rightward
   // drag opens the sessions drawer, a leftward drag on the open drawer closes
   // it. Which rule applies is read live from `open` inside the hook, so the
@@ -7290,7 +7392,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // exactly, state included: solid while the panel is hidden, light while it
   // is showing.
   const mobileSessionsToggle = (
-    <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto shrink-0" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
+    <button className="mc-touch-hit p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto shrink-0" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
       {mobileSessions ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
     </button>
   )
@@ -7300,7 +7402,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
    * held before it (page-layout.md, "The title belongs to the content column").
    */
   const topbarSessionsToggle = (
-    <button className="p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')} aria-expanded={mobileSessions} data-testid="mobile-topbar-sessions-toggle">
+    <button className="mc-touch-hit p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0" onClick={() => mobileSessions ? closeSidebar() : openSidebar()} aria-label={i18nT('pages.chatPage.toggle_sessions')} aria-expanded={mobileSessions} data-testid="mobile-topbar-sessions-toggle">
       {mobileSessions ? <PanelLeftLight size={18} /> : <PanelLeftSolid size={18} />}
     </button>
   )
@@ -7335,6 +7437,126 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }
   // The non-orchestrator welcome screen puts its memory chip directly above the composer.
   const showComposerMemoryChip = isWelcomeState && (currentSlot?.mode || mode) !== 'orchestrator'
+
+  // Memoized so the composer's memo holds across page renders that change
+  // nothing it shows (a pin, a streamed frame): JSX written inline in the prop
+  // is a new element on every render. `langGen`: i18nT labels inside.
+  const composerAbove = useMemo(() => {
+    void langGen
+    return (
+    <>
+      {/* Session-control failures surface HERE, beside the chips they
+          are about, rather than on the chat. Both hooks fail closed —
+          a failed `/api/apps` renders no chips, a failed status probe
+          renders a stateless one — and either is indistinguishable
+          from "no app declares a control", so without this the user
+          sees a feature silently missing and has nothing to act on.
+          One notice covers both: they are the same feature to the
+          user, and the composer shares a row with the message input.
+          `askAgent` is on because nothing here holds an unsaved
+          draft, and a failed app-list or status route is squarely
+          something the agent can investigate.
+
+          The folder query rides along rather than getting its own
+          banner: it feeds the folder NAME handed to each control, and
+          on `/embed/chat` no sidebar is mounted to consume the shared
+          ['chat-folders'] cache — so this is the only place its
+          failure can be seen at all. It is gated on a control
+          actually existing, though: with no chips on screen a folder
+          failure is not a session-control problem, and calling it one
+          would put an unexplained notice on every composer. */}
+      {(sessionControlsError
+        || sessionControlStatusError
+        || (chatFoldersError && sessionControls.length > 0)) && (
+        <div className="pt-1.5" key="session-controls-error">
+          <ErrorNotice
+            title={i18nT('components.sessionControlHost.controls_unavailable')}
+            message={
+              (sessionControlsError || sessionControlStatusError || chatFoldersError)
+                ?.message
+            }
+            askAgent
+            variant="inline"
+          />
+        </div>
+      )}
+      {/* In-flow tip inside the composer's own width wrapper: shares
+       the composer's exact box geometry (Raymond 2026-07-21: tip
+       width must always match the input box) while still pushing
+       chat content up like QueueStack (team decision: never cover
+       thinking/output; queue and question card keep priority via
+       tipSuppressed). ChatInput renders this slot LAST in the
+       above-composer stack, so the card stays flush against the
+       input box and an options row sits above it. */}
+      <AnimatePresence>
+        {folderSuggestion && activeSlot ? (
+          <div className="pt-1.5" key="folder-suggestion">
+        {/* The card's option list follows the sidebar's folder
+            order. A failed read of that order is said once per
+            screen -- by the sidebar's banner while the sidebar is
+            on this screen, and here, above the card, only when it
+            is not (embed chat, the drawer closed, the panel
+            collapsed): otherwise the list is drawn in the stored
+            order with nothing on screen to say why.
+            No hand-off: the card's dropdown holds a pick that is
+            not saved until Accept, and the hand-off navigates
+            away and unmounts it -- so the line under the notice
+            is the one phrase every surface uses for this failure
+            plus where the hand-off lives. */}
+        {folderSortError !== null && !sidebarOnScreen && (
+          <ErrorNotice
+            title={i18nT('pages.chatSidebar.folder_order_unavailable')}
+            message={folderSortError}
+            messagePlacement="below"
+            footer={i18nT('pages.chatSidebar.folder_order_unavailable_detail_picker_ask')}
+            className="mb-1.5"
+            testId="folder-suggestion-order-unavailable"
+          />
+        )}
+            {/* Keyed by the suggestion's ts: a replacement card
+                remounts the component, so its dropdown re-prefills
+                and a selection made against the previous suggestion
+                cannot leak onto the new one. `chatFolders` is the
+                sidebar's own ['chat-folders'] cache (normalized to
+                [] on error above), so the dropdown costs no extra
+                request and degrades to a suggestion-only option
+                list when folders are unavailable. */}
+            <FolderSuggestionCard
+              key={folderSuggestion.ts}
+              suggestedFolderId={folderSuggestion.folderId}
+              suggestedFolderName={folderSuggestion.folderName}
+              suggestedFolderBreadcrumb={folderSuggestion.breadcrumb}
+              folders={chatFolders}
+          folderSortMode={folderSortMode}
+              onAccept={folderSuggestionAccept}
+              onDecline={folderSuggestionDecline}
+            />
+          </div>
+        ) : activeTip && (
+          <div className="pt-1.5" key="tip">
+            <TipCard tip={activeTip} onDismiss={dismissTip} />
+          </div>
+        )}
+      </AnimatePresence>
+    </>
+    )
+  }, [sessionControlsError, sessionControlStatusError, chatFoldersError, sessionControls.length, folderSuggestion, activeSlot, chatFolders, folderSortMode, folderSortError, sidebarOnScreen, folderSuggestionAccept, folderSuggestionDecline, activeTip, dismissTip, langGen])
+  const composerSessionControls = useMemo(() => sessionControls.map(sc => ({
+    key: sc.key,
+    label: sc.label,
+    icon: sc.icon,
+    active: openSessionControl?.key === sc.key && openSessionControl.slot === activeSlot,
+    state: sessionControlStatuses[sc.key]?.state,
+    statusTooltip: sessionControlStatuses[sc.key]?.tooltip,
+  })), [sessionControls, openSessionControl, activeSlot, sessionControlStatuses])
+  // `isRefused` keeps one identity per slot and reads the module-level latches,
+  // so the latch set it answers from (`latchedActions`, published after a Go /
+  // Cancel click) is what has to re-key this memo.
+  const planLatches = planActionMutation.latchedActions
+  const followUpRefusedOptions = useMemo(() => {
+    void planLatches
+    return new Set(followUpOptions.filter(planActionMutation.isRefused))
+  }, [followUpOptions, planActionMutation.isRefused, planLatches])
 
   return (
     <RowDisclosureProvider resetKey={activeSlot}>
@@ -7641,7 +7863,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       {topbarTrailSlot && activeSlot && !embedMode && createPortal(
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" className="w-8 h-8 rounded-md flex items-center justify-center text-text hover:text-text-strong hover:bg-bg-hover bg-transparent border-none cursor-pointer shrink-0" aria-label={i18nT('pages.chatPage.more_actions')} title={i18nT('pages.chatPage.more_actions')} data-testid="mobile-topbar-more">
+            <button type="button" className="mc-touch-hit w-8 h-8 rounded-md flex items-center justify-center text-text hover:text-text-strong hover:bg-bg-hover bg-transparent border-none cursor-pointer shrink-0" aria-label={i18nT('pages.chatPage.more_actions')} title={i18nT('pages.chatPage.more_actions')} data-testid="mobile-topbar-more">
               <MoreHorizontal size={18} />
             </button>
           </DropdownMenuTrigger>
@@ -7704,6 +7926,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       {/* Per-slot tag picker — a single connected popover, opened from any session
           menu (sidebar row or header) via the ChatPage-scoped TagPopover context. */}
       <SlotTagPopover />
+      <ComposerDraftSync store={composerDraft} inputRef={inputRef} onCommit={onComposerDraftCommit} />
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
@@ -7846,7 +8069,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             embeds one scoped conversation has no sessions list to open. */}
         {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !titleInTopbar && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-safe-offset-[42px] left-safe ml-2 z-10">
-            <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={openSidebar} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
+            <button className="mc-touch-hit p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={openSidebar} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {/* Same glyph as the desktop toggle: a control is named by the SURFACE
                   it opens, and this opens the sessions panel. Solid rather than
                   `PanelLeftLight` because this form only renders while that panel is
@@ -7915,6 +8138,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 ? (embedMode !== 'chat' && !titleInTopbar ? { control: mobileSessionsToggle } : undefined)
                 : (embedMode !== 'chat' && embedMode !== 'sessions' && filteredSlots.length > 0 && !sidebarOpen ? { inset: true } : undefined)
             }
+            onFileOpen={handleFileOpen}
             onClose={() => setSplitMode(false)}
             onCollapse={(slot, anchorTs, anchorMid) => {
               // User gesture on a session reference (split-pane collapse): the
@@ -8392,6 +8616,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   calls and goes stale when the user clicks a tab in the panel. */}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
+              <CommandCenterDock slot={activeSlot} onOpen={() => { dispatch(openActivityPanel()); tabsCtl.openView('command-center') }} />
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
@@ -8554,113 +8779,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <Composer
                 ref={composerRef}
                 slotKey={activeSlot}
-                value={input}
-                onChange={v => { clearFollowUpOwnership(); setInput(v) }}
+                draft={composerDraft}
+                onChange={composerRootChange}
                 voice={composerVoiceOptions}
               >
-              <ChatInput
-              aboveComposer={
-                <>
-                  {/* Session-control failures surface HERE, beside the chips they
-                      are about, rather than on the chat. Both hooks fail closed —
-                      a failed `/api/apps` renders no chips, a failed status probe
-                      renders a stateless one — and either is indistinguishable
-                      from "no app declares a control", so without this the user
-                      sees a feature silently missing and has nothing to act on.
-                      One notice covers both: they are the same feature to the
-                      user, and the composer shares a row with the message input.
-                      `askAgent` is on because nothing here holds an unsaved
-                      draft, and a failed app-list or status route is squarely
-                      something the agent can investigate.
-
-                      The folder query rides along rather than getting its own
-                      banner: it feeds the folder NAME handed to each control, and
-                      on `/embed/chat` no sidebar is mounted to consume the shared
-                      ['chat-folders'] cache — so this is the only place its
-                      failure can be seen at all. It is gated on a control
-                      actually existing, though: with no chips on screen a folder
-                      failure is not a session-control problem, and calling it one
-                      would put an unexplained notice on every composer. */}
-                  {(sessionControlsError
-                    || sessionControlStatusError
-                    || (chatFoldersError && sessionControls.length > 0)) && (
-                    <div className="pt-1.5" key="session-controls-error">
-                      <ErrorNotice
-                        title={i18nT('components.sessionControlHost.controls_unavailable')}
-                        message={
-                          (sessionControlsError || sessionControlStatusError || chatFoldersError)
-                            ?.message
-                        }
-                        askAgent
-                        variant="inline"
-                      />
-                    </div>
-                  )}
-                  {/* In-flow tip inside the composer's own width wrapper: shares
-                   the composer's exact box geometry (Raymond 2026-07-21: tip
-                   width must always match the input box) while still pushing
-                   chat content up like QueueStack (team decision: never cover
-                   thinking/output; queue and question card keep priority via
-                   tipSuppressed). ChatInput renders this slot LAST in the
-                   above-composer stack, so the card stays flush against the
-                   input box and an options row sits above it. */}
-                  <AnimatePresence>
-                    {folderSuggestion && activeSlot ? (
-                      <div className="pt-1.5" key="folder-suggestion">
-                        {/* The card's option list follows the sidebar's folder
-                            order. A failed read of that order is said once per
-                            screen -- by the sidebar's banner while the sidebar is
-                            on this screen, and here, above the card, only when it
-                            is not (embed chat, the drawer closed, the panel
-                            collapsed): otherwise the list is drawn in the stored
-                            order with nothing on screen to say why.
-                            No hand-off: the card's dropdown holds a pick that is
-                            not saved until Accept, and the hand-off navigates
-                            away and unmounts it -- so the line under the notice
-                            is the one phrase every surface uses for this failure
-                            plus where the hand-off lives. */}
-                        {folderSortError !== null && !sidebarOnScreen && (
-                          <ErrorNotice
-                            title={i18nT('pages.chatSidebar.folder_order_unavailable')}
-                            message={folderSortError}
-                            messagePlacement="below"
-                            footer={i18nT('pages.chatSidebar.folder_order_unavailable_detail_picker_ask')}
-                            className="mb-1.5"
-                            testId="folder-suggestion-order-unavailable"
-                          />
-                        )}
-                        {/* Keyed by the suggestion's ts: a replacement card
-                            remounts the component, so its dropdown re-prefills
-                            and a selection made against the previous suggestion
-                            cannot leak onto the new one. `chatFolders` is the
-                            sidebar's own ['chat-folders'] cache (normalized to
-                            [] on error above), so the dropdown costs no extra
-                            request and degrades to a suggestion-only option
-                            list when folders are unavailable. */}
-                        <FolderSuggestionCard
-                          key={folderSuggestion.ts}
-                          suggestedFolderId={folderSuggestion.folderId}
-                          suggestedFolderName={folderSuggestion.folderName}
-                          suggestedFolderBreadcrumb={folderSuggestion.breadcrumb}
-                          folders={chatFolders}
-                          folderSortMode={folderSortMode}
-                          onAccept={folderSuggestionAccept}
-                          onDecline={folderSuggestionDecline}
-                        />
-                      </div>
-                    ) : activeTip && (
-                      <div className="pt-1.5" key="tip">
-                        <TipCard tip={activeTip} onDismiss={dismissTip} />
-                      </div>
-                    )}
-                  </AnimatePresence>
-                </>
-              }
-              value={input}
-              // ChatInput calls this for the user's own edits (typing, paste, undo,
-              // picker inserts), never for a parent-driven seed -- so it is the
-              // signal that arms the prefill hint's expiry.
-              onChange={v => { clearFollowUpOwnership(); setInput(v); setPrefillEdited(true) }}
+              <StableChatInput
+              aboveComposer={composerAbove}
+              // No `value`: ChatInput reads the text from the root's `draft` store.
+              // `composerUserEdit` is what ChatInput calls for the user's own edits
+              // (typing, paste, undo, picker inserts), never for a parent-driven
+              // seed -- so it is the signal that arms the prefill hint's expiry.
+              onChange={composerUserEdit}
               onSend={() => send()}
               canSteer={composerBusy}
               onSteer={steer}
@@ -8877,6 +9006,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 setPendingFiles(prev => addPendingFile(prev, canon))
               }}
               onFileOpen={handleFileOpen}
+              // A tree row dropped on the composer is "Add to chat" by drag.
+              onTreeEntryDrop={handleAddToContext}
+              clampDropOffset={clampOutOfTokens}
               project={currentSlot?.project || ''}
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}
@@ -8913,14 +9045,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 anchorProjectBtn(rect, trigger)
                 setProjectPickerOpen(o => !o)
               }}
-              sessionControls={sessionControls.map(sc => ({
-                key: sc.key,
-                label: sc.label,
-                icon: sc.icon,
-                active: openSessionControl?.key === sc.key && openSessionControl.slot === activeSlot,
-                state: sessionControlStatuses[sc.key]?.state,
-                statusTooltip: sessionControlStatuses[sc.key]?.tooltip,
-              }))}
+              sessionControls={composerSessionControls}
               onSessionControlClick={(key, rect, trigger) => {
                 anchorSessionControl(rect, trigger)
                 // Two independent setState calls, not one updater with a side
@@ -9032,7 +9157,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               followUpLayout={chatConfig.followUpLayout}
               followUpSourceKey={followUpSourceKey}
               followUpPendingOptions={planActionMutation.latchedActions}
-              followUpRefusedOptions={new Set(followUpOptions.filter(planActionMutation.isRefused))}
+              followUpRefusedOptions={followUpRefusedOptions}
               followUpError={planActionMutation.failure}
               onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
                 // Plan options (Go / Go All / Cancel) dispatch directly — no input fill.
@@ -9244,9 +9369,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           // below) so its iframe — and the drawing inside it — survives the
           // close, exactly as the width-reveal branch always did.
           ? (sideOverlayPhase !== 'closed'
-              || (shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
-                  && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }))) && !activitySlot
-          : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && !activitySlot) && (
+              || (shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
+                  && isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }))) && !activitySlot
+          : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && !activitySlot) && (
           <motion.div
             key="side-panel-inline"
             ref={isMobile ? sideOverlayPanelRef : undefined}
@@ -9269,12 +9394,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               ? (sideOverlayPhase === 'closed'
                   ? { display: 'none' } // keep-alive: mounted for the iframe, invisible
                   : { x: sideOverlayX })
-              : (isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined)}
+              : (isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined)}
           >
             <SidePanel
               tabsCtl={tabsCtl}
               slot={activeSlot || ''}
-              panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })}
+              panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })}
               onFileOpen={handleFileOpen}
               onArtifactOpen={handleArtifactOpen}
               onAddToContext={handleAddToContext}
@@ -9302,7 +9427,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           the window edge — both sides move together instead of snapping. */}
       {activitySlot && createPortal(
         <AnimatePresence initial={false}>
-          {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
+          {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
               initial={sidePanelDockAnim.initial}
@@ -9310,12 +9435,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               exit={sidePanelDockAnim.exit}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
               className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
-              style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
+              style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
             >
               <SidePanel
                 tabsCtl={tabsCtl}
                 slot={activeSlot || ''}
-                panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })}
+                panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })}
                 onFileOpen={handleFileOpen}
                 onArtifactOpen={handleArtifactOpen}
                 onAddToContext={handleAddToContext}

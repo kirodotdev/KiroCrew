@@ -1285,7 +1285,7 @@ describe('Decisions (Jev) preview card', () => {
       // A sibling card proves the section rendered, so an absent switch is the
       // gate and not a failed render.
       await waitFor(() => {
-        expect(screen.getByRole('switch', { name: /Crew Members/i })).toBeInTheDocument()
+        expect(screen.getByRole('switch', { name: /Crewmates/i })).toBeInTheDocument()
       })
       expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
       // Not merely hidden: nothing about the feature is on screen to act on.
@@ -1298,7 +1298,7 @@ describe('Decisions (Jev) preview card', () => {
       stubGateway({ enabled: true }, { decisions: { bucket: 100 } }, {})
       renderSection()
       await waitFor(() => {
-        expect(screen.getByRole('switch', { name: /Crew Members/i })).toBeInTheDocument()
+        expect(screen.getByRole('switch', { name: /Crewmates/i })).toBeInTheDocument()
       })
       expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
     })
@@ -1330,7 +1330,7 @@ describe('Decisions (Jev) preview card', () => {
       vi.spyOn(api, 'dashboardConfig').mockReturnValue(new Promise(() => {}) as never)
       renderSection()
       await waitFor(() => {
-        expect(screen.getByRole('switch', { name: /Crew Members/i })).toBeInTheDocument()
+        expect(screen.getByRole('switch', { name: /Crewmates/i })).toBeInTheDocument()
       })
       expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
       expect(screen.queryByText(/could not read the settings/i)).toBeNull()

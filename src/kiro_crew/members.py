@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import stat
+from collections.abc import Container, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -41,7 +42,12 @@ from kiro_crew.pinned_fs import (
     supports_pinned_walk,
 )
 from kiro_crew.slugs import slug_hash_fallback
-from kiro_crew.validation import MAX_SHORT_STRING, normalize_unicode, sanitize_string
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    MAX_SHORT_STRING,
+    normalize_unicode,
+    sanitize_string,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +404,78 @@ def validate_member_name(name: object) -> str:
     if not name.strip("."):
         raise MemberNameError("name must not consist only of periods")
     return name
+
+
+#: Longest base a derived crew id keeps, leaving room for a ``-<n>`` suffix
+#: inside ``_AGENT_NAME_RE``'s 64-character cap.
+_CREW_ID_BASE_MAX_CHARS = 56
+
+#: Suffixes tried before a derived crew id falls back to the name's hash.
+_CREW_ID_SUFFIX_ATTEMPTS = 99
+
+
+def is_crew_id(value: object) -> bool:
+    """Return whether *value* is shaped like a new crew's config key.
+
+    A crew id is the identifier grammar crews carried before free-form names
+    (``validation._AGENT_NAME_RE``). New crews are keyed by one; a crew already
+    stored under a free-form name stays readable and is never renamed.
+    """
+    return isinstance(value, str) and bool(_AGENT_NAME_RE.match(value))
+
+
+def crew_id_for_display_name(name: str, taken: Container[str]) -> str:
+    """Derive an unused crew id for a crew the user named *name*.
+
+    The id is a slug of the name, suffixed ``-2``, ``-3``... past any id in
+    *taken*. A name with no slug-safe characters (CJK, emoji) derives from its
+    hash, so two such names never share an id. Deterministic for a given
+    *name* and *taken*.
+    """
+    base = slugify(name)[:_CREW_ID_BASE_MAX_CHARS].strip("-")
+    if not base or base == slug_hash_fallback(name, "artifact"):
+        base = slug_hash_fallback(name, "crew")
+    for n in range(1, _CREW_ID_SUFFIX_ATTEMPTS + 1):
+        candidate = base if n == 1 else f"{base}-{n}"
+        if candidate not in taken and is_crew_id(candidate):
+            return candidate
+    return slug_hash_fallback(name, "crew")
+
+
+@dataclass(frozen=True)
+class NewCrewKey:
+    """How a crew being created is keyed and labelled.
+
+    ``taken`` is the name the user would see twice when the create must be
+    refused (``409 agent_exists``), else ``""``.
+    """
+
+    key: str
+    display_name: str
+    taken: str
+
+
+def key_new_crew(name: str, display_name: str, agents: Mapping[str, object]) -> NewCrewKey:
+    """Decide the config key and label for a crew created as *name*.
+
+    An id-shaped *name* is the key as sent. A free-form one is kept as the
+    label of an id :func:`crew_id_for_display_name` derives. An explicit
+    *display_name* is the label either way. The create is refused when the
+    key is taken, or when the name the crew would show (its label, else its
+    key) is exactly what another crew already shows. The one decision both
+    create surfaces (``POST /api/agents``, ``kirocrew agent create``) share.
+    """
+    if is_crew_id(name):
+        key, label = name, display_name
+        if key in agents:
+            return NewCrewKey(key, label, name)
+    else:
+        key, label = crew_id_for_display_name(name, agents), display_name or name
+    shown = label or key
+    for other_key, other in agents.items():
+        if (getattr(other, "display_name", "") or other_key) == shown:
+            return NewCrewKey(key, label, shown)
+    return NewCrewKey(key, label, "")
 
 
 def is_valid_member_name(value: object) -> bool:

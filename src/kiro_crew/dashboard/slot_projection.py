@@ -254,12 +254,25 @@ class SlotProjection:
                 meta = parse_cls_meta(message.get("cls") or "") or {}
                 if meta.get("resolved"):
                     continue
+                request_id = meta.get("approval_id", meta.get("request_id", ""))
+                if not isinstance(request_id, str):
+                    continue
+                future = slot._approval_futures.get(request_id)
+                if future is None or future.done():
+                    continue
+                request_mid = slot.approval_instance(request_id, message)
+                if not request_mid:
+                    continue
                 pending_approval_info = {
+                    "origin": "native",
                     "tool": redact(message.get("content") or ""),
                     "tool_input": redact(meta.get("tool_input", "")),
                     "tool_kind": redact(meta.get("tool_kind", "")),
-                    "request_id": redact(meta.get("approval_id", meta.get("request_id", ""))),
+                    "request_id": redact(request_id),
+                    "request_mid": request_mid,
                 }
+                if meta.get("tool_purpose"):
+                    pending_approval_info["tool_purpose"] = redact(meta["tool_purpose"])
                 break
         if pending_approval_info is None and coordinator_pending:
             # No unresolved permission row supplied the card: the pending
@@ -269,11 +282,21 @@ class SlotProjection:
             record = coordinator_pending[0]
             approval_id = str(record.get("id") or "")
             pending_approval_info = {
+                "origin": "coordinator",
                 "tool": redact(str(record.get("tool") or "")),
                 "tool_input": redact(str(record.get("tool_input") or "")),
                 "tool_kind": "spawn" if approval_id.startswith("spawn:") else "",
                 "request_id": redact(approval_id),
             }
+            if record.get("tool_purpose"):
+                # Import after state initialization: chat_utils itself imports state.
+                from kiro_crew.dashboard.chat_utils import _MAX_TOOL_PURPOSE, _redact_tool_field
+
+                # Redact the full source before the display cap. Native metadata
+                # is already capped upstream; recapping would split its notice.
+                pending_approval_info["tool_purpose"] = _redact_tool_field(
+                    redact(str(record["tool_purpose"])), limit=_MAX_TOOL_PURPOSE
+                )
 
         return {
             "key": slot.key,

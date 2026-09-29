@@ -60,11 +60,12 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
@@ -124,7 +125,12 @@ from kiro_crew.session_ledger import EVENT_KINDS as LEDGER_EVENT_KINDS
 from kiro_crew.session_ledger import LEDGER_ENTRY_TYPE
 from kiro_crew.session_ledger import SCHEMA_VERSION as LEDGER_SCHEMA_VERSION
 from kiro_crew.session_ledger import TERMINAL_PHASES as LEDGER_TERMINAL_PHASES
-from kiro_crew.work_vocab import WORK_CONDUCTOR_FIELDS
+from kiro_crew.work_vocab import (
+    WORK_CONDUCTOR_FIELDS,
+    WORK_STORED_ITEM_LIMIT,
+    WorkBoardItem,
+    WorkBoardView,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +201,7 @@ FOLD_NAMES: Final[tuple[str, ...]] = (
 #: each and is the only in-product way to retire them, since the tree is fenced from
 #: the agent. ``test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move``
 #: pins each fold's stored state, so forgetting the move fails CI rather than shipping.
-FOLD_STATE_VERSION: Final[int] = 3
+FOLD_STATE_VERSION: Final[int] = 4
 
 #: The types these folds can interpret, handed to ``iter_from(known=...)`` so an
 #: entry from a newer writer stops the fold instead of skewing it. The set is the
@@ -1290,7 +1296,13 @@ def _usage_start() -> dict[str, Any]:
     return {
         "turns_completed": 0,
         "credits": 0.0,
-        "credits_turns": 0,
+        # The same charges the total above sums, kept apart by who spent them. Every
+        # bucket is present from the start, so an absent source reads as "spent
+        # nothing" rather than leaving the reader to guess whether the split is
+        # partial. ``reported`` counts the entries that carried a measurement, which
+        # is what says how much of the bucket's total is covered -- an absent
+        # ``credits`` is an unmetered provider, never a zero charge.
+        "credits_by_source": {source: {"credits": 0.0, "reported": 0} for source in CREDIT_SOURCES},
         "tokens": {dimension: 0 for dimension in TOKEN_DIMENSIONS},
         "tokens_turns": 0,
         "duration_ms": 0,
@@ -1311,8 +1323,68 @@ def _usage_start() -> dict[str, Any]:
     }
 
 
+def _bill_credits(state: dict[str, Any], entry: Entry) -> float | None:
+    """Add this entry's charge to the session total and to its own source bucket.
+
+    One function for all three spenders, so the total and the split cannot drift
+    apart: a bucket that is incremented somewhere the total is not would make the
+    two disagree, and a reader has no way to tell which half is wrong.
+
+    Returns the charge, so ``turn/completed`` can also attribute it per model, and
+    ``None`` when the entry carried no ``credits`` at all. Absent credits are NOT
+    zero: a provider that does not bill in them writes no key, and folding that in
+    as 0.0 would state a measurement nobody made. ``reported`` beside each bucket is
+    what tells a reader how many charges the bucket's total covers.
+    """
+    source = _CREDIT_SOURCE_OF.get(entry.type)
+    if source is None:
+        return None
+    credits = entry.data.get("credits")
+    if not isinstance(credits, (int, float)) or isinstance(credits, bool):
+        return None
+    try:
+        billed = float(credits)
+    except (OverflowError, ValueError):
+        # A JSON integer is unbounded, so a charge can be unrepresentable rather
+        # than merely wrong -- ``float(10 ** 400)`` raises. Nothing between here and
+        # ``fold_session`` catches it, so letting it escape would cost the whole
+        # projection over one line. A line this fold cannot interpret costs that
+        # line and nothing else.
+        return None
+    bucket = state["credits_by_source"][source]
+    total = state["credits"] + billed
+    grown = bucket["credits"] + billed
+    # ONE invariant, and it is about the RESULT rather than the charge: a spend
+    # total stays finite, and it never goes down.
+    #
+    # Checking the charge instead needs a new clause per shape, and the shapes
+    # outnumber the clauses -- NaN, each infinity, a negative, and a pair of finite
+    # values that overflow on the way up are four different inputs with one
+    # consequence. That consequence is what is worth stating, because it is also
+    # what cannot be undone: ``round`` keeps a non-finite total non-finite, the
+    # savepoint persists it, and a cold refold reads the same entry again, so the
+    # fold serves a broken total for the life of the unit.
+    #
+    # Zero passes deliberately. It does not move the total, and a provider reporting
+    # 0.0 measured zero -- a different fact from a closer that reported nothing,
+    # which is what ``reported`` beside each bucket exists to tell apart.
+    #
+    # ``by_model`` needs no check of its own: every billed charge is non-negative, so
+    # a model's row is a sub-sum of ``state["credits"]`` and cannot exceed a total
+    # this guard has already proved finite.
+    if not math.isfinite(total) or not math.isfinite(grown):
+        return None
+    if total < state["credits"] or grown < bucket["credits"]:
+        return None
+    state["credits"] = total
+    bucket["credits"] = grown
+    bucket["reported"] += 1
+    return billed
+
+
 def _usage_step(state: dict[str, Any], entry: Entry) -> None:
     data = entry.data
+    billed = _bill_credits(state, entry)
     if entry.type == "turn/completed":
         state["turns_completed"] += 1
         model = _as_str(data.get("model"))
@@ -1340,17 +1412,13 @@ def _usage_step(state: dict[str, Any], entry: Entry) -> None:
             )
         if per_model is not None:
             per_model["turns"] += 1
-        credits = data.get("credits")
-        # Absent credits are NOT zero: a synthesized closer reports no cost
-        # because none was measured, and folding that in as 0.0 would state a
-        # measurement nobody made. The count beside the total is what tells a
-        # reader how many turns the total covers.
-        if isinstance(credits, (int, float)) and not isinstance(credits, bool):
-            state["credits"] += float(credits)
-            state["credits_turns"] += 1
-            if per_model is not None:
-                per_model["credits"] += float(credits)
-                per_model["credits_turns"] += 1
+        # The session total and the turn bucket were already billed above. Only the
+        # per-model row is left, and it stays turn-scoped: a child's closer names no
+        # model, so attributing its spend to the parent turn's model would charge one
+        # model for work another did.
+        if billed is not None and per_model is not None:
+            per_model["credits"] += billed
+            per_model["credits_turns"] += 1
         tokens = data.get("tokens")
         if isinstance(tokens, dict):
             state["tokens_turns"] += 1
@@ -1398,11 +1466,24 @@ def _usage_render(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "turns": {
             "completed": state["turns_completed"],
-            "credits_reported": state["credits_turns"],
+            # Turn-scoped on purpose, and it stays that way now the total covers
+            # three sources: this number answers how many of the session's TURNS
+            # reported a cost, which a whole-session count could not.
+            "credits_reported": state["credits_by_source"]["turn"]["reported"],
             "tokens_reported": state["tokens_turns"],
             "duration_reported": state["duration_turns"],
         },
         "credits": round(state["credits"], 6),
+        # The total above, split by who spent it. Rounded per bucket so the parts
+        # are each readable; a reader comparing them against the total is comparing
+        # two roundings of the same sum, not two different sums.
+        "credits_by_source": {
+            source: {
+                "credits": round(row["credits"], 6),
+                "reported": row["reported"],
+            }
+            for source, row in state["credits_by_source"].items()
+        },
         "tokens": {**tokens, "total": sum(tokens.values())},
         "duration_ms": state["duration_ms"],
         "by_model": {
@@ -1458,6 +1539,10 @@ def _timeline_step(state: dict[str, Any], entry: Entry) -> None:
         "model",
         "source",
         "duration_ms",
+        # Both spellings of a measured duration: ``duration_ms`` is the turn entry's,
+        # ``ms`` is what the subagent closers and steps call theirs. Copying only one
+        # of the two keeps that half of the log's durations out of the timeline.
+        "ms",
         "credits",
         "freed_pct",
         "dropped_count",
@@ -3344,10 +3429,23 @@ def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
     return tuple(found)
 
 
-#: Item records the fold retains per board. The WRITER caps a board at far fewer
-#: (it refuses a create past its own limit); this is the fold's own bound, so a
-#: log that somehow carries more still folds to a value of bounded size.
-WORK_ITEM_LIMIT: Final[int] = 256
+#: Item records the fold retains per board -- the fold's own memory bound, so a
+#: log that carries more still folds to a value of bounded size. Two bounds meet
+#: here. The WRITER caps a board's OPEN items at
+#: ``work_ledger.MAX_ITEMS_PER_CONDUCTOR`` (32, live fan-out) and the CREATES it
+#: admits over the board's life, open and closed together, at
+#: ``work_ledger.MAX_STORED_ITEMS_PER_CONDUCTOR`` -- which is THIS number, both read
+#: off ``work_vocab.WORK_STORED_ITEM_LIMIT``. The writer counts those creates in a
+#: monotonic counter in the board's header, the way this fold counts them in an
+#: append-only log, so a record removed from the writer's cache reopens nothing:
+#: every create the writer admits is one recorded create, a board the writer admits
+#: cannot overflow the fold, the fold holds the whole board and ``omitted`` stays 0.
+#: The fold still holds at most ``WORK_ITEM_LIMIT`` items and counts every create
+#: past that in ``omitted``, and ``work_ledger.rebuild_from_projection`` still
+#: refuses a full fold that reports omissions -- only such a fold is necessarily a
+#: prefix of the board rather than the board -- but with the two bounds equal that
+#: guard is defensive, not the working path.
+WORK_ITEM_LIMIT: Final[int] = WORK_STORED_ITEM_LIMIT
 
 #: Newest event lines kept per item, the same tail the stored ledger kept.
 WORK_EVENT_LIMIT: Final[int] = 200
@@ -3411,6 +3509,16 @@ def _work_start() -> dict[str, Any]:
         "omitted": 0,
         "entries": 0,
         "first_entry_at": "",
+        "last_entry_at": "",
+        # The epoch behind ``last_entry_at``, kept so the greatest stamp can be chosen
+        # by TIME rather than by spelling. ``_work_iso`` renders local time with an
+        # offset, so a plain string comparison is only accidentally ordered: at an
+        # autumn DST change the offset shrinks and a later entry spells an earlier
+        # string, which is exactly the inversion this field exists to refuse. Not
+        # rendered -- ``_work_render`` serves ``last_entry_at`` -- so it costs a reader
+        # nothing. A checkpoint written before this key existed differs from this shape
+        # and ``_state_matches_fold`` discards it, so no resumed state reads it absent.
+        "last_entry_ms": 0,
         "generation": "",
     }
 
@@ -3511,6 +3619,24 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
     state["entries"] += 1
     if not state["first_entry_at"]:
         state["first_entry_at"] = _work_iso(entry.time)
+    # HERE, where an entry is accepted, rather than beside any one action: this is the
+    # answer to "how old is this board's information", and a reader asking that must
+    # not get a different answer depending on which kind of entry came last. Taken from
+    # an item's own stamps instead, a conductor-only round -- a decision, a verdict, an
+    # acceptance, a bind -- moves nothing, so a board that just changed keeps ageing and
+    # eventually reads as stale while it is in fact current.
+    #
+    # The GREATEST accepted stamp, not the last one written, because the fold order is
+    # by UNIT and never by time: ``_work_units`` yields the conductor's units first and
+    # then each bound worker's, so a worker report appended before the conductor's
+    # latest round is folded after it. An unconditional write hands the board that older
+    # stamp, the age inflates to the gap between the two, and a current board reads as
+    # stale -- reproducibly, since the log order never changes. Scoped to the current
+    # board generation for free: the reset above runs first and clears both keys, so a
+    # purged board's newest stamp cannot pin a board born after it.
+    if entry.time >= state["last_entry_ms"]:
+        state["last_entry_ms"] = entry.time
+        state["last_entry_at"] = _work_iso(entry.time)
     if not state["created_at"] and data.get("actor") == "conductor":
         state["created_at"] = _work_iso(entry.time)
     action = _as_str(data.get("action"))
@@ -3734,10 +3860,18 @@ def _work_is_progress(event: Mapping[str, Any]) -> bool:
     return event.get("kind") == "report" and event.get("status") == "progress"
 
 
-def _work_render(state: dict[str, Any]) -> dict[str, Any]:
+def _work_render(state: dict[str, Any]) -> WorkBoardView:
     """The board in the shape its readers already consume: the conductor header and
-    every item in creation order, each with its event tail."""
-    items = []
+    every item in creation order, each with its event tail.
+
+    The return is NARROWED to :class:`~kiro_crew.work_vocab.WorkBoardView` rather than
+    left as ``dict``: a reader mapping this onto a dashboard's own contract type then
+    has both ends checked by mypy, and a field renamed here is an error at every such
+    reader instead of a key that silently reads as missing. The projection kernel in
+    ``kiro_crew.projection`` is unchanged -- its Protocol asks for ``-> dict`` and a
+    return type is covariant.
+    """
+    items: list[WorkBoardItem] = []
     for item_id in state["order"]:
         item = state["items"].get(item_id)
         if item is None:
@@ -3747,7 +3881,7 @@ def _work_render(state: dict[str, Any]) -> dict[str, Any]:
         rendered["events"] = [
             {key: value for key, value in event.items() if key != "_t"} for event in item["events"]
         ]
-        items.append(rendered)
+        items.append(cast("WorkBoardItem", rendered))
     return {
         "conductor": {
             "schema": 1,
@@ -3760,6 +3894,12 @@ def _work_render(state: dict[str, Any]) -> dict[str, Any]:
             "created_at": state["created_at"],
             "entries": state["entries"],
             "first_entry_at": state["first_entry_at"],
+            # Read directly, like its sibling keys. ``_work_start`` declares this key
+            # in the fold's durable top-level shape, and ``_state_matches_fold``
+            # refuses any checkpoint whose top-level keys differ from that shape, so a
+            # payload missing it is discarded and cold-folded rather than resumed. The
+            # key is present on every state that reaches here.
+            "last_entry_at": state["last_entry_at"],
             "generation": state["generation"],
         },
         "items": items,
@@ -4083,10 +4223,36 @@ def _as_id(value: Any) -> str:
 
 
 #: Entry types ``usage`` bills. A turn's cost, the context composed for it,
-#: compaction, and step time.
+#: compaction, step time -- and the two other things that spend this session's
+#: budget without being one of its turns: the children it dispatched and the
+#: background helpers the gateway ran on its behalf. Billing turns alone reads a
+#: session that spent most of its budget on a wave of subagents as cheap.
 USAGE_TYPES: Final[frozenset[str]] = frozenset(
-    {"turn/completed", "context/composed", "compaction/applied", "step/completed"}
+    {
+        "turn/completed",
+        "context/composed",
+        "compaction/applied",
+        "step/completed",
+        "subagent/completed",
+        "subagent/failed",
+        "background/completed",
+    }
 )
+
+#: Where a credit charge came from, which is the split ``usage`` keeps beside its
+#: total. Fixed rather than discovered: these are the three writers that carry a
+#: ``credits`` field, so the buckets are a closed set and a reader is never shown a
+#: partial split. A fourth spender would add a bucket here and move
+#: :data:`FOLD_STATE_VERSION`.
+CREDIT_SOURCES: Final[tuple[str, ...]] = ("turn", "subagent", "background")
+
+#: Which bucket each billing entry type lands in.
+_CREDIT_SOURCE_OF: Final[dict[str, str]] = {
+    "turn/completed": "turn",
+    "subagent/completed": "subagent",
+    "subagent/failed": "subagent",
+    "background/completed": "background",
+}
 
 #: Entry types ``tools`` pairs: a call and the completion that closes it.
 TOOL_TYPES: Final[frozenset[str]] = frozenset({"tool/called", "tool/completed"})
@@ -4115,6 +4281,9 @@ def _usage_copy(state: dict[str, Any]) -> dict[str, Any]:
     """Per-dimension, per-model and per-source rows are all incremented in place."""
     grown = dict(state)
     grown["tokens"] = dict(state["tokens"])
+    grown["credits_by_source"] = {
+        source: dict(row) for source, row in state["credits_by_source"].items()
+    }
     grown["by_model"] = {model: dict(row) for model, row in state["by_model"].items()}
     grown["context_by_source"] = {
         source: dict(row) for source, row in state["context_by_source"].items()
@@ -4214,7 +4383,15 @@ _FOLDS: Final[dict[str, _Fold]] = {
         "work",
         _work_start,
         _work_step,
-        _work_render,
+        # ONE cast, here, because ``_work_render`` promises a TypedDict while this
+        # registry field asks for ``dict[str, Any]``. mypy refuses that assignment even
+        # though it holds at runtime: a TypedDict is assignable to a read-only mapping
+        # but not to a mutable ``dict[str, V]``, which is invariant in V. Widening the
+        # field to ``Mapping`` instead pushes the same refusal onto ``Projection.value``
+        # and two ``view`` methods, so it would cost three shared types rather than one
+        # line. Safe in the direction that matters: the registry only CALLS this, and a
+        # caller wanting the checked shape reads ``_work_render``'s own annotation.
+        cast("Callable[[dict[str, Any]], dict[str, Any]]", _work_render),
         bind_slot=_work_bind_slot,
         affects=frozenset({WORK_ENTRY_TYPE}),
     ),

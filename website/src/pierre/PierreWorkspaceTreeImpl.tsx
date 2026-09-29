@@ -36,6 +36,8 @@ import {
   isGitFilterRefusal,
 } from '../utils/gitStatusError'
 import { normalizeWindowsPath } from '../utils/fileTokens'
+import { treeEntryFromComposedPath, writeTreeEntry } from '../lib/treeEntryDrag'
+import { isUntokenizableDirPath } from '../utils/dropClassify'
 import { errMessage } from '../utils/thunkError'
 import { PIERRE_TREE_STATE_ROW_CSS } from './config'
 import { recallExpandedPaths, rememberExpandedPaths } from './treeExpansionMemory'
@@ -56,6 +58,12 @@ const NO_STATE_ROWS: ReadonlySet<string> = new Set()
  *  not-readable notice stood: the session-move undo bar's horizon, so the
  *  product has one undo window. */
 const UNREADABLE_UNDO_MS = MOVE_UNDO_MS
+
+/** A mouse or trackpad is the primary pointer (not touch). */
+function finePointer(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: fine)').matches
+}
 
 /** A path for DISPLAY in a narrow notice: a zero-width space after every `/`
  *  gives the line breaker a point at each segment boundary, so a path that does
@@ -144,6 +152,13 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   // root-relative-looking path instead of project-relative).
   const abs = `${normalizeWindowsPath(root).replace(/\/$/, '')}/${item.path}`
   const rows = visibleFileMenuItems(contribItems, { path: abs, kind: isDir ? 'dir' : 'file' })
+  // "Add to chat" on a folder writes an `@path/` folder reference, which cannot
+  // carry whitespace or `@`; for such a folder the row is shown disabled with
+  // the reason rather than inserting a reference that never reaches the send
+  // (the drag refuses the same folders with the same note).
+  const folderRefused = !!onAddToContext && isDir && isUntokenizableDirPath(item.path.replace(/\/+$/, ''))
+  const addToChat = folderRefused ? undefined : onAddToContext
+  const hasBuiltinChatRow = !!addToChat || folderRefused
   // role="menuitem" divs (an interactive ARIA role) with a keyboard handler:
   // the correct menu semantics inside the role="menu" container, and the role
   // is what makes an onClick div compliant rather than a static-element one.
@@ -270,7 +285,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   // machine running the browser). Directories do not: the ask is file rows
   // only, and /api/file-download serves a single file, not a folder.
   const canDownload = !isDir
-  if (!onAddToContext && !canDownload && rows.length === 0) return null
+  if (!hasBuiltinChatRow && !canDownload && rows.length === 0) return null
   return createPortal(
     <div
       ref={menuRef}
@@ -279,17 +294,33 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
       style={pos ? { top: pos.top, left: pos.left } : { top: context.anchorRect.bottom + 2, left: context.anchorRect.left, visibility: 'hidden' }}
       className="fixed z-50 min-w-[176px] max-w-[min(420px,calc(100vw-2rem))] rounded-lg border border-border bg-bg-elevated p-1 shadow-lg"
     >
-      {onAddToContext && (
+      {addToChat && (
         <div
           ref={firstItemRef}
           role="menuitem"
           tabIndex={-1}
           className={itemCls}
-          onClick={activate(() => onAddToContext(abs, isDir ? 'dir' : 'file'))}
-          onKeyDown={activate(() => onAddToContext(abs, isDir ? 'dir' : 'file'))}
+          onClick={activate(() => addToChat(abs, isDir ? 'dir' : 'file'))}
+          onKeyDown={activate(() => addToChat(abs, isDir ? 'dir' : 'file'))}
         >
           <AtSign className="lucide-inline text-muted" />
           {i18nT('pages.chat.fileBrowserRail.ctx_add_to_chat')}
+        </div>
+      )}
+      {folderRefused && (
+        <div
+          ref={firstItemRef}
+          role="menuitem"
+          tabIndex={-1}
+          aria-disabled="true"
+          data-testid="file-tree-add-to-chat-refused"
+          className="flex items-start gap-2 rounded-md px-2.5 py-1.5 text-[12.5px] text-muted cursor-default focus:bg-bg-hover outline-hidden"
+        >
+          <AtSign className="lucide-inline mt-0.5" aria-hidden="true" />
+          <span className="flex flex-col">
+            <span>{i18nT('pages.chat.fileBrowserRail.ctx_add_to_chat')}</span>
+            <span className="text-[11.5px]">{i18nT('components.chatInput.tree_drop_folder_refused')}</span>
+          </span>
         </div>
       )}
       {/* Built-in Download for a file row. Streams the raw bytes through the
@@ -300,7 +331,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
           it to own focus entry. */}
       {canDownload && (
         <div
-          ref={onAddToContext ? undefined : firstItemRef}
+          ref={hasBuiltinChatRow ? undefined : firstItemRef}
           role="menuitem"
           tabIndex={-1}
           className={itemCls}
@@ -331,7 +362,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
         return (
           <div
             key={`${mi.app}:${mi.id}`}
-            ref={!onAddToContext && !canDownload && idx === 0 ? firstItemRef : undefined}
+            ref={!hasBuiltinChatRow && !canDownload && idx === 0 ? firstItemRef : undefined}
             role="menuitem"
             tabIndex={-1}
             className={itemCls}
@@ -578,8 +609,21 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const stateRowsRef = useRef<ReadonlySet<string>>(NO_STATE_ROWS)
   const stateRowFoldersRef = useRef<ReadonlySet<string>>(NO_STATE_ROWS)
 
+  // Rows can be dragged into the composer only where the host can take a
+  // mention (it wires "Add to chat") and on a fine pointer: a touch long-press
+  // would otherwise start a drag instead of the long-press it does today.
+  // Fixed at mount, like every other `useFileTree` option.
+  const [dragToComposer] = useState(() => !!onAddToContext && finePointer())
+  // True while a row is being dragged out of the tree (see the drag effect).
+  const rowDragRef = useRef(false)
+
   const { model } = useFileTree({
     paths: [],
+    // Drag is for carrying a row OUT of the tree. `canDrop` refuses every
+    // in-tree target, so a drag never moves or renames anything here.
+    dragAndDrop: dragToComposer
+      ? { canDrag: paths => !paths.some(p => stateRowsRef.current.has(p)), canDrop: () => false }
+      : false,
     // Changed mode holds a handful of paths — show them all; the full
     // workspace starts collapsed.
     initialExpansion: mode === 'changed' ? 'open' : 'closed',
@@ -897,6 +941,9 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   onFileOpenRef.current = onFileOpen
   useEffect(() => {
     const unsubscribe = model.subscribe(() => {
+      // A row carried toward the composer is selected by the drag itself;
+      // that is not an open.
+      if (rowDragRef.current) return
       const focused = model.getFocusedItem()
       if (!focused || focused.isDirectory()) return
       const selected = model.getSelectedPaths()
@@ -926,6 +973,59 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   onAddToContextRef.current = onAddToContext
   const rootRef = useRef(root)
   rootRef.current = root
+
+  // Tag every row drag with the dashboard's tree-entry payload so the composer
+  // can tell it from an OS file drag or a text drag. Native listener: the rows
+  // live in Pierre's shadow root, and `dragstart` is composed, so it reaches
+  // this container with the row still on its composed path. State, not a ref:
+  // the container mounts only once the tree has loaded, after the first effect.
+  const [dragHost, setDragHost] = useState<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const host = dragHost
+    if (!host || !dragToComposer) return
+    const onDragStart = (event: DragEvent) => {
+      if (!event.dataTransfer) return
+      const found = treeEntryFromComposedPath(event.composedPath(), rootRef.current)
+      if (found) writeTreeEntry(event.dataTransfer, found.entry, { mentionable: found.mentionable })
+    }
+    host.addEventListener('dragstart', onDragStart)
+    // Starting a row drag makes Pierre select that row, and a selection is an
+    // open (see the subscription above). Carrying a row to the composer must
+    // not swap the viewer, so opens are held for the length of the drag and
+    // the selection the drag added is dropped again afterwards. Capture phase:
+    // the flag is up before Pierre's own row handler selects.
+    let heldSelection: readonly string[] = []
+    let release: ReturnType<typeof setTimeout> | undefined
+    const onDragStartCapture = () => {
+      clearTimeout(release)
+      rowDragRef.current = true
+      heldSelection = model.getSelectedPaths()
+    }
+    const onDragEndCapture = () => {
+      if (!rowDragRef.current) return
+      // After Pierre's own dragend handler, which emits once more.
+      release = setTimeout(() => {
+        for (const p of model.getSelectedPaths()) if (!heldSelection.includes(p)) model.getItem(p)?.deselect()
+        rowDragRef.current = false
+      }, 0)
+    }
+    host.addEventListener('dragstart', onDragStartCapture, true)
+    host.addEventListener('dragend', onDragEndCapture, true)
+    // A row scrolled out of the virtualized list mid-drag sends its dragend
+    // from a detached node that never reaches the host; the drop (or the next
+    // press anywhere) releases the hold instead.
+    window.addEventListener('drop', onDragEndCapture, true)
+    window.addEventListener('mousedown', onDragEndCapture, true)
+    return () => {
+      host.removeEventListener('dragstart', onDragStart)
+      host.removeEventListener('dragstart', onDragStartCapture, true)
+      host.removeEventListener('dragend', onDragEndCapture, true)
+      window.removeEventListener('drop', onDragEndCapture, true)
+      window.removeEventListener('mousedown', onDragEndCapture, true)
+      clearTimeout(release)
+      rowDragRef.current = false
+    }
+  }, [dragHost, dragToComposer, model])
   // Ref'd like the two above so this callback stays identity-stable: Pierre takes
   // `renderContextMenu` as a prop, and a new function each render would remount the
   // slotted menu mid-interaction.
@@ -1080,7 +1180,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   }
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
+    <div ref={setDragHost} className="flex-1 min-h-0 flex flex-col">
       {/* A contributed row's endpoint refused or never answered. askAgent on: this
           subtree holds no editable draft, only the tree's own selection. */}
       {actionError && (

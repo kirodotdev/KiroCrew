@@ -69,6 +69,8 @@ from typing import Any, Protocol
 
 from aiohttp import web
 
+from kiro_crew.executors import subprocess_executor
+
 logger = logging.getLogger(__name__)
 
 #: The literal message CPython's proactor loop reports when an accept
@@ -83,6 +85,23 @@ ACCEPT_FAILED_MESSAGE = "Accept failed on a socket"
 #: ``sysexits.h`` ("service unavailable"), distinct from the stale-asset
 #: watchdog's ``EX_TEMPFAIL`` (75) so a post-mortem can tell the two apart.
 LISTENER_LOST_EXIT_CODE = 69
+
+
+class _HookRaised:
+    """The answer a lifecycle hook gives by throwing. See :meth:`ListenerGuard._notify`."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return "HOOK_RAISED"
+
+
+#: A hook that could not run, as distinct from one that ran and reported nothing
+#: (``None``). Its own object rather than ``False`` or ``None`` because the caller
+#: acts on all three differently: a reported failure and a refusal that threw both
+#: mean "the advertisement is still standing", while a hook that answers nothing
+#: says nothing about it and must not be read as either.
+HOOK_RAISED = _HookRaised()
 
 #: Seconds between periodic self-probes. The exception hook reacts instantly to
 #: the CPython path above; the probe covers the two states that hook cannot
@@ -246,6 +265,9 @@ class ListenerGuard:
         max_unverified: int = DEFAULT_MAX_UNVERIFIED_RECOVERIES,
         probe: Callable[..., Any] | None = None,
         bind_factory: Callable[[str, int], socket.socket] | None = None,
+        on_listener_lost: Callable[[], Any] | None = None,
+        on_listener_restored: Callable[[], None] | None = None,
+        on_give_up: Callable[[str], None] | None = None,
     ) -> None:
         self._runner = runner
         self._site = site
@@ -258,6 +280,19 @@ class ListenerGuard:
         self._max_backoff = max_backoff
         self._max_unverified = max(1, max_unverified)
         self._probe = probe if probe is not None else http_probe
+        # Listener-lifecycle hooks. The guard's own recovery is unchanged by
+        # them; they exist because something OUTSIDE the guard publishes "this
+        # gateway holds this address" on disk, and that claim has to track the
+        # listener rather than the process. ``on_listener_lost`` fires once a
+        # death is confirmed and BEFORE the first rebind attempt, so the address
+        # stops being advertised while it is free for anyone to take;
+        # ``on_listener_restored`` fires after a rebind actually binds.
+        # ``on_give_up`` REPLACES the default terminal action -- see
+        # :meth:`_give_up` -- which is what lets a best-effort listener degrade
+        # to uncovered instead of exiting a gateway that is still serving.
+        self._on_listener_lost = on_listener_lost
+        self._on_listener_restored = on_listener_restored
+        self._on_give_up = on_give_up
         # Bind parameters are captured from the live site so the rebind lands on
         # the SAME host and the port that was REALLY bound (``--port auto`` binds
         # 0 and reads the OS-assigned port back; rebinding 0 would move it).
@@ -340,10 +375,68 @@ class ListenerGuard:
         if self._probe_task is not None:
             self._probe_task.cancel()
             self._probe_task = None
+        self._detach_handler()
+
+    def _detach_handler(self) -> None:
+        """Restore the handler this guard displaced, if it is still the installed one.
+
+        Guards CHAIN: :meth:`arm` captures whatever handler is installed and
+        delegates to it, so a second guard armed on the same loop sits in front
+        of the first. The equality check is what keeps that chain intact -- an
+        inner guard restores its outer neighbour, and a guard that is not the
+        installed handler restores nothing rather than tearing a live
+        neighbour out of the chain. Hence the ordering rule at the call sites:
+        guards must be detached in the REVERSE of the order they were armed, or
+        the inner one stays installed for the life of the loop.
+        """
         loop = self._loop
         if loop is not None and loop.get_exception_handler() == self._on_loop_exception:
             loop.set_exception_handler(self._previous_handler)
         self._loop = None
+
+    async def _notify(self, hook: Callable[..., Any] | None, what: str, *args: Any) -> Any:
+        """Run one lifecycle hook off the loop. A hook must never break recovery.
+
+        OFF the loop, not inline, because a hook's work is filesystem work on the
+        data home: the sidecar hooks unlink, ``mkdir`` and ``os.open`` under
+        ``run/``, and each of those applies an owner-only DACL on Windows -- the
+        only platform this guard arms on -- which costs an unbounded SMB round
+        trip when the home is a UNC or mapped-drive path. Running that inline
+        would freeze the loop, and so every request on the listener that is still
+        alive, at the moment the gateway is already degraded; a freeze long enough
+        is what the shell's liveness probe force-kills the gateway for.
+
+        On the ``subprocess_executor`` bulkhead rather than the default one, for
+        the same reason the boot paths publish these very files there: a hook's
+        stall is UNBOUNDED, and a stall parked in the default executor is a stall
+        every other ``asyncio.to_thread`` caller in the process waits behind.
+
+        A hook raising is contained here for the same reason the offload exists:
+        recovery is the caller, and a rebind must land whether or not the
+        advertisement around it did.
+
+        Returns the hook's own value, so a caller that must ACT on the outcome
+        can -- the withdrawal hook reports whether the address is still
+        advertised, and a recovery that cannot tell is a recovery that proceeds
+        with a live credential on a freed address.
+
+        THREE answers, not two, because a hook that reports nothing and a hook
+        that could not run are different facts: its value, ``None`` for a hook
+        that answers nothing (including no hook at all), and :data:`HOOK_RAISED`
+        for one that threw. A hook whose work is filesystem work throws for the
+        same reason it would have reported failure, so a caller that reads
+        ``None`` as "proceed" must still read :data:`HOOK_RAISED` as "did not
+        land"; collapsing the two would make every hook that returns nothing look
+        like a refusal.
+        """
+        if hook is None:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(subprocess_executor(), hook, *args)
+        except Exception:
+            logger.warning("listener guard %s hook raised", what, exc_info=True)
+            return HOOK_RAISED
 
     def listener_open(self) -> bool:
         """Whether the current site still holds an open LISTEN socket.
@@ -457,6 +550,40 @@ class ListenerGuard:
             self._port,
             reason,
         )
+        # BEFORE the first attempt, not after the last. From here until a rebind
+        # lands, this address is one nobody holds -- so any on-disk claim that
+        # this gateway covers it is false for the whole of the recovery window,
+        # and a co-resident that takes the freed address during it would receive
+        # whatever a client sends to the name. Withdrawing first costs a client
+        # one explicit sign-in during a recovery that usually succeeds, which is
+        # the degradation this design already accepts everywhere else.
+        #
+        # The withdrawal's ANSWER, when it gives one, decides whether a recovery
+        # may proceed at all.
+        # Withdrawing is what makes the freed address safe to leave free, so a
+        # withdrawal that did not land turns the rebind loop -- up to
+        # ``_max_attempts`` with exponential backoff between them -- into a long
+        # window in which the address is unheld and its credential is still
+        # readable, which is exactly what a co-resident needs. There is nothing
+        # to gain by spending that window: the terminal action ends the process
+        # (or, for a best-effort listener, the injected one escalates), and a
+        # credential a dead process does not accept authenticates nobody.
+        # A hook that RAISED counts as "did not land" for the same reason -- the
+        # filesystem refused -- while a hook that answers nothing proceeds, because
+        # most hooks report no outcome at all and silence is not a refusal.
+        if self._on_listener_lost is not None:
+            withdrawn = await self._notify(self._on_listener_lost, "on_listener_lost")
+            if withdrawn is False or withdrawn is HOOK_RAISED:
+                logger.critical(
+                    "The %s:%d listener sidecar could not be withdrawn after the "
+                    "listener died, so the address is free while its credential is "
+                    "still readable; ending this listener's life rather than "
+                    "rebinding behind a claim that is false",
+                    self._host or "*",
+                    self._port,
+                )
+                await self._give_up("the listener sidecar could not be withdrawn")
+                return False
         for attempt in range(1, self._max_attempts + 1):
             if self._stopped or self._shutdown_event.is_set():
                 return False
@@ -485,6 +612,12 @@ class ListenerGuard:
                     continue
             self._site = new_site
             self.recoveries += 1
+            # The bind is what makes the claim true again: this generation holds
+            # the address once more, whatever the app then answers on it. The
+            # verify pass below tests a different property (does it SERVE), and
+            # its failure path ends in _give_up, which is where a listener that
+            # binds and answers nothing stops being advertised.
+            await self._notify(self._on_listener_restored, "on_listener_restored")
             logger.warning(
                 "Gateway listener rebound on %s:%d after %d attempt(s) "
                 "(recovery #%d this process); existing connections were kept",
@@ -497,7 +630,7 @@ class ListenerGuard:
                 return await self._verify_recovery()
             return True
 
-        self._give_up(f"rebinding failed {self._max_attempts} time(s) in a row")
+        await self._give_up(f"rebinding failed {self._max_attempts} time(s) in a row")
         return False
 
     async def _verify_recovery(self) -> bool:
@@ -524,15 +657,38 @@ class ListenerGuard:
             self._max_unverified,
         )
         if self._unverified_recoveries >= self._max_unverified:
-            self._give_up(
+            await self._give_up(
                 f"the listener rebound {self._unverified_recoveries} time(s) and still "
                 f"does not answer {_PROBE_PATH}, so rebinding cannot fix it"
             )
             return False
         return True
 
-    def _give_up(self, reason: str) -> None:
-        """Record the non-zero exit status and ask the process to shut down."""
+    async def _give_up(self, reason: str) -> None:
+        """Terminal action: exit non-zero by default, or run the injected one.
+
+        The default is right for the listener a gateway EXISTS to serve: alive
+        but unreachable is worse than dead, so the exit status hands the problem
+        to a supervisor that will relaunch.
+
+        It is wrong for a best-effort listener whose loss is supposed to degrade.
+        An additional loopback family is one of those: losing it costs a client
+        dialling a name one explicit sign-in, and killing a gateway that is still
+        serving its primary listener to avoid that would turn a degradation into
+        an outage. Such a caller injects *on_give_up*, which REPLACES this --
+        neither the exit code nor the shutdown event is touched on that path.
+
+        Either way the guard stops here: without it the probe loop would keep
+        rediscovering the same dead listener and rebinding it forever. The task
+        is not cancelled, because this can run INSIDE that task; ``_stopped`` is
+        what the loop and every recovery entry point check, so setting it is
+        enough and cancelling would raise inside the caller.
+        """
+        if self._on_give_up is not None:
+            self._stopped = True
+            await self._notify(self._on_give_up, "on_give_up", reason)
+            self._detach_handler()
+            return
         self._exit_code = LISTENER_LOST_EXIT_CODE
         logger.critical(
             "Gateway listener on %s:%d cannot be restored (%s); exiting with "
@@ -544,6 +700,59 @@ class ListenerGuard:
             LISTENER_LOST_EXIT_CODE,
         )
         self._shutdown_event.set()
+
+    def request_exit(self, reason: str) -> None:
+        """Ask for the process-wide exit this guard's default terminal action takes.
+
+        The seam for a caller whose INJECTED terminal action discovers a condition
+        the degradation it implements does not cover -- a best-effort listener
+        whose sidecar can be neither removed nor blanked, so its credential stays
+        readable for an address nothing holds. Ending the process is what stops
+        that value authenticating, and the exit status is what gets the gateway
+        relaunched.
+
+        CALLED FROM A WORKER THREAD, always: the only caller is a terminal hook,
+        and :meth:`_notify` runs every hook in the executor. So both loop-owned
+        things this touches are marshalled onto the loop rather than done inline.
+
+        * ``shutdown_event.set()`` off-loop reaches nothing. The process-wide event
+          binds an ``asyncio.Event`` to the loop that first touched it, and a
+          thread with no running loop only flips the proxy's pending flag while
+          the bound Event -- the one ``is_set()`` reads from the loop -- stays
+          clear. The shutdown would be requested and never observed, and nothing
+          revisits it, because this method is the last thing that runs.
+        * ``_detach_handler`` reads and replaces the loop's exception handler,
+          which is not thread-safe either.
+
+        The loop is captured BEFORE anything else, because ``_detach_handler``
+        clears it. With no loop -- a guard never armed, or already detached --
+        there is nothing to marshal onto and the direct call is all there is.
+
+        Idempotent, and it stops the guard for the same reason ``_give_up`` does:
+        a guard that keeps probing would rediscover the same dead listener.
+        """
+        if self._exit_code == LISTENER_LOST_EXIT_CODE:
+            return
+        loop = self._loop
+        self._exit_code = LISTENER_LOST_EXIT_CODE
+        self._stopped = True
+        logger.critical(
+            "Listener guard on %s:%d requested exit with status %d: %s",
+            self._host or "*",
+            self._port,
+            LISTENER_LOST_EXIT_CODE,
+            reason,
+        )
+        if loop is None:
+            self._detach_handler()
+            self._shutdown_event.set()
+            return
+
+        def _on_loop() -> None:
+            self._detach_handler()
+            self._shutdown_event.set()
+
+        loop.call_soon_threadsafe(_on_loop)
 
     async def _new_site(self) -> web.TCPSite | web.SockSite:
         # shutdown_timeout is deliberately not forwarded: aiohttp owns it on the

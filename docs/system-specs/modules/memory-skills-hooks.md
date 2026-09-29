@@ -85,7 +85,10 @@ an edited or shortened prefix refuses acknowledgement. Receipts are not pruned.
 - `memory_stores.py` resolves configured store paths and explicit member creation.
   `members.py` owns persisted member IDs and manual member documents.
 - `memory_schema.py` defines the authoritative member tables. `vector_memory.py`
-  owns exclusive creation, strict open, learned reads/writes, FTS and vectors;
+  owns exclusive creation, strict open and the store's one connection and lock.
+  Learned reads/writes, FTS and vectors run on that connection, split between the
+  store and the `vector_memory_runtime/` modules it delegates to (see
+  [Store composition](#store-composition-vector_memorypy-and-vector_memory_runtime));
   `memory_record_metadata.py` maintains revisions, proposals and provenance.
 - `memory.py` is the facade for manual documents and learned history. V2 learned
   operations delegate to its admitted SQLite handle; V1 keeps its file layout.
@@ -511,7 +514,71 @@ decoded JSON values, or episode text and decoded tags. `%` and `_` are literal
 characters, not SQL wildcards. Query filtering does not change retrieval ranking,
 store provenance, or the existing V1 list behavior when `q` is absent.
 
-Structured memory system backed by SQLite + FAISS + in-process embeddings (vendored llama-cpp-python). Embeddings are ALWAYS-ON: `_coerce_embedding_provider` (config/loader.py) coerces EVERY `embedding_provider` value — including legacy `"ollama"` and `"none"` — to `"llama_cpp"`, so there is no config knob to disable them. While the model is still downloading or absent, memory degrades gracefully to keyword/FTS search and the lazy-rebind machinery in `vector_memory._try_embed` picks embeddings up when the model lands — no restart. Per-store overrides (`MemoryStoreConfig.embedding_provider`, enum `["", "llama_cpp"]`) can only inherit or restate the default — per-store disable is not supported, and the value reaches nothing: `context._build_store_vectors` configures a named store's `VectorMemoryStore` from top-level `cfg.memory`, and the embedder beneath it is the process-wide `get_shared_embedder()` singleton, so two stores cannot run two backends without two resident models and two incomparable vector spaces.
+Structured memory system backed by SQLite + FAISS + in-process embeddings (vendored llama-cpp-python). Embeddings are ALWAYS-ON: `_coerce_embedding_provider` (config/loader.py) coerces EVERY `embedding_provider` value — including legacy `"ollama"` and `"none"` — to `"llama_cpp"`, so there is no config knob to disable them. While the model is still downloading or absent, memory degrades gracefully to keyword/FTS search and the lazy-rebind machinery in `VectorMemoryStore._try_embed` (`vector_memory_runtime/embedding.py`) picks embeddings up when the model lands — no restart. Per-store overrides (`MemoryStoreConfig.embedding_provider`, enum `["", "llama_cpp"]`) can only inherit or restate the default — per-store disable is not supported, and the value reaches nothing: `context._build_store_vectors` configures a named store's `VectorMemoryStore` from top-level `cfg.memory`, and the embedder beneath it is the process-wide `get_shared_embedder()` singleton, so two stores cannot run two backends without two resident models and two incomparable vector spaces.
+
+### Store composition (`vector_memory.py` and `vector_memory_runtime/`)
+
+`VectorMemoryStore` is the one owner of a store's SQLite connection and its
+`_db_lock`. The class keeps:
+
+- the store lifecycle (`init`, `close`, `reconfigure`, lineage binding, owner-only
+  file lockdown) and the member-database operations;
+- the history files and their FTS index (`append_history`, `read_history_entries`,
+  `read_editable_history`, `replace_today_history`, `search_memory`,
+  `rebuild_memory_index`, `consolidation_receipt`);
+- record revisions and the eligibility filter (`_record_mutation`,
+  `with_record_metadata`, `_eligible_rows`);
+- the facet and event-log readers (`count_by_facet`, `list_by_facets`,
+  `get_events`), event rotation (`rotate_events`), the `_log_event` and
+  `memory_meta` helpers and the read counters;
+- the episodic list, cap, delete and restore paths, the per-row embed calls
+  (`embed_episodic`, `embed_lesson`), `get_semantic`, the statistics readers
+  (`memory_stats`, `get_rejection_stats`), the embedding-space guards and the
+  invalidation of both resident scoring sets;
+- the write paths whose source the read-only guards pin to `vector_memory.py`:
+  `_write_semantic` with its consolidation branches, `write_episodic` and
+  `write_episodic_outcome`, `write_lesson`, `apply_consolidation`, `import_memory`,
+  and the writer loops of `migrate_from_markdown`, `promote_episodic_patterns` and
+  `seed_item_if_absent`.
+
+The other rules live in
+the modules of `kiro_crew.vector_memory_runtime`. Each store method keeps its name
+and signature and delegates to the function that owns the rule (`set_semantic` to
+`semantic.write_value`, for example):
+
+| Module | Owns |
+|---|---|
+| `semantic` | Key and value validation and the reject audit, insert-if-absent, delete and review-proposal writes, facet stamping, the publication tail a committed `_write_semantic` runs (V1 audit event, write-time vector, supersession trigger), the V1 and V2 fact and preference readers, and the resident `_SemanticScoringSet` the V1 fact reader ranks from |
+| `episodic_search` | The episodic search ladder (V2 population scan, FAISS, stored-vector cosine over the resident `_EpisodicScoringSet`, keyword fallback), the relevance gate and decay, the debounced `last_accessed_at` touch and the episodic context block |
+| `faiss_index` | Building, persisting (stamped in `memory_meta`) and verifying the optional FAISS index |
+| `retirement` | Supersession retirement on both algorithms and the retired-episode listing |
+| `lessons` | The lesson value codec, `write_lesson`'s exact-rule pass, scope partition and tier rule, `delete_lesson`'s scope selection, and the lesson readers, ranking and tiered rendering |
+| `embedding` | Embedding inference (`_try_embed`), its provenance types and the stored-vector scorers |
+| `embedding_repair` | The recorded vector space, `reconcile_embedding_space` and the three NULL-vector sweeps |
+| `recall` | `recall`, its single-inference retry, and the bounded evidence payload |
+| `migration` | Legacy `lessons.jsonl` parsing, Markdown parsing through the `MemoryFiles` the store resolves, and the episode clustering promotion uses |
+| `text_scoring` | Stemming, the row-token memo, keyword and hybrid scores, MMR and the list-search predicate |
+
+A runtime function that works on a store takes it as its first argument. Every
+statement it runs, its commits and its `memory_meta` and `memory_events` writes
+included, goes through `store.db` under `store._db_lock` or `store._vector_commit`.
+None opens a connection or keeps store state; the only module-level state is the
+per-thread stemmer and the text-keyed stem memos in `text_scoring`. A runtime
+function reaches other store behaviour through the store (`store._try_embed(...)`,
+never the function that implements it), so a class-level patch of a method reaches
+every caller. It reads the facade's patch seams (`np`, `faiss`, `_HAS_NUMPY`,
+`_HAS_FAISS`, `datetime`, `time`, `sqlite3`, `_now_iso`, `_contains_injection`,
+`bulk_pace_delay` and the patched bounds) through `kiro_crew.vector_memory` at
+call time. Any other moved name belongs to its runtime module, and a patch of it
+goes there. `vector_memory.py` imports every runtime module when it loads and still
+binds every name it defined or imported from another `kiro_crew` module, and the
+runtime modules log on the `kiro_crew.vector_memory` logger.
+`test/test_vector_memory_composition_contract.py` pins that surface, the seams, the
+import and logger rules and the through-the-store call rule, and re-applies the
+source guards that scan
+`vector_memory.py` by name — the lineage relation and kind-guard checks, the
+facet-in-view check, the redaction-sink and md5 checks — to every runtime module,
+each with a planted violation proving the re-applied check can fail.
 
 ### Live reconfiguration (`VectorMemoryStore.reconfigure`)
 
@@ -566,9 +633,10 @@ a column the `WHERE` clause excluded), while a concurrent FAISS `add` during a
 `search` can corrupt the C++ index outright. `self._db_lock` (a reentrant
 `threading.RLock`, so a locked method may call another locked method)
 serializes every statement on that connection. The structural regression guard
-recognizes explicit lock scopes and `_vector_commit`, checks the latter's actual
-`ExitStack.enter_context(_db_lock)` acquisition, and fails if that acquisition
-is removed. Its negative fixtures retain checks before acquisition, after scope
+scans `vector_memory.py` and every `vector_memory_runtime` module (where the store
+is the `store` parameter), recognizes explicit lock scopes and `_vector_commit`,
+checks the latter's actual `ExitStack.enter_context(_db_lock)` acquisition, and
+fails if that acquisition is removed. Its negative fixtures retain checks before acquisition, after scope
 exit, on failed admission and in deferred nested functions. Generation rechecks
 must be lexically inside a lock-owning scope, not merely later in source order.
 The critical sections that matter most:
@@ -592,7 +660,8 @@ The critical sections that matter most:
 
 An async caller offloads every operation that can reach `_db_lock`, including
 `close()`, so contention never stalls the event loop. The source gate derives
-the ordinary method set from the store call graph and separately tracks
+the ordinary method set from the store call graph, following each delegate into
+the runtime function that implements it, pins that set, and separately tracks
 constructor-bound receivers for the generic lifecycle names `init` and `close`.
 
 **The lock is never held across an embedding call.** An embed on a loaded model
@@ -600,9 +669,9 @@ is serialized behind the embedder's own lock and costs tens of ms per short
 text; holding a process-wide store lock across that would serialize every reader
 behind it and defeat the point of offloading the write to a worker thread in the
 first place. So each write embeds FIRST, then takes the lock for local work
-only. Two consequences the code handles explicitly: `_write_semantic` calls
-`_retire_stale_episodic` AFTER releasing the lock (that helper embeds, then
-re-takes the lock itself), and `write_episodic` samples `_space_generation`
+only. Two consequences the code handles explicitly: `_write_semantic`'s
+publication tail calls `_retire_stale_episodic` AFTER releasing the lock (that
+helper embeds, then re-takes the lock itself), and `write_episodic` samples `_space_generation`
 before the embed, carries it into the locked region, and re-checks it there,
 because an embedding-model swap can land in the gap and a vector from the
 previous space must be persisted as NULL rather than committed (the post-swap
@@ -687,8 +756,8 @@ discriminating lessons with `key LIKE 'lesson.%'` exactly as it does on v1, so `
 never becomes a second, divergent notion of what a lesson is.
 
 **`semantic_memory` and `episodic_memories` survive as READ-ONLY VIEWS presenting v1's
-exact columns in v1's exact order.** The 36 read statements naming them in
-`vector_memory.py` are therefore unchanged, and `SELECT *` still hands `sqlite3.Row`
+exact columns in v1's exact order.** The read statements naming them in the
+engine (`vector_memory.py` and `vector_memory_runtime/`) are therefore unchanged, and `SELECT *` still hands `sqlite3.Row`
 the columns the engine expects. Splitting by `kind` is also what keeps the vector scorers
 partitioned by RELATION: episodic blobs are L2-normalized at write and semantic and
 lesson blobs are not, and three of the four places that score a stored blob take a bare
@@ -709,7 +778,7 @@ instead of uploading — permanently, since the trigger is part of the schema.
 Writes therefore name the physical table: `semantic_relation(lineage)` /
 `episodic_relation(lineage)` resolve it and
 `semantic_guard` / `episodic_guard` supply the trailing `AND kind …` clause that keeps a
-semantic write off an episode sharing the table; both render EMPTY on v1, so the 15
+semantic write off an episode sharing the table; both render EMPTY on v1, so the
 interpolated write statements are byte-identical to the literals they replace. The four
 that differ in their COLUMN LIST — semantic insert, semantic upsert, and the two episodic
 inserts — carry two spellings plus a param builder in `memory_schema`, side by side so a
@@ -784,9 +853,10 @@ indexes.
 
 **The SQL lives in `memory_schema`, not in the engine, and that placement is load-bearing
 twice over.** It names `memory_items`, a relation only the crew lineage has, so the same
-literal inside `vector_memory.py` would be a statement that raises on every v1 file — which
-is exactly what `test_memory_lineage_drift`'s "every relation the module names exists in
-both lineages" refuses. And it keeps the one place a facet NAME is spliced into SQL beside
+literal inside the engine would be a statement that raises on every v1 file — which is
+exactly what `test_memory_lineage_drift`'s "every relation the module names exists in both
+lineages" refuses for `vector_memory.py`, and the composition contract refuses for the
+`vector_memory_runtime` modules. And it keeps the one place a facet NAME is spliced into SQL beside
 the dataclass those names come from.
 
 **Names come from an allowlist derived from the dataclass; values are bound.**
@@ -924,7 +994,7 @@ SQLite table `semantic_memory` — structured key-value store with:
 - **Confidence gating**: writes whose source is not `user_explicit` require confidence ≥ `_DEFAULT_CONFIDENCE_THRESHOLD` (0.8); `user_explicit` bypasses the threshold
 - **V1 conflict resolution**: `user_explicit` replaces an existing value; an automated source cannot replace an active user-explicit fact, unless the stored value is itself degenerate (null, empty, or only whitespace) — that row holds nothing for precedence to protect, and only an automated writer would ever repair it, so such a write is allowed and logged. Otherwise higher confidence wins, or the newer value wins when the confidence difference is less than 0.1. Tombstones can be recreated. V1 consolidation retains direct stale-key deletion and its semantic prompt, while extracted lessons keep their automatic consolidation source. An LLM confidence claim is not user evidence. Reaffirmation still refreshes confidence/source and reaches the original embedding and retirement paths. Owner edits retain shared revision checks. A rejected write logs a best-effort `conflict_skip` event; an unavailable event log does not prevent a V1 data write.
 - **Injection detection**: the `_INJECTION_PATTERNS` regex set (`vector_memory_constants.py`) is scanned on every value write
-- **Write-time embedding**: `_write_semantic()` embeds `"<key> <value_json>"` after the upsert (outside `_db_lock`, at `PRIORITY_BULK` — nothing blocks on it and the tail is reached from consolidation/import loops; same space-generation contract as `write_lesson`) and persists the struct-packed, un-normalized vector into the row's `embedding` column. The upsert's conflict clause keeps the stored vector when the value is unchanged (a re-affirmation — the tail then skips the redundant embed) and clears it when the value changed, so a row never ranks by a vector for text it no longer holds. `lesson.*` keys are excluded (`write_lesson` owns their vector — raw rule text). `set_semantic_if_absent()` (bulk import) defers embedding to the backfill sweep, like `write_episodic(defer_embedding=True)`. Rows missed while the model was absent — plus rows cleared by `reconcile_embedding_space()` — are repaired by `_backfill_semantic_kv_embeddings()` inside `backfill_missing_embeddings()`.
+- **Write-time embedding**: `_write_semantic()`'s publication tail embeds `"<key> <value_json>"` after the upsert (outside `_db_lock`, at `PRIORITY_BULK` — nothing blocks on it and the tail is reached from consolidation/import loops; same space-generation contract as `write_lesson`) and persists the struct-packed, un-normalized vector into the row's `embedding` column. The upsert's conflict clause keeps the stored vector when the value is unchanged (a re-affirmation — the tail then skips the redundant embed) and clears it when the value changed, so a row never ranks by a vector for text it no longer holds. `lesson.*` keys are excluded (`write_lesson` owns their vector — raw rule text). `set_semantic_if_absent()` (bulk import) defers embedding to the backfill sweep, like `write_episodic(defer_embedding=True)`. Rows missed while the model was absent — plus rows cleared by `reconcile_embedding_space()` — are repaired by `_backfill_semantic_kv_embeddings()` inside `backfill_missing_embeddings()`.
 - **Audit trail**: `memory_events` table logs every create/update/delete with old+new values, bounded at `_MAX_EVENTS = 10_000`. The dashboard events API recursively redacts credentials and unsafe URLs on response for Global V1, named V1 and private V2. Stored events and their identities remain unchanged.
 
 Retrieval formats `key: value` pairs in a `[Semantic Memory]` block and excludes `lesson.*` keys. With a query it uses `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score; `_stored_similarity_scorer` embeds the query once and reads stored vectors. When the query vector is available, a row without a vector contributes zero on that term; without embeddings, retrieval uses keyword scoring. Explicit identity terms supplement keys and values. V1 startup reads eligible `pref.*` rows through `get_preferences_context`, with the DATA-only wrapper and no query embedding, as protected context; with `memory.inject_activity` on, the other semantic facts arrive query-ranked in the budgeted `[Memory activity]` block through `get_semantic_context(facts_only=True)`, which embeds the request. With the switch off they are retrieved explicitly through `memory_recall` or the activity-enabled Python reader. V2 also leaves fragment retrieval to `memory_recall`, which has its own total response cap.
@@ -2963,8 +3033,8 @@ lesson beat a contradicting preference in the same prompt.
 | Two semantic writes to one key in V2 | Owner correction or verified transcript correction with matching revision replaces the fact; other changed automated assertions remain reviewable proposals | `vector_memory._write_semantic()` |
 | Duplicate lessons in V1 | Substring dedup (contained-in-stored declines; contains-a-stored-one deletes it, longer wins, regardless of source), then topic-overlap dedup (shared keywords cover at least 50% of the LARGER keyword set; newer replaces older regardless of source), then embedding dedup (cosine > 0.85; newer replaces older unless a stored near-duplicate outranks the write: `user_explicit` over a lower-authority source, or strictly higher stored confidence). A non-mutating authority pre-pass decides semantic-match refusals before the scan; it mirrors the earlier substring/topic branches, which remain source-blind. Every branch's deletions are deferred and execute only after the semantic write commits, so a call that stores nothing deletes nothing: a `deduped` verdict from any branch and a `refused` from the semantic write each preserve every live lesson row and report empty `superseded` (a lazy embedding backfill for a row the call read may still have flushed, which changes a vector and no lesson). `delete_semantic` takes an optional `expect_value_json`, carrying the comparison inside its own UPDATE, so a queued row is tombstoned only while its stored body is still the version the scan read and one a competing writer changed is skipped -- the same compare-and-write contract the lazy embedding backfill applies, atomic against another process, and what covers the write's own key once `set_semantic` has committed under it. A drain that stops partway (raised error, killed process) keeps the submission and leaves the rows it had not reached: the residue is a duplicate, never a lost lesson, and the next write matching those rows retires them. Every completed deletion is named in `LessonWriteResult.superseded` | `vector_memory.write_lesson()` |
 | Distinct lessons in V2 | Different rule text coexists without substring, topic or embedding deduplication. Exact-rule enrichment remains; key-targeted corrections use the owner/revision machinery | `vector_memory.write_lesson()` |
-| Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `vector_memory.search_episodic()` |
-| A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | `vector_memory._write_semantic()` step 9 |
+| Contradicting episodic fragments | No explicit resolution: time decay plus MMR surfaces the newer/more relevant fragment | `VectorMemoryStore.search_episodic()` (`vector_memory_runtime/episodic_search.py`) |
+| A semantic value is superseded | `_retire_stale_episodic()` tombstones episodic rows that quote the old value | the publication tail of `vector_memory._write_semantic()` (`vector_memory_runtime/semantic.py`), after the write commits |
 
 ### Memory across surfaces and channels
 

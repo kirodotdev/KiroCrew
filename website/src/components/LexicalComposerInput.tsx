@@ -30,6 +30,7 @@ import {
   type LexicalNode,
   type PointType,
   INSERT_LINE_BREAK_COMMAND,
+  INSERT_PARAGRAPH_COMMAND,
   KEY_BACKSPACE_COMMAND,
   KEY_DELETE_COMMAND,
   KEY_ARROW_DOWN_COMMAND,
@@ -43,10 +44,12 @@ import { MacLineEdgePlugin } from './composerLineEdge'
 import { createImeLatch } from '../hooks/useImeGuard'
 import type { ComposerControl, ComposerSelection } from './composerControl'
 import {
+  isRawPasteChord,
   clipboardFiles,
   hasPlainClipboardText,
   stripTrailingBlankLines,
 } from './composerPastePolicy'
+import { listLineBreakEdit } from './composerListContinuation'
 import {
   $createPasteTokenNode,
   $isPasteTokenNode,
@@ -195,6 +198,26 @@ function $setPointAtOffset(point: PointType, offset: number): void {
     point.set(parent.getKey(), children.length, 'element')
   }
   visit(root, bounded)
+}
+
+// Continue or end the markdown list item under a collapsed caret; false leaves
+// the ordinary line break to PlainTextPlugin. One editor update, one undo step.
+function $applyListLineBreak(): boolean {
+  const selection = $getSelection()
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return false
+  const chips = $nodesOfType(PasteTokenNode).map(node => {
+    const start = $nodeStartOffset(node)
+    return { start, end: start + node.getTextContentSize() }
+  })
+  const edit = listLineBreakEdit($getRoot().getTextContent(), $pointOffset(selection.anchor), chips)
+  if (!edit) return false
+  const range = $createRangeSelection()
+  $setPointAtOffset(range.anchor, edit.start)
+  $setPointAtOffset(range.focus, edit.end)
+  $setSelection(range)
+  if (edit.insert) range.insertRawText(edit.insert)
+  else range.removeText()
+  return true
 }
 
 function ComposerControlPlugin({
@@ -349,8 +372,7 @@ function InteractionPlugin({
     const unregisterModifier = editor.registerCommand(
       KEY_MODIFIER_COMMAND,
       event => {
-        rawPasteRef.current = (event.metaKey || event.ctrlKey) && event.shiftKey &&
-          !event.altKey && event.key.toLowerCase() === 'v'
+        rawPasteRef.current = isRawPasteChord(event)
         return false
       },
       COMMAND_PRIORITY_HIGH,
@@ -459,6 +481,22 @@ function InteractionPlugin({
       },
       COMMAND_PRIORITY_HIGH,
     )
+    // Every new-line path (Shift+Enter, Enter in ctrl-enter mode, Ctrl+Enter in
+    // enter-ctrl-newline mode, WebKit's beforeinput) arrives as one of these two
+    // commands; the send key never does. `selectStart` is the caret-stays-put
+    // break, which is not a new item.
+    const continueList = (selectStart: boolean) =>
+      !selectStart && !editor.isComposing() && !latch.isLatched() && $applyListLineBreak()
+    const unregisterLineBreak = editor.registerCommand(
+      INSERT_LINE_BREAK_COMMAND,
+      continueList,
+      COMMAND_PRIORITY_HIGH,
+    )
+    const unregisterParagraph = editor.registerCommand(
+      INSERT_PARAGRAPH_COMMAND,
+      () => continueList(false),
+      COMMAND_PRIORITY_HIGH,
+    )
 
     const moveAfterRecall = (value: string, position: 'start' | 'end') => {
       requestAnimationFrame(() => {
@@ -530,6 +568,8 @@ function InteractionPlugin({
       unregisterBackspace()
       unregisterDelete()
       unregisterEnter()
+      unregisterLineBreak()
+      unregisterParagraph()
       unregisterArrowUp()
       unregisterArrowDown()
       rootListeners()

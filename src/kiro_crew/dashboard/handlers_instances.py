@@ -24,6 +24,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Collection
 from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import unquote
 
@@ -180,8 +181,17 @@ def _guard(request: web.Request, operation: str) -> web.Response | None:
     cfg = KiroCrewConfig.load()
     if not cfg.instances.enabled:
         _audit(operation, "denied", error="feature disabled")
+        # Carries a ``code`` because this is the ONE denial on this route the
+        # dashboard treats as routine: it is expected on every install that has
+        # not turned the feature on, so the SPA opts it out of the error journal
+        # rather than reporting it.  The opt-out is keyed on this code, not on the
+        # 403 -- the owner-only and Slack-origin denials above share that status
+        # and are real authorization failures a reader must still see.
         return web.json_response(
-            {"error": "instances feature is disabled (set instances.enabled=true)"},
+            {
+                "error": "instances feature is disabled (set instances.enabled=true)",
+                "code": "instances_disabled",
+            },
             status=403,
         )
     return None
@@ -1908,8 +1918,57 @@ _PEER_SLOT_STR_FIELDS: dict[str, int] = {
 #: for any reader, not only the one frontend that happens to re-check.
 _PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval")
 
+#: The two keys of a peer row's ``parent`` citation (``{slot, key}``, the shape
+#: ``lineage_parents`` puts on every local row), each clamped like ``key``. Both
+#: halves have a reader in the sidebar and they answer different questions:
+#: ``key`` is what the conductor lane NESTS on (resolved against rows of the same
+#: origin only, so the citation stays a bare key in the peer's own key space and
+#: the hub never rewrites it), while ``slot`` is the child's own record of who
+#: opened it -- the "opened by" glyph on a row placed under nothing
+#: (``orphanCitation``, ``citesParent``) and the baseline the lane diffs to tell a
+#: re-parented row from a new one (``citedCreatorRef``). ``lineage_parents``
+#: leaves ``key`` null when the creator is gone and keeps ``slot``, so a
+#: citation with only ``slot`` is the orphan case, not a malformed one. Dropped
+#: from the wire, every session a peer's conductor opened rendered at the top
+#: level of this dashboard as a stray -- the tree existed on the peer and was
+#: stripped one hop from the reader.
+_PEER_SLOT_PARENT_FIELDS: dict[str, int] = {
+    "slot": _PEER_FIELD_MAX_CHARS,
+    "key": _PEER_FIELD_MAX_CHARS,
+}
 
-def _clean_peer_slot(row: object) -> dict[str, object] | None:
+
+def _clean_peer_parent(value: object, driven: Collection[str] = ()) -> dict[str, str] | None:
+    """Shape a peer row's ``parent`` citation, or ``None`` when it carries none.
+
+    A citation is a dict with a string ``key`` or a string ``slot``; one that has
+    neither nests nothing and names nobody, so it is treated as no citation at all
+    rather than forwarded as an empty object. Anything else -- ``None``, a string,
+    a list -- is not a citation.
+
+    *driven* is the set of peer slot keys this hub itself drives (see
+    ``read_peer_slots``). A citation naming one of them is dropped whole: that
+    creator's row was filtered out of this listing precisely so its peer slot key
+    never crosses to the browser, and the citation would carry the same key by
+    another route. The child still ships -- it is a real session -- as a root
+    with no citation, which is also the truth of what this listing can show for
+    it: its creator is on screen as the LOCAL row that drives it, not as a peer
+    row the lane could hang it from.
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, str] = {}
+    for field, limit in _PEER_SLOT_PARENT_FIELDS.items():
+        raw = value.get(field)
+        if isinstance(raw, str) and raw in driven:
+            return None
+        shaped = _cap_str(raw, limit)
+        if shaped:
+            out[field] = shaped
+    return out or None
+
+
+def _clean_peer_slot(row: object, driven: Collection[str] = ()) -> dict[str, object] | None:
     """Re-shape one untrusted peer slot: allowlist keys, redact, clamp, coerce.
 
     What ``_clean`` does for a peer's SEARCH row, applied to a peer's LIVE row.
@@ -1940,6 +1999,17 @@ def _clean_peer_slot(row: object) -> dict[str, object] | None:
             out[field] = value
     for field in _PEER_SLOT_BOOL_FIELDS:
         out[field] = row.get(field) is True
+    # Both OMITTED when absent, the distinction the local payload keeps: a row with
+    # no citation carries no ``parent`` (the lane reads absence and ``None`` alike),
+    # and ``lineage_pending`` appears only on the frame whose citations are still
+    # provisional -- the lane skips such a frame when it records what the user has
+    # opened, and a ``False`` here would look like a settled frame to a reader that
+    # tests presence.
+    parent = _clean_peer_parent(row.get("parent"), driven)
+    if parent is not None:
+        out["parent"] = parent
+    if row.get("lineage_pending") is True:
+        out["lineage_pending"] = True
     return out
 
 
@@ -1984,6 +2054,11 @@ class PeerSlots(NamedTuple):
     rows: list[dict[str, object]]
     filtered: int
     over_cap: int
+    #: The peer slot keys this hub drives, as judged for THIS listing. The rows
+    #: carrying them are already out of ``rows``; the chat-slots route needs the
+    #: set again to drop a surviving row's citation of one, so a driven key does
+    #: not reach the browser through ``parent`` after being kept out of ``key``.
+    driven: frozenset[str] = frozenset()
 
 
 async def read_peer_slots(
@@ -2163,7 +2238,7 @@ async def read_peer_slots(
         over_cap = max(0, len(rows) - effective_cap)
         if over_cap:
             rows = rows[:effective_cap]
-    return PeerSlots(rows=rows, filtered=filtered, over_cap=over_cap)
+    return PeerSlots(rows=rows, filtered=filtered, over_cap=over_cap, driven=frozenset(driven))
 
 
 async def api_instances_chat_slots(request: web.Request) -> web.Response:
@@ -2188,7 +2263,10 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
     PEER's slot key, meaningful only inside a request routed back through that
     instance). Filtering here is what keeps it that way — the dedupe runs where
     the binding already lives, so no peer slot key has to cross to the browser to
-    make it possible.
+    make it possible. The same rule covers the one other field that can carry a
+    peer slot key, a surviving row's ``parent`` citation: a citation naming a
+    driven key is dropped by ``_clean_peer_parent``, so the key stays off the
+    wire by every route, not only the row's own ``key``.
 
     Surviving rows are then re-shaped by ``_clean_peer_slot`` rather than
     forwarded as the peer sent them. A slot title is MODEL-AUTHORED text from
@@ -2229,7 +2307,9 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
         return web.json_response({"error": e.message, "code": e.code}, status=e.status)
 
     shaped = [
-        cleaned for cleaned in (_clean_peer_slot(row) for row in peer.rows) if cleaned is not None
+        cleaned
+        for cleaned in (_clean_peer_slot(row, peer.driven) for row in peer.rows)
+        if cleaned is not None
     ]
     # Stamp the row identity HERE, so the server is the only author of it. The
     # format is a contract in exactly one place: were the browser to compose

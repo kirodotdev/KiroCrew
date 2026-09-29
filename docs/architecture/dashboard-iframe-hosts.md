@@ -14,6 +14,7 @@ Pick a host from this table. **Do not widen an existing host's sandbox to make i
 | `WidgetFrame.tsx` (`<mcwidget>`, artifacts) | `allow-scripts allow-popups allow-popups-to-escape-sandbox` | **LLM-emitted HTML** | **Defended against.** A malicious emitted `<script>` can `postMessage`, so the host treats inbound messages as hostile |
 | `McpAppFrame.tsx` (the **App** tab) | `allow-scripts allow-forms` | **MCP-server-supplied HTML** (`srcDoc`) | **Required and trusted-by-capability.** SEP-1865 JSON-RPC bridge; the host holds a `callback_secret` |
 | `InstancesViewport.tsx` | none | another instance's dashboard | n/a |
+| `TaskDashboardFrame.tsx` (**Dynamic Dashboard**) | empty sandbox | Sanitized task-specific HTML/CSS/SVG artifacts; no model scripts or outbound links | none; answers and approvals use separate native controls |
 
 ## The two axes
 

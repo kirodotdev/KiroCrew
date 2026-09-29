@@ -121,6 +121,11 @@ def wired(monkeypatch):
     monkeypatch.setattr(backend_mod, "build_backend_env", lambda settings: {})
     monkeypatch.setattr(backend_mod, "seed_model_identity", lambda settings, **kw: True)
     monkeypatch.setattr(backend_mod, "require_model_identity", lambda settings: None)
+    # The kiro-cli login-check row shells out to create a store; it has its own
+    # tests, and the ORDERING tests here neutralise it like the rest. Silent on
+    # purpose: the happy-path assertion below pins the whole startup list, and this
+    # seam's ordering is pinned by a dedicated test rather than by widening that.
+    monkeypatch.setattr(entry.kiro_login_mod, "seed_kiro_cli_login", lambda **kw: None)
     monkeypatch.setattr(entry, "verify_sandbox", lambda settings, **kw: None)
     monkeypatch.setattr(entry.bundle_mod, "install_bundle", lambda settings, **kw: None)
     return events
@@ -459,3 +464,73 @@ def test_no_bucket_still_boots(wired, tmp_path):
     entry.run(make_settings(tmp_path, bucket=None), wait_for_shutdown=lambda c: "signal")
     assert "start_backend" in wired
     assert "start_front" in wired
+
+
+# --- run() seeds kiro-cli's own login store before the backend ------------
+
+
+def test_run_seeds_the_kiro_cli_login_store_before_the_backend(wired, tmp_path, monkeypatch):
+    """The copy must exist before anything could spawn ``kiro-cli acp``.
+
+    ``kiro-cli`` validates its own credential store ahead of the ACP handshake, so
+    a copy written after the backend is serving would leave the first turns of the
+    task refusing with the same 503 the vault seed already looks like it fixed.
+    """
+
+    def recording_seed(**kw):
+        wired.append("seed_kiro_cli_login")
+
+    monkeypatch.setattr(entry.kiro_login_mod, "seed_kiro_cli_login", recording_seed)
+    entry.run(make_settings(tmp_path), wait_for_shutdown=lambda c: "signal")
+    assert "seed_kiro_cli_login" in wired
+    assert wired.index("seed_kiro_cli_login") < wired.index("start_backend")
+
+
+def test_run_refuses_when_the_kiro_cli_login_store_cannot_be_written(wired, tmp_path, monkeypatch):
+    """Fail closed: never a silent fall-through to the 503 this seed removes."""
+
+    def refusing_seed(**kw):
+        raise ConfigError("kiro-cli login store is unwritable")
+
+    monkeypatch.setattr(entry.kiro_login_mod, "seed_kiro_cli_login", refusing_seed)
+    with pytest.raises(ConfigError, match="kiro-cli login store"):
+        entry.run(make_settings(tmp_path), wait_for_shutdown=lambda c: "signal")
+    assert "start_backend" not in wired
+
+
+def test_the_login_probe_gets_the_scrubbed_env_not_this_process_environment(
+    wired, tmp_path, monkeypatch
+):
+    """The step shells out to kiro-cli while this process still holds the credential.
+
+    ``build_backend_env`` runs before the vault seed, so the pop of this process's own
+    environment cannot happen until after it -- which leaves the delivered credential
+    in ``os.environ`` at the moment the login probe spawns. An inherited copy would
+    land in a child kiro-cli may outlive through a helper, readable by the later
+    same-uid model worker. So the caller hands over the scrubbed dictionary, and this
+    test asserts it at the seam rather than trusting the call site to keep doing it.
+    """
+    seen: list[dict[str, str]] = []
+
+    def recording_seed(**kw):
+        seen.append(dict(kw.get("env") or {}))
+
+    monkeypatch.setattr(backend_mod, "build_backend_env", _real_build_backend_env)
+    monkeypatch.setattr(backend_mod, "seed_model_identity", _real_seed_model_identity)
+    monkeypatch.setattr(backend_mod, "require_model_identity", _real_require_model_identity)
+    monkeypatch.setattr(entry.kiro_login_mod, "seed_kiro_cli_login", recording_seed)
+    monkeypatch.setenv("KIRO_IDENTITY", IDENTITY_JSON)
+    monkeypatch.setenv("KIRO_API_KEY", "sk-live")
+
+    entry.run(make_settings(tmp_path), wait_for_shutdown=lambda c: "signal")
+
+    assert seen, "the login probe seam was never reached"
+    handed = seen[-1]
+    assert handed, "an empty env would fall back to this process's own environment"
+    assert "KIRO_IDENTITY" not in handed
+    assert "KIRO_API_KEY" not in handed
+    # The credential really was delivered and consumed, so the absence above is the
+    # withholding rather than a test that delivered nothing. Read from the VAULT: by
+    # the time run() returns it has popped both names from this process's own
+    # environment, which is the later half of the same interlock.
+    backend_mod.require_model_identity(make_settings(tmp_path))

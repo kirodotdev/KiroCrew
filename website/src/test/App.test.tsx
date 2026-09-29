@@ -2273,3 +2273,19 @@ describe('Kiro credits pill — edge cases', () => {
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument()
   })
 })
+
+describe('import outcome notice', () => {
+  it('is mounted once, above the layout branch, so every layout renders it', () => {
+    // The row's menu closes on the picker's blur, so an import's outcome only
+    // reaches the user through this notice. The popout, embed and dashboard
+    // layouts each render a session menu; mounting above the branch that picks
+    // among them is what keeps a new layout from shipping without it.
+    // Read from source: standing up the popout and embed shells here would
+    // mean faking the window-level flags each branch keys on.
+    const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
+    const mounts = src.split('<ImportSessionOutcomeNotice />').length - 1
+    expect(mounts).toBe(1)
+    expect(src.indexOf('<ImportSessionOutcomeNotice />')).toBeLessThan(src.indexOf('{isPopout ? ('))
+    expect(src.indexOf('<ImportSessionOutcomeNotice />')).toBeGreaterThan(src.indexOf('<WsContext.Provider'))
+  })
+})

@@ -212,7 +212,7 @@ export function FeaturePreviewsSection() {
       </SettingsCard>
       {/* One card, one flag, one door: the Crew Members page (`/members`) and its
           rail item. Crew Mode — the second door this card used to name — retired
-          in favour of that page; the sidebar create menu keeps a "Crew Members"
+          in favour of that page; the sidebar create menu keeps a "Crewmates"
           entry that opens the page, or lands HERE with this card ringed while the
           flag is still off (`ChatSidebar.openCrewMembers`).
 

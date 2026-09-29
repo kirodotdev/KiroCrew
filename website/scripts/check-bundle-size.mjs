@@ -127,10 +127,6 @@ export const CHUNK_BUDGETS = {
   // percent of headroom fails on the next feature's ordinary strings rather than
   // on the new library it exists to catch. Back to the 5% convention over the
   // measured size.
-  // Meet CrewMates (first-run flow) added ~60 catalog keys x 12 languages plus
-  // the regenerated `en-XA`, which all land in this chunk by construction: measured
-  // 907.7 KB on this branch before the judge row above landed on main, so the two
-  // features together sit near 909 KB; same 5% convention over that size.
   // OPERATOR-SET CEILING, NOT A MEASUREMENT. It departs from the 5% convention
   // every other entry follows, and it is written this way deliberately so nobody
   // reads it as one.
@@ -150,6 +146,11 @@ export const CHUNK_BUDGETS = {
   // named what grew. Re-measuring this entry down to the 5% convention is a
   // strict improvement whenever someone does that work -- and until then, reading
   // this ceiling as "the chunk is fine" would be reading it wrong.
+  //
+  // The crew board adds ~1,610 B (35 keys of product copy across the 12 shipped
+  // catalogs plus the generated en-XA pseudo-locale) to this same chunk. It adds
+  // no dependency and sits far under the operator ceiling below, so it needs no
+  // further raise.
   t: 6075 * KB, // operator ceiling; chunk measured 955.0 KB -- see the note above
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose

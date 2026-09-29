@@ -1714,14 +1714,18 @@ class TestHardlinkScanBudget:
         # filesystem, so it must not enter the match set: when every
         # credential has nlink == 1 the CWD + /tmp walk is skipped and the
         # common healthy-host spawn pays nothing (and emits no truncation
-        # warning). Both collection loops (SENSITIVE_DIRS and
-        # SENSITIVE_FILES) carry the gate.
+        # warning). BOTH collection loops carry the gate: SENSITIVE_DIRS
+        # (depth 1) and SENSITIVE_FILES. The per-app credentials one level below
+        # a mask root reach the child as inodes the PARENT read -- it cannot stat
+        # them itself, because it masks that tree in this same process -- and the
+        # parent applies the same gate before sending one. The count is how this
+        # notices a third loop added without the gate.
         #
         # REGULAR FILES only, and that half is not cosmetic: every directory has
         # nlink >= 2, and SENSITIVE_FILES carries directories on purpose, so a bare
         # nlink test armed the walk on every spawn. Behaviour is covered in
-        # test_sandbox_hardlink_scan.py; this is the source-level pin that both
-        # collection loops still carry the gate.
+        # test_sandbox_hardlink_scan.py; this is the source-level pin that every
+        # collection loop still carries the gate.
         script = _build_launcher_script("strict")
         assert script.count("if stat.S_ISREG(_st.st_mode) and _st.st_nlink > 1:") == 2
 
@@ -2074,6 +2078,39 @@ class TestNamespaceArgv:
         assert result[5] == "acp"
         # Cleanup temp file
         os.unlink(result[3])
+
+    @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
+    def test_established_target_that_cannot_be_restatted_refuses(self, mock_resolve, tmp_path):
+        """A ``_required_targets`` entry whose ``lstat`` now fails must FAIL CLOSED.
+
+        A pre-spawn materialiser reports a target as established (present). If an
+        ``lstat`` of that name then fails while the launcher builds -- renamed aside
+        or its permission revoked, the ordinary racing data-home write this module
+        already assumes -- carrying NO identity would leave ``_carried_occupant``
+        returning ``None`` in the child, the substitution refusal never fires, and a
+        decoy left at the name is sealed while the original stays writable elsewhere.
+        ``namespace_argv`` must raise :class:`SandboxCeilingUnsealable` instead of
+        masking whatever took the name's place.
+        """
+        established_name = str(tmp_path / "phantom-ceiling")
+        real_lstat = os.lstat
+
+        def _lstat_fails_for_target(path, *a, **k):  # noqa: ANN001, ANN202
+            if os.fspath(path) == established_name:
+                raise OSError(2, "vanished")
+            return real_lstat(path, *a, **k)
+
+        def _establish(established=None):  # noqa: ANN001, ANN202
+            if established is not None:
+                established.append(established_name)
+            return []
+
+        with (
+            patch("kiro_crew.sandbox._materialize_sealable_ceilings", side_effect=_establish),
+            patch("kiro_crew.sandbox.os.lstat", side_effect=_lstat_fails_for_target),
+        ):
+            with pytest.raises(sandbox_mod.SandboxCeilingUnsealable):
+                namespace_argv(["kiro-cli"], "strict")
 
     @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
     def test_launcher_script_is_executable(self, mock_resolve):

@@ -22,6 +22,7 @@ paths, where the contract is "never even called").
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -35,7 +36,8 @@ from kiro_crew.dashboard.chat_handlers import (
     api_chat_mode,
     api_chat_slot_approve,
 )
-from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
+from kiro_crew.dashboard.state import SlotOrigin, row_mid
 from kiro_crew.safety_override import (
     reset_singleton,
 )
@@ -433,8 +435,9 @@ async def test_app_never_resolves_state_level_approvals(state, target: str, acti
     assert future.done() is False
 
 
+@pytest.mark.parametrize("action", ["approved", "rejected", "rejected_once"])
 @pytest.mark.asyncio
-async def test_dashboard_still_resolves_state_level_approvals(state) -> None:
+async def test_dashboard_still_resolves_state_level_approvals(state, action: str) -> None:
     # The dashboard owner keeps the pre-existing fallback: a parked background
     # approval is theirs to answer from the tab it appears in.
     state.get_or_create_slot("addressed", origin=SlotOrigin.USER)
@@ -454,10 +457,366 @@ async def test_dashboard_still_resolves_state_level_approvals(state) -> None:
     async with TestClient(TestServer(app)) as client:
         resp = await client.post(
             "/api/chat/slots/addressed/approve",
-            json={"action": "approved", "request_id": "req-state"},
+            json={"action": action, "request_id": "req-state"},
         )
     assert resp.status == 200
-    assert future.result() is True
+    assert future.result() is (action == "approved")
+
+
+@pytest.mark.parametrize("action", ["approved", "rejected", "rejected_once"])
+@pytest.mark.asyncio
+async def test_dashboard_decision_targets_slot_and_request_with_colliding_ids(
+    state, action
+) -> None:
+    other = state.get_or_create_slot("other", origin=SlotOrigin.USER)
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    loop = asyncio.get_running_loop()
+    other_future = loop.create_future()
+    selected_future = loop.create_future()
+    sibling_future = loop.create_future()
+    other._approval_futures["same-id"] = other_future
+    selected._approval_futures.update({"same-id": selected_future, "sibling": sibling_future})
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={"action": action, "request_id": "same-id"},
+        )
+        assert response.status == 200
+        assert selected_future.result() == action
+        assert not other_future.done()
+        assert not sibling_future.done()
+        state.broadcast_ws.assert_any_call(
+            "approval_resolved",
+            {"id": "same-id", "approved": action == "approved", "slot": "selected"},
+        )
+        # An expired request cannot fall through to the colliding other session.
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={"action": action, "request_id": "same-id"},
+        )
+        assert response.status == 404
+        assert not other_future.done()
+        assert not sibling_future.done()
+
+
+@pytest.mark.parametrize("replacement_slot", [False, True])
+@pytest.mark.asyncio
+async def test_dashboard_native_stale_row_cannot_resolve_reused_id(state, replacement_slot):
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    old_row = selected.append("permission", "Old tool", json.dumps({"request_id": "reused"}))
+    old = asyncio.get_running_loop().create_future()
+    selected.register_approval("reused", old, old_row)
+    old.set_result("rejected")
+    if replacement_slot:
+        state._slots.pop("selected")
+        selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    current_row = selected.append(
+        "permission", "Replacement tool", json.dumps({"request_id": "reused"})
+    )
+    current = asyncio.get_running_loop().create_future()
+    selected.register_approval("reused", current, current_row)
+    assert row_mid(old_row) != row_mid(current_row)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "action": "approved",
+                "request_id": "reused",
+                "origin": "native",
+                "request_mid": row_mid(old_row),
+            },
+        )
+    assert response.status == 404
+    assert not current.done()
+    assert not selected._trust and not selected._trust_reads
+
+
+@pytest.mark.parametrize("action", ["approve", "reject", "reject_once"])
+@pytest.mark.parametrize(
+    "pending", ["live", "missing", "done", "record_missing", "wrong_slot", "wrong_instance"]
+)
+@pytest.mark.asyncio
+async def test_dashboard_strict_coordinator_never_falls_into_native(state, action, pending):
+    loop = asyncio.get_running_loop()
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    other = state.get_or_create_slot("other", origin=SlotOrigin.USER)
+    native = [loop.create_future(), loop.create_future()]
+    selected._approval_futures["same-id"] = native[0]
+    other._approval_futures["same-id"] = native[1]
+    coordinator = loop.create_future()
+    if pending != "missing":
+        state._approval_futures["same-id"] = coordinator
+    if pending == "done":
+        coordinator.set_result(False)
+    if pending != "record_missing":
+        state._pending_approvals["same-id"] = {
+            "id": "same-id",
+            "slot": "other" if pending == "wrong_slot" else "dashboard:selected",
+            # The record a stale card was rendered from carries another instance:
+            # the caller reused the request id, and this is the replacement.
+            "instance": "replacement" if pending == "wrong_instance" else "shown",
+        }
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    target = {"origin": "coordinator", "slot": "dashboard:selected", "instance": "shown"}
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(f"/api/approvals/same-id/{action}", params=target, json={})
+        assert response.status == (200 if pending == "live" else 404)
+        if pending == "live":
+            assert coordinator.result() is (action == "approve")
+            # A repeated click after resolution is stale even before record cleanup.
+            response = await client.post(f"/api/approvals/same-id/{action}", params=target, json={})
+            assert response.status == 404
+        elif pending != "done":
+            assert not coordinator.done()
+        assert all(not future.done() for future in native)
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.asyncio
+async def test_dashboard_coordinator_target_without_an_instance_is_refused(state, action):
+    """A coordinator target names the instance it saw, as a native target names its
+    row; one that names none is malformed and mutates nothing, even for a live
+    record whose id and slot it does name."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["same-id"] = coordinator
+    state._pending_approvals["same-id"] = {
+        "id": "same-id",
+        "slot": "dashboard:selected",
+        "instance": "shown",
+    }
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/approvals/same-id/{action}",
+            params={"origin": "coordinator", "slot": "dashboard:selected"},
+            json={},
+        )
+    assert response.status == 400
+    assert not coordinator.done()
+
+
+def test_coordinator_records_carry_a_distinct_instance_per_request():
+    """The request id is the caller's and can recur; the instance is minted here,
+    once per request, so two requests sharing an id are told apart."""
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+
+    class _State:
+        _APPROVAL_TIMEOUT = 0.01
+        _BACKGROUND_APPROVAL_TIMEOUT_SECS = 0.01
+
+        def __init__(self):
+            self._approval_futures = {}
+            self._pending_approvals = {}
+            self.records = []
+
+        def broadcast_ws(self, kind, payload):
+            if kind == "approval":
+                self.records.append(dict(payload))
+
+        def push_slots_update(self):
+            pass
+
+        def _audit_and_broadcast_approval(self, *args, **kwargs):
+            pass
+
+    async def run():
+        st = _State()
+        for _ in range(2):
+            await ApprovalCoordinator.request(
+                st,
+                "same-id",
+                "dashboard",
+                "shell",
+                tool_input="",
+                tool_purpose="",
+                slot="dashboard:selected",
+                is_background=False,
+                redact_url=lambda t: (t, []),
+                redact_secret=lambda t: (t, []),
+            )
+        return st.records
+
+    records = asyncio.run(run())
+    assert len(records) == 2 and all(r["id"] == "same-id" for r in records)
+    assert all(len(r["instance"]) == 32 for r in records)
+    assert records[0]["instance"] != records[1]["instance"]
+
+
+@pytest.mark.parametrize("proof", [None, "", [], {}, 1, "wrong-row"])
+@pytest.mark.asyncio
+async def test_dashboard_native_instance_proof_fails_closed(state, proof):
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    row = selected.append("permission", "Tool", json.dumps({"request_id": "id"}))
+    current = asyncio.get_running_loop().create_future()
+    selected.register_approval("id", current, row)
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "origin": "native",
+                "request_id": "id",
+                "request_mid": proof,
+                "action": "approved",
+            },
+        )
+    assert response.status == (404 if proof == "wrong-row" else 400)
+    assert not current.done()
+    assert selected.approval_instance("id") == row_mid(row)
+    assert not selected._trust and not selected._trust_reads
+
+
+@pytest.mark.parametrize("action", ["approved", "rejected", "rejected_once"])
+@pytest.mark.parametrize("pending", ["live", "missing", "done"])
+@pytest.mark.parametrize("coordinator_slot", ["selected", "other"])
+@pytest.mark.asyncio
+async def test_dashboard_strict_native_never_falls_into_coordinator(
+    state, action, pending, coordinator_slot
+):
+    loop = asyncio.get_running_loop()
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    other = state.get_or_create_slot("other", origin=SlotOrigin.USER)
+    native = loop.create_future()
+    permission = selected.append(
+        "permission", "Current tool", json.dumps({"request_id": "same-id"})
+    )
+    if pending != "missing":
+        selected.register_approval("same-id", native, permission)
+    if pending == "done":
+        native.set_result("rejected_once")
+    other_future = loop.create_future()
+    sibling = loop.create_future()
+    other._approval_futures["same-id"] = other_future
+    selected._approval_futures["sibling"] = sibling
+    coordinator = loop.create_future()
+    state._approval_futures["same-id"] = coordinator
+    state._pending_approvals["same-id"] = {"id": "same-id", "slot": coordinator_slot}
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "action": action,
+                "request_id": "same-id",
+                "origin": "native",
+                "request_mid": row_mid(permission),
+            },
+        )
+        assert response.status == (200 if pending == "live" else 404)
+        if pending == "live":
+            assert native.result() == action
+        elif pending == "missing":
+            assert not native.done()
+        assert not coordinator.done()
+        assert not other_future.done()
+        assert not sibling.done()
+        assert not selected._trust and not selected._trust_reads
+
+
+@pytest.mark.parametrize("action", ["approve", "reject", "reject_once"])
+@pytest.mark.asyncio
+async def test_dashboard_legacy_coordinator_endpoint_keeps_native_fallback(state, action):
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    future = asyncio.get_running_loop().create_future()
+    selected._approval_futures["legacy"] = future
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(f"/api/approvals/legacy/{action}", json={})
+    assert response.status == 200
+    assert (
+        future.result()
+        == {"approve": "approved", "reject": "rejected", "reject_once": "rejected_once"}[action]
+    )
+
+
+@pytest.mark.parametrize(
+    "origin,request_id,action",
+    [
+        ("coordinator", "same-id", "approved"),
+        (None, "same-id", "approved"),
+        ("native", "", "approved"),
+        ("native", [], "approved"),
+        ("native", "same-id", "trust"),
+        ("native", "same-id", "unknown"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_dashboard_strict_native_invalid_target_refuses_without_mutation(
+    state, origin, request_id, action
+):
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    future = asyncio.get_running_loop().create_future()
+    selected._approval_futures["same-id"] = future
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={"origin": origin, "request_id": request_id, "action": action},
+        )
+    assert response.status == 400
+    assert not future.done()
+    assert not selected._trust and not selected._trust_reads
+
+
+@pytest.mark.parametrize(
+    "origin,slot,action",
+    [
+        ("native", "selected", "approve"),
+        ("", "selected", "approve"),
+        ("coordinator", "", "approve"),
+        ("coordinator", "selected", "unknown"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_dashboard_strict_coordinator_invalid_target_refuses_without_mutation(
+    state, origin, slot, action
+):
+    future = asyncio.get_running_loop().create_future()
+    state._approval_futures["same-id"] = future
+    state._pending_approvals["same-id"] = {"id": "same-id", "slot": "selected"}
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/approvals/same-id/{action}",
+            params={"origin": origin, "slot": slot},
+            json={},
+        )
+    assert response.status == 400
+    assert not future.done()
+
+
+@pytest.mark.parametrize("strict", [True, False])
+@pytest.mark.asyncio
+async def test_dashboard_native_origin_does_not_adopt_replacement_slot_future(state, strict):
+    selected = state.get_or_create_slot("selected", origin=SlotOrigin.USER)
+    replacement = state.get_or_create_slot("replacement", origin=SlotOrigin.USER)
+    selected.linked_session_key = replacement.linked_session_key = "slack:thread"
+    future = asyncio.get_running_loop().create_future()
+    replacement._approval_futures["same-id"] = future
+    app = _make_mode_app(state)
+    app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/chat/slots/selected/approve",
+            json={
+                "action": "approved",
+                "request_id": "same-id",
+                **({"origin": "native", "request_mid": "missing-instance"} if strict else {}),
+            },
+        )
+    assert response.status == (404 if strict else 200)
+    assert future.done() is not strict
 
 
 @pytest.mark.asyncio

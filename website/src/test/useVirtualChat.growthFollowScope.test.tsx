@@ -127,6 +127,51 @@ describe('useVirtualChat: only TAIL growth carries a bottom-parked reader', () =
     act(() => { fire?.([{ target: tailRow }]) })
     expect(state.scrollTop).toBeGreaterThan(4600)
   })
+
+  describe('trailing chrome (the host\'s belowRows) counts as tail growth', () => {
+    // The working footer mounts under a reply that went quiet: its own state
+    // change mounts it, so no layout effect of the hook runs, it is not a row,
+    // and it leaves the scroller's box alone. The observer watches the wrapper
+    // TranscriptScrollShell hands to `trailingRef`, and its growth is followed
+    // like a tail row's -- measured before this as a crewmate DM parked 56px
+    // above a "working" indicator it could not see.
+    function trailing(view: ReturnType<typeof setup>['view']) {
+      const wrapper = document.createElement('div')
+      ;(view.result.current.trailingRef as { current: HTMLDivElement | null }).current = wrapper
+      return wrapper
+    }
+
+    it('pins a followed reader to the new bottom when the footer mounts below the rows', () => {
+      const { state, view } = setup()
+      const wrapper = trailing(view)
+      state.scrollTop = 4600
+      state.scrollHeight = 5056 // the footer's 56px landed under the tail
+      act(() => { fire?.([{ target: wrapper }]) })
+      expect(state.scrollTop).toBe(4656)
+      expect(view.result.current.getFollow()).toBe(true)
+    })
+
+    it('leaves a reader who scrolled up where they are', () => {
+      const { el, state, view } = setup()
+      const wrapper = trailing(view)
+      // Reading history: a wheel-up and its scroll event release follow.
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
+      state.scrollTop = 3000
+      act(() => { el.dispatchEvent(new Event('scroll')) })
+      expect(view.result.current.getFollow()).toBe(false)
+      act(() => { vi.advanceTimersByTime(300) })
+      state.scrollHeight = 5056
+      act(() => { fire?.([{ target: wrapper }]) })
+      expect(state.scrollTop).toBe(3000)
+    })
+
+    it('feeds no height into the row cache (the wrapper is not a row)', () => {
+      const { view } = setup()
+      const wrapper = trailing(view)
+      expect(() => act(() => { fire?.([{ target: wrapper }]) })).not.toThrow()
+      expect(view.result.current.farmIsMeasured(0)).toBe(false)
+    })
+  })
 })
 
 describe('pinSuppressedNow', () => {

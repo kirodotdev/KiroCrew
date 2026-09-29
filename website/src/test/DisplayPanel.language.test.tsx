@@ -65,6 +65,11 @@ vi.mock('../hooks/useSessionPalette', () => ({
 
 import { DisplayPanel } from '../pages/settings/DisplayPanel'
 
+// The rail mounts one item at a time; each block renders the panel at the item
+// whose controls it exercises (language lives under View, zoom under Zoom & Font).
+let displaySub = 'view'
+const renderPanel = () => renderWithProviders(<DisplayPanel />, { route: `/settings?tab=display&sub=${displaySub}` })
+
 /** Open the Language dropdown and return the Auto row's text,
  *  e.g. "Auto — 简体中文". */
 function autoOptionText(): string {
@@ -77,6 +82,7 @@ function autoOptionText(): string {
 
 describe('DisplayPanel — language picker Auto row', () => {
   beforeEach(() => {
+    displaySub = 'view'
     localStorage.clear()
   })
 
@@ -92,7 +98,7 @@ describe('DisplayPanel — language picker Auto row', () => {
     localStorage.setItem(LANG_STORAGE_KEY, 'en')
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN', 'en'])
 
-    renderWithProviders(<DisplayPanel />)
+    renderPanel()
 
     expect(autoOptionText()).toContain('简体中文')
   })
@@ -103,7 +109,7 @@ describe('DisplayPanel — language picker Auto row', () => {
     // would make this assert the opposite of its name when its catalog lands.
     vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['tlh-US'])
 
-    renderWithProviders(<DisplayPanel />)
+    renderPanel()
 
     const text = autoOptionText()
     expect(text).toContain('English')
@@ -116,7 +122,7 @@ describe('DisplayPanel — language picker Auto row', () => {
   it.each([['Japanese', '日本語'], ['Korean', '한국어']])(
     'offers %s as a display language',
     (_language, endonym) => {
-      renderWithProviders(<DisplayPanel />)
+      renderPanel()
 
       fireEvent.click(screen.getByRole('combobox', { name: 'Language' }))
       expect(screen.getByRole('option', { name: endonym })).toBeInTheDocument()
@@ -126,6 +132,7 @@ describe('DisplayPanel — language picker Auto row', () => {
 
 describe('DisplayPanel — zoom level description', () => {
   beforeEach(() => {
+    displaySub = 'zoom'
     localStorage.clear()
   })
 
@@ -142,7 +149,7 @@ describe('DisplayPanel — zoom level description', () => {
   it('is translated, and still names the platform modifier key', async () => {
     await i18next.changeLanguage('zh-CN')
 
-    renderWithProviders(<DisplayPanel />)
+    renderPanel()
 
     const description = screen.getByText(/原生窗口缩放/)
     expect(screen.queryByText(/Native window zoom/)).toBeNull()

@@ -95,7 +95,7 @@ vi.mock('../api/client', () => ({
             ? { messages: [], has_more: false, total: 0 }
             : prop === 'sessions'
               ? { sessions: [], has_more: false }
-              : {},
+              : prop === 'pendingQuestions' || prop === 'approvals' ? [] : {},
         )
       }
       return apiMocks[prop]

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from kiro_crew.cron_script import resolve_script_path
@@ -94,11 +95,31 @@ def _run_sync_mutator(
     The refusal is deterministic and immediate — an app author hits it on the
     first run of an on-loop call site, not under production lock contention.
     """
+    _refuse_sync_on_loop(_api or getattr(fn, "__name__", "this method"))
+    return fn(*args, **kwargs)  # loop-less — the intended synchronous path
+
+
+def _refuse_sync_on_loop(api: str) -> None:
+    """Raise ``CronSyncOnLoopError`` when this thread has a running event loop.
+
+    Extracted rather than copied so the refusal has ONE spelling. Two sites need
+    it and they must agree: :func:`_run_sync_mutator`, which guards the store
+    mutation itself, and the synchronous ``add_job``, which must refuse BEFORE it
+    vets. A second hand-written copy of the predicate is how the two drift.
+
+    The earlier ordering refused only at the mutator, so an on-loop caller paid
+    the vet's filesystem work first -- a stat, a body read for the content scan,
+    and on the first call for that SDK instance a walk of the builtin manifest
+    sources -- and got the refusal afterwards. The refusal is supposed to be the
+    cheap, immediate answer an app author hits on their first on-loop call, so
+    doing disk work on the loop before producing it defeats the point of failing
+    fast. Refusing first costs nothing on the off-loop path, which is the only
+    path that goes on to do the work.
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return fn(*args, **kwargs)  # loop-less — the intended synchronous path
-    api = _api or getattr(fn, "__name__", "this method")
+        return  # loop-less — the caller may proceed on its own thread
     raise CronSyncOnLoopError(
         f"CronSDK.{api}() is synchronous and cannot be called from a running "
         f"event loop: it would park the loop for the bounded cron-store lock "
@@ -145,6 +166,8 @@ class CronSDK:
 
     def __init__(self, app_name: str, cron_service: Any) -> None:
         self._app_name = app_name
+        self._bundle_root: Path | None = None
+        self._bundle_root_cached = False
         self._cron = cron_service
         self._owner_prefix = owner_tag(app_name)
 
@@ -154,8 +177,59 @@ class CronSDK:
 
     # ── Shared vetting (deny-by-default, before any job is built) ──
 
-    def _vet_command_script(self, name: str, command: str, script: str) -> None:
+    def _app_bundle_root(self) -> Path | None:
+        """This app's own tree, the base a relative ``script`` spec resolves against.
+
+        Derived ONLY from ``self._app_name``, which this SDK instance was
+        constructed with and no caller can change. That is a security boundary,
+        not a convenience: ``ctx.cron`` hands a ``CronSDK`` to every app holding
+        the ``cron`` permission, and the resolved root is what
+        :func:`resolve_script_path` confines the script to before it is persisted
+        for the launcher to execute. A root taken from a method keyword would let
+        one app name a root of its choosing and get a ``.py`` under it executed,
+        which is the cross-bundle confinement bypass the root exists to prevent.
+
+        Chosen the same way ``apps.bridges._registration_source`` chooses it: a
+        shipped builtin's bundle is its IMMUTABLE package directory, so a mutable
+        installed directory borrowing a builtin's name cannot supply the script;
+        everything else uses the installed snapshot. Imports are function-local,
+        matching the ``mcp_cron`` imports below, because ``bridges`` imports this
+        module and a module-level edge back into the apps package would close a
+        cycle.
+
+        BLOCKING on its first call: ``shipped_builtin_app_root`` WALKS the builtin
+        manifest sources (``iterdir``, then ``resolve`` + ``read_text`` +
+        ``json.loads`` per entry). MEMOISED per instance so a registrar looping
+        over an app's jobs pays that walk once, not once per job, and the async
+        mutators run the vet that reaches it inside ``asyncio.to_thread`` so the
+        walk never lands on the gateway event loop.
+
+        Returns ``None`` when the root cannot be determined, which leaves
+        :func:`resolve_script_path` on its context-free behaviour rather than
+        inventing a base directory.
+        """
+        if self._bundle_root_cached:
+            return self._bundle_root
+        try:
+            from kiro_crew.apps.execution import shipped_builtin_app_root
+            from kiro_crew.apps.manager import app_dir
+
+            shipped = shipped_builtin_app_root(self._app_name)
+            self._bundle_root = shipped if shipped is not None else app_dir(self._app_name)
+        except Exception:  # noqa: BLE001 — an undeterminable root must not deny the job
+            self._bundle_root = None
+        self._bundle_root_cached = True
+        return self._bundle_root
+
+    def _vet_command_script(self, name: str, command: str, script: str) -> str:
         """Vet ``command`` / ``script`` BEFORE a job is created (deny-by-default).
+
+        Returns the ``script`` spec to PERSIST: unchanged when empty, otherwise
+        the resolved absolute ``"<path>.py:<func>"``. Callers store the returned
+        value, because every later consumer re-resolves ``job.script`` holding
+        no app context — the fire-time governance gate, the launcher, the
+        dashboard source endpoint — and a relative spec on the record would be
+        re-resolved against THEIR process CWD.
 
         A rejected payload never lands in the cron service's in-memory state.
         Safe even if a future caller reaches a mutator without the upstream
@@ -165,6 +239,19 @@ class CronSDK:
         (``cron_script.run_command_sandboxed`` / ``run_script_sandboxed``). The
         ``mcp_cron`` vetting imports are lazy to avoid the
         ``mcp_cron -> security -> ... -> bridges -> cron_sdk`` import cycle.
+        BLOCKING, and it always was: it stats the script, reads its body for the
+        content scan, and on its first call for this instance walks the builtin
+        manifest sources to find the bundle. So it runs either on a thread the
+        caller already owns -- the sync ``add_job`` path, which calls
+        ``_refuse_sync_on_loop`` BEFORE reaching here, so an on-loop caller is
+        turned away without paying any of this -- or inside ``asyncio.to_thread``,
+        which is how both async mutators call it. An earlier revision named
+        ``_run_sync_mutator`` as the guard for the sync path; that refusal is real
+        but lands AFTER this function, so it did not keep the work off the loop. The
+        bundle root is NOT a parameter: it is derived from ``self._app_name``
+        alone, because a caller-chosen root would be a confinement bypass (see
+        :meth:`_app_bundle_root`).
+
         Raises ``ValueError`` on rejection (SEL-audited).
         """
         if command:
@@ -189,11 +276,15 @@ class CronSDK:
         if script:
             from kiro_crew.mcp_cron import _vet_script_file
 
-            # resolve_script_path rejects paths outside ~/.kiro/crew/crons/ (and
-            # missing/sensitive files) by raising. Emit a SEL denied audit on
-            # that path too, mirroring bridges.py, so every denial is audited.
+            # resolve_script_path rejects a missing or sensitive file, and any
+            # path outside ~/.kiro/crew/crons/ or this app's own bundle, by
+            # raising. Emit a SEL denied audit on that path too, mirroring
+            # bridges.py, so every denial is audited. `app_root` is what makes a
+            # bundle-relative spec ("job.py:run", the only spelling an app can
+            # write without knowing the install location) resolve next to the
+            # app instead of against the gateway process's CWD.
             try:
-                file_path, _ = resolve_script_path(script)
+                file_path, func_name = resolve_script_path(script, app_root=self._app_bundle_root())
             except (PermissionError, FileNotFoundError, ValueError) as exc:
                 sel().log_api_access(
                     caller="cron_sdk",
@@ -219,6 +310,8 @@ class CronSDK:
                 outcome="allowed",
                 resources=f"app={self._owner_prefix} cron={name}",
             )
+            return f"{file_path}:{func_name}"
+        return script
 
     def _add_job_kwargs(
         self,
@@ -310,7 +403,13 @@ class CronSDK:
         ``bridges`` calls, so a ``folder_id`` on this method would be an
         untested parameter no caller reaches.
         """
-        self._vet_command_script(name, command, script)
+        # Refuse BEFORE vetting, not after. The vet is blocking -- a stat, a body
+        # read for the content scan, and on this instance's first call a walk of
+        # the builtin manifest sources -- and `_run_sync_mutator` below would only
+        # refuse once that work was already done on the loop. Same predicate, one
+        # spelling: see `_refuse_sync_on_loop`.
+        _refuse_sync_on_loop("add_job")
+        script = self._vet_command_script(name, command, script)
         job = _run_sync_mutator(
             self._cron.add_job,
             _api="add_job",
@@ -353,7 +452,12 @@ class CronSDK:
         save, so a job never exists with the wrong calendar settings. Folder
         assignment is likewise absent for the reason given there.
         """
-        self._vet_command_script(name, command, script)
+        # Off-loop: the vet stats the script, reads its body for the content
+        # scan, and may walk the builtin manifest sources for the bundle root.
+        # This coroutine is awaited on the gateway loop (app enable, gateway
+        # start), so running that filesystem work inline would park every request
+        # and the heartbeat for its duration.
+        script = await asyncio.to_thread(self._vet_command_script, name, command, script)
         job = await self._cron.add_job_async(
             **self._add_job_kwargs(
                 name, message,
@@ -397,7 +501,12 @@ class CronSDK:
         :meth:`add_job`, so the winning registrar's job is calendar-correct on
         its first and only save.
         """
-        self._vet_command_script(name, command, script)
+        # Off-loop, same reason as add_job_async: this is the method `bridges`
+        # awaits on the gateway loop for every app cron at enable and at start.
+        # The vet derives the bundle root itself, from this SDK's own app name,
+        # and memoises it -- so the walk happens once per instance rather than
+        # once per job, and never on the loop.
+        script = await asyncio.to_thread(self._vet_command_script, name, command, script)
         job = await self._cron.add_job_if_absent_async(
             lambda existing, n=name: existing.name == n,
             **self._add_job_kwargs(
@@ -427,7 +536,8 @@ class CronSDK:
     def list_jobs(self) -> list[Any]:
         """List only jobs owned by this app."""
         return [
-            j for j in self._cron.list_jobs(include_disabled=True)
+            j
+            for j in self._cron.list_jobs(include_disabled=True)
             if getattr(j, "created_by", "") == self._owner_prefix
         ]
 
@@ -527,9 +637,7 @@ class CronSDK:
         self._assert_owned(job_id, "cron_update_job")
         if "enabled" in kwargs or "user_paused" in kwargs:
             raise ValueError("Use set_enabled or set_enabled_async to pause/resume a job")
-        result = _run_sync_mutator(
-            self._cron.update_job, job_id, _api="update_job", **kwargs
-        )
+        result = _run_sync_mutator(self._cron.update_job, job_id, _api="update_job", **kwargs)
         self._audit_update(job_id)
         return result
 

@@ -11,7 +11,7 @@ import {
 } from './panelTabRegistry'
 
 /** Singleton "view" tabs (opened from the + menu, one instance each). */
-export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins'
+export type ViewKind = 'changes' | 'issues' | 'links' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'browser' | 'git' | 'summary' | 'pins' | 'command-center'
 /** All tab kinds: singleton views + on-demand document/terminal tabs. */
 /** `app` hosts an MCP App (a sandboxed iframe with a live JSON-RPC bridge).
  *  It is deliberately a TabKind and NOT a ViewKind: SidePanel unmounts
@@ -71,6 +71,7 @@ export const PINNED_VIEWS: ViewKind[] = ['changes', 'artifacts', 'files']
  *  classifying it is a type error, so a new transcript-fed view cannot slip
  *  onto the Members page unfed — the default is not "offered", it is "decide". */
 export const VIEW_DATA_SOURCE: Record<ViewKind, 'slot' | 'chat-transcript'> = {
+  'command-center': 'slot',
   changes: 'chat-transcript',
   issues: 'chat-transcript',
   links: 'chat-transcript',
@@ -187,6 +188,7 @@ export interface PanelTab {
  * displayed title is localised.
  */
 const VIEW_TITLE_KEY: Record<ViewKind, string> = {
+  'command-center': 'commandCenter.title',
   changes: 'hooks.usePanelTabs.changes',
   issues: 'hooks.usePanelTabs.issues',
   files: 'hooks.usePanelTabs.files',
@@ -843,7 +845,15 @@ export function usePanelTabs(
     // line on the tab, so a later plain click on the same file would re-jump to
     // a line the user did not ask for.
     const reveal = opts?.line != null ? { line: opts.line, endLine: opts.endLine, nonce: nextRevealNonce() } : undefined
-    update(b => {
+    // Write into the bucket that OWNS the file, keyed by `slot`, not the strip's
+    // bound `key`. The two are the same on every host but split view, where one
+    // opener is shared across panes and `slot` is the pane's own session
+    // (#9921): stamping the tab `slot: B` while storing it in the bound slot A's
+    // bucket would hide the tab the moment B became active (it lives in A's
+    // bucket, keyed elsewhere). Routing the mutation to `bucketKey(slot)` keeps
+    // the stamp and the bucket the SAME slot. `null` slot keeps the bound key.
+    const target = slot !== null ? bucketKey(slot) : key
+    mutateSlot(target, b => {
       const prev = b.tabs.find(t => t.id === `file:${path}`)
       if (prev && prev.content !== prev.savedContent) {
         // The tab holds edits that were never saved (its buffer differs from
@@ -878,7 +888,7 @@ export function usePanelTabs(
         ...(opts?.diffMode != null ? { diffMode: opts.diffMode } : {}),
       }, opts?.replaceId)
     })
-  }, [update])
+  }, [key])
 
   const openDiff = useCallback((path: string, modified: string, original = '') => {
     upsert({ id: `diff:${path}`, kind: 'diff', title: i18nT('hooks.usePanelTabs.diff', { name: basename(path) }), path, modified, original })

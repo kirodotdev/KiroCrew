@@ -6,8 +6,10 @@ import { test, expect, Page, APIRequestContext } from '@playwright/test'
  *
  * jsdom has no layout engine, so `position: sticky` can only be proven in a real
  * browser. The measured claims:
- *   1. scrolled into a root folder's sessions, its header sits on the lane's top edge;
- *   2. scrolled into a nested folder, the parent header stays on the top edge and
+ *   1. scrolled into a root folder's sessions, its header sits on the lane's pin
+ *      edge — the bottom edge of the floating search dock (ListDock: the glass
+ *      field and its shelf), the lane's top edge when no dock floats over it;
+ *   2. scrolled into a nested folder, the parent header stays on the pin edge and
  *      the nested header sits exactly one header-height below it, which pins the
  *      `--folder-row-sticky-h` offset to the rendered row height;
  *   3. once a folder's block has scrolled past, the next folder's header takes the
@@ -68,7 +70,10 @@ test.afterEach(async ({ request }) => {
   for (const id of seeded.folders.splice(0).reverse()) await request.delete(`/api/chat/folders/${id}`)
 })
 
-type Probe = { laneTop: number; tops: Record<string, number | null>; heights: Record<string, number | null>; bg: string | null; cardBg: string | null }
+/** `pin` is the edge a pinned header sits on, relative to the lane top: the
+ *  floating search dock's bottom edge (components/ListDock `list-dock`), or 0
+ *  when no dock floats over the lane. */
+type Probe = { laneTop: number; pin: number; tops: Record<string, number | null>; heights: Record<string, number | null>; bg: string | null; cardBg: string | null }
 
 /** Scroll `rowKey` (inside `folderId`'s block) to the lane's vertical middle, wait
  *  for the scroll to settle, and read every header's top relative to the lane. */
@@ -86,6 +91,8 @@ async function scrollRowToMiddle(page: Page, folderId: string, rowKey: string, h
     probe = await page.evaluate((ids) => {
       const lane = document.querySelector<HTMLElement>('[data-testid="tree-view-lane"]')!
       const laneTop = lane.getBoundingClientRect().top
+      const dock = lane.parentElement?.querySelector<HTMLElement>('[data-testid="list-dock"]')
+      const pin = dock ? dock.getBoundingClientRect().bottom - laneTop : 0
       const tops: Record<string, number | null> = {}
       const heights: Record<string, number | null> = {}
       let bg: string | null = null
@@ -97,7 +104,7 @@ async function scrollRowToMiddle(page: Page, folderId: string, rowKey: string, h
         heights[id] = el ? el.getBoundingClientRect().height : null
         if (el && bg === null) bg = getComputedStyle(el).backgroundColor
       }
-      return { laneTop, tops, heights, bg, cardBg }
+      return { laneTop, pin, tops, heights, bg, cardBg }
     }, headerIds)
     const cur = JSON.stringify(probe)
     const stable = cur === prev
@@ -161,8 +168,8 @@ test.describe('Sidebar folder headers pin while scrolling', () => {
     const inB = await scrollRowToMiddle(page, b.id, bKeys[Math.floor(bKeys.length / 2)], ids, surface.name.replace(/\W+/g, '-'))
     await expect(page.locator('html'), 'theme must still be applied when measured').toHaveAttribute('data-theme', surface.theme)
     const rowH = inB.heights[a.id]!
-    expect(Math.abs(inB.tops[a.id]!), `A pinned at lane top (${JSON.stringify(inB)})`).toBeLessThanOrEqual(TOLERANCE)
-    expect(Math.abs(inB.tops[b.id]! - rowH), `B pinned one row (${rowH}px) below A (${JSON.stringify(inB)})`).toBeLessThanOrEqual(TOLERANCE)
+    expect(Math.abs(inB.tops[a.id]! - inB.pin), `A pinned on the pin edge (${JSON.stringify(inB)})`).toBeLessThanOrEqual(TOLERANCE)
+    expect(Math.abs(inB.tops[b.id]! - inB.pin - rowH), `B pinned one row (${rowH}px) below A (${JSON.stringify(inB)})`).toBeLessThanOrEqual(TOLERANCE)
     // The offset constant must match the rendered row, or nested headers gap/overlap.
     const cssH = await page.evaluate((id) => parseFloat(getComputedStyle(document.querySelector(`[data-folder-row="${id}"]`)!).getPropertyValue('--folder-row-sticky-h')), a.id)
     expect(Math.abs(cssH - rowH), `--folder-row-sticky-h ${cssH} should equal the header height ${rowH}`).toBeLessThanOrEqual(TOLERANCE)
@@ -193,12 +200,12 @@ test.describe('Sidebar folder headers pin while scrolling', () => {
     // Past B's block, still inside A: A stays pinned, B has been pushed up off its slot.
     // Rows render newest-first, so the earliest-created keys sit at the END of A's block.
     const inA = await scrollRowToMiddle(page, a.id, aKeys[1], ids, surface.name.replace(/\W+/g, '-'))
-    expect(Math.abs(inA.tops[a.id]!), `A still pinned (${JSON.stringify(inA)})`).toBeLessThanOrEqual(TOLERANCE)
-    expect(inA.tops[b.id]!, `B no longer pinned below A (${JSON.stringify(inA)})`).toBeLessThan(rowH - TOLERANCE)
+    expect(Math.abs(inA.tops[a.id]! - inA.pin), `A still pinned (${JSON.stringify(inA)})`).toBeLessThanOrEqual(TOLERANCE)
+    expect(inA.tops[b.id]! - inA.pin, `B no longer pinned below A (${JSON.stringify(inA)})`).toBeLessThan(rowH - TOLERANCE)
 
     // Into C: C owns the top edge, A has scrolled off it.
     const inC = await scrollRowToMiddle(page, c.id, cKeys[Math.floor(cKeys.length / 2)], ids, surface.name.replace(/\W+/g, '-'))
-    expect(Math.abs(inC.tops[c.id]!), `C pinned at lane top (${JSON.stringify(inC)})`).toBeLessThanOrEqual(TOLERANCE)
-    expect(inC.tops[a.id]!, `A pushed off the top (${JSON.stringify(inC)})`).toBeLessThan(-TOLERANCE)
+    expect(Math.abs(inC.tops[c.id]! - inC.pin), `C pinned on the pin edge (${JSON.stringify(inC)})`).toBeLessThanOrEqual(TOLERANCE)
+    expect(inC.tops[a.id]! - inC.pin, `A pushed off the pin edge (${JSON.stringify(inC)})`).toBeLessThan(-TOLERANCE)
   })
 })

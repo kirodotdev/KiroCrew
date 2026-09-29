@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
-import MeetCrewmatesFlow, { MeetCrewmatesEligibilityNotice, START_MEET_CREWMATES_EVENT, builtFromOptions, isValidCrewmateName, scheduleFor } from './MeetCrewmatesFlow'
-import { hasNoCrewmates, hasNoCustomAgents } from '../hooks/useMeetCrewmatesGate'
+import MeetCrewmatesFlow, { builtFromOptions, isValidCrewmateName, scheduleFor } from './MeetCrewmatesFlow'
+import { hasNoCrewmates } from '../hooks/useMeetCrewmatesGate'
 import { api } from '../api/client'
 
 // framer-motion never finishes an exit animation in jsdom, so the step
@@ -419,26 +419,6 @@ describe('MeetCrewmatesFlow', () => {
     expect((screen.getByTestId('meet-crewmates-job') as HTMLInputElement).value).not.toBe('')
   })
 
-  it('the eligibility notice says the flow could not decide, offers the agent hand-off, and Dismiss reports back', () => {
-    const onDismiss = vi.fn()
-    renderWithProviders(<MeetCrewmatesEligibilityNotice onDismiss={onDismiss} />)
-    expect(screen.getByTestId('meet-crewmates-eligibility-error')).toHaveTextContent('Could not check whether to show Meet CrewMates')
-    // Nothing can be lost here, so the hand-off is on (errors-use-error-notice).
-    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId('meet-crewmates-eligibility-dismiss'))
-    expect(onDismiss).toHaveBeenCalledTimes(1)
-    // The remedy is the flow itself, not a page the user may already be on.
-    const started = vi.fn()
-    window.addEventListener(START_MEET_CREWMATES_EVENT, started)
-    try {
-      fireEvent.click(screen.getByTestId('meet-crewmates-eligibility-open'))
-    } finally {
-      window.removeEventListener(START_MEET_CREWMATES_EVENT, started)
-    }
-    expect(started).toHaveBeenCalledTimes(1)
-    expect(onDismiss).toHaveBeenCalledTimes(2)
-  })
-
   it('a suggestion chip never overwrites a job the user typed', () => {
     renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
     next()
@@ -492,14 +472,9 @@ describe('MeetCrewmatesFlow helpers', () => {
     expect(builtFromOptions(undefined)).toEqual(['kirocrew'])
   })
 
-  it('the auto-fire gate reads "no crewmates" past the default row and "no custom agents" past the built-ins', () => {
+  it('the empty-state predicate reads "no crewmates" past the default row', () => {
     expect(hasNoCrewmates([{ name: 'default' }])).toBe(true)
     expect(hasNoCrewmates([{ name: 'default' }, { name: 'Radar' }])).toBe(false)
     expect(hasNoCrewmates(undefined)).toBe(false)
-    expect(hasNoCustomAgents([{ name: 'kirocrew', kirocrew_owned: true }, { name: 'kirocrew-lite', kirocrew_owned: true }])).toBe(true)
-    expect(hasNoCustomAgents([{ name: 'kirocrew', kirocrew_owned: true }, { name: 'issue-triage', kirocrew_owned: false }])).toBe(false)
-    // No flag, no built-in: the server always stamps its own rows.
-    expect(hasNoCustomAgents([{ name: 'kirocrew' }])).toBe(false)
-    expect(hasNoCustomAgents(undefined)).toBe(false)
   })
 })

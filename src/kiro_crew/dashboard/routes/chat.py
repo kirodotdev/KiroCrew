@@ -12,6 +12,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import chat, chat_threads, handlers, session_export, session_transfer
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import (
     api_app_contributors,
     api_issue_source,
@@ -28,6 +29,29 @@ from kiro_crew.dashboard.handlers.source_providers import (
     api_pull_request_unresolve,
 )
 from kiro_crew.dashboard.handlers.worktree import api_worktree_create
+
+
+async def api_dashboard_card(request: web.Request) -> web.Response:
+    """Owner-only read; registering this route never loads the optional producer."""
+    denied = await require_owner_dashboard_request(request, "dashboard.card.read")
+    if denied is not None:
+        return denied
+    state = request.app["state"]
+    slot = state._slots.get(request.match_info["slot"])
+    if slot is None:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    lifecycle = getattr(state, "_dynamic_cards", None)
+    if lifecycle is None:
+        return web.json_response(
+            {
+                "card": None,
+                "status": "disabled",
+                "published_at": None,
+                "content_event_at": None,
+                "stale": False,
+            }
+        )
+    return web.json_response(await lifecycle.read(slot))
 
 
 def register(app: web.Application) -> None:
@@ -61,6 +85,7 @@ def register(app: web.Application) -> None:
     # the tunnel's send, so it is not a pure read of the disk.
     app.router.add_get("/api/chat/slots/{slot}/export", session_export.api_chat_slot_export)
     app.router.add_get("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary)
+    app.router.add_get("/api/chat/slots/{slot}/dashboard-card", api_dashboard_card)
     # Same path, POST: reading a summary must stay free of side effects, so
     # generating one is a separate verb rather than a query flag on the GET.
     app.router.add_post("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary_generate)

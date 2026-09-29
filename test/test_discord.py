@@ -6408,12 +6408,22 @@ class TestRotationSeamCredentialSafety:
         The link target is a long run with no space in it, which is what makes the
         cut land inside the credential rather than at a break the splitter prefers.
         """
-        # The key lives in the link TARGET behind an innocuous label, broken by a run
-        # of ``*``. Neither whole-text reading sees it: canonicalising collapses the
-        # link to its label, and the literal form has the run between the halves. So
-        # the seal's own redaction finds nothing and the text arrives at the split
-        # intact. Canonicalising each delivered frame DROPS the emphasis run, which
-        # is what puts the halves flush once the cut lands inside it.
+        # Narrow the generic screen to the readings that existed when this
+        # regression was added. The key lives in the link target behind an
+        # innocuous label, broken by a run of ``*``. Neither whole-text reading
+        # sees it: canonicalising collapses the link to its label, and the literal
+        # form has the run between the halves. The seal's own split grading must
+        # still catch the key after each delivered frame consumes the emphasis run.
+        from kiro_crew.messaging import display_safety
+        from kiro_crew.messaging import split as messaging_split
+
+        further_readings = (display_safety._plain_reading,)
+        monkeypatch.setattr(display_safety, "FURTHER_READINGS", further_readings)
+        monkeypatch.setattr(
+            messaging_split,
+            "_RENDERINGS",
+            (display_safety.canonicalize_display, *further_readings),
+        )
         src = (
             "a" * (DISCORD_MAX_TEXT - 100)
             + "[l](https://x/AKIA"

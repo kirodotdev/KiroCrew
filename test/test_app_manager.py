@@ -13,6 +13,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
@@ -38,6 +39,41 @@ from kiro_crew.apps.manager import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+#: The install's own refusal for a root `data` the data directory cannot stand
+#: beside -- the one explanation the install log, the AppResult and the audit
+#: record carry, so the tests pin the sentence, not a fragment of it.
+_DATA_IS_A_FILE = (
+    "`data` in the app tree is a file; Kiro Crew creates the app's data directory at "
+    "that path and cannot install beside it."
+)
+_DATA_IS_A_LINK = _DATA_IS_A_FILE.replace("is a file", "is a link")
+
+
+def _folds_by_a_direct_look(directory: Path) -> bool:
+    """Whether names in *directory* fold case, asked of the filesystem directly (a
+    file created and looked up under its upper-cased name), so a probe's verdict
+    can be checked against the host's truth instead of a platform guess."""
+    marker = directory / "case-look"
+    marker.touch()
+    try:
+        return (directory / "CASE-LOOK").exists()
+    finally:
+        marker.unlink()
+
+
+def _data_dir_mkdir_accepts(data: Path) -> bool:
+    """What `app_data_dir()` does at that name, as a verdict: `mkdir(exist_ok=True)`
+    stands beside a directory (a link resolving to one included) and fails on
+    anything else -- on Windows that includes a file-type link at a directory,
+    which `is_dir` cannot follow. The predicate under test must answer the same on
+    every host, so the tests derive the expectation from this call rather than
+    from the platform."""
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return True
 
 
 def _make_app_source(tmp_path, name="test-app", **manifest_overrides):
@@ -264,6 +300,249 @@ class TestInstall:
         installed = app_home / "apps" / "test-app"
         assert (installed / "agents" / "analyst.json").is_file()
         assert (installed / "skills" / "triage" / "SKILL.md").is_file()
+
+    @requires_symlinks
+    def test_a_shipped_app_secret_link_is_unlinked_before_the_secret_is_written(
+        self, tmp_path, app_home
+    ):
+        """`.app_secret` is the gateway's. The copy keeps an in-tree link as a
+        link, and `write_app_secret` opens the path it is given -- so an app
+        shipping `.app_secret -> ui/leak.js` would have the freshly generated
+        secret written THROUGH the link into a file the unauthenticated UI route
+        serves. The install removes whatever the source shipped under that name,
+        unfollowed, before writing its own regular file there."""
+        src = _make_app_source(tmp_path)
+        (src / "ui").mkdir()
+        (src / "ui" / "leak.js").write_text("export const leak = 1;\n", encoding="utf-8")
+        (src / ".app_secret").symlink_to(Path("ui") / "leak.js")
+
+        result = install_app(src)
+
+        assert result.ok, result.error
+        installed = app_home / "apps" / "test-app"
+        assert (installed / "ui" / "leak.js").read_text(encoding="utf-8") == (
+            "export const leak = 1;\n"
+        )  # the link's target was never written to
+        secret = installed / ".app_secret"
+        assert not os.path.islink(secret) and secret.is_file()
+        assert secret.read_text(encoding="utf-8").strip()  # the gateway's own value
+        assert (src / "ui" / "leak.js").read_text(encoding="utf-8") == "export const leak = 1;\n"
+
+    def test_a_shipped_app_secret_file_is_replaced_by_the_gateway_s_own(self, tmp_path, app_home):
+        src = _make_app_source(tmp_path)
+        (src / ".app_secret").write_text("the-author-s-choice\n", encoding="utf-8")
+
+        result = install_app(src)
+
+        assert result.ok, result.error
+        secret = app_home / "apps" / "test-app" / ".app_secret"
+        assert secret.is_file()
+        assert secret.read_text(encoding="utf-8") != "the-author-s-choice\n"
+
+    @requires_symlinks
+    def test_a_shipped_data_link_is_unlinked_before_preserved_data_is_put_back(
+        self, tmp_path, app_home
+    ):
+        """A default uninstall leaves `data/` behind; the next install puts it back
+        over whatever the source shipped under that name. A shipped `data -> ui`
+        link is unlinked -- never traversed, never left for the move to fail on --
+        exactly as the preview copy the desktop gate judges drops it."""
+        assert install_app(_make_app_source(tmp_path)).ok
+        installed = app_home / "apps" / "test-app"
+        (installed / "data" / "state.json").write_text('{"kept": true}', encoding="utf-8")
+        assert uninstall_app("test-app").ok  # keeps data/
+        assert (installed / "data" / "state.json").is_file()
+
+        src = _make_app_source(tmp_path / "again")
+        (src / "ui").mkdir()
+        (src / "ui" / "index.js").write_text("", encoding="utf-8")
+        (src / "data").symlink_to(Path("ui"))
+
+        result = install_app(src)
+
+        assert result.ok, result.error
+        assert not os.path.islink(installed / "data")
+        assert (installed / "data" / "state.json").read_text(encoding="utf-8") == '{"kept": true}'
+        assert (installed / "ui" / "index.js").is_file()  # the link's target, untouched
+
+    def test_a_root_data_file_is_refused_before_the_installed_record_is_written(
+        self, tmp_path, app_home
+    ):
+        """`app_data_dir()` is `mkdir(exist_ok=True)` at `<app dir>/data`, which a
+        shipped FILE of that name makes raise -- and it ran AFTER installed.json was
+        written, so the app was half-installed: a record, no data directory, no
+        secret. The copied tree is now asked the data directory's own question
+        before the record exists, and the whole copy goes with the refusal."""
+        src = _make_app_source(tmp_path)
+        (src / "data").write_text("a file where the gateway's data directory goes\n", encoding="utf-8")
+
+        result = install_app(src)
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_FILE, result.error
+        assert _read_installed("test-app") is None
+        assert not (app_home / "apps" / "test-app").exists()  # no partial copy either
+
+        # A preserved `data/` (left by a default uninstall) is put back OVER the
+        # shipped file, as over any other shape: what stands there is then a
+        # directory, and the same source installs.
+        assert install_app(_make_app_source(tmp_path / "first")).ok
+        installed = app_home / "apps" / "test-app"
+        (installed / "data" / "state.json").write_text('{"kept": true}', encoding="utf-8")
+        assert uninstall_app("test-app").ok
+        result = install_app(src)
+        assert result.ok, result.error
+        assert (installed / "data" / "state.json").read_text(encoding="utf-8") == '{"kept": true}'
+
+    @requires_symlinks
+    def test_a_link_planted_at_the_temp_name_refuses_the_install_before_anything_moves(
+        self, tmp_path, app_home
+    ):
+        """`.<name>-data-tmp` is where the install parks a leftover `data/` while it
+        copies. A LINK planted there is not the gateway's stale copy: moving the
+        directory onto it would deposit `data/` inside the link's target, and the
+        restore would rename the link -- not the data -- back. Refused before any
+        move: the leftover directory stays where it is, the link's target receives
+        nothing, the link itself is untouched, no record is written."""
+        assert install_app(_make_app_source(tmp_path / "first")).ok
+        installed = app_home / "apps" / "test-app"
+        (installed / "data" / "state.json").write_text('{"kept": true}', encoding="utf-8")
+        assert uninstall_app("test-app").ok  # default uninstall keeps data/ behind
+        assert (installed / "data" / "state.json").is_file()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        planted = app_home / "apps" / ".test-app-data-tmp"
+        planted.symlink_to(elsewhere, target_is_directory=True)
+
+        result = install_app(_make_app_source(tmp_path))
+
+        assert not result.ok
+        assert result.error == (
+            f"{planted} is a link; Kiro Crew keeps the app's data directory at that name "
+            "while it replaces the app files and cannot use it -- remove it first"
+        ), result.error
+        assert _read_installed("test-app") is None
+        assert (installed / "data" / "state.json").read_text(encoding="utf-8") == '{"kept": true}'
+        assert list(elsewhere.iterdir()) == []  # nothing was moved through the link
+        assert os.path.islink(planted)
+
+        # Remove the planted link and the same source installs, its data restored.
+        planted.unlink()
+        result = install_app(_make_app_source(tmp_path / "again"))
+        assert result.ok, result.error
+        assert (installed / "data" / "state.json").read_text(encoding="utf-8") == '{"kept": true}'
+
+    @requires_symlinks
+    def test_a_root_data_link_is_refused_whatever_it_resolves_to(self, tmp_path, app_home):
+        """A link at `data` is refused before the record on every host, dangling or
+        not: `mkdir(exist_ok=True)` fails on a dangling one, and a link RESOLVING to
+        an in-tree directory would pass it -- then the next update would move the
+        LINK aside, where its relative target does not resolve, put nothing back,
+        and delete the directory it named with the retired tree. Refused here, the
+        shape never reaches an update; the directory the link named is untouched."""
+        src = _make_app_source(tmp_path)
+        (src / "data").symlink_to(Path("nowhere"))
+        result = install_app(src)
+        assert not result.ok
+        assert result.error == _DATA_IS_A_LINK, result.error
+        assert _read_installed("test-app") is None
+        assert not (app_home / "apps" / "test-app").exists()
+
+        linked = _make_app_source(tmp_path / "linked")
+        (linked / "state").mkdir()
+        (linked / "state" / "kept.json").write_text('{"kept": true}', encoding="utf-8")
+        (linked / "data").symlink_to(Path("state"), target_is_directory=True)
+        result = install_app(linked)
+        assert not result.ok
+        assert result.error == _DATA_IS_A_LINK, result.error
+        assert _read_installed("test-app") is None
+        assert not (app_home / "apps" / "test-app").exists()  # the copy went with the refusal
+        # The directory the link named is the source's own and is untouched.
+        assert (linked / "state" / "kept.json").read_text(encoding="utf-8") == '{"kept": true}'
+        assert os.path.islink(linked / "data")
+
+    @requires_symlinks
+    def test_a_pre_existing_data_link_at_a_recordless_app_dir_is_refused_before_the_transaction(
+        self, tmp_path, app_home
+    ):
+        """The THIRD ask of the same predicate. An app directory already standing at
+        the destination with no `installed.json` (a prior default uninstall's
+        leftover, or an orphaned partial copy) whose `data` is a link to a directory
+        elsewhere: the move-aside skips what is not an owned directory, so the orphan
+        cleanup would `rmtree` the app directory and unlink the link, the post-copy
+        ask would see only the source's `data`, and the install would return
+        `ok=True` with a fresh empty `data/` -- the pre-existing entry gone with no
+        refusal, no log line and no error, where `update_app` and `uninstall_app`
+        refuse the identical shape before mutating. Refused here, before anything
+        moves: the link still stands and still resolves, the directory it names is
+        intact, no record and no temp copy appear."""
+        from kiro_crew.apps.manager import app_dir
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "sentinel.json").write_text('{"kept": true}', encoding="utf-8")
+        dest = app_dir("test-app")
+        dest.mkdir(parents=True)
+        (dest / "data").symlink_to(elsewhere, target_is_directory=True)
+        assert _read_installed("test-app") is None
+
+        result = install_app(_make_app_source(tmp_path))
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_LINK, result.error
+        assert os.path.islink(dest / "data") and (dest / "data").resolve() == elsewhere.resolve()
+        assert (elsewhere / "sentinel.json").read_text(encoding="utf-8") == '{"kept": true}'
+        assert _read_installed("test-app") is None
+        assert not (dest / APP_MANIFEST_FILENAME).exists()  # nothing was copied
+        assert not (dest.parent / ".test-app-data-tmp").exists()
+
+    def test_a_pre_existing_data_file_at_a_recordless_app_dir_is_refused_before_the_transaction(
+        self, tmp_path, app_home
+    ):
+        """Same ask, the regular-file shape: `mkdir(exist_ok=True)` cannot stand on a
+        file and the move-aside skips it, so without the refusal the orphan cleanup
+        would delete it and the install would succeed over a fresh empty `data/`.
+        Refused before anything moves; the file and its content are intact."""
+        from kiro_crew.apps.manager import app_dir
+
+        dest = app_dir("test-app")
+        dest.mkdir(parents=True)
+        (dest / "data").write_text("a regular file so named\n", encoding="utf-8")
+
+        result = install_app(_make_app_source(tmp_path))
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_FILE, result.error
+        assert (dest / "data").read_text(encoding="utf-8") == "a regular file so named\n"
+        assert _read_installed("test-app") is None
+        assert not (dest / APP_MANIFEST_FILENAME).exists()
+        assert not (dest.parent / ".test-app-data-tmp").exists()
+
+    def test_a_pre_existing_data_junction_at_a_recordless_app_dir_is_refused_before_the_transaction(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """The Windows shape of the same ask, fed through the module's junction seam
+        (no POSIX junction exists): a real directory at `data` that
+        `is_link_or_junction` reports as a junction is refused with the link
+        sentence, and the directory and its content are untouched."""
+        from kiro_crew.apps.manager import app_dir
+
+        dest = app_dir("test-app")
+        (dest / "data").mkdir(parents=True)
+        (dest / "data" / "state.json").write_text('{"k": 1}', encoding="utf-8")
+        junction = dest / "data"
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.is_link_or_junction", lambda path: Path(path) == junction
+        )
+
+        result = install_app(_make_app_source(tmp_path))
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_LINK, result.error
+        assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
+        assert _read_installed("test-app") is None
+        assert not (dest / APP_MANIFEST_FILENAME).exists()
+        assert not (dest.parent / ".test-app-data-tmp").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1952,6 +2231,241 @@ class TestCopyAppTree:
         assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
         assert secret.read_text(encoding="utf-8") == "s3cret"
 
+    @requires_symlinks
+    def test_an_installed_data_link_refuses_the_update_before_the_transaction(self, tmp_path, app_home):
+        """An installed `data` that is a LINK (an install from before the link
+        refusal) cannot be preserved: the move would relocate the link beside the
+        app directory, where its relative target does not resolve, put nothing
+        back, and delete the directory it named with the retired tree on the
+        update's success path. The update refuses before anything moves: the link,
+        the directory it names, the rest of the tree and the record are untouched,
+        no temp copy and no retired tree appear, and the sentence is the one
+        predicate every entry point asks (`gateway_data_dir_obstruction`)."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        src = _make_app_source(tmp_path)
+        assert install_app(src).ok
+        dest = app_dir("test-app")
+        (dest / "data").rmdir()
+        (dest / "state").mkdir()
+        (dest / "state" / "state.json").write_text('{"k": 1}', encoding="utf-8")
+        (dest / "data").symlink_to(Path("state"), target_is_directory=True)
+        before = _read_installed("test-app")
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        result = update_app(v2)
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_LINK, result.error
+        assert os.path.islink(dest / "data")
+        assert (dest / "state" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
+        assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'  # still reachable
+        assert _read_installed("test-app") == before  # version 1.0.0, untouched
+        assert not (dest.parent / ".test-app-data-tmp").exists()
+        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        # The source of the refused update is not the app's business: untouched too.
+        assert (v2 / APP_MANIFEST_FILENAME).is_file()
+
+    def test_an_installed_data_junction_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """The Windows shape of the same loss: a directory JUNCTION at `<app>/data`
+        is not a symlink -- `os.path.islink` and `Path.is_symlink` both say False --
+        so a link test built on either calls it a directory, moves it aside as one,
+        retires the tree it names with the old app files and cannot put the
+        dangling junction back: the stored data is deleted on the update's own
+        success path. Fed as a SHAPE through the module's junction seam, the way the
+        dangling-junction tests do (a junction has no POSIX equivalent to create):
+        `data` is a real directory here that `is_link_or_junction` reports as a
+        junction, and the predicate, the preservation forecast and the update
+        preflight must all answer as they do for a symlink -- refuse before anything
+        moves, with the data, the record and the tree untouched."""
+        from kiro_crew.apps.manager import (
+            _owned_data_dir,
+            app_dir,
+            preserved_data_awaits,
+            update_app,
+        )
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        (dest / "data" / "state.json").write_text('{"k": 1}', encoding="utf-8")
+        before = _read_installed("test-app")
+        junction = dest / "data"
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.is_link_or_junction", lambda path: Path(path) == junction
+        )
+        assert _owned_data_dir(junction) is False  # not a directory the gateway may move
+        assert preserved_data_awaits("test-app") is False  # so the preview preserves nothing over it
+
+        result = update_app(_make_app_source(tmp_path / "v2", version="2.0.0"))
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_LINK, result.error
+        assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
+        assert _read_installed("test-app") == before  # version 1.0.0, untouched
+        assert not (dest.parent / ".test-app-data-tmp").exists()
+        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+
+    @requires_symlinks
+    def test_an_installed_data_link_to_an_outside_directory_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
+        """The OUTSIDE shape of the link: `data` names a directory elsewhere (state
+        relocated to another volume). The predicate refuses a link whatever it
+        resolves to, so the update refuses before anything moves: the link still
+        stands and still resolves, the sentinel behind it is intact, the tree and
+        the record are untouched, no temp copy and no retired tree appear."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "sentinel.json").write_text('{"kept": true}', encoding="utf-8")
+        (dest / "data").rmdir()
+        (dest / "data").symlink_to(elsewhere, target_is_directory=True)
+        before = _read_installed("test-app")
+
+        result = update_app(_make_app_source(tmp_path / "v2", version="2.0.0"))
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_LINK, result.error
+        assert os.path.islink(dest / "data") and (dest / "data").resolve() == elsewhere.resolve()
+        assert (elsewhere / "sentinel.json").read_text(encoding="utf-8") == '{"kept": true}'
+        assert _read_installed("test-app") == before  # version 1.0.0, untouched
+        assert not (dest.parent / ".test-app-data-tmp").exists()
+        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+
+    def test_an_installed_data_file_refuses_the_update_before_the_transaction(self, tmp_path, app_home):
+        """The FILE shape of the same loss: an installed `data` that is a regular
+        file (an install from before the refusal, or the app's own runtime
+        replacing its directory) is not a directory the gateway can move aside. A
+        link-only preflight lets the update through: the move skips the file, the
+        old tree is retired with the file in it, the post-copy question is asked of
+        the NEW tree only, the retired tree is deleted on the success path and an
+        empty `data/` is created in the file's place -- the content gone, with
+        `ok=True`. The preflight asks the one predicate every entry point asks
+        (`gateway_data_dir_obstruction`), so the update refuses before anything
+        moves: the file and its content, the rest of the tree and the record are
+        untouched, no temp copy and no retired tree appear, and no directory
+        replaces the file."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        (dest / "data").rmdir()
+        (dest / "data").write_text("the app's own bytes", encoding="utf-8")
+        before = _read_installed("test-app")
+        tree_before = sorted(str(p.relative_to(dest)) for p in dest.rglob("*"))
+        manifest_before = (dest / APP_MANIFEST_FILENAME).read_text(encoding="utf-8")
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        result = update_app(v2)
+
+        assert not result.ok
+        assert result.error == _DATA_IS_A_FILE, result.error
+        assert (dest / "data").is_file()
+        assert (dest / "data").read_text(encoding="utf-8") == "the app's own bytes"
+        assert sorted(str(p.relative_to(dest)) for p in dest.rglob("*")) == tree_before
+        assert (dest / APP_MANIFEST_FILENAME).read_text(encoding="utf-8") == manifest_before
+        assert _read_installed("test-app") == before  # version 1.0.0, untouched
+        assert not (dest.parent / ".test-app-data-tmp").exists()
+        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+        # The source of the refused update is not the app's business: untouched too.
+        assert (v2 / APP_MANIFEST_FILENAME).is_file()
+
+    @requires_symlinks
+    def test_a_link_planted_at_the_temp_name_refuses_the_update_before_the_transaction(
+        self, tmp_path, app_home
+    ):
+        """Same shape on the update: `.<name>-data-tmp` holding a planted link is
+        refused before the transaction opens, so the app's real `data/` is never
+        moved onto it (which would deposit it inside the link's target and later
+        rename the link back over `data`). Data, record, tree and the link's target
+        are untouched; nothing is retired."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        (dest / "data" / "state.json").write_text('{"k": 1}', encoding="utf-8")
+        before = _read_installed("test-app")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        planted = dest.parent / ".test-app-data-tmp"
+        planted.symlink_to(elsewhere, target_is_directory=True)
+
+        result = update_app(_make_app_source(tmp_path / "v2", version="2.0.0"))
+
+        assert not result.ok
+        assert result.error.startswith(f"{planted} is a link; "), result.error
+        assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
+        assert list(elsewhere.iterdir()) == []
+        assert os.path.islink(planted)
+        assert _read_installed("test-app") == before
+        assert [p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")] == []
+
+    @requires_symlinks
+    @pytest.mark.parametrize("secret_installed", [True, False])
+    def test_update_never_keeps_a_shipped_app_secret_link(
+        self, tmp_path, app_home, secret_installed
+    ):
+        """The copied `.app_secret` is removed, unfollowed, on EVERY update: with a
+        preserved secret it is replaced by that regular file; with none (an install
+        that predates per-app secrets) nothing the source shipped stands there
+        either, so no later write can be steered through an app-chosen link."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        secret = dest / ".app_secret"
+        if secret_installed:
+            secret.write_text("s3cret", encoding="utf-8")
+        else:
+            secret.unlink()
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        (v2 / "ui").mkdir()
+        (v2 / "ui" / "leak.js").write_text("export const leak = 1;\n", encoding="utf-8")
+        (v2 / ".app_secret").symlink_to(Path("ui") / "leak.js")
+
+        result = update_app(v2)
+
+        assert result.ok, result.error
+        assert not os.path.islink(secret)
+        if secret_installed:
+            assert secret.read_text(encoding="utf-8") == "s3cret"
+        else:
+            assert not os.path.lexists(secret)
+        assert (dest / "ui" / "leak.js").read_text(encoding="utf-8") == "export const leak = 1;\n"
+
+    def test_an_update_shipping_a_root_data_file_where_none_is_preserved_rolls_back(
+        self, tmp_path, app_home
+    ):
+        """With the installed `data/` gone (nothing to put back), a source's root
+        `data` FILE reached the app directory and `app_data_dir()` raised AFTER the
+        new record and tree were durable and the old tree discarded. Refused inside
+        the transaction instead: the old tree and record come back whole."""
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        src = _make_app_source(tmp_path)
+        (src / "marker-v1.txt").write_text("", encoding="utf-8")
+        assert install_app(src).ok
+        dest = app_dir("test-app")
+        shutil.rmtree(dest / "data")
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        (v2 / "data").write_text("a file\n", encoding="utf-8")
+        result = update_app(v2)
+
+        assert not result.ok
+        assert result.error == f"failed to update app files: {_DATA_IS_A_FILE}", result.error
+        meta = _read_installed("test-app")
+        assert meta is not None and meta.version == "1.0.0"
+        assert (dest / "marker-v1.txt").is_file()  # the old tree, restored
+        assert not os.path.lexists(dest / "data")  # the shipped file did not stay
+        assert [p.name for p in dest.parent.iterdir()] == ["test-app"]  # no retired tree left
+
     @pytest.mark.parametrize("rollback_metadata_fails", [False, True])
     def test_metadata_failure_restores_data_secret_and_retired_tree(
         self, tmp_path, app_home, monkeypatch, rollback_metadata_fails
@@ -3536,3 +4050,261 @@ class TestRegisterExternalPreservesServerProvenance:
         assert meta.source == "C:/local/second"
         assert meta.sourceUrl == ""
         assert meta.origin == "external"
+
+
+class TestCopyAppTreeAsInstalled:
+    """The tree the install-time desktop gate judges: the install's own copy plus
+    the gateway's post-copy part, produced -- never predicted. Only the two tests
+    that create a link need the symlink privilege; the rest run on every host,
+    NTFS included, where the install's direct paths reach a case-variant entry
+    exactly as they do in the app directory."""
+
+    def _source(self, tmp_path: Path) -> Path:
+        # Under a directory named like the real sources dir, so a link text can
+        # re-enter the tree from above by naming it.
+        root = tmp_path / "app-sources" / "demo"
+        (root / "requirements").mkdir(parents=True)
+        (root / "requirements" / "prod.txt").write_text("fastapi\n", encoding="utf-8")
+        (root / "server.py").write_text("", encoding="utf-8")
+        return root
+
+    def test_the_gateway_owned_root_entries_are_removed_by_the_install_s_own_paths(self, tmp_path):
+        """`install_app` and `update_app` remove `.app_secret` and (with a preserved
+        directory to put back) `data` by direct path; the preview makes the very same
+        calls, so the filesystem decides a case variant for both alike: where names
+        fold (APFS, NTFS) `dest / "data"` IS the shipped `Data/` and it goes; where
+        they do not (ext4) `Data/` is the app's own directory and stays. Checked
+        against a direct look at this host, not a platform guess."""
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "Data").mkdir()
+        (root / "Data" / "server.py").write_text("", encoding="utf-8")
+        (root / ".app_secret").write_text("secret\n", encoding="utf-8")
+        (root / "backend").mkdir()
+        (root / "backend" / "data").mkdir()
+        (root / "backend" / "data" / "kept.txt").write_text("", encoding="utf-8")
+        # The exact name ships from a SECOND source: `Data/` and `data/` cannot
+        # coexist in one directory on a folding filesystem, and this test runs on
+        # NTFS and APFS too.
+        exact = tmp_path / "app-sources-exact" / "demo"
+        (exact / "data").mkdir(parents=True)
+        (exact / "data" / "seed.txt").write_text("", encoding="utf-8")
+        (exact / "server.py").write_text("", encoding="utf-8")
+        (exact / ".app_secret").write_text("secret\n", encoding="utf-8")
+
+        folds = _folds_by_a_direct_look(tmp_path)
+        dest = tmp_path / "installed"
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+        assert not os.path.lexists(dest / "data")  # the install's own path, gone everywhere
+        # On a folding filesystem that path WAS `Data/`; elsewhere `Data/` is the
+        # app's own directory, carried as itself -- the install's answer too.
+        assert (dest / "Data" / "server.py").is_file() is (not folds)
+        assert not os.path.lexists(dest / ".app_secret")
+        assert (dest / "backend" / "data" / "kept.txt").is_file()  # nested: the app's own
+        assert (dest / "server.py").is_file()
+
+        dest = tmp_path / "installed-exact"
+        copy_app_tree_as_installed(exact, dest, data_preserved=True)
+        assert not os.path.lexists(dest / "data")
+        assert not os.path.lexists(dest / ".app_secret")
+        assert (dest / "server.py").is_file()
+
+    def test_a_first_install_carries_the_source_s_data_dir_as_itself(self, tmp_path):
+        """With no preserved `data/` to put back -- a first install -- `install_app`
+        copies the source's `data/` and leaves it: an entry point under it is the
+        source's there, so the preview keeps it. `.app_secret` is the gateway's on
+        every install (written after the copy) and goes regardless."""
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "data").mkdir()
+        (root / "data" / "server.py").write_text("", encoding="utf-8")
+        (root / ".app_secret").write_text("secret\n", encoding="utf-8")
+        dest = tmp_path / "installed-fresh"
+        copy_app_tree_as_installed(root, dest, data_preserved=False)
+        assert (dest / "data" / "server.py").is_file()
+        assert not os.path.lexists(dest / ".app_secret")
+
+    def test_a_root_data_entry_the_data_dir_cannot_stand_beside_is_refused_on_a_first_install(
+        self, tmp_path
+    ):
+        """The gate judged only the layout it was about and waived an app shipping a
+        root FILE named `data`; `install_app` then wrote its record and raised at
+        `app_data_dir()`. The preview asks the install's own question
+        (`gateway_data_dir_obstruction`) and raises the install's own refusal, so
+        the gate turns the tree away before any transaction touches the app
+        directory. With a preserved `data/` awaiting, the copied entry is removed
+        (the install puts the directory back) and the same source passes."""
+        from kiro_crew.apps.manager import (
+            InstalledTreeRefused,
+            copy_app_tree_as_installed,
+            gateway_data_dir_obstruction,
+        )
+
+        root = self._source(tmp_path)
+        (root / "data").write_text("a file\n", encoding="utf-8")
+        dest = tmp_path / "installed-fresh"
+        with pytest.raises(InstalledTreeRefused) as refused:
+            copy_app_tree_as_installed(root, dest, data_preserved=False)
+        assert str(refused.value) == _DATA_IS_A_FILE
+        assert gateway_data_dir_obstruction(dest) == _DATA_IS_A_FILE  # the tree it refused, as copied
+        dest = tmp_path / "installed-update"
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+        assert not os.path.lexists(dest / "data")
+        assert gateway_data_dir_obstruction(dest) == ""
+        # The predicate answers exactly as `mkdir(exist_ok=True)` would: a directory
+        # (or nothing) is fine; anything else at the name is not.
+        assert gateway_data_dir_obstruction(tmp_path / "does-not-exist") == ""
+        (dest / "data").mkdir()
+        assert gateway_data_dir_obstruction(dest) == ""
+
+    def test_an_entry_that_cannot_be_followed_to_a_directory_is_refused_not_raised(
+        self, tmp_path, monkeypatch
+    ):
+        """On Windows a file-type link at a directory cannot be stat'ed through:
+        `is_dir` raises `PermissionError` -- and so would the data directory's own
+        `mkdir(exist_ok=True)`, after the record. The predicate must answer that
+        shape as a refusal, never let the raise out (which the install's copy branch
+        would report as a failed copy). Pinned on every host by making the follow
+        fail the way that platform does."""
+        from kiro_crew.apps.manager import gateway_data_dir_obstruction
+
+        root = tmp_path / "installed"
+        root.mkdir()
+        (root / "data").write_text("stands in for a link Windows cannot follow\n", encoding="utf-8")
+        real_stat = os.stat
+
+        def _unfollowable(path, *args, **kwargs):
+            if (
+                isinstance(path, (str, os.PathLike))
+                and Path(path).name == "data"
+                and kwargs.get("follow_symlinks", True)
+            ):
+                raise PermissionError(5, "Access is denied", str(path))
+            return real_stat(path, *args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, "stat", _unfollowable)
+            assert gateway_data_dir_obstruction(root) == _DATA_IS_A_FILE
+            assert _data_dir_mkdir_accepts(root / "data") is False  # the same host verdict
+
+    @requires_symlinks
+    def test_a_root_data_link_is_refused_whatever_it_resolves_to(self, tmp_path, monkeypatch):
+        """A link at `data` is refused by the preview whether it dangles or resolves
+        to an in-tree directory -- the same answer the install gives, on every
+        host: the gateway moves `data` aside and back across updates, and a relative
+        link relocated out of its tree dangles and loses the directory it named.
+        The copy keeps the link as a link and the target directory stays where it
+        is; nothing is judged by what the link resolves to."""
+        from kiro_crew.apps.manager import InstalledTreeRefused, copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "state").mkdir()
+        (root / "state" / "kept.json").write_text('{"kept": true}', encoding="utf-8")
+        (root / "data").symlink_to(Path("state"), target_is_directory=True)
+        dest = tmp_path / "installed-linked"
+        with pytest.raises(InstalledTreeRefused) as refused:
+            copy_app_tree_as_installed(root, dest, data_preserved=False)
+        assert str(refused.value) == _DATA_IS_A_LINK
+        assert os.path.islink(dest / "data")  # the tree it refused, as copied: the link, unfollowed
+        assert (root / "state" / "kept.json").read_text(encoding="utf-8") == '{"kept": true}'
+
+        (root / "data").unlink()
+        (root / "data").symlink_to(Path("nowhere"))
+        with pytest.raises(InstalledTreeRefused) as refused:
+            copy_app_tree_as_installed(root, tmp_path / "installed-dangling", data_preserved=False)
+        assert str(refused.value) == _DATA_IS_A_LINK
+
+    def test_preserved_data_awaits_reads_what_the_install_will_put_back(
+        self, tmp_path, monkeypatch
+    ):
+        """The three things `install_app` / `update_app` restore over the copied
+        `data/`: the installed app's own directory, one a default uninstall left
+        behind (same place), and a crashed sibling's `.{name}-data-tmp` copy."""
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import preserved_data_awaits
+
+        apps = tmp_path / "apps"
+        apps.mkdir()
+        monkeypatch.setattr(manager_mod, "apps_dir", lambda: apps)
+        assert preserved_data_awaits("demo") is False  # a first install
+        (apps / "demo").mkdir()
+        assert preserved_data_awaits("demo") is False  # an orphaned partial copy, no data
+        (apps / "demo" / "data").write_text("a file, not the directory\n", encoding="utf-8")
+        assert preserved_data_awaits("demo") is False
+        (apps / "demo" / "data").unlink()
+        (apps / "demo" / "data").mkdir()
+        assert preserved_data_awaits("demo") is True  # installed, or left by an uninstall
+        shutil.rmtree(apps / "demo")
+        (apps / ".demo-data-tmp").mkdir()
+        assert preserved_data_awaits("demo") is True  # a crashed sibling's copy, restored
+
+    @requires_symlinks
+    def test_preserved_data_awaits_never_counts_a_link(self, tmp_path, monkeypatch):
+        """A link at `data` (an install that predates the link refusal) is not a
+        directory the gateway can move aside and put back, so nothing is preserved
+        over the copy for it -- the preview keeps the source's own `data`, exactly
+        as the update that refuses to move the link would have."""
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import preserved_data_awaits
+
+        apps = tmp_path / "apps"
+        (apps / "demo" / "state").mkdir(parents=True)
+        monkeypatch.setattr(manager_mod, "apps_dir", lambda: apps)
+        (apps / "demo" / "data").symlink_to(Path("state"), target_is_directory=True)
+        assert (apps / "demo" / "data").is_dir()  # `is_dir` follows it; the predicate must not
+        assert preserved_data_awaits("demo") is False
+        (apps / ".demo-data-tmp").symlink_to(apps / "demo" / "state", target_is_directory=True)
+        assert preserved_data_awaits("demo") is False
+
+    @requires_symlinks
+    def test_a_root_file_or_link_named_like_a_gateway_entry_is_removed_too(self, tmp_path):
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "data").write_text("a regular file so named\n", encoding="utf-8")
+        (root / ".app_secret").symlink_to(Path("server.py"))
+        dest = tmp_path / "installed"
+
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+
+        assert not os.path.lexists(dest / "data")
+        assert not os.path.lexists(dest / ".app_secret")
+        assert (dest / "server.py").is_file()  # the link's target itself is untouched
+
+    @requires_symlinks
+    def test_it_is_the_install_copy_link_for_link(self, tmp_path):
+        """What the gate meets in the preview is what `install_app` leaves: a
+        structural in-tree link kept as a link, a link into a dropped name kept but
+        dangling, an escaping link omitted, an absolute in-tree link rewritten, and a
+        text that climbs above the root and re-enters by naming the checkout kept
+        verbatim -- so it resolves to the CHECKOUT's file from the copy."""
+        from kiro_crew.apps.manager import copy_app_tree_as_installed
+
+        root = self._source(tmp_path)
+        (root / "requirements.txt").symlink_to(Path("requirements") / "prod.txt")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "req.txt").write_text("x\n", encoding="utf-8")
+        (root / "dropped.txt").symlink_to(Path("node_modules") / "req.txt")
+        outside = tmp_path / "outside.txt"
+        outside.write_text("x\n", encoding="utf-8")
+        (root / "escaping.txt").symlink_to(outside)
+        (root / "absolute.txt").symlink_to(root / "requirements" / "prod.txt")
+        (root / "climbing.txt").symlink_to(
+            Path("..") / ".." / "app-sources" / "demo" / "requirements" / "prod.txt"
+        )
+        # Same depth as the checkout, as the real app directory is.
+        dest = tmp_path / "apps" / "demo"
+
+        copy_app_tree_as_installed(root, dest, data_preserved=True)
+
+        assert (dest / "requirements.txt").resolve() == (dest / "requirements" / "prod.txt")
+        assert os.path.islink(dest / "dropped.txt") and not (dest / "dropped.txt").exists()
+        assert not os.path.lexists(dest / "escaping.txt")
+        assert os.path.islink(dest / "absolute.txt") and not os.path.isabs(
+            os.readlink(dest / "absolute.txt")
+        )
+        assert (dest / "absolute.txt").resolve() == (dest / "requirements" / "prod.txt")
+        # Kept verbatim: from the copy it reaches the checkout, outside the copy.
+        assert (dest / "climbing.txt").resolve() == (root / "requirements" / "prod.txt").resolve()

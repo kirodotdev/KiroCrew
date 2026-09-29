@@ -303,6 +303,16 @@ def _walk_destination(rest: str) -> tuple[str | None, int]:
     (:data:`_MD_ESCAPABLE`): a native Windows path is ``C:\\Users\\me\\shot.png``,
     and treating every backslash as an escape strips the separators and leaves a
     path that cannot resolve.
+
+    :func:`kiro_crew.constants.md_link_destination` is the parenthesis grammar of
+    this walk as a regex unit, bounded to one nesting level with escaped
+    parentheses and a ``[`` that opens a nested ``[label](`` refused, for the channel
+    renderers and the display-safety screen that compose it into one ``re.sub``
+    pass. Wherever it matches it closes at the
+    same ``)`` as this walk; only the text can differ, because this walk drops the
+    backslash of an escaped non-parenthesis character and :func:`_finish_destination`
+    rewrites or rejects what it collected once the close is found. Neither moves the end.
+    ``test/test_markdown_link_parentheses.py`` pins the shared end.
     """
     depth = 1
     out: list[str] = []

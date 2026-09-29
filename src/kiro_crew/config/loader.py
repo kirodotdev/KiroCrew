@@ -883,31 +883,70 @@ def ssh_auth_sock_consent_path() -> Path:
     return config_dir() / "ssh_auth_sock_consent.json"
 
 
-def read_local_secret(port: int) -> str:
+def read_local_secret(port: int, dial_host: str | None = None) -> str:
     """Read the internal-API credential for the gateway on *port*.
 
     Single home for the secret read that callers (cron scripts, MCP tool bridges,
     CLI) need to authenticate to the gateway's internal API. Returns empty string
     when no credential can be read.
 
-    Resolution is per LISTENER first: ``run/gateway-<port>.secret``, then the
-    shared ``.local_secret``. That order is the invariant, and it lives here rather
-    than in each reader because the credential identifies ONE gateway generation
-    while the shared file has one slot per data home, last-writer-wins. A caller
-    that reads the shared file while a different generation owns the port it dials
-    gets 403 on every internal call.
+    Resolution depends on whether the caller can name the ADDRESS it dials:
 
-    *port* is REQUIRED, and deliberately so: the credential is a function of the
-    dial target, so inferring the target here would let a caller dial one gateway
-    while authenticating for another -- the exact desync this helper exists to
-    close, reintroduced one call site at a time and invisible at the call site. A
-    caller with no port must resolve one explicitly and pass it, where the choice
-    is reviewable.
+    * With *dial_host* -- the loopback host the caller is about to send the
+      credential to (``127.0.0.1``, ``localhost``, ``::1``) -- the credential is
+      resolved per LISTENER: :func:`run_marker.read_listener_secret` returns the
+      value published under every loopback family that host reaches. When it
+      returns a value, that value is used. When it returns nothing, the answer
+      turns on WHY:
+
+      - The gateway published NO listener entry for this port at all
+        (:func:`run_marker.has_listener_entries` is false) -- an older gateway,
+        or one that could not name its bound address. There is no OTHER
+        listener's credential on this port to confuse it with, so this falls back
+        to the port-keyed read and then the shared file, exactly as an
+        address-less caller does. This is the pre-per-listener world, not the
+        desync, and withholding the credential here would stop an ordinary
+        install from authenticating at all.
+      - Listener entries EXIST but none covers the family *dial_host* reaches.
+        A gateway bound some address other than the one being dialled, so the
+        port-keyed read could hand back a DIFFERENT listener's credential -- the
+        exact desync this issue closes. This FAILS CLOSED (returns ``""``): no
+        fallback, because the fallback is the bug.
+
+    * Without *dial_host* -- a caller that structurally cannot name an address --
+      resolution is per LISTENER for the port only: ``run/gateway-<port>.secret``,
+      then the shared ``.local_secret``. This is the pre-existing behaviour, kept
+      for the callers section 12.1 names as resolving a port and nothing finer.
+
+    Every reader that constructs a loopback URL a line or two away from this call
+    SHOULD pass that URL's host as *dial_host*, so the credential is paired to the
+    listener it will actually reach. *port* stays REQUIRED regardless: the
+    credential is a function of the dial target, so inferring the target here
+    would let a caller dial one gateway while authenticating for another -- the
+    exact desync, reintroduced one call site at a time and invisible at the call
+    site.
     """
     # Function-local: port_resolution imports this module, so a module-level
     # import would be circular.
     from kiro_crew.instances import run_marker
 
+    if dial_host:
+        try:
+            listener = run_marker.read_listener_secret(int(port), dial_host)
+            if listener:
+                return listener
+            # An empty listener read is a REFUSAL unless the gateway PROVABLY
+            # published no listener entries at all -- only then does this port
+            # predate the per-listener publish and the port-keyed read below is
+            # safe and required. ``has_listener_entries`` is three-valued: a
+            # proven-empty ``False`` re-opens the fallback; ``True`` (entries
+            # exist, none covered the family) and ``None`` (could not enumerate,
+            # so absence is unproven) both FAIL CLOSED here -- an unreadable
+            # ``run/`` must not silently downgrade to the shared credential.
+            if run_marker.has_listener_entries(int(port)) is not False:
+                return ""
+        except Exception:
+            return ""
     try:
         per_port = run_marker.read_secret(int(port))
     except Exception:
@@ -939,7 +978,7 @@ class _PinnedCreateRefusal(Exception):
     """pinned_fs's refusal for the workspace create, mapped by the caller."""
 
 
-def materialize_workspace_dir(validated: Path, *, display: str) -> None:
+def materialize_workspace_dir(validated: Path, *, leaf: Path, display: str) -> None:
     """Make *validated* exist as a directory: adopt one that is there, create one that is not.
 
     One writer-side rule shared by the dashboard handler and the CLI: a published
@@ -969,7 +1008,18 @@ def materialize_workspace_dir(validated: Path, *, display: str) -> None:
     caller's config write later fails. It is reachable only through the entry
     written in the same locked section, and a concurrent create can already have
     adopted it, so deleting it is the unsafe option.
+
+    *leaf* is the same path BEFORE resolution. Resolving follows a link at the
+    final name, so *validated* alone never shows one: the entry the caller
+    registers is the unresolved spelling, and a link or junction there is
+    refused on every platform. It is normalized first, so a ``..`` through a
+    missing component cannot make the probe miss the name resolution lands on.
     """
+    if platform_compat.is_link_or_junction(os.path.normpath(leaf)):
+        raise WorkspaceDirUnusable(
+            "workspace_dir_not_a_directory",
+            f"'{display}' is a link, not a directory; choose another dir or remove it first",
+        )
     if pinned_fs.supports_pinned_walk():
         try:
             parent_fd = pinned_fs.pin_parent(
@@ -1004,16 +1054,19 @@ def materialize_workspace_dir(validated: Path, *, display: str) -> None:
                 f"Directory '{display}' could not be created: {exc.strerror or exc}",
             ) from exc
 
-    if validated.is_dir():
+    # By name here, so a link at the name must be screened out explicitly: a
+    # Windows junction answers is_dir() True and is_symlink() False, and the
+    # pinned arm above refuses every link through its lstat.
+    if not platform_compat.is_link_or_junction(validated) and validated.is_dir():
         return
     try:
         os.mkdir(validated)
     except FileExistsError as exc:
         # EEXIST is the filesystem itself saying something is at the name: a
         # racer's directory is the state this create wanted, while a file, a
-        # socket, a dangling link or a symlink cannot serve as a workspace, and
+        # socket, a dangling link, a symlink or a junction cannot serve as a workspace, and
         # registering one writes back exactly the unusable entry this prevents.
-        if validated.is_dir() and not validated.is_symlink():
+        if not platform_compat.is_link_or_junction(validated) and validated.is_dir():
             return
         raise WorkspaceDirUnusable(
             "workspace_dir_not_a_directory",
@@ -2964,6 +3017,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         restore_sessions=dashboard_data.get("restore_sessions", False),
         crewmate_threads=_safe_bool(dashboard_data.get("crewmate_threads"), False),
+        dynamic_dashboard_cards=_safe_bool(dashboard_data.get("dynamic_dashboard_cards"), False),
         qr_session_until_restart=_safe_bool(dashboard_data.get("qr_session_until_restart"), True),
         qr_session_persist_across_restart=_safe_bool(
             dashboard_data.get("qr_session_persist_across_restart"), False
@@ -5952,7 +6006,10 @@ def resolve_agent_bindings(
     if ws_name in config.workspaces:
         ws_dir = Path(config.workspaces[ws_name].dir)
     else:
-        logger.warning(
+        # When the agent already names default_workspace there is nothing to fall
+        # back to, and "'x' not found, falling back to 'x'" would only mislead.
+        log = logger.debug if ws_name == config.default_workspace else logger.warning
+        log(
             "Agent workspace '%s' not found, falling back to default_workspace '%s'",
             ws_name,
             config.default_workspace,

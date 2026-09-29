@@ -181,6 +181,8 @@ class TestShellBeforePython:
         import sys
         from unittest.mock import MagicMock, patch
 
+        from dashboard_owner_helpers import owner_claims
+
         call_order: list[str] = []
 
         async def mock_shell(*args, **kwargs):
@@ -216,10 +218,10 @@ class TestShellBeforePython:
             # Build a minimal fake request
             request = MagicMock()
             request.match_info = {"name": "test-app"}
-            request.app = {"state": MagicMock()}
+            request.app = {"state": MagicMock(owner_id="")}
             request.can_read_body = False
             # No app identity: the enable route refuses app tokens outright.
-            request.get = lambda key, default=None: default
+            owner_claims(request)
 
             await handle_enable_app(request)
 

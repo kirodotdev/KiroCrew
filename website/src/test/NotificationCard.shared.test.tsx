@@ -1,7 +1,9 @@
 /**
  * The bell popover's mac rows and the in-app banner must render the SAME
- * `NotificationCard`, differing only in elevation material. A second
- * look-alike rendering of a note is the regression this file exists to catch.
+ * `NotificationCard` — one body, one material (the `Glass` pane the composer
+ * dock wears), with nothing on the card saying which surface it is on. A
+ * second look-alike rendering of a note, or a card-shaped div carrying its own
+ * tint/blur/border classes, is the regression this file exists to catch.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen } from '@testing-library/react'
@@ -9,7 +11,7 @@ import { createRef } from 'react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationFeed from '../components/notifications/NotificationFeed'
 import NotificationBanner from '../components/notifications/NotificationBanner'
-import NotificationCard, { CARD_MATERIAL } from '../components/notifications/NotificationCard'
+import NotificationCard from '../components/notifications/NotificationCard'
 import { dispatchLiveNotification } from '../hooks/notificationEvent'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
@@ -48,12 +50,11 @@ beforeEach(() => { localStorage.clear(); vi.spyOn(document, 'hasFocus').mockRetu
 const cardsIn = (root: ParentNode) => Array.from(root.querySelectorAll<HTMLElement>('[data-notification-card]'))
 
 describe('NotificationCard is the one rendering for both mac surfaces', () => {
-  it('the bell popover (variant="mac") renders every row through the card at popover elevation', () => {
+  it('the bell popover (variant="mac") renders every row through the card', () => {
     const store = createTestStore({ notifications: { items: [note] } as RootState['notifications'] })
     const { container } = renderWithProviders(<NotificationFeed variant="mac" selectedTs={null} onSelect={() => {}} />, { store })
     const cards = cardsIn(container)
     expect(cards).toHaveLength(1)
-    expect(cards[0].getAttribute('data-elevation')).toBe('popover')
     expect(cards[0].getAttribute('data-ts')).toBe(note.ts)
     // The title lives INSIDE the card, nowhere else on the surface.
     const title = screen.getByText('Shared card note')
@@ -61,7 +62,7 @@ describe('NotificationCard is the one rendering for both mac surfaces', () => {
     expect(screen.getByText('Open run').closest('[data-notification-card]')).toBe(cards[0])
   })
 
-  it('the banner renders its top card through the same component at banner elevation', () => {
+  it('the banner renders its top card through the same component', () => {
     const bellRef = createRef<HTMLButtonElement>()
     const { container } = renderWithProviders(
       <><button ref={bellRef}>bell</button><NotificationBanner bellRef={bellRef} popoverOpen={false} onOpenNote={() => {}} /></>,
@@ -70,10 +71,36 @@ describe('NotificationCard is the one rendering for both mac surfaces', () => {
     act(() => { dispatchLiveNotification(note) })
     const cards = cardsIn(container)
     expect(cards).toHaveLength(1)
-    expect(cards[0].getAttribute('data-elevation')).toBe('banner')
     expect(cards[0].contains(screen.getByText('Shared card note'))).toBe(true)
     expect(screen.getByText('Open run').closest('[data-notification-card]')).toBe(cards[0])
-    for (const cls of CARD_MATERIAL.banner.split(' ')) expect(cards[0].classList.contains(cls)).toBe(true)
+    expect(cards[0].classList.contains('liquid-glass')).toBe(true)
+  })
+
+  it('the card is a Glass pane and carries no material of its own', () => {
+    const { container } = renderWithProviders(<NotificationCard n={note} onOpen={() => {}} openLabel="open" />)
+    const card = cardsIn(container)[0]
+    expect(card.classList.contains('liquid-glass')).toBe(true)
+    expect(card.classList.contains('glass-shadow')).toBe(true)
+    // The index.css solidifying hook the sheet-dismiss predicate also keys on.
+    expect(card.classList.contains('notif-material')).toBe(true)
+    // No hand-rolled tint / blur / border: the pane's layers are the material.
+    expect(card.className).not.toMatch(/\bbg-\[|backdrop-blur|\bborder\b|shadow-(md|lg)/)
+    expect(card.querySelectorAll(':scope > [data-liquid-glass-layer]').length).toBeGreaterThan(0)
+  })
+
+  it('state is a tint step on the pane, never a border or an opacity', () => {
+    const { container: a } = renderWithProviders(<NotificationCard n={note} active onOpen={() => {}} openLabel="open" />)
+    expect(cardsIn(a)[0].classList.contains('glass-accent')).toBe(true)
+    expect(cardsIn(a)[0].className).not.toMatch(/border-accent|bg-accent-subtle/)
+    const { container: b } = renderWithProviders(<NotificationCard n={note} onOpen={() => {}} openLabel="open" />)
+    expect(cardsIn(b)[0].classList.contains('glass-hover')).toBe(true)
+    const { container: c } = renderWithProviders(<NotificationCard n={note} muted onOpen={() => {}} openLabel="open" />)
+    expect(cardsIn(c)[0].classList.contains('glass-faded')).toBe(true)
+    expect(cardsIn(c)[0].classList.contains('glass-hover')).toBe(false)
+    expect(cardsIn(c)[0].className).not.toMatch(/border-dashed/)
+    // Never `opacity` on a glass host: it would make the host a backdrop root
+    // and void the pane's own blur.
+    for (const el of [a, b, c]) expect(cardsIn(el)[0].className).not.toMatch(/\bopacity-\d/)
   })
 
   it('a deck card and the non-mac page list are not extra renderings of the body', () => {
@@ -85,15 +112,10 @@ describe('NotificationCard is the one rendering for both mac surfaces', () => {
     expect(screen.getByText('Shared card note')).toBeTruthy()
   })
 
-  it('only the material differs between elevations', () => {
-    const { container: a } = renderWithProviders(<NotificationCard n={note} elevation="popover" onOpen={() => {}} openLabel="open" />)
-    const { container: b } = renderWithProviders(<NotificationCard n={note} elevation="banner" onOpen={() => {}} openLabel="open" />)
-    const strip = (el: HTMLElement) => {
-      const clone = el.cloneNode(true) as HTMLElement
-      clone.removeAttribute('class'); clone.removeAttribute('data-elevation')
-      return clone.innerHTML
-    }
-    expect(strip(cardsIn(a)[0])).toBe(strip(cardsIn(b)[0]))
-    expect(cardsIn(a)[0].className).not.toBe(cardsIn(b)[0].className)
+  it('the card carries no surface marker: nothing on it says popover or banner', () => {
+    const { container } = renderWithProviders(<NotificationCard n={note} onOpen={() => {}} openLabel="open" />)
+    const card = cardsIn(container)[0]
+    expect(card.hasAttribute('data-elevation')).toBe(false)
+    expect(card.className).not.toMatch(/popover|banner/)
   })
 })

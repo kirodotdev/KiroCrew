@@ -37,7 +37,9 @@ interface UseChatPageSessionControllerArgs {
   filteredSlots: ChatSlot[]
   filteredSlotsRef: MutableRefObject<ChatSlot[]>
   history: SessionInfo[]
-  input: string
+  /** Whether the composer holds any non-whitespace text. A boolean, not the
+   *  text: the page must not re-render per keystroke to feed this hook. */
+  inputNonBlank: boolean
   isMobile: boolean
   locationKey: string
   locationPathname: string
@@ -77,7 +79,7 @@ export function useChatPageSessionController({
   filteredSlots,
   filteredSlotsRef,
   history,
-  input,
+  inputNonBlank,
   isMobile,
   locationKey,
   locationPathname,
@@ -112,10 +114,10 @@ export function useChatPageSessionController({
   // typing never re-fetches.
   const historySeededRef = useRef(false)
   useEffect(() => {
-    if (historySeededRef.current || !input.trim()) return
+    if (historySeededRef.current || !inputNonBlank) return
     historySeededRef.current = true
     if (history.length === 0) dispatch(fetchHistory(false))
-  }, [input, history.length, dispatch])
+  }, [inputNonBlank, history.length, dispatch])
 
   // Persist active slot to localStorage for refresh recovery (per-mode)
   const slotStorageKey = `mc-active-slot-${mode || 'chat'}`

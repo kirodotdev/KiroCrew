@@ -171,8 +171,11 @@ as the row's denominator, and a cut-off that survives for nobody is omitted with
 reason stated rather than shown as a low score.
 
 **2. `round(score, 4)` destroys ordering past ~306 days.** The score is rounded to
-four decimals before sorting (`vector_memory.search_episodic` on the FAISS path,
-`vector_memory._episodic_candidate` on the sqlite path). Solving `cosine * 0.85 * exp(-0.03d) < 0.00005` gives d ≈ 306
+four decimals before sorting: in `vector_memory_runtime/episodic_search.py`,
+`search_episodic` on the FAISS path and `episodic_candidate` and
+`rank_from_scoring_set` on the stored-vector path (the store methods
+`search_episodic`, `_episodic_candidate` and `_rank_from_scoring_set` delegate to
+them). Solving `cosine * 0.85 * exp(-0.03d) < 0.00005` gives d ≈ 306
 days, after which every candidate ties at `0.0` and the "ranking" is whatever order
 sqlite returned. Measured directly:
 
@@ -224,8 +227,9 @@ Three details that are load-bearing:
   embedder, so the timings would describe the contention rather than the code.
 
 Not built, and deliberately: a **path-filtered PR comment** for changes to
-`vector_memory.py` / `embeddings.py` / `context.py`. It is the natural second
-step once the nightly has produced a stable baseline for a few weeks, and it
+`vector_memory.py` / `vector_memory_runtime/` / `embeddings.py` / `context.py`. It
+is the natural second step once the nightly has produced a stable baseline for a
+few weeks, and it
 should stay a comment rather than a check for the reasons in the workflow's own
 header comment.
 
@@ -349,7 +353,8 @@ names `longmemeval_s` as the fix.
 
 **Dedup can eat gold, and does not work the way its config suggests.**
 `write_episodic` rejects any text whose lowercased first 80 characters already
-exist (`LOWER(SUBSTR(text, 1, 80))` in `vector_memory.write_episodic`)
+exist (`LOWER(SUBSTR(text, 1, 80))` in `vector_memory.write_episodic_outcome`,
+which `write_episodic` wraps)
 **unconditionally** — `dedup_threshold` is never consulted for that path. The
 cosine near-duplicate check that *does* use the threshold is gated on a live FAISS
 index in the same function, so **on a host without faiss, near-duplicate dedup never

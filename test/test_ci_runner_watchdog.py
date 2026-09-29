@@ -541,6 +541,263 @@ def test_saturation_evidence_inside_a_young_run_still_counts() -> None:
     assert api.posts == []
 
 
+# ── the orphan's own queue decides before the fleet does ────────────────────
+
+
+def test_dispatch_queue_strips_the_per_run_suffix_and_keeps_the_fleet_override() -> None:
+    """Two runs' jobs on the same project and fleet compare equal; a fleet override does not."""
+    linux_a = wd.dispatch_queue([CODEBUILD.format(run=1, attempt=1)])
+    linux_b = wd.dispatch_queue([CODEBUILD.format(run=98765, attempt=3)])
+    large = wd.dispatch_queue([CODEBUILD.format(run=1, attempt=1) + " instance-size:large"])
+    windows = wd.dispatch_queue(["codebuild-example-gha-windows-1-1"])
+    assert linux_a == linux_b == frozenset({"codebuild-example-gha-linux"})
+    assert large == frozenset({"codebuild-example-gha-linux instance-size:large"})
+    assert windows != linux_a
+    # Hosted labels are kept verbatim; the suffix rule is for routed labels only.
+    assert wd.dispatch_queue(["ubuntu-latest"]) == frozenset({"ubuntu-latest"})
+    assert wd.dispatch_queue(["windows-2022-1-1"]) == frozenset({"windows-2022-1-1"})
+
+
+def _incident_siblings(*, queued_minutes_ago: float = 94) -> list[dict[str, Any]]:
+    """The measured shape: fourteen fast-gate jobs queued together, thirteen started in 23 s."""
+    started = queued_minutes_ago - 23 / 60
+    return [
+        _job(
+            100 + i,
+            status="completed",
+            conclusion="success",
+            minutes_ago=queued_minutes_ago,
+            started_minutes_ago=started,
+            completed_minutes_ago=started - 1,
+            runner_name=f"r{i}",
+        )
+        for i in range(13)
+    ]
+
+
+def test_prompt_sibling_starts_on_the_orphans_own_queue_clear_a_slow_start_elsewhere() -> None:
+    """The measured incident: thirteen siblings on the orphan's label started in 23 s,
+    the fourteenth sat for an hour and a half, and a 7-minute start on ANOTHER fleet
+    held it unhealed for six hours.
+
+    The orphan's own queue served thirteen jobs promptly after it queued, so the
+    reading for that queue is DISPATCHING and the run is healed. The slow start on the
+    large fleet is a fact about that fleet's capacity, not this queue's.
+
+    Negative control: judged without the queue, the fleet-wide reading sees the slow
+    start and holds; that is the hold that kept the run stuck.
+    """
+    orphan = _job(11, minutes_ago=94)
+    slow_elsewhere = _job(
+        21,
+        status="in_progress",
+        minutes_ago=10,
+        started_minutes_ago=3,
+        runner_name="r",
+        run_id=2,
+        large=True,
+    )
+    api = FakeApi(
+        {"in_progress": [_run(1, minutes_ago=94), _run(2, minutes_ago=12, branch="other")]},
+        {1: [orphan] + _incident_siblings(), 2: [slow_elsewhere]},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.ORPHANED
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+
+    # The control: the same evidence, read label-blind, is the old hold.
+    evidence = wd.DispatchEvidence()
+    evidence.absorb([orphan] + _incident_siblings() + [slow_elsewhere], _policy())
+    since = _verdict_of(verdicts, 1).orphans[0].queued_at
+    blind = wd.resolve_hold(FakeApi({}, {}), _policy(), evidence, since)
+    assert blind is not None and blind[0] == wd.SKIPPED_SATURATED
+    scoped = wd.resolve_hold(
+        FakeApi({}, {}), _policy(), evidence, since, queue=wd.dispatch_queue(orphan["labels"])
+    )
+    assert scoped is None
+
+
+def test_a_slow_start_on_the_orphans_own_queue_holds_though_the_rest_of_the_fleet_is_prompt() -> (
+    None
+):
+    """Scoping cuts both ways: a saturated own queue holds even when other fleets are quick.
+
+    Run 2 shares the orphan's queue and served a job after a 6-minute wait; run 3 on
+    the large fleet served one in seconds. Label-blind, the slow start would hold
+    anyway, so the test also pins that the detail NAMES the own-queue reading -- the
+    difference a reader of the tick log needs.
+    """
+    slow_same_queue = _job(
+        21, status="in_progress", minutes_ago=8, started_minutes_ago=2, runner_name="r", run_id=2
+    )
+    prompt_elsewhere = _job(
+        31,
+        status="in_progress",
+        minutes_ago=3,
+        started_minutes_ago=2.8,
+        runner_name="r",
+        run_id=3,
+        large=True,
+    )
+    api = FakeApi(
+        {
+            "in_progress": [
+                _run(1),
+                _run(2, minutes_ago=40, branch="other"),
+                _run(3, minutes_ago=5, branch="third"),
+            ]
+        },
+        {1: [_job(11)], 2: [slow_same_queue], 3: [prompt_elsewhere]},
+    )
+    verdicts, outcomes = _sweep(api)
+    verdict = _verdict_of(verdicts, 1)
+    assert verdict.verdict == wd.SKIPPED_SATURATED
+    assert "own CodeBuild queue" in verdict.detail and "job-21" in verdict.detail
+    assert outcomes == {}
+    assert api.posts == []
+
+
+def test_a_same_queue_prompt_start_does_not_lift_the_partial_evidence_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unread-run hold guards against a slow start nobody read, and a same-queue
+    prompt start does not rule one out.
+
+    Same listing as the partial-hold pin, except the prompt start is on the orphan's
+    own queue. The own-queue reading is derived from the starts this sweep read; a
+    slow start on that same queue would turn it into SATURATED, and an unread
+    30-minute run can hold exactly that start. The retained candidates carry no queue
+    attribution that could rule it out, so the sweep holds either way and posts
+    nothing. Negative control: the same listing with the unread run gone heals, so the
+    hold is the unread run's, not the start's.
+    """
+    monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
+    monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    older = _run(500, minutes_ago=30, status="queued", branch="older")
+
+    same_queue = _job(
+        21, status="in_progress", minutes_ago=20, started_minutes_ago=19, runner_name="r", run_id=2
+    )
+    held = FakeApi(
+        {"in_progress": [_run(1), older, _run(2, minutes_ago=20, branch="other")]},
+        {1: [_job(11)], 2: [same_queue], 500: []},
+    )
+    verdicts, outcomes = _sweep(held)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert outcomes == {} and held.posts == []
+
+    other_fleet = dict(same_queue, labels=[same_queue["labels"][0] + " instance-size:large"])
+    held_elsewhere = FakeApi(
+        {"in_progress": [_run(1), older, _run(2, minutes_ago=20, branch="other")]},
+        {1: [_job(11)], 2: [other_fleet], 500: []},
+    )
+    elsewhere_verdicts, elsewhere_outcomes = _sweep(held_elsewhere)
+    assert _verdict_of(elsewhere_verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert elsewhere_outcomes == {} and held_elsewhere.posts == []
+
+    read_in_full = FakeApi(
+        {"in_progress": [_run(1), _run(2, minutes_ago=20, branch="other")]},
+        {1: [_job(11)], 2: [same_queue]},
+    )
+    full_verdicts, full_outcomes = _sweep(read_in_full)
+    assert _verdict_of(full_verdicts, 1).verdict == wd.ORPHANED
+    assert full_outcomes == {1: wd.OUTCOME_HEALED}
+
+
+def test_a_prompt_own_queue_does_not_clear_the_outage_hold() -> None:
+    """The own-queue reading settles the orphan's place in line, not whether the fleet is up.
+
+    Thirteen siblings started 94 minutes ago and nothing on CodeBuild has started in
+    the half hour since: the orphan was never in line, but re-running it now would
+    queue finished work into what may be a total outage. The outage hold still holds,
+    and the tick says so.
+    """
+    orphan = _job(11, minutes_ago=94)
+    api = FakeApi(
+        {"in_progress": [_run(1, minutes_ago=94)]},
+        {1: [orphan] + _incident_siblings()},
+        evidence=False,
+    )
+    verdicts, outcomes = _sweep(api)
+    verdict = _verdict_of(verdicts, 1)
+    assert verdict.verdict == wd.SKIPPED_NO_DISPATCH_EVIDENCE
+    assert outcomes == {} and api.posts == []
+
+
+def test_the_own_queue_reading_prefers_recent_starts_and_reads_old_ones_one_way() -> None:
+    """Recent starts are read like the fleet-wide rule; old ones only say "dispatching".
+
+    An old slow start with nothing recent is SILENT: it does not say the queue is slow
+    now, and it does not say the orphan was never in line either, so the label-blind
+    rules keep the decision. Old prompt starts alone say DISPATCHING; a recent slow
+    start says SATURATED whatever the old ones said.
+    """
+    policy = _policy()
+    since = NOW - timedelta(minutes=94)
+    queue = wd.dispatch_queue(_job(11)["labels"])
+
+    old_slow = _job(
+        21, status="completed", minutes_ago=90, started_minutes_ago=80, runner_name="r", run_id=2
+    )
+    evidence = wd.DispatchEvidence()
+    evidence.absorb([old_slow], policy)
+    assert evidence.own_queue(since, policy, queue) == (wd.OWN_QUEUE_SILENT, None)
+
+    old_prompt = wd.DispatchEvidence()
+    old_prompt.absorb(_incident_siblings(), policy)
+    assert old_prompt.own_queue(since, policy, queue) == (wd.OWN_QUEUE_DISPATCHING, None)
+
+    recent_slow = _job(
+        31, status="in_progress", minutes_ago=9, started_minutes_ago=3, runner_name="r", run_id=3
+    )
+    old_prompt.absorb([recent_slow], policy)
+    reading, slow = old_prompt.own_queue(since, policy, queue)
+    assert reading == wd.OWN_QUEUE_SATURATED and slow is not None and slow.job_id == 31
+
+    # Another fleet's starts are not this queue's, however recent or prompt.
+    elsewhere = wd.DispatchEvidence()
+    elsewhere.absorb(
+        [
+            _job(
+                41,
+                status="in_progress",
+                minutes_ago=2,
+                started_minutes_ago=1.9,
+                runner_name="r",
+                run_id=4,
+                large=True,
+            )
+        ],
+        policy,
+    )
+    assert elsewhere.own_queue(since, policy, queue) == (wd.OWN_QUEUE_SILENT, None)
+
+
+def test_orphans_spanning_two_queues_get_the_label_blind_reading() -> None:
+    """A run with a Linux orphan and a Windows orphan has no one own queue.
+
+    A prompt start on the Linux queue says nothing about the Windows one, and the hold
+    is judged for the run as a whole, so a slow start elsewhere holds it as before.
+    """
+    windows_orphan = dict(_job(12), labels=["codebuild-example-gha-windows-1-1"])
+    slow_elsewhere = _job(
+        21,
+        status="in_progress",
+        minutes_ago=10,
+        started_minutes_ago=3,
+        runner_name="r",
+        run_id=2,
+        large=True,
+    )
+    api = FakeApi(
+        {"in_progress": [_run(1, minutes_ago=94), _run(2, minutes_ago=12, branch="other")]},
+        {1: [_job(11, minutes_ago=94), windows_orphan] + _incident_siblings(), 2: [slow_elsewhere]},
+    )
+    verdicts, outcomes = _sweep(api)
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_SATURATED
+    assert outcomes == {} and api.posts == []
+
+
 def test_a_young_runs_start_still_counts_as_evidence_though_the_run_is_not_actionable() -> None:
     """A run the classifier refuses to act on still feeds the evidence set.
 
@@ -3935,8 +4192,17 @@ def test_the_summary_reports_a_partial_evidence_hold(monkeypatch: pytest.MonkeyP
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
+    # On another fleet (`instance-size:large`): this test pins the label-blind path, and
+    # a prompt start on the orphan's OWN queue would take the saturation question
+    # (though not this hold) down the own-queue path instead.
     prompt = _job(
-        21, status="in_progress", minutes_ago=20, started_minutes_ago=19, runner_name="r", run_id=2
+        21,
+        status="in_progress",
+        minutes_ago=20,
+        started_minutes_ago=19,
+        runner_name="r",
+        run_id=2,
+        large=True,
     )
     api = FakeApi(
         {
@@ -5061,7 +5327,7 @@ def test_the_tick_logs_the_slowest_served_wait_against_the_saturation_line() -> 
 
     # Nothing served at all: no reading is invented.
     quiet = wd.DispatchEvidence()
-    assert quiet.slowest_served_wait() is None
+    assert quiet.slowest_served_wait(_policy()) is None
 
 
 def test_a_tick_that_saw_no_served_start_logs_no_calibration_reading() -> None:
@@ -5137,8 +5403,17 @@ def test_the_partial_hold_turns_on_unread_saturation_capable_runs_not_on_the_bou
     Negative control: keying the hold on the bound alone holds in both halves, which
     at this repository's listing size is every tick.
     """
+    # On another fleet (`instance-size:large`): this test pins the label-blind path, and
+    # a prompt start on the orphan's OWN queue would take the saturation question
+    # (though not this hold) down the own-queue path instead.
     prompt = _job(
-        21, status="in_progress", minutes_ago=20, started_minutes_ago=19, runner_name="r", run_id=2
+        21,
+        status="in_progress",
+        minutes_ago=20,
+        started_minutes_ago=19,
+        runner_name="r",
+        run_id=2,
+        large=True,
     )
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)

@@ -2348,6 +2348,15 @@ class DashboardConfig:
             restart=True,
         ),
     )
+    dynamic_dashboard_cards: bool = field(
+        default=False,
+        metadata=_meta(
+            "Automatic session cards",
+            "Use the background model to update session-owned HTML cards after activity. "
+            "Off by default. One call at a time, at most one per session every two minutes "
+            "and 60 per gateway hour. Live status and native decisions work without it.",
+        ),
+    )
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(

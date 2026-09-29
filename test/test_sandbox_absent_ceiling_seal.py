@@ -35,6 +35,7 @@ import sys
 import tempfile
 import textwrap
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -91,30 +92,74 @@ def _seal_loop_source() -> str:
     """The launcher's ``READONLY_DIRS`` loop body, ready to run.
 
     Pulled out of the generated script rather than restated, so this test cannot pass
-    against a loop the launcher does not contain.
+    against a loop the launcher does not contain. The loop pins each target by
+    descriptor, so the helpers it calls come along -- sliced up to
+    ``_locked_mount_flags`` and no further, because that one is deliberately
+    stubbed by the caller.
     """
     script = sandbox._build_launcher_script("strict")
+    helpers = script[script.index("_O_PATH = getattr") : script.index("def _locked_mount_flags(")]
     loop = (
         "for d in READONLY_DIRS:"
         + script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
     )
-    return textwrap.dedent(loop)
+    return helpers + "\n" + textwrap.dedent(loop)
 
 
 def _run_seal_loop(targets: list[str]) -> list[tuple[str, int]]:
     """Execute the launcher's seal loop over *targets*, recording every mount call."""
     calls: list[tuple[str, int]] = []
 
+    def _named(path: object) -> str:
+        """Which entry of *targets* the mount actually reached.
+
+        The loop hands ``mount`` a descriptor path pinning the object it
+        classified, so the spelling is a live fd number. Translating it back by
+        device and inode keeps these assertions about the configured NAME while
+        still proving the mount landed on that name's object.
+
+        Resolved with ``fstat`` on the descriptor the spelling NAMES rather than
+        ``stat`` on the spelling itself: the descriptor is still open when the
+        loop calls the recorder, and ``fstat`` reaches the same object on every
+        POSIX host, whereas ``/proc/self/fd/<n>`` resolves only on Linux. Going
+        through the path would have made every assertion here measure the
+        presence of procfs instead of the seal, so the whole suite would have had
+        to skip off Linux -- losing coverage this file already had.
+        """
+        spelling = os.fsdecode(path)  # type: ignore[arg-type]
+        reached = None
+        prefix = "/proc/self/fd/"
+        if spelling.startswith(prefix):
+            try:
+                reached = os.fstat(int(spelling[len(prefix) :]))
+            except (OSError, ValueError):
+                reached = None
+        if reached is None:
+            try:
+                reached = os.stat(spelling)
+            except OSError:
+                return spelling
+        for entry in targets:
+            try:
+                candidate = os.stat(entry)
+            except OSError:
+                continue
+            if (candidate.st_dev, candidate.st_ino) == (reached.st_dev, reached.st_ino):
+                return entry
+        return spelling
+
     def _record(source, target, flags, what):
         assert source == target, "a ceiling is bound over ITSELF, not over an empty source"
-        calls.append((os.fsdecode(target), flags))
+        calls.append((_named(target), flags))
 
     # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
     exec(  # noqa: S102 - running the launcher's OWN generated source is the assertion
         _seal_loop_source(),
         {
             "os": os,
+            "sys": sys,
             "READONLY_DIRS": targets,
+            "REQUIRED_MASK_TARGETS": frozenset(),
             "_mount_or_die": _record,
             "_MS_BIND": _MS_BIND,
             "_MS_REMOUNT": _MS_REMOUNT,
@@ -292,6 +337,132 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
 
         assert (crew_home / "computer_use.json").is_file()
         assert (crew_home / "profiles").is_dir()
+
+    @pytest.mark.parametrize(
+        "materialiser",
+        [
+            "_materialize_sealable_ceilings",
+            "_materialize_live_target_mask_target",
+            "_materialize_md_notebook_mask_targets",
+        ],
+    )
+    def test_every_lost_publication_branch_records_the_winner(self, crew_home, materialiser):
+        """Losing the publish race still ends with the object THERE and just seen.
+
+        The invariant, not the four lines that currently implement it: any branch that
+        returns after losing a publication must record the winner, because the launcher
+        then requires that name and refuses if it later goes missing. Asserted per
+        materialiser and driven by FORCING the loss, so a publish site added later is
+        covered without anyone remembering this test, and so the no-``else`` shape --
+        where the lost path simply falls through -- is covered like the rest.
+        """
+        real = sandbox._publish_empty_ceiling
+        lost: list[str] = []
+
+        def lost_race(target, parent, **kwargs):
+            # What a real loser leaves behind: the object present, publish reporting False.
+            real(target, parent, **kwargs)
+            lost.append(target)
+            return False
+
+        established: list[str] = []
+        with mock.patch.object(sandbox, "_publish_empty_ceiling", side_effect=lost_race):
+            getattr(sandbox, materialiser)(established)
+
+        assert lost, f"{materialiser} never reached a publication, so nothing was exercised"
+        missing = [target for target in lost if target not in established]
+        assert not missing, (
+            f"{materialiser} lost the publication race for {missing} and did not record "
+            "them, so the launcher will treat those names as optional"
+        )
+
+    def test_a_target_nested_under_a_masked_directory_is_never_required(self, crew_home):
+        """The predicate is the DISTINCTION, not presence.
+
+        "Absent because my own parent's mask already covers me" and "absent because the
+        name moved" are different facts, and only the second is a race. A target under a
+        directory the launcher masks earlier is legitimately gone by the time it is
+        pinned, so requiring it would refuse every spawn on an ordinary host.
+
+        The nested pair is CONSTRUCTED rather than looked for: on most hosts no nested
+        entry reaches the required set at all, so asserting over whatever the host
+        happens to have would assert that an empty set is empty and would still pass
+        with the filter deleted. This drives the filter with both members present.
+        """
+        parent = str(crew_home / "nested-parent")
+        child = f"{parent}/credential.json"
+
+        script = sandbox._build_launcher_script(
+            "strict",
+            extra_hidden_dirs=(parent,),
+            required_mask_targets=(parent, child),
+        )
+        match = re.search(r"REQUIRED_MASK_TARGETS = frozenset\((\[.*?\])\)", script, re.S)
+        assert match, "the launcher does not emit REQUIRED_MASK_TARGETS"
+        required = set(json.loads(match.group(1)))
+
+        assert child not in required, (
+            "a target under a masked ancestor was required, so the launcher will refuse "
+            "the spawn once the parent's mask hides it"
+        )
+        assert parent in required, "the masked parent itself must still be required"
+
+    def test_the_required_set_survives_a_second_spawn_on_the_same_home(self, crew_home):
+        """The set must describe what is THERE, not what this spawn happened to create.
+
+        A materialiser reports what it created, and on every spawn after the first it
+        creates nothing, so collecting only creations makes the launcher's absence
+        refusal cover exactly one spawn per data home and nothing afterwards -- which is
+        every real install. Pinning two consecutive spawns is what makes that visible;
+        a single-spawn assertion passes with the defect present.
+        """
+
+        def required():
+            argv = sandbox.namespace_argv(["/bin/true"], "strict")
+            script = Path(argv[-2]).read_text()
+            match = re.search(r"REQUIRED_MASK_TARGETS = frozenset\((\[.*?\])\)", script, re.S)
+            assert match, "the launcher does not emit REQUIRED_MASK_TARGETS"
+            return set(json.loads(match.group(1)))
+
+        first = required()
+        second = required()
+
+        assert first, "the first spawn established nothing"
+        assert second == first, (
+            "the required set collapsed on the second spawn against the same home: "
+            f"lost {sorted(first - second)}"
+        )
+
+    def test_every_materialized_path_reaches_the_launcher_required_set(self, crew_home):
+        """What a materialiser created must be named as required, not re-derived.
+
+        The child cannot tell a leaf that was never configured from one that was
+        moved after it was established -- both are simply an absent name by the
+        time it looks. Only this side knows, because it just created the object,
+        so the proof travels with the script. A materialiser whose result is not
+        collected leaves its leaves silently skippable again, which is the whole
+        defect, and no other assertion here would notice.
+        """
+        argv = sandbox.namespace_argv(["/bin/true"], "strict")
+        script = Path(argv[-2]).read_text()
+        match = re.search(r"REQUIRED_MASK_TARGETS = frozenset\((\[.*?\])\)", script, re.S)
+        assert match, "the launcher does not emit REQUIRED_MASK_TARGETS"
+        required = set(json.loads(match.group(1)))
+
+        # Derived from the precreate tuples rather than from a materialiser's return
+        # value: each returns only what it newly CREATED, so calling one again after
+        # the spawn path already ran returns nothing and would assert vacuously.
+        leaves = (
+            sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+            + sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
+            + sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        )
+        missing = [
+            leaf
+            for leaf in leaves
+            if (crew_home / leaf).exists() and str(crew_home / leaf) not in required
+        ]
+        assert not missing, f"materialised but not named as required: {missing}"
 
     def test_relocated_data_home_is_covered(self, tmp_path, monkeypatch):
         """A data home that escapes ``$HOME`` gets the same treatment.
@@ -1618,11 +1789,14 @@ class TestTheDoctorReadOfMaskedCredentialAliases:
         """
         source = inspect.getsource(sandbox.namespace_argv)
         order = [
-            source.index("_materialize_sealable_ceilings()"),
-            source.index("_materialize_maskable_dirs()"),
-            source.index("_materialize_md_notebook_mask_targets()"),
-            source.index("_materialize_live_target_mask_target()"),
-            source.index("_refuse_aliased_masked_leaves()"),
+            # Anchored on the call NAME: each of these takes the established-target
+            # collector, so pinning an empty argument list would read an argument change
+            # as an ordering break.
+            source.index("_materialize_sealable_ceilings("),
+            source.index("_materialize_maskable_dirs("),
+            source.index("_materialize_md_notebook_mask_targets("),
+            source.index("_materialize_live_target_mask_target("),
+            source.index("_refuse_aliased_masked_leaves("),
         ]
         assert order == sorted(order), "the alias pass must run last"
 
@@ -2327,19 +2501,36 @@ class TestADanglingSymlinkRefusesTheSpawn:
     """
 
     def test_the_unguarded_chain_really_is_exploitable(self, crew_home):
-        """Pin the mechanism itself, so the refusal below is not guarding a phantom."""
+        """Pin the mechanism itself, so the refusal below is not guarding a phantom.
+
+        Collected on every platform. The link reads as absent everywhere. On Linux
+        the seal loop skips it and a write through the link creates the referent,
+        so the host reads the agent's bytes back through the ceiling path. Off
+        Linux there is no ``O_PATH``, so the loop's pin refuses the link instead of
+        skipping and the chain never reaches the write. Both outcomes are asserted,
+        because a skipped witness would let the refusal below guard a phantom on the
+        platform that skipped it.
+        """
         target = crew_home / "computer_use.json"
         victim = crew_home / "elsewhere.json"
         target.symlink_to(victim)
 
         assert os.path.lexists(target) is True
         assert os.path.exists(target) is False, "exists() follows the link -> reads as absent"
-        # The launcher's own guard therefore skips it: no bind, no remount.
-        assert _run_seal_loop([str(target)]) == []
-        # And a write through the link lands where the host will read it back.
-        target.write_text('{"enabled": true}', encoding="utf-8")
-        assert victim.exists()
-        assert target.read_text(encoding="utf-8") == '{"enabled": true}'
+        if sys.platform == "linux":
+            # The launcher's own guard therefore skips it: no bind, no remount.
+            assert _run_seal_loop([str(target)]) == []
+            # And a write through the link lands where the host will read it back.
+            target.write_text('{"enabled": true}', encoding="utf-8")
+            assert victim.exists()
+            assert target.read_text(encoding="utf-8") == '{"enabled": true}'
+        else:
+            # No ``O_PATH`` off Linux: the seal loop cannot pin a link no-follow and
+            # REFUSES it rather than skipping, so the chain stops before any write.
+            # The launcher never runs here; the assertion is that it fails closed.
+            with pytest.raises((SystemExit, OSError)):
+                _run_seal_loop([str(target)])
+            assert not victim.exists(), "the refused chain still wrote through the link"
 
     def test_a_file_ceiling_squatter_refuses(self, crew_home):
         target = crew_home / "computer_use.json"

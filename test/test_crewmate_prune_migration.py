@@ -1,28 +1,24 @@
 """The one-time startup prune of sync-generated crewmates (``crewmate_prune_migration``).
 
-Seeds an old-style ``config.json`` -- the rows an older ``POST /api/agents/sync``
-left behind (no ``member_id``, shared ``default`` store, bound to the user's own
-spec by name) beside a hand-created member and a sync-shaped row that owns a
-non-empty memory store -- and asserts the pass does exactly what its docstring
-promises: the never-chatted synced row on the shared store is removed, the
-chatted one keeps its exact binding (shared store, no ``member_id``), the
-hand-created one and the one with memory are untouched, the marker is written,
-and a second boot is a no-op. Then the evidence edges: a session file the pass
-cannot read makes the history incomplete and keeps every candidate, while one
-that reads but names nobody (or another agent) is evidence and voids nothing; a
-candidate whose own activity log or binding cannot be read is kept on doubt,
-a FIFO or link at either path is "no record" rather than a hang, and the pass
-always finishes; a spec that is gone, a package spec, the
-runtime's own, a row with an extra key or one the overlay touches is never a
-candidate; a row, spec or overlay that changes between the judgement and the
-delete refuses the delete. Last, the request gate the pass relies on:
-registering it arms the barrier, every mutating request -- under ``/api/`` or
-not -- and every read of the member roster waits until the pass settles (or
-gets 503 when it never does), other reads are never held; and the writer-side
-wait, which on timeout tells the pass to stop deleting and still waits for it
-to return. And the cross-process lock the pass runs under: a second process
-holding it keeps this one from removing anything, and the marker is created
-exclusively.
+Seeds old-style ``config.json`` rows beside created and customized crewmates and
+asserts that only generated rows bound to installed matching-source specs are
+candidates. A candidate's description may differ from its spec; ``member_id``,
+private specs, the runtime's own (``kirocrew_owned``) specs, missing specs,
+non-string or mismatched sources, ``kirocrew``
+rows, non-default protected fields, unknown keys, overlay-owned rows and rows
+some team lists keep a
+crewmate. Package and legacy ``aim`` sources are equivalent.
+
+The pass removes a candidate only when its Crewmates-page thread has no turn.
+A turn in the live transcript or an archived segment keeps it; another session
+that ran the agent and a thread opened but never written to do not. Unreadable
+bindings, transcript evidence and an unreadable team document fail closed, while
+links and FIFOs are no
+record. Delete-time checks retain row identity, source identity, overlay
+absence, team absence and a matching, non-private, non-runtime-owned installed
+spec under their locks. The request
+barrier, abandon signal, marker and cross-process lock tests pin the serialization
+that makes candidate checks safe.
 """
 
 from __future__ import annotations
@@ -69,9 +65,9 @@ def _spec(name: str, **kw) -> AgentInfo:
     return AgentInfo(**base)
 
 
-def _synced(name: str) -> KiroCrewAgentConfig:
-    # Exactly what an older sync wrote: the spec's description, nothing else set.
-    return KiroCrewAgentConfig(kiro_agent=name, description=f"{name} agent", source="builtin")
+def _synced(name: str, source: str = "builtin") -> KiroCrewAgentConfig:
+    # Exactly what an older sync wrote: the spec's description and source.
+    return KiroCrewAgentConfig(kiro_agent=name, description=f"{name} agent", source=source)
 
 
 def _spec_path(name: str) -> Path:
@@ -88,6 +84,10 @@ def _write_specs(specs: dict) -> None:
         )
 
 
+_META = json.dumps({"_type": "metadata", "title": "t", "mode": "member"}) + "\n"
+_TURN = json.dumps({"role": "user", "content": "hi"}) + "\n"
+
+
 class _Log:
     """A conversation log: ``_dir`` holds one ``<key>.jsonl`` per session, the
     first line the metadata record the real log writes."""
@@ -96,17 +96,35 @@ class _Log:
         self._dir = root
         root.mkdir(parents=True, exist_ok=True)
 
-    def session(self, key: str, agent: str | None = None, *, raw: bytes | None = None):
-        path = self._dir / f"{key}.jsonl"
-        if raw is not None:
-            path.write_bytes(raw)
-            return path
+    def session(self, key: str, agent: str | None = None):
+        """A session elsewhere -- a plain chat, a spawn, a cron run -- that ran ``agent``."""
         meta: dict = {"_type": "metadata", "title": key}
         if agent:
             meta["agent"] = agent
-        path.write_text(
-            json.dumps(meta) + "\n" + json.dumps({"role": "user", "content": "hi"}) + "\n"
-        )
+        path = self._dir / f"{key}.jsonl"
+        path.write_text(json.dumps(meta) + "\n" + _TURN)
+        return path
+
+    def dm(
+        self,
+        slug: str,
+        *,
+        turns: bool = True,
+        raw: bytes | None = None,
+        archived: str = "",
+        slot_key: str = "",
+    ):
+        """The Crewmates-page thread of ``slug``: metadata plus a turn by default."""
+        stem = f"dashboard_{slot_key or 'member-' + slug}"
+        if archived:
+            path = self._dir / "archive" / f"{stem}__{archived}.jsonl"
+            path.parent.mkdir(exist_ok=True)
+        else:
+            path = self._dir / f"{stem}.jsonl"
+        if raw is not None:
+            path.write_bytes(raw)
+        else:
+            path.write_text(_META + (_TURN if turns else ""))
         return path
 
 
@@ -123,34 +141,20 @@ def bindings_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.members.dm_binding_path", lambda slug: root / f"{slug}.json")
     monkeypatch.setattr("kiro_crew.members.member_slug", lambda name, cfg=None: name)
 
-    def write(name: str, *, member: str | None = None, raw: bytes | None = None):
+    def write(
+        name: str,
+        *,
+        member: str | None = None,
+        raw: bytes | None = None,
+        slot_key: str = "",
+    ):
         path = root / f"{name}.json"
         if raw is not None:
             path.write_bytes(raw)
         else:
-            path.write_text(json.dumps({"slot_key": f"member-{name}", "member": member or name}))
-        return path
-
-    return write
-
-
-@pytest.fixture
-def activity_dir(tmp_path, monkeypatch):
-    """Point the member directory at a scratch dir; ``write(name)`` records a session."""
-    root = tmp_path / "members"
-    root.mkdir()
-    monkeypatch.setattr("kiro_crew.members.member_dir", lambda slug: root / slug)
-    monkeypatch.setattr("kiro_crew.members.member_slug", lambda name, cfg=None: name)
-
-    def write(name: str, *, member: str | None = None, raw: bytes | None = None, rotated=False):
-        d = root / name
-        d.mkdir(exist_ok=True)
-        path = d / ("activity.jsonl.1" if rotated else "activity.jsonl")
-        if raw is not None:
-            path.write_bytes(raw)
-        else:
-            row = {"ts": "2026-01-01T00:00:00Z", "member": member or name, "session": f"s-{name}"}
-            path.write_text(json.dumps(row) + "\n")
+            path.write_text(
+                json.dumps({"slot_key": slot_key or f"member-{name}", "member": member or name})
+            )
         return path
 
     return write
@@ -192,7 +196,8 @@ class TestThePass:
         before = KiroCrewConfig.load()
         hand_before = before.agents["by-hand"]
         assert not mig.marker_path().exists()
-        bindings_dir("radar")  # the owner opened radar's thread once
+        bindings_dir("radar")
+        log.dm("radar")  # the owner chatted with radar on the Crewmates page
         log.session("chat-1", "kirocrew")
 
         report = _run(old_style_config, log)
@@ -216,64 +221,129 @@ class TestThePass:
         assert marker["kept"] == ["radar"]
         assert marker["doubted"] == {}
 
-    def test_an_activity_record_counts_as_chatted(
-        self, old_style_config, bindings_dir, activity_dir, log
+    def test_a_session_that_ran_the_agent_elsewhere_does_not_count(
+        self, old_style_config, bindings_dir, log
     ):
-        # The slot later switched agents, so no session metadata names scout
-        # and no DM thread exists; the member activity log still holds the
-        # session pointer record_activity wrote when the chat ran as scout.
-        log.session("chat-3", "someone-else")
-        activity_dir("scout")
+        # A plain chat, a spawn, a cron run or an app's own slot used the AGENT,
+        # which stays installed; only the crewmate's own thread keeps the row.
+        log.session("chat-2", "scout")
+        log.session("dashboard_chat-3", "radar")
         report = _run(old_style_config, log)
-        assert report.removed == ["radar"]
-        assert report.kept == ["scout"]
-        assert KiroCrewConfig.load().agents["scout"].member_id == ""
+        assert set(report.removed) == {"radar", "scout"}
+        assert _spec_path("scout").exists()
 
-    def test_a_rotated_activity_file_counts_too(
-        self, old_style_config, bindings_dir, activity_dir, log
+    def test_a_thread_opened_but_never_written_to_does_not_count(
+        self, old_style_config, bindings_dir, log
     ):
-        activity_dir("scout", rotated=True)
+        # Clicking the crewmate in the roster writes the binding and at most a
+        # metadata line; nobody chatted.
+        bindings_dir("radar")
+        log.dm("radar", turns=False)
+        bindings_dir("scout")
         report = _run(old_style_config, log)
-        assert report.kept == ["scout"]
+        assert set(report.removed) == {"radar", "scout"}
 
-    def test_an_event_log_record_counts_as_chatted(
-        self, old_style_config, bindings_dir, activity_dir, log, monkeypatch
-    ):
-        class _FakeLog:
-            def __init__(self, slug):
-                self.slug = slug
-
-            def exists(self):
-                return self.slug == "scout"
-
-            def iter_events(self):
-                yield {"type": "activity/record", "data": {"member": "scout", "session": "s"}}
-
-        monkeypatch.setattr("kiro_crew.eventlog.log.MemberLog", _FakeLog)
+    def test_an_archived_segment_of_the_thread_counts(self, old_style_config, bindings_dir, log):
+        # Compaction moved the turns into an archive segment; the live file
+        # holds only the metadata line.
+        log.dm("scout", turns=False)
+        log.dm("scout", archived="20260901-195926")
         report = _run(old_style_config, log)
         assert report.kept == ["scout"]
         assert report.removed == ["radar"]
 
-    def test_an_activity_record_for_another_name_is_not_this_crewmates(
-        self, old_style_config, bindings_dir, activity_dir, log
+    def test_a_missing_live_transcript_without_an_archive_is_no_turn(
+        self, old_style_config, bindings_dir, log
     ):
-        # Slugs collide: one log can hold two members. The name decides.
-        activity_dir("scout", member="Scout!")
+        live = log._dir / "dashboard_member-scout.jsonl"
+        assert not live.exists()
+        assert mig._transcript_has_a_turn(live) is False
+
+        report = _run(old_style_config, log)
+
+        assert "scout" in report.removed
+
+    def test_another_crewmates_archive_is_not_this_ones(self, old_style_config, bindings_dir, log):
+        # ``member-scout`` is a prefix of ``member-scout-2``; the segment
+        # delimiter keeps them apart.
+        log.dm("scout-2", archived="20260901-195926")
         report = _run(old_style_config, log)
         assert "scout" in report.removed
 
-    def test_a_session_that_named_the_crewmate_counts_as_chatted(
+    def test_the_bindings_recorded_slot_key_is_read_too(self, old_style_config, bindings_dir, log):
+        bindings_dir("scout", slot_key="member-scout-v2abc")
+        log.dm("scout", slot_key="member-scout-v2abc")
+        report = _run(old_style_config, log)
+        assert report.kept == ["scout"]
+
+    def test_a_binding_for_another_name_does_not_lend_its_thread(
         self, old_style_config, bindings_dir, log
     ):
-        # No DM thread, but a plain session selected it: kept, untouched.
-        log.session("chat-2", "scout")
+        # A colliding slug's binding names the other crew: its thread is not
+        # scout's, so its turns do not keep scout.
+        bindings_dir("scout", member="someone-else", slot_key="member-elsewhere")
+        log.dm("x", slot_key="member-elsewhere")
         report = _run(old_style_config, log)
-        assert report.removed == ["radar"]
+        assert "scout" in report.removed
+
+    def test_an_older_builds_first_line_that_is_a_message_counts(
+        self, old_style_config, bindings_dir, log
+    ):
+        log.dm("scout", raw=_TURN.encode())
+        report = _run(old_style_config, log)
         assert report.kept == ["scout"]
-        assert KiroCrewConfig.load().agents["scout"].member_id == ""
+
+    def test_sync_rows_with_matching_sources_are_removed(self, bindings_dir, log):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["builtin"] = _synced("builtin", source="builtin")
+        cfg.agents["omni"] = _synced("omni", source="package")
+        cfg.agents["legacy"] = _synced("legacy", source="aim")
+        cfg.save()
+        specs = {
+            "builtin": _spec("builtin"),
+            "omni": _spec("omni", filename="Pkg-omni.json", source="package", package="Pkg"),
+            "legacy": _spec("legacy", filename="Pkg-legacy.json", source="package", package="Pkg"),
+        }
+        report = _run(specs, log)
+        assert set(report.removed) == {"builtin", "omni", "legacy"}
+
+    def test_an_edited_description_without_a_dm_turn_is_removed(self, bindings_dir, log):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["scout"] = KiroCrewAgentConfig(
+            kiro_agent="scout", description="owner wording", source="package"
+        )
+        cfg.save()
+        report = _run(
+            {"scout": _spec("scout", filename="Pkg-scout.json", source="package", package="Pkg")},
+            log,
+        )
+        assert report.removed == ["scout"]
+        assert "scout" not in KiroCrewConfig.load().agents
+
+    def test_a_spec_less_row_is_never_removed(self, bindings_dir, log):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["empty"] = KiroCrewAgentConfig(
+            kiro_agent="empty", description="", source="package"
+        )
+        cfg.agents["described"] = KiroCrewAgentConfig(
+            kiro_agent="described", description="owner wording", source="package"
+        )
+        cfg.save()
+        report = _run({}, log)
+        assert report.removed == []
+        assert {"empty", "described"} <= KiroCrewConfig.load().agents.keys()
+
+    def test_a_created_crewmate_is_never_removed(self, bindings_dir, log):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["created"] = _synced("created")
+        cfg.agents["created"].member_id = "member-created"
+        cfg.save()
+        report = _run({"created": _spec("created")}, log)
+        assert report.removed == []
+        assert KiroCrewConfig.load().agents["created"].member_id == "member-created"
 
     def test_second_boot_is_a_no_op(self, old_style_config, bindings_dir, log):
-        bindings_dir("radar")
+        log.dm("radar")
         _run(old_style_config, log)
         cfg = KiroCrewConfig.load()
         cfg.agents["late"] = _synced("late")
@@ -283,6 +353,18 @@ class TestThePass:
         assert report.skipped_marker is True
         assert "late" in KiroCrewConfig.load().agents
 
+    def test_the_first_passes_marker_does_not_stop_this_one(
+        self, old_style_config, bindings_dir, log
+    ):
+        from kiro_crew.config.paths import config_dir
+
+        first = config_dir() / "crewmate_prune_migrated.json"
+        first.write_text(json.dumps({"removed": [], "kept": [], "doubted": {}}))
+        report = _run(old_style_config, log)
+        assert report.skipped_marker is False
+        assert set(report.removed) == {"radar", "scout"}
+        assert first.exists()
+
     def test_a_no_op_pass_still_writes_the_marker(self, bindings_dir, log):
         report = _run({}, log)
         assert report.removed == [] and report.kept == []
@@ -290,150 +372,137 @@ class TestThePass:
 
 
 class TestKeptOnDoubt:
-    """A session file the pass cannot read makes the history incomplete, and an
-    incomplete history removes nothing: every candidate is kept. A session file
-    that reads but names nobody is evidence, not doubt. A candidate whose own
-    history cannot be read is kept; the pass still finishes and the marker
-    names both, so no boot re-runs it."""
+    """A candidate whose binding or thread transcript is there but cannot be
+    judged is kept; the others are judged on their own evidence. No
+    conversation log keeps everyone. The pass still finishes and the marker
+    names the doubted, so no boot re-runs it."""
 
-    def test_a_session_file_that_does_not_parse_keeps_every_candidate(
-        self, old_style_config, bindings_dir, log
-    ):
-        # The torn file could have been the one session that ran as radar, so
-        # the history is incomplete and nothing is removed -- even scout, whom
-        # another session vouches for, is only "kept on doubt": the pass never
-        # reached the per-candidate judgement. The marker says why.
-        log.session("broken", raw=b"{not json\n")
-        log.session("chat-9", "scout")
-        report = _run(old_style_config, log)
-        assert report.removed == []
-        assert report.kept == []
-        assert set(report.doubted) == {"radar", "scout"}
-        assert "incomplete" in report.doubted["radar"]
-        assert "broken.jsonl" in report.doubted["radar"]
-        assert report.unreadable_sessions == ["broken.jsonl"]
-        after = KiroCrewConfig.load()
-        assert "radar" in after.agents and "scout" in after.agents
-        marker = json.loads(mig.marker_path().read_text())
-        assert marker["unreadable_sessions"] == ["broken.jsonl"]
-        assert marker["removed"] == []
-        assert set(marker["doubted"]) == {"radar", "scout"}
-
-    def test_a_session_file_that_is_not_utf8_keeps_every_candidate(
-        self, old_style_config, bindings_dir, log
-    ):
-        log.session("binary", raw=b"\xff\xfe\n")
-        report = _run(old_style_config, log)
-        assert report.removed == []
-        assert set(report.doubted) == {"radar", "scout"}
-        assert report.unreadable_sessions == ["binary.jsonl"]
-
-    def test_an_empty_session_file_is_a_torn_write_and_keeps_every_candidate(
-        self, old_style_config, bindings_dir, log
-    ):
-        # A session file is born with its metadata line; one with no bytes is
-        # a write that did not finish, and what it would have said is unknown.
-        log.session("torn", raw=b"")
-        report = _run(old_style_config, log)
-        assert report.removed == []
-        assert report.unreadable_sessions == ["torn.jsonl"]
-        # The doubt names the incomplete history and the file behind it; the
-        # per-file reason is the WARNING line's, not the marker's.
-        assert "torn.jsonl" in report.doubted["scout"]
-
-    def test_a_first_line_over_budget_keeps_every_candidate(
+    def test_an_archive_directory_that_cannot_be_listed_keeps_that_crewmate(
         self, old_style_config, bindings_dir, log, monkeypatch
     ):
-        monkeypatch.setattr(mig, "_SESSION_META_LINE_MAX", 32)
-        log.session("chat-1", "kirocrew")  # a real metadata line is longer than 32 bytes
-        report = _run(old_style_config, log)
-        assert report.removed == []
-        assert report.unreadable_sessions == ["chat-1.jsonl"]
-        assert "chat-1.jsonl" in report.doubted["radar"]
+        log.dm("radar")
+        archive = log._dir / "archive"
+        archive.mkdir()
+        real_scandir = os.scandir
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-    def test_a_session_file_that_cannot_be_opened_keeps_every_candidate(
+        def _unreadable(path):
+            if isinstance(path, (str, os.PathLike)) and Path(path) == archive:
+                raise PermissionError("archive unreadable")
+            return real_scandir(path)
+
+        monkeypatch.setattr(mig.os, "scandir", _unreadable)
+        report = _run(old_style_config, log)
+
+        assert report.removed == []
+        assert report.kept == ["radar"]
+        assert list(report.doubted) == ["scout"]
+        assert "could not list archived transcripts" in report.doubted["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert json.loads(mig.marker_path().read_text())["doubted"] == report.doubted
+
+    def test_a_listed_archive_segment_that_disappears_keeps_that_crewmate(
+        self, old_style_config, bindings_dir, log, monkeypatch
+    ):
+        segment = log.dm("scout", archived="20260901-195926")
+        real_open = mig.open_file_no_reparse
+
+        def _remove_then_open(path, *, nonblocking=False):
+            if Path(path) == segment:
+                segment.unlink()
+            return real_open(path, nonblocking=nonblocking)
+
+        monkeypatch.setattr(mig, "open_file_no_reparse", _remove_then_open)
+        report = _run(old_style_config, log)
+
+        assert report.removed == ["radar"]
+        assert list(report.doubted) == ["scout"]
+        assert "disappeared before it could be opened" in report.doubted["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert json.loads(mig.marker_path().read_text())["doubted"] == report.doubted
+
+    def test_a_thread_whose_first_line_does_not_parse_keeps_that_crewmate(
         self, old_style_config, bindings_dir, log
     ):
-        path = log.session("locked", "kirocrew")
+        log.dm("scout", raw=b"{not json\n")
+        report = _run(old_style_config, log)
+        assert report.removed == ["radar"]
+        assert list(report.doubted) == ["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert json.loads(mig.marker_path().read_text())["doubted"] == report.doubted
+
+    def test_a_thread_that_is_not_utf8_keeps_that_crewmate(
+        self, old_style_config, bindings_dir, log
+    ):
+        log.dm("scout", raw=b"\xff\xfe\n")
+        report = _run(old_style_config, log)
+        assert list(report.doubted) == ["scout"]
+
+    def test_an_empty_thread_is_a_torn_write_and_keeps_that_crewmate(
+        self, old_style_config, bindings_dir, log
+    ):
+        log.dm("scout", raw=b"")
+        report = _run(old_style_config, log)
+        assert list(report.doubted) == ["scout"]
+        assert "empty" in report.doubted["scout"]
+
+    def test_a_first_line_over_budget_keeps_that_crewmate(
+        self, old_style_config, bindings_dir, log, monkeypatch
+    ):
+        monkeypatch.setattr(mig, "_TRANSCRIPT_META_LINE_MAX", 16)
+        log.dm("scout")
+        report = _run(old_style_config, log)
+        assert list(report.doubted) == ["scout"]
+
+    def test_a_torn_row_after_the_metadata_still_counts(self, old_style_config, bindings_dir, log):
+        # A row that was being written proves a turn was sent.
+        log.dm("scout", raw=_META.encode() + b'{"role": "us')
+        report = _run(old_style_config, log)
+        assert report.kept == ["scout"]
+
+    def test_a_row_past_the_read_cap_still_counts(
+        self, old_style_config, bindings_dir, log, monkeypatch
+    ):
+        # A row too long to buffer is still a written turn, never "no turn".
+        monkeypatch.setattr(mig, "_TRANSCRIPT_META_LINE_MAX", len(_META) + 8)
+        log.dm(
+            "scout", raw=_META.encode() + b'{"role": "user", "content": "' + b"x" * 256 + b'"}\n'
+        )
+        report = _run(old_style_config, log)
+        assert report.kept == ["scout"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+        reason="POSIX permission bits; root reads any file",
+    )
+    def test_a_thread_that_cannot_be_opened_keeps_that_crewmate(
+        self, old_style_config, bindings_dir, log
+    ):
+        path = log.dm("scout")
         path.chmod(0)
-        if os.access(path, os.R_OK):
-            pytest.skip("file modes are not enforced for this user")
         try:
             report = _run(old_style_config, log)
         finally:
             path.chmod(0o644)
-        assert report.removed == []
-        assert report.unreadable_sessions == ["locked.jsonl"]
-        assert "could not be read" in report.doubted["scout"]
+        assert list(report.doubted) == ["scout"]
+        assert report.removed == ["radar"]
 
-    def test_a_session_that_reads_but_names_another_agent_is_evidence_not_doubt(
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO")
+    def test_a_fifo_at_a_thread_path_is_no_record_and_no_hang(
         self, old_style_config, bindings_dir, log
     ):
-        # The other half of the distinction: a file that READS is history, and
-        # history that names someone else -- or nobody, as an older build's
-        # metadata record without ``agent`` -- is complete evidence about the
-        # candidates. Neither voids the pass; both candidates are judged, and
-        # neither is named anywhere, so both go.
-        log.session(
-            "other",
-            raw=json.dumps({"_type": "metadata", "agent": "someone-else"}).encode() + b"\n",
-        )
-        log.session("old-build", raw=b'{"_type": "metadata", "created_at": "2025-01-01"}\n')
-        report = _run(old_style_config, log)
+        os.mkfifo(log._dir / "dashboard_member-scout.jsonl")
+        report = _run(old_style_config, log)  # returns: the open does not wait
         assert set(report.removed) == {"radar", "scout"}
-        assert report.doubted == {}
-        assert report.unreadable_sessions == []
 
-    def test_a_first_line_that_is_json_but_not_a_record_names_nobody(
-        self, old_style_config, bindings_dir, log
+    @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks")
+    def test_a_link_at_a_thread_path_is_no_record(
+        self, old_style_config, bindings_dir, log, tmp_path
     ):
-        # Parses (a JSON list), so it is not an unreadable file; it is also not
-        # a metadata record, so it names nobody. Evidence, not doubt.
-        log.session("odd", raw=b"[1, 2, 3]\n")
+        real = tmp_path / "elsewhere.jsonl"
+        real.write_text(_META + _TURN)
+        os.symlink(real, log._dir / "dashboard_member-scout.jsonl")
         report = _run(old_style_config, log)
-        assert set(report.removed) == {"radar", "scout"}
-        assert report.unreadable_sessions == []
-
-    def test_every_agent_naming_field_of_the_record_counts(
-        self, old_style_config, bindings_dir, log
-    ):
-        # Usage evidence is the union of what the record names, not one field.
-        # An interrupted switch can leave ``agent`` and the durable selection
-        # apart; a name either holds is a name the session ran as. Here the
-        # slot-owned field says the default crew, while ``execution_context``
-        # names ``scout`` as the selection and ``radar`` as the template it
-        # ran on. Both are chatted; neither is removed.
-        record = {
-            "_type": "metadata",
-            "agent": "kirocrew",
-            "execution_context": {
-                "member_id": None,
-                "store": {"member_id": None, "store": "default"},
-                "selection_kind": "template",
-                "template_id": "radar",
-                "selection_name": "scout",
-            },
-        }
-        log.session("split", raw=json.dumps(record).encode() + b"\n")
-        report = _run(old_style_config, log)
-        assert report.removed == []
-        assert set(report.kept) == {"radar", "scout"}
-        assert report.doubted == {}
-
-    def test_an_execution_context_of_the_wrong_shape_names_nobody(
-        self, old_style_config, bindings_dir, log
-    ):
-        # Read defensively: a record whose ``execution_context`` is not a dict,
-        # or whose fields are not strings, contributes nothing and voids
-        # nothing -- it is a record that reads, so it is evidence.
-        record = {"_type": "metadata", "execution_context": ["scout"]}
-        log.session("odd-ctx", raw=json.dumps(record).encode() + b"\n")
-        record = {"_type": "metadata", "execution_context": {"selection_name": 7}}
-        log.session("odd-field", raw=json.dumps(record).encode() + b"\n")
-        report = _run(old_style_config, log)
-        assert set(report.removed) == {"radar", "scout"}
-        assert report.unreadable_sessions == []
+        assert "scout" in report.removed
 
     def test_a_doubted_pass_is_recorded_and_not_re_run(self, old_style_config, bindings_dir, log):
         bindings_dir("scout", raw=b"{not json")
@@ -442,80 +511,6 @@ class TestKeptOnDoubt:
         assert "scout" in KiroCrewConfig.load().agents
         report = _run(old_style_config, log)
         assert report.skipped_marker is True
-
-    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO")
-    def test_a_fifo_at_a_session_path_is_no_record_and_no_hang(
-        self, old_style_config, bindings_dir, log
-    ):
-        os.mkfifo(log._dir / "trap.jsonl")
-        report = _run(old_style_config, log)  # returns: the open does not wait
-        assert set(report.removed) == {"radar", "scout"}
-        assert report.unreadable_sessions == []
-
-    @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks")
-    def test_a_link_at_a_session_path_is_no_record(
-        self, old_style_config, bindings_dir, log, tmp_path
-    ):
-        real = tmp_path / "elsewhere.jsonl"
-        real.write_text(json.dumps({"_type": "metadata", "agent": "scout"}) + "\n")
-        os.symlink(real, log._dir / "alias.jsonl")
-        report = _run(old_style_config, log)
-        assert "scout" in report.removed
-
-    def test_a_session_that_vanishes_between_listing_and_open_keeps_every_candidate(
-        self, old_style_config, bindings_dir, log
-    ):
-        # The listing saw the file; the open did not find it. Whatever it
-        # named is gone, and the pass cannot tell it was not the one session
-        # that ran as scout -- so the history is incomplete and nothing is
-        # removed, the same as a file that would not read. The name is in the
-        # marker so the next boot does not re-run the question.
-        gone = log.session("chat-7", "scout")
-        real = mig._session_agents_named
-
-        def _unlink_then_read(path):
-            if path == gone:
-                gone.unlink()
-            return real(path)
-
-        with patch.object(mig, "_session_agents_named", _unlink_then_read):
-            report = _run(old_style_config, log)
-        assert report.removed == []
-        assert set(report.doubted) == {"radar", "scout"}
-        assert report.unreadable_sessions == ["chat-7.jsonl"]
-        after = KiroCrewConfig.load()
-        assert "radar" in after.agents and "scout" in after.agents
-        marker = json.loads(mig.marker_path().read_text())
-        assert marker["unreadable_sessions"] == ["chat-7.jsonl"]
-
-    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO")
-    def test_a_fifo_at_the_activity_path_is_no_record_and_no_hang(
-        self, old_style_config, bindings_dir, activity_dir, log
-    ):
-        d = activity_dir("radar").parent  # creates the member dir
-        (d / "activity.jsonl").unlink()
-        os.mkfifo(d / "activity.jsonl")
-        report = _run(old_style_config, log)
-        assert "radar" in report.removed
-
-    def test_an_activity_file_over_budget_keeps_that_crewmate(
-        self, old_style_config, bindings_dir, activity_dir, log, monkeypatch
-    ):
-        monkeypatch.setattr("kiro_crew.eventlog.service.MAX_LEGACY_ACTIVITY_BYTES", 16)
-        activity_dir("scout")  # one row, well over 16 bytes
-        report = _run(old_style_config, log)
-        assert list(report.doubted) == ["scout"]
-        assert "exceeds" in report.doubted["scout"]
-
-    def test_a_session_file_without_metadata_names_nobody(
-        self, old_style_config, bindings_dir, log
-    ):
-        # A first line that reads and parses but is not a metadata record names
-        # no agent; that is the same contract list_sessions applies. It is
-        # evidence that speaks for nobody, not an unreadable file.
-        log.session("plain", raw=b'{"role": "user", "content": "x"}\n')
-        report = _run(old_style_config, log)
-        assert set(report.removed) == {"radar", "scout"}
 
     def test_no_conversation_log_keeps_every_candidate(self, old_style_config, bindings_dir):
         report = _run(old_style_config, None)
@@ -528,8 +523,7 @@ class TestKeptOnDoubt:
         self, old_style_config, bindings_dir, log
     ):
         # The roster's own reader answers "not bound" for this file; the prune
-        # must not: a damaged member directory is unknown history, not none.
-        # Only scout's evidence is in doubt, so only scout is kept on it.
+        # must not: the binding may record the thread's slot key.
         bindings_dir("scout", raw=b"{not json")
         report = _run(old_style_config, log)
         assert report.removed == ["radar"]
@@ -546,7 +540,7 @@ class TestKeptOnDoubt:
         assert "scout" in KiroCrewConfig.load().agents
 
     def test_an_unresolvable_binding_path_keeps_the_crewmate(
-        self, old_style_config, activity_dir, monkeypatch, log
+        self, old_style_config, bindings_dir, monkeypatch, log
     ):
         def _boom(slug):
             raise OSError("members root unreadable")
@@ -557,7 +551,7 @@ class TestKeptOnDoubt:
         assert "scout" in KiroCrewConfig.load().agents
 
     def test_a_binding_path_refused_by_containment_keeps_the_crewmate(
-        self, old_style_config, activity_dir, monkeypatch, log
+        self, old_style_config, bindings_dir, monkeypatch, log
     ):
         # A slug that passed ``member_slug`` but whose binding path resolves
         # outside the trust root (a symlinked component) is a binding that MAY
@@ -571,59 +565,6 @@ class TestKeptOnDoubt:
         report = _run(old_style_config, log)
         assert set(report.doubted) == {"radar", "scout"}
         assert "scout" in KiroCrewConfig.load().agents
-
-    def test_an_unparseable_activity_file_keeps_that_crewmate(
-        self, old_style_config, bindings_dir, activity_dir, log
-    ):
-        activity_dir("scout", raw=b"{torn")
-        report = _run(old_style_config, log)
-        assert report.removed == ["radar"]
-        assert list(report.doubted) == ["scout"]
-
-    def test_a_corrupt_event_log_keeps_that_crewmate(
-        self, old_style_config, bindings_dir, activity_dir, log, monkeypatch
-    ):
-        class _Corrupt:
-            def __init__(self, slug):
-                self.slug = slug
-
-            def exists(self):
-                return self.slug == "scout"
-
-            def iter_events(self):
-                raise RuntimeError("committed region unreadable")
-
-        monkeypatch.setattr("kiro_crew.eventlog.log.MemberLog", _Corrupt)
-        report = _run(old_style_config, log)
-        assert report.removed == ["radar"]
-        assert list(report.doubted) == ["scout"]
-
-    def test_a_torn_event_log_keeps_that_crewmate(
-        self, old_style_config, bindings_dir, activity_dir, log
-    ):
-        # The store reads a zero-byte segment as "no log" -- what a torn write
-        # leaves behind. The prune must not read that as "never chatted": the
-        # segment is there and what it held is unknown. Radar, whose log truly
-        # does not exist, is judged on the other sources and goes.
-        from kiro_crew.crew_log.schema import KIND_MEMBER
-        from kiro_crew.crew_log.store import LOG_FILE, crew_log_dir
-
-        unit = crew_log_dir(KIND_MEMBER, "scout")
-        unit.mkdir(parents=True, exist_ok=True)
-        (unit / LOG_FILE).write_bytes(b"")
-        report = _run(old_style_config, log)
-        assert report.removed == ["radar"]
-        assert list(report.doubted) == ["scout"]
-        assert "torn" in report.doubted["scout"]
-
-    def test_a_binding_for_another_name_is_not_this_crewmates(
-        self, old_style_config, bindings_dir, log
-    ):
-        # A colliding slug's file names the other crew: scout was never opened.
-        bindings_dir("scout", member="someone-else")
-        bindings_dir("radar")
-        report = _run(old_style_config, log)
-        assert report.removed == ["scout"]
 
     def test_a_doubt_on_one_candidate_does_not_spare_the_next(
         self, old_style_config, bindings_dir, log
@@ -640,7 +581,7 @@ class TestKeptOnDoubt:
     def test_a_row_that_changed_under_the_lock_is_refused_and_no_marker(
         self, old_style_config, bindings_dir, log
     ):
-        bindings_dir("radar")
+        log.dm("radar")
         # The on-disk row gained a model between the judgement and the lock:
         # newer evidence wins, the delete is refused, and a refusal is not a
         # commit -- no marker, so the next boot re-judges it.
@@ -674,7 +615,7 @@ class TestKeptOnDoubt:
 
         update_config_locked(mutate=_strip)
         assert "member_id" not in read_config_for_update()["agents"]["scout"]
-        bindings_dir("radar")
+        log.dm("radar")
         report = _run(old_style_config, log)
         assert report.removed == ["scout"]
         assert mig.marker_path().exists()
@@ -712,7 +653,7 @@ class TestAbandoned:
             polls += 1
             return polls >= 2
 
-        cand = mig.SyncedCandidate(description="scout agent", filename="scout.json")
+        cand = mig.SyncedCandidate(filename="scout.json", source="builtin")
         removed, refused, left = mig.remove_never_chatted(
             cfg, {"scout": cand}, abandoned=_second_poll_says_stop
         )
@@ -725,7 +666,7 @@ class TestAbandoned:
     ):
         import threading
 
-        bindings_dir("radar")
+        log.dm("radar")
         stop = threading.Event()
         original = mig.remove_never_chatted
 
@@ -743,99 +684,212 @@ class TestAbandoned:
 
 
 class TestCandidates:
-    def test_only_untouched_user_spec_rows(self):
+    def test_only_matching_builtin_package_and_aim_sources_are_candidates(self):
         cfg = KiroCrewConfig.load()
-        cfg.agents["radar"] = _synced("radar")  # candidate
-        cfg.agents["gone"] = _synced("gone")  # spec absent from disk
-        cfg.agents["omni"] = KiroCrewAgentConfig(kiro_agent="omni", source="package")
-        cfg.agents["own"] = KiroCrewAgentConfig(
-            kiro_agent="own", source="builtin"
-        )  # kirocrew-owned spec
-        cfg.agents["copy"] = KiroCrewAgentConfig(
-            kiro_agent="copy", source="builtin"
-        )  # private copy
-        specs = {
-            "radar": _spec("radar"),
-            "omni": _spec("omni", filename="Pkg-omni.json", source="package", package="Pkg"),
-            "own": _spec("own", kirocrew_owned=True),
-            "copy": _spec("copy", private_to="someone"),
-        }
+        cfg.agents["radar"] = _synced("radar")
+        cfg.agents["omni"] = _synced("omni", source="package")
+        cfg.agents["older"] = _synced("older", source="aim")
+        cfg.agents["runtime"] = KiroCrewAgentConfig(kiro_agent="runtime", source="kirocrew")
+        # The runtime's own helper specs read as ``builtin`` -- discovery keeps
+        # ``kirocrew_owned`` apart from ``source`` -- and a sync-shaped row
+        # bound to one is still never a candidate.
+        cfg.agents["kirocrew-conductor"] = _synced("kirocrew-conductor")
+        # Never a candidate: a private copy, a row the owner tuned or routed, a
+        # row whose name is not its binding, or a source the sync rule excludes.
+        cfg.agents["copy"] = KiroCrewAgentConfig(kiro_agent="copy", source="builtin")
         cfg.agents["tuned"] = KiroCrewAgentConfig(kiro_agent="tuned", source="builtin", model="m")
         cfg.agents["routed"] = KiroCrewAgentConfig(
             kiro_agent="routed", source="builtin", triggers="x"
         )
-        cfg.agents["renamed"] = _synced("radar")  # name != kiro_agent: not the sync's row
-        specs["tuned"] = _spec("tuned")
-        specs["routed"] = _spec("routed")
+        cfg.agents["renamed"] = _synced("radar")
+        cfg.agents["odd"] = KiroCrewAgentConfig(kiro_agent="odd", source="somewhere")
+        specs = {
+            "radar": _spec("radar"),
+            "omni": _spec("omni", filename="Pkg-omni.json", source="package", package="Pkg"),
+            "older": _spec("older", source="package", package="Pkg"),
+            "runtime": _spec("runtime", source="kirocrew", kirocrew_owned=True),
+            "kirocrew-conductor": _spec("kirocrew-conductor", kirocrew_owned=True),
+            "copy": _spec("copy", private_to="someone"),
+            "tuned": _spec("tuned"),
+            "routed": _spec("routed"),
+            "odd": _spec("odd"),
+        }
         cfg.save()
         raw = mig._raw_agents_section()
         with (
             patch("kiro_crew.agent_discovery.list_agents", return_value=list(specs.values())),
             patch("kiro_crew.agent.kiro_agents_dir_path", return_value="/nowhere"),
         ):
-            assert list(mig._synced_candidates(cfg, raw, {})) == ["radar"]
+            got = mig._synced_candidates(cfg, raw, {}, frozenset())
+        assert list(got) == ["radar", "omni", "older"]
+        assert got["omni"] == mig.SyncedCandidate(filename="Pkg-omni.json", source="package")
+        assert got["older"].source == "package"
 
-    def test_a_row_whose_description_differs_from_the_spec_is_kept(self):
-        # The owner rewrote the description (or the spec moved on): either way
-        # the row is not what the sync wrote, so it is the owner's.
+    def test_a_spec_less_row_is_not_a_candidate(self):
         cfg = KiroCrewConfig.load()
-        cfg.agents["radar"] = _synced("radar")
-        cfg.agents["scout"] = KiroCrewAgentConfig(
-            kiro_agent="scout", description="my own words", source="builtin"
+        cfg.agents["gone"] = KiroCrewAgentConfig(
+            kiro_agent="gone", description="any wording", source="package"
         )
         cfg.save()
-        cfg = KiroCrewConfig.load()
-        raw = mig._raw_agents_section()
-        specs = {"radar": _spec("radar"), "scout": _spec("scout")}
-        with (
-            patch("kiro_crew.agent_discovery.list_agents", return_value=list(specs.values())),
-            patch("kiro_crew.agent.kiro_agents_dir_path", return_value="/nowhere"),
-        ):
-            assert mig._synced_candidates(cfg, raw, {}) == {
-                "radar": mig.SyncedCandidate(description="radar agent", filename="radar.json")
-            }
+        assert mig._synced_candidates(cfg, mig._raw_agents_section(), {}, frozenset()) == {}
 
-    def test_a_description_edit_under_the_lock_refuses_the_delete(
+    def test_a_non_string_row_source_is_kept_without_exception(self, log):
+        from kiro_crew.config.loader import update_config_locked
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["scout"] = _synced("scout")
+        cfg.save()
+
+        def _break_source(doc):
+            doc["agents"]["scout"]["source"] = []
+            return doc
+
+        update_config_locked(mutate=_break_source)
+        report = _run({"scout": _spec("scout")}, log)
+        assert report.removed == [] and report.refused == []
+        assert "scout" in KiroCrewConfig.load().agents
+        assert mig.marker_path().exists()
+
+    def test_a_source_mismatch_is_kept(self, log):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["scout"] = _synced("scout", source="builtin")
+        cfg.save()
+        spec = _spec("scout", source="package", package="Pkg")
+        report = _run({"scout": spec}, log)
+        assert report.removed == [] and report.refused == []
+        assert "scout" in KiroCrewConfig.load().agents
+        assert mig.marker_path().exists()
+
+    def test_an_aim_row_bound_to_a_package_spec_is_a_candidate(self):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["legacy"] = _synced("legacy", source="aim")
+        cfg.save()
+        spec = _spec("legacy", source="package", package="Pkg")
+        with patch("kiro_crew.agent_discovery.list_agents", return_value=[spec]):
+            got = mig._synced_candidates(cfg, mig._raw_agents_section(), {}, frozenset())
+        assert got == {"legacy": mig.SyncedCandidate(filename="legacy.json", source="package")}
+
+    def test_a_kirocrew_row_is_kept(self, log):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["runtime"] = KiroCrewAgentConfig(kiro_agent="runtime", source="kirocrew")
+        cfg.save()
+        spec = _spec("runtime", source="kirocrew", kirocrew_owned=True)
+        report = _run({"runtime": spec}, log)
+        assert report.removed == [] and report.refused == []
+        assert "runtime" in KiroCrewConfig.load().agents
+        assert mig.marker_path().exists()
+
+    def test_a_row_bound_to_a_runtime_owned_builtin_spec_is_kept(self, bindings_dir, log):
+        # The conductor, worker, knowledge, research and heartbeat specs are
+        # ``builtin``-sourced but ``kirocrew_owned``: the flag is kept apart
+        # from ``source`` in discovery, so the source rule alone would let a
+        # sync-shaped row bound to one through. It is never a candidate, so
+        # with no DM turn it is neither removed nor refused, and the pass
+        # records itself as complete.
+        cfg = KiroCrewConfig.load()
+        cfg.agents["kirocrew-conductor"] = _synced("kirocrew-conductor")
+        cfg.agents["scout"] = _synced("scout")
+        cfg.save()
+        specs = {
+            "kirocrew-conductor": _spec("kirocrew-conductor", kirocrew_owned=True),
+            "scout": _spec("scout"),
+        }
+        report = _run(specs, log)
+        assert report.removed == ["scout"] and report.refused == []
+        assert "kirocrew-conductor" in KiroCrewConfig.load().agents
+        assert mig.marker_path().exists()
+
+    def test_a_spec_that_became_runtime_owned_under_the_lock_refuses_the_delete(
         self, old_style_config, bindings_dir, log
     ):
+        # The bound file is now one of ``OWNED_KIRO_AGENT_FILES``: discovery
+        # still derives ``builtin`` from it (the stem is not ``<pkg>-scout``),
+        # so only the ``kirocrew_owned`` re-check can refuse.
+        specs = dict(old_style_config)
+        specs["scout"] = _spec("scout", filename="kirocrew-conductor.json")
         original = mig.remove_never_chatted
 
-        def _edit_then_remove(cfg_, cands, **kw):
-            live = KiroCrewConfig.load()
-            live.agents["scout"].description = "renamed by hand"
-            live.save()
+        def _replace_spec_then_remove(cfg_, cands, **kw):
+            (Path(kiro_agents_dir_path()) / "kirocrew-conductor.json").write_text(
+                json.dumps({"name": "scout", "description": "now the conductor"})
+            )
             return original(cfg_, cands, **kw)
 
-        with patch.object(mig, "remove_never_chatted", _edit_then_remove):
-            report = _run(old_style_config, log)
+        with patch.object(mig, "remove_never_chatted", _replace_spec_then_remove):
+            report = _run(specs, log)
         assert report.refused == ["scout"]
-        assert KiroCrewConfig.load().agents["scout"].description == "renamed by hand"
+        assert "scout" in KiroCrewConfig.load().agents
         assert not mig.marker_path().exists()
 
-    def test_a_spec_description_edited_under_the_lock_refuses_the_delete(
+    def test_an_unchanged_spec_identity_under_the_lock_still_allows_delete(
         self, old_style_config, bindings_dir, log
     ):
-        # Discovery read the spec before the delete; the owner rewrote the
-        # SPEC's description in between (a hand edit of the file -- the gate
-        # holds every in-app writer). The row still matches the stale snapshot,
-        # so only a re-read of the file under the spec lock can tell: the
-        # description moved on, that is newer evidence, and the delete is
-        # refused. The row and the spec both stay; no marker.
         original = mig.remove_never_chatted
 
-        def _edit_spec_then_remove(cfg_, cands, **kw):
+        def _edit_description_then_remove(cfg_, cands, **kw):
             _spec_path("scout").write_text(
                 json.dumps({"name": "scout", "description": "rewritten in the file"})
             )
             return original(cfg_, cands, **kw)
 
-        with patch.object(mig, "remove_never_chatted", _edit_spec_then_remove):
+        with patch.object(mig, "remove_never_chatted", _edit_description_then_remove):
             report = _run(old_style_config, log)
-        assert report.refused == ["scout"]
-        assert "scout" in KiroCrewConfig.load().agents
+        assert "scout" in report.removed
+        assert "scout" not in KiroCrewConfig.load().agents
         assert json.loads(_spec_path("scout").read_text())["description"] == (
             "rewritten in the file"
         )
+        assert mig.marker_path().exists()
+
+    def test_a_spec_renamed_under_the_lock_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        original = mig.remove_never_chatted
+
+        def _rename_spec_then_remove(cfg_, cands, **kw):
+            _spec_path("scout").write_text(json.dumps({"name": "renamed-scout"}))
+            return original(cfg_, cands, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _rename_spec_then_remove):
+            report = _run(old_style_config, log)
+        assert report.refused == ["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert not mig.marker_path().exists()
+
+    def test_a_spec_made_private_under_the_lock_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        from kiro_crew import agent_state
+
+        original = mig.remove_never_chatted
+
+        def _make_spec_private_then_remove(cfg_, cands, **kw):
+            agent_state.set_fork_info("scout", forked_from="shared-scout", private_to="owner")
+            return original(cfg_, cands, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _make_spec_private_then_remove):
+            report = _run(old_style_config, log)
+        assert report.refused == ["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert not mig.marker_path().exists()
+
+    def test_a_spec_replaced_by_a_kirocrew_source_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        specs = dict(old_style_config)
+        specs["scout"] = _spec("scout", filename="kirocrew.json")
+        original = mig.remove_never_chatted
+
+        def _replace_spec_then_remove(cfg_, cands, **kw):
+            (Path(kiro_agents_dir_path()) / "kirocrew.json").write_text(
+                json.dumps({"name": "scout", "description": "runtime replacement"})
+            )
+            return original(cfg_, cands, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _replace_spec_then_remove):
+            report = _run(specs, log)
+        assert report.refused == ["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
         assert not mig.marker_path().exists()
 
     def test_a_spec_that_vanished_under_the_lock_refuses_the_delete(
@@ -877,7 +931,7 @@ class TestCandidates:
             patch("kiro_crew.agent_discovery.list_agents", return_value=list(specs.values())),
             patch("kiro_crew.agent.kiro_agents_dir_path", return_value="/nowhere"),
         ):
-            assert list(mig._synced_candidates(cfg, raw, overlay)) == ["scout"]
+            assert list(mig._synced_candidates(cfg, raw, overlay, frozenset())) == ["scout"]
 
     def test_an_overlay_leaf_appearing_under_the_lock_refuses_the_delete(
         self, old_style_config, bindings_dir, log
@@ -896,6 +950,139 @@ class TestCandidates:
         assert "scout" in KiroCrewConfig.load().agents
         assert not mig.marker_path().exists()
 
+    def test_a_teamed_row_is_never_a_candidate(self):
+        # Placing a crewmate on a team is the owner's own act, so the row is
+        # the owner's whatever its shape.
+        from kiro_crew import crew_teams
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["radar"] = _synced("radar")
+        cfg.agents["scout"] = _synced("scout")
+        cfg.save()
+        crew_teams.create_team("ops", ["radar"], known=lambda: {"radar", "scout"})
+        teamed = mig._teamed_names()
+        assert teamed == frozenset({"radar"})
+        specs = {"radar": _spec("radar"), "scout": _spec("scout")}
+        with (
+            patch("kiro_crew.agent_discovery.list_agents", return_value=list(specs.values())),
+            patch("kiro_crew.agent.kiro_agents_dir_path", return_value="/nowhere"),
+        ):
+            assert list(mig._synced_candidates(cfg, mig._raw_agents_section(), {}, teamed)) == [
+                "scout"
+            ]
+
+    def test_a_teamed_never_chatted_generated_row_is_kept(
+        self, old_style_config, bindings_dir, log
+    ):
+        # Neither removed, refused nor doubted: not a candidate at all, so the
+        # pass records itself as complete with the row in place.
+        from kiro_crew import crew_teams
+
+        crew_teams.create_team("ops", ["scout"], known=lambda: {"radar", "scout"})
+        report = _run(old_style_config, log)
+        assert report.removed == ["radar"]
+        assert report.refused == [] and report.doubted == {}
+        assert "scout" in KiroCrewConfig.load().agents
+        assert [t.members for t in crew_teams.read_teams()] == [["scout"]]
+        assert mig.marker_path().exists()
+
+    def test_an_unteamed_row_is_still_removed_when_teams_exist(
+        self, old_style_config, bindings_dir, log
+    ):
+        from kiro_crew import crew_teams
+
+        crew_teams.create_team("ops", ["by-hand"], known=lambda: {"by-hand"})
+        report = _run(old_style_config, log)
+        assert set(report.removed) == {"radar", "scout"}
+        assert "scout" not in KiroCrewConfig.load().agents
+        assert mig.marker_path().exists()
+
+    def test_a_row_teamed_under_the_lock_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        # The team write lands between discovery and the delete: newer
+        # evidence, the delete is refused, no marker, the row and its team stay.
+        from kiro_crew import crew_teams
+
+        original = mig.remove_never_chatted
+
+        def _team_then_remove(cfg_, names, **kw):
+            # Called once per candidate; the team is made on the first call.
+            if not crew_teams.read_teams():
+                crew_teams.create_team("ops", ["scout"], known=lambda: {"radar", "scout"})
+            return original(cfg_, names, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _team_then_remove):
+            report = _run(old_style_config, log)
+        assert report.removed == ["radar"]
+        assert report.refused == ["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert [t.members for t in crew_teams.read_teams()] == [["scout"]]
+        assert not mig.marker_path().exists()
+
+    def test_an_unreadable_team_document_keeps_every_candidate(
+        self, old_style_config, bindings_dir, log
+    ):
+        # None of them can be shown to be off a team, so all are kept on doubt
+        # -- the way no conversation log keeps them -- and the marker records it.
+        from kiro_crew import crew_teams
+
+        path = crew_teams.teams_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json")
+        report = _run(old_style_config, log)
+        assert report.removed == [] and report.refused == []
+        assert set(report.doubted) == {"radar", "scout"}
+        assert all(mig.TEAMS_UNREADABLE_REASON in why for why in report.doubted.values())
+        assert {"radar", "scout"} <= KiroCrewConfig.load().agents.keys()
+        assert json.loads(mig.marker_path().read_text())["doubted"] == report.doubted
+
+    def test_a_team_document_turned_unreadable_under_the_lock_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        from kiro_crew import crew_teams
+
+        original = mig.remove_never_chatted
+
+        def _corrupt_then_remove(cfg_, names, **kw):
+            path = crew_teams.teams_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{not json")
+            return original(cfg_, names, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _corrupt_then_remove):
+            report = _run(old_style_config, log)
+        assert set(report.refused) == {"radar", "scout"}
+        assert not mig.marker_path().exists()
+
+    def test_the_team_lock_is_held_until_the_base_delete_has_committed(
+        self, old_style_config, bindings_dir, log
+    ):
+        # Same rule as the overlay and spec locks: at the moment the team
+        # document lock is released the base file has already lost the row, so
+        # a team write that waited on it cannot place a name the pass is about
+        # to delete.
+        from kiro_crew.config.loader import config_path
+
+        log.dm("radar")
+        base_at_release: list[dict] = []
+        real = mig.document_lock
+
+        @contextlib.contextmanager
+        def _recording(directory=None):
+            with real(directory):
+                yield
+                base_at_release.append(
+                    json.loads(config_path().read_text(encoding="utf-8")).get("agents", {})
+                )
+
+        with patch.object(mig, "document_lock", _recording):
+            report = _run(old_style_config, log)
+        assert report.removed == ["scout"]
+        assert len(base_at_release) == 1
+        assert "scout" not in base_at_release[0]
+        assert "radar" in base_at_release[0]
+
     def test_the_overlay_lock_is_held_until_the_base_delete_has_committed(
         self, old_style_config, bindings_dir, log
     ):
@@ -905,7 +1092,7 @@ class TestCandidates:
         # therefore finds the row gone, never a row it can still bind to.
         from kiro_crew.config.loader import config_path
 
-        bindings_dir("radar")
+        log.dm("radar")
         base_at_release: list[dict] = []
         real = mig._config_write_lock
 
@@ -936,7 +1123,7 @@ class TestCandidates:
         import kiro_crew.agent as agent_mod
         from kiro_crew.config.loader import config_path
 
-        bindings_dir("radar")
+        log.dm("radar")
         base_at_release: list[dict] = []
         real = agent_mod.agents_spec_lock
 
@@ -956,15 +1143,21 @@ class TestCandidates:
         assert "scout" not in base_at_release[0]
         assert "radar" in base_at_release[0]
 
-    def test_the_locks_nest_base_then_overlay_then_spec(self, old_style_config, bindings_dir, log):
-        # The order every binding writer keeps, so no writer that holds the
-        # base lock can wait on this pass for a lock this pass waits on it for.
+    def test_the_locks_nest_base_then_overlay_then_spec_then_teams(
+        self, old_style_config, bindings_dir, log
+    ):
+        # The order every binding writer keeps, then the team document lock
+        # innermost (its own contract is registry lock first, then it, and
+        # nothing takes a registry, overlay or spec lock while holding it), so
+        # no writer that holds the base lock can wait on this pass for a lock
+        # this pass waits on it for.
         import kiro_crew.agent as agent_mod
 
-        bindings_dir("radar")
+        log.dm("radar")
         order: list[str] = []
         real_overlay = mig._config_write_lock
         real_spec = agent_mod.agents_spec_lock
+        real_teams = mig.document_lock
 
         @contextlib.contextmanager
         def _overlay(p, **kw):
@@ -978,26 +1171,33 @@ class TestCandidates:
                 order.append("spec")
                 yield
 
+        @contextlib.contextmanager
+        def _teams(directory=None):
+            with real_teams(directory):
+                order.append("teams")
+                yield
+
         with (
             patch.object(mig, "_config_write_lock", _overlay),
             patch.object(agent_mod, "agents_spec_lock", _spec),
+            patch.object(mig, "document_lock", _teams),
         ):
             report = _run(old_style_config, log)
         assert report.removed == ["scout"]
-        assert order == ["overlay", "spec"]
+        assert order == ["overlay", "spec", "teams"]
 
     def test_a_key_the_record_does_not_declare_disqualifies(self):
         raw = {"kiro_agent": "radar", "description": "d", "source": "builtin", "extra": 1}
-        assert not mig._is_fresh_sync_shape(raw, kiro_agent="radar", description="d")
+        assert not mig._is_fresh_sync_shape(raw, kiro_agent="radar")
 
-    def test_every_field_including_the_description_is_the_owners_signal(self):
+    def test_protected_fields_disqualify(self):
         raw = {"kiro_agent": "radar", "description": "d", "source": "builtin"}
 
         def shape(r):
-            return mig._is_fresh_sync_shape(r, kiro_agent="radar", description="d")
+            return mig._is_fresh_sync_shape(r, kiro_agent="radar")
 
         assert shape(raw)
-        assert not shape({**raw, "description": "rewritten"})
+        assert shape({**raw, "description": "rewritten"})
         assert not shape({**raw, "starred": True})
         assert not shape({**raw, "avatar": {"kind": "image"}})
         assert not shape({**raw, "workspace": "other"})
@@ -1234,7 +1434,7 @@ class TestOneProcess:
 
         from kiro_crew.platform_compat import file_lock, open_lock_file
 
-        bindings_dir("radar")
+        log.dm("radar")
         holding = threading.Event()
         release = threading.Event()
 
@@ -1275,7 +1475,7 @@ class TestOneProcess:
         from kiro_crew.platform_compat import file_lock, open_lock_file
 
         monkeypatch.setattr(mig, "PRUNE_LOCK_WAIT_S", 0.1)
-        bindings_dir("radar")
+        log.dm("radar")
         holding = threading.Event()
         release = threading.Event()
 
@@ -1306,7 +1506,7 @@ class TestOneProcess:
         from kiro_crew.platform_compat import file_lock, open_lock_file
 
         monkeypatch.setattr(mig, "PRUNE_LOCK_WAIT_S", 0.1)
-        bindings_dir("radar")
+        log.dm("radar")
         with open_lock_file(mig.lock_path()) as fd, file_lock(fd, exclusive=True):
             mig._write_marker(mig.PruneReport(removed=["scout"], kept=["radar"]))
             report = _run(old_style_config, log)
@@ -1337,7 +1537,7 @@ class TestOneProcess:
     def test_the_lock_is_released_after_the_pass(self, old_style_config, bindings_dir, log):
         from kiro_crew.platform_compat import file_lock, open_lock_file
 
-        bindings_dir("radar")
+        log.dm("radar")
         _run(old_style_config, log)
         # A second opener can take it at once: the pass did not leak its hold.
         with open_lock_file(mig.lock_path()) as fd:

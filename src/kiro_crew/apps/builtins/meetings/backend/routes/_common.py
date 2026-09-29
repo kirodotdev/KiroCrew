@@ -5,6 +5,8 @@ Holds the pieces every handler needs and nothing route-specific:
 * :func:`require_enabled` — the deny-by-default authorization decorator. The app
   is ``defaultEnabled: false`` and routes are registered once at gateway
   startup, so without this a disabled app would stay callable.
+* :func:`require_owner` — the dashboard-owner gate for the write routes that
+  change a meeting or drive its agents, in the shape ``/import`` uses.
 * :func:`json_body` / the ``field_*`` helpers — input validation. Every value
   that reaches the filesystem or a model prompt goes through one of these.
 * :data:`ACTIVE` — the single active meeting (``MAX_CONCURRENT_MEETINGS == 1``).
@@ -30,6 +32,7 @@ from kiro_crew.apps.builtins.meetings.backend.domain.session import (
     end_meeting_meta,
 )
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.hooks import get_global_hook_store  # noqa: F401  (re-export for handlers)
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact
@@ -279,6 +282,37 @@ def require_enabled(handler: Handler) -> Handler:
         return await handler(request)
 
     return _wrapped
+
+
+def require_owner(operation: str) -> Callable[[Handler], Handler]:
+    """Refuse *handler* to every caller but the dashboard owner.
+
+    The same gate ``audio_import.handle_import_audio`` runs inline: the shared
+    ``is_owner_dashboard_request`` predicate, the shared ``_owner_denial_response``
+    with the ``dashboard_owner_required`` code, and a SEL record for BOTH the
+    denial and the allow. A non-owner dashboard subject and any app token are
+    refused before the body is read, so neither the store nor an agent is reached.
+    """
+
+    def _decorate(handler: Handler) -> Handler:
+        @wraps(handler)
+        async def _wrapped(request: web.Request) -> web.StreamResponse:
+            if not is_owner_dashboard_request(request):
+                audit(operation, f"{request.path} reason:non-owner", outcome="denied")
+                # Imported here, not at module top: ``_shared`` pulls in the
+                # dashboard handler surface (``audio_import`` resolves it the same
+                # way for the same reason).
+                from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+
+                return _owner_denial_response(
+                    request, "dashboard owner required", "dashboard_owner_required"
+                )
+            audit(operation, f"{request.path} owner-check", outcome="allowed")
+            return await handler(request)
+
+        return _wrapped
+
+    return _decorate
 
 
 def audit(operation: str, resource: str, *, outcome: str, error: str = "") -> None:

@@ -467,6 +467,42 @@ describe('CommandBarOverlay rows', () => {
     await waitFor(() => expect(sessionSearch.mock.calls.length).toBeGreaterThan(before))
   })
 
+  it('refuses a STALE Enter, so a fast typist never opens the wrong session', async () => {
+    // Every scoped view ranks from the DEBOUNCED query, so for one debounce interval
+    // after a keystroke its rows answer the previous query, and an Enter in that window
+    // acts on the row selected against it. Reported in the crewmates view; the guard is
+    // on the activation path all four views share, so each one pins it.
+    const openAlpha = vi.fn()
+    const openBeta = vi.fn()
+    const hit = (title: string, onActivate: () => void) => ({
+      id: `sessions:${title}`,
+      providerId: 'sessions',
+      title,
+      icon: null,
+      score: 1,
+      indices: [],
+      onActivate,
+    })
+    sessionSearch.mockResolvedValue([hit('Alpha planning', openAlpha)])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    expect(await screen.findByText('Alpha planning')).toBeTruthy()
+    sessionSearch.mockResolvedValue([hit('Beta review', openBeta)])
+    fireEvent.change(input, { target: { value: 'beta' } })
+    // No debounce tick: the row on screen still answers `alpha`.
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(openAlpha).not.toHaveBeenCalled()
+    // Once the rows catch up, the same Enter opens what was typed.
+    await waitFor(() => {
+      expect(screen.queryByText('Beta review')).not.toBeNull()
+      expect(screen.queryByText('Alpha planning')).toBeNull()
+    })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(openBeta).toHaveBeenCalled()
+  })
+
   it('leaves the sessions failure a row, with none of the artifacts scope notice', async () => {
     // Guard on a deliberate boundary. The artifacts scope renders its failure through
     // ErrorNotice above the list, and it would have been easy to reach that surface for

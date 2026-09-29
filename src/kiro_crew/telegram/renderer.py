@@ -44,9 +44,17 @@ from kiro_crew.constants import (
 )
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
 from kiro_crew.messaging.display_safety import (
+    TELEGRAM_FALLBACK_BOLD_STAR,
+    TELEGRAM_FALLBACK_BOLD_USCORE,
+    TELEGRAM_FALLBACK_FENCE,
+    TELEGRAM_FALLBACK_HEADING,
+    TELEGRAM_FALLBACK_INLINE_CODE,
+    TELEGRAM_FALLBACK_LINK,
+    TELEGRAM_FALLBACK_LINK_TEXT,
     redact_for_display,
     safe_split_offset,
     severs_a_credential,
+    telegram_fallback_heading_text,
 )
 from kiro_crew.messaging.outbound_files import (
     ExtractLimits,
@@ -354,7 +362,7 @@ def _strip_hr(text: str) -> str:
         stash.append(fragment)
         return f"\x00H{len(stash) - 1}\x00"
 
-    text = _FENCE_RE.sub(lambda m: _keep(m.group(0)), text)
+    text = TELEGRAM_FALLBACK_FENCE.sub(lambda m: _keep(m.group(0)), text)
     # Max 3 leading spaces (markdown HR rule) — a 4-space-indented "---" is
     # indented CODE (e.g. a YAML separator) and must survive.
     out = re.sub(r"(?m)^[ ]{0,3}([-*_])\1{2,}[ \t]*$", "", text)
@@ -438,14 +446,15 @@ def _split_markdown(text: str, limit: int) -> list[str]:
 # final message. Code spans are stashed first so their contents are never
 # treated as markup, then the remaining text is HTML-escaped before any tags
 # are introduced -- so raw '<', '>' and '&' in the answer can't break the parse.
-_FENCE_RE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*)$", re.MULTILINE)
-_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_BOLD_USCORE_RE = re.compile(r"__(.+?)__", re.DOTALL)
+# The fence, inline-code, heading, ``**``, ``__`` and link patterns are the
+# display-safety screen's (``TELEGRAM_FALLBACK_*``): the screen models
+# ``_strip_md`` with the same objects, so what it scans is what the fallback
+# shows. The link's label class is the screen's (no ``[``, ``]`` or line break),
+# so this never links (or, in ``_strip_md``, flattens) a label the screen left raw,
+# and its url is the shared destination unit, so a balanced pair may sit inside
+# it; see :func:`kiro_crew.constants.md_link_destination`.
 _ITALIC_STAR_RE = re.compile(r"(?<!\w)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\w)")
 _ITALIC_USCORE_RE = re.compile(r"(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+", re.MULTILINE)
 
 # Characters a GFM separator row may contain (`| --- |`, `|:---|---:|`, `- | -`).
@@ -653,17 +662,21 @@ def _md_to_telegram_html(text: str) -> str:
         stash.append(fragment)
         return f"\x00{len(stash) - 1}\x00"
 
-    text = _FENCE_RE.sub(
-        lambda m: _keep(f"<pre>{html.escape(m.group(1).rstrip(chr(10)))}</pre>"), text
+    text = TELEGRAM_FALLBACK_FENCE.sub(
+        lambda m: _keep(f"<pre>{html.escape((m.group(1) or '').rstrip(chr(10)))}</pre>"), text
     )
-    text = _INLINE_CODE_RE.sub(lambda m: _keep(f"<code>{html.escape(m.group(1))}</code>"), text)
+    text = TELEGRAM_FALLBACK_INLINE_CODE.sub(
+        lambda m: _keep(f"<code>{html.escape(m.group(1))}</code>"), text
+    )
     text = html.escape(text)
-    text = _HEADING_RE.sub(lambda m: f"<b>{m.group(1).strip()}</b>", text)
-    text = _BOLD_STAR_RE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
-    text = _BOLD_USCORE_RE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
+    text = TELEGRAM_FALLBACK_HEADING.sub(
+        lambda m: f"<b>{telegram_fallback_heading_text(m)}</b>", text
+    )
+    text = TELEGRAM_FALLBACK_BOLD_STAR.sub(lambda m: f"<b>{m.group(1)}</b>", text)
+    text = TELEGRAM_FALLBACK_BOLD_USCORE.sub(lambda m: f"<b>{m.group(1)}</b>", text)
     text = _ITALIC_STAR_RE.sub(lambda m: f"<i>{m.group(1)}</i>", text)
     text = _ITALIC_USCORE_RE.sub(lambda m: f"<i>{m.group(1)}</i>", text)
-    text = _LINK_RE.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', text)
+    text = TELEGRAM_FALLBACK_LINK.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', text)
     text = _BULLET_RE.sub(lambda m: f"{m.group(1)}\u2022 ", text)
     # Group consecutive "> " lines (escaped to "&gt; ") into a native Telegram
     # <blockquote> — the ▎ quote bar. Runs after inline formatting so bold/italic
@@ -870,22 +883,30 @@ def _split_markdown_table_aware(text: str, rendered_limit: int, rich_limit: int)
         elif block.strip():
             out.extend(_split_markdown_bounded(block, rendered_limit))
     kept = [c for c in out if c.strip()]
-    repaired = repaired_for_delivery(text, kept, _default_redactor)
+
+    def bounded(repaired: str) -> list[str]:
+        return _split_markdown_bounded(repaired, rendered_limit)
+
+    repaired = repaired_for_delivery(text, kept, _default_redactor, bounded)
     if repaired is None:
         return kept
-    return _split_markdown_bounded(repaired, rendered_limit)
+    return bounded(repaired)
 
 
 def _strip_md(text: str) -> str:
     """Flatten Markdown to clean plaintext for the streaming typewriter frames
     (and as the safe fallback if an HTML final edit is ever rejected) -- avoids
-    showing raw ``**``/``##``/``[x](url)`` noise while the answer is forming."""
-    text = _FENCE_RE.sub(lambda m: m.group(1), text)
-    text = _INLINE_CODE_RE.sub(lambda m: m.group(1), text)
-    text = _HEADING_RE.sub(lambda m: m.group(1).strip(), text)
-    text = _BOLD_STAR_RE.sub(lambda m: m.group(1), text)
-    text = _BOLD_USCORE_RE.sub(lambda m: m.group(1), text)
-    text = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
+    showing raw ``**``/``##``/``[x](url)`` noise while the answer is forming.
+    The fence, inline-code, heading, ``**``, ``__`` and link passes are the
+    display-safety screen's own objects and replacements, in the order its
+    ``_plain_reading`` applies them. The bullet pass keeps a visible bullet
+    between surrounding text and remains this renderer's own."""
+    text = TELEGRAM_FALLBACK_FENCE.sub(lambda m: m.group(1) or "", text)
+    text = TELEGRAM_FALLBACK_INLINE_CODE.sub(lambda m: m.group(1), text)
+    text = TELEGRAM_FALLBACK_HEADING.sub(telegram_fallback_heading_text, text)
+    text = TELEGRAM_FALLBACK_BOLD_STAR.sub(lambda m: m.group(1), text)
+    text = TELEGRAM_FALLBACK_BOLD_USCORE.sub(lambda m: m.group(1), text)
+    text = TELEGRAM_FALLBACK_LINK.sub(TELEGRAM_FALLBACK_LINK_TEXT, text)
     text = _BULLET_RE.sub(lambda m: f"{m.group(1)}\u2022 ", text)
     return text
 

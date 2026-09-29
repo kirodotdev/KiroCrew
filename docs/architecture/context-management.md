@@ -56,7 +56,7 @@ cannot disagree with what was sent.
 | 10 | `[WORKSPACE IDENTITY]` | `workspace_dir_for` | `kirocrew` agent only |
 | 11 | `[DOCUMENTATION]` | `_build_docs_section`, the packaged docs dir | `kirocrew` agent, `project` group |
 | 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json` | **Claude Code backend**, `kirocrew` agent, `project` group |
-| 13 | `[THREAD CONVERSATION HISTORY]` | `compress_thread_history`, else `_recall_rows` truncation | new, non-resumed session |
+| 13 | `[THREAD CONVERSATION HISTORY]` | `build_session_replay` (lossless, newest first), else `_recall_rows` truncation | new, non-resumed session |
 | 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
 | 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
 | 16 | `[Skills:]` (pinned bodies, then discovery) | `skills.py` → `get_context` | see §4 |
@@ -175,6 +175,20 @@ Slack thread text and folder paths are also screened by `contains_injection` and
 **dropped** with an audit row — a span-local scrub cannot stop directive prose.
 
 ## 2. During a session
+
+Dashboard sessions discover the artifacts skill through the existing system
+prompt's `WIDGET_BLOCK` in both density variants and through the on-demand skill
+catalog. `build_message` does not repeat that pointer every turn. Interactive
+sessions with a Dashboard surface receive milestone evidence, result and next-step
+guidance only when the current live `dashboard.dynamic_dashboard_cards` setting
+is on, including warm, resumed and re-injected turns.
+Every turn reads the live snapshot (the current config loader when no watcher
+exists), so toggling affects the next turn without rebuilding the context builder.
+The guidance does not load the skill body, enable generation, start another producer,
+or grant persistence or approval authority. The host owns eligibility and updates.
+Minimal-context calls, sessions without a Dashboard surface, and agents with
+`includeCrewContext: false` do not receive the hint. It shares the existing
+per-turn guidance envelope so the current request remains at the recency edge.
 
 After the first turn `build_message` injects no transcript — the ACP session
 carries its history natively, and a second copy is two sources of truth. Per turn
@@ -542,7 +556,7 @@ per-member permission control; both exist today, in the forms above.
 | Which block is which, and how big it was | `src/kiro_crew/context_blocks.py` (`_MARKERS`, `_CLOSERS`, `measure_prompt`) |
 | Budgets, caps, the protected ceiling | `src/kiro_crew/context.py` (`_budget`, `_resolve_caps`, `_ResolvedCaps`) |
 | Memory block contents | `src/kiro_crew/memory.py` (`get_context`, `activity_index`, `get_activity_context`) |
-| Lessons | `src/kiro_crew/learn.py`, `src/kiro_crew/vector_memory.py` |
+| Lessons | `src/kiro_crew/learn.py`, `src/kiro_crew/vector_memory.py` (`write_lesson`), `src/kiro_crew/vector_memory_runtime/lessons.py` (the lesson readers, ranking and tiered rendering) |
 | Skill index, pinned bodies, discovery | `src/kiro_crew/skills.py` (`get_context`, `load_skill`) |
 | Trigger matching, and its model-picked override | `src/kiro_crew/trigger_match.py`, `src/kiro_crew/skills.py` (`get_triggered_skills`, `split_triggered`, `trigger_hint`), `src/kiro_crew/decisions/points/skills_select.py` |
 | Which agents get skills | `src/kiro_crew/context.py` (`_skills_injection_plan`), `src/kiro_crew/agent_discovery.py` (`agent_skill_globs`, `expand_skill_uri`) |

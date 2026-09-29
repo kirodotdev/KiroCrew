@@ -325,11 +325,12 @@ class _FakeSvc:
     def list_all(self):
         return list(self._all)
 
-    async def remove(self, loop_id, *, stop_reason="", stop_detail=""):
+    async def remove(self, loop_id, *, stop_reason="", stop_detail="", on_absent=None):
         self.removed.append(loop_id)
         self.notes.append((loop_id, stop_reason, stop_detail))
+        return True
 
-    async def update(self, loop_id, **patch):
+    async def update(self, loop_id, on_absent=None, **patch):
         self.updated.append((loop_id, patch))
         return self._loop
 

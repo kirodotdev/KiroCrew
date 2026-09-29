@@ -47,7 +47,8 @@ mechanism:
 
 - **A successful prerelease run clears the candidate commit.** After every
   publish lane succeeds, `record-promotion` assembles the wheel/sdist, all six
-  Linux artifacts, notarized zip/DMG, the optional Windows installer pair, and
+  Linux artifacts, all three notarized macOS zip/DMG pairs (universal,
+  arm64-only, x86_64-only), the optional Windows installer pair, and
   the attested OCI manifest digest into a
   `stable-promotion-<x.y.z>` GitHub artifact (90-day retention) whose manifest
   (`scripts/release_promotion.py create`) carries per-file SHA-256/SHA-512/size
@@ -251,12 +252,12 @@ concurrency group, and their version derivation.
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle. A bare tag verifies the same-commit successful prerelease run, then rebuilds under the bare version by default; `STABLE_PROMOTE_BYTES` opts one base into exact-byte reuse. Then it creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
-| `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` passes true, `release.yml` keeps the default off). The job is `continue-on-error`; on nightly each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
+| `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
 | `build-windows.yml` | reusable build | `windows-latest`, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
-| `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. Called once for the universal DMG (`feed/<channel>/latest-mac.yml`) and, on nightly only, once more per single-arch DMG with `mac_variant: arm64 \| x64` + `mac_artifact`, which suffixes every shared key and artifact name with the arch and writes `feed/<channel>/<arch>/latest-mac.yml`; `release.yml` calls the universal leg alone because the promotion bundle records one DMG. |
+| `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. Called THREE TIMES by each trigger: once for the universal DMG (`feed/<channel>/latest-mac.yml`) and once per single-arch DMG with `mac_variant: arm64 \| x64` + `mac_artifact`, which suffixes every shared key, artifact and in-artifact zip name with the arch and writes `feed/<channel>/<arch>/latest-mac.yml`. All three are required lanes on `release.yml`, and the promotion bundle carries all three zip/DMG pairs (`mac_zip[_<arch>]` / `dmg[_<arch>]` roles). |
 | `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. |
 | `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
 
@@ -293,7 +294,8 @@ cli/<channel>/<version>/kirocrew-<version>-py3-none-any.whl  immutable
 cli/<channel>/<version>/SHA256SUMS                           immutable
 cli/<channel>/<version>/cli-manifest.json                    immutable
 desktop/<channel>/<version>/KiroCrew.zip                     immutable
-desktop/<channel>/<version>/KiroCrew.dmg                     immutable
+desktop/<channel>/<version>/KiroCrew.dmg                     immutable (universal)
+desktop/<channel>/<version>/KiroCrew-{arm64,x64}.{zip,dmg}   immutable (single-arch)
 desktop/<channel>/<version>/KiroCrew-x86_64.AppImage         immutable
 desktop/<channel>/<version>/KiroCrew-aarch64.AppImage        immutable
 desktop/<channel>/<version>/KiroCrew-x86_64.deb              immutable
@@ -302,14 +304,17 @@ desktop/<channel>/<version>/KiroCrew-x86_64.rpm              immutable
 desktop/<channel>/<version>/KiroCrew-aarch64.rpm             immutable
 desktop/<channel>/<version>/KiroCrew-Setup.exe               immutable
 desktop/<channel>/<version>/KiroCrew-Setup.exe.blockmap      immutable
-desktop/<channel>/latest/KiroCrew.dmg                        pointer, max-age=300
+desktop/<channel>/latest/KiroCrew.dmg                        pointer, max-age=300 (universal)
+desktop/<channel>/latest/KiroCrew-{arm64,x64}.dmg            pointer, max-age=300 (single-arch)
 desktop/<channel>/latest/KiroCrew-x86_64.AppImage            pointer, max-age=300
 desktop/<channel>/latest/KiroCrew-aarch64.AppImage           pointer, max-age=300
 desktop/<channel>/latest/KiroCrew-<arch>.deb                 pointer, max-age=300
 desktop/<channel>/latest/KiroCrew-<arch>.rpm                 pointer, max-age=300
 desktop/<channel>/latest/KiroCrew-Setup.exe                   pointer, max-age=300
-feed/<channel>/latest-mac.yml                                pointer, max-age=300
+feed/<channel>/latest-mac.yml                                pointer, max-age=300 (universal)
 feed/<channel>/latest-mac.json                               pointer, max-age=300 (legacy bridge)
+feed/<channel>/{arm64,x64}/latest-mac.yml                    pointer, max-age=300 (single-arch)
+feed/<channel>/{arm64,x64}/latest-mac.json                   pointer, max-age=300 (legacy bridge, inert)
 feed/<channel>/latest-linux.yml                              pointer, max-age=300 (x64 AppImage)
 feed/<channel>/latest-linux-arm64.yml                        pointer, max-age=300 (arm64 AppImage)
 feed/<channel>/{deb,rpm}/latest-linux.yml                    pointer, max-age=300 (x64 package)
@@ -493,11 +498,20 @@ truncating the version history.
 
 `sign-and-notarize.yml`, three jobs, called with `write_feed: true` by both
 triggers. Nothing about it is caller-specific: the trigger files carry only
-version derivation and `uses:` calls. `nightly.yml` calls it three times — once
+version derivation and `uses:` calls. Both triggers call it three times — once
 for the universal DMG and once per single-arch DMG (`mac_variant: arm64 | x64`,
 `mac_artifact: unsigned-build-darwin-<arch>`); with the variant empty every
 name below is the literal it always was, with it set every shared name carries
-`-<arch>` and the channel file moves to `feed/nightly/<arch>/latest-mac.yml`.
+`-<arch>` and the channel file moves to `feed/<channel>/<arch>/latest-mac.yml`.
+The zip inside the gated artifact is `notarized-<arch>.zip` on a single-arch
+leg (`notarized.zip` on the universal one) because the stable promotion bundle
+holds all three legs' files in one flat directory: on a byte promotion every
+leg downloads that one bundle and picks its own zip and DMG out of it by name,
+the same name the fresh path wrote into its own gated artifact. On `release.yml`
+the two single-arch callers are required lanes beside the universal one:
+`record-promotion`, `github-release` and `record-stable-promotion` all wait on
+all three, and the release page carries `KiroCrew-<v>-{universal,arm64,x64}.dmg`
+with the matching `*-mac.zip`.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
    the wheel, sdist, and AppImages (not the mac zip or DMG, whose bytes are not
@@ -1112,9 +1126,13 @@ BYTES=https://download.crew.kiro.dev
 PTR=https://updates.crew.kiro.dev
 
 curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew.dmg" | head -1
+curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew-arm64.dmg" | head -1
+curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew-x64.dmg" | head -1
 curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew-x86_64.AppImage" | head -1
 curl -fsSI "$BYTES/desktop/$CH/latest/KiroCrew-aarch64.AppImage" | head -1
 curl -fsS  "$PTR/feed/$CH/latest-mac.yml"
+curl -fsS  "$PTR/feed/$CH/arm64/latest-mac.yml"
+curl -fsS  "$PTR/feed/$CH/x64/latest-mac.yml"
 curl -fsS  "$PTR/feed/$CH/latest-linux.yml"
 curl -fsS  "$PTR/feed/$CH/latest-linux-arm64.yml"
 curl -fsS  "$PTR/feed/$CH/deb/latest-linux.yml"
@@ -1159,7 +1177,8 @@ PTR=https://updates.crew.kiro.dev
 BYTES=https://download.crew.kiro.dev
 
 # 1. Every feed advertises the BARE version -- no rc/insider suffix anywhere.
-for f in latest-cli.json latest-mac.yml latest-linux.yml latest-linux-arm64.yml \
+for f in latest-cli.json latest-mac.yml arm64/latest-mac.yml x64/latest-mac.yml \
+         latest-linux.yml latest-linux-arm64.yml \
          deb/latest-linux.yml deb/latest-linux-arm64.yml \
          rpm/latest-linux.yml rpm/latest-linux-arm64.yml latest.yml; do
   printf '%-22s ' "$f"

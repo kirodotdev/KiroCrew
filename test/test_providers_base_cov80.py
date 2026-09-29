@@ -11,10 +11,12 @@ assert.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.mcp_gateway.abort import RuntimeAbortTarget
 from kiro_crew.providers.base import LLMEvent, LLMProvider
 
 
@@ -86,9 +88,54 @@ def test_liveness_defaults_and_process_delegation(provider: _MinimalProvider) ->
     assert _Dead().is_process_alive() is False
 
 
-def test_touch_activity_and_runtime_info_defaults(provider: _MinimalProvider) -> None:
+def test_touch_activity_default(provider: _MinimalProvider) -> None:
     assert provider.touch_activity() is None
-    assert provider.runtime_info() == (None, None)
+
+
+def test_a_provider_with_no_runtime_names_no_abort_target(provider: _MinimalProvider) -> None:
+    """No runtime of its own means no abort push, and no address to invent."""
+    assert provider.runtime_abort_target() is None
+
+
+def test_the_private_client_walk_is_the_undeclared_providers_fallback() -> None:
+    """A provider outside this tree keeps its abort push without declaring one.
+
+    The walk lives here so no consumer reaches through provider internals for a
+    pid of its own; a provider in this tree overrides the method instead.
+    """
+    provider = _MinimalProvider()
+    provider._client = SimpleNamespace(  # type: ignore[attr-defined]
+        _pid=99, _mcp_gateway_socket="/tmp/b.sock"
+    )
+    assert provider.runtime_abort_target() == RuntimeAbortTarget.build(99, "/tmp/b.sock")
+
+
+@pytest.mark.parametrize(
+    "pid, socket_path",
+    [
+        (1, "/tmp/b.sock"),  # init, never a runtime this gateway spawned
+        (0, "/tmp/b.sock"),  # addresses a process group, not a process
+        (-5, "/tmp/b.sock"),
+        (True, "/tmp/b.sock"),  # a bool is an int and must not pass as pid 1
+        ("99", "/tmp/b.sock"),
+        (99, ""),  # no gateway socket, so nowhere to send the frame
+        (99, None),
+    ],
+)
+def test_an_unroutable_address_yields_no_target(pid: object, socket_path: object) -> None:
+    """Refused at mint time, so holding a target IS the answer to "can I abort"."""
+    provider = _MinimalProvider()
+    provider._client = SimpleNamespace(  # type: ignore[attr-defined]
+        _pid=pid, _mcp_gateway_socket=socket_path
+    )
+    assert provider.runtime_abort_target() is None
+
+
+def test_a_target_names_the_runtime_it_addresses() -> None:
+    """The audit label is the target's own rendering, not the caller's."""
+    target = RuntimeAbortTarget.build(4242, "/tmp/gw.sock")
+    assert target is not None
+    assert target.audit_label == "pid=4242"
 
 
 @pytest.mark.asyncio

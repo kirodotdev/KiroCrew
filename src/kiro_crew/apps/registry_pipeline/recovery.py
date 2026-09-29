@@ -51,6 +51,19 @@ class _MoveAsideUndoFailed(OSError):
         self.aside = aside
 
 
+def _stale_sibling(path: Path) -> Path:
+    """The path a move-aside of *path* goes to: ``<path>.stale-<8 hex>`` beside it.
+
+    The one spelling of the retention sweep's ``.stale-*`` name
+    (:data:`_STALE_CHECKOUT_PATTERN`), so everything set aside under
+    ``app-sources`` -- a whole checkout, or the layout files a refused install
+    script created -- is retired by the same sweep after the same
+    :data:`_STALE_CHECKOUT_RETENTION_DAYS`, and nothing is stranded under a name
+    the sweep does not know.
+    """
+    return path.with_name(f"{path.name}.stale-{uuid.uuid4().hex[:8]}")
+
+
 def _rename_and_refresh_mtime(dest: Path, aside: Path) -> None:
     """Refresh *dest*'s mtime, then rename it to *aside*, in one thread call.
 
@@ -148,7 +161,7 @@ async def _move_checkout_aside(dest: Path, log_lines: list[str]) -> Path | None:
     path. No new ``await`` runs after settlement: the undo/log is synchronous
     so it cannot itself be interrupted.
     """
-    aside = dest.with_name(f"{dest.name}.stale-{uuid.uuid4().hex[:8]}")
+    aside = _stale_sibling(dest)
     loop = asyncio.get_running_loop()
     # Retain the worker future so the CancelledError handler can settle it
     # before inspecting *aside*; shield keeps a task cancel from propagating
@@ -283,11 +296,19 @@ def _restore_moved_aside(
         )
 
 
+# The sweep removes .stale-* / .partial-* siblings under app-sources that are
+# older than _STALE_CHECKOUT_RETENTION_DAYS; the desktop gate's preview holder
+# (_installed_tree_preview) takes the .partial-* name so a copy an unclean exit
+# leaves behind goes with them.
 _STALE_CHECKOUT_PATTERN = re.compile(r"^.+\.(stale|partial)-[0-9a-f]{8}$")
 
 
 def _is_stale_candidate(p: Path) -> bool:
-    """Return True if *p* matches the .stale-*/.partial-* naming convention."""
+    """Return True if *p* matches the .stale-*/.partial-* naming convention.
+
+    Both are moved-aside checkouts the sweep may retire after the retention
+    window.
+    """
     return bool(_STALE_CHECKOUT_PATTERN.match(p.name))
 
 

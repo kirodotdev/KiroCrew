@@ -607,13 +607,14 @@ def test_every_field_the_reader_hint_names_is_reachable_along_the_hints_own_path
 
 
 def test_an_evicted_crew_has_no_record_and_reads_the_count_from_the_top_level():
-    """The evicted reader's whole path, which is the case the count exists for.
+    """The evicted reader's path: absence under its own key, count at the top level.
 
     Eviction is ``del owners[oldest]``, so a crew whose record was evicted finds
     NOTHING under its own ``crew_key`` -- not an empty record. That is why the count
     cannot live on the per-owner record: the crew it is about has none. The fold's
-    top-level count is what this reader reads instead, and this pins that it is there
-    and non-zero in exactly that state.
+    top-level count is what this reader reads instead, and this pins that the key is
+    ABSENT (a placeholder record would break the reader) and the count is non-zero in
+    exactly that state.
     """
     _unit()
     keys = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
@@ -627,6 +628,31 @@ def test_an_evicted_crew_has_no_record_and_reads_the_count_from_the_top_level():
     assert evicted not in value["owners"]
     assert value["owners"].get(evicted) is None
     # So the top level is the only thing that can tell this reader it was evicted.
+    assert value["owners_omitted"] == 1
+
+
+def test_a_non_zero_count_does_not_attribute_the_loss_to_the_asking_crew():
+    """The false-positive direction the count cannot rule out, pinned as behaviour.
+
+    ``_panel_step`` increments on ANY owner's eviction with no reference to the
+    asking key, so a crew that never published on a busy slot reads exactly what a
+    genuinely evicted crew reads: no record of its own, and the same non-zero count.
+    Pinned as an executable assertion (not only in prose) so a ``_panel_step`` change
+    that increments on the asking key, or seeds a placeholder for an evicted owner,
+    reddens here rather than shipping green.
+    """
+    _unit()
+    publishers = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
+    for i, key in enumerate(publishers):
+        _publish(crew_key=key, title=f"crew-{i}", data={"cycle": i})
+
+    value = _folded()
+    evicted = publishers[0]
+    never_published = "z" * 40
+
+    # Both read absence, and both read the same count. Indistinguishable by design.
+    assert evicted not in value["owners"]
+    assert never_published not in value["owners"]
     assert value["owners_omitted"] == 1
 
 
@@ -656,31 +682,6 @@ def test_no_record_under_owners_is_ever_empty_so_absence_is_the_only_signal():
     assert fresh["owners_omitted"] == 0
 
 
-def test_a_non_zero_count_does_not_attribute_the_loss_to_the_asking_crew():
-    """The false-positive direction, which the count genuinely cannot rule out.
-
-    ``_panel_step`` increments on ANY owner's eviction with no reference to the
-    asking key, so a crew that never published on a busy slot reads exactly what a
-    genuinely evicted crew reads: no record of its own, and the same non-zero count.
-    Pinned so the documentation can never be tightened back into claiming an
-    attribution, and so the true-positive pin above is not mistaken for the whole
-    guarantee.
-    """
-    _unit()
-    publishers = [chr(ord("c") + i) * 40 for i in range(PANEL_OWNER_LIMIT + 1)]
-    for i, key in enumerate(publishers):
-        _publish(crew_key=key, title=f"crew-{i}", data={"cycle": i})
-
-    value = _folded()
-    evicted = publishers[0]
-    never_published = "z" * 40
-
-    # Both read absence, and both read the same count. Indistinguishable by design.
-    assert evicted not in value["owners"]
-    assert never_published not in value["owners"]
-    assert value["owners_omitted"] == 1
-
-
 def test_a_zero_count_speaks_only_about_this_fold_not_about_publishing():
     """``0`` says this FOLD recorded no eviction. It says nothing about publishing.
 
@@ -706,11 +707,11 @@ def test_a_zero_count_speaks_only_about_this_fold_not_about_publishing():
 
 
 def test_a_slot_that_evicted_nobody_still_reports_the_count_as_zero():
-    """The count's other direction: zero is an answer, not an absent field.
+    """Zero is an answer, not an absent field, on a slot that published and evicted
 
-    A reader that cannot distinguish "no eviction" from "this fold does not report
-    evictions" is back to guessing, so the field is present on a slot that published
-    and evicted nobody -- the ordinary case, distinct from the empty fold above.
+    nobody -- the ordinary case, distinct from the empty fold above. A reader that
+    cannot tell "no eviction" from "this fold does not report evictions" is back to
+    guessing, so the field is present and zero here.
     """
     _unit()
     _publish(title="fleet", data={"cycle": 47})

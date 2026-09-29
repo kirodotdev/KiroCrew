@@ -55,7 +55,8 @@ IFS=',' read -r -a members <<< "$GUI_MEMBERS"
 for m in "${members[@]}"; do
   [ -n "$m" ] && member_args+=(--member "$m")
 done
-KIROCREW_HOME="$HOME_DIR" python3 "$(dirname "$0")/seed_home.py" --fixture "$GUI_SEED" "${member_args[@]}"
+# The seed itself runs after 2c: the pinned starter session is seeded with
+# the sample project staged there as its project directory.
 
 # ---- 2b. sample notes folder for the Knowledge scenarios -------------------
 # The Knowledge "Add Source > Local Folder" form takes a typed absolute path
@@ -87,6 +88,21 @@ mkdir -m 0700 -- "$notes_root"
 mkdir -m 0700 -- "$GUI_NOTES_DIR"
 cp -- "$(dirname "$0")/knowledge-notes/"*.md "$GUI_NOTES_DIR/"
 echo "notes=$notes_root" >> "$GUI_OUT/target.paths"
+
+# ---- 2c. sample project for the Files scenario -----------------------------
+# The chat's Files view lists a session's project directory, and the fixture's
+# sessions carry none (a fixture cannot spell a path that only exists on the
+# machine it is seeded on). A small project tree -- a README beside a docs/
+# folder holding the same three notes -- is staged under the owned root above
+# (same marker, same teardown), and seed_home.py writes it into the metadata of
+# the pinned starter session (dashboard_starter.jsonl). Only that one gets it: the
+# other seeded chats keep reading as project-less conversations.
+GUI_PROJECT_DIR="$notes_root/sample-project"
+mkdir -m 0700 -- "$GUI_PROJECT_DIR" "$GUI_PROJECT_DIR/docs"
+cp -- "$(dirname "$0")/knowledge-notes/"*.md "$GUI_PROJECT_DIR/docs/"
+printf '# Sample project\n\nA small tree the GUI user test browses from the chat Files view.\n' > "$GUI_PROJECT_DIR/README.md"
+
+KIROCREW_HOME="$HOME_DIR" python3 "$(dirname "$0")/seed_home.py" --fixture "$GUI_SEED" "${member_args[@]}" --project "$GUI_PROJECT_DIR"
 
 # ---- 3. gateway ------------------------------------------------------------
 # Same shape as kiro_crew.testing.harness.spawn_feature_gateway (the E2E job's

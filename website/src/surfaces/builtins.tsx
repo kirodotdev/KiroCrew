@@ -53,7 +53,7 @@ registerBuiltinSurface({
   activityLabel: 'subagents in flight',
 })
 
-// Crew Members — one durable, pinned DM thread per crew member. Sits directly
+// Crewmates — one durable, pinned DM thread per crew member. Sits directly
 // under Sessions: both are conversation surfaces, but here the primary object
 // is a NAMED MEMBER rather than a task-shaped session. `slotMode: 'member'`
 // claims the `member-<slug>` slots this page's threads live in, so their
@@ -69,14 +69,14 @@ registerBuiltinSurface({
 // `getAdvertisedSurfaces()` — and the third, the browser-tab attention count,
 // applies it inside `selectAllSurfacesAttention`, because that sum reads the
 // registry directly rather than the advertised list. The sidebar create menu's
-// "Crew Members" entry is not gated by this flag at all — it reads PREVIEW_CREW
+// "Crewmates" entry is not gated by this flag at all — it reads PREVIEW_CREW
 // only to decide whether it lands on `/members` or on the Settings card that
 // turns the page on (`ChatSidebar.openCrewMembers`); a create-menu item is not
 // a surface.
 registerBuiltinSurface({
   navId: 'members',
   route: '/members',
-  label: surfaceMachineValue('Crew Members'),
+  label: surfaceMachineValue('Crewmates'),
   labelKey: 'nav.crew_members',
   icon: <CrewMemberMark />,
   group: surfaceMachineValue('Main'),

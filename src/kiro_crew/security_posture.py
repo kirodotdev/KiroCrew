@@ -121,6 +121,23 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "than emitting it unredacted.",
     ),
     (
+        "Conductor work items shown on the Crew page",
+        "dashboard/handlers/work_ledger_board.py",
+        "Every string in one conductor's work-item board on its way to a browser: "
+        "the item titles, each worker's own `summary`, the conductor's `decision`, "
+        "and every artifact key and value. All are written by an AGENT and nothing "
+        "between that write and this read inspects them, so a worker that pasted a "
+        "token into its own status line would otherwise have it rendered verbatim "
+        "on the page -- the masking that removes `worker_session_key` covers the one "
+        "field known to be a secret and says nothing about prose that happens to "
+        "contain one. The pass is recursive over the whole payload rather than a "
+        "named list of prose fields, so a field added to `WorkItem` later is covered "
+        "by default; it runs through `platform.context.redact_via_context`, so both "
+        "scanners run in the shared order and a host with a loaded companion applies "
+        "that companion's patterns too. Deliberately fail-closed: a composition "
+        "error surfaces as a 500 rather than an un-redacted board.",
+    ),
+    (
         "Tool-call risk questions sent to the decision judge",
         "decisions/points/tool_risk.py",
         "The tool name, its arguments and the message excerpt that one `tool.risk` "
@@ -400,6 +417,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "reproduced inside it; `normalize_payload` runs the whole nested payload "
         "through the credential + exfiltration-URL chain before the write, because "
         "the sidecar is durable and read straight back to the panel.",
+    ),
+    (
+        "Automatic session status cards",
+        "dashboard/card_lifecycle.py",
+        "Bounded recent transcript messages sent to the background model and its "
+        "HTML/text response served by GET /api/chat/slots/{slot}/dashboard-card. "
+        "Both boundaries run credential and exfiltration-URL redaction before "
+        "model input or cached publication; the owner-only GET never generates content.",
     ),
     (
         "Cross-session turn delivery",
@@ -1634,7 +1659,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # credentials) before the provisioning failure is written to the
         # gateway log and to the app backend's own log file. Defensive
         # scrubbing at the point of capture, not an output boundary.
-        "apps/backend.py",
+        "apps/backend_runtime/provisioning.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier
@@ -1979,6 +2004,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/source_providers/chip_refresh.py",
         "dashboard/source_providers/review.py",
         "dashboard/source_providers/sanitize.py",
+        # Pre-redacts a persisted subagent record's retained text at the point it
+        # is READ, because that is also the point it is clamped to its field caps
+        # and the two have a required order: a value cut at the cap first loses
+        # the tail a credential pattern needs, so a downstream scanner cannot
+        # match the fragment that survives. The outbound bytes are still redacted
+        # at the registered sinks -- `dashboard/handlers/messaging.py` for the
+        # REST listing, and the WS replay's own pre-redaction into `state.py` --
+        # so this module hands records to consumers rather than writing to a
+        # human, and is not itself an egress boundary.
+        "subagent_persistence.py",
         # Pre-redacts follow-up items before handing to state.py's WS egress
         # (the registered sink); its own return string is re-redacted by
         # chat_runner before broadcast. Not itself an egress boundary.

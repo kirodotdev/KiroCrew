@@ -549,6 +549,13 @@ export interface ThemeContextValue {
   privacyAcked: boolean
   /** Has the first-run Meet CrewMates flow been finished or dismissed? Server-backed like the other first-run flags; localStorage is only the render cache. */
   crewmatesOnboarded: boolean
+  /** Has the Meet CrewMates flow itself actually been finished or dismissed on
+   *  this workspace (the server's `crewmates_onboarded`)? Unlike
+   *  `crewmatesOnboarded` it does NOT count an existing user who finished first
+   *  run before the chapter shipped: that seed only keeps the tour-end auto-fire
+   *  from interrupting them, and the Crewmates page's first visit still owes
+   *  them the flow. */
+  crewmatesFlowSeen: boolean
   themeBootReady: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
@@ -869,6 +876,9 @@ function useThemeState(): ThemeContextValue {
       !!localStorage.getItem('mc-crewmates-onboarded') ||
       (!!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-crewmates-pending')),
   )
+  const [crewmatesFlowSeen, setCrewmatesFlowSeen] = useState(
+    () => !!localStorage.getItem('mc-crewmates-onboarded'),
+  )
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
   )
@@ -1145,6 +1155,7 @@ function useThemeState(): ThemeContextValue {
           setCrewmatesOnboarded(true)
           if (bootData.crewmates_onboarded === true) safeSetItem('mc-crewmates-onboarded', '1')
         }
+        if (bootData.crewmates_onboarded === true) setCrewmatesFlowSeen(true)
       }
     }
     setThemeBootReady(true)
@@ -1488,6 +1499,7 @@ function useThemeState(): ThemeContextValue {
     safeSetItem('mc-crewmates-onboarded', '1')
     localStorage.removeItem('mc-crewmates-pending')
     setCrewmatesOnboarded(true)
+    setCrewmatesFlowSeen(true)
   }, [persistThemeAsync])
 
   return {
@@ -1514,6 +1526,7 @@ function useThemeState(): ThemeContextValue {
     importOnboarded,
     privacyAcked,
     crewmatesOnboarded,
+    crewmatesFlowSeen,
     themeBootReady,
     markOnboarded,
     markImportOnboarded,

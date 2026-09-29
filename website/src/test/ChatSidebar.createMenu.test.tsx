@@ -146,7 +146,7 @@ function openCreateMenu() {
  *  well as this row. The role scopes the query to the menu, and the
  *  accessible name is the row's own label — the leading lucide icon
  *  contributes no text. */
-function findCreateMenuItem(label: string) {
+function findCreateMenuItem(label: string | RegExp) {
   return screen.findByRole('menuitem', { name: label })
 }
 
@@ -178,6 +178,14 @@ describe('create-button caret menu', () => {
     expect(screen.getByText('New autopilot chat')).toBeTruthy()
   })
 
+  it('offers importing a session from a file among the create entries', async () => {
+    // Import creates a session, so it is reachable without first opening the
+    // ⋯ menu of some unrelated session.
+    renderSidebar()
+    openCreateMenu()
+    expect(await findCreateMenuItem(/import a session from a file/i)).toBeTruthy()
+  })
+
   it('explains the engineered entries, at the point of choice', async () => {
     // The moment a user cannot tell Autopilot from Crew Members is the moment
     // this menu opens. Before this, the only explanation was a native title= on
@@ -189,7 +197,7 @@ describe('create-button caret menu', () => {
     await screen.findByText('New autopilot chat')
     // The contrast that matters: one job in stages vs standing agents you talk to.
     expect(screen.getByText(/One job, done in steps/)).toBeTruthy()
-    expect(screen.getByText(/Opens the Crew Members page/)).toBeTruthy()
+    expect(screen.getByText(/Opens the Crewmates page/)).toBeTruthy()
   })
 
   it('leaves the plain entries single-line', async () => {
@@ -239,7 +247,7 @@ describe('create-button caret menu', () => {
     // the menu simply failed to open.
     await screen.findByText('New autopilot chat')
     const item = screen.getByTestId('open-crew-members')
-    expect(item.textContent).toContain('Crew Members')
+    expect(item.textContent).toContain('Crewmates')
     // The retired ingress and its experimental tag are gone, not merely hidden.
     expect(screen.queryByTestId('new-crew-chat')).toBeNull()
     expect(screen.queryByText('New Crew Mode chat')).toBeNull()
@@ -267,7 +275,7 @@ describe('create-button caret menu', () => {
     // The gloss discloses the detour BEFORE the click, instead of promising the
     // page and then landing somewhere else (UX review on #9519).
     expect(item.textContent).toMatch(/Opens Settings first/)
-    expect(item.textContent).not.toMatch(/Opens the Crew Members page/)
+    expect(item.textContent).not.toMatch(/Opens the Crewmates page/)
     fireEvent.click(item)
     await waitFor(() => expect(screen.getByTestId('location').textContent)
       .toBe(`/settings/developer?highlight=${SETTINGS_CREW_MEMBERS_PREVIEW_ID}`))

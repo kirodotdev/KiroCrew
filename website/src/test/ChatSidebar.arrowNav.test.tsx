@@ -195,9 +195,10 @@ describe('sessionRowNav', () => {
    * lane's top edge is at 100 and the row either sits under the headers (17px
    * into a 56px margin) or clear of them (80px in).
    */
-  function pinnedLaneDom(rowOffset: number, margin: string) {
+  function pinnedLaneDom(rowOffset: number, margin: string, scrollPadding = '') {
     const lane = document.createElement('div')
     lane.style.overflowY = 'auto'
+    if (scrollPadding) lane.style.scrollPaddingTop = scrollPadding
     const from = mkRow('a', 'list')
     const to = mkRow('b', 'list')
     to.style.scrollMarginTop = margin
@@ -214,6 +215,18 @@ describe('sessionRowNav', () => {
     const { from, scrolls } = pinnedLaneDom(17, '56px')
     expect(focusSiblingSessionRow(from, -1)).toBe(true)
     expect(scrolls).toEqual([{ block: 'nearest' }, { block: 'start' }])
+  })
+
+  it('counts the pinned band from the lane\'s scroll-padding, where the floating search dock pushes the headers', () => {
+    // Dock 44px tall: the headers pin just above the padding edge, so a row 60px
+    // in is still under a 56px stack (band ends at 44 + 56 = 100).
+    const covered = pinnedLaneDom(60, '56px', '44px')
+    expect(focusSiblingSessionRow(covered.from, -1)).toBe(true)
+    expect(covered.scrolls).toEqual([{ block: 'nearest' }, { block: 'start' }])
+    document.body.replaceChildren()
+    const clear = pinnedLaneDom(104, '56px', '44px')
+    expect(focusSiblingSessionRow(clear.from, -1)).toBe(true)
+    expect(clear.scrolls).toEqual([{ block: 'nearest' }])
   })
 
   it('leaves a row clear of the pinned headers, or with no margin, where nearest put it', () => {

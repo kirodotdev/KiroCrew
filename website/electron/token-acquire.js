@@ -4,8 +4,8 @@
 // unit-testable without Electron (mirrors gateway-recovery.js / blocking-prompt.js).
 //
 // PROBLEM: showLoadingThenConnect waits for /api/status to answer, then mints a
-// dashboard token via fetchLocalToken (reads $KIROCREW_HOME/.local_secret and
-// calls GET /api/token/local). A gateway we just (re)started — boot, wedge
+// dashboard token via mintLocalToken (reads the dialed listener's own
+// `run/gateway-<port>-<bind address>.secret` and calls GET /api/token/local). A gateway we just (re)started -- boot, wedge
 // recovery, auto-update relaunch — REGENERATES that secret at startup, so for a
 // brief warmup window right after /api/status first answers, the local mint can
 // transiently 403 while the secret settles. The old code treated that single

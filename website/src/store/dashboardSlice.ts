@@ -918,9 +918,18 @@ const dashboardSlice = createSlice({
      *  its failure path BEFORE the recovery `fetchSlots`, because the thunk's
      *  `rejected` action only fires after a trailing `await navigation` (a peer
      *  transcript load, unbounded), and the refetch reply must not be filtered
-     *  by the very hold the failed close armed. */
-    releaseCloseHold(state, action: PayloadAction<{ key: string; requestId: string }>) {
-      releaseHold(state, action.payload.key, action.payload.requestId)
+     *  by the very hold the failed close armed.
+     *
+     *  `distrustInFlight` is for a DELETE answered 404: the server had already
+     *  popped the key, so a `fetchSlots` still in flight at that answer may
+     *  have been serialized before the pop, and with the hold gone nothing else
+     *  stops its reply re-adding the row. Those requests are paired with the key
+     *  in `staleSlotFetches`, as the `removed` branch of `sseSlotPatch` does,
+     *  before the release; the recovery refetch dispatched after it is not. */
+    releaseCloseHold(state, action: PayloadAction<{ key: string; requestId: string; distrustInFlight?: boolean }>) {
+      const { key, requestId, distrustInFlight } = action.payload
+      if (distrustInFlight && !isUnsafeKey(key)) markStaleSlotFetches(state, key, [...(state.slotFetchesInFlight ?? [])])
+      releaseHold(state, key, requestId)
     },
     /** The DELETE resolved: the server has popped the slot. Dispatched by
      *  `deleteSlot` before it awaits the peer navigation (see `confirmHold`). */

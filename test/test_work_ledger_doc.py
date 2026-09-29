@@ -106,10 +106,15 @@ def test_the_doc_pins_the_item_states(doc_text: str) -> None:
 
 
 def test_the_doc_quotes_the_real_caps(doc_text: str) -> None:
-    """The two numbers the page states are read off the store's own constants."""
-    from kiro_crew.work_ledger import MAX_DEPTH, MAX_ITEMS_PER_CONDUCTOR
+    """The three numbers the page states are read off the store's own constants."""
+    from kiro_crew.work_ledger import (
+        MAX_DEPTH,
+        MAX_ITEMS_PER_CONDUCTOR,
+        MAX_STORED_ITEMS_PER_CONDUCTOR,
+    )
 
-    assert f"{MAX_ITEMS_PER_CONDUCTOR} items per conductor" in doc_text
+    assert f"{MAX_ITEMS_PER_CONDUCTOR} open items per conductor" in doc_text
+    assert f"{MAX_STORED_ITEMS_PER_CONDUCTOR} items stored per conductor in total" in doc_text
     assert f"depth is capped at {MAX_DEPTH}" in doc_text
 
 

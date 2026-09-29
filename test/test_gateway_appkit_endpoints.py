@@ -22,6 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app as _make_chat_app
 from chat_test_helpers import _make_state as _make_chat_state
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
 from kiro_crew.apps.routes import register_app_routes
@@ -3494,7 +3495,7 @@ class TestUninstallAppSourcesCleanup:
 
     @asynccontextmanager
     async def _make_client(self):
-        app = web.Application()
+        app = as_owner(web.Application())
         register_app_routes(app)
         async with TestClient(TestServer(app)) as c:
             yield c

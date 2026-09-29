@@ -231,16 +231,18 @@ class TestKeystonesAreSealedInEveryMode:
     @_POSIX_ONLY
     @pytest.mark.parametrize("mode", _MODES)
     def test_the_seal_survives_a_file_shaped_ceiling(self, mode: str) -> None:
-        """The read-only loop must not guard on ``isdir``.
+        """The read-only loop must not require a directory.
 
-        ``security_policy.json`` is a plain file. An ``isdir`` guard skips it silently —
-        no error, and the ceiling stays writable.
+        ``security_policy.json`` is a plain file. Requiring a directory skips it
+        silently -- no error, and the ceiling stays writable. The loop pins its
+        target by descriptor and accepts ANY kind of object there, which is what
+        ``_any_kind`` names.
         """
         script = sandbox._build_launcher_script(mode)
         loop = script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
 
-        assert "os.path.exists(target)" in loop
-        assert "os.path.isdir(target)" not in loop
+        assert "_pin_mount_path(target, _any_kind)" in loop
+        assert "stat.S_ISDIR" not in loop
         assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in loop
 
 

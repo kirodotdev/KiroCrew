@@ -58,8 +58,9 @@ test.describe('Settings Page', () => {
     await displayTab.click()
 
     // URL should update to the path segment — navigation state lives in the
-    // path now, never in ?tab=.
-    await expect(page).toHaveURL(/\/settings\/display(?:[?#]|$)/)
+    // path now, never in ?tab=. Display is a rail, so its first item's segment
+    // may follow the tab (as Chat's does), e.g. /settings/display/view.
+    await expect(page).toHaveURL(/\/settings\/display(?:\/[a-z-]+)?(?:[?#]|$)/)
 
     // Click About tab button
     await page.getByRole('button', { name: 'About', exact: true }).click()
@@ -90,8 +91,9 @@ test.describe('Settings Page', () => {
     const before = await (await request.get('/api/config/kirocrew')).json()
     const originalCount: number = before?.dashboard?.recent_tint_count ?? 0
 
-    // Navigate to the Display tab
-    await page.goto('/settings/display', { waitUntil: 'domcontentloaded' })
+    // Navigate to the Display tab's Sidebar Colors rail item, where the
+    // "Highlight recent sessions" stepper now lives after the rail split.
+    await page.goto('/settings/display/sidebar', { waitUntil: 'domcontentloaded' })
 
     // Find the "Highlight recent sessions" stepper
     const field = page.locator('[data-setting-label="Highlight recent sessions"]')

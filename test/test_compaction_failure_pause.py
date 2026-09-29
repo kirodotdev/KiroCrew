@@ -45,7 +45,7 @@ def _factory(order: list[str]):
         m.context_usage_pct = lambda: 0.0
         m.context_window_tokens = lambda: 0
         m.has_active_turn = lambda: False
-        m.runtime_info = lambda: (None, None)
+        m.runtime_abort_target = lambda: None
         # No status event and no dict result: the compaction fails.
         m.stream_command = MagicMock(side_effect=_no_events)
         m.shutdown = AsyncMock(side_effect=lambda: order.append("shutdown"))

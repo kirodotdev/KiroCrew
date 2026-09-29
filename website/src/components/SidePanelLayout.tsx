@@ -501,9 +501,9 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
               style={keyboardInset > 0 ? { transform: `translateY(-${keyboardInset}px)` } : undefined}
             >
               {/* Liquid Glass capsule: the shared recipe (components/Glass.tsx) with the
-                * neutral rest shadow. No accent on focus: the theme-colored glow is the
-                * session composer's own cue, the material never lights up; here focus
-                * deepens the shadow one step (`.glass-shadow:focus-within`). */}
+                * neutral rest shadow. Nothing changes on focus: the material never
+                * lights up, steps or deepens (maintainer decision); the caret in the
+                * search field is the focus indicator. */}
               <Glass radius={24} className="glass-shadow pointer-events-auto mx-auto max-w-sm">
                 <SidePanelDockContext.Provider value="bottom-float">
                   {headerRight}

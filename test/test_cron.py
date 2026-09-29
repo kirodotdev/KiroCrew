@@ -987,7 +987,7 @@ class TestCancelAgainstFinishedTask:
     standing. Trusting it against a ``done()`` task kills nothing, answers
     True, writes a "Cancelled by user after Ns" history row for a run that
     ended long ago, and -- because only the runner's ``finally`` discards
-    ``_cancelled_jobs``, and that ``finally`` never runs for the finished task
+    ``RunClaims.cancelled``, and that ``finally`` never runs for the finished task
     -- leaves that marker set, so the job's NEXT real run is treated as
     cancelled: its result is neither merged to the store nor recorded. The
     guard must ask ``discard_finished_run`` first, release the leftovers, and
@@ -1025,8 +1025,8 @@ class TestCancelAgainstFinishedTask:
         with patch("kiro_crew.sel.sel"):
             cancelled = await svc.cancel(job.id)
 
-        assert not svc._cancelled_jobs._marks, (
-            "cancel() against a finished task left _cancelled_jobs set; the job's "
+        assert not svc._runs.cancelled._marks, (
+            "cancel() against a finished task left the cancel markers set; the job's "
             "next real run will be treated as cancelled and its result dropped"
         )
         assert cancelled is False, "cancel() reported a cancellation with nothing running"

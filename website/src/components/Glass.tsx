@@ -3,8 +3,11 @@
  *
  * Every surface that floats over the transcript in the composer dock (the
  * composer itself, an approval bar, the follow-up chips, a tip or suggestion
- * card, the queue, the memory chip, the jump-to-bottom button) and the mobile
- * Settings search capsule wear the SAME material, from the SAME primitive:
+ * card, the queue, the memory chip, the jump-to-bottom button), the mobile
+ * Settings search capsule, the notification panes (the in-app banner, the
+ * bell popover's rows and controls card) and the list panels' search field
+ * (Sessions sidebar, Crew Members roster; components/SearchFilterBar.tsx) wear
+ * the SAME material, from the SAME primitive:
  * `--glass-tint` over a blurred backdrop, an even top/bottom light band in
  * `--glass-band`, a 1px `--glass-edge` line down each side and a half-pixel
  * `--glass-hairline` just outside the top and bottom edges. No ring: the
@@ -13,8 +16,11 @@
  * they are (`variant`), how round they are (`radius`) and which element they
  * ARE (`as`); they never restate the optics.
  *
- * Two variants, one recipe: `panel` (frost 6, light 25) for the composer-sized
- * boxes and `chip` (frost 4, light 18) for the small pills and cards, where
+ * Two variants, one recipe: `panel` and `chip` now share the same optics
+ * (frost 4, light 25) -- the maintainer wants one blur across every pane and the
+ * light band reaching full white on every edge, chips included -- and differ
+ * only in name, kept so a call site still says which kind of box it is; the
+ * chip used to run lighter (frost 4, light 18) for the small pills and cards, where
  * the panel numbers read heavy at 30px tall.
  *
  * The pane IS the host element — there is no wrapper box. A follow-up chip is
@@ -22,16 +28,18 @@
  * the entrance animation and its own `onClick`, and the effect layers sit
  * inside it under the label. `className` and `style` go on that host and carry
  * LAYOUT (margin, width, flex, padding) plus the box-shadow state the caller
- * owns — `glass-shadow` for the neutral rest shadow, `composer-halo` for the
- * session composer's focus glow, or `approval-glow` while a decision is
- * pending — because which shadow a pane wears at this instant is the caller's
- * state, not the material's. A hue is mixed INTO the tint with `glass-accent`
+ * owns — `glass-shadow` for the neutral rest shadow every pane wears (the
+ * session composer included), plus `approval-glow` stacked on it while a
+ * decision is pending — because which shadow a pane wears at this instant is
+ * the caller's state, not the material's. A hue is mixed INTO the tint with `glass-accent`
  * (picked chip, tip card) or `glass-warn` (incognito chip), and `glass-hover`
  * brightens an interactive pane a step on hover — all three swap `--glass-tint`
- * on the host (index.css), so the pane stays the same material. The accent
- * focus glow is the composer's alone: the material itself never lights up in
- * the theme color. The optics are not open for override here — change the
- * recipe, not the call site.
+ * on the host (index.css), so the pane stays the same material. Focus changes
+ * NOTHING on the pane — no theme colour, no brighter tint, no darker side
+ * lines, no deeper shadow (maintainer decision): a focused pane is the same
+ * glass as a resting one, and the focus indicator is the caret, or the app's
+ * own `:focus-visible` ring on a pane that is itself the control. The optics
+ * are not open for override here — change the recipe, not the call site.
  */
 import { forwardRef, type ReactElement, type Ref } from 'react'
 import { LiquidGlass, type GlassHostTag, type LiquidGlassOwnProps, type LiquidGlassProps } from './ui/liquid-glass'
@@ -39,8 +47,8 @@ import { LiquidGlass, type GlassHostTag, type LiquidGlassOwnProps, type LiquidGl
 export type GlassVariant = 'panel' | 'chip'
 
 const RECIPE: Record<GlassVariant, Pick<LiquidGlassOwnProps, 'frost' | 'lightIntensity'>> = {
-  panel: { frost: 6, lightIntensity: 25 },
-  chip: { frost: 4, lightIntensity: 18 },
+  panel: { frost: 4, lightIntensity: 25 },
+  chip: { frost: 4, lightIntensity: 25 },
 }
 
 export type GlassProps<T extends GlassHostTag = 'div'> = Omit<LiquidGlassProps<T>, 'cornerRadius' | 'frost' | 'lightIntensity'> & {

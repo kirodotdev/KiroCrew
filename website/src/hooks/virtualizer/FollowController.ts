@@ -260,6 +260,49 @@ export function pinSuppressedNow(
 }
 
 /**
+ * How much longer is a hardware scroll intent still waiting for its own scroll
+ * event? 0 = not pending.
+ *
+ * Input lands BEFORE the scroll it causes: the wheel/touch/key listener stamps
+ * intent, and the scroll event that moves `scrollTop` dispatches a frame later.
+ * In that gap the reader still sits on our last write to the pixel, so a
+ * position test alone reads them as resting -- and an append landing in the
+ * same frame (the one automatic pin path with no settle gate of its own) would
+ * pin them to the bottom against the scroll they have just started. The scroll
+ * event then releases follow, so the harm is one visible yank, but it is a
+ * yank the reader did not ask for.
+ *
+ * This is the ONE input term the resting rule keeps, and it is deliberately
+ * narrow. The caller feeds it two stamps only: an input whose own direction was
+ * UP (wheel deltaY < 0, an upward key, an upward touch drag), and a pointer that
+ * landed on the SCROLLBAR (a drag is about to scroll and nothing names its
+ * direction until it does). Each holds only until its scroll event arrives or
+ * the settle window expires. A wheel-DOWN at the end, a click on a message, a
+ * finger that landed and lifted move nothing and are never stamped -- treating
+ * those as "the reader left" is the regression the position-only rule exists to
+ * fix. The expiry covers the intent that never scrolls at all (a click on the
+ * thumb without a drag, a wheel-up on a transcript shorter than its viewport):
+ * the caller retries the held pin at that moment, so intent that produced no
+ * scroll event within `settleMs` is spent, not preserved forever.
+ *
+ * Pure so the caller can hand it clock and stamps; `lastScrollEventAt` is the
+ * time of the last scroll event of ANY origin (ours or the reader's), because
+ * after any scroll event the position reflects the input and the position test
+ * is exact again. Returns the ms left on the hold so the caller can schedule
+ * its retry exactly at expiry.
+ */
+export function scrollIntentPending(
+  now: number,
+  lastIntentInputAt: number,
+  lastScrollEventAt: number,
+  settleMs: number,
+): number {
+  if (!(lastIntentInputAt > lastScrollEventAt)) return 0
+  const left = settleMs - (now - lastIntentInputAt)
+  return left > 0 ? left : 0
+}
+
+/**
  * Whether a prepend SHIFT COMPENSATION may write the scroll position.
  *
  * Those corrections keep the reader visually still when rows are inserted above
@@ -497,6 +540,11 @@ export interface AutoPinResult {
  * layout effect / its follow-up rAF), reading LIVE geometry.
  *
  *   - Not sticking → never pin.
+ *   - Sticking and RESTING on our last write (`|scrollTop - lastWriteTop| <=
+ *     epsilon`) → pin: the reader never left the end, so whatever opened the
+ *     gap under them was content (a new message, a reprice), live turn or not.
+ *   - Sticking, off our write, and nothing running → release stick, don't pin:
+ *     with no output to follow, a reader above the bottom is one who left it.
  *   - Sticking but the user has scrolled up since our last write
  *     (`scrollTop < lastWriteTop - epsilon`) → release stick, don't pin.
  *     This is the synchronous, race-proof guard.
@@ -527,11 +575,14 @@ export function evaluateAutoPin(args: {
   viewportShrink?: number
   /** Is a turn actually producing output right now?
    *
-   *  Follow means "keep me at the end of a LIVE turn". With nothing running there
-   *  is no output to follow, so a reader sitting above the bottom is not
-   *  following — and an automatic pin there is a yank with no cause, reported
-   *  from a phone as the transcript springing back after scrolling up about a
-   *  hundred pixels with nothing streaming.
+   *  Follow means "keep me at the end of the transcript". A reader RESTING on
+   *  our own last write is at that end whether or not a turn is live, and is
+   *  carried by the resting rule below without consulting this flag. This flag
+   *  decides the OTHER reader: one whose scrollTop has left our write while
+   *  nothing runs. With no output to follow, that reader is not following —
+   *  and an automatic pin there is a yank with no cause, reported from a phone
+   *  as the transcript springing back after scrolling up about a hundred
+   *  pixels with nothing streaming.
    *
    *  Defaults to `true` = assume a run is live, which keeps the behaviour of a
    *  caller that has no run signal to give (the app-SDK chat surface). The chat
@@ -551,62 +602,55 @@ export function evaluateAutoPin(args: {
    *  gives: skipping leaves follow armed, so the next growth yanks the reader
    *  from wherever the restore just put them. */
   restoreGate?: boolean
-  /** Has hardware input -- wheel / touch / pointer / a scrolling key -- reached
-   *  the scroller since we last placed the reader at the bottom?
-   *
-   *  False means the reader has done nothing, so a gap that opened while they
-   *  rest on our last write was opened by content -- a row settling from its
-   *  estimate, a code-block stand-in swapping for the highlighted block, the
-   *  top spacer repricing -- and is a gap WE owe them, not one they chose.
-   *
-   *  The idle rule below cannot tell those apart from distance alone, and it
-   *  errs toward release, which was invisible wherever the browser's native
-   *  scroll anchoring quietly carried the reader through the growth. WebKit has
-   *  no scroll anchoring at all, so on an iPhone every entry into an idle
-   *  session paid the whole post-pin reprice as a displacement and then had
-   *  follow released on top of it: the transcript opened a viewport or more
-   *  above the end with nothing streaming to bring it back.
-   *
-   *  Defaults to `true` = assume the reader may have moved, which is the
-   *  release-leaning legacy behaviour for a caller that has no input signal. */
-  readerMovedSinceWrite?: boolean
 }): AutoPinResult {
   const { stick, geom, lastWriteTop } = args
   const epsilon = args.epsilon ?? SELF_SCROLL_EPSILON
   const viewportShrink = Math.max(0, args.viewportShrink ?? 0)
   const runActive = args.runActive ?? true
-  const readerMovedSinceWrite = args.readerMovedSinceWrite ?? true
   const target = bottomTarget(geom)
   if (args.restoreGate) return { pin: false, stick: false, target }
   if (!stick) return { pin: false, stick: false, target }
-  // The reader is resting exactly where we last put them and has given no input
-  // since, so any gap is content settling under them -- carry them back, live
-  // turn or not. Both conditions are load-bearing. Position alone would read our
-  // own write as consent for a reader who wheeled up and happened to stop on it;
-  // input alone would drag back a programmatic reveal -- a search hit, a pinned
-  // prompt, find-in-page -- whose scroll event has not dispatched yet when a
-  // height commit lands, since none of those touch the scroller's input
-  // listeners. A reveal moves scrollTop off our write; a reprice does not.
+  // RESTING RULE. The reader is exactly where we last put them -- a pin, the
+  // clamp that re-baselined the reference, or their own return to the bottom
+  // that the scroll handler recorded as the place they chose to follow from --
+  // so any gap between them and the end was opened by CONTENT: a new message
+  // landing, a row settling from its estimate, a code-block stand-in swapping
+  // for the highlighted block, the top spacer repricing. That gap is one we owe
+  // them, live turn or not. Carry them back.
+  //
+  // Position is the whole test; hardware input is deliberately NOT consulted.
+  // A wheel-down at the end, a finger that landed and lifted, a scrollbar grab
+  // that went nowhere all stamp input and move nothing, and a reader who did
+  // any of those is still at the bottom. Reading that input as "the reader
+  // left" is how a crewmate's reply landing in an idle DM stopped following a
+  // reader who had done nothing but wheel at the end -- they had to scroll by
+  // hand to see it. A reader who DID leave is not resting: their scroll moved
+  // scrollTop off our write, and the scroll handler released follow on the way
+  // (the guard further down catches the race where the height commit lands
+  // before that scroll event; the frame between an UPWARD input and its scroll
+  // event, where the reader has not moved YET, is the caller's to hold --
+  // `scrollIntentPending`, checked in pinAuto before this predicate runs, for
+  // an upward input and for a pointer that grabbed the scrollbar). A
+  // programmatic reveal -- a search hit, a pinned prompt, find-in-page -- moves
+  // scrollTop off our write too, so it is never mistaken for content settling
+  // under a still reader. The old `readerMovedSinceWrite` term ("any input
+  // since the last pin") is gone for good, not merely narrowed: the per-scroll
+  // re-baseline in the scroll handler makes position sufficient, and an
+  // any-input term cannot tell a no-op wheel from a departure.
   const restingOnOurWrite = lastWriteTop >= 0 && Math.abs(geom.scrollTop - lastWriteTop) <= epsilon
-  if (!readerMovedSinceWrite && restingOnOurWrite) {
+  if (restingOnOurWrite) {
     return { pin: distanceFromBottom(geom) > atBottomEpsilon(), stick: true, target }
   }
   // Idle: release rather than merely skip the pin. Skipping would leave follow
   // armed, so the next turn to start would yank this reader to the bottom from
   // wherever they had settled — the same defect one event later.
   //
-  // But distance alone cannot say WHO opened that gap, and the two causes want
-  // opposite answers: a reader who scrolled up should be released, while a
-  // reader the CONTENT moved away from should be carried back.
+  // Reaching here means scrollTop has LEFT our last write (or nothing has been
+  // written this session) while nothing runs. Distance alone cannot say WHO
+  // opened a gap, but the one reader the CONTENT moved is already answered
+  // above by position, so a reader who is above the bottom here is one who
+  // left it -- or one a reveal placed -- and is not ours to move.
   if (!runActive && distanceFromBottom(geom) > atBottomEpsilon()) {
-    // Released. The question this branch cannot answer from geometry -- did the
-    // reader open this gap, or did the content -- is answered ABOVE by
-    // `readerMovedSinceWrite`: reaching here means input or an unexplained
-    // scroll has been seen since our last positioning, so a reader who is now
-    // above the bottom while nothing runs is one who left it. Reading our own
-    // last write as consent would be an automatic action authorizing itself;
-    // the only evidence that the reader never moved is the absence of input,
-    // and that is what the branch above requires.
     return { pin: false, stick: false, target }
   }
   // Release only on a genuine user scroll-UP: scrollTop dropped below our last
