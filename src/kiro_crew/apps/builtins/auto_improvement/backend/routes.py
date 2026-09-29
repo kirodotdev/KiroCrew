@@ -464,7 +464,15 @@ async def _handle_branches(request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_pr_status(request: web.Request) -> web.StreamResponse:
-    """Live status + CI checks + watcher verdict for one PR url."""
+    """Live status + CI checks + watcher verdict for one PR url.
+
+    The fetch runs with the owner's forge credential, so only the dashboard owner
+    may call it; an app token is refused like any other non-owner caller.
+    """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.pr_status")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.pr_status")
     url = (request.query.get("url") or "").strip()
     if not url:
         return web.json_response(
@@ -507,6 +515,10 @@ async def _handle_save_session(request: web.Request) -> web.StreamResponse:
     The frontend calls this after creating a slot so a repeat click RESUMES the
     same conversation instead of starting a duplicate one.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.session_save")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.session_save")
     key = request.match_info.get("key", "")
     patch = await _json_body(request)
     allowed = {"slot_key", "folder_id", "status", "subject", "title", "url"}
@@ -519,6 +531,10 @@ async def _handle_save_session(request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_delete_session(request: web.Request) -> web.StreamResponse:
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.session_delete")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.session_delete")
     key = request.match_info.get("key", "")
     try:
         removed = await asyncio.to_thread(store.delete_session, key)
@@ -1138,6 +1154,10 @@ async def _handle_watcher_start(request: web.Request) -> web.StreamResponse:
 
 async def _handle_watcher_stop(request: web.Request) -> web.StreamResponse:
     """Ask a watcher to stop after its current attempt."""
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.watcher_stop")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.watcher_stop")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1204,6 +1224,10 @@ async def _handle_forget(request: web.Request) -> web.StreamResponse:
     forever — even after the reason it failed has been fixed. This is the escape
     hatch for exactly that, and it keeps the artifacts.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.forget")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.forget")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1222,6 +1246,10 @@ async def _handle_forget(request: web.Request) -> web.StreamResponse:
 
 async def _handle_purge(request: web.Request) -> web.StreamResponse:
     """Forget a finding AND remove its artifacts."""
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.purge")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.purge")
     fp, _bad = _validated_fp(request)
     if _bad is not None:
         return _bad
@@ -1244,6 +1272,10 @@ async def _handle_purge_dead(request: web.Request) -> web.StreamResponse:
     Artifact removal is opt-in (``?artifacts=1``): a sweep is a bulk operation and
     the evidence is usually the reason someone is looking at a dead record.
     """
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.purge_dead")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.purge_dead")
     remove = request.query.get("artifacts") in {"1", "true", "yes"}
 
     result = await asyncio.to_thread(ledger_admin.purge_dead, remove_artifacts=remove)
@@ -1502,9 +1534,13 @@ async def _handle_run_status(_request: web.Request) -> web.StreamResponse:
     return web.json_response(runner.get_supervisor().status())
 
 
-async def _handle_run_stop(_request: web.Request) -> web.StreamResponse:
+async def _handle_run_stop(request: web.Request) -> web.StreamResponse:
     """Request a clean stop. Blocking (it joins the worker thread, bounded), so it runs
     off the event loop."""
+    owner_denied = await require_owner_dashboard_request(request, "auto_improvement.run_stop")
+    if owner_denied is not None:
+        return owner_denied
+    await _audit_owner_route_allowed(request, "auto_improvement.run_stop")
 
     def _stop() -> dict:
 
