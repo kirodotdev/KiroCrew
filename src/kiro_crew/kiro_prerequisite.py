@@ -442,6 +442,13 @@ _IDENTITY_CLAIM_FIELDS = frozenset(
         "start_url",
     }
 )
+# Claims whose value is a label rather than an identifier, compared without case.
+# kiro-cli has more than one token refresher, and they serialise the same flow with
+# different casing (`PKCE` and `Pkce` observed minutes apart on one login). Hashing
+# the raw spelling turns every such refresh into an "account change" and retires
+# healthy sessions (#14979). Case-folding keeps a real flow change (PKCE to device
+# code) visible while ignoring spelling.
+_CASE_INSENSITIVE_CLAIM_FIELDS = frozenset({"oauth_flow"})
 # How long a computed fingerprint may be reused. Bounds both the SQLite reads and
 # the SEL audit events a poll storm can produce (N dashboard tabs poll status every
 # few seconds), so the store is observed per action rather than per poll. Read off
@@ -1225,7 +1232,8 @@ def identity_fingerprint(path: Path) -> str:
     rotating field would report an account change roughly hourly and retire
     healthy sessions, so the rotating and secret ones -- ``access_token``,
     ``refresh_token``, ``expires_at``, ``client_secret`` -- are excluded and the
-    identifying ones are kept: the SSO ``start_url``, ``region``, ``oauth_flow``,
+    identifying ones are kept: the SSO ``start_url``, ``region``, ``oauth_flow``
+    (compared without case, see :data:`_CASE_INSENSITIVE_CLAIM_FIELDS`),
     ``scopes`` and the OIDC registration's ``client_id``. Key NAMES also
     participate, so a change of credential kind counts even when no value moved.
 
@@ -1605,6 +1613,8 @@ def _identity_claims(key: str, value: object) -> list[str]:
             rendered = ",".join(sorted(str(item) for item in raw))
         else:
             rendered = str(raw)
+        if claim in _CASE_INSENSITIVE_CLAIM_FIELDS:
+            rendered = rendered.casefold()
         claims.append(f"c:{key}:{claim}={_claim_digest(rendered)}")
     return claims
 

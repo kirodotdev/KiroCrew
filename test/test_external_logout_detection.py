@@ -309,6 +309,53 @@ class TestIdentityFingerprint:
         con.close()
         assert kp.identity_fingerprint(db) == before
 
+    @staticmethod
+    def _set_oauth_flow(db: Path, flow: str) -> None:
+        con = sqlite3.connect(str(db))
+        with con:
+            for key, value in con.execute("SELECT key, value FROM auth_kv").fetchall():
+                blob = json.loads(value)
+                blob["oauth_flow"] = flow
+                con.execute("UPDATE auth_kv SET value=? WHERE key=?", (json.dumps(blob), key))
+        con.close()
+
+    def test_oauth_flow_casing_is_not_an_account_change(self, tmp_path: Path) -> None:
+        """kiro-cli's refreshers write the same flow as `PKCE` or `Pkce` (#14979).
+
+        A refresh that only re-spells the flow must not read as a new account,
+        or every refresh retires healthy sessions.
+        """
+
+        db = tmp_path / "data.sqlite3"
+        _write_store(db)
+        self._set_oauth_flow(db, "PKCE")
+        before = kp.identity_fingerprint(db)
+        self._set_oauth_flow(db, "Pkce")
+        assert kp.identity_fingerprint(db) == before
+        self._set_oauth_flow(db, "pkce")
+        assert kp.identity_fingerprint(db) == before
+
+    def test_an_oauth_flow_change_is_still_detected(self, tmp_path: Path) -> None:
+        """Case-folding must not hide a genuine change of sign-in flow."""
+
+        db = tmp_path / "data.sqlite3"
+        _write_store(db)
+        self._set_oauth_flow(db, "PKCE")
+        before = kp.identity_fingerprint(db)
+        self._set_oauth_flow(db, "device_code")
+        assert kp.identity_fingerprint(db) != before
+
+    def test_start_url_and_client_id_stay_case_sensitive(self, tmp_path: Path) -> None:
+        """Only the flow label is case-folded; identifiers keep exact comparison."""
+
+        db = tmp_path / "data.sqlite3"
+        _write_store(db, state_rows=False, client_id="client-registration-aaa")
+        before = kp.identity_fingerprint(db)
+        _write_store(db, state_rows=False, client_id="CLIENT-REGISTRATION-AAA")
+        assert kp.identity_fingerprint(db) != before
+        _write_store(db, state_rows=False, start_url="https://COMPANY.awsapps.com/start")
+        assert kp.identity_fingerprint(db) != before
+
     def test_an_unknown_blob_field_never_joins_the_fingerprint(self, tmp_path: Path) -> None:
         """Allowlist, not denylist: a field a future kiro-cli adds stays out.
 
