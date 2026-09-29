@@ -95,12 +95,19 @@ export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
 // shell's <section> are byte-identical (same flex layout / min-heights).
 // Exported for the Kiro CLI setup gate, which composes the same three pieces
 // (scrim + panel + section) around its own non-chapter content.
+//
+// Narrow viewports stack the aside above the section and the SCRIM scrolls, so
+// the heights use `svh` (the viewport with the URL bar showing) rather than
+// `100vh`, which on iOS Safari is the LARGE viewport and pushed the footer below
+// the toolbar. The panel clips with `overflow-clip`, not `overflow-hidden`: a
+// hidden ancestor would become the sticky footer's scrollport and stop it
+// pinning to the bottom of the scrim.
 export const SECTION_CLASS =
-  'flex min-h-[calc(100vh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0'
+  'flex min-h-[calc(100svh-248px)] min-w-0 flex-1 flex-col bg-card sm:min-h-0'
 export const SCRIM_CLASS =
   'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-xs p-0 text-text sm:items-center sm:justify-center sm:p-6'
 export const PANEL_CLASS =
-  'relative flex min-h-screen w-full flex-col overflow-hidden bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
+  'relative flex min-h-svh w-full flex-col overflow-clip bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
 
 export interface ShellAsideCopy {
   ariaLabel: string
@@ -289,7 +296,10 @@ export default function OnboardingChapterShell({
         </main>
       </div>
       {footer && (
-        <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 px-6 pt-4 pb-6 sm:px-10 sm:pb-10">
+        // Sticky on narrow viewports so the step's navigation stays on screen
+        // however tall the stacked aside + body grow; the bottom padding
+        // clears the home indicator / floating browser toolbar.
+        <footer className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-end gap-3 bg-card px-6 pt-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:static sm:px-10 sm:pb-10">
           {footer}
         </footer>
       )}
