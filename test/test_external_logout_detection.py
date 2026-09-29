@@ -320,7 +320,7 @@ class TestIdentityFingerprint:
         con.close()
 
     def test_oauth_flow_casing_is_not_an_account_change(self, tmp_path: Path) -> None:
-        """kiro-cli's refreshers write the same flow as `PKCE` or `Pkce` (#14979).
+        """kiro-cli's refreshers write the same flow as `PKCE` or `Pkce`.
 
         A refresh that only re-spells the flow must not read as a new account,
         or every refresh retires healthy sessions.

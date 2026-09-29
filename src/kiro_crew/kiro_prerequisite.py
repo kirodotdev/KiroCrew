@@ -446,7 +446,7 @@ _IDENTITY_CLAIM_FIELDS = frozenset(
 # kiro-cli has more than one token refresher, and they serialise the same flow with
 # different casing (`PKCE` and `Pkce` observed minutes apart on one login). Hashing
 # the raw spelling turns every such refresh into an "account change" and retires
-# healthy sessions (#14979). Case-folding keeps a real flow change (PKCE to device
+# healthy sessions. Case-folding keeps a real flow change (PKCE to device
 # code) visible while ignoring spelling.
 _CASE_INSENSITIVE_CLAIM_FIELDS = frozenset({"oauth_flow"})
 # How long a computed fingerprint may be reused. Bounds both the SQLite reads and
