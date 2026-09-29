@@ -406,7 +406,63 @@ def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
     else:
         print("  janitor:     ✅ no stale temp/backup files to reclaim")
     _doctor_skill_view_census(agents_dir)
+    _doctor_skill_view_residue(agents_dir)
     _doctor_run_dirs()
+
+
+# Orphaned sidecars or leftover ``<alias>.lock`` files above which the doctor
+# warns. The gateway sweeps both in bounded batches, so steady state is near
+# zero; a count this high is a backlog it has not drained yet.
+_SKILL_VIEW_RESIDUE_WARN = 500
+
+
+def _doctor_skill_view_residue(agents_dir: Path) -> None:
+    """Report, in one line, the skill-view residue and an external rewriter.
+
+    Advisory and read-only. Two signals the alias census cannot give: files the
+    projection left around aliases that are gone (ownership sidecars, and the
+    empty ``<alias>.lock`` files a spec-rewriting launcher leaves), and aliases
+    whose bytes differ from what the projection recorded -- another program is
+    rewriting the agents directory, the precondition of alias growth and of the
+    "not installed" failure. A
+    rewriter is not a fault by itself; the line says so and names the rollback
+    switch in case sessions are failing.
+    """
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+    counts = acp_driver.skill_view_residue_census(agents_dir)
+    orphans = counts.get("orphan_sidecars", 0)
+    locks = counts.get("alias_locks", 0)
+    rewritten = counts.get("rewritten", 0)
+    floor = "+" if counts.get("truncated", 0) else ""
+    metadata_dir, _lease_dir = acp_driver.skill_view_sidecar_dirs()
+    warn = orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN or rewritten
+    print(
+        f"  skill-view residue: {'⚠️ ' if warn else '✅'} {orphans}{floor} ownership sidecar(s) in"
+        f" {metadata_dir}/ with no alias, {locks}{floor} leftover alias .lock file(s),"
+        f" {rewritten}{floor} alias(es) rewritten by another program"
+    )
+    if orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN:
+        print(
+            f"{render._INDENT}The gateway removes the ones it can prove are its own residue"
+            f" (this home's sidecars, unheld empty locks) in bounded batches at boot and on"
+            f" every spawn; restart it once to drain the backlog."
+        )
+    churning = acp_driver.skill_view_churning_env_keys(agents_dir)
+    if churning:
+        print(
+            f"{render._INDENT}⚠️ env value(s) differing across one agent's skill views:"
+            f" {', '.join(render._safe_display(label) for label in churning)}. If a launcher"
+            f" re-stamps one on every launch, add its"
+            f" key to KIROCREW_SKILL_VIEW_VOLATILE_ENV so it stops naming a new view per launch."
+        )
+    if rewritten:
+        print(
+            f"{render._INDENT}Another program rewrites the specs in {agents_dir} (a sandbox or"
+            f" credential launcher does this on every launch). Kiro Crew tolerates it; if"
+            f" sessions still fail with 'Agent spec ... is not installed', set"
+            f" KIROCREW_NATIVE_SKILL_PROJECTION=0 for the gateway and report it."
+        )
 
 
 # Unmarked run directories above which the doctor warns. Each is one directory

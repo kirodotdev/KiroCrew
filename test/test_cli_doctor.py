@@ -4170,6 +4170,88 @@ class TestDoctorSkillViewCensus:
         assert f"{skill_projection._PROJECTION_METADATA_DIR_NAME}/ directory" in line
         assert f"in {skill_projection._PROJECTION_LEASE_DIR_NAME}/ cannot be read" in line
 
+    @staticmethod
+    def _residue(out: str) -> str:
+        return out.split("skill-view residue:", 1)[1]
+
+    def test_a_clean_directory_reports_no_residue(self, tmp_path, monkeypatch, capsys):
+        self._own(tmp_path, 0)
+        line = self._residue(self._run(tmp_path, monkeypatch, capsys))
+        assert line.startswith(" ✅ 0 ownership sidecar(s)")
+        assert "0 leftover alias .lock file(s), 0 alias(es) rewritten" in line
+
+    def test_residue_past_the_threshold_and_any_external_rewrite_warn(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import hashlib
+
+        from kiro_crew.doctor_checks import resources
+
+        monkeypatch.setattr(resources, "_SKILL_VIEW_RESIDUE_WARN", 1)
+        metadata_dir = tmp_path / ".kirocrew-skill-projection-metadata"
+        metadata_dir.mkdir()
+        for i in range(2):
+            (metadata_dir / f"{self.PREFIX}{i:024x}.json").write_text("{}")
+        out = self._run(tmp_path, monkeypatch, capsys)
+        assert self._residue(out).startswith(" ⚠️  2 ownership sidecar(s)")
+        assert "restart it once to drain the backlog" in out
+
+        stem = self._own(tmp_path, 9)
+        record = json.loads((metadata_dir / f"{stem}.json").read_text())
+        record["x-kirocrew-alias-sha256"] = hashlib.sha256(b"what was published").hexdigest()
+        (metadata_dir / f"{stem}.json").write_text(json.dumps(record))
+        out = self._run(tmp_path, monkeypatch, capsys)
+        assert "1 alias(es) rewritten by another program" in out
+        assert "KIROCREW_NATIVE_SKILL_PROJECTION=0" in out
+
+    def test_an_env_value_that_differs_across_one_agents_views_is_named(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Two views of one agent whose only difference is an env value: a launcher
+        re-stamping a key the volatile set does not know. The line names it and
+        the setting that makes it volatile; volatile keys are never named."""
+        monkeypatch.delenv("KIROCREW_SKILL_VIEW_VOLATILE_ENV", raising=False)
+        home = self._home(tmp_path).absolute().as_posix()
+        metadata_dir = tmp_path / ".kirocrew-skill-projection-metadata"
+        metadata_dir.mkdir()
+        for i, launch in enumerate(("a", "b")):
+            stem = f"{self.PREFIX}{i:024x}"
+            view = {
+                "name": stem,
+                "mcpServers": {
+                    "broker": {
+                        "command": "b",
+                        "env": {"LAUNCH_ID": launch, "AIM_CREDS_AGENT_INJECTION": launch},
+                    }
+                },
+            }
+            (tmp_path / f"{stem}.json").write_text(json.dumps(view))
+            (metadata_dir / f"{stem}.json").write_text(
+                json.dumps(
+                    {
+                        "x-kirocrew-managed": "skill-view",
+                        "x-kirocrew-home": home,
+                        "x-kirocrew-agent": "ops",
+                        "x-kirocrew-source": "/agents/ops.json",
+                    }
+                )
+            )
+        out = self._residue(self._run(tmp_path, monkeypatch, capsys))
+        assert "broker.LAUNCH_ID" in out
+
+    def test_a_churning_env_label_is_rendered_escaped(self, tmp_path, monkeypatch, capsys):
+        """Labels come from spec files another program wrote: a control sequence in
+        a server or key name must reach the terminal escaped, never executed."""
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        monkeypatch.setattr(
+            acp_driver, "skill_view_churning_env_keys", lambda _d: ["srv.\x1b]0;pwn\x07KEY"]
+        )
+        out = self._run(tmp_path, monkeypatch, capsys)
+        assert "\x1b" not in out and "\x07" not in out
+        assert "AIM_CREDS_AGENT_INJECTION" not in out.split("KIROCREW_SKILL_VIEW_VOLATILE_ENV")[0]
+        assert "KIROCREW_SKILL_VIEW_VOLATILE_ENV" in out
+
 
 class TestRunDirCensus:
     """The run-directory census is read-only, down to the workspace root itself.

@@ -1074,7 +1074,8 @@ def _runtime_rpc_exception(error: object) -> AcpRuntimeError:
 # full rescan; measured selectable 0.7-1.5 s after publication) and never on a
 # rename, and a miss does not trigger a reload itself. Short even steps land
 # soon after a reload; the total (3 s) stays well inside the set_mode budget, and
-# after it the session falls back to the authored agent rather than failing.
+# after it the session start fails with the restart remedy rather than activate
+# any older copy of the agent.
 _PROJECTED_MODE_RETRY_DELAYS_SECS: tuple[float, ...] = (0.5, 0.5, 0.5, 0.5, 1.0)
 
 

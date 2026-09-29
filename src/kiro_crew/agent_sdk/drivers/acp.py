@@ -633,6 +633,24 @@ def skill_view_alias_census(agents_dir: "Path") -> dict[str, int]:
     return census_projected_aliases(agents_dir)
 
 
+def skill_view_residue_census(agents_dir: "Path") -> dict[str, int]:
+    """Count the projection's non-alias residue as plain integers; reads, never writes.
+
+    The keys are ``sidecars``, ``orphan_sidecars``, ``alias_locks``,
+    ``rewritten`` and ``truncated``; their meaning is the projection module's.
+    """
+    from kiro_crew.acp.skill_projection import census_projection_residue
+
+    return census_projection_residue(agents_dir)
+
+
+def skill_view_churning_env_keys(agents_dir: "Path") -> list[str]:
+    """``<server>.<ENV_KEY>`` names whose value differs across one agent's aliases; reads only."""
+    from kiro_crew.acp.skill_projection import census_churning_env_keys
+
+    return census_churning_env_keys(agents_dir)
+
+
 def drain_skill_view_aliases() -> int:
     """Best-effort drain of unused skill-view aliases this data home owns; never raises.
 

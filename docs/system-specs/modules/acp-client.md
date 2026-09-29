@@ -149,7 +149,10 @@ in this process holds them and no held lease in any process names them. An
 alias is named by a 24-hex digest of the agent name, the owning Crew data home
 and the view content, so every spawn from that home that derives the same view
 -- any run folder, any session -- publishes the same file, and publication skips
-an existing alias whose bytes already match. Each MCP server env value is in that
+an existing alias that already SAYS the same spec with this home's sidecar: the
+two are compared parsed, so a launcher that re-serializes every file in the
+agents directory does not force a rewrite of every alias under the shared lock,
+while every value, env values included, still counts. Each MCP server env value is in that
 digest as a digest of its own, except the values of `volatile_env_keys()`: keys a
 launcher re-stamps with a per-launch nonce (default `AIM_CREDS_AGENT_INJECTION`,
 extended by `KIROCREW_SKILL_VIEW_VOLATILE_ENV`). Leaving those in would name a new
@@ -159,7 +162,10 @@ names a NEW alias, one kiro-cli has not loaded, so `set_mode` never activates a
 copy still carrying the old credential, and two launch contexts with different
 credentials never share an alias. The env keys and the source spec's path are in
 the digest too, so two agent files differing only in env values never share an
-alias.
+alias. A launcher nonce under a
+key the set does not know shows up as one view per launch; `kirocrew doctor`
+names each `<server>.<KEY>` whose value differs across one agent's views
+(`census_churning_env_keys`), so the operator can declare it volatile.
 Views can still differ per
 workspace: a SCOPE_PROJECT agent's prompt path and workspace-local inheritance
 shape the view, so those agents get
@@ -344,11 +350,52 @@ its aliases OR its authored id, once, so an agent never vanishes from later
 session starts because its alias changed. Each outcome logs and counts
 `kirocrew.acp.skill_view.fallback`; any other error propagates as before.
 
+An alias view leaves out `welcomeMessage` and caps `description` at
+`_ALIAS_DESCRIPTION_MAX_CHARS`. kiro-cli copies every loaded spec's name,
+description, source and welcomeMessage into each `session/new` and `session/load`
+reply, and an alias is a second copy of an agent the host already lists. So
+duplicating that text only doubles the reply, and past the ACP readers' 10 MB
+frame limit the reply is dropped: 50 agents carrying 113 KB of release notes each
+reached 11.7 MB. Kiro Crew renders an agent's welcomeMessage from the authored
+spec, never from an alias. A preparation also warns, once per size, naming each
+authored spec whose display text passes `_DISPLAY_TEXT_WARN_BYTES` and the
+directory total past `_DISPLAY_TEXT_TOTAL_WARN_BYTES`. That text still reaches
+every reply from the authored copy, so the fix for it is at its source.
+
 Projected agent JSON contains only fields accepted by Kiro's strict
 schema; lifecycle ownership lives in the non-spec
 `.kirocrew-skill-projection-metadata` directory. Each sidecar records the alias's
-exact byte digest, so a stale or replaced sidecar cannot authorize deletion of a
-different spec. No released build ever wrote lifecycle fields INTO a spec --
+exact byte digest AND the digest of its identity (the view the alias is named by,
+env values out), so a stale or replaced sidecar cannot authorize deletion of a
+different spec, while an alias another program merely re-serialized or
+re-stamped stays owned. A sidecar written before the identity digest existed,
+whose alias bytes moved, is still ownership-checked -- marker, this data home,
+the projected-view shape -- and then removed WITH its alias, without the legacy
+age wait: every build that writes a sidecar also holds a lease while it uses the
+alias; removing the alias alone would strand its sidecar. Two sweeps retire
+what outlived an alias, under the same lock, walk limit, random start and time
+budget as the alias walk, capped at
+`_SIDECAR_SWEEP_MAX_PER_RUN`: this home's sidecars whose alias is gone, and empty
+`<alias>.lock` files older than the legacy age with no alias beside them. This
+module never creates the latter; a launcher that rewrites every spec leaves one
+per spec it locked. The boot drain counts both sweeps as progress. `kirocrew
+doctor` reports the residue and the aliases whose bytes no longer match their
+sidecar -- another program is rewriting the directory -- on a `skill-view
+residue` line, warning past `_SKILL_VIEW_RESIDUE_WARN` or on any rewrite.
+
+Publication is by rename (`atomic_write`), and kiro-cli -- measured on 2.25.0
+and 2.26.0 -- does not reload its agents directory on a rename: its inotify
+watch receives `IN_MOVED_TO` but it reloads only on a data write to a `*.json`
+name, about 0.6 s debounced. A new alias renamed in after the process started
+therefore answers `Mode '<alias>' not found` indefinitely, and an alias renamed
+over a known name keeps serving its OLD content. Every publication is
+therefore followed by `_announce_publication`, which rewrites the alias's own
+bytes in place, unchanged -- a data write the host reloads on, which a racing
+reader cannot see torn -- and only while the file still holds exactly those
+bytes. That is what lets the `set_mode` retry above land on the published alias
+within its budget instead of failing the start.
+
+No released build ever wrote lifecycle fields INTO a spec --
 kiro-cli denies unknown fields, so the projection never could -- and an alias
 without a sidecar is judged by the unrecorded path above instead. The recorded
 source paths are never probed, so untrusted metadata cannot
