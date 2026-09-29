@@ -143,6 +143,7 @@ import { skillsCacheStaleTime } from '../lib/skillsCache'
 import ProjectSkillsTrustDialog from './ProjectSkillsTrustDialog'
 import { matchFileToken, matchPathToken, matchSkillToken, PATH_TOKEN_RE, replaceTokenAtCaret } from './composerTokens'
 import { useComposerTreeDrop } from './composerTreeDrop'
+import { textareaDropTargetAtPoint } from '../utils/textareaPointOffset'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 
@@ -651,9 +652,13 @@ interface ChatInputProps {
   onFileSelect?: (path: string, kind?: FileKind, token?: string) => void
   /** A Files-panel tree row dropped on the composer: the host's "Add to
    *  chat" handler (absolute path, entry kind), which inserts and stages the
-   *  same mention the row's context menu does. Absent: tree rows are not
+   *  same mention the row's context menu does. `at` is the text offset under
+   *  the drop point, or null to use the caret. Absent: tree rows are not
    *  accepted. */
-  onTreeEntryDrop?: (absPath: string, kind: FileKind) => void
+  onTreeEntryDrop?: (absPath: string, kind: FileKind, at?: number | null) => void
+  /** The host's clamp for a drop offset (out of mentions and pasted chips),
+   *  so the drop caret previews where `onTreeEntryDrop` will insert. */
+  clampDropOffset?: (text: string, at: number) => number
   onFileOpen?: (path: string) => void
   project?: string
   /** Checked-out branch of the active project (or short SHA when detached). */
@@ -1023,6 +1028,7 @@ function ChatInput({
   providerId: _providerId,
   onFileSelect,
   onTreeEntryDrop,
+  clampDropOffset,
   onFileOpen,
   project,
   projectBranch,
@@ -1429,6 +1435,10 @@ function ChatInput({
       const boundedEnd = Math.min(end, textarea.value.length)
       textarea.setSelectionRange(boundedStart, boundedEnd)
       if (options?.focus) textarea.focus()
+    },
+    dropTargetAtPoint: (clientX, clientY, adjust) => {
+      const textarea = inputRef.current
+      return textarea ? textareaDropTargetAtPoint(textarea, clientX, clientY, adjust) : null
     },
   }), [])
   const composerControl = useCallback(
@@ -2692,6 +2702,7 @@ function ChatInput({
     enabled: !disabled && !optimizing,
     project: project ?? '',
     onTreeEntryDrop,
+    clampDropOffset,
     getControl: composerControl,
     containerRef: wrapperRef,
     onDragOver,
@@ -4290,6 +4301,17 @@ function ChatInput({
       >
         {treeDrop.state === 'accept' && (
           <div aria-hidden="true" data-testid="composer-tree-drop-indicator" className="pointer-events-none absolute inset-0 z-10 rounded-[inherit] border-2 border-dashed border-accent bg-accent/5" />
+        )}
+        {/* Where a release would land: portalled so a transformed ancestor
+            cannot offset its viewport coordinates. */}
+        {treeDrop.state === 'accept' && treeDrop.caret && createPortal(
+          <div
+            aria-hidden="true"
+            data-testid="composer-tree-drop-caret"
+            className="pointer-events-none fixed z-50 w-0.5 rounded-full bg-accent"
+            style={{ left: treeDrop.caret.left - 1, top: treeDrop.caret.top, height: treeDrop.caret.height }}
+          />,
+          document.body,
         )}
         {/* A folder whose path cannot be written as a folder reference: say why
             instead of leaving only the no-drop cursor. */}

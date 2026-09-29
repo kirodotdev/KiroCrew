@@ -14,6 +14,10 @@
  *                 reference can carry its space, so the composer says so
  *   05-menu       right-click on `My Docs/`: Add to chat is disabled with the
  *                 same reason
+ *   06-drop-point `package.json` held at the start of the draft's second line:
+ *                 an insertion caret marks where the release will land
+ *   07-placed     after that drop: the mention sits where it was let go, not
+ *                 at the caret (the end of the draft)
  *
  * Usage: node scripts/capture-file-tree-drag-mention.mjs <out-dir> [prefix]
  */
@@ -85,20 +89,27 @@ async function main() {
   const textarea = page.locator('textarea[data-composer-input]').first()
   const wrapper = page.getByTestId('input-wrapper').first()
 
-  const drag = async (path, { holdFrame, expect = 'accept' } = {}) => {
+  const drag = async (path, { holdFrame, expect = 'accept', at } = {}) => {
     const from = await row(path).boundingBox()
     const to = await textarea.boundingBox()
     if (!from || !to) throw new Error(`no geometry for ${path}`)
+    const target = at ?? { x: to.x + to.width / 2 + 4, y: to.y + to.height / 2 }
     await page.mouse.move(from.x + 20, from.y + from.height / 2)
     await page.mouse.down()
     await page.mouse.move(from.x + 40, from.y + from.height / 2, { steps: 4 })
-    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 })
+    await page.mouse.move(target.x - 4, target.y, { steps: 12 })
     // Chromium fires `dragover` on pointer movement; nudge so the composer gets one.
-    await page.mouse.move(to.x + to.width / 2 + 4, to.y + to.height / 2, { steps: 2 })
+    await page.mouse.move(target.x, target.y, { steps: 2 })
     await page.waitForTimeout(250)
     if (holdFrame) {
       const attr = expect === 'refuse' ? 'data-tree-drop-refused' : 'data-tree-drop-active'
       if ((await wrapper.getAttribute(attr)) !== 'true') throw new Error(`composer did not show the ${expect} state while hovering`)
+      if (at) {
+        const caret = await page.getByTestId('composer-tree-drop-caret').boundingBox()
+        if (!caret || Math.abs(caret.x - at.x) > 12 || caret.y > at.y || caret.y + caret.height < at.y) {
+          throw new Error(`drop caret ${JSON.stringify(caret)} is not at the pointer ${JSON.stringify(at)}`)
+        }
+      }
       await page.screenshot({ path: `${OUT}/${PREFIX}-${holdFrame}.png` })
     }
     await page.mouse.up()
@@ -127,6 +138,26 @@ async function main() {
   await page.waitForTimeout(200)
   await page.screenshot({ path: `${OUT}/${PREFIX}-05-menu.png` })
   await page.keyboard.press('Escape')
+
+  // Drop point: a two-line draft with the caret left at its end; the row is
+  // let go at the start of the second line, and the mention must land there.
+  await textarea.fill('first line\nsecond line')
+  await textarea.press('End')
+  await page.waitForTimeout(200)
+  const line2 = await textarea.evaluate(el => {
+    const r = el.getBoundingClientRect()
+    const cs = getComputedStyle(el)
+    const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4
+    return {
+      x: r.left + (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.paddingLeft) || 0) + 1,
+      y: r.top + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.paddingTop) || 0) + lh * 1.5 - el.scrollTop,
+    }
+  })
+  await drag('package.json', { holdFrame: '06-drop-point', at: line2 })
+  const placed = await textarea.inputValue()
+  if (placed !== 'first line\n@package.json second line') throw new Error(`drop-point insert left ${JSON.stringify(placed)}`)
+  await page.screenshot({ path: `${OUT}/${PREFIX}-07-placed.png` })
+  console.log('drop-point text:', JSON.stringify(placed))
 
   await browser.close()
   srv.close()

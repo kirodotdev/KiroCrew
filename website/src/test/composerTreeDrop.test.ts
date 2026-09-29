@@ -1,7 +1,8 @@
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { isInsideProject, useComposerTreeDrop } from '../components/composerTreeDrop'
+import type { ComposerControl } from '../components/composerControl'
 import { TREE_ENTRY_DRAG_TYPE, TREE_ENTRY_REFUSED_TYPE, encodeTreeEntry } from '../lib/treeEntryDrag'
 
 describe('isInsideProject', () => {
@@ -39,7 +40,7 @@ describe('useComposerTreeDrop', () => {
       files: [],
       dropEffect: 'none',
     }
-    const event = { dataTransfer, preventDefault: vi.fn(), stopPropagation: vi.fn(), relatedTarget: null }
+    const event = { dataTransfer, clientX: 40, clientY: 12, preventDefault: vi.fn(), stopPropagation: vi.fn(), relatedTarget: null }
     return event as unknown as ReactDragEvent & { dataTransfer: { dropEffect: string }; preventDefault: ReturnType<typeof vi.fn> }
   }
   const treeRow = (path: string, kind: 'file' | 'dir', refused = false) => dragEvent({
@@ -47,7 +48,7 @@ describe('useComposerTreeDrop', () => {
     [TREE_ENTRY_DRAG_TYPE]: encodeTreeEntry({ path, kind }),
     ...(refused ? { [TREE_ENTRY_REFUSED_TYPE]: '1' } : {}),
   })
-  function mount({ enabled = true, withHandler = true } = {}) {
+  function mount({ enabled = true, withHandler = true, control = null as ComposerControl | null, clampDropOffset = undefined as ((text: string, at: number) => number) | undefined } = {}) {
     const onTreeEntryDrop = vi.fn()
     const onDragOver = vi.fn()
     const onDrop = vi.fn()
@@ -55,7 +56,8 @@ describe('useComposerTreeDrop', () => {
       enabled,
       project: '/repo',
       onTreeEntryDrop: withHandler ? onTreeEntryDrop : undefined,
-      getControl: () => null,
+      clampDropOffset,
+      getControl: () => control,
       containerRef: { current: null },
       onDragOver,
       onDrop,
@@ -86,7 +88,54 @@ describe('useComposerTreeDrop', () => {
     const t = mount()
     t.result.current.onDrop(treeRow('/repo/src/a.ts', 'file'))
     t.result.current.onDrop(treeRow('/repo/src', 'dir'))
-    expect(t.onTreeEntryDrop.mock.calls).toEqual([['/repo/src/a.ts', 'file'], ['/repo/src', 'dir']])
+    expect(t.onTreeEntryDrop.mock.calls).toEqual([['/repo/src/a.ts', 'file', null], ['/repo/src', 'dir', null]])
+  })
+
+  it('passes the text offset under the drop point to the host', () => {
+    const dropTargetAtPoint = vi.fn(() => ({ offset: 7 }))
+    const control = { focus: vi.fn(), getRootElement: () => null, getSelection: () => null, setSelection: vi.fn(), dropTargetAtPoint }
+    const t = mount({ control })
+    t.result.current.onDrop(treeRow('/repo/src/a.ts', 'file'))
+    expect(dropTargetAtPoint).toHaveBeenCalledWith(40, 12, undefined)
+    expect(t.onTreeEntryDrop).toHaveBeenCalledWith('/repo/src/a.ts', 'file', 7)
+  })
+
+  it('hands the host clamp to the editor for both the preview and the drop', async () => {
+    const clamp = (_t: string, at: number) => at
+    const dropTargetAtPoint = vi.fn(() => ({ offset: 3, caret: { left: 1, top: 2, height: 3 } }))
+    const control = { focus: vi.fn(), getRootElement: () => null, getSelection: () => null, setSelection: vi.fn(), dropTargetAtPoint }
+    const t = mount({ control, clampDropOffset: clamp })
+    act(() => { t.result.current.onDragOver(treeRow('/repo/a.ts', 'file')) })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    t.result.current.onDrop(treeRow('/repo/a.ts', 'file'))
+    expect(dropTargetAtPoint.mock.calls.map(c => (c as unknown[])[2])).toEqual([clamp, clamp])
+  })
+
+  it('falls back to the caret (null) when the editor cannot tell the offset', () => {
+    const control = { focus: vi.fn(), getRootElement: () => null, getSelection: () => null, setSelection: vi.fn(), dropTargetAtPoint: () => null }
+    const t = mount({ control })
+    t.result.current.onDrop(treeRow('/repo/src/a.ts', 'file'))
+    expect(t.onTreeEntryDrop).toHaveBeenCalledWith('/repo/src/a.ts', 'file', null)
+  })
+
+  it('tracks the drop caret during dragover and clears it when the drag leaves', async () => {
+    const caret = { left: 5, top: 6, height: 7 }
+    const control = { focus: vi.fn(), getRootElement: () => null, getSelection: () => null, setSelection: vi.fn(), dropTargetAtPoint: () => ({ offset: 2, caret }) }
+    const t = mount({ control })
+    act(() => { t.result.current.onDragOver(treeRow('/repo/a.ts', 'file')) })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(t.result.current.caret).toEqual(caret)
+    act(() => { t.result.current.onDragLeave(treeRow('/repo/a.ts', 'file')) })
+    expect(t.result.current.caret).toBeNull()
+  })
+
+  it('draws no drop caret for a refused folder', async () => {
+    const control = { focus: vi.fn(), getRootElement: () => null, getSelection: () => null, setSelection: vi.fn(), dropTargetAtPoint: vi.fn(() => ({ offset: 0, caret: { left: 1, top: 1, height: 1 } })) }
+    const t = mount({ control })
+    act(() => { t.result.current.onDragOver(treeRow('/repo/My Folder', 'dir', true)) })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(t.result.current.caret).toBeNull()
+    expect(control.dropTargetAtPoint).not.toHaveBeenCalled()
   })
 
   it('refuses a payload naming a path outside the project', () => {

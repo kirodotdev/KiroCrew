@@ -2,13 +2,13 @@
  * Route a file-tree row dropped on the composer to the host's "Add to chat"
  * entry point, the same one the tree's context menu calls. That handler owns
  * the mention itself (the `@path` / `@folder/` token the `@` picker inserts,
- * its place at the caret, keeping clear of existing tokens, dedupe and
+ * its place (the drop point, or the caret), keeping clear of existing tokens, dedupe and
  * staging), so a drop is only a second way to reach it.
  */
-import { useCallback, useEffect, useState, type DragEvent as ReactDragEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent, type RefObject } from 'react'
 import { classifyComposerDrop, readTreeEntry, type TreeEntryDragKind } from '../lib/treeEntryDrag'
 import { isWindowsShapedPath, normalizeWindowsPath } from '../utils/fileTokens'
-import type { ComposerControl } from './composerControl'
+import type { ComposerControl, ComposerDropTarget } from './composerControl'
 
 /** Is `path` strictly below the project root? Both sides are compared in the
  *  normalized form the tree hands out. An empty, `.` or `..` segment never
@@ -45,6 +45,7 @@ export function useComposerTreeDrop({
   enabled,
   project,
   onTreeEntryDrop,
+  clampDropOffset,
   getControl,
   containerRef,
   onDragOver,
@@ -53,15 +54,39 @@ export function useComposerTreeDrop({
 }: {
   enabled: boolean
   project: string
-  /** The host's "Add to chat" handler: absolute path and entry kind. */
-  onTreeEntryDrop?: (absPath: string, kind: TreeEntryDragKind) => void
+  /** The host's "Add to chat" handler: absolute path, entry kind, and the
+   *  text offset under the drop point (null: use the caret). */
+  onTreeEntryDrop?: (absPath: string, kind: TreeEntryDragKind, at?: number | null) => void
+  /** The host's clamp, so the preview caret shows the offset it will use. */
+  clampDropOffset?: (text: string, at: number) => number
   getControl: () => ComposerControl | null
   containerRef: RefObject<HTMLElement | null>
   onDragOver?: DragHandler
   onDragLeave?: DragHandler
   onDrop?: DragHandler
-}): { state: TreeDropState; onDragOver: DragHandler; onDragLeave: DragHandler; onDrop: DragHandler } {
+}): {
+  state: TreeDropState
+  /** Viewport box of the insertion caret a release would land at, while an
+   *  accepted row is over a composer that can measure it. */
+  caret: ComposerDropTarget['caret'] | null
+  onDragOver: DragHandler
+  onDragLeave: DragHandler
+  onDrop: DragHandler
+} {
   const [state, setState] = useState<TreeDropState>('idle')
+  const [caret, setCaret] = useState<ComposerDropTarget['caret'] | null>(null)
+  // dragover fires every few ms; measure at most once a frame.
+  const pendingPoint = useRef<{ x: number; y: number } | null>(null)
+  const frame = useRef<number | null>(null)
+  const cancelFrame = useCallback(() => {
+    if (frame.current != null) cancelAnimationFrame(frame.current)
+    frame.current = null
+    pendingPoint.current = null
+  }, [])
+  useEffect(() => cancelFrame, [cancelFrame])
+  useEffect(() => {
+    if (state !== 'accept') { cancelFrame(); setCaret(null) }
+  }, [state, cancelFrame])
   const active = state !== 'idle'
   const accepts = enabled && !!onTreeEntryDrop
 
@@ -88,7 +113,17 @@ export function useComposerTreeDrop({
     event.stopPropagation()
     event.dataTransfer.dropEffect = kind === 'tree-entry' ? 'copy' : 'none'
     setState(kind === 'tree-entry' ? 'accept' : 'refuse')
-  }, [accepts, onDragOver])
+    if (kind !== 'tree-entry') return
+    pendingPoint.current = { x: event.clientX, y: event.clientY }
+    if (frame.current != null) return
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null
+      const point = pendingPoint.current
+      pendingPoint.current = null
+      if (!point) return
+      setCaret(getControl()?.dropTargetAtPoint?.(point.x, point.y, clampDropOffset)?.caret ?? null)
+    })
+  }, [accepts, clampDropOffset, getControl, onDragOver])
 
   const handleDragLeave = useCallback((event: ReactDragEvent) => {
     const kind = accepts ? classifyComposerDrop(event.dataTransfer) : 'none'
@@ -117,9 +152,12 @@ export function useComposerTreeDrop({
     // Only rows of this project's tree: a payload naming a path outside it
     // (another page can set any drag type) would stage an arbitrary file.
     if (!isInsideProject(entry.path, project)) return
-    onTreeEntryDrop(entry.path, entry.kind)
+    // Land the mention where the row was let go, not at the old caret. The
+    // host still clamps this out of any token it falls inside.
+    const at = getControl()?.dropTargetAtPoint?.(event.clientX, event.clientY, clampDropOffset)?.offset ?? null
+    onTreeEntryDrop(entry.path, entry.kind, at)
     requestAnimationFrame(() => getControl()?.focus())
-  }, [accepts, getControl, onDrop, onTreeEntryDrop, project])
+  }, [accepts, clampDropOffset, getControl, onDrop, onTreeEntryDrop, project])
 
-  return { state, onDragOver: handleDragOver, onDragLeave: handleDragLeave, onDrop: handleDrop }
+  return { state, caret, onDragOver: handleDragOver, onDragLeave: handleDragLeave, onDrop: handleDrop }
 }

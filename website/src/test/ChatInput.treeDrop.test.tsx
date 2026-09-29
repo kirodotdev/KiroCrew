@@ -52,7 +52,7 @@ describe('ChatInput file-tree drop', () => {
   it('hands a file row dropped on the text area to the host', () => {
     const t = setup()
     fireEvent.drop(t.textarea, { dataTransfer: treeDrag({ path: '/repo/src/a.ts', kind: 'file' }) })
-    expect(t.onTreeEntryDrop).toHaveBeenCalledWith('/repo/src/a.ts', 'file')
+    expect(t.onTreeEntryDrop).toHaveBeenCalledWith('/repo/src/a.ts', 'file', null)
     expect(t.onDrop).not.toHaveBeenCalled()
     expect(t.onChange).not.toHaveBeenCalled()
   })
@@ -60,7 +60,7 @@ describe('ChatInput file-tree drop', () => {
   it('hands a folder row dropped on the composer frame to the host', () => {
     const t = setup('')
     fireEvent.drop(t.wrapper, { dataTransfer: treeDrag({ path: '/repo/src/pages', kind: 'dir' }) })
-    expect(t.onTreeEntryDrop).toHaveBeenCalledWith('/repo/src/pages', 'dir')
+    expect(t.onTreeEntryDrop).toHaveBeenCalledWith('/repo/src/pages', 'dir', null)
     expect(t.onDrop).not.toHaveBeenCalled()
   })
 

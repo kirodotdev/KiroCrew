@@ -3628,7 +3628,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return at
   }, [currentSlotTokens])
 
-  const handleAddToContext = useCallback((absPath: string, kind: 'file' | 'dir') => {
+  const handleAddToContext = useCallback((absPath: string, kind: 'file' | 'dir', dropAt?: number | null) => {
+    // `dropAt` is the text offset under a file-tree drop (useComposerTreeDrop);
+    // the context menu passes none and the mention goes in at the caret.
+    const insertAt = (): number | null => dropAt ?? voiceCaretRef.current?.start ?? null
     // `absPath` arrives from the tree with a forward-slash-normalized Windows
     // root; normalize the project root the same way (Windows-shaped roots
     // only — normalizeWindowsPath leaves POSIX paths, where `\` is a legal
@@ -3660,7 +3663,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (!dup) {
         // Insert at the last known caret, same as a dir-token drop (line ~3130)
         // -- both go through spliceDirTokens, so they share its caret contract.
-        const dirCaret = voiceCaretRef.current?.start ?? null
+        const dirCaret = insertAt()
         const spliced = spliceDirTokens(
           inputRef.current,
           dirCaret == null ? null : clampOutOfTokens(inputRef.current, Math.max(0, Math.min(dirCaret, inputRef.current.length))),
@@ -3704,7 +3707,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // "please check @README.md for bugs" stays possible when the file is
         // added mid-sentence instead of the token always landing at the end.
         const prev = inputRef.current
-        const caret = voiceCaretRef.current?.start ?? null
+        const caret = insertAt()
         let at = caret == null ? prev.length : Math.max(0, Math.min(caret, prev.length))
         // The caret can legally be parked INSIDE a token: vertical arrows
         // are only intercepted for prompt history at the text edges, the
@@ -8879,6 +8882,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onFileOpen={handleFileOpen}
               // A tree row dropped on the composer is "Add to chat" by drag.
               onTreeEntryDrop={handleAddToContext}
+              clampDropOffset={clampOutOfTokens}
               project={currentSlot?.project || ''}
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}

@@ -64,13 +64,15 @@ vi.mock('../components/DetailPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/SidePanel', () => ({
   CHAT_PANE_MIN_W: 320,
   sidePanelFillWidth: () => undefined,
-  default: ({ onAddToContext }: { onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void }) => (
+  default: ({ onAddToContext }: { onAddToContext?: (absPath: string, kind: 'file' | 'dir', dropAt?: number | null) => void }) => (
     // Each stub control lives in its own wrapper, one per row -- not a
     // horizontal sibling group of 4 action buttons (fork GPT review,
     // AUTOSDE `max-two-buttons-per-row`). These are individually-triggered
     // test fixtures, not a real action row.
     <>
       <div><button onClick={() => onAddToContext?.('/repo/src/main.ts', 'file')}>Add to chat: main.ts</button></div>
+      <div><button onClick={() => onAddToContext?.('/repo/src/main.ts', 'file', 4)}>Drop at 4: main.ts</button></div>
+      <div><button onClick={() => onAddToContext?.('/repo/docs', 'dir', 4)}>Drop at 4: docs/</button></div>
       {/* On POSIX this is a single literal filename, not a nested src/main.ts
           path. Its suffix behavior must never borrow Windows separator rules. */}
       <div><button onClick={() => onAddToContext?.('/repo/src\\main.ts', 'file')}>Add to chat: src\\main.ts (literal POSIX)</button></div>
@@ -1430,6 +1432,43 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     await screen.findByLabelText('Remove')
     // The token literal survives intact and the mention landed beside it.
     expect(ta.value).toContain(token)
+    expect(ta.value).toContain('@src/main.ts')
+  })
+
+  it('a file-tree drop inserts at the drop offset, not at the caret', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    act(() => { store.dispatch(openActivityPanel()) })
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'see here' } })
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+    fireEvent.mouseUp(ta)
+    fireEvent.click(await screen.findByText('Drop at 4: main.ts'))
+    await screen.findByLabelText('Remove')
+    expect(ta.value).toBe('see @src/main.ts here')
+  })
+
+  it('a folder dropped mid-draft goes in at the drop offset too', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    act(() => { store.dispatch(openActivityPanel()) })
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'see here' } })
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+    fireEvent.mouseUp(ta)
+    fireEvent.click(await screen.findByText('Drop at 4: docs/'))
+    await waitFor(() => expect(ta.value).toBe('see @docs/ here'))
+  })
+
+  it('a drop offset inside an existing mention is moved to its edge', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    act(() => { store.dispatch(openActivityPanel()) })
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'x @ab/cdefgh y' } })
+    fireEvent.click(await screen.findByText('Drop at 4: main.ts'))
+    await screen.findByLabelText('Remove')
+    expect(ta.value).toContain('@ab/cdefgh')
     expect(ta.value).toContain('@src/main.ts')
   })
 
