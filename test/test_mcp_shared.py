@@ -505,9 +505,7 @@ class TestRespondStdoutFdSnapshot:
     def test_run_loop_releases_fd_on_exit(self):
         """``run_mcp_stdio_loop`` must not leak the dup across invocations."""
         with patch.object(mcp_shared, "_read_message", lambda _stdin: None):
-            mcp_shared.run_mcp_stdio_loop(
-                "test-server", "0.1.0", lambda: [], lambda _n, _a: "ok"
-            )
+            mcp_shared.run_mcp_stdio_loop("test-server", "0.1.0", lambda: [], lambda _n, _a: "ok")
         assert mcp_shared._stdout_fd is None
 
 
@@ -688,8 +686,9 @@ class _LoopHarness:
     resolution are stubbed out so the loop needs no gateway environment.
     """
 
-    def __init__(self, monkeypatch, call_tool_fn, loop_kwargs: dict | None = None,
-                 list_tools_fn=None):
+    def __init__(
+        self, monkeypatch, call_tool_fn, loop_kwargs: dict | None = None, list_tools_fn=None
+    ):
         import os
         import sys
         import threading
@@ -844,9 +843,7 @@ class TestStdioLoopBusyQueue:
                 for call in harness.sel_mock.log_tool_invocation.call_args_list
             )
             release.set()
-            assert harness.wait_for(
-                lambda: {401, 402} <= {r[0] for r in harness.responses}
-            )
+            assert harness.wait_for(lambda: {401, 402} <= {r[0] for r in harness.responses})
         finally:
             release.set()
             harness.close()
@@ -988,9 +985,7 @@ class TestStdioLoopCallerIdentity:
             assert "carried no session token" in body
             assert "agents directory" not in body
             assert "Retry shortly" not in body
-            assert harness.wait_for(
-                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
-            )
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-11"
@@ -1024,9 +1019,7 @@ class TestStdioLoopCallerIdentity:
             assert "identity_unattested" in body
             assert "could not prove which session it acts for" in body
             assert body.endswith(mcp_shared.external_client_identity_note("test-server"))
-            assert harness.wait_for(
-                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
-            )
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-copied-by-hand"
@@ -1189,16 +1182,12 @@ class TestStdioLoopCallerIdentity:
         # Without the advertisement gatewayd treats the backend as
         # single-session and never injects the caller block, which would make
         # the whole per-call identity path dead code.
-        harness = _LoopHarness(
-            monkeypatch, lambda n, a: "ok", {"advertise_caller_identity": True}
-        )
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok", {"advertise_caller_identity": True})
         try:
             harness.send(_initialize(1))
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             caps = harness.responses[0][1]["capabilities"]
-            assert caps["experimental"] == {
-                "kirocrew.caller-identity": {"schemaVersion": 1}
-            }
+            assert caps["experimental"] == {"kirocrew.caller-identity": {"schemaVersion": 1}}
         finally:
             harness.close()
 
@@ -1290,13 +1279,13 @@ class TestStdioLoopCallerIdentity:
         # present.
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         monkeypatch.setattr(
-            mcp_shared, "_resolve_tool_policy", lambda *a, **k: mcp_shared.ToolPolicy(frozenset({"blocked"}), "")
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset({"blocked"}), ""),
         )
         try:
             harness.send(_tools_call_with_caller(21, "blocked", "dashboard:chat-9"))
-            assert harness.wait_for(
-                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
-            )
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "rejected_excluded"
             assert kw["session_key"] == "dashboard:chat-9"
@@ -1326,9 +1315,7 @@ class TestStdioLoopCallerIdentity:
             assert "tool policy could not be read" in body
             assert "policy_unreadable" in body
             # And it is attributable: the audit names the caller and the path.
-            assert harness.wait_for(
-                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
-            )
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-7"
@@ -1452,16 +1439,13 @@ class TestStdioLoopCallerIdentity:
             assert "is unavailable" in _body
             assert "resolution_failed" in _body
             ops = [
-                c.kwargs.get("operation")
-                for c in harness.sel_mock.log_api_access.call_args_list
+                c.kwargs.get("operation") for c in harness.sel_mock.log_api_access.call_args_list
             ]
             assert "tool_policy.unenforced_call" not in ops
         finally:
             harness.close()
 
-    def test_the_unreachable_gateway_refusal_names_a_retry_not_a_spec_edit(
-        self, monkeypatch
-    ):
+    def test_the_unreachable_gateway_refusal_names_a_retry_not_a_spec_edit(self, monkeypatch):
         """The refusal has to diagnose the condition it actually hit.
 
         ``policy_unreadable`` means the gateway read a spec and could not use it,
@@ -1488,9 +1472,7 @@ class TestStdioLoopCallerIdentity:
         finally:
             harness.close()
 
-    def test_an_excluded_tool_stays_excluded_when_the_gateway_cannot_answer(
-        self, monkeypatch
-    ):
+    def test_an_excluded_tool_stays_excluded_when_the_gateway_cannot_answer(self, monkeypatch):
         """The defect this guards: a real exclusion going unenforced.
 
         The named tool is genuinely excluded for this session, and the resolver
@@ -1534,8 +1516,7 @@ class TestStdioLoopCallerIdentity:
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             assert ran == ["echo"]
             ops = [
-                c.kwargs.get("operation")
-                for c in harness.sel_mock.log_api_access.call_args_list
+                c.kwargs.get("operation") for c in harness.sel_mock.log_api_access.call_args_list
             ]
             assert "tool_policy.unenforced_call" in ops
         finally:
@@ -1560,8 +1541,7 @@ class TestStdioLoopCallerIdentity:
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             assert ran == ["echo"]
             ops = [
-                c.kwargs.get("operation")
-                for c in harness.sel_mock.log_api_access.call_args_list
+                c.kwargs.get("operation") for c in harness.sel_mock.log_api_access.call_args_list
             ]
             assert "tool_policy.unenforced_call" in ops
         finally:
@@ -1591,25 +1571,20 @@ class TestStdioLoopCallerIdentity:
         # failure would hide them for the session's whole life. Listing is not
         # the enforcement point; the call path above is.
         tools = [{"name": "echo"}, {"name": "blocked"}]
-        harness = _LoopHarness(
-            monkeypatch, lambda n, a: "ok", list_tools_fn=lambda: list(tools)
-        )
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok", list_tools_fn=lambda: list(tools))
         monkeypatch.setattr(
             mcp_shared,
             "_resolve_tool_policy",
             lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "no_session_key"),
         )
         try:
-            harness.send(
-                {"jsonrpc": "2.0", "id": 42, "method": "tools/list", "params": {}}
-            )
+            harness.send({"jsonrpc": "2.0", "id": 42, "method": "tools/list", "params": {}})
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
             listed = [t["name"] for t in harness.responses[0][1]["tools"]]
             assert listed == ["echo", "blocked"]
             # The widened listing window is recorded, so it is attributable.
             ops = [
-                c.kwargs.get("operation")
-                for c in harness.sel_mock.log_api_access.call_args_list
+                c.kwargs.get("operation") for c in harness.sel_mock.log_api_access.call_args_list
             ]
             assert "tool_policy.unfiltered_listing" in ops
         finally:
@@ -1642,9 +1617,7 @@ class TestStdioLoopCallerIdentity:
         try:
             harness.send(_tools_call_with_caller(31, "echo", "dashboard:chat-5"))
             assert harness.wait_for(lambda: len(harness.responses) >= 1)
-            assert harness.wait_for(
-                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
-            )
+            assert harness.wait_for(lambda: harness.sel_mock.log_tool_invocation.call_count >= 1)
             kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
             assert kw["outcome"] == "failed"
             assert kw["session_key"] == "dashboard:chat-5"
@@ -1679,11 +1652,9 @@ class TestPerSessionToolPolicy:
             return io.BytesIO(b'{"exclude":["blocked"]}')
 
         monkeypatch.setattr(mcp_shared, "loopback_urlopen", policy)
-        monkeypatch.setattr(mcp_shared, "read_local_secret", lambda _port: "internal")
+        monkeypatch.setattr(mcp_shared, "read_local_secret", lambda _port, **_kw: "internal")
         monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
-        assert mcp_shared._resolve_tool_policy("dashboard:alice").excluded == {
-            "blocked"
-        }
+        assert mcp_shared._resolve_tool_policy("dashboard:alice").excluded == {"blocked"}
         assert mcp_shared._resolve_tool_policy("dashboard:global").excluded == {"blocked"}
         assert requests[0]["X-session-key"] == "dashboard:alice"
         assert "X-member-session-proof" not in requests[0]

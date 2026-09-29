@@ -1210,10 +1210,14 @@ spelling in that set reaches this same gateway. What it never does is move a
 CREDENTIAL: a navigation carrying `?token=` is served where it was addressed
 rather than redirected, because a 302 preserves the query. That gate does not
 depend on which families are bound, which is why it holds even when the second
-bind degraded. Callers
-that resolve a port and nothing finer
-(`config/loader.py`, `mcp_core.py`, `cron_script.py`, the container runtime) still
-read the port-keyed file, which is why it stays published.
+bind degraded. A caller that names the loopback ADDRESS it dials reads the
+address-keyed entry and refuses when the family that address reaches is uncovered
+(`config/loader.read_local_secret(port, dial_host=...)`, mirroring the app's
+`listenerSecretsFor`); it falls back to the port-keyed file only for a gateway that
+published NO listener entry for the port at all -- an older gateway, or one that
+could not name its bound address -- because there is then no other listener's
+credential to be confused with. The container runtime, which resolves a port and
+nothing finer, still reads the port-keyed file, which is why it stays published.
 
 The credential is generated per gateway start (`os.urandom(16).hex()`) and kept in
 memory as the value the auth middleware compares against, so it identifies ONE
@@ -1245,22 +1249,50 @@ Two rules keep the two halves paired:
   credential under a guessed address.
 - **The reader** is ONE shared helper, `config.loader.read_local_secret(port)`: it
   returns the credential for the port the caller is about to dial and falls back to
-  `.local_secret` when no per-port file exists. It lives there rather than in each
-  reader because every surface that implements its own read reintroduces the bug for
-  itself. **`port` is required.** An optional port would resolve the dial target from
-  process context, so a converted call site could read the credential for one gateway
-  while dialing another -- the same desync, reintroduced one call site at a time and
-  invisible in the hunk under review. A caller with no port resolves one explicitly
-  and passes it, where the choice is reviewable. `mcp_core`, `mcp_shared`,
-  `cron_script`, `computer_use/screencast` and the Sage review driver each name their
-  dial target; a test greps for a no-argument call so the shape cannot come back.
+  `.local_secret` when no per-port file exists. It takes an optional `dial_host`, the
+  loopback address the caller is about to send the credential to. When a caller names
+  it, the read is per LISTENER (`run_marker.read_listener_secret`, the Python twin of
+  the app's `listenerSecretsFor`): every loopback family that host reaches must be
+  covered by an entry carrying one shared secret, and the helper FAILS CLOSED --
+  returning `""` with no port-keyed fallback -- when listener entries exist for the
+  port but none covers the dialed family, because that fallback would hand the
+  credential to whatever else holds the address. It falls back to the port-keyed read
+  only when the gateway PROVABLY published NO listener entry for the port at all (a
+  pre-per-listener gateway), where nothing else claims the port;
+  `run_marker.has_listener_entries` is three-valued for exactly this and its `None`
+  (an enumeration error, absence unproven) fails closed like a covered-but-uncovered
+  `True`, never re-opening the fallback over an unreadable `run/`. A caller with no
+  `dial_host` keeps the port-keyed-then-shared read. It lives there rather than in
+  each reader because every surface that implements its own read reintroduces the bug
+  for itself. **`port` is required.** An optional port would resolve the dial target
+  from process context, so a converted call site could read the credential for one
+  gateway while dialing another -- the same desync, reintroduced one call site at a
+  time and invisible in the hunk under review. A caller with no port resolves one
+  explicitly and passes it, where the choice is reviewable. Each TCP-loopback caller
+  names the IPv4 loopback LITERAL (`127.0.0.1`) as its `dial_host` -- `cli_server`
+  (`_CLI_LOOPBACK`), `mcp_core` (derived from the base it dials), `mcp_shared`,
+  `mcp_cron`, `cron_script`, `cron_trigger`, `computer_use/screencast`, `cli_commands`
+  and the Sage review driver -- and dials that same literal in its URL, NOT the
+  ambiguous `localhost`. A literal reaches ONE family, so a gateway that bound only v4,
+  or a wildcard/container bind (`0.0.0.0`) that publishes a single v4-family entry,
+  still authenticates; the ambiguous name would demand BOTH families and refuse such
+  an ordinary single-family deployment even though the dial reaches that very gateway.
+  `app_lifecycle_client` is the one caller that passes NO `dial_host`: its request
+  travels the owner-only UNIX SOCKET, not TCP loopback, so the credential is not paired
+  to a dialed TCP address and a listener lookup would wrongly fail closed on a bind
+  with no v4 counterpart, silently dropping an uninstall to its file-only path while
+  the backend keeps running. A test greps for a no-argument call so an ambient-port
+  shape cannot come back.
 - **The dialed port's own credential outranks any path a caller names.**
-  `cron_trigger.trigger_cron_job` reads the per-port credential for the port it posts
-  to FIRST, and falls back to the `secret_path` its caller named only when that is
-  absent. The order is deliberate and is dictated by the callers: both of them pass
-  `config_dir() / ".local_secret"`, the home-wide file, which is exactly the file a
-  second gateway generation replaces -- so preferring the named path would reinstate
-  the defect this module exists to prevent.
+  `cron_trigger.trigger_cron_job` resolves the credential for the IPv4 loopback
+  listener it posts to FIRST (`run_marker.read_listener_secret`, refusing outright
+  when listener entries exist for the port but none covers that address), then the
+  port-keyed read for a gateway that published none, and only then the `secret_path`
+  its caller named. It does its OWN resolution rather than calling `read_local_secret`
+  because that helper's tail is the home-wide `.local_secret`, and the named path must
+  outrank that file: both callers pass `config_dir() / ".local_secret"`, which is
+  exactly the file a second gateway generation replaces, so preferring it over the
+  named path would reinstate the defect this module exists to prevent.
   The cost of that order, stated rather than hidden: a crash-orphaned
   `run/gateway-<port>.secret` (the prune never deletes credentials, see section 12)
   is preferred over a correct named path, so a caller that genuinely names another

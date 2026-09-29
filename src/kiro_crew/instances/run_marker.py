@@ -312,6 +312,182 @@ def read_secret(port: int) -> str:
     return _read_sidecar(port, _SECRET_SUFFIX)
 
 
+#: The loopback families a dialled host can land on, and the bind addresses that
+#: cover each. The Python twin of ``LOOPBACK_FAMILY_BINDS`` in
+#: ``website/electron/local-token.js`` -- the two must agree on what covers a
+#: family, because the same publisher feeds both readers. ``0.0.0.0``/``::`` are
+#: the wildcard binds a gateway may hold; ``::`` counts as v6 ONLY, since whether
+#: a v6 wildcard also accepts v4-mapped connections depends on the host's
+#: ``IPV6_V6ONLY`` and counting it for v4 would be a guess in the permissive
+#: direction.
+_LOOPBACK_FAMILY_BINDS: dict[str, tuple[str, ...]] = {
+    "v4": ("127.0.0.1", "0.0.0.0"),
+    "v6": ("::1", "::"),
+}
+
+#: Hostnames that name a SET of listeners rather than one: they resolve to BOTH
+#: loopback families on an ordinary host, so dialling one can land on either
+#: listener. Mirrors ``AMBIGUOUS_LOOPBACK_NAMES`` in ``local-token.js``.
+_AMBIGUOUS_LOOPBACK_NAMES = frozenset({"localhost", "kirocrew.localhost"})
+
+
+def _dial_families(host: str) -> tuple[str, ...] | None:
+    """Loopback families the dial *host* can reach, or ``None`` if it is not a
+    loopback target a local secret may be sent to.
+
+    The Python twin of ``dialTarget`` in ``local-token.js`` for the host half.
+    An ambiguous name reaches BOTH families (so a safe dial requires the gateway
+    to hold both); a literal reaches exactly one. Any other host -- a real
+    hostname, a public address -- is not a loopback target, so ``None`` is
+    returned and the caller refuses rather than reading a local credential for a
+    party that is not on this machine. A bracketed IPv6 literal (``[::1]``) is
+    accepted in the spelling a URL host carries.
+    """
+    if not host:
+        return None
+    if host in _AMBIGUOUS_LOOPBACK_NAMES:
+        return ("v4", "v6")
+    if host == "127.0.0.1":
+        return ("v4",)
+    if host in ("::1", "[::1]"):
+        return ("v6",)
+    return None
+
+
+def read_listener_secret(port: int, host: str) -> str:
+    """Credential safe to send to the listener a caller dials at *host*:*port*,
+    or ``""`` to refuse.
+
+    The address-keyed reader, and the Python twin of ``listenerSecretsFor`` in
+    ``website/electron/local-token.js`` -- the two implement the SAME predicate
+    against the SAME files the publisher writes
+    (``run/gateway-<port>-<address>.secret``), because a credential paired to a
+    listener is only as safe as its weakest reader. The rule:
+
+        every family the dialled host can reach must be covered by an entry, and
+        one secret must appear under every family.
+
+    A literal host is one family, which is the pre-per-port behaviour narrowed to
+    that address. An ambiguous name (``localhost``) is both families, and that is
+    what makes the name safe to dial: if the gateway holds v4 AND v6 on this
+    port, then whichever family the resolver picks, the party reached is the
+    gateway that published the credential; a co-resident cannot be on either,
+    because the gateway is.
+
+    Refuses (``""``) rather than narrows on a single missing family: if the
+    gateway bound only v4 and something else holds ``[::1]:<port>``, dialling
+    ``localhost`` may reach that squatter, so no secret goes out. Refuses too when
+    *host* is not a loopback target at all.
+
+    Presence alone fails OPEN: nothing deletes a sidecar but a graceful shutdown,
+    so a SIGKILLed generation that held both families leaves one entry behind, a
+    co-resident takes that address, the gateway restarts binding one family, and
+    a presence test would call the other family "covered" by the DEAD
+    generation's file and send the LIVE secret to the squatter. The INTERSECTION
+    is what makes coverage a fact about the live generation: one generation
+    writes the same freshly-minted secret under every address it bound, so a
+    secret appearing under an address in every reachable family proves one
+    generation holds them all, and a stale file carries a different value and
+    drops out of the intersection.
+
+    Reads only local disk; the peer is never consulted and never believed.
+    Read-only: never creates ``run/`` (mirrors :func:`read_secret`).
+    """
+    families = _dial_families(host)
+    if families is None:
+        return ""  # not a loopback target: refuse
+    per_family: list[set[str]] = []
+    for family in families:
+        candidates: set[str] = set()
+        for bind_address in _LOOPBACK_FAMILY_BINDS[family]:
+            # EVERY present entry is a candidate, not just the first: a crashed
+            # generation can leave a stale entry beside the live one, and stopping
+            # at the stale secret would refuse a gateway reachable through the
+            # wildcard entry beside it. A refused candidate must not end the walk.
+            secret = _read_listener_sidecar(port, bind_address)
+            if secret:
+                candidates.add(secret)
+        # One uncovered family the dialled host can reach is enough to refuse: the
+        # resolver may hand the caller exactly that listener.
+        if not candidates:
+            return ""
+        per_family.append(candidates)
+    shared = set.intersection(*per_family)
+    if not shared:
+        return ""
+    # A single generation writes ONE secret under every address it bound, so the
+    # intersection is normally a singleton. If a race left two, either is the live
+    # generation's own value (both were minted by it), so any is safe; sort for a
+    # deterministic answer.
+    return sorted(shared)[0]
+
+
+def _read_listener_sidecar(port: int, host: str) -> str:
+    """Stripped contents of the listener-keyed credential for *host*:*port*, or
+    ``""``.
+
+    Read-only sibling of :func:`_read_sidecar` for the address-keyed name. It
+    composes the path against ``run/`` directly rather than through
+    :func:`listener_secret_path` so a reader that merely looks for a gateway does
+    not MATERIALISE ``run/`` (:func:`listener_secret_path` goes through
+    :func:`_run_dir`). An unreadable or absent file reads as ``""``.
+    """
+    try:
+        return (
+            (config_dir() / RUN_DIR_NAME / listener_secret_file_name(int(port), host))
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+    except (OSError, ValueError):
+        return ""
+
+
+def has_listener_entries(port: int) -> bool | None:
+    """Whether ANY ``run/gateway-<port>-<address>.secret`` exists for *port*.
+
+    A THREE-valued answer, because a caller falling back on it must distinguish
+    "proven absent" from "could not tell":
+
+    * ``False`` -- **no listener entry exists at all**, proven by a successful
+      enumeration that found none. The gateway serving this port predates the
+      per-listener publish (an older gateway, or one that could not name its
+      bound address, which suppresses the write). There is no OTHER listener's
+      credential on this port to be confused with, so a caller may safely fall
+      back to the port-keyed read -- that is the pre-per-listener world, not the
+      desync this feature closes.
+
+    * ``True`` -- **entries exist but** (as the caller already found from
+      :func:`read_listener_secret` returning ``""``) **none covers the dialled
+      family**. A gateway published for some addresses and NOT the one being
+      dialled, so the port-keyed read could hand back a DIFFERENT listener's
+      credential -- the exact desync. A caller must fail closed here.
+
+    * ``None`` -- **could not enumerate** (``run/`` exists but the glob raised).
+      Absence is UNPROVEN: an unreadable ``run/`` might well hold the very entry
+      that would forbid the fallback, while the port-keyed and home-wide files
+      (which live outside ``run/``) stay readable and sendable. So a caller must
+      treat ``None`` exactly like ``True`` -- fail closed, never fall back on an
+      error it cannot see past. Only a proven-empty ``False`` re-opens the
+      fallback.
+
+    Read-only: never creates ``run/`` (a client merely looking for a gateway must
+    materialise no state), so it globs the directory directly rather than through
+    :func:`listener_secret_paths`, whose call is read-only too but whose name
+    invites the confusion that this is about paths rather than existence.
+    """
+    try:
+        d = config_dir() / RUN_DIR_NAME
+    except OSError:
+        return None
+    if not d.is_dir():
+        return False
+    prefix = f"{_MARKER_PREFIX}{int(port)}-"
+    try:
+        return any(p.is_file() for p in d.glob(f"{prefix}*{_SECRET_SUFFIX}"))
+    except OSError:
+        return None
+
+
 def _read_start_token(pid_path: Path) -> str:
     """Start identity recorded beside the pid sidecar at *pid_path*, or ``""``.
 

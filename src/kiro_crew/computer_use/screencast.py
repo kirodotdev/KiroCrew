@@ -332,7 +332,7 @@ def _headers() -> dict[str, str]:
     try:
         # The SAME resolution _ingress_url uses, so the credential is always read
         # for the port this module actually POSTs to -- the two cannot diverge.
-        secret = read_local_secret(resolve_serving_port())
+        secret = read_local_secret(resolve_serving_port(), dial_host="127.0.0.1")
     except Exception:
         return headers
     if secret:

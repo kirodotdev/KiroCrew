@@ -1008,7 +1008,9 @@ class TestTheSharedHelperOwnsThePairing:
             ) as helper,
         ):
             assert mcp_core._internal_secret() == "from-helper"
-        helper.assert_called_once_with(7811)
+        # The dial host is named now, so the credential is paired to the listener
+        # this client dials rather than resolved by port alone.
+        helper.assert_called_once_with(7811, dial_host="127.0.0.1")
 
     def test_cron_trigger_pairs_its_credential_with_the_port(self, home: Path) -> None:
         from kiro_crew import cron_trigger
@@ -1454,4 +1456,282 @@ class TestReviewDriverDoesNotGuessASiblingPort:
         monkeypatch.setattr(review_driver, "_RESOLVED_BASE", "", raising=False)
         monkeypatch.setattr(review_driver, "_candidate_ports", lambda: [7811])
         monkeypatch.setattr(review_driver, "_probe", lambda base, secret: False)
-        assert review_driver._gateway_base() == "http://localhost:7811"
+        assert review_driver._gateway_base() == "http://127.0.0.1:7811"
+
+    def test_local_secret_honours_the_helper_refusal_and_does_not_read_crew_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # GPT F2: when the shared resolver FAILS CLOSED (returns "" because the
+        # dialled family is uncovered or run/ is unreadable), _local_secret must
+        # return that refusal directly. Falling through to crew_home()/.local_secret
+        # would send a DIFFERENT listener's credential -- the desync this closes.
+        from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
+
+        crew_home = tmp_path / "crew_home"
+        crew_home.mkdir()
+        (crew_home / ".local_secret").write_text("home-wide-secret", encoding="utf-8")
+        monkeypatch.setattr(review_driver.store, "crew_home", lambda: crew_home)
+        # The shared resolver is present and refuses.
+        monkeypatch.setattr(
+            "kiro_crew.config.loader.read_local_secret",
+            lambda port, dial_host=None: "",
+        )
+        assert review_driver._local_secret(7811) == ""
+
+    def test_local_secret_returns_the_helper_value_when_it_resolves(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
+
+        crew_home = tmp_path / "crew_home"
+        crew_home.mkdir()
+        (crew_home / ".local_secret").write_text("home-wide-secret", encoding="utf-8")
+        monkeypatch.setattr(review_driver.store, "crew_home", lambda: crew_home)
+        monkeypatch.setattr(
+            "kiro_crew.config.loader.read_local_secret",
+            lambda port, dial_host=None: "listener-secret",
+        )
+        assert review_driver._local_secret(7811) == "listener-secret"
+
+
+def _publish_listener(home: Path, port: int, host: str, secret: str) -> None:
+    """Publish only the listener-keyed entry for *host* (no port-keyed file).
+
+    The port-keyed file is written by the real publisher too, but these cases are
+    about what the ADDRESS-keyed reader does on its own, so they seed only the
+    listener entry and assert the reader never reaches past it to the port file.
+    """
+    dashboard_server._write_secret_file(run_marker.listener_secret_path(port, host), secret)
+
+
+class TestReadListenerSecret:
+    """``run_marker.read_listener_secret`` -- the Python twin of the JS
+    ``listenerSecretsFor``: prefer the address-keyed entry, refuse (``""``) when a
+    family the dialled host reaches is uncovered or the host is not loopback.
+    """
+
+    def test_literal_host_reads_its_own_entry(self, home: Path) -> None:
+        _publish_listener(home, 5476, "127.0.0.1", "v4-secret")
+        assert run_marker.read_listener_secret(5476, "127.0.0.1") == "v4-secret"
+
+    def test_literal_host_refuses_when_its_entry_is_absent(self, home: Path) -> None:
+        # The gateway bound only v6; a caller dialling the IPv4 literal must NOT
+        # get the v6 listener's credential -- a co-resident may hold 127.0.0.1.
+        _publish_listener(home, 5476, "::1", "v6-secret")
+        assert run_marker.read_listener_secret(5476, "127.0.0.1") == ""
+
+    def test_v6_bracketed_and_bare_both_read_the_v6_entry(self, home: Path) -> None:
+        _publish_listener(home, 5476, "::1", "v6-secret")
+        assert run_marker.read_listener_secret(5476, "::1") == "v6-secret"
+        assert run_marker.read_listener_secret(5476, "[::1]") == "v6-secret"
+
+    def test_wildcard_bind_covers_the_family(self, home: Path) -> None:
+        # A gateway bound to 0.0.0.0 publishes under that address; a caller
+        # dialling the IPv4 literal is covered by the wildcard entry.
+        _publish_listener(home, 5476, "0.0.0.0", "wild-secret")
+        assert run_marker.read_listener_secret(5476, "127.0.0.1") == "wild-secret"
+
+    def test_ambiguous_name_requires_every_family(self, home: Path) -> None:
+        # localhost resolves to BOTH families. Only v4 is published, so dialling
+        # localhost may still land on an unowned v6 listener -> refuse.
+        _publish_listener(home, 5476, "127.0.0.1", "one-secret")
+        assert run_marker.read_listener_secret(5476, "localhost") == ""
+
+    def test_ambiguous_name_covered_when_both_families_hold_one_secret(self, home: Path) -> None:
+        # The gateway holds v4 AND v6 and writes the SAME secret under each, so
+        # the intersection is non-empty and localhost is safe to dial.
+        _publish_listener(home, 5476, "127.0.0.1", "gen-secret")
+        _publish_listener(home, 5476, "::1", "gen-secret")
+        assert run_marker.read_listener_secret(5476, "localhost") == "gen-secret"
+
+    def test_ambiguous_name_refuses_on_a_stale_cross_generation_pair(self, home: Path) -> None:
+        # A SIGKILLed generation left its v6 entry behind; a co-resident took v6
+        # and the live gateway rebound v4 with a fresh secret. Presence alone would
+        # call v6 "covered" by the DEAD file -> the intersection catches it because
+        # the two values differ, so no secret goes to the squatter.
+        _publish_listener(home, 5476, "127.0.0.1", "live-secret")
+        _publish_listener(home, 5476, "::1", "stale-dead-secret")
+        assert run_marker.read_listener_secret(5476, "localhost") == ""
+
+    def test_non_loopback_host_refuses(self, home: Path) -> None:
+        _publish_listener(home, 5476, "127.0.0.1", "v4-secret")
+        for host in ("example.com", "10.0.0.5", "", "0.0.0.0"):
+            assert run_marker.read_listener_secret(5476, host) == "", host
+
+    def test_read_does_not_create_the_run_dir(self, home: Path) -> None:
+        run_marker.read_listener_secret(5476, "127.0.0.1")
+        assert not (home / "run").exists()
+
+
+class TestReadLocalSecretDialHost:
+    """``config.loader.read_local_secret`` prefers the address-keyed entry and
+    FAILS CLOSED when a dial host is named, and keeps the port-keyed read only for
+    a caller that names no host.
+    """
+
+    def test_dial_host_prefers_the_listener_entry(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # Port-keyed says one thing, the dialled listener says another. A caller
+        # that names its host must get the LISTENER'S value, not the port file's.
+        dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
+        _publish_listener(home, 5476, "127.0.0.1", "listener-keyed")
+        assert read_local_secret(5476, dial_host="127.0.0.1") == "listener-keyed"
+
+    def test_dial_host_fails_closed_when_another_family_is_published(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # The port-keyed AND shared files exist, and the gateway published a
+        # listener entry for the OTHER family (::1). A caller dialling 127.0.0.1
+        # must NOT fall back to either home-wide file: a different listener holds
+        # the address, so the port-keyed read is the disclosure this closes.
+        dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
+        (home / ".local_secret").write_text("shared-secret", encoding="utf-8")
+        _publish_listener(home, 5476, "::1", "v6-secret")
+        assert read_local_secret(5476, dial_host="127.0.0.1") == ""
+
+    def test_dial_host_falls_back_when_no_listener_entry_exists(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # A gateway that published NO listener entry for this port (older gateway,
+        # or one that could not name its bound address) has no other listener's
+        # credential to be confused with, so a caller naming its host safely reads
+        # the port-keyed file. Withholding it here would break an ordinary install.
+        dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
+        assert read_local_secret(5476, dial_host="127.0.0.1") == "port-keyed"
+
+    def test_dial_host_falls_back_to_shared_for_a_pre_per_listener_gateway(
+        self, home: Path
+    ) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # No per-port file and no listener entry -- a gateway predating the whole
+        # per-listener publish. The shared file is the only credential, and a
+        # host-naming caller may read it because nothing else claims this port.
+        (home / ".local_secret").write_text("shared-secret", encoding="utf-8")
+        assert read_local_secret(5476, dial_host="127.0.0.1") == "shared-secret"
+
+    def test_no_dial_host_keeps_port_keyed_read(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # A caller that structurally cannot name a host keeps the pre-existing
+        # port-keyed-then-shared resolution.
+        dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
+        assert read_local_secret(5476) == "port-keyed"
+
+    def test_no_dial_host_falls_back_to_shared(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        (home / ".local_secret").write_text("shared-secret", encoding="utf-8")
+        assert read_local_secret(5476) == "shared-secret"
+
+    def test_round_trip_through_the_real_publisher(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # End to end: a gateway bound to both families publishes via the real
+        # writer; a caller dialling either literal or the ambiguous name reads the
+        # generation's own secret, and a caller dialling an unbound literal refuses.
+        shared = home / ".local_secret"
+        with mock.patch.object(dashboard_server, "_live_sibling_port", return_value=None):
+            dashboard_server._write_instance_credentials(shared, 7811, "127.0.0.1", "gen", ("::1",))
+        assert read_local_secret(7811, dial_host="127.0.0.1") == "gen"
+        assert read_local_secret(7811, dial_host="::1") == "gen"
+        assert read_local_secret(7811, dial_host="localhost") == "gen"
+
+
+class TestHasListenerEntriesIsThreeValued:
+    """``run_marker.has_listener_entries`` must tell "proven absent" (``False``)
+    from "could not enumerate" (``None``). Collapsing an enumeration error to
+    ``False`` would let a caller fall back to the port-keyed / home-wide
+    credential over an unreadable ``run/`` that might hold the very entry
+    forbidding that fallback -- the GPT F1 finding.
+    """
+
+    def test_proven_empty_is_false(self, home: Path) -> None:
+        # run/ exists (a sibling wrote something) but holds no entry for 5476.
+        _publish_listener(home, 9999, "127.0.0.1", "other-port")
+        assert run_marker.has_listener_entries(5476) is False
+
+    def test_no_run_dir_is_false(self, home: Path) -> None:
+        # run/ never materialised: provably no entries, and the reader must not
+        # create it just by asking.
+        assert run_marker.has_listener_entries(5476) is False
+        assert not (home / "run").exists()
+
+    def test_entry_present_is_true(self, home: Path) -> None:
+        _publish_listener(home, 5476, "::1", "v6")
+        assert run_marker.has_listener_entries(5476) is True
+
+    def test_enumeration_error_is_none(self, home: Path) -> None:
+        # run/ exists and is_dir() passes, but the glob raises OSError. Absence is
+        # UNPROVEN -> None, never False.
+        (home / "run").mkdir()
+        with mock.patch.object(Path, "glob", side_effect=OSError(errno.EACCES, "denied")):
+            assert run_marker.has_listener_entries(5476) is None
+
+    def test_dial_host_fails_closed_when_run_dir_is_unreadable(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # The port-keyed and shared files are readable, but run/ enumeration
+        # raises. Because absence of a covering listener entry is UNPROVEN, the
+        # helper must refuse rather than downgrade to the readable-but-wrong
+        # port-keyed credential (GPT F1: an unreadable run/ must not open the
+        # fallback).
+        dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
+        (home / ".local_secret").write_text("shared-secret", encoding="utf-8")
+        (home / "run").mkdir(exist_ok=True)
+        with mock.patch.object(Path, "glob", side_effect=OSError(errno.EACCES, "denied")):
+            assert read_local_secret(5476, dial_host="127.0.0.1") == ""
+
+    def test_cron_trigger_gate_fails_closed_when_run_dir_is_unreadable(self, home: Path) -> None:
+        # The cron-trigger reader shares the three-valued gate: an unreadable run/
+        # (None) must NOT open the port-keyed fallback.
+        dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
+        (home / "run").mkdir(exist_ok=True)
+        with mock.patch.object(Path, "glob", side_effect=OSError(errno.EACCES, "denied")):
+            # Directly assert the gate the reader uses: proven-absent is required
+            # to fall back, and None is not proven-absent.
+            assert (run_marker.has_listener_entries(5476) is False) is False
+
+
+class TestSingleFamilyGatewayAuthenticatesTheV4LiteralDial:
+    """The Design blocker: a gateway that publishes ONE loopback family -- a
+    wildcard/container bind (``0.0.0.0``) or an IPv6-less host -- must still
+    authenticate the internal callers, which dial the IPv4 LITERAL. Dialing the
+    ambiguous ``localhost`` would demand both families and 403 such a gateway even
+    though the dial reaches it.
+    """
+
+    def test_wildcard_bind_covers_the_v4_literal_dial(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # A --slack-only / container gateway binds 0.0.0.0 and publishes one entry.
+        _publish_listener(home, 5476, "0.0.0.0", "wild")
+        assert read_local_secret(5476, dial_host="127.0.0.1") == "wild"
+
+    def test_v4_only_bind_covers_the_v4_literal_dial(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # An IPv6-less host: only the v4 entry is published. A v4-literal dial is
+        # covered; no squatter can be on a v6 the host cannot even offer.
+        _publish_listener(home, 5476, "127.0.0.1", "v4only")
+        assert read_local_secret(5476, dial_host="127.0.0.1") == "v4only"
+
+    def test_v4_literal_still_fails_closed_when_only_v6_is_published(self, home: Path) -> None:
+        from kiro_crew.config.loader import read_local_secret
+
+        # A ::1-only gateway. A v4-literal dial finds the v4 family uncovered while
+        # a listener MAP exists -> fail closed, no port-keyed fallback to a v4
+        # co-resident (GPT F1's disclosure scenario, closed).
+        dashboard_server._write_secret_file(run_marker.secret_path(5476), "port-keyed")
+        _publish_listener(home, 5476, "::1", "v6")
+        assert read_local_secret(5476, dial_host="127.0.0.1") == ""
+
+    def test_review_driver_base_dials_the_v4_literal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew.apps.builtins.code_review_sage.sage_lib import review_driver
+
+        monkeypatch.setattr(review_driver, "_RESOLVED_BASE", "", raising=False)
+        monkeypatch.setattr(review_driver, "_candidate_ports", lambda: [7811])
+        monkeypatch.setattr(review_driver, "_probe", lambda base, secret: False)
+        # The unreachable fallback base must be the v4 literal, not localhost.
+        assert review_driver._gateway_base() == "http://127.0.0.1:7811"

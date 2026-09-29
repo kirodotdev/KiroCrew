@@ -1196,7 +1196,7 @@ class ScriptContext:
             "X-Session-Key": f"cron:{self.job.id}",
         }
         req = urllib.request.Request(
-            f"http://localhost:{self._port}{path}",
+            f"http://127.0.0.1:{self._port}{path}",
             data=data,
             headers=headers,
             method="POST",
@@ -1569,7 +1569,10 @@ def _resolve_internal_secret(port: int) -> str:
     env_secret = os.environ.get("KIROCREW_INTERNAL_SECRET", "")
     if env_secret:
         return env_secret
-    return read_local_secret(port)
+    # v4 loopback LITERAL, matching the http://127.0.0.1 dial: a single-family
+    # gateway (v4-only or wildcard/container) still authenticates, where the
+    # ambiguous ``localhost`` would demand both families and refuse it.
+    return read_local_secret(port, dial_host="127.0.0.1")
 
 
 def _child_internal_secret(
