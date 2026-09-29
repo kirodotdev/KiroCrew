@@ -7,9 +7,9 @@
  * Settings search capsule, the notification panes (the in-app banner, the
  * bell popover's rows and controls card), the list panels' search field
  * (Sessions sidebar, Crew Members roster; components/SearchFilterBar.tsx) and
- * the crewmate DM header's centred identity pill (face + name;
- * pages/members/MembersPage.tsx) wear the SAME material, from the SAME
- * primitive:
+ * the crewmate DM header's centred identity pill (face + name, itself the
+ * "Edit crewmate" button; pages/members/MembersPage.tsx) wear the SAME
+ * material, from the SAME primitive:
  * `--glass-tint` over a blurred backdrop, an even top/bottom light band in
  * `--glass-band`, a 1px `--glass-edge` line down each side and a half-pixel
  * `--glass-hairline` just outside the top and bottom edges. No ring: the

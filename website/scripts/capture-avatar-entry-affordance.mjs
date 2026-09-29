@@ -27,7 +27,7 @@ import { check, podInfo, primeCrewPod } from './lib/crew-pod-harness.mjs'
 const OUT = process.argv[2] || '../temp-screenshots/avatar-entry-affordance'
 const CREW = 'oncall'
 const EDIT_AVATAR = 'Edit avatar'
-const EDIT_MEMBER = 'Edit member' // the Members page's pencil names what the click opens
+const EDIT_MEMBER = 'Edit crewmate' // the Members page's identity pill: its tooltip names what the click opens
 const BUILDER_TITLE = 'Customize avatar' // the builder DialogContent's aria-label
 
 mkdirSync(OUT, { recursive: true })
@@ -78,19 +78,22 @@ async function stills(browser, theme) {
   await sheet.screenshot({ path: join(OUT, `03-editor-avatar-row-${theme}.png`) })
 
   // 4: Crew Members — on that chat surface the face is a plain face (issue
-  //    #9425); the entry is a hover-revealed pencil right of the name, named
-  //    "Edit member", no chip, no text "Edit avatar" button, and it opens the
-  //    member's whole editor (not the builder). The full Members evidence
-  //    lives in capture-members-hover-edit-member.mjs; this step only pins
-  //    that the editor's own entries survive the trip.
+  //    #9425) inside the centred identity pill; the pill itself is the entry,
+  //    a button whose tooltip says "Edit crewmate", no pencil, no chip, no
+  //    text "Edit avatar" button, and it opens the member's whole editor (not
+  //    the builder). The full Members evidence lives in
+  //    capture-members-header-identity-pill.mjs; this step only pins that the
+  //    editor's own entries survive the trip.
   await page.goto(`${BASE}/members`, { waitUntil: 'domcontentloaded' })
   const row = page.locator('#main-content li button', { hasText: CREW }).first()
   await row.waitFor({ state: 'visible', timeout: 20000 })
   await row.click()
   const titleRow = page.getByTestId('member-title-row')
   await titleRow.waitFor({ state: 'visible', timeout: 10000 })
-  const pencil = page.getByTestId('member-edit-name-button')
-  check(`[${theme}] members header pencil named "${EDIT_MEMBER}"`, (await pencil.getAttribute('aria-label')) === EDIT_MEMBER)
+  const pill = page.getByTestId('member-identity-pill')
+  check(`[${theme}] members header pill is the entry, described "${EDIT_MEMBER}"`,
+    (await pill.evaluate(el => el.tagName)) === 'BUTTON' && (await pill.getAttribute('title')) === EDIT_MEMBER)
+  check(`[${theme}] no pencil in the members header`, (await page.getByTestId('member-edit-name-button').count()) === 0)
   check(`[${theme}] members face is not an edit button`, (await page.getByTestId('member-avatar-button').count()) === 0)
   check(`[${theme}] no first-run chip on the chat surface`, (await page.getByTestId('avatar-edit-hint').count()) === 0)
   await page.mouse.move(5, 5)
@@ -99,9 +102,7 @@ async function stills(browser, theme) {
 
   // 5: the deep link lands in the crew manager on this crew's editor, with
   //    the editor's own "Edit avatar" entries in place and the builder closed.
-  await titleRow.locator('div').first().hover()
-  await page.waitForTimeout(250)
-  await pencil.click()
+  await pill.click()
   const editor = page.getByRole('dialog', { name: `Edit agent ${CREW}` })
   await editor.waitFor({ state: 'visible', timeout: 20000 })
   check(`[${theme}] deep link from Members opens the editor for ${CREW}`, true)

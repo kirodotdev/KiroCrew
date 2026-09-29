@@ -351,7 +351,12 @@ test('an empty private memory opens its exact member conversation and reuses the
   await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === owner.name)
   const memberHeader = page.getByTestId('member-thread-header')
   await expect(memberHeader.getByText(owner.name, { exact: true })).toBeVisible()
-  await expect(memberHeader.getByRole('button', { name: 'Edit crewmate', exact: true })).toBeAttached()
+  // The identity pill is the edit entry: a button NAMED by the crewmate (its
+  // content) whose tooltip -- the accessible description -- says what it opens.
+  const identityPill = memberHeader.getByTestId('member-identity-pill')
+  await expect(identityPill).toHaveRole('button')
+  await expect(identityPill).toContainText(owner.name)
+  await expect(identityPill).toHaveAttribute('title', 'Edit crewmate')
   await expect(page.getByPlaceholder(/message/i)).toBeVisible()
 
   const panelToggle = page.getByTestId('member-panel-toggle')

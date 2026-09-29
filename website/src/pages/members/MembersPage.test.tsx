@@ -3055,25 +3055,38 @@ describe('MembersPage member edit entry (issue #9425)', () => {
 
   beforeEach(() => { localStorage.clear() })
 
-  it('the DM header carries a pencil right of the name, named "Edit crewmate", that opens this crewmate\'s editor', async () => {
+  it('the DM header identity pill — face + name, centred, one Glass chip — is a button, named by the crewmate and described "Edit crewmate", that opens this crewmate\'s editor', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    const btn = await screen.findByTestId('member-edit-name-button')
-    expect(btn.tagName).toBe('BUTTON')
-    // The label names what the click does — the whole editor, not the builder.
-    expect(btn).toHaveAccessibleName('Edit crewmate')
-    expect(btn).toHaveAttribute('title', 'Edit crewmate')
-    expect(btn.querySelector('svg')).not.toBeNull()
-    // It sits INSIDE the title row, right AFTER the name — never a
-    // header-level peer (docked wide with the panel open, the header carries no
-    // panel control at all; the open column's own strip carries it).
+    const pill = await screen.findByTestId('member-identity-pill')
+    // The material and the control are ONE element: the Glass pane's host is
+    // the button, so there is no wrapper box and no inner control.
+    expect(pill.tagName).toBe('BUTTON')
+    expect(pill).toHaveAttribute('type', 'button')
+    expect(pill.className).toContain('liquid-glass')
+    // Same glass at rest and under the pointer: no hover tint step.
+    expect(pill.className).not.toContain('glass-hover')
+    expect(pill.className).toContain('cursor-pointer')
+    expect(pill.className).toContain('justify-self-center')
+    // The accessible NAME is the crewmate — the identity a screen reader hears
+    // and voice control can say; what the click does is the tooltip, which is
+    // also the accessible description. No aria-label: it would replace the
+    // identity with the verb.
+    expect(pill).not.toHaveAttribute('aria-label')
+    expect(pill).toHaveAccessibleName(expect.stringContaining('oncall'))
+    expect(pill).toHaveAccessibleDescription('Edit crewmate')
+    expect(pill).toHaveAttribute('title', 'Edit crewmate')
+    // Face and name sit INSIDE the pill; the panel toggle is not in it (docked
+    // wide with the panel open, the header carries no panel control at all).
     const titleRow = screen.getByTestId('member-title-row')
-    expect(titleRow).toContainElement(btn)
+    expect(pill).toContainElement(titleRow)
     expect(titleRow.textContent).toContain('oncall')
-    const nameEl = within(titleRow).getByText('oncall')
-    expect(nameEl.compareDocumentPosition(btn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(pill.querySelector('img')).not.toBeNull()
     expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
-    fireEvent.click(btn)
+    // The header is a three-column grid so the pill is centred whether or not
+    // a side control is present.
+    expect(screen.getByTestId('member-thread-header').className).toContain('grid-cols-[1fr_minmax(0,auto)_1fr]')
+    fireEvent.click(pill)
     // Mutation check on the DESTINATION: this page never writes — the crew
     // manager opens THIS crew's editor. No `&avatar=1`: the builder is one
     // row inside that editor, not where an "edit this member" click lands.
@@ -3081,29 +3094,27 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('avatar=1'))
   })
 
-  it('the pencil is invisible at rest, revealed by hovering the title row or by focus, and low-contrast-persistent on touch', async () => {
+  it('there is no separate pencil: the pill is the only edit control in the header', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
-    const btn = await screen.findByTestId('member-edit-name-button')
-    const cls = btn.className
-    expect(cls).toContain('opacity-0')
-    expect(cls).toContain('group-hover/title:opacity-100')
-    expect(cls).toContain('focus-visible:opacity-100')
-    // Reveal is scoped to the TITLE row, so hovering the panel toggle (overlay
-    // mode) to the right does not summon it.
-    expect(screen.getByTestId('member-title-row').className).toContain('group/title')
-    // Transition present, deferring to prefers-reduced-motion.
-    expect(cls).toContain('transition-opacity')
-    expect(cls).toContain('motion-reduce:transition-none')
-    // No hover on touch: the pencil stays, dimmed, instead of never appearing.
-    expect(cls).toContain('[@media(hover:none)]:opacity-60')
+    const header = await screen.findByTestId('member-thread-header')
+    expect(screen.queryByTestId('member-edit-name-button')).toBeNull()
+    // Exactly one control in the header is described "Edit crewmate", and it
+    // is the pill.
+    const edits = within(header).getAllByRole('button', { description: 'Edit crewmate' })
+    expect(edits).toHaveLength(1)
+    expect(edits[0]).toBe(screen.getByTestId('member-identity-pill'))
+    // No hover-reveal machinery left behind on the title row.
+    expect(screen.getByTestId('member-title-row').className).not.toContain('group/title')
   })
 
   it('the chat surface\'s avatar is just an avatar: no scrim, no badge, no chip, no text "Edit avatar" button', async () => {
     // The #9116 shapes the user rejected: the face wrapped as an "Edit avatar"
     // button, a full-width "Edit avatar" text button in the summary and an
     // "Edit this avatar" chip beside the header face. The default-face
-    // fixture (`{}`) is exactly the one that used to summon the chip.
+    // fixture (`{}`) is exactly the one that used to summon the chip. The face
+    // now sits inside the identity pill, whose label names the EDITOR — it is
+    // still not an avatar control of its own.
     await renderPage([row({ bound: true, slot_key: 'member-oncall', avatar: {} })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-notes')
@@ -3130,7 +3141,7 @@ describe('MembersPage member edit entry (issue #9425)', () => {
   it('encodes the crew name in the deep link', async () => {
     await renderPage([row({ name: 'on call/2', slug: 'on-call-2', bound: true, slot_key: 'member-on-call-2' })])
     fireEvent.click(await rosterRow('on call/2'))
-    fireEvent.click(await screen.findByTestId('member-edit-name-button'))
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=on%20call%2F2')
   })
 })

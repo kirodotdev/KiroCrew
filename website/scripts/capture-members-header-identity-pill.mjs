@@ -1,15 +1,19 @@
 /**
  * Screenshot harness for the Crew Members DM header's centred identity pill:
- * the crewmate's face and name (and the hover-revealed edit pencil) sit in
- * ONE Liquid Glass chip in the middle of the header, with the back button and
- * the panel opener staying bare at the edges. Against a REAL pod, not fixtures.
+ * the crewmate's face and name sit in ONE Liquid Glass chip in the middle of
+ * the header, the chip itself is the "Edit crewmate" button (no separate
+ * pencil), and the back button and the panel opener stay bare at the edges.
+ * Against a REAL pod, not fixtures.
  *
  * What the evidence has to show, per frame:
- *   - the pill is a Glass pane holding the face, the name and the pencil;
+ *   - the pill is a Glass pane AND a button named by the crewmate (its
+ *     content) and described "Edit crewmate" (its tooltip), holding the face
+ *     and the name, with no pencil anywhere in the header;
  *   - it is centred on the header whether the panel opener is present (panel
  *     hidden) or absent (panel docked open), and on a narrow window where the
  *     back button sits at the left edge;
- *   - the pencil is still invisible at rest and fades in on hovering the name;
+ *   - hovering the pill changes nothing but the cursor (the Glass material has
+ *     no hover state), and clicking it opens this crewmate's full editor;
  *   - with Reduce glass transparency on, the pill solidifies with the rest of
  *     the glass instead of staying translucent.
  *
@@ -76,12 +80,14 @@ async function stills(browser, theme) {
   const pill = await openMember(page)
 
   check(`[${theme}] the pill is a Glass pane`, await pill.evaluate(el => el.classList.contains('liquid-glass')))
-  check(`[${theme}] the pill holds the face, the name and the pencil`,
-    await pill.evaluate(el => !!el.querySelector('img') && !!el.querySelector('[data-testid="member-title-row"]') && !!el.querySelector('[data-testid="member-edit-name-button"]')))
-  const pencil = page.getByTestId('member-edit-name-button')
+  check(`[${theme}] the pill is a button named by the crewmate, described "Edit crewmate"`,
+    (await pill.evaluate(el => el.tagName)) === 'BUTTON' && (await pill.getAttribute('aria-label')) === null
+      && (await pill.innerText()).includes(CREW) && (await pill.getAttribute('title')) === 'Edit crewmate')
+  check(`[${theme}] the pill holds the face and the name`,
+    await pill.evaluate(el => !!el.querySelector('img') && !!el.querySelector('[data-testid="member-title-row"]')))
+  check(`[${theme}] no pencil anywhere in the header`, (await page.getByTestId('member-edit-name-button').count()) === 0)
   await page.mouse.move(5, 5)
   await page.waitForTimeout(300)
-  check(`[${theme}] pencil invisible at rest`, (await pencil.evaluate(el => getComputedStyle(el).opacity)) === '0')
 
   // 1: wide, panel docked open → no opener; the pill is centred.
   const withPanel = await offCentre(page)
@@ -98,11 +104,25 @@ async function stills(browser, theme) {
   await page.screenshot({ path: join(OUT, `02-dm-panel-hidden-${theme}.png`) })
   await shootHeader(page, join(OUT, `02b-header-panel-hidden-${theme}.png`))
 
-  // 3: hover the name → the pencil fades in inside the pill.
-  await page.getByTestId('member-title-row').locator('div').first().hover()
+  // 3: hover the pill → same glass (no tint step); the cursor is the affordance.
+  const restTint = await pill.evaluate(el => getComputedStyle(el).getPropertyValue('--glass-tint'))
+  await pill.hover()
   await page.waitForTimeout(350)
-  check(`[${theme}] pencil revealed on hovering the name`, (await pencil.evaluate(el => getComputedStyle(el).opacity)) === '1')
-  await shootHeader(page, join(OUT, `03-header-hover-pencil-${theme}.png`))
+  const hoverTint = await pill.evaluate(el => getComputedStyle(el).getPropertyValue('--glass-tint'))
+  check(`[${theme}] the pill keeps its tint under the pointer`, hoverTint === restTint, `${restTint} -> ${hoverTint}`)
+  check(`[${theme}] pointer cursor on the pill`, (await pill.evaluate(el => getComputedStyle(el).cursor)) === 'pointer')
+  await shootHeader(page, join(OUT, `03-header-hover-${theme}.png`))
+  // 3b: click → the crew manager opens THIS crewmate's full editor.
+  await pill.click()
+  const editor = page.getByRole('dialog', { name: `Edit agent ${CREW}` })
+  await editor.waitFor({ state: 'visible', timeout: 20000 })
+  check(`[${theme}] click opens the crew editor for ${CREW}`, true)
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(400)
+  await page.screenshot({ path: join(OUT, `03b-click-opens-editor-${theme}.png`) })
+  await page.goBack({ waitUntil: 'domcontentloaded' })
+  await page.getByTestId('member-identity-pill').waitFor({ state: 'visible', timeout: 10000 })
+  await page.waitForTimeout(500)
 
   // 4: Reduce glass transparency → the pill is a solid card, no glass layers.
   await page.evaluate(() => document.documentElement.setAttribute('data-reduce-transparency', 'on'))

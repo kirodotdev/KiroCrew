@@ -3,7 +3,7 @@
  * (`kirocrew pod up <worktree> --json`) and need one crew to exist.
  *
  * Used by `capture-avatar-entry-affordance.mjs` (the crew editor's avatar
- * entries, #9103) and `capture-members-hover-edit-member.mjs` (the Crew
+ * entries, #9103) and `capture-members-header-identity-pill.mjs` (the Crew
  * Members page's edit entry, #9425). Both prime the pod the same way — preview
  * flag, theme, a crew created through the real API — so the recipe lives once.
  */
