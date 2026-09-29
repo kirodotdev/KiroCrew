@@ -100,13 +100,16 @@
 .le-hint {
   margin-left: auto;
   min-width: 0;
+  max-width: 22ch;
   flex-shrink: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-size: 10.5px;
   color: var(--muted);
   opacity: 0.6;
-  white-space: nowrap;
+  /* Wrap to (at most) two lines rather than ellipsis-clipping: this is the only
+     text disclosing the move + off-grid-remove gestures, so truncating it to
+     "…or off the gri…" at common laptop widths hides how removal works. */
+  white-space: normal;
+  line-height: 1.2;
 }
 
 /* ---- canvas + cells ---- */

@@ -380,4 +380,147 @@ describe('LayoutEditorHarnessPage', () => {
     expect(within(editor).getAllByText('Chat').length).toBeGreaterThan(0)
     expect(within(editor).getAllByText('Side panel').length).toBeGreaterThan(0)
   })
+
+  it('opens over a ?seed= override when a valid GridSpec is supplied', () => {
+    // The dev-only seed override lets a capture harness open a specific editor
+    // state (e.g. the invalid "Doesn't fit" drop, which needs a wide pane this
+    // PR cannot otherwise create). A Files+Terminal seed must render those, not
+    // the default Chat/Side panel arrangement.
+    const seed = { cols: 2, rows: 1, items: [
+      { id: 's1', element: 'files', x: 0, y: 0, w: 1, h: 1 },
+      { id: 's2', element: 'terminal', x: 1, y: 0, w: 1, h: 1 },
+    ] }
+    const prev = window.location.search
+    window.history.replaceState({}, '', `/developer/layout-editor?seed=${encodeURIComponent(JSON.stringify(seed))}`)
+    try {
+      render(<LayoutEditorHarnessPage />)
+      const editor = screen.getByTestId('layout-editor')
+      // Assert against PLACED panes (title bars), not palette tiles — every
+      // element label appears in the palette regardless of the seed.
+      const placed = () => Array.from(editor.querySelectorAll('.le-item .le-bar-title')).map((n) => n.textContent)
+      expect(placed()).toContain('Files')
+      expect(placed()).toContain('Terminal')
+      // The default seed's Chat/Side panel are NOT placed — the override replaced them.
+      expect(placed()).not.toContain('Side panel')
+      expect(placed()).not.toContain('Chat')
+    } finally {
+      window.history.replaceState({}, '', `/developer/layout-editor${prev}`)
+    }
+  })
+
+  it('falls back to the default seed when ?seed= is malformed', () => {
+    const prev = window.location.search
+    window.history.replaceState({}, '', '/developer/layout-editor?seed=not-json')
+    try {
+      render(<LayoutEditorHarnessPage />)
+      const editor = screen.getByTestId('layout-editor')
+      // Malformed seed → default arrangement (Chat + Side panel) is PLACED.
+      const placed = Array.from(editor.querySelectorAll('.le-item .le-bar-title')).map((n) => n.textContent)
+      expect(placed).toContain('Chat')
+      expect(placed).toContain('Side panel')
+    } finally {
+      window.history.replaceState({}, '', `/developer/layout-editor${prev}`)
+    }
+  })
+
+  it('rejects an out-of-bounds or non-positive ?seed= without crashing (falls back)', () => {
+    // A seed that PARSES and has the right field TYPES but holds an invalid
+    // dimension/geometry must not reach the editor: a negative dim would make
+    // trackSizes call Array(-1) and throw, error-boundarying the route. Each of
+    // these must silently fall back to the default Chat/Side panel arrangement.
+    const bad = [
+      { cols: -1, rows: 1, items: [] }, // negative dim → Array(-1) throws
+      { cols: 0, rows: 2, items: [] }, // zero dim
+      { cols: 2.5, rows: 2, items: [] }, // non-integer dim
+      { cols: 99, rows: 1, items: [] }, // over MAX_DIM
+      { cols: 2, rows: 2, items: [{ id: 'x', element: 'chat', x: 5, y: 0, w: 1, h: 1 }] }, // item off-grid
+      { cols: 2, rows: 2, items: [{ id: 'x', element: 'chat', x: 0, y: 0, w: 3, h: 1 }] }, // span runs off-grid
+    ]
+    const prev = window.location.search
+    for (const seed of bad) {
+      window.history.replaceState({}, '', `/developer/layout-editor?seed=${encodeURIComponent(JSON.stringify(seed))}`)
+      const { unmount } = render(<LayoutEditorHarnessPage />)
+      const editor = screen.getByTestId('layout-editor')
+      const placed = Array.from(editor.querySelectorAll('.le-item .le-bar-title')).map((n) => n.textContent)
+      expect(placed).toContain('Chat')
+      expect(placed).toContain('Side panel')
+      unmount()
+    }
+    window.history.replaceState({}, '', `/developer/layout-editor${prev}`)
+  })
+
+  it('rejects a well-typed but unsafe ?seed= (unknown element, bad tracks, containers, overlap) without crashing', () => {
+    // GPT 5.6 blocking finding + the full field audit: a seed can PARSE and pass
+    // a bare typeof check yet still reach an unchecked lookup or render wrong.
+    // isValidSeed now rejects EVERY such case, so each falls back to the default.
+    const bad = [
+      // The GPT block: an unknown `element` string passes typeof but crashes
+      // ELEMENT_META[element] (undefined.labelKey).
+      { cols: 2, rows: 2, items: [{ id: 'x', element: 'bogus', x: 0, y: 0, w: 1, h: 1 }] },
+      { cols: 2, rows: 2, items: [{ id: 'x', element: '', x: 0, y: 0, w: 1, h: 1 }] },
+      // colSizes/rowSizes: wrong length, or non-positive / non-finite entries.
+      { cols: 2, rows: 1, colSizes: [1], items: [] }, // length ≠ cols
+      { cols: 2, rows: 1, colSizes: [1, 0], items: [] }, // non-positive track
+      { cols: 2, rows: 1, colSizes: [1, 'x'], items: [] }, // non-number track
+      // Container / nested fields are rejected — leaves only on a harness seed.
+      { cols: 2, rows: 2, items: [{ id: 'g', element: 'group', x: 0, y: 0, w: 1, h: 1, grid: { cols: 1, rows: 1, items: [] } }] },
+      { cols: 2, rows: 2, items: [{ id: 't', element: 'tabs', x: 0, y: 0, w: 1, h: 1, tabs: [] }] },
+      { cols: 2, rows: 2, items: [{ id: 'c', element: 'chat', x: 0, y: 0, w: 1, h: 1, config: {} }] },
+      // Two items sharing a cell — a seed bypasses the editor's move-time guard.
+      { cols: 2, rows: 2, items: [
+        { id: 'a', element: 'chat', x: 0, y: 0, w: 1, h: 1 },
+        { id: 'b', element: 'files', x: 0, y: 0, w: 1, h: 1 },
+      ] },
+      // GPT 5.6 blocking finding (round 2): two items sharing an id — closing
+      // either makes removeItemById (which filters EVERY match) delete both.
+      { cols: 2, rows: 2, items: [
+        { id: 'dup', element: 'chat', x: 0, y: 0, w: 1, h: 1 },
+        { id: 'dup', element: 'files', x: 1, y: 0, w: 1, h: 1 },
+      ] },
+      // An empty id collides the same way (two empty ids are duplicates).
+      { cols: 2, rows: 2, items: [
+        { id: '', element: 'chat', x: 0, y: 0, w: 1, h: 1 },
+        { id: '', element: 'files', x: 1, y: 0, w: 1, h: 1 },
+      ] },
+    ]
+    const prev = window.location.search
+    for (const seed of bad) {
+      window.history.replaceState({}, '', `/developer/layout-editor?seed=${encodeURIComponent(JSON.stringify(seed))}`)
+      const { unmount } = render(<LayoutEditorHarnessPage />)
+      const editor = screen.getByTestId('layout-editor')
+      const placed = Array.from(editor.querySelectorAll('.le-item .le-bar-title')).map((n) => n.textContent)
+      // Fell back to the default Chat + Side panel arrangement — no crash, no
+      // partial render of the unsafe seed.
+      expect(placed).toContain('Chat')
+      expect(placed).toContain('Side panel')
+      unmount()
+    }
+    window.history.replaceState({}, '', `/developer/layout-editor${prev}`)
+  })
+
+  it('accepts a valid ?seed= carrying colSizes/rowSizes (the tracks a real seed uses)', () => {
+    // The floor seed carries non-equal tracks; a valid override may too. This
+    // guards that the new track-array validation does not reject a legitimate seed.
+    const seed = {
+      cols: 2,
+      rows: 1,
+      colSizes: [3, 2],
+      items: [
+        { id: 's1', element: 'files', x: 0, y: 0, w: 1, h: 1 },
+        { id: 's2', element: 'git', x: 1, y: 0, w: 1, h: 1 },
+      ],
+    }
+    const prev = window.location.search
+    window.history.replaceState({}, '', `/developer/layout-editor?seed=${encodeURIComponent(JSON.stringify(seed))}`)
+    try {
+      render(<LayoutEditorHarnessPage />)
+      const editor = screen.getByTestId('layout-editor')
+      const placed = Array.from(editor.querySelectorAll('.le-item .le-bar-title')).map((n) => n.textContent)
+      expect(placed).toContain('Files')
+      expect(placed).toContain('Git')
+      expect(placed).not.toContain('Chat')
+    } finally {
+      window.history.replaceState({}, '', `/developer/layout-editor${prev}`)
+    }
+  })
 })
