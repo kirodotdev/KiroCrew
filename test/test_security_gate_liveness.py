@@ -116,12 +116,17 @@ def _url_payload_command(n: int) -> str:
 #: are independent additions to the same ratchet, so the number below is re-MEASURED
 #: off the tree rather than being the arithmetic sum of the deltas.
 #:
+#: Raised again, from 27,863, for the per-decision payload-walk memo: a
+#: ``ContextVar``-scoped memo in ``shell_normalizer`` and the decorator that opens it
+#: around ``is_denied``, so every floor of one decision shares a single walk of each
+#: distinct text instead of re-tokenizing the command once per floor.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 27_863
+_PACKAGE_LINE_BUDGET = 27_933
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
