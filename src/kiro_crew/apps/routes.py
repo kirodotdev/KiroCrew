@@ -4423,6 +4423,9 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             status=502,
         )
 
+    # Set once the relay has begun. The two handlers below consult it: after
+    # the head has gone out, no status of the gateway's own can be sent any more.
+    resp: web.StreamResponse | None = None
     try:
         # The total bound is enforced HERE rather than handed to aiohttp as
         # ``total``, because ``total`` also covers reading the response body and a
@@ -4481,12 +4484,40 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                 await session.close()
     except aiohttp.ClientError as exc:
         logger.warning("Proxy to app %s failed: %s", name, exc)
+        if resp is not None and resp.prepared:
+            return _end_relay_midbody(request, resp)
         return web.json_response(
             {"error": "backend unreachable"},
             status=502,
         )
     except asyncio.TimeoutError:
+        if resp is not None and resp.prepared:
+            return _end_relay_midbody(request, resp)
         return web.json_response({"error": "backend timeout"}, status=504)
+
+
+def _end_relay_midbody(request: web.Request, resp: web.StreamResponse) -> web.StreamResponse:
+    """End a relayed response whose head the client has already received.
+
+    The upstream failed or went silent after ``resp.prepare()``. A fresh
+    ``json_response`` at that point is not a reply: aiohttp writes its status
+    line and headers INTO the chunked body already in flight, so the client gets
+    a 200 whose body carries a second ``HTTP/1.1 502`` head, and the connection
+    then idles on keep-alive. Aborting the transport instead leaves the body
+    unterminated -- the one shape every client reads as a failed transfer
+    (``ERR_INCOMPLETE_CHUNKED_ENCODING``; an ``EventSource`` reconnects) -- and
+    frees the connection nothing more will be written on. Abort, not close:
+    abort discards whatever a slow client still has buffered, so the terminating
+    chunk the server's own post-handler ``write_eof`` would add can never be
+    flushed behind it and make a cut body look complete. ``force_close`` keeps
+    the server from offering keep-alive on it, and that ``write_eof`` fails on
+    the gone transport as a routine disconnect.
+    """
+    resp.force_close()
+    transport = request.transport
+    if transport is not None and not transport.is_closing():
+        transport.abort()
+    return resp
 
 
 async def handle_migrate_cleanup(request: web.Request) -> web.Response:
