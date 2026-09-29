@@ -3806,15 +3806,19 @@ class TestDbLockGuard:
     #: they run before/after the store is shared across threads.
     _RAW_DB_ALLOWED = {"init", "_init_database", "close", "db"}
 
-    @staticmethod
-    def _is_self_attr(node: object, attr: str) -> bool:
+    #: The names a store is reached by: ``self`` inside ``VectorMemoryStore`` and
+    #: ``store``, the first parameter of every ``vector_memory_runtime`` function.
+    _RECEIVERS = ("self", "store")
+
+    @classmethod
+    def _is_self_attr(cls, node: object, attr: str) -> bool:
         import ast
 
         return (
             isinstance(node, ast.Attribute)
             and node.attr == attr
             and isinstance(node.value, ast.Name)
-            and node.value.id == "self"
+            and node.value.id in cls._RECEIVERS
         )
 
     @classmethod
@@ -3828,19 +3832,22 @@ class TestDbLockGuard:
 
         class Visitor(ast.NodeVisitor):
             def __init__(self) -> None:
-                self.lock_depth = 0
+                # The receivers whose ``_db_lock`` is held here: the lock on
+                # ``store`` does not serialize a statement on ``self``.
+                self.locked: tuple[str, ...] = ()
                 self.exit_stacks: set[str] = set()
                 self.func_stack: list[str] = []
 
             def visit_With(self, node: ast.With) -> None:
-                saved_depth, saved_stacks = self.lock_depth, self.exit_stacks.copy()
+                saved_locked, saved_stacks = self.locked, self.exit_stacks.copy()
                 for item in node.items:
                     expr = item.context_expr
-                    if guard._is_self_attr(expr, "_db_lock") or (
-                        isinstance(expr, ast.Call)
-                        and guard._is_self_attr(expr.func, "_vector_commit")
+                    if guard._is_self_attr(expr, "_db_lock"):
+                        self.locked += (expr.value.id,)
+                    elif isinstance(expr, ast.Call) and guard._is_self_attr(
+                        expr.func, "_vector_commit"
                     ):
-                        self.lock_depth += 1
+                        self.locked += (expr.func.value.id,)
                     if (
                         isinstance(expr, ast.Call)
                         and isinstance(expr.func, ast.Name)
@@ -3849,7 +3856,7 @@ class TestDbLockGuard:
                     ):
                         self.exit_stacks.add(item.optional_vars.id)
                 self.generic_visit(node)
-                self.lock_depth, self.exit_stacks = saved_depth, saved_stacks
+                self.locked, self.exit_stacks = saved_locked, saved_stacks
 
             def visit_Expr(self, node: ast.Expr) -> None:
                 self.generic_visit(node)
@@ -3863,39 +3870,39 @@ class TestDbLockGuard:
                     and len(call.args) == 1
                     and guard._is_self_attr(call.args[0], "_db_lock")
                 ):
-                    self.lock_depth += 1
+                    self.locked += (call.args[0].value.id,)
 
             def visit_Try(self, node: ast.Try) -> None:
                 # An enter_context which raises cannot protect its error handler.
-                saved = self.lock_depth
+                saved = self.locked
                 for statement in node.body:
                     self.visit(statement)
                 for statement in node.orelse:
                     self.visit(statement)
-                self.lock_depth = saved
+                self.locked = saved
                 for handler in node.handlers:
                     self.visit(handler)
-                    self.lock_depth = saved
+                    self.locked = saved
                 for statement in node.finalbody:
                     self.visit(statement)
-                self.lock_depth = saved
+                self.locked = saved
 
             def visit_If(self, node: ast.If) -> None:
-                saved = self.lock_depth
+                saved = self.locked
                 self.visit(node.test)
                 for statement in node.body:
                     self.visit(statement)
-                self.lock_depth = saved
+                self.locked = saved
                 for statement in node.orelse:
                     self.visit(statement)
-                self.lock_depth = saved
+                self.locked = saved
 
             visit_While = visit_If
 
             def visit_For(self, node: ast.For) -> None:
-                saved = self.lock_depth
+                saved = self.locked
                 self.generic_visit(node)
-                self.lock_depth = saved
+                self.locked = saved
 
             def visit_ClassDef(self, node) -> None:
                 self.func_stack.append(node.name)
@@ -3904,11 +3911,11 @@ class TestDbLockGuard:
 
             def _visit_func(self, node) -> None:
                 self.func_stack.append(node.name)
-                saved, saved_stacks = self.lock_depth, self.exit_stacks
-                self.lock_depth = 0  # function body runs at call time, not here
+                saved, saved_stacks = self.locked, self.exit_stacks
+                self.locked = ()  # function body runs at call time, not here
                 self.exit_stacks = set()
                 self.generic_visit(node)
-                self.lock_depth, self.exit_stacks = saved, saved_stacks
+                self.locked, self.exit_stacks = saved, saved_stacks
                 self.func_stack.pop()
 
             visit_FunctionDef = _visit_func
@@ -3922,7 +3929,10 @@ class TestDbLockGuard:
                     "executescript",
                 ):
                     where = ".".join(self.func_stack) or "<module>"
-                    if guard._is_self_attr(func.value, "db") and self.lock_depth == 0:
+                    if (
+                        guard._is_self_attr(func.value, "db")
+                        and func.value.value.id not in self.locked
+                    ):
                         violations.append(
                             f"line {node.lineno} ({where}): self.db.{func.attr}() outside "
                             "`with self._db_lock:` — use _fetch_all_locked/_fetch_one_locked "
@@ -3940,6 +3950,14 @@ class TestDbLockGuard:
         Visitor().visit(tree)
         return violations
 
+    @staticmethod
+    def _runtime_sources() -> dict[str, str]:
+        """Every ``vector_memory_runtime`` module's source, keyed by file name."""
+        from kiro_crew import vector_memory
+
+        root = Path(vector_memory.__file__).resolve().with_name("vector_memory_runtime")
+        return {path.name: path.read_text(encoding="utf-8") for path in sorted(root.glob("*.py"))}
+
     def test_every_db_statement_is_lock_serialized(self) -> None:
         import ast
         import inspect
@@ -3950,6 +3968,61 @@ class TestDbLockGuard:
         tree = ast.parse(source)
         violations = self._find_unserialized_statements(tree)
         assert not violations, "unserialized sqlite statement(s):\n" + "\n".join(violations)
+
+    def test_every_runtime_db_statement_is_lock_serialized(self) -> None:
+        """The store's delegates run on ``store.db`` too, under the same rule. A
+        raw ``store._db`` statement is refused (no runtime function is a lifecycle
+        method), and neither handle may be bound to a local name that the guard
+        would then not recognise as the store's connection."""
+        import ast
+
+        sources = self._runtime_sources()
+        assert {"lessons.py", "embedding.py"} <= sources.keys()
+        violations: list[str] = []
+        for name, source in sources.items():
+            tree = ast.parse(source)
+            violations.extend(
+                f"{name}: {item}" for item in self._find_unserialized_statements(tree)
+            )
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+                    and isinstance(node.value, ast.Attribute)
+                    and (
+                        self._is_self_attr(node.value, "db")
+                        or self._is_self_attr(node.value, "_db")
+                    )
+                ):
+                    violations.append(f"{name}:{node.lineno}: the connection bound to a name")
+        assert not violations, "unserialized sqlite statement(s):\n" + "\n".join(violations)
+
+    def test_guard_catches_a_seeded_runtime_violation(self) -> None:
+        """Runtime-style code, with the store as a parameter, is checked too."""
+        import ast
+
+        seeded = ast.parse(
+            "def bad(store):\n"
+            "    return store.db.execute('SELECT 1').fetchone()\n"
+            "def good(store):\n"
+            "    with store._db_lock:\n"
+            "        return store.db.execute('SELECT 1').fetchone()\n"
+            "def committed(store, vec):\n"
+            "    with store._vector_commit(vec):\n"
+            "        store.db.execute('UPDATE x SET y = 1')\n"
+            "def raw(store):\n"
+            "    with store._db_lock:\n"
+            "        return store._db.execute('SELECT 1')\n"
+            "class VectorMemoryStore:\n"
+            "    def merge_from(self, store):\n"
+            "        with store._db_lock:\n"
+            "            return self.db.execute('SELECT 1').fetchall()\n"
+        )
+        violations = self._find_unserialized_statements(seeded)
+        assert len(violations) == 3
+        assert "(bad)" in violations[0]
+        assert "(raw)" in violations[1]
+        # One store's lock does not serialize a statement on another store.
+        assert "(VectorMemoryStore.merge_from)" in violations[2]
 
     def test_guard_catches_a_seeded_violation(self) -> None:
         """The guard itself must fail on an unlocked fetch — otherwise a refactor
@@ -4312,10 +4385,11 @@ class TestHandlerOffload1947:
 
     Both the method set and the caller set are DERIVED, not hand-listed
     (a hand-maintained list re-introduces
-    enforcement-by-convention one level up): the methods come from
-    ``vector_memory.py``'s AST (public methods that reach
-    ``with self._db_lock:`` directly or transitively through other ``self``
-    calls), and the scan covers every module in the ``kiro_crew`` package.
+    enforcement-by-convention one level up): the methods come from the AST of
+    ``vector_memory.py`` and of the ``vector_memory_runtime`` modules it delegates
+    to (public methods that reach a ``with <store>._db_lock:`` directly or
+    transitively through store calls and runtime functions), and the scan covers
+    every module in the ``kiro_crew`` package.
     """
 
     #: Lock-reaching methods exempt from this name-only scan. ``init`` is the
@@ -4330,42 +4404,138 @@ class TestHandlerOffload1947:
 
         return Path(kiro_crew.__file__).resolve().parent
 
+    #: A floor, not the list the scan enforces: the public lock-reaching set as
+    #: it stood before the store delegated to ``vector_memory_runtime``. The
+    #: enforced set stays derived. A derivation that stops following a delegate
+    #: would shrink it and leave that delegate's async callers unflagged, so
+    #: every name here must stay derived; a new locked method only adds to it.
+    _FROZEN_LOCKED = frozenset("""
+        append_history apply_consolidation backfill_missing_embeddings begin_space_change
+        build_faiss_index consolidation_receipt count_by_facet count_lessons delete_episodic
+        delete_lesson delete_semantic embed_episodic embed_lesson embed_semantic
+        embed_semantic_retirement embedding_repair_state find_contradiction_candidates
+        get_all_semantic get_context_preview get_episodic_context get_episodic_list get_events
+        get_lessons get_lessons_context get_preferences_context get_rejection_stats
+        get_retired_episodic get_semantic get_semantic_context has_any_decodable_lesson
+        has_any_lesson has_episodic_text has_pending_embeddings has_stored_embeddings
+        import_memory invalidate_episode_content list_by_facets load_faiss_index
+        log_reject_event memory_stats migrate_from_markdown promote_episodic_patterns
+        propose_semantic_delete read_counters read_editable_history read_history_entries
+        rebuild_memory_index recall reconcile_embedding_space recorded_embedding_space
+        recorded_rebuild_generation replace_today_history restore_episodic rotate_events
+        save_faiss_index search_episodic search_memory search_semantic seed_item_if_absent
+        set_embedding_dim set_semantic set_semantic_if_absent with_record_metadata
+        write_episodic write_lesson
+        """.split())
+
+    @classmethod
+    def _store_sources(cls) -> tuple[str, dict[str, str]]:
+        """The facade's source and every ``vector_memory_runtime`` module's, by stem."""
+        root = cls._package_root()
+        runtime = {
+            path.stem: path.read_text(encoding="utf-8")
+            for path in sorted((root / "vector_memory_runtime").glob("*.py"))
+            if path.stem != "__init__"
+        }
+        return (root / "vector_memory.py").read_text(encoding="utf-8"), runtime
+
     @classmethod
     def _derive_locked_methods(cls) -> set[str]:
         """Public ``VectorMemoryStore`` methods that acquire ``_db_lock``,
-        directly or transitively through other ``self`` method calls."""
+        directly or transitively through other store calls, including the
+        ``vector_memory_runtime`` functions the store delegates to."""
+        facade, runtime = cls._store_sources()
+        return cls._derive_locked_from_sources(facade, runtime)
+
+    @classmethod
+    def _derive_locked_from_sources(cls, facade: str, runtime: dict[str, str]) -> set[str]:
+        """Fixpoint over one call graph spanning the store and its runtime modules.
+
+        Nodes are ``VMS.<method>`` for store methods and ``<module>.<function>``
+        for runtime functions. The receiver is ``self`` in the store and ``store``
+        in a runtime function; a call to a runtime function is resolved through the
+        importing module's own ``from kiro_crew.vector_memory_runtime import mod``
+        aliases and ``from kiro_crew.vector_memory_runtime.mod import name`` names.
+        """
         import ast
 
-        source = (cls._package_root() / "vector_memory.py").read_text(encoding="utf-8")
-        klass = next(
-            node
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.ClassDef) and node.name == "VectorMemoryStore"
-        )
+        package = "kiro_crew.vector_memory_runtime"
+
+        def aliases(tree: ast.Module) -> tuple[dict[str, str], dict[str, str]]:
+            modules: dict[str, str] = {}
+            names: dict[str, str] = {}
+            for node in tree.body:
+                if isinstance(node, ast.ImportFrom) and node.module == package:
+                    for alias in node.names:
+                        modules[alias.asname or alias.name] = alias.name
+                elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                    package + "."
+                ):
+                    owner = node.module.rsplit(".", 1)[-1]
+                    for alias in node.names:
+                        names[alias.asname or alias.name] = f"{owner}.{alias.name}"
+            return modules, names
+
+        def edges(fn, receiver, modules, names, local, own) -> tuple[bool, set[str]]:
+            takes_lock = False
+            called: set[str] = set()
+            for sub in ast.walk(fn):
+                if isinstance(sub, ast.withitem):
+                    expr = sub.context_expr
+                    if (
+                        isinstance(expr, ast.Attribute)
+                        and expr.attr == "_db_lock"
+                        and isinstance(expr.value, ast.Name)
+                        and expr.value.id == receiver
+                    ):
+                        takes_lock = True
+                if not isinstance(sub, ast.Call):
+                    continue
+                func = sub.func
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    if func.value.id == receiver:
+                        called.add(f"VMS.{func.attr}")
+                    elif func.value.id in modules:
+                        called.add(f"{modules[func.value.id]}.{func.attr}")
+                elif isinstance(func, ast.Name):
+                    if func.id in local:
+                        called.add(f"{own}.{func.id}")
+                    elif func.id in names:
+                        called.add(names[func.id])
+            return takes_lock, called
 
         callees: dict[str, set[str]] = {}
         direct: set[str] = set()
-        for node in klass.body:
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            called: set[str] = set()
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.withitem) and TestDbLockGuard._is_self_attr(
-                    sub.context_expr, "_db_lock"
-                ):
-                    direct.add(node.name)
-                if isinstance(sub, ast.Call):
-                    func = sub.func
-                    if (
-                        isinstance(func, ast.Attribute)
-                        and isinstance(func.value, ast.Name)
-                        and func.value.id == "self"
-                    ):
-                        called.add(func.attr)
-            callees[node.name] = called
 
-        # Fixpoint over the self-call graph: a method that calls a
-        # lock-reaching method is itself lock-reaching.
+        tree = ast.parse(facade)
+        modules, names = aliases(tree)
+        klass = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == "VectorMemoryStore"
+        )
+        for node in klass.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                locked, called = edges(node, "self", modules, names, set(), "")
+                callees[f"VMS.{node.name}"] = called
+                if locked:
+                    direct.add(f"VMS.{node.name}")
+
+        for stem, source in runtime.items():
+            tree = ast.parse(source)
+            modules, names = aliases(tree)
+            local = {
+                node.name
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    locked, called = edges(node, "store", modules, names, local, stem)
+                    callees[f"{stem}.{node.name}"] = called
+                    if locked:
+                        direct.add(f"{stem}.{node.name}")
+
         reaching = set(direct)
         changed = True
         while changed:
@@ -4375,7 +4545,11 @@ class TestHandlerOffload1947:
                     reaching.add(name)
                     changed = True
 
-        return {name for name in reaching if not name.startswith("_")} - cls._EXEMPT
+        return {
+            name.removeprefix("VMS.")
+            for name in reaching
+            if name.startswith("VMS.") and not name.removeprefix("VMS.").startswith("_")
+        } - cls._EXEMPT
 
     @classmethod
     def _find_inline_calls(cls, tree, locked: set[str], label: str) -> list[str]:
@@ -4442,6 +4616,57 @@ class TestHandlerOffload1947:
         assert "embed_lesson" in locked
         assert not {"close", "init"} & locked
 
+    def test_delegation_keeps_the_frozen_method_set(self) -> None:
+        """Moving a body into ``vector_memory_runtime`` must not drop a method."""
+        missing = self._FROZEN_LOCKED - self._derive_locked_methods()
+        assert not missing, f"no longer derived as lock-reaching: {sorted(missing)}"
+
+    def test_derivation_follows_delegation_into_runtime_modules(self) -> None:
+        """A delegate that reaches the lock only through a runtime function, or
+        through a store call made BY that function, is still lock-reaching."""
+        import textwrap
+
+        facade = textwrap.dedent("""
+            from kiro_crew.vector_memory_runtime import reads as _reads
+
+            class VectorMemoryStore:
+                def _fetch(self):
+                    with self._db_lock:
+                        return 1
+
+                def through_runtime(self):
+                    return _reads.fetch_rows(self)
+
+                def through_callback(self):
+                    return _reads.back_to_store(self)
+
+                def lock_free(self):
+                    return _reads.pure(self)
+            """)
+        runtime = {
+            "reads": textwrap.dedent("""
+                from kiro_crew.vector_memory_runtime.other import helper
+
+                def fetch_rows(store):
+                    with store._db_lock:
+                        return []
+
+                def back_to_store(store):
+                    return helper(store)
+
+                def pure(store):
+                    return 0
+                """),
+            "other": textwrap.dedent("""
+                def helper(store):
+                    return store._fetch()
+                """),
+        }
+        assert self._derive_locked_from_sources(facade, runtime) == {
+            "through_runtime",
+            "through_callback",
+        }
+
     def test_guard_catches_seeded_violation(self) -> None:
         """The scanner must flag a known-bad inline call, so a visitor
         regression cannot silently turn the guard vacuous."""
@@ -4471,7 +4696,7 @@ class TestHandlerOffload1947:
         root = self._package_root()
         violations: list[str] = []
         for path in sorted(root.rglob("*.py")):
-            if path.name == "vector_memory.py":
+            if path == root / "vector_memory.py":
                 continue  # the store may call its own methods inline
             tree = ast.parse(path.read_text(encoding="utf-8"))
             violations.extend(self._find_inline_calls(tree, locked, str(path.relative_to(root))))

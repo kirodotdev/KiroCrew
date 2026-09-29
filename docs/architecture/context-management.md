@@ -542,7 +542,7 @@ per-member permission control; both exist today, in the forms above.
 | Which block is which, and how big it was | `src/kiro_crew/context_blocks.py` (`_MARKERS`, `_CLOSERS`, `measure_prompt`) |
 | Budgets, caps, the protected ceiling | `src/kiro_crew/context.py` (`_budget`, `_resolve_caps`, `_ResolvedCaps`) |
 | Memory block contents | `src/kiro_crew/memory.py` (`get_context`, `activity_index`, `get_activity_context`) |
-| Lessons | `src/kiro_crew/learn.py`, `src/kiro_crew/vector_memory.py` |
+| Lessons | `src/kiro_crew/learn.py`, `src/kiro_crew/vector_memory.py` (`write_lesson`), `src/kiro_crew/vector_memory_runtime/lessons.py` (the lesson readers, ranking and tiered rendering) |
 | Skill index, pinned bodies, discovery | `src/kiro_crew/skills.py` (`get_context`, `load_skill`) |
 | Trigger matching, and its model-picked override | `src/kiro_crew/trigger_match.py`, `src/kiro_crew/skills.py` (`get_triggered_skills`, `split_triggered`, `trigger_hint`), `src/kiro_crew/decisions/points/skills_select.py` |
 | Which agents get skills | `src/kiro_crew/context.py` (`_skills_injection_plan`), `src/kiro_crew/agent_discovery.py` (`agent_skill_globs`, `expand_skill_uri`) |
