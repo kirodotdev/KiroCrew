@@ -939,7 +939,7 @@ class _PinnedCreateRefusal(Exception):
     """pinned_fs's refusal for the workspace create, mapped by the caller."""
 
 
-def materialize_workspace_dir(validated: Path, *, display: str) -> None:
+def materialize_workspace_dir(validated: Path, *, leaf: Path, display: str) -> None:
     """Make *validated* exist as a directory: adopt one that is there, create one that is not.
 
     One writer-side rule shared by the dashboard handler and the CLI: a published
@@ -969,7 +969,18 @@ def materialize_workspace_dir(validated: Path, *, display: str) -> None:
     caller's config write later fails. It is reachable only through the entry
     written in the same locked section, and a concurrent create can already have
     adopted it, so deleting it is the unsafe option.
+
+    *leaf* is the same path BEFORE resolution. Resolving follows a link at the
+    final name, so *validated* alone never shows one: the entry the caller
+    registers is the unresolved spelling, and a link or junction there is
+    refused on every platform. It is normalized first, so a ``..`` through a
+    missing component cannot make the probe miss the name resolution lands on.
     """
+    if platform_compat.is_link_or_junction(os.path.normpath(leaf)):
+        raise WorkspaceDirUnusable(
+            "workspace_dir_not_a_directory",
+            f"'{display}' is a link, not a directory; choose another dir or remove it first",
+        )
     if pinned_fs.supports_pinned_walk():
         try:
             parent_fd = pinned_fs.pin_parent(
@@ -1004,16 +1015,19 @@ def materialize_workspace_dir(validated: Path, *, display: str) -> None:
                 f"Directory '{display}' could not be created: {exc.strerror or exc}",
             ) from exc
 
-    if validated.is_dir():
+    # By name here, so a link at the name must be screened out explicitly: a
+    # Windows junction answers is_dir() True and is_symlink() False, and the
+    # pinned arm above refuses every link through its lstat.
+    if not platform_compat.is_link_or_junction(validated) and validated.is_dir():
         return
     try:
         os.mkdir(validated)
     except FileExistsError as exc:
         # EEXIST is the filesystem itself saying something is at the name: a
         # racer's directory is the state this create wanted, while a file, a
-        # socket, a dangling link or a symlink cannot serve as a workspace, and
+        # socket, a dangling link, a symlink or a junction cannot serve as a workspace, and
         # registering one writes back exactly the unusable entry this prevents.
-        if validated.is_dir() and not validated.is_symlink():
+        if not platform_compat.is_link_or_junction(validated) and validated.is_dir():
             return
         raise WorkspaceDirUnusable(
             "workspace_dir_not_a_directory",

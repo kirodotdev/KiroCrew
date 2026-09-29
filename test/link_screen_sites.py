@@ -91,6 +91,7 @@ DECLARED_SITES = frozenset(
         ("apps/registry_pipeline/install.py", "_layout_cleanup_escaped"),
         ("apps/registry_pipeline/install.py", "_set_aside_new_layout_files"),
         ("cloud/source.py", "_staging_dir"),
+        ("config/loader.py", "materialize_workspace_dir"),
         ("config/superseded_defaults.py", "_update_map"),
         ("connections/warm.py", "_is_plain_warm_generation_dir"),
         ("connections/warm.py", "_read_warm_generation_owner"),
