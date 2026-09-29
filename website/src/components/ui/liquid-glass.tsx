@@ -146,7 +146,38 @@ function roundRectPath(w: number, h: number, radius: number): string {
  * is capped at MAP_MAX on the long side and only the band pixels do the trig,
  * so a rebuild at the composer's sizes is a few milliseconds — well inside one
  * frame even when it does land mid-interaction.
+ *
+ * The map is a pure function of (size, radius, band), and a LIST of panes — the
+ * bell popover's rows, a row of follow-up chips — mounts many at the same size
+ * in one commit, so the rasterised data URL is memoised across instances in a
+ * small bounded cache (`MAP_CACHE_MAX`, oldest key evicted): N equal rows cost
+ * one canvas encode, not N.
  */
+const MAP_CACHE_MAX = 64;
+const mapCache = new Map<string, string>();
+
+function displacementMapFor(width: number, height: number, radius: number, band: number): string {
+  const key = `${width}x${height}r${radius}b${band}`;
+  const hit = mapCache.get(key);
+  if (hit !== undefined) return hit;
+  const map = buildDisplacementMap(width, height, radius, band);
+  // No 2D context yields "" (the pane renders without its bend); that is a
+  // property of the host, not of the size, so it is never remembered.
+  if (map === "") return map;
+  if (mapCache.size >= MAP_CACHE_MAX) {
+    const oldest = mapCache.keys().next().value;
+    if (oldest !== undefined) mapCache.delete(oldest);
+  }
+  mapCache.set(key, map);
+  return map;
+}
+
+/** Test seam: the cache outlives a render, so a test counting rasterisations
+ *  starts from an empty one. */
+export function resetDisplacementMapCache(): void {
+  mapCache.clear();
+}
+
 function buildDisplacementMap(width: number, height: number, radius: number, band: number): string {
   const fit = Math.min(1, MAP_MAX / Math.max(width, height));
   const w = Math.max(2, Math.round(width * fit));
@@ -319,7 +350,7 @@ function LiquidGlassImpl(
   const map = useMemo(
     () =>
       mapSize.width > 1 && mapSize.height > 1
-        ? buildDisplacementMap(mapSize.width, mapSize.height, cornerRadius, bandFor(mapSize))
+        ? displacementMapFor(mapSize.width, mapSize.height, cornerRadius, bandFor(mapSize))
         : "",
     [mapSize, cornerRadius]
   );

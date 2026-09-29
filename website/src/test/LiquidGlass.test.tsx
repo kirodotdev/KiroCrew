@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
-import { LiquidGlass } from '../components/ui/liquid-glass'
+import { LiquidGlass, resetDisplacementMapCache } from '../components/ui/liquid-glass'
 
 type ResizeCallback = (entries: Array<{ contentRect: { width: number; height: number } }>) => void
 
@@ -56,6 +56,7 @@ function frostBoxOf(layer: HTMLElement) {
 beforeEach(() => {
   vi.useFakeTimers()
   observers.length = 0
+  resetDisplacementMapCache()
   fakeContext.putImageData.mockClear()
   vi.stubGlobal('ResizeObserver', FakeResizeObserver)
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(fakeContext as unknown as CanvasRenderingContext2D)
@@ -231,6 +232,21 @@ describe('LiquidGlass', () => {
     expect(image.getAttribute('height')).toBe('140')
     expect(fakeContext.putImageData.mock.calls.length).toBe(1)
     act(() => { vi.advanceTimersByTime(200) })
+    expect(fakeContext.putImageData.mock.calls.length).toBe(2)
+  })
+
+  it('rasterises one map for many panes of the same size, and one more per new size', () => {
+    // A list of panes (the bell popover's rows, a row of chips) mounts many
+    // equal boxes in one commit; the map is a pure function of (size, radius,
+    // band), so the second pane reuses the first pane's encode.
+    const { container } = render(<><LiquidGlass {...composer} /><LiquidGlass {...composer} /><LiquidGlass {...composer} /></>)
+    measure(400, 80)
+    expect(fakeContext.putImageData.mock.calls.length).toBe(1)
+    const roots = Array.from(container.children) as HTMLElement[]
+    for (const root of roots) expect((root.querySelector('feImage') as SVGElement).getAttribute('href')).toBe(MAP_URL)
+    // A different size (or radius) is a different map.
+    render(<LiquidGlass {...composer} cornerRadius={4} />)
+    measure(400, 80)
     expect(fakeContext.putImageData.mock.calls.length).toBe(2)
   })
 

@@ -116,8 +116,9 @@ describe('composer liquid glass', () => {
   // and each step is a `--glass-tint` swap derived once on :root.
   it('has no CSS copy of the material, only tint steps on the host', () => {
     expect(INDEX_CSS).not.toContain('glass-pane')
-    expect(INDEX_CSS).toMatch(/:root \{ --glass-tint-accent: color-mix\(in srgb, var\(--accent\) 14%, var\(--glass-tint\)\); --glass-tint-warn: color-mix\(in srgb, var\(--warn\) 12%, var\(--glass-tint\)\); --glass-tint-hover: color-mix\(in srgb, var\(--text\) 8%, var\(--glass-tint\)\); \}/)
+    expect(INDEX_CSS).toMatch(/:root \{ --glass-tint-accent: color-mix\(in srgb, var\(--accent\) 14%, var\(--glass-tint\)\); --glass-tint-warn: color-mix\(in srgb, var\(--warn\) 12%, var\(--glass-tint\)\); --glass-tint-hover: color-mix\(in srgb, var\(--text\) 8%, var\(--glass-tint\)\); --glass-tint-faded: color-mix\(in srgb, var\(--glass-tint\) 55%, transparent\); \}/)
     expect(INDEX_CSS).toContain('.glass-accent { --glass-tint: var(--glass-tint-accent); }')
+    expect(INDEX_CSS).toContain('.glass-faded { --glass-tint: var(--glass-tint-faded); }')
     expect(INDEX_CSS).toContain('.glass-warn { --glass-tint: var(--glass-tint-warn); }')
     expect(INDEX_CSS).toContain('.glass-hover:hover { --glass-tint: var(--glass-tint-hover); }')
   })

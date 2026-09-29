@@ -287,9 +287,25 @@ macOS Notification Center-style card under the top bar for a **live**
 notification. The card body is `NotificationCard.tsx`, the ONE rendering the
 bell popover's mac rows and the banner both use (kind-tinted 26 px icon square,
 one-line title, two-line body, relative time with the unread dot, hover-reveal
-close, quiet capsule actions); its `elevation` prop is the only difference —
-`popover` (72 % card tint, the theme's `--shadow-md`) versus `banner` (88 %
-tint, `--shadow-lg`); shadows are theme tokens, never literal alphas. The
+close, quiet capsule actions). The card IS a Liquid Glass pane
+(`components/Glass.tsx`, the `panel` recipe, `CARD_RADIUS` 16 px) — the same
+material as the composer dock — so it carries no tint, blur, border or shadow
+classes of its own: the pane's layers are the material, `glass-shadow` the
+rest shadow. The card does not know which surface it is on: the pane reads
+correctly over the sheet's scrim and over page content alike, so there is no
+elevation prop and both surfaces are one glass.
+State is a tint step on the host, never an edge: `glass-accent` for the feed's
+selected row, `glass-hover` while a pressable card is hovered, and
+`glass-faded` (the tint thinned to 55 %) for a silenced row, a collapsed
+stack's edges and the banner's deck shells — recession is a tint step, never
+an `opacity` on a glass host, because opacity < 1 makes the host a backdrop
+root and voids the pane's own blur. The banner's blank deck
+shells, its "+N more in your inbox" pill and the feed's controls card, stack
+edges and first-note-from-a-channel prompt (its own accent-tinted pane under
+the row, since a pane has one radius) are the same primitive. Every pane also
+carries `notif-material`, the index.css hook that solidifies it to the card
+color where backdrop-filter is unsupported and the selector the sheet's
+background-press verdict keys on. The
 card's `body` prop replaces the two-line clamp: the feed passes the full
 read-only approval render for every approval row, because the popover card
 keeps one-click Approve/Reject and a clamped excerpt hides the tail of the
@@ -345,8 +361,8 @@ retires every pending card.
 ### Stack
 
 Newest on top. Beyond the top card, up to `BANNER_DECK_DEPTH` (2) older cards
-peek as a deck of BLANK shells (card material only, no text, icon or time;
-4/8 px offset, .98/.96 scale, .8/.55 opacity), so nothing prints through the
+peek as a deck of BLANK shells (the card's glass only, no text, icon or time;
+4/8 px offset, .98/.96 scale, the `glass-faded` tint step), so nothing prints through the
 translucent top card. Each shell and the "Show N more" pill on the top card's
 corner are the same control (`Show N more notifications`) that expands to a
 vertical list of at most `BANNER_EXPANDED_MAX` (4) cards plus a "+N more in your

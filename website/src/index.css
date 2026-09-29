@@ -2942,12 +2942,18 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * `glass-accent` (a picked chip, an attached card) and `glass-warn` (the
  * incognito chip) mix a hue INTO the glass tint so the pane stays a glass, and
  * `glass-hover` brightens an interactive pane a step on hover, as the old chip
- * border-color change did. Each step is a `--glass-tint` swap on the host: the
+ * border-color change did, and `glass-faded` thins the tint to 55% for a pane
+ * that recedes (a silenced notification row, the edges of a collapsed stack,
+ * the blank shells behind a banner deck). Recession is a TINT step and never
+ * `opacity` on the host: an ancestor with opacity < 1 is a backdrop root, so
+ * the pane's own backdrop-filter layers would have nothing to sample and the
+ * glass would turn into a flat, unblurred wash. Each step is a `--glass-tint` swap on the host: the
  * primitive's frost box reads the token, so the pane repaints without a rule
  * of its own. The mixed values are computed once on :root (from the polarity's
  * own `--glass-tint`), so a swap on the host cannot reference itself. */
-:root { --glass-tint-accent: color-mix(in srgb, var(--accent) 14%, var(--glass-tint)); --glass-tint-warn: color-mix(in srgb, var(--warn) 12%, var(--glass-tint)); --glass-tint-hover: color-mix(in srgb, var(--text) 8%, var(--glass-tint)); }
+:root { --glass-tint-accent: color-mix(in srgb, var(--accent) 14%, var(--glass-tint)); --glass-tint-warn: color-mix(in srgb, var(--warn) 12%, var(--glass-tint)); --glass-tint-hover: color-mix(in srgb, var(--text) 8%, var(--glass-tint)); --glass-tint-faded: color-mix(in srgb, var(--glass-tint) 55%, transparent); }
 .glass-accent { --glass-tint: var(--glass-tint-accent); }
+.glass-faded { --glass-tint: var(--glass-tint-faded); }
 .glass-warn { --glass-tint: var(--glass-tint-warn); }
 .glass-hover:hover { --glass-tint: var(--glass-tint-hover); }
 
@@ -3087,8 +3093,9 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   /* The focus cue of a neutral pane (tint + side-line step) lives in the hidden
      layers, so a solidified pane holding focus gets the standard ring. */
   .glass-shadow:focus-within{ outline:2px solid var(--accent) !important; outline-offset:2px }
-  /* Floating notification cards (NotificationFeed mac variant) sit OVER page
-     content, so they solidify to the card color, not the page background. */
+  /* Floating notification panes (the banner, the bell popover's rows) sit OVER
+     page content, so they solidify to the card color, not the page background.
+     They are Glass panes too, so this rule follows `.liquid-glass` and wins. */
   .notif-material{ background:var(--card) !important }
 }
 

@@ -3,8 +3,10 @@
  *
  * Every surface that floats over the transcript in the composer dock (the
  * composer itself, an approval bar, the follow-up chips, a tip or suggestion
- * card, the queue, the memory chip, the jump-to-bottom button) and the mobile
- * Settings search capsule wear the SAME material, from the SAME primitive:
+ * card, the queue, the memory chip, the jump-to-bottom button), the mobile
+ * Settings search capsule and the notification panes (the in-app banner, the
+ * bell popover's rows and controls card) wear the SAME material, from the SAME
+ * primitive:
  * `--glass-tint` over a blurred backdrop, an even top/bottom light band in
  * `--glass-band`, a 1px `--glass-edge` line down each side and a half-pixel
  * `--glass-hairline` just outside the top and bottom edges. No ring: the

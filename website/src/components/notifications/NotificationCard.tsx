@@ -2,22 +2,13 @@ import type { HTMLAttributes, MouseEvent, ReactNode } from 'react'
 import { X } from 'lucide-react'
 
 import Clickable from '../Clickable'
+import Glass from '../Glass'
 import type { Notification } from '../../types'
-import {
-  KIND_META, DEFAULT_META, notePriority, stripMd, fmtRelativeMinute,
-  MAC_CARD_TINT_CLASS, MAC_CARD_BLUR_CLASS, MAC_CARD_SHADOW_CLASS, MAC_CARD_BORDER_CLASS,
-  BANNER_CARD_TINT_CLASS, BANNER_CARD_SHADOW_CLASS, MAC_ACTION_BTN_CLASS,
-} from './notifMeta'
+import { KIND_META, DEFAULT_META, notePriority, stripMd, fmtRelativeMinute, MAC_ACTION_BTN_CLASS } from './notifMeta'
 
-/** Where the card floats: inside the bell sheet's own scrim (softer material)
- *  or over arbitrary page content as a banner (denser tint, deeper shadow).
- *  The material is the ONLY thing that differs between the two surfaces. */
-export type NotificationCardElevation = 'popover' | 'banner'
-
-export const CARD_MATERIAL: Record<NotificationCardElevation, string> = {
-  popover: `${MAC_CARD_TINT_CLASS} ${MAC_CARD_BLUR_CLASS} ${MAC_CARD_SHADOW_CLASS} ${MAC_CARD_BORDER_CLASS}`,
-  banner: `${BANNER_CARD_TINT_CLASS} ${MAC_CARD_BLUR_CLASS} ${BANNER_CARD_SHADOW_CLASS} ${MAC_CARD_BORDER_CLASS}`,
-}
+/** Corner radius of every notification pane (the card, a deck shell, the
+ *  feed's controls card): Tailwind's `rounded-2xl`, in px for `Glass`. */
+export const CARD_RADIUS = 16
 
 /** Semantic tint on an action's LABEL only — never a solid fill. */
 export type CardActionTone = 'text' | 'accent' | 'ok' | 'danger' | 'muted'
@@ -37,10 +28,6 @@ export interface NotificationCardAction {
 
 export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title' | 'onClick'> {
   n: Notification
-  elevation: NotificationCardElevation
-  /** Full material override (the feed's silenced ghost and selected row keep
-   *  their own border/tint); default is `CARD_MATERIAL[elevation]`. */
-  material?: string
   /** Press on the card body. Omitted → decorative body (no control, no
    *  dismiss, no actions), for a deck card whose wrapper is the control. */
   onOpen?: () => void
@@ -55,9 +42,11 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
   actionsAlign?: 'start' | 'end'
   /** Extra content under the timestamp (the feed's muted label / stack count). */
   trailing?: ReactNode
-  /** Selected in a host that owns selection (the feed): keeps content undimmed. */
+  /** Selected in a host that owns selection (the feed): the pane steps onto
+   *  the accent tint (`glass-accent`) and its content stays undimmed. */
   active?: boolean
-  /** Titles read muted for a silenced ghost row. */
+  /** A silenced row: the pane thins to the `glass-faded` tint step, its
+   *  content dims and its title reads muted. */
   muted?: boolean
   /** Rendered under the actions (a failure notice the card must keep showing). */
   footer?: ReactNode
@@ -81,11 +70,20 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
  * dim; a critical note is signalled ONLY by its danger unread dot and the
  * approval kind's icon tint — never an edge or a label.
  *
+ * The card IS a `Glass` pane (`panel` recipe, `CARD_RADIUS`): the same
+ * material the composer dock wears, so a note floating over the transcript and
+ * the composer under it are one glass. It does not know which surface it is on
+ * (the sheet's scrim or arbitrary page content): the pane reads correctly over
+ * both, so there is nothing for an elevation to pick. Its state is a tint step
+ * on the host — `glass-accent` for the feed's selected row, `glass-hover`
+ * while a pressable card is hovered, `glass-faded` for a silenced row — never
+ * a border, a fill or an `opacity` of its own.
+ *
  * Hosts wrap it: the feed adds its row anchor, stack deck and selection; the
  * banner adds motion and its own deck. Neither re-renders any of the body.
  */
 export default function NotificationCard({
-  n, elevation, material, onOpen, openLabel, onDismiss, dismissLabel, dismissTestId, dismissVisible = false,
+  n, onOpen, openLabel, onDismiss, dismissLabel, dismissTestId, dismissVisible = false,
   actions = [], actionsAlign = 'start', trailing, active = false, muted = false, footer, body: bodyOverride, className = '', ...rest
 }: NotificationCardProps) {
   const km = KIND_META[n.kind] || DEFAULT_META
@@ -110,11 +108,15 @@ export default function NotificationCard({
     </>
   )
   const interactive = !!onOpen
+  // Recession is a tint step, never `opacity` on the host: opacity < 1 makes
+  // the host a backdrop root and voids its own blur (see index.css).
+  const tint = active ? 'glass-accent' : muted ? 'glass-faded' : interactive ? 'glass-hover' : ''
   return (
-    <div
+    <Glass
+      variant="panel"
+      radius={CARD_RADIUS}
       data-notification-card
-      data-elevation={elevation}
-      className={`notif-material group flex flex-col px-3 py-2.5 rounded-2xl transition-all ${material ?? CARD_MATERIAL[elevation]} ${className}`}
+      className={`notif-material glass-shadow group flex flex-col px-3 py-2.5 transition-all ${tint} ${className}`}
       {...rest}
     >
       <div className="flex items-start gap-2.5">
@@ -150,6 +152,6 @@ export default function NotificationCard({
         </div>
       )}
       {interactive && footer}
-    </div>
+    </Glass>
   )
 }

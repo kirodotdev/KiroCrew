@@ -31,6 +31,13 @@
  *                           write threw: row stays, notice under it
  *   popover-approval-row    the bell popover holding a critical approval row
  *                           (Approve / Reject capsules, danger dot, no edge)
+ *   popover-states          the popover with every row state at once: a
+ *                           SELECTED row (accent tint step), a SILENCED row
+ *                           (faded pane, muted title), a collapsed STACK of
+ *                           three (count badge, two glass edges peeking below)
+ *                           and a plain unread row
+ *   popover-channel-prompt  a first note from an app channel the user has not
+ *                           decided on: the Keep / Mute prompt pane under it
  *
  * Recordings (dark, mp4 + gif when ffmpeg is present):
  *   rec-default-autohide    slide-in, hover pause, then the travel into the bell
@@ -119,6 +126,10 @@ async function openPage({ theme = 'dark', viewport = DESKTOP, permission = 'gran
   }
   await page.goto(base + '/')
   await page.locator('button:has(svg.lucide-bell)').waitFor({ state: 'visible', timeout: 20000 })
+  // Boot redirects `/` to the first chat route; the bell's sheet closes on any
+  // pathname change, so a sheet opened before the redirect lands is torn down
+  // a frame later. Let the route settle first.
+  await page.waitForURL(u => u.pathname !== '/', { timeout: 10000 }).catch(() => {})
   // The socket binds during boot; without it no frame can reach the banner.
   for (let i = 0; i < 50 && !ws; i++) await page.waitForTimeout(100)
   if (!ws) throw new Error('websocket route never bound')
@@ -128,6 +139,20 @@ async function openPage({ theme = 'dark', viewport = DESKTOP, permission = 'gran
 }
 
 const card = page => page.getByTestId('notification-banner-card')
+/** Open the bell sheet and make sure it STAYS open: a sheet opened while boot
+ *  is still settling (a late route change, a store replay) is torn down a few
+ *  frames later, so the phase is re-read after a beat and the bell pressed
+ *  again when that happened. */
+async function openSheet(page) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.locator('button:has(svg.lucide-bell)').click()
+    await page.waitForTimeout(900)
+    const phase = await page.locator('[data-nc-phase]').getAttribute('data-nc-phase').catch(() => null)
+    if (phase === 'open') return
+    await page.waitForTimeout(400)
+  }
+  throw new Error('bell sheet did not stay open')
+}
 const shoot = (page, name) => page.screenshot({ path: join(OUT, `${name}.png`) })
 
 // ---- stills -----------------------------------------------------------------
@@ -268,6 +293,66 @@ for (const theme of ['dark', 'light']) {
     await page.waitForTimeout(700)
     await shoot(page, `popover-approval-row-${theme}`)
     console.log(`popover-approval-row-${theme}: Approve/Reject capsules`)
+    await context.close()
+  }
+  {
+    // Every restyled row state in one frame. Rows are grouped by day, so all
+    // four are seeded with the same day (`ts` a few seconds apart); the stack is
+    // three notes sharing a group_key, the silenced note is what a muted channel
+    // delivers (silenced + passive), and the selection is a click on the plain
+    // row (which the popover also acks, so the frame shows an acked+selected
+    // row exactly as a user sees it after opening a note). Silenced rows hide
+    // behind the controls card's muted disclosure, so it is opened first.
+    const seeded = [
+      note({ kind: 'agent', title: 'Weekly cost report is ready', body: 'Spend is down 12% week over week.' }),
+      note({ kind: 'cron', title: 'Backup completed', body: 'Snapshot 2026-09-21 stored.', group_key: 'backup' }),
+      note({ kind: 'cron', title: 'Backup completed', body: 'Snapshot 2026-09-20 stored.', group_key: 'backup' }),
+      note({ kind: 'cron', title: 'Backup completed', body: 'Snapshot 2026-09-19 stored.', group_key: 'backup' }),
+      note({ kind: 'hook', title: 'Noisy webhook fired', body: 'Muted channel: still in history.', silenced: true, priority: 'passive', source: 'github', channel: 'github.noisy' }),
+      note({ kind: 'subagent', title: 'Research subagent finished', body: 'Summary attached to the session.' }),
+    ]
+    const { context, page } = await openPage({ theme, seeded })
+    // The silenced note's channel must not prompt: a prompt is its own frame below.
+    await page.evaluate(() => localStorage.setItem('mc:notif:seenChannels', JSON.stringify(['github.noisy'])))
+    await openSheet(page)
+    await page.getByText('Weekly cost report is ready').waitFor({ timeout: 5000 })
+    // Silenced rows sit behind the muted disclosure in the controls card.
+    await page.getByRole('button', { name: 'Show muted (1)' }).click()
+    await page.getByText('Noisy webhook fired').waitFor({ timeout: 5000 })
+    await page.getByRole('button', { name: /Weekly cost report is ready/ }).first().click()
+    await page.waitForTimeout(700)
+    const rows = page.locator('[data-notif-row]')
+    if ((await rows.count()) !== 4) throw new Error(`expected 4 rows (plain, stack head, silenced, plain), got ${await rows.count()}`)
+    // The selected row is the accent tint step, the silenced row a faded pane; neither is an edge.
+    const selected = await page.locator('[data-notif-row].glass-accent').count()
+    if (selected !== 1) throw new Error(`expected exactly 1 selected (glass-accent) row, got ${selected}`)
+    const faded = await page.locator('[data-notif-row].glass-faded').count()
+    if (faded !== 1) throw new Error(`expected exactly 1 silenced (glass-faded) row, got ${faded}`)
+    if ((await page.locator('[data-notif-row].border-dashed, [data-notif-row].border-accent').count()) !== 0) throw new Error('a row still carries a border state')
+    // The collapsed stack: one head row with the count badge and two edges under it.
+    if ((await page.getByText('Backup completed').count()) !== 1) throw new Error('stack did not collapse to one head row')
+    await shoot(page, `popover-states-${theme}`)
+    console.log(`popover-states-${theme}: selected + silenced + collapsed stack`)
+    await context.close()
+  }
+  {
+    const seeded = [
+      note({ kind: 'agent', title: 'Deploy finished on staging', body: 'ci-bot: build 4821 is live.', source: 'ci-bot', channel: 'ci-bot.deploys' }),
+      note({ title: 'Nightly digest finished' }),
+    ]
+    const { context, page } = await openPage({ theme, seeded })
+    await openSheet(page)
+    await page.getByText('Deploy finished on staging').waitFor({ timeout: 5000 })
+    await page.getByRole('button', { name: 'Keep' }).waitFor({ timeout: 5000 })
+    await page.waitForTimeout(700)
+    // The prompt is its own glass pane on the accent tint step under the row,
+    // not a strip glued to the card.
+    const promptPane = page.locator('.liquid-glass.glass-accent:has(button)').filter({ hasText: 'Keep' })
+    await promptPane.first().waitFor({ timeout: 5000 })
+    const promptPanes = await promptPane.count()
+    if (promptPanes !== 1) throw new Error(`expected the Keep / Mute prompt inside exactly 1 accent glass pane, got ${promptPanes}`)
+    await shoot(page, `popover-channel-prompt-${theme}`)
+    console.log(`popover-channel-prompt-${theme}: Keep / Mute pane`)
     await context.close()
   }
   {
