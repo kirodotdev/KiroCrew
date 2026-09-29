@@ -478,7 +478,12 @@ def test_launch_approval_inputs_are_read_only_in_the_sandbox(tmp_path, monkeypat
     assert "mcp-launch-approvals" in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
     assert "mcp-launch-approvals" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
     assert str(approvals_dir) in dirs
-    assert not any(path.endswith("approvals.json") for path in files)
+    # The launch-approval INPUT is sealed via its read-only directory, so no file
+    # under it is sealed individually. Match the launch-approval path specifically
+    # rather than any ``*approvals.json``: an unrelated top-level secret leaf such
+    # as ``app-unit-approvals.json`` is a sealed FILE by design and legitimately
+    # appears in ``files``.
+    assert not any(path.endswith("mcp-launch-approvals/approvals.json") for path in files)
     assert "mcp/resolved" in sandbox._CREW_READONLY_LEAVES
     for leaf in ("mcp-gateway/agents", "mcp-gateway/stubs"):
         assert leaf not in sandbox._CREW_READONLY_LEAVES

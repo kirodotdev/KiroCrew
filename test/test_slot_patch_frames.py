@@ -307,6 +307,14 @@ async def test_pin_reaches_a_capable_tab_as_a_patch_and_an_old_tab_as_a_list(
         "kiro_crew.dashboard.ws.load_declared_events_for_connect",
         lambda _app: (True, frozenset()),
     )
+    # The app-token WS client below authenticates as "test-app", which is not
+    # installed on disk in this harness; app_token_path_allowed now reads the
+    # app's enabled-state at the door and fails closed on an unreadable/absent
+    # record, so without this the app tab is 403'd before it can subscribe.
+    monkeypatch.setattr(
+        "kiro_crew.apps.manager.app_enabled_state",
+        lambda _name: True,
+    )
 
     app = _make_app(e2e_state)
     app.router.add_patch("/api/chat/slots/{slot}/pin", api_chat_slot_pin)

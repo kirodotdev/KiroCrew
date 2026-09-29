@@ -1,9 +1,11 @@
 import { QueryClient, QueryObserver, skipToken } from '@tanstack/react-query'
+import { api, type MemberRosterRow } from './client'
 import {
   forgetUnobservedMemberThreads,
   memberProjectionsQuery,
   memberProjectionsQueryKey,
   memberThreadQueryKey,
+  membersRosterQuery,
 } from './membersQuery'
 import { memberProjectionStore } from '../state/memberProjectionStore'
 
@@ -136,5 +138,69 @@ describe('memberProjectionsQuery', () => {
 
     memberProjectionStore.apply('fresh', 'roster', { name: 'Fresh' }, 1)
     expect(memberProjectionStore.get('fresh', 'roster')).toEqual({ name: 'Fresh' })
+  })
+})
+
+/* The roster read is asynchronous and the socket is live while it is in flight, so
+ * the answer is seeded against the revision the REQUEST was issued at rather than
+ * the moment it arrived. Without that, a deletion landing mid-request is undone by
+ * an answer that still carries the key. */
+describe('the roster answer is seeded at the revision its read was issued', () => {
+  const rowFor = (slug: string, seq: number): MemberRosterRow =>
+    ({
+      name: slug,
+      slug,
+      slot_key: '',
+      running: false,
+      projections: {
+        asOfSeq: 12,
+        values: { 'demo/card': { n: 1 } },
+        seqs: { 'demo/card': seq },
+      },
+    }) as MemberRosterRow
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('a deletion landing during the request is not undone by the answer', async () => {
+    const slug = 'issued-rev-alice'
+    memberProjectionStore.seed(slug, { 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+    expect(memberProjectionStore.get(slug, 'demo/card')).toEqual({ n: 1 })
+
+    vi.spyOn(api, 'members').mockImplementation(async () => {
+      // The app deletes the key while this request is on the wire.
+      memberProjectionStore.apply(slug, 'demo/card', null, 8)
+      return { members: [rowFor(slug, 7)] } as Awaited<ReturnType<typeof api.members>>
+    })
+
+    const answer = await membersRosterQuery.queryFn()
+    membersRosterQuery.select(answer)
+    expect(memberProjectionStore.get(slug, 'demo/card')).toBeUndefined()
+  })
+
+  it('an answer with nothing newer against it still seeds its keys', async () => {
+    // CONTROL. The refusal above must come from the deletion's own revision, not
+    // from baselines having stopped seeding.
+    const slug = 'issued-rev-bob'
+    vi.spyOn(api, 'members').mockImplementation(
+      async () => ({ members: [rowFor(slug, 7)] }) as Awaited<ReturnType<typeof api.members>>,
+    )
+
+    const answer = await membersRosterQuery.queryFn()
+    membersRosterQuery.select(answer)
+    expect(memberProjectionStore.get(slug, 'demo/card')).toEqual({ n: 1 })
+  })
+
+  it('disables structural sharing so the issued-revision lookup is reliable', () => {
+    // Opus membersQuery.ts:75 -- the age is keyed on the rows array's identity
+    // (ISSUED_AT_REV), so React Query must hand `select` the SAME array `queryFn`
+    // produced. Default `structuralSharing` (`replaceEqualDeep`) would substitute
+    // a different array from the second fetch onward, the WeakMap lookup would
+    // miss, the age would read UNKNOWN, and the deletion-ranking would go inert.
+    // The query MUST set structuralSharing:false. Also guards the setQueryData
+    // consumers, which keep seeing a MemberRosterRow[] because the queryFn return
+    // shape is unchanged.
+    expect(membersRosterQuery.structuralSharing).toBe(false)
   })
 })

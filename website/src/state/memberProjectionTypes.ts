@@ -10,10 +10,41 @@
 /** Projection keys the store tracks. Kept as a union so callers name a real key. */
 export type ProjectionKey = 'roster' | 'activity' | 'wake' | 'driving'
 
+/**
+ * Built-in views the ROSTER baseline does not answer for.
+ *
+ * A list row paints the `roster` line and the cards an app contributed to it, so
+ * `GET /api/members` narrows its block to exactly those. The activity timeline,
+ * the patrol state and the driven-slot list belong to the drawer, which reads them
+ * from the member's own projections route. A key named here is therefore missing
+ * from a roster block BY DESIGN, and its absence says nothing about whether the
+ * row is still there -- unlike a contributed key, whose absence does.
+ */
+export const DRAWER_ONLY_VIEWS: ReadonlySet<string> = new Set<ProjectionKey>([
+  'activity',
+  'wake',
+  'driving',
+])
+
 /** Baseline projections carried by each GET /api/members roster row. */
 export interface ProjectionsBlock {
   asOfSeq: number
   values: { [key: string]: unknown }
+  /**
+   * Per-key generation for CONTRIBUTED rows, which orders ahead of the seq. The
+   * backend sends it only when an app has published to this member, and never for
+   * a built-in key, so it is optional and an absent entry reads as 0 — which
+   * collapses that row's ordering to plain higher-seq-wins.
+   */
+  stateVersions?: { [key: string]: number }
+  /**
+   * Per-key SEQ for CONTRIBUTED rows. A contributed row's seq is the contributor's
+   * own fold position, which trails this response's `asOfSeq`, so seeding the row at
+   * `asOfSeq` would make the ordering gate drop that contributor's next live push and
+   * freeze the card at its baseline. Absent for a built-in key, whose seq IS
+   * `asOfSeq`, and absent entirely when no app has published to this member.
+   */
+  seqs?: { [key: string]: number }
 }
 
 

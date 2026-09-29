@@ -128,13 +128,11 @@ src/kiro_crew/apps/dependencies.py
 src/kiro_crew/apps/dependency_ledger.py
 src/kiro_crew/apps/dev_mode.py
 src/kiro_crew/apps/execution.py
-src/kiro_crew/apps/manager.py
 src/kiro_crew/apps/manifest.py
 src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/permissions.py
 src/kiro_crew/apps/route_registry.py
 src/kiro_crew/apps/scaffold.py
-src/kiro_crew/apps/teardown.py
 src/kiro_crew/artifact_source.py
 src/kiro_crew/beacon.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
@@ -313,7 +311,6 @@ test/test_app_context.py
 test/test_app_dev_mode.py
 test/test_app_e2e.py
 test/test_app_execution.py
-test/test_app_manager.py
 test/test_app_manifest.py
 test/test_app_mcp_scoping.py
 test/test_app_permissions.py

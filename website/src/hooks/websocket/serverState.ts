@@ -232,9 +232,25 @@ export function handleArtifactUpdate(queryClient: QueryClient, data: FrameData):
  *  missing slug/key/seq is a malformed frame that must not touch the store at
  *  all. */
 export function handleMemberProjection(data: FrameData): void {
-  const pf = (data ?? {}) as { slug?: unknown; key?: unknown; seq?: unknown; value?: unknown }
+  const pf = (data ?? {}) as {
+    slug?: unknown
+    key?: unknown
+    seq?: unknown
+    value?: unknown
+    stateVersion?: unknown
+  }
   if (typeof pf.slug === 'string' && pf.slug && typeof pf.key === 'string' && pf.key && typeof pf.seq === 'number') {
-    memberProjectionStore.apply(pf.slug, pf.key, pf.value, pf.seq)
+    // `stateVersion` orders ahead of seq and is read but NOT required: a frame
+    // without it (a built-in key, or a gateway older than the field) reads as 0,
+    // collapsing the comparison to plain higher-seq-wins for that row. Requiring
+    // it would drop those frames.
+    memberProjectionStore.apply(
+      pf.slug,
+      pf.key,
+      pf.value,
+      pf.seq,
+      typeof pf.stateVersion === 'number' ? pf.stateVersion : 0,
+    )
   }
 }
 
