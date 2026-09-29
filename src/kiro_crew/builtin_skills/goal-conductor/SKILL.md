@@ -522,6 +522,16 @@ what the composer renders:
   defaults to true and exists only as a single withdrawal — if an operator set it
   to `false`, every session tool answers `session_control_disabled`. If you see
   that error, say which switch to flip; do not retry.
+- **A conductor holds at most 32 items, and closing one does not free a slot.**
+  `work_ledger_record action=create` refuses with `item_cap_exceeded` once the
+  ledger holds 32 items, and the count is every item ever created -- `accepted`,
+  `rejected` and `abandoned` included, not just open ones. There is no per-item
+  reclaim verb, so a single goal run across enough rounds will hit the cap and be
+  unable to dispatch further even though every prior item is terminal. Keep a goal
+  small enough to finish under 32 items: scope it to one or two rounds, and at a
+  round boundary let the finished goal end so an operator can reclaim its ledger
+  with `kirocrew ledger-sweep --purge` (it removes a conductor whose every item is
+  terminal), then start the next round as a new goal with a fresh ledger.
 - **Reads and creates do not prompt; anything that touches another session does.**
   Auto-approved by name: `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_file_self` (it writes only your own placement),
