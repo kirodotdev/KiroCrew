@@ -11556,6 +11556,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "Effacer les sessions fermées ? Les onglets actifs et les sessions épinglées seront conservés.",
       "clear_filter": "Effacer le filtre",
       "clear_named_filter": "Effacer le filtre {{filter}}",
+      "pause_all_filters": "Suspendre tous les filtres",
+      "resume_all_filters": "Reprendre tous les filtres",
       "clear_search": "Effacer la recherche",
       "close": "Fermer",
       "close_session": "Fermer la session",

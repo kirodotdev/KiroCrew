@@ -11240,6 +11240,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "清除已关闭的会话？活动标签页和已置顶的会话会保留。",
       "clear_filter": "清除筛选",
       "clear_named_filter": "清除“{{filter}}”筛选",
+      "pause_all_filters": "暂停所有筛选",
+      "resume_all_filters": "恢复所有筛选",
       "clear_search": "清除搜索",
       "close": "关闭",
       "close_session": "关闭会话",

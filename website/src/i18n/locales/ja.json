@@ -11240,6 +11240,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "閉じたセッションをクリアしますか？ アクティブなタブと固定したセッションは保持されます。",
       "clear_filter": "フィルターをクリア",
       "clear_named_filter": "{{filter}} フィルターをクリア",
+      "pause_all_filters": "すべてのフィルターを一時停止",
+      "resume_all_filters": "すべてのフィルターを再開",
       "clear_search": "検索をクリア",
       "close": "閉じる",
       "close_session": "セッションを閉じる",

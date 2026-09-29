@@ -11398,6 +11398,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "Geschlossene Sitzungen löschen? Aktive Tabs und angepinnte Sitzungen werden beibehalten.",
       "clear_filter": "Filter zurücksetzen",
       "clear_named_filter": "Filter „{{filter}}“ zurücksetzen",
+      "pause_all_filters": "Alle Filter pausieren",
+      "resume_all_filters": "Alle Filter fortsetzen",
       "clear_search": "Suche leeren",
       "close": "Schließen",
       "close_session": "Sitzung schließen",

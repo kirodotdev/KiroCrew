@@ -11240,6 +11240,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "닫힌 세션을 지우시겠습니까? 활성 탭과 고정된 세션은 유지됩니다.",
       "clear_filter": "필터 지우기",
       "clear_named_filter": "{{filter}} 필터 지우기",
+      "pause_all_filters": "모든 필터 일시 중지",
+      "resume_all_filters": "모든 필터 다시 시작",
       "clear_search": "검색 지우기",
       "close": "닫기",
       "close_session": "세션 닫기",

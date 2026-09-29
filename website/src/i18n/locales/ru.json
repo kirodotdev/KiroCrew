@@ -11714,6 +11714,8 @@
       "clear_closed_sessions_active_tabs_and_pinned_ses": "Очистить закрытые сессии? Активные вкладки и закреплённые сессии будут сохранены.",
       "clear_filter": "Сбросить фильтр",
       "clear_named_filter": "Сбросить фильтр «{{filter}}»",
+      "pause_all_filters": "Приостановить все фильтры",
+      "resume_all_filters": "Возобновить все фильтры",
       "clear_search": "Очистить поиск",
       "close": "Закрыть",
       "close_session": "Закрыть сессию",
