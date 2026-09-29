@@ -2171,7 +2171,7 @@ when a switch is detected (stored SID exists AND providers differ).
 4. The new provider's session_id (once obtained) is saved with the correct
    provider label
 5. On the first prompt after the switch, `chat_runner` detects the flag and
-   injects history from `compress_thread_history()` (Kiro Crew's conversation_log)
+   injects history from `build_session_replay()` (Kiro Crew's conversation_log)
 6. The flag remains armed through prompt acceptance and is settled only when the
    replay-bearing turn lands. ACP providers promote a deliberately deferred fresh
    SID before consuming the lease; non-ACP providers already published their SID
@@ -2180,8 +2180,8 @@ when a switch is detected (stored SID exists AND providers differ).
 
 **Replayed content carries no image reference.** `_replay_rows` and
 `_recall_rows` — the two row builders behind every history vehicle
-(`build_session_replay`, the thread-history fallback in `build_session_context`,
-and the transcript `compress_thread_history` hands to the LLM compressor) — hand
+(`build_session_replay` and the thread-history fallback in
+`build_session_context`) — hand
 each row out through
 `kiro_crew.image_refs.strip_image_refs`, which replaces every local image
 reference with `[image not carried into this context]`. Markdown references go

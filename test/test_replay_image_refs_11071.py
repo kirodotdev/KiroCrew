@@ -298,10 +298,8 @@ class TestReplayedHistoryCarriesNoImage:
         assert replay.startswith("User: here is the failing screen ")
 
     def test_recall_rows_strip_too(self, tmp_path):
-        # The other row builder. It feeds the thread-history fallback AND the
-        # transcript compress_thread_history hands to the LLM compressor, which
-        # returns it verbatim under the cap -- so a path here reaches a model
-        # on a warm turn, not only after a compaction.
+        # The other row builder. It feeds the thread-history fallback, so a
+        # path here reaches a model on a warm turn, not only after a compaction.
         p = _png(tmp_path)
         rows = _recall_rows(_Log(self._rows(_dest(p))), "k", conv_max=10)
 

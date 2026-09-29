@@ -382,29 +382,6 @@ class TestBoundedRecallQuotas:
         assert "ACKNOWLEDGED_BETA_REPLY" in out
         assert "[Note] tick" in out, "notes must still reach the model"
 
-    def test_a_note_flood_cannot_evict_conversation_from_compression(self, tmp_path):
-        """Same defect at the compression site, whose bound is 100 rather than 20."""
-        import asyncio
-
-        from kiro_crew import context as ctx
-        from kiro_crew.history import ConversationLog as _CL
-
-        log = _CL(base_dir=tmp_path)
-        key = "compress-note-flood"
-        log.append(key, "user", "REMEMBER_THE_ALPHA_REQUEST")
-        log.append(key, "assistant", "ACKNOWLEDGED_BETA_REPLY")
-        for i in range(ctx._COMPRESSION_MAX_MESSAGES + 25):
-            log.append(key, "inject", f"[Note] tick {i}")
-
-        # Short transcript stays under the compressed cap, so this returns the
-        # transcript directly and never reaches the LLM branch (sessions unused).
-        out = asyncio.run(ctx.compress_thread_history(log, key, "a query", None))
-
-        assert out is not None
-        assert "REMEMBER_THE_ALPHA_REQUEST" in out
-        assert "ACKNOWLEDGED_BETA_REPLY" in out
-        assert "[Note] tick" in out, "notes must still reach the model"
-
     def test_large_notes_cannot_spend_the_whole_fallback_budget(self, tmp_path):
         """Second, independent direction at the same site.
 
@@ -436,41 +413,3 @@ class TestBoundedRecallQuotas:
         assert "REMEMBER_THE_ALPHA_REQUEST" in out
         assert "ACKNOWLEDGED_BETA_REPLY" in out
         assert "[Note] tick" in out, "notes must still reach the model"
-
-    def test_the_compression_transcript_read_does_not_run_on_the_event_loop(self, tmp_path):
-        """The quota walk needs the WHOLE file, so the read cannot be a cheap tail
-        slice -- which makes where it runs matter. On the loop thread a cold parse
-        stops every other gateway coroutine (no-blocking-call-on-event-loop).
-        """
-        import asyncio
-        import threading
-        from unittest.mock import patch
-
-        from kiro_crew import context as ctx
-        from kiro_crew.history import ConversationLog as _CL
-
-        log = _CL(base_dir=tmp_path)
-        key = "offloaded-read"
-        log.append(key, "user", "REMEMBER_THE_ALPHA_REQUEST")
-        log.append(key, "assistant", "ACKNOWLEDGED_BETA_REPLY")
-
-        seen: list[int] = []
-        real = _CL.read_messages
-
-        def _recording(self, k):
-            seen.append(threading.get_ident())
-            return real(self, k)
-
-        async def _run():
-            with patch.object(_CL, "read_messages", _recording):
-                out = await ctx.compress_thread_history(log, key, "a query", None)
-            return threading.get_ident(), out
-
-        loop_thread, out = asyncio.run(_run())
-
-        assert out is not None
-        assert "REMEMBER_THE_ALPHA_REQUEST" in out
-        assert seen, "the transcript read never happened -- test proves nothing"
-        assert all(t != loop_thread for t in seen), (
-            "the whole-file transcript read ran on the event-loop thread"
-        )

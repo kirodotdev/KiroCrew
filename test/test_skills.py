@@ -301,6 +301,28 @@ class TestSkillsLoader:
         assert loader.load_skill("framed") is None
         assert "Weather" in loader.read_scoped_skill("weather")
 
+    def test_html_skill_in_an_index_warmed_before_the_marker_is_dropped(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import skill_search_index
+        from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+        skills_dir = tmp_path / "skills"
+        _create_skill(skills_dir, "page", "<!doctype html><p>x</p>")
+        _create_skill(skills_dir, "notes", "# Notes\nplain markdown\n")
+        with monkeypatch.context() as old:
+            # Schema 5 and its parser are what shipped before the HTML marker.
+            old.setattr(skill_search_index, "_SCHEMA_VERSION", 5)
+            old.setattr(
+                SkillsLoader,
+                "_parse_frontmatter_text",
+                staticmethod(lambda content: parse_frontmatter(content, SKILL_LOADER)),
+            )
+            warm = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+            assert sorted(s["key"] for s in warm.list_skills()) == ["notes", "page"]
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        assert [s["key"] for s in loader.list_skills()] == ["notes"]
+
     def test_load_skill(self, tmp_path):
         skills_dir = tmp_path / "skills"
         _create_skill(skills_dir, "test", "---\nname: test\n---\n# Test Skill\nDo stuff.")

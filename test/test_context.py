@@ -1096,91 +1096,7 @@ class TestDocsSection:
         assert "[DOCUMENTATION]" not in ctx
 
 
-class TestCompressThreadHistory:
-    @pytest.mark.asyncio
-    async def test_returns_none_when_no_history(self, tmp_path):
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        sessions = Mock(spec=[])  # unused — no messages to compress
-        result = await compress_thread_history(conv_log, "no-thread", "hi", sessions)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_short_transcript_returned_without_llm(self, tmp_path):
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        conv_log.append("t1", "user", "hello")
-        conv_log.append("t1", "assistant", "hi there")
-        sessions = Mock(spec=[])  # unused — transcript is short
-        result = await compress_thread_history(conv_log, "t1", "hello", sessions)
-        assert result is not None
-        assert "hello" in result
-        assert "hi there" in result
-
-    @pytest.mark.asyncio
-    async def test_long_transcript_calls_llm(self, tmp_path, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        for i in range(50):
-            conv_log.append("t1", "user", f"msg {i} " + "x" * 1400)
-            conv_log.append("t1", "assistant", f"reply {i} " + "y" * 1400)
-
-        mock_client = MagicMock()
-        mock_sessions = MagicMock()
-        mock_sessions.get_pid = MagicMock(return_value=None)
-        mock_sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
-        mock_sessions.release = MagicMock()
-        mock_sessions.recycle_background = AsyncMock()
-
-        monkeypatch.setattr(
-            "kiro_crew.llm_helpers.stream_and_collect",
-            AsyncMock(return_value="compressed summary here"),
-        )
-
-        result = await compress_thread_history(conv_log, "t1", "latest q", mock_sessions)
-        assert result is not None
-        assert "compressed summary here" in result
-        assert "Thread start (verbatim)" in result
-        assert "Compressed history" in result
-        assert "Recent exchanges (verbatim)" in result
-        mock_sessions.release.assert_called_once()
-        mock_sessions.recycle_background.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_llm_failure_returns_none(self, tmp_path, monkeypatch):
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        for i in range(50):
-            conv_log.append("t1", "user", f"msg {i} " + "x" * 1400)
-            conv_log.append("t1", "assistant", f"reply {i} " + "y" * 1400)
-
-        mock_sessions = MagicMock()
-        mock_sessions.get_pid = MagicMock(return_value=None)
-        mock_sessions.get_or_create = AsyncMock(side_effect=RuntimeError("boom"))
-        mock_sessions.release = MagicMock()
-        mock_sessions.recycle_background = AsyncMock()
-
-        result = await compress_thread_history(conv_log, "t1", "q", mock_sessions)
-        assert result is None
-        mock_sessions.release.assert_not_called()
-        mock_sessions.recycle_background.assert_not_awaited()
-
+class TestCompressedHistory:
     def test_build_session_context_uses_compressed_history(self, tmp_path):
         """When compressed_history is passed, it replaces naive truncation."""
         from kiro_crew.history import ConversationLog
@@ -1227,36 +1143,6 @@ class TestCompressThreadHistory:
 
         assert "OPENING CONTEXT LINE" in ctx
         assert "[Older thread history omitted]" not in ctx
-
-    @pytest.mark.asyncio
-    async def test_compressed_output_redacts_credentials(self, tmp_path, monkeypatch):
-        """Credentials in LLM compression output must be scrubbed."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        for i in range(50):
-            conv_log.append("t1", "user", f"msg {i} " + "x" * 500)
-            conv_log.append("t1", "assistant", f"reply {i} " + "y" * 500)
-
-        mock_sessions = MagicMock()
-        mock_sessions.get_pid = MagicMock(return_value=None)
-        mock_sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
-        mock_sessions.release = MagicMock()
-        mock_sessions.recycle_background = AsyncMock()
-
-        fake_key = "AKIAIOSFODNN7EXAMPLE"
-        monkeypatch.setattr(
-            "kiro_crew.llm_helpers.stream_and_collect",
-            AsyncMock(return_value=f"summary with {fake_key} leaked"),
-        )
-
-        result = await compress_thread_history(conv_log, "t1", "q", mock_sessions)
-        assert result is not None
-        assert fake_key not in result
 
 
 class TestLoadAgentPrompt:
@@ -1503,23 +1389,6 @@ class TestMultibyteSanitization:
         sample = "\u2014 \u2013 \u2018 \u2019 \u201c \u201d \u2026 \u00a0 \u2022"
         result = sample.translate(_MULTIBYTE_TABLE)
         assert result == "-- - ' ' \" \" ...   -"
-
-    @pytest.mark.asyncio
-    async def test_compress_thread_history_strips_multibyte(self, tmp_path):
-        """Short transcript with multi-byte chars gets sanitized."""
-        from kiro_crew.context import compress_thread_history
-        from kiro_crew.history import ConversationLog
-
-        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
-        conv_log.init()
-        conv_log.append("t1", "user", "what\u2019s the status \u2014 any update?")
-        conv_log.append("t1", "assistant", "All good \u2026 no issues.")
-        sessions = Mock(spec=[])
-        result = await compress_thread_history(conv_log, "t1", "hello", sessions)
-        assert result is not None
-        assert "\u2019" not in result
-        assert "\u2014" not in result
-        assert "\u2026" not in result
 
 
 class TestCurrentDateTimezone:
