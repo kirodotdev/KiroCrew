@@ -1978,9 +1978,10 @@ async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
 # ~/.kiro/settings/mcp.json. That shared file is read by everything else living
 # under ~/.kiro — Kiro IDE and any other kiro-cli agent — so registering an app's
 # tools there leaks them into surfaces that never installed the app (and a dead
-# HTTP entry there breaks EVERY kiro session, see backend.py's warning). KiroCrew
-# sessions read only the agent config (``includeMcpJson`` pinned False in
-# agent.py), so this is both sufficient and correctly scoped.
+# HTTP entry there breaks EVERY kiro session, see the boot-reconcile warning in
+# backend_runtime/startup.py). Kiro Crew sessions read only the agent config
+# (``includeMcpJson`` pinned False in agent.py), so this is both sufficient and
+# correctly scoped.
 def _mcp_json_path() -> Path:
     """KiroCrew's own agent config. A function, not an import-time constant:
     the path must track the live data home, and freezing it at import would
@@ -2115,7 +2116,7 @@ def _resolve_live_mcp_url(app_name: str, url: str, live_port: int | None = None)
     """Rewrite a manifest HTTP MCP url's port to the backend's ACTUALLY-allocated port.
 
     Gateway-managed backends declare ``backend.port:"auto"`` and get a free port at
-    spawn time (``backend.py:_find_free_port`` — 9100 if free, else 9101, …). The
+    spawn time (``backend_runtime/ports.py:_find_free_port`` — 9100 if free, else 9101, …). The
     manifest's ``mcpServers.<name>.url`` carries an illustrative fixed port (e.g.
     ``http://localhost:9100/mcp``). Registering that verbatim is a latent bug: whenever
     the backend lands on a different port, the registered MCP server points at the wrong
@@ -2133,8 +2134,9 @@ def _resolve_live_mcp_url(app_name: str, url: str, live_port: int | None = None)
         return url
     try:
         if live_port is None:
-            # circular import: backend.py imports from bridges (reregister_app_mcp_servers
-            # in its boot path), so bridges can't import backend at module load — defer it.
+            # circular import: backend_runtime/registration.py imports from bridges
+            # (reregister_app_mcp_servers in its health gate), so bridges can't import
+            # backend at module load — defer it.
             from kiro_crew.apps.backend import get_app_backend_port
 
             live_port = get_app_backend_port(app_name)

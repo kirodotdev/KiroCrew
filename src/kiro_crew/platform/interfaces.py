@@ -1420,9 +1420,9 @@ class PackageManager(Protocol):
     """**RESERVED extension point — not consumed by the core.**
 
     Composing a ``PackageManager`` into ``PlatformContext.package_manager`` has
-    NO effect: the external-tool install paths (ollama, ffmpeg, whisper) are
-    inline step-by-step brew/curl/pip logic in ``cli_doctor.py``, not a single
-    plan-resolution point this seam could own. Both methods are inert.
+    NO effect: the external-tool install hints (ffmpeg, faiss, the ``voice-aws``
+    extra) are inline brew/winget/pip text in ``doctor_checks/features.py``, not a
+    single plan-resolution point this seam could own. Both methods are inert.
 
     For registry-backed installation of MCP servers / skills / agent packages,
     use ``CapabilityManager`` — the live, operations-based seam.

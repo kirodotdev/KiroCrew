@@ -2254,7 +2254,7 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
 # ONE literal for the slot-detail page ceiling. The handler clamps ``?limit=`` to
 # it and the cache cap is derived from it, so raising the page size cannot leave
 # the cache sized for the old one. The frontend mirrors it as
-# ``SLOT_DETAIL_MAX_LIMIT`` in ``website/src/store/chatSlice.ts``.
+# ``SLOT_DETAIL_MAX_LIMIT`` in ``website/src/store/chat/paging.ts``.
 SLOT_DETAIL_MAX_LIMIT = 500
 _DISPLAY_REDACTION_STRINGS_PER_ROW = 8
 _DISPLAY_REDACTION_CACHE_MAX_ENTRIES = (

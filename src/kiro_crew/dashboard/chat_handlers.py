@@ -2111,7 +2111,7 @@ def _is_answered_permission(m: dict) -> bool:
     (``state.py`` ``_mark_permission_resolved``), which is also the only place the
     stale-sweep and the slot resolver read it, so ``cls`` is the single source of
     truth here. Truthiness rather than key presence mirrors the client's own
-    ``!meta.resolved`` test (``chatSlice.ts`` ``selectSlotPendingApproval``), so an
+    ``!meta.resolved`` test (``store/chat/selectors.ts`` ``selectSlotPendingApproval``), so an
     empty decision still counts as pending and an actionable approval is never lost.
     """
     if m.get("role") != "permission":
@@ -2918,7 +2918,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             # CLIENT DEPENDENCY on this collapse shape: while a slot streams, the
             # in-flight chunk run folds into ONE trailing row that carries no durable
             # `meta.mid`, and the bounded window ends in it. The dashboard's
-            # `warmSlotCache` (website/src/store/chatSlice.ts) sizes its count-matched
+            # `warmSlotCache` (website/src/store/chat/slotRefresh.ts) sizes its count-matched
             # request to the durable rows a pane holds and asks for ONE EXTRA row on a
             # running slot so the folded row does not displace a durable one out of
             # the window. A change here that folds the run into more than one row, or
@@ -11764,7 +11764,7 @@ def _hydrate_slot_from_history(
     (RFC 7.1b); see the parameter docs on the public function.
     """
     # PERSISTED METADATA IS AUTHORITATIVE for the title. The sidebar's resume
-    # call always sends a ``title`` (see website/src/api/client.ts
+    # call always sends a ``title`` (see website/src/api/client/chat.ts
     # resumeChatSlot: ``title: title || key``), and that value is client
     # chrome — often a STALE echo of an older name (a notification deep link,
     # a sidebar row rendered before a background refresh landed). Classifying

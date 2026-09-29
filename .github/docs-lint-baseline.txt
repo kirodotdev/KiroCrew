@@ -240,8 +240,6 @@ dead-identifier	website/docs/narrow-viewport.md	ActionBar
 dead-identifier	website/docs/testing.md	CronNotificationButtons
 dead-identifier	website/docs/testing.md	webServer
 dead-identifier	website/docs/theming-contract.md	TestThemeVarsFilter
-line-ref	docs/blog/vibe-coding-generations.md	src/kiro_crew/vector_memory.py:1562
-line-ref	docs/blog/vibe-coding-generations.md	src/kiro_crew/vector_memory.py:1565
 line-ref	docs/request-for-change/README.md	hooks.py:93-99
 line-ref	docs/request-for-change/README.md	validation.py:92-94
 line-ref	docs/request-for-change/rfc-agent-config-mirror.md	acp/client.py:5881
@@ -310,7 +308,6 @@ line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/manager.py:281
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/manifest.py:1010
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/manifest.py:1214-1215
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/permissions.py:71
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/registry.py:4053
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/route_registry.py:122
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/routes.py:2336
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	apps/routes.py:503
@@ -421,7 +418,6 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:173
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:180-200
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	apps/builtins/code_review_sage/sage_lib/review_pool.py:490
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	chatSlice.ts:668-671
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	config/loader.py:755-756
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	context.py:872
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	context.py:897-902

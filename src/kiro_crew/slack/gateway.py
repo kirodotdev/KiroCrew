@@ -1215,7 +1215,7 @@ async def _await_cron_fire_time_gate(
         reason = await run_in_cron_gate_pool(vet_job_at_fire_time, job, timeout=budget)
     except CronQueueTimeout as exc:
         # Scoped exactly as _run_job_isolated's own result-less clear
-        # (cron.py:2852). For an agent/message job ``last_result`` is the
+        # (close_run, cron_service/execution.py). For an agent/message job ``last_result`` is the
         # cross-run dedup context build_cron_session_context prepends as "do
         # NOT repeat", and a run starved here produced no result to replace it
         # -- clearing it would make the NEXT run repeat content it had already

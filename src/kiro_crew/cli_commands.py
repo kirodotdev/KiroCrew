@@ -3093,7 +3093,8 @@ def _learn(args: argparse.Namespace) -> None:
                     "significant words with it can coexist."
                 )
             # The category is echoed ONLY where the store adopted the submitted one.
-            # It is write-once (vector_memory.py builds an enrichment with the STORED
+            # It is write-once (write_lesson's exact-rule pass, `resolve_exact_rule` in
+            # vector_memory_runtime/lessons.py, builds an enrichment with the STORED
             # category, falling back to the submitted one only when the row has none),
             # so an insert is the single outcome where what was typed is what is held.
             # Anything else printing it would show a value the store may not have --

@@ -9180,7 +9180,7 @@ class TestCronStoreProtection:
     """
 
     def test_leaf_membership(self) -> None:
-        # Drift guard: a rename of the store or sidecar dir in cron.py /
+        # Drift guard: a rename of the store or sidecar dir in cron_service/store.py /
         # cron_history.py without a matching entry here would silently
         # un-fence them.
         from kiro_crew.security import _CREW_SECRET_LEAVES

@@ -501,8 +501,8 @@ class TestUnresolvedMcpRefs:
         imports it inside the function (doctor keeps its import graph lazy). That
         the row asks ONE boundary-clean question rather than assembling the answer
         from the spec, the backend registry and the mirror seam is the reason this
-        fixture is a single return value -- and is what keeps `cli_doctor` off the
-        agent-sdk-boundary baseline.
+        fixture is a single return value -- and is what keeps `doctor_checks/mcp.py`, the
+        row's home, off the agent-sdk-boundary baseline.
         """
         from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
@@ -3374,7 +3374,7 @@ class TestCronHealth:
         return path
 
     def _run(self, monkeypatch, tmp_path: Path) -> list[str]:
-        # The scan lives in cron.py (single owner of the pause predicates), so
+        # The scan lives in cron.py (pause predicates: cron_service/store.py), so
         # the data home is patched THERE; doctor is only the presentation half.
         monkeypatch.setattr(cron, "config_dir", lambda: tmp_path)
         issues: list[str] = []

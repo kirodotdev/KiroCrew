@@ -962,7 +962,7 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
         """Verify the gateway's X-KiroCrew-Proxy HMAC before dispatch (CWE-306).
 
         The health endpoint stays unauthenticated because the gateway's own
-        liveness probe (apps/backend.py) hits the backend directly, unsigned.
+        liveness probe (apps/backend_runtime/probe.py) hits the backend directly, unsigned.
         A read-only GET carries no body, so the signed body hash is sha256(b"").
         """
         route = urllib.parse.urlparse(self.path).path.rstrip("/")

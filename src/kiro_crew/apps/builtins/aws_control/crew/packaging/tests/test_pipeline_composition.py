@@ -400,7 +400,7 @@ class TestTheSurfaceSurvivesTheSplit:
 
     def test_the_crew_name_guard_runtime_prose_points_at_still_resolves(self, facade) -> None:
         # ``crew/runtime/container/supervisor/bundle.py`` names ``_validated_crew_name`` in
-        # ``packaging/build.py`` as the builder's copy of its own guard.
+        # ``packaging/pipeline/crew.py`` as the builder's copy of its own guard.
         assert facade._validated_crew_name is _owner("crew")._validated_crew_name
         with pytest.raises(facade.ExportRefused):
             facade._validated_crew_name("../x")

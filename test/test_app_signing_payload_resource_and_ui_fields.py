@@ -15,8 +15,8 @@ keys name things the install chain turns into code or into text an agent obeys:
 * each ``sops`` file becomes procedure an agent follows,
 * ``dependencies.capabilities.mcp`` is an id ``dependencies.resolve_dependencies``
   hands to ``CapabilityManager.install_mcp`` at install time, and
-* ``platform.clientInstall.shell`` is a one-liner ``registry.py`` returns as
-  ``needsClientInstall`` for the reader to paste into a terminal.
+* ``platform.clientInstall.shell`` is a one-liner ``apps/registry_pipeline/install.py`` returns
+  in ``clientInstall`` (with ``needsClientInstall``) for the reader to paste into a terminal.
 
 Left out of the payload, each is a part of a signed app an attacker could rewrite
 -- or merely APPEND to -- with the publisher's signature still verifying.

@@ -716,7 +716,7 @@ class TestABlockEndsAtItsOwnCloser:
             assert sum(out.values()) == len(prompt)
 
     def test_task_facts_inside_the_activity_block_are_their_own_block(self):
-        """The activity block nests ``[Task facts —`` (``vector_memory.py``,
+        """The activity block nests ``[Task facts —`` (``vector_memory_runtime/semantic.py``,
         ``facts_only=True``) and ``[Episodic Memory``. Without its own opener the
         facts fold into ``memory``; without its own closer they absorb the
         episodes. Only the wrapper's trailing closer is unattributed, exactly as

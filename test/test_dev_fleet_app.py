@@ -2993,7 +2993,8 @@ async def test_hmac_expired_timestamp_returns_401():
 
 @pytest.mark.asyncio
 async def test_hmac_health_bypasses_verification():
-    """Health endpoint does not require HMAC (used by backend.py health loop)."""
+    """Health endpoint does not require HMAC (used by the backend health loop in
+    ``apps/backend_runtime/supervision.py``)."""
     app = _make_hmac_app()
     with patch.object(http_api_mod, "_load_app_secret", return_value=""):
         async with TestClient(TestServer(app)) as client:

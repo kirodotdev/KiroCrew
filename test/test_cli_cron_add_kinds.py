@@ -919,7 +919,8 @@ class TestArgparse:
     def test_help_copy_numbers_track_the_production_bounds(self, monkeypatch, capsys):
         # The two flag descriptions quote ranges and defaults. Each number is
         # read back from the code that enforces it, so a bound that moves in
-        # cron.py or validation.py fails here instead of leaving stale prose.
+        # cron_service/ (model.py, execution.py) or validation.py fails here
+        # instead of leaving stale prose.
         from kiro_crew import cli
         from kiro_crew.cron import _JOB_TIMEOUT_SECS, _SUBPROC_CLEANUP_ALLOWANCE_SECS
         from kiro_crew.validation import CRON_ADD_SCHEMA

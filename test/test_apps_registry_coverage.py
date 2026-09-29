@@ -1386,7 +1386,7 @@ class TestApplyTrustFields:
     def test_core_row_is_verified_only_from_the_index_author(self):
         rows = registry._apply_trust_fields(
             [
-                {"name": "a", "_index_author": "KiroCrew"},  # brand-ok: registry.py compares author.lower() == "kirocrew"
+                {"name": "a", "_index_author": "KiroCrew"},  # brand-ok: see catalog._fold_author
                 {"name": "b", "_index_author": "someone-else"},
                 {"name": "c", "_index_author": {"name": "kirocrew"}},
             ]
@@ -2344,7 +2344,7 @@ class TestRunAppBuild:
         """A root requirements.txt for an OUT-OF-PROCESS backend is not a
         gateway-import dependency, so the desktop gate must let it through.
 
-        ``apps/backend.py::provision_app_deps`` installs exactly this file with
+        ``apps/backend_runtime/provisioning.py::provision_app_deps`` installs exactly this file with
         ``pip install --target`` into the app's own deps dir at backend start,
         which works on the bundled interpreter. Refusing it here blocked an app
         class the runtime serves. Nothing is pip-installed AT INSTALL TIME — the

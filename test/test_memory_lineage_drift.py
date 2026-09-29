@@ -1,12 +1,13 @@
 """Neither lineage may drift out from under ``vector_memory``'s SQL.
 
-``vector_memory`` drives two schema lineages through one statement set. Fifteen of
-its write statements interpolate a per-lineage relation name
-(``f"UPDATE {self._sem_rel} ... {self._sem_guard}"``) and four more route through a
+``vector_memory`` and the ``vector_memory_runtime`` modules it delegates to drive two
+schema lineages through one statement set. Their per-lineage write statements
+interpolate a relation name (``f"UPDATE {self._sem_rel} ... {self._sem_guard}"``,
+spelled ``store._sem_rel`` in a runtime module) or route through a
 ``memory_schema`` builder; on the v1 lineage every one of them renders
 byte-identically to the literal it replaced.
 
-That byte-identity is exactly what makes the drift invisible. A twentieth write
+That byte-identity is exactly what makes the drift invisible. One more write
 spelled as a plain ``UPDATE semantic_memory SET ...`` literal is correct on every
 v1 install — which is every file the rest of the suite exercises — and fails only
 on a crew silo, at runtime, because ``semantic_memory`` is a VIEW there:
@@ -24,6 +25,8 @@ Three properties, one test each:
 
 The scan walks ``vector_memory.py``'s AST and opens nothing but ``:memory:``
 databases, so it has no filesystem side effects at all.
+``test_vector_memory_composition_contract.py`` re-applies this module's source scans
+to the ``vector_memory_runtime`` modules.
 """
 
 from __future__ import annotations

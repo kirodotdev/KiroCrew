@@ -2784,8 +2784,8 @@ class AppManifest:
         platform_d = self.platform.to_dict()
         if platform_d:
             # `clientInstall.shell` is a one-liner the App Store hands the reader to
-            # PASTE INTO A TERMINAL -- `registry.py` returns the whole `clientInstall`
-            # dict as `needsClientInstall`, under a signature-verified publisher badge.
+            # PASTE INTO A TERMINAL -- `install_from_registry` returns the whole `clientInstall`
+            # dict with `needsClientInstall: True`, under a signature-verified publisher badge.
             # No file in the package has to exist for it to run, which is the property
             # that put `setup` in the payload.
             # The whole canonical dict, not `clientInstall` alone: `installMode:
@@ -3158,11 +3158,11 @@ def requirements_in_tree(app_root: Path, req_file: Path) -> tuple[Path, Path] | 
     ``requirements.txt -> requirements/prod.txt`` is legitimate layout and
     resolves.
 
-    Three callers, one rule. ``backend.py``'s provisioning read and its
+    Three callers, one rule. ``backend_runtime/provisioning.py``'s provisioning read and its
     activation gate use it as the fast refusal before their descriptor-pinned,
     every-component-no-follow open of the returned target -- that open, and the
     bounded read through it, are the security boundary; this is not, and it
-    stays where it is. ``registry.py``'s install-time desktop gate uses it to
+    stays where it is. ``registry_pipeline/install.py``'s install-time desktop gate uses it to
     predict what those two will do, so it never waives a file the provisioner
     would refuse. ``None`` on any resolution error, so no caller catches here.
     """

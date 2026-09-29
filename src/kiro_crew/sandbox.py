@@ -7619,9 +7619,9 @@ def _probe_unshare_via_fork() -> tuple[bool, bool, str, str]:
 # The event loop NEVER executes fork/waitpid/sleep for the probe. On-loop
 # callers with a cold cache get an immediate transient "none" (fail-closed,
 # self-heals in ms) and fire a background daemon thread that populates the
-# cache off-loop. Boot sites call prewarm_backend() to fill the cache before
-# any on-loop caller ever reaches detect_backend(), so the transient path is
-# typically never hit in production.
+# cache off-loop. Boot sites call warm_backend() (via asyncio.to_thread) to fill
+# the cache before any on-loop caller ever reaches detect_backend(), so the
+# transient path is typically never hit in production.
 
 _warm_thread: threading.Thread | None = None
 
@@ -7683,8 +7683,9 @@ def _kick_background_warm() -> None:
 def prewarm_backend() -> None:
     """Fire-and-forget boot hook: start background probe to fill the cache.
 
-    Call early in gateway startup (slack/gateway.py, mcp_gateway/gatewayd.py)
-    so the cache is warm before any on-loop spawn path reaches detect_backend().
+    The gateway boot sites (slack/gateway.py, mcp_gateway/daemon/cli.py::_amain)
+    call the blocking ``warm_backend`` instead, which waits for the probe so the
+    cache is warm before any on-loop spawn path reaches detect_backend().
     """
     if sys.platform != "linux":
         return  # probes are Linux-only

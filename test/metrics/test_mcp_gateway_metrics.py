@@ -7,7 +7,7 @@ asserts the captured metric name + attributes:
 * ``kirocrew.mcp.backend.acquire.duration`` — via ``gatewayd._emit_backend_acquire_metric``
 * ``kirocrew.mcp.lazy_load.{count,duration}`` — via ``gatewayd._emit_lazy_load_metrics``
 
-The metric names/attrs live in production (prewarm.py / gatewayd.py), so a
+The metric names/attrs live in production (prewarm.py / daemon/diagnostics.py), so a
 rename, attribute change, or removed emit fails these tests rather than passing
 green against logic the test wrote itself.
 """

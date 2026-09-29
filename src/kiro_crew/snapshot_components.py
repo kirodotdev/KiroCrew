@@ -174,7 +174,7 @@ COMPONENTS: dict[str, ComponentSpec] = {
     ),
     "crons": ComponentSpec(
         # `CronJob.env` is a persisted dict of per-job environment variables
-        # (cron.py), so a job passing an API token carries it in crons.json.
+        # (cron_service/model.py), so a job passing an API token carries it in crons.json.
         policy=SecretPolicy.UNRESOLVED,
         help="crons.json (scheduled jobs)",
         files=("crons.json",),

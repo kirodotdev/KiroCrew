@@ -3,7 +3,7 @@
 This predicate has two consumers that must not disagree: it selects the
 continuation body handed to the model (``_MANUAL_RESUME_MSG`` vs
 ``_MANUAL_CONTINUE_MSG``), and its frontend mirror ``selectTurnInterrupted``
-(``website/src/store/chatSlice.ts``) decides whether the composer offers the
+(``website/src/store/chat/selectors.ts``) decides whether the composer offers the
 Resume control at all. A divergence means the button promises one thing and the
 agent is told another.
 
@@ -279,7 +279,7 @@ class TestInjectRowsOpenTurns:
     user row. An untagged inject -- a ``/note`` breadcrumb, a Stop-hook halt card,
     a policy refusal notice -- dispatched nothing and is looked through.
 
-    Mirrors ``selectTurnInterrupted`` in ``chatSlice.ts``, which decides inject
+    Mirrors ``selectTurnInterrupted`` in ``store/chat/selectors.ts``, which decides inject
     rows before its CONTINUE_SCAN_SKIP set.
     """
 

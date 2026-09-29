@@ -6296,7 +6296,7 @@ async def start_dashboard(
     # The backend the main wave deferred (``apps.backend.DEV_FLEET_APP_NAME``):
     # ``apps/backend.py`` hands the Dev Fleet backend ``KIROCREW_BOUND_PORT`` at
     # spawn. Under the reservation above that value existed before the main wave
-    # too, but the admission split lives in ``apps/backend.py`` and is shared
+    # too, but the admission split lives in ``apps/backend_runtime/startup.py`` and is shared
     # with the headless entrypoint, where the value only exists post-listen —
     # so the second wave stays. Same bulkhead as the main wave; admission
     # already ran there.

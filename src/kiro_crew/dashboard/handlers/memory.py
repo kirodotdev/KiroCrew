@@ -1611,7 +1611,7 @@ async def _ensure_pip_available() -> tuple[bool, str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # don't leak secrets to pip subprocesses (same reason and same
-            # helper as the sibling pip spawn in apps/backend.py): `standard`
+            # helper as the sibling pip spawn in apps/backend_runtime/provisioning.py): `standard`
             # mode scrubs only _SENSITIVE_ENV_PREFIXES, and on a host where no
             # launcher runs at all nothing else strips the gateway's channel
             # tokens or owner id from a child that executes packaging code.

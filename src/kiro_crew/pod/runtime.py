@@ -1030,7 +1030,7 @@ def pod_plane_mutex(cfg: PodConfig):
     Without this, two colliding names ``up``'d concurrently (Dev Fleet's normal
     shape) hold disjoint name locks, both probe the same port free, and both boot
     onto it -- exactly the crash-loop :func:`allocate_port` exists to prevent.
-    ``apps/backend.py``'s ``_reserve_free_port`` carries the same lesson one
+    ``apps/backend_runtime/ports.py``'s ``_reserve_free_port`` carries the same lesson one
     subsystem over: "Probing without reserving ... lets two apps be handed the same
     port -- both children then bind it and the loser dies with EADDRINUSE."
 

@@ -358,7 +358,7 @@ class TestTheOperatorFacingClaimsSurviveMeasurement:
         """
         overclaims = ("blocks monitor_start", "disables monitor_start", "requires monitor_watch")
         sites = {
-            "src/kiro_crew/config/sections.py (schema help)": self._entry().help,
+            "src/kiro_crew/config/service_sections.py (schema help)": self._entry().help,
             "config-baseline.json": _baseline_help(_KEY),
             str(_SPEC): _spec_paragraph_about("prefer_structured_arming"),
         }

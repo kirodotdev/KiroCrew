@@ -242,8 +242,8 @@ async def _run_app_build(
         # applies to what would have to land there: `pyproject.toml` / `setup.py`
         # install INTO this interpreter (`pip install .`). A root requirements.txt
         # the RUNTIME provisions out of process is a different dependency:
-        # `backend.py::provision_app_deps` (at the spawn of a `backend.entryPoint`)
-        # and `bridges.py::_maybe_provision_backendless_deps` (at the
+        # `backend_runtime/provisioning.py::provision_app_deps` (at the spawn of a
+        # `backend.entryPoint`) and `bridges.py::_maybe_provision_backendless_deps` (at the
         # registration of a stdio `mcpServers` entry) both install that same file
         # with `pip install --target` into the app's own deps dir, which works on
         # the bundled interpreter and never touches the bundle. Refusing it here

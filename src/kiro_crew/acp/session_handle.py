@@ -280,7 +280,7 @@ NATIVE_CHILD_LABEL_CAP = 512
 class WatchdogSettings:
     """Resolved ``watchdog.*`` config values, read ONCE at handle construction
     (never inside the dispatch loop). Defaults mirror ``WatchdogConfig`` in
-    ``config/loader.py`` so a config-less context (tests, early bootstrap)
+    ``config/service_sections.py`` so a config-less context (tests, early bootstrap)
     behaves identically to a default config.
 
     Every idle window must stay strictly inside the turn's own wall-clock

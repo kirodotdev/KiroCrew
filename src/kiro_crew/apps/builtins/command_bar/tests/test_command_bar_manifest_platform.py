@@ -3,7 +3,7 @@
 Command Bar is overlay-only: the manifest declares no page, no backend entry point and
 no cron, and every line of behaviour lives in the browser bundle under
 ``website/src/apps/command-bar/``. ``platform.os`` is a published capability
-label, not an enable gate: ``apps/routes.py`` and ``apps/registry.py`` only call
+label, not an enable gate: ``apps/routes.py`` and ``apps/registry_pipeline/install.py`` only call
 ``supports_platform`` for a ``platform.installMode == "client"`` app, which no
 builtin -- including this one -- sets, so the declared OS list never actually
 gated anything here.

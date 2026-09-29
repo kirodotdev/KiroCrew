@@ -10,7 +10,7 @@ not mean the same thing on both families:
 
 The gateway decides that an app backend hit a port collision by observing that
 the spawned child died on its initial bind (``kiro_crew/apps/backend.py`` --
-``_survived_initial_bind`` and the EADDRINUSE reasoning around it). That signal
+the ``_survived_spawn`` call and the EADDRINUSE reasoning around it). That signal
 only exists while the bind is allowed to fail, so with the stock flag a second
 backend binds the same fixed port on Windows, the gateway reports a healthy
 start, and the two processes split incoming requests.

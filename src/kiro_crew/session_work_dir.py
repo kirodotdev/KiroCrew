@@ -85,8 +85,10 @@ RUN_DIR_MARKER = ".kirocrew-run-dir"
 #: run ids ``SubagentManager._mint_agent_id`` draws -- sixteen characters on
 #: this tree, eight on the shipped builds whose directories the sweep also has
 #: to recognise; cron job and run ids are the eight-hex UUID prefixes minted in
-#: ``cron.py``. A named agent never reaches a key in these shapes: the stable
-#: sequence key ``cron:<job>:<agent>`` carries a name, not eight hex digits.
+#: ``cron_service/fields.py`` (``build_job``) and ``cron_service/identity.py``
+#: (``build_cron_session_context``). A named agent never reaches a key in these
+#: shapes: the stable sequence key ``cron:<job>:<agent>`` carries a name, not
+#: eight hex digits.
 #: Both the key predicate and the directory-name filter are generated from this
 #: table so their shapes cannot diverge.
 _DERIVED_SESSION_SHAPES: tuple[tuple[str, tuple[int, ...]], ...] = (

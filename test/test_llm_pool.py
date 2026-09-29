@@ -1642,7 +1642,7 @@ class TestCCWorkerReapsTheProcessTree:
 
     ``spine/agent_runner.py``'s ``_terminate_group`` already records this for the
     same argv ("agents kept costing money after Stop"), and
-    ``apps/registry.py``'s ``_communicate_with_timeout`` states the rule that a
+    ``apps/registry_pipeline/checkout.py``'s ``_communicate_with_timeout`` states the rule that a
     caller MUST spawn with ``start_new_session`` for the group signal to land.
     These pin both halves: without the spawn flag the child shares the gateway's
     group and ``kill_and_reap`` deliberately skips its tree kill, so the flag is

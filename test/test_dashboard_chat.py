@@ -2732,7 +2732,7 @@ class TestSlotDetailPagination:
         in-memory ``slot.messages`` instead, which answers a different question:
         which rows does the client still need? A pending approval is actionable, and
         the client reads it straight out of the transcript
-        (``chatSlice.ts`` ``selectSlotPendingApproval``), so dropping it makes the
+        (``store/chat/selectors.ts`` ``selectSlotPendingApproval``), so dropping it makes the
         approval bar vanish while the server is still waiting on an answer.
 
         Skipping it also bought nothing: ``permission`` is never persisted
@@ -2740,7 +2740,7 @@ class TestSlotDetailPagination:
         a disk counterpart for the id dedup to match.
 
         Single delivery is safe because the client REPLACES its transcript from this
-        payload (``chatSlice.ts`` ``state.messages = next``) rather than appending,
+        payload (``store/chat/slotSwitch.ts`` ``state.messages = next``) rather than appending,
         so returning the row once cannot double it.
         """
         import json as _json
@@ -2864,7 +2864,7 @@ class TestSlotDetailPagination:
         ``_prepare_messages`` does not discard chunk rows, it ACCUMULATES them and
         emits one ``streaming`` row (``chat_utils.py:1651-1660``). That is the only
         way in-flight assistant text reaches the client through this endpoint,
-        because the client filters raw ``chunk`` itself (``chatSlice.ts``
+        because the client filters raw ``chunk`` itself (``store/chat/wire.ts``
         ``SKIP_ROLES``). So skipping chunk rows in the owed set does not merely omit
         noise — it destroys the partial answer.
 

@@ -265,7 +265,7 @@ def test_faiss_install_spawn_env_is_scrubbed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# registry.py -- the two /bin/sh -c detectInstalled probes
+# registry_pipeline/catalog.py + install.py -- the two /bin/sh -c detectInstalled probes
 # ---------------------------------------------------------------------------
 def _stub_registry_probe(monkeypatch, registry, returncode: int) -> tuple[list[dict], list[dict]]:
     """Stub the probe's sandbox chokepoint and spawn.

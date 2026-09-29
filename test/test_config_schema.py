@@ -71,10 +71,11 @@ def _all_fields_recursive(
         result.append((path, f))
         tp = f.type
         if isinstance(tp, str):
-            # Evaluate in the DEFINING module's namespace (standard
-            # get_type_hints semantics): the section dataclasses live in
-            # sections.py, and the loader facade's re-export list is frozen, so
-            # a post-split type is resolvable only where it is defined.
+            # Evaluate in the sections facade's namespace: every section
+            # dataclass is defined in sections.py or in a section owner it
+            # re-exports (memory_sections, integration_sections, service_sections),
+            # so each annotation resolves there, while the loader facade's
+            # frozen re-export list does not carry every section type.
             import kiro_crew.config.sections as _mod
 
             try:

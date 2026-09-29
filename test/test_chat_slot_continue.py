@@ -66,7 +66,7 @@ def _patched(monkeypatch):
 
 
 class TestIsInterrupted:
-    """The predicate mirrors `selectContinuable` in website/src/store/chatSlice.ts."""
+    """The predicate mirrors `selectTurnInterrupted` in website/src/store/chat/selectors.ts."""
 
     def test_empty_transcript_is_not_interrupted(self):
         assert _is_interrupted(_ChatSlot("s")) is False

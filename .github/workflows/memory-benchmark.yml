@@ -20,7 +20,7 @@ name: Memory Benchmark (nightly)
 #      same backend, so the runner image has to be pinned for the comparison to
 #      mean anything.
 #   4. Nothing in a normal PR moves the number. Only `vector_memory.py`,
-#      `embeddings.py` and `context.py` do.
+#      `vector_memory_runtime/`, `embeddings.py` and `context.py` do.
 #
 # The arms run as a MATRIX rather than sequentially in one job, and that is a
 # measurement result, not a style choice: two arms in one job overruns any

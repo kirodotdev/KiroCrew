@@ -53,8 +53,9 @@ from .corpus import CAT_UNKNOWN, BenchQuery
 # overwhelming majority of English tokens but are not bit-identical.
 #
 # snowballstemmer keeps the in-progress word as mutable instance state, so a
-# shared instance is not thread-safe (same hazard documented in
-# vector_memory.py:133). One instance per thread; construction is trivial.
+# shared instance is not thread-safe (same hazard documented at
+# `_snowball_local` in vector_memory_runtime/text_scoring.py). One instance per
+# thread; construction is trivial.
 _stemmer_local = threading.local()
 
 

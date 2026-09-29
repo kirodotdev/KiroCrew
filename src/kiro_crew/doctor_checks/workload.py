@@ -40,8 +40,8 @@ _STALL_CURRENT_SECS = 24 * 3600
 # "paused" and its error state is not displayed at all.
 #
 # The scan itself lives in `cron.unhealthy_jobs_from_disk` so the pause-state
-# predicates keep the single owner `cron.py` declares for them; this module owns
-# only the presentation.
+# predicates keep their single owner (`_record_user_paused` / `_record_is_enabled`
+# in `cron_service/store.py`); this module owns only the presentation.
 #
 # Read-only, like the rest of doctor: an auto-paused job has failed
 # `_AUTO_PAUSE_THRESHOLD` times in a row and is usually paused for a good

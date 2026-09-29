@@ -291,7 +291,7 @@ class TestEnableGate:
     def test_default_off_when_the_config_field_is_absent(self, monkeypatch):
         """A build whose dataclass predates the field must not start drawing.
 
-        The field is owned by ``config/loader.py``, so this module reads it through
+        The field is owned by ``config/integration_sections.py``, so this module reads it through
         ``getattr``; a missing field can only ever mean "no decoration".
         """
 

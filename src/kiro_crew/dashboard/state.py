@@ -1108,7 +1108,7 @@ def is_stop_event_row(m: dict) -> bool:
 #: message's delivery). Every other inject row -- a ``/note`` breadcrumb, a
 #: Stop-hook halt card, a policy refusal notice -- is appended without one and
 #: opens nothing. Mirrors ``TURN_INJECT_KINDS`` in
-#: ``website/src/store/chatSlice.ts``, which is keyed by the ``InjectKind``
+#: ``website/src/store/chat/selectors.ts``, which is keyed by the ``InjectKind``
 #: type so a new kind cannot be stamped without being classified there.
 #: Wider than ``_TURN_OPENING_INJECT_KINDS`` in ``chat_handlers.py`` on
 #: purpose: that set counts turns for the session-start failure streak and
@@ -1161,7 +1161,7 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     purpose", NOT "there is nothing to do": a force-quit runs no ``finally``, so
     the error row that would have proved an interruption was never written.
 
-    Mirrors ``selectTurnInterrupted`` in ``website/src/store/chatSlice.ts`` —
+    Mirrors ``selectTurnInterrupted`` in ``website/src/store/chat/selectors.ts`` —
     the two must agree, or the composer promises one thing and the agent is
     told another.
 

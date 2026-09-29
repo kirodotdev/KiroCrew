@@ -915,7 +915,7 @@ def installed_attachment(
 
     Defaults to the launcher profile (``kirocrew sandbox status``'s original
     caller). The service profile is attached too, so
-    ``cli_doctor.py`` passes ``PROFILE_PATH`` / ``PROFILE_NAME`` here to answer
+    ``doctor_checks/confinement.py`` passes ``PROFILE_PATH`` / ``PROFILE_NAME`` here to answer
     the same question for the systemd service — "is the profile actually
     attached to the launcher script this host currently resolves?" — instead of
     the unit-directive check.

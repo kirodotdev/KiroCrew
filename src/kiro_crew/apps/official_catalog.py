@@ -764,7 +764,9 @@ def list_catalog_rows() -> list[dict[str, Any]]:
     fields, and the explicit session approval disclosure. They carry no clone
     coordinates and no ``origin`` because the catalog is trusted only as far as
     TLS, so it must not supply install coordinates or a first-party claim. Install status and trust are stamped later by
-    ``registry.py`` from the installed app, never from this document.
+    ``registry_pipeline/catalog.py``: install status from local install state
+    (``_enrich_with_install_status``), trust server-side (``_apply_trust_fields``),
+    never from this document.
 
     Returns ``[]`` when the catalog is unavailable, which is the caller's signal
     to fall back to the seed listing offline. Every field is type-guarded on the

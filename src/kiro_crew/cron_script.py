@@ -215,7 +215,7 @@ _SECRET_ENV_DENIED_PREFIXES: tuple[str, ...] = (
     "PYTHON",  # PYTHONPATH / PYTHONSTARTUP would shadow the launcher's imports
 )
 
-#: Cap mirrors the intent of the per-field caps in cron.py: a grant is a small
+#: Cap mirrors the intent of the per-field caps in cron_service/fields.py: a grant is a small
 #: hand-written map, not a bulk store.
 _SECRET_ENV_MAX_ENTRIES = 16
 
