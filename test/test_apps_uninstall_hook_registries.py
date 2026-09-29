@@ -19,6 +19,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from dashboard_owner_helpers import owner_claims
 
 import kiro_crew.apps.teardown as teardown
 
@@ -108,7 +109,9 @@ class TestUninstallDropsTheHooks:
         # cleanup raises is refused before anything destructive runs.
         state = MagicMock()
         state.crons = None
+        state.owner_id = ""
         request.app = {"state": state}
+        owner_claims(request)
         request.json = AsyncMock(return_value={})
 
         with (

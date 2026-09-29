@@ -1041,6 +1041,11 @@ async def handle_register_external(request: web.Request) -> web.Response:
 
     Body: { name, version, displayName, source?, manifest? }
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "app_register_external")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -1229,6 +1234,11 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     Steps 2–6 run inside the per-app lifecycle lock so the whole teardown is
     atomic and the cron precondition can abort before any irreversible action.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "app_uninstall")
+    if denied is not None:
+        return denied
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
@@ -2131,6 +2141,11 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     - ``app``: run onDisable only
     If onDisable fails, disable proceeds anyway (with warnings).
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "app_disable")
+    if denied is not None:
+        return denied
     name = request.match_info["name"]
     info = get_app(name)
     if not info:

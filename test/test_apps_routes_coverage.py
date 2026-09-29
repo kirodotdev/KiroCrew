@@ -29,6 +29,7 @@ import pytest
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from dashboard_owner_helpers import as_owner
 
 import kiro_crew.apps.routes as routes_mod
 from conftest import requires_symlinks
@@ -738,7 +739,7 @@ class TestRegisterExternal:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(
                 "/api/apps/register",
                 data="{",
@@ -762,7 +763,7 @@ class TestRegisterExternal:
         body: dict[str, str],
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/register", json=body)
             assert resp.status == 400
             assert "required" in (await resp.json())["error"]
@@ -772,7 +773,7 @@ class TestRegisterExternal:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(
                 "/api/apps/register",
                 json={
@@ -795,7 +796,7 @@ class TestRegisterExternal:
         from kiro_crew.apps.manager import _read_installed
 
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             response = await client.post(
                 "/api/apps/register",
                 json={
@@ -821,7 +822,7 @@ class TestRegisterExternal:
         from kiro_crew.apps.manager import _builtin_owns_install, _read_installed
 
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             first = await client.post(
                 "/api/apps/register",
                 json={
@@ -864,7 +865,7 @@ class TestRegisterExternal:
         )
         safe_source = "https://clone.example.test/owner/ext-app.git"
 
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             registered = await client.post(
                 "/api/apps/register",
                 json={
@@ -940,7 +941,7 @@ class TestRegisterExternal:
         from kiro_crew.apps.manager import INSTALLED_META_FILENAME, app_dir
 
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             registered = await client.post(
                 "/api/apps/register",
                 json={
@@ -1018,7 +1019,7 @@ class TestRegisterExternal:
             )
             _invalidate_config_cache()
 
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             response = await client.post(
                 "/api/apps/register",
                 json={
@@ -1081,7 +1082,7 @@ class TestRegisterExternal:
                 request_entered.set()
             return await handler(request)
 
-        app = web.Application(middlewares=[_mark_request])
+        app = as_owner(web.Application(middlewares=[_mark_request]))
         register_app_routes(app)
         repository = "https://clone.example.test/owner/ext-app.git"
 
@@ -1142,7 +1143,7 @@ class TestRegisterExternal:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(
                 "/api/apps/register",
                 json={
@@ -1716,7 +1717,7 @@ class TestUninstallRefusals:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/ghost/uninstall")
             assert resp.status == 404
 
@@ -1728,7 +1729,7 @@ class TestUninstallRefusals:
         register_external_app(
             "locked-app", "1.0.0", "Locked App", lifecycle="locked", resources="app"
         )
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/locked-app/uninstall")
             assert resp.status == 400
             assert "lifecycle=locked" in (await resp.json())["error"]
@@ -1756,7 +1757,7 @@ class TestUninstallRefusals:
 
         monkeypatch.setattr(routes_mod, "uninstall_app", _must_not_uninstall)
 
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/uninstall", json={})
             assert resp.status == 409
             body = await resp.json()
@@ -1784,7 +1785,7 @@ class TestUninstallRefusals:
         monkeypatch.setattr(routes_mod, "clean_dependencies", _clean)
         monkeypatch.setattr(routes_mod, "canonical_dep_key", lambda k: k)
 
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(
                 f"/api/apps/{APP}/uninstall",
                 json={"keep_specific": ["python:keepme", "", 7]},
@@ -1810,7 +1811,7 @@ class TestUninstallRefusals:
         monkeypatch.setattr(
             routes_mod, "classify_and_clean_for_uninstall", _classify
         )
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(
                 f"/api/apps/{APP}/uninstall", json={"keep_dependencies": True}
             )
@@ -1841,7 +1842,7 @@ class TestUninstallRefusals:
 
         monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _script)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/uninstall", json={})
             assert resp.status == 200
             log = (await resp.json())["uninstall_log"]
@@ -1864,7 +1865,7 @@ class TestUninstallRefusals:
             ),
         )
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/uninstall", json={})
             assert resp.status == 400
             assert (await resp.json())["error"] == "permission denied"
@@ -2097,7 +2098,7 @@ class TestDisableBranches:
         monkeypatch.setattr(routes_mod, "teardown_app_runtime", _must_not_teardown)
         monkeypatch.setattr(routes_mod, "disable_app", _must_not_disable)
 
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/disable")
             assert resp.status == 409
             body = await resp.json()
@@ -2112,7 +2113,7 @@ class TestDisableBranches:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/ghost/disable")
             assert resp.status == 404
 
@@ -2147,7 +2148,7 @@ class TestDisableBranches:
         # "could not be run" rather than "script failed".
         monkeypatch.setattr(teardown_mod, "run_lifecycle_script", _failed)
         monkeypatch.setattr(teardown_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/disable")
             assert resp.status == 200
             body = await resp.json()
@@ -2180,7 +2181,7 @@ class TestDisableBranches:
 
         monkeypatch.setattr(teardown_mod, "on_app_disable", _boom)
         monkeypatch.setattr(teardown_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/disable")
             assert resp.status == 200
             assert any(
@@ -2209,7 +2210,7 @@ class TestDisableBranches:
 
         monkeypatch.setattr(teardown_mod, "on_app_disable", _hooks)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/disable")
             assert (await resp.json())["warnings"] == ["2 job(s) left enabled"]
 
@@ -2226,7 +2227,7 @@ class TestDisableBranches:
             lambda name: AppResult(ok=False, name=name, error="metadata locked"),
         )
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/disable")
             assert resp.status == 400
             assert (await resp.json())["error"] == "metadata locked"
@@ -2294,7 +2295,7 @@ class TestRepeatedToggleIsIdempotent:
         monkeypatch.setattr(routes_mod, "get_app", _get_app)
         monkeypatch.setattr(teardown_mod, "run_lifecycle_script", _script)
         monkeypatch.setattr(teardown_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             first, second = await asyncio.gather(
                 client.post(f"/api/apps/{APP}/disable"),
                 client.post(f"/api/apps/{APP}/disable"),
@@ -4878,3 +4879,88 @@ async def test_app_proxy_stream_client_disconnect_is_quiet(
         "write_eof": ["prepare", "write", "write_eof"],
     }
     assert calls == expected[boundary]
+
+
+class TestLifecycleRoutesAreOwnerOnly:
+    """Register, uninstall and disable answer 403 to anyone but the owner.
+
+    Rows: a non-owner dashboard subject (``app == ""``) and an app token, both
+    before any side effect. The app token row on register names ANOTHER
+    installed app in the body, and the app token rows on uninstall and disable
+    target the app's own ``/api/apps/<self>/**`` path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_owner_cannot_register(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        body = {"name": "rogue-app", "version": "1.0.0", "displayName": "R"}
+        async with TestClient(TestServer(_make_app(dashboard_user="channel-user"))) as client:
+            resp = await client.post("/api/apps/register", json=body)
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "owner_only"
+        assert routes_mod.get_app("rogue-app") is None
+
+    @pytest.mark.asyncio
+    async def test_app_token_cannot_register_over_another_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.apps.manager import app_dir
+
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        before = (app_dir(APP) / APP_MANIFEST_FILENAME).read_text(encoding="utf-8")
+        body = {"name": APP, "version": "9.9.9", "displayName": "Other"}
+        app = _make_app(app_identity="other-app", dashboard_user="other-app")
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/apps/register", json=body)
+            assert resp.status == 403
+        after = (app_dir(APP) / APP_MANIFEST_FILENAME).read_text(encoding="utf-8")
+        assert after == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("app_identity", "user"), [(None, "channel-user"), (APP, APP)]
+    )
+    async def test_uninstall_is_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        app_identity: str | None,
+        user: str,
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        calls: list[str] = []
+
+        def _uninstall(name: str, **_kw: Any) -> AppResult:
+            calls.append(name)
+            return AppResult(ok=True, name=name, message="stub")
+
+        monkeypatch.setattr(routes_mod, "uninstall_app", _uninstall)
+        app = _make_app(app_identity=app_identity, dashboard_user=user)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/apps/{APP}/uninstall", json={"purge_data": True})
+            assert resp.status == 403
+        assert calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("app_identity", "user"), [(None, "channel-user"), (APP, APP)]
+    )
+    async def test_disable_is_refused(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        app_identity: str | None,
+        user: str,
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        assert enable_app(APP).ok
+        app = _make_app(app_identity=app_identity, dashboard_user=user)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/api/apps/{APP}/disable")
+            assert resp.status == 403
+        assert routes_mod.get_app(APP)["enabled"] is True
