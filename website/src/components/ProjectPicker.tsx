@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { createPortal } from 'react-dom'
-import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
+import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import ErrorNotice from './ErrorNotice'
+import { Btn } from './ui'
 import { findReport, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
 
 import { i18nT } from '../i18n/t'
+
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -34,6 +36,28 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const [browseParent, setBrowseParent] = useState('')
   const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
   const [recentDirs, setRecentDirs] = useState<string[]>([])
+  // Separate from the retry flag: clearing it on success would unmount the notice mid-click.
+  const [recentFailed, setRecentFailed] = useState(false)
+  const [retryingRecent, setRetryingRecent] = useState(false)
+  // `picked` gates whether the notice still follows the user, and ONLY a deliberate
+  // tab choice sets it: typing must not make an unresolved failure notice vanish.
+  const [picked, setPicked] = useState(false)
+  // Held separately because a late read must not move the tab under ANY engagement,
+  // tab choice or not, and its continuation must read the live value rather than the
+  // one captured when the retry was clicked.
+  const holdTabRef = useRef(false)
+  const choosePicked = useCallback((v: boolean) => { holdTabRef.current = v; setPicked(v) }, [])
+  const holdTab = useCallback(() => { holdTabRef.current = true }, [])
+  const retryRef = useRef<HTMLButtonElement | null>(null)
+  // A disabled button cannot hold focus, so a keyboard retry that fails again would
+  // cost a Tab per attempt. Armed only when the button HELD focus, never on a mouse
+  // click (its mousedown is prevented), which would yank focus out of the path field.
+  const retryFocusWanted = useRef(false)
+  useEffect(() => {
+    if (retryingRecent || !retryFocusWanted.current) return
+    retryFocusWanted.current = false
+    retryRef.current?.focus()
+  }, [retryingRecent])
   const [recentQuery, setRecentQuery] = useState('')
   const [browseSel, setBrowseSel] = useState(0)
   // Which listing failed last, if any: a directory (`browse`) or the drive
@@ -62,10 +86,14 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // this a slow drive list answered after a faster drill into a child would
   // replace that child's rows with the drives (GPT review on #11424).
   const listingSeq = useRef(0)
+  // Recents takes its own ticket, for the same reason: a read answered after a
+  // reopen must not repaint rows or re-raise the notice over a good list.
+  const recentsSeq = useRef(0)
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const recentSearchRef = useRef<HTMLInputElement>(null)
+  const recentTabRef = useRef<HTMLButtonElement>(null)
   const browseItemRefs = useRef<(HTMLElement | null)[]>([])
   const anchorRectRef = useRef<DOMRect | null>(anchorRect ?? null)
   anchorRectRef.current = anchorRect ?? null
@@ -134,18 +162,47 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const canCommit = (!!input.trim() || !!browsePath) && (listFailed !== 'dir' || fieldNamesShownListing)
   const atDriveRoot = parentIsDriveList(browsePath, browseParent)
   const canGoUp = atDriveRoot || (!!browseParent && browseParent !== browsePath)
-  const goUp = () => { if (atDriveRoot) browseDrives(); else browse(browseParent) }
+  // Back and "All drives" are Browse engagement too, so a late recents read must not
+  // flip the tab away from the directory the user just navigated to.
+  const goUp = () => { holdTab(); if (atDriveRoot) browseDrives(); else browse(browseParent) }
+
+  const loadRecents = useCallback(() => {
+    const ticket = ++recentsSeq.current
+    return api.recentProjects().then(
+      d => {
+        if (ticket !== recentsSeq.current) return { ok: false, rows: 0, live: false }
+        const dirs = d.dirs || []
+        setRecentDirs(dirs)
+        setRecentFailed(false)
+        return { ok: true, rows: dirs.length, live: true }
+      },
+      () => {
+        if (ticket !== recentsSeq.current) return { ok: false, rows: 0, live: false }
+        // Drop the rows a previous open left behind, so the notice and the list agree:
+        // retained rows are still mouse-clickable and would commit a stale project.
+        setRecentDirs([])
+        setRecentFailed(true)
+        return { ok: false, rows: 0, live: true }
+      },
+    )
+  }, [])
 
   useEffect(() => {
     if (!open) return
     setRecentQuery('')
     setListFailed(null)
-    api.recentProjects().then(d => {
-      setRecentDirs(d.dirs || [])
-      setTab(d.dirs?.length ? 'recent' : 'browse')
-    }).catch(() => setTab('browse'))
+    choosePicked(false)
+    setRecentFailed(false)
+    // The picker is hidden, not unmounted, so a retry still in flight at close
+    // would otherwise paint its spinner over the reopen's fresh rows.
+    setRetryingRecent(false)
+    // A read retired by a reopen must not drag the tab off that reopen's own rows,
+    // and a slow one must not overrule a tab the user has since engaged.
+    loadRecents().then(({ ok, rows, live }) => {
+      if (live && !holdTabRef.current) setTab(ok && rows > 0 ? 'recent' : 'browse')
+    })
     browse()
-  }, [open, browse])
+  }, [open, browse, loadRecents, choosePicked])
 
   useEffect(() => {
     if (!open) return
@@ -182,10 +239,17 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // Recent tab uses the shared selected-index keyboard nav (same model as the
   // Skill/File pickers). The Browse tab has its own combobox input handler
   // below, so the hook is only armed on Recent to avoid double-handling keys.
+  // The notice gates row ACTIVATION, never the hook itself: this hook is the only
+  // Escape owner on Recent, and disarming it let the un-prevented Escape reach
+  // Modal's window listener, which dismissed the dialog under the popover.
   const recentNav = useListKeyboardNav({
     open: open && tab === 'recent',
     count: filteredRecent.length,
-    onChoose: i => { const d = filteredRecent[i]; if (d) select(d) },
+    onChoose: i => {
+      if (recentFailed || retryingRecent) return
+      const d = filteredRecent[i]
+      if (d) select(d)
+    },
     onClose: () => onOpenChange(false),
   })
 
@@ -288,13 +352,57 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     })()}>
       {/* Tabs */}
       <div className="flex border-b border-border">
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('recent') }}>
+        <button ref={recentTabRef} className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); choosePicked(true); setTab('recent') }}>
           <Clock size={12} /> {i18nT('components.projectPicker.recent')}
         </button>
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('browse') }}>
+        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); choosePicked(true); setTab('browse') }}>
           <FolderOpen size={12} /> {i18nT('components.projectPicker.browse')}
         </button>
       </div>
+
+      {/* Also on Browse until she picks a tab: the failure is what selected Browse. */}
+      {(tab === 'recent' || !picked) && (recentFailed || retryingRecent) && (
+        <div className="px-3 py-2 border-b border-border flex items-center gap-2">
+          {/* No hand-off: navigating to the chat unmounts this popover, discarding the
+              typed path (`input`) and the recents filter (`recentQuery`). */}
+          <ErrorNotice variant="inline" message={i18nT('components.projectPicker.recent_unavailable')} />
+          <Btn
+            ref={r => { retryRef.current = r }}
+            type="button"
+            // Keeps the field behind the notice focused: without it the mousedown blurs the
+            // input before the click lands, leaving a successful retry nowhere to hand back to.
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => {
+              retryFocusWanted.current = document.activeElement === retryRef.current
+              setRetryingRecent(true)
+              void loadRecents().then(({ ok, rows, live }) => {
+                if (!live) return
+                setRetryingRecent(false)
+                if (!ok) return
+                if (!holdTabRef.current && rows > 0) setTab('recent')
+                // Resolve the target AFTER the commit, the same way `browse` does: the
+                // search input mounts only once the rows land, so reading the refs here
+                // would miss it and hand focus to the control it replaced.
+                requestAnimationFrame(() => {
+                  // The search input mounts only with rows, `inputRef` only on Browse.
+                  const target = recentSearchRef.current ?? inputRef.current ?? recentTabRef.current
+                  target?.focus()
+                })
+              })
+            }}
+            disabled={retryingRecent}
+            aria-busy={retryingRecent}
+            aria-label={`${i18nT('components.projectPicker.retry')}: ${i18nT('components.projectPicker.recent_unavailable')}`}
+            className="shrink-0 text-[11px] px-1.5 py-0.5 rounded"
+          >
+            <RefreshCw
+              size={10}
+              className={retryingRecent ? 'animate-spin inline-block mr-1' : 'invisible inline-block mr-1'}
+            />
+            {i18nT('components.projectPicker.retry')}
+          </Btn>
+        </div>
+      )}
 
       {tab === 'recent' ? (
         <>
@@ -317,7 +425,9 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
             </div>
           )}
           <div id="pp-recent-list" role="listbox" aria-label={i18nT('components.projectPicker.recent_projects')} className="overflow-y-auto flex-1 min-h-0">
-            {recentDirs.length === 0 ? (
+            {/* While the read has failed the notice above is the only statement: claiming
+                the list is empty would assert the very fact the failure withheld. */}
+            {(recentFailed || retryingRecent) ? null : recentDirs.length === 0 ? (
               <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_recent_projects')}</div>
             ) : filteredRecent.length === 0 ? (
               <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_matching_projects')}</div>
@@ -368,7 +478,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               placeholder={listing === 'drives' ? i18nT('components.projectPicker.path_to_project_drive') : i18nT('components.projectPicker.path_to_project')}
               value={input}
               onChange={e => {
-                setInput(e.target.value); setListFailed(null)
+                setInput(e.target.value); setListFailed(null); holdTab()
                 // A keystroke retires every listing still in flight: a drive list
                 // answering now would run `setInput('')` and erase what was just
                 // typed before its own auto-drill fires (GPT review on #11424).
@@ -444,7 +554,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 ref={el => { browseItemRefs.current[i] = el }}
                 className={`w-full text-left px-3 py-1.5 flex items-center gap-2 cursor-pointer transition-colors ${i === browseSel ? 'bg-bg-hover' : 'hover:bg-bg-hover'}`}
                 onMouseEnter={() => setBrowseSel(i)}
-                onClick={() => browse(d.path)}
+                onClick={() => { holdTab(); browse(d.path) }}
               >
                 <FolderOpen size={12} className="text-accent shrink-0" />
                 <span className="text-[13px] font-mono text-text truncate">{d.name}</span>
