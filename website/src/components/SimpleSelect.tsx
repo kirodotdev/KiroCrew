@@ -60,6 +60,16 @@ export interface SimpleSelectProps {
    *  Honoured on the Radix path only: on touch the trigger IS the selected
    *  `<option>`, so the label is unavoidably visible there. */
   labelsInListOnly?: boolean
+  /** COLLAPSED-TRIGGER text for the CURRENT value, computed by the caller.
+   *  Unlike `labelsInListOnly` (which shows the bare option VALUE in the
+   *  trigger), this lets the trigger show a SHORT form while the open list
+   *  keeps the full `optionLabels` text — e.g. a "Default · Medium" trigger
+   *  over a "Default from Settings · Medium" row, so a value that would
+   *  otherwise clip at panel width stays readable closed. Undefined falls
+   *  through to the selected row's own label. Radix path only, for the same
+   *  reason `labelsInListOnly` is: on touch the trigger IS the selected
+   *  `<option>`, so the full label shows. */
+  triggerLabel?: string
   /** Per-option trailing badge in the open list (same order as `options`); leave
    *  an entry undefined for a row with nothing to say. `source` picks the colour,
    *  `label` is the already-translated text.
@@ -95,7 +105,7 @@ export interface SimpleSelectProps {
   title?: string
 }
 
-export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title }: SimpleSelectProps) {
+export default function SimpleSelect({ options, optionLabels, optionIcons, value, onChange, action, clearLabel, triggerFallback, labelsInListOnly, triggerLabel, optionBadges, disabled, style, id, className, contentClassName, 'aria-label': ariaLabel, 'aria-describedby': ariaDescribedBy, title }: SimpleSelectProps) {
   const isTouch = useIsTouchDevice()
   const toRadix = (v: string) => (v === '' ? EMPTY_VALUE_SENTINEL : v)
   const fromRadix = (v: string) => (v === EMPTY_VALUE_SENTINEL ? '' : v)
@@ -112,6 +122,10 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
     return badge ? `${opt} — ${badge.label}` : opt
   }
   const selectedIcon = optionIcons?.[options.indexOf(value)]
+  // Collapsed-trigger short form for the current value, when the caller supplied
+  // one. Undefined (no override, or an unselectable value) falls through to the
+  // existing labelsInListOnly / default-item-text behaviour below.
+  const triggerOverride = triggerLabel !== undefined && selectable(value) ? triggerLabel : undefined
 
   if (isTouch) {
     // A value with no matching option (a legacy or provider-dropped setting) has
@@ -174,10 +188,13 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
       >
         <SelectTrigger id={id} aria-label={ariaLabel} aria-describedby={ariaDescribedBy} title={title} className={className}>
           <SelectValue placeholder={triggerFallback ?? clearLabel ?? (value || '—')}>
-            {/* Children override the selected item's text. Passed only when there
-                IS a selectable non-empty value, so an unset control still falls
-                through to the placeholder. */}
-            {labelsInListOnly && value !== '' && selectable(value) ? value : undefined}
+            {/* Children override the selected item's text. A `triggerLabel`
+                short form wins; otherwise `labelsInListOnly` shows the bare
+                value; otherwise (undefined) the selected item's full text is
+                rendered, and an unset control falls through to the placeholder. */}
+            {triggerOverride !== undefined
+              ? triggerOverride
+              : labelsInListOnly && value !== '' && selectable(value) ? value : undefined}
           </SelectValue>
         </SelectTrigger>
         {/* eslint-disable-next-line shadcn/require-static-classes -- forwards the caller's

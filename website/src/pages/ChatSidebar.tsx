@@ -44,6 +44,7 @@ import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
 import ModelDropdownList from '../components/ModelDropdownList'
 import { useAvailableModelsQuery } from '../hooks/useAvailableModels'
+import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { haptic } from '../lib/haptic'
@@ -120,6 +121,13 @@ import { compareText, fmtDateFields, fmtList } from '../i18n/format'
 /** Date-segment header between rows. Marks the geometry a row's own rect cannot
  *  see, so the hover hold can anchor on a pixel offset headers contribute to. */
 const DATE_HEADER_SELECTOR = '[data-date-header]'
+// Switch All Sessions effort choice that leaves each session's effort as it is.
+// Not an effort level ('' is the "configured default" level), so it never
+// reaches the wire: the request omits reasoning_effort instead.
+const BULK_EFFORT_KEEP = 'keep'
+// What the disabled effort select is handed instead of a pick. Matches no row,
+// so the select shows its fallback dash rather than a choice nobody made.
+const BULK_EFFORT_NONE = 'none'
 
 /**
  * Row markers a reveal targets, by the kind of thing being revealed.
@@ -938,6 +946,8 @@ interface Slot {
   // positive claim only: a falsy value never means "mismatch".
   effective_agent?: string
   model?: string  // '' / absent = provider-default ("auto")
+  /** The session's effort override; '' / absent = runs at the configured default. */
+  reasoning_effort?: string
   // Message count from the slot payload. Already carried by every ChatSlot
   // (redux seeds it in addSlotOptimistic and SessionGridView renders it); it was
   // simply never declared on this local view of the type.
@@ -4506,9 +4516,32 @@ function ChatSidebar({
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
   const [bulkModelError, setBulkModelError] = useState('')
+  // A partial outcome that is not a failure: sessions the switch skipped as busy
+  // or whose effort a remote peer kept. Shown in place of closing the panel, so a
+  // pick that changed nothing never reads as success.
+  const [bulkModelNotice, setBulkModelNotice] = useState('')
+  // After a partial outcome, the slot keys a retry still has anything to do for:
+  // the sessions that FAILED or were SKIPPED AS BUSY (not the ones already
+  // switched, nor a deferred default or a peer-kept effort, which a retry cannot
+  // change). Non-null is ONLY the RETRY-mode flag: it switches the button label
+  // to "Retry N", where N is the ordinary affected count. It does NOT scope the
+  // split or the request -- the retry re-sends the same unscoped switch, so the
+  // lists and counts must keep describing the whole fleet the server
+  // re-evaluates (see bulkSplit), never just these keys, or a session that
+  // appeared or changed since the outcome would be reset while unlisted.
+  // Cleared when the user changes the model or effort (the prior set is stale
+  // against the new pick) or the switch finishes with nothing left.
+  const [bulkRetryKeys, setBulkRetryKeys] = useState<string[] | null>(null)
+  const [bulkEffort, setBulkEffort] = useState<string>(BULK_EFFORT_KEEP)
+  // Changing the model or effort invalidates a pending retry set: it was the
+  // list of sessions the PREVIOUS pick did not finish, so it means nothing
+  // against a new one. Both return the panel to its normal "Switch" label.
+  const chooseBulkModel = useCallback((m: string) => { setBulkModel(m); setBulkRetryKeys(null) }, [])
+  const chooseBulkEffort = useCallback((e: string) => { setBulkEffort(e); setBulkRetryKeys(null) }, [])
   // Per-instance id: ChatPage mounts a mobile-drawer sidebar and a desktop one, so a
   // literal id would collide and point one panel's checkbox at the other's label.
   const bulkSkipRunningLabelId = useId()
+  const bulkEffortHintId = useId()
   const bulkModelsQuery = useAvailableModelsQuery({ enabled: bulkModelOpen })
   const bulkModelOptions = bulkModelsQuery.data
   // The roster failed to load when EITHER flag is up. The ACP adapter never
@@ -4529,19 +4562,77 @@ function ChatSidebar({
     () => (bulkModelOptions.some(m => m.name === bulkModel) ? bulkModel : ''),
     [bulkModelOptions, bulkModel],
   )
+  // Effort is offered only for a model that can use it (Settings > Chat gates
+  // its default-effort row the same way). Derived like the model pick: switching
+  // to a model without effort drops the pick instead of sending a level that
+  // model would ignore. undefined = leave each session's effort as it is.
+  const bulkEffortSupported = modelSupportsEffort(bulkModelPick)
+  const bulkEffortPick = bulkEffortSupported && bulkEffort !== BULK_EFFORT_KEEP ? bulkEffort : undefined
+  // The one line under the effort control: the scale cue while a picked
+  // model takes effort, or the reason the control is disabled before and
+  // after a model pick. Resolved in render (i18nT re-reads the language per
+  // call), never memoized.
+  const bulkEffortHint = bulkEffortSupported
+    ? i18nT('pages.chatSidebar.bulk_effort_scale_hint')
+    : bulkModelPick ? i18nT('pages.chatSidebar.bulk_effort_needs_reasoning_model') : i18nT('pages.chatSidebar.bulk_effort_pick_model_first')
   const bulkRunningCount = useMemo(() => localSlots.filter(s => s.running).length, [localSlots])
-  // Count only slots that would actually change: model differs from the target
-  // (the backend leaves already-on-target slots as `unchanged`), minus running
-  // slots when skipping. Keeps the "Switch N" label + disable guard honest.
-  const bulkAffectedCount = useMemo(() => {
-    return localSlots.filter(s => (s.model ?? '') !== bulkModelPick && (!bulkSkipRunning || !s.running)).length
-  }, [localSlots, bulkModelPick, bulkSkipRunning])
+  // What the switch will do to each session, as the backend decides it, so the
+  // "Switch N" label, its disable guard and the split above it stay honest.
+  // A model difference RESETS the conversation (minus running sessions when
+  // skipping them; a remote-bound session's model still moves, its effort does
+  // not). A matching model with a different picked effort KEEPS it -- but the
+  // backend leaves such a session alone, whatever the running checkbox says,
+  // while it is mid-turn (there is no turn to tear down, so it waits for a
+  // retry) or bound to a remote peer (the peer owns its effort, and the bulk
+  // request has no relay), so neither is counted. Sessions with both already on
+  // target are `unchanged`. The sessions themselves, not just their counts: the
+  // split names them, so a reader can tell WHICH conversation a reset would
+  // wipe before pressing Switch.
+  const bulkSplit = useMemo(() => {
+    const reset: Slot[] = []
+    const keep: Slot[] = []
+    // Retry mode does NOT scope this split: the retry re-sends the same unscoped
+    // request, so the display must match the whole fleet the server re-evaluates
+    // -- a session that appeared or changed its model since the partial outcome
+    // is reset by that request and must be listed and counted here, never hidden
+    // (hiding it let the retry destroy an unlisted conversation). Sessions
+    // already on target match bulkModelPick and drop out on their own. Running
+    // sessions are excluded from a model-change reset when the skip box is on; an
+    // effort-only change never counts a running or remote-bound session, since
+    // the backend leaves those alone. bulkRetryKeys only selects the "Retry N"
+    // button label, not the contents of this split.
+    for (const s of localSlots) {
+      if ((s.model ?? '') !== bulkModelPick) {
+        if (!bulkSkipRunning || !s.running) reset.push(s)
+      } else if (bulkEffortPick !== undefined && (s.reasoning_effort ?? '') !== bulkEffortPick) {
+        if (!s.running && !slotIsRemoteBound(s)) keep.push(s)
+      }
+    }
+    return { reset, keep }
+  }, [localSlots, bulkModelPick, bulkEffortPick, bulkSkipRunning])
+  const bulkAffectedCount = bulkSplit.reset.length + bulkSplit.keep.length
+  // Retry mode is ENTERED from a partial outcome (bulkRetryKeys set), but everything
+  // that belongs to it -- the "Retry N" button label and the split's retry heading
+  // ("If you retry, here is what happens to each session.") -- renders only while a
+  // retry still has something to switch
+  // (bulkAffectedCount > 0). A busy-only partial skipped while its session is still
+  // running leaves bulkRetryKeys set with a zero count; at zero the button falls back
+  // to the ordinary Switch label (still disabled via bulkAffectedCount === 0), never
+  // "Retry 0 sessions".
+  const bulkRetryMode = bulkRetryKeys !== null && bulkAffectedCount > 0
+  // The name a session goes by in this panel: its title, or its key when it has
+  // no distinct title -- the same fallback every row and the Clean Up list use.
+  const bulkSessionName = (s: Slot) => (s.title && s.title !== s.key ? s.title : s.key)
+  // The outcome lists on the wire carry slot keys; the notices name the
+  // sessions, so a key whose slot has since left the list falls back to itself.
+  const bulkSessionNames = (keys: string[]) =>
+    fmtList(keys.map(k => { const s = localSlots.find(x => x.key === k); return s ? bulkSessionName(s) : k }))
   const bulkModelMutation = useMutation({
     // 'auto' goes on the wire verbatim (not collapsed to ''): '' doubles as the
     // "never chosen" state that every reader re-resolves to the agent template's
     // model, so it cannot express an explicit Auto pick.
-    mutationFn: ({ model, skipRunning }: { model: string; skipRunning: boolean }) =>
-      api.chatSlotsModel(model, skipRunning),
+    mutationFn: ({ model, skipRunning, effort }: { model: string; skipRunning: boolean; effort?: string }) =>
+      api.chatSlotsModel(model, skipRunning, effort),
     onSuccess: (res) => {
       // The switched models refresh on the next authoritative sseSlots push;
       // this handler does not eagerly reflect them. The previous dead-key
@@ -4552,16 +4643,41 @@ function ChatSidebar({
       // belongs to the whole-list applySlots reducer-contract work in #11149,
       // not this rename-recovery fix. Removing the no-op keeps the pre-existing
       // behaviour without carrying that contract into this PR.
-      // Partial failure: the endpoint returns 200 with a non-empty `failed`
-      // list when some slots' resets raised. Surface it and keep the panel
-      // open instead of silently closing on a partial success.
-      if (res.failed?.length) {
-        setBulkModelError(i18nT('pages.chatSidebar.session_failed_to_switch', { count: res.failed.length }))
-      } else {
-        setBulkModelOpen(false)
-        setBulkModel('')
-        setBulkModelError('')
-      }
+      // Partial outcomes, classified independently by the backend for each slot
+      // in one loop, so one response can carry several at once: some slots'
+      // resets raised (`failed`), some were skipped as busy (a retry can land
+      // them once their replies finish), some are remote-bound sessions whose
+      // effort the peer kept (a retry cannot), and some recorded the new default
+      // effort but keep their current level until they next start
+      // (`effort_deferred` -- nothing to retry, the default just has not taken
+      // hold yet). Compute all four before deciding anything, and render every
+      // one that applies -- a failure must not hide the remote-kept or deferred
+      // notice. Each names its sessions, so the reader knows WHICH ones,
+      // including the failure. Any of them keeps the panel open, its picks
+      // intact, so the user can retry or close it knowingly; closing would read
+      // the switch as fully applied.
+      const failed = res.failed ?? []
+      const busy = res.skipped_running ?? []
+      const remote = res.effort_not_applied ?? []
+      const deferred = res.effort_deferred ?? []
+      setBulkModelError(failed.length ? i18nT('pages.chatSidebar.session_failed_to_switch', { count: failed.length, names: bulkSessionNames(failed) }) : '')
+      setBulkModelNotice([
+        busy.length ? i18nT('pages.chatSidebar.bulk_switch_skipped_busy', { count: busy.length, names: bulkSessionNames(busy) }) : '',
+        remote.length ? i18nT('pages.chatSidebar.bulk_switch_effort_kept_by_peer', { count: remote.length, names: bulkSessionNames(remote) }) : '',
+        deferred.length ? i18nT('pages.chatSidebar.bulk_switch_effort_deferred', { count: deferred.length, names: bulkSessionNames(deferred) }) : '',
+      ].filter(Boolean).join(' '))
+      // Enter RETRY mode from the retryable outcomes only. A retry re-runs the
+      // switch (the backend applies it to the fleet and no-ops the sessions
+      // already on target), so only FAILED and still-BUSY sessions have anything
+      // left to do — a deferred default and a peer-kept effort cannot be retried.
+      // Empty means nothing to retry, so the button stays "Switch".
+      const retryable = [...failed, ...busy]
+      setBulkRetryKeys(retryable.length ? retryable : null)
+      if (failed.length || busy.length || remote.length || deferred.length) return
+      setBulkModelOpen(false)
+      setBulkModel('')
+      setBulkEffort(BULK_EFFORT_KEEP)
+      setBulkRetryKeys(null)
     },
     onError: (e) => setBulkModelError(e instanceof Error ? e.message : i18nT('pages.chatSidebar.switch_failed')),
   })
@@ -4576,7 +4692,7 @@ function ChatSidebar({
     hasFilterInput: false,
     filteredCount: bulkModelOptions.length,
     onEnterSingleMatch: () => {},
-    closeToTrigger: () => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') },
+    closeToTrigger: () => { setBulkModelOpen(false); setBulkModel(''); setBulkEffort(BULK_EFFORT_KEEP); setBulkModelError(''); setBulkModelNotice(''); setBulkRetryKeys(null) },
   })
 
   // Pinned membership is server-persisted; the order inside that section is a
@@ -4835,7 +4951,11 @@ function ChatSidebar({
   // Ranks up to the configured count of sessions by settled recency for the sidebar tint —
   // see ../utils/recencyTint. Count = server-side dashboard.recent_tint_count (shared
   // kirocrewConfig query); recomputes when the slots or the configured count change.
-  const { data: mcCfg, status: mcCfgStatus, error: mcCfgError, errorUpdatedAt: mcCfgErrorUpdatedAt } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
+  // `isError` is read as well as `data`: the Switch All Sessions panel's Default
+  // effort row names the level this entry configures, and a read that failed
+  // must be said there rather than letting the row read "not set" as if
+  // nothing were configured.
+  const { data: mcCfg, status: mcCfgStatus, error: mcCfgError, errorUpdatedAt: mcCfgErrorUpdatedAt, isError: mcCfgFailed } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const recentTintCount = clampTintCount(mcCfg?.dashboard?.recent_tint_count)
   const recentRank = useMemo(() => computeRecentRank(localSlots, recentTintCount), [localSlots, recentTintCount])
 
@@ -8828,7 +8948,7 @@ function ChatSidebar({
                 <BrushCleaning size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.clean_up_sessions')}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError('') }}>
+              <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkEffort(BULK_EFFORT_KEEP); setBulkSkipRunning(true); setBulkModelError(''); setBulkModelNotice(''); setBulkRetryKeys(null) }}>
                 <Cpu size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.switch_all_to_model')}
               </DropdownMenuItem>
@@ -9193,7 +9313,7 @@ function ChatSidebar({
       {bulkModelOpen && (
         <div className="mx-2 mb-2 p-3 rounded-lg bg-bg border border-border shadow-md text-sm animate-rise">
           <div className="font-medium text-text-strong mb-2"><Cpu size={14} className="lucide-inline" /> {i18nT('pages.chatSidebar.switch_all_sessions')}</div>
-          <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.pick_a_model_for_every_session_switching_a_sessi')} <span className="text-danger">{i18nT('pages.chatSidebar.resets_its_conversation')}</span>.</div>
+          <div className="text-muted text-[12px] mb-2">{i18nT('pages.chatSidebar.bulk_switch_intro')} {i18nT('pages.chatSidebar.bulk_switch_model_change')} <span className="text-danger">{i18nT('pages.chatSidebar.resets_its_conversation')}</span>. {i18nT('pages.chatSidebar.bulk_switch_effort_only_keeps')}</div>
           {bulkModelsFailed && (
             <div className="flex flex-wrap items-center gap-2 mb-2">
               {/* No hand-off: the chosen bulkModel/skipRunning selection is unsaved,
@@ -9216,8 +9336,83 @@ function ChatSidebar({
             </div>
           )}
           <div ref={bulkListRef} role="listbox" aria-label={i18nT('pages.chatSidebar.model_list')} tabIndex={-1} onKeyDown={bulkOnListKeyDown} className="max-h-[220px] overflow-y-auto rounded-md border border-border bg-bg-elevated p-1 mb-2 outline-hidden">
-            <ModelDropdownList models={bulkModelOptions} activeModel={bulkModelPick} onSelect={setBulkModel} />
+            <ModelDropdownList models={bulkModelOptions} activeModel={bulkModelPick} onSelect={chooseBulkModel} />
           </div>
+          {/* Effort for the same switch. "Keep" sends no level, so each session
+              keeps its own; the default row clears overrides to the configured
+              default (named "Default from Settings", not a bare "Default",
+              because the model list above has its own "auto — Default" row and
+              the two defaults come from different places). Disabled
+              until a model that takes effort is picked. One hint line at a time
+              sits under the control and is announced with it: the scale cue
+              (the sibling ReasoningEffortDropdown's Faster/Smarter anchors, in a
+              sentence, since a list has no left and right end) while the control
+              is live, or the reason it is disabled once a model is picked. */}
+          <div className="flex items-center gap-2 text-[12px] mb-2">
+            <span className="text-muted shrink-0" aria-hidden="true">{i18nT('components.reasoningEffortDropdown.effort')}</span>
+            <SimpleSelect
+              // While disabled the control shows an em dash, not "Keep current
+              // effort": a value there would read as a remembered choice, and
+              // there is none -- the pick is dropped with the model. The dash is
+              // reached by handing the select a value it has no row for, which
+              // is the one state in which it renders `triggerFallback`.
+              value={bulkEffortSupported ? bulkEffort : BULK_EFFORT_NONE}
+              triggerFallback="—"
+              onChange={chooseBulkEffort}
+              options={[BULK_EFFORT_KEEP, ...EFFORT_LEVELS]}
+              optionLabels={[
+                i18nT('pages.chatSidebar.bulk_effort_keep'),
+                ...EFFORT_LEVELS.map(level => (level === ''
+                  // The Default row always names where the default comes from:
+                  // "Default from Settings", with the level when it is known, or
+                  // "· not set (model decides)" when Settings configures none.
+                  // When the config read failed the level is unknown, so the row
+                  // drops the level and the notice below says why. It never reads
+                  // a bare "Model default", which would drop the Settings anchor
+                  // that tells it apart from the model list's own "auto — Default"
+                  // row.
+                  ? (mcCfgFailed
+                    ? i18nT('pages.chatSidebar.bulk_effort_configured_default')
+                    : mcCfg?.agent?.reasoning_effort
+                      ? i18nT('pages.chatSidebar.bulk_effort_configured_default_with_level', { level: effortLabel(mcCfg.agent.reasoning_effort) })
+                      : i18nT('pages.chatSidebar.bulk_effort_model_default'))
+                  : effortLabel(level))),
+              ]}
+              // CLOSED-trigger short form for the CURRENT value: the full
+              // "Default from Settings · currently X" row truncates at sidebar width, so
+              // when the Default row is the pick the collapsed trigger shows the
+              // short "Default · X" (or "Default from Settings" when the level is
+              // unset or the config read failed). Every other value's full label
+              // already fits, so it gets no override (undefined -> the selected
+              // row's own label).
+              triggerLabel={bulkEffortSupported && bulkEffort === ''
+                ? (!mcCfgFailed && mcCfg?.agent?.reasoning_effort
+                  ? i18nT('pages.chatSidebar.bulk_effort_trigger_default_level', { level: effortLabel(mcCfg.agent.reasoning_effort) })
+                  : i18nT('pages.chatSidebar.bulk_effort_trigger_default'))
+                : undefined}
+              aria-label={i18nT('components.reasoningEffortDropdown.effort')}
+              aria-describedby={bulkEffortHint ? bulkEffortHintId : undefined}
+              disabled={!bulkEffortSupported}
+              style={{ flex: '1 1 0%', minWidth: 0 }}
+            />
+          </div>
+          {bulkEffortHint && (
+            <div id={bulkEffortHintId} className="text-muted text-[11px] -mt-1 mb-2" data-testid={bulkEffortSupported ? 'bulk-effort-scale' : 'bulk-effort-unsupported'}>{bulkEffortHint}</div>
+          )}
+          {/* No hand-off: the chosen bulkModel/effort/skipRunning selection is
+              unsaved, and the navigation would discard it -- the same reason the
+              roster notice above stays in the panel. Fixed copy rather than the
+              server's text, like that notice: what the reader needs is which row
+              the failure touches (the Default effort row still clears to the
+              configured default; only its level is unnamed), not the transport
+              error, which the error journal keeps for a hand-off elsewhere. */}
+          {mcCfgFailed && bulkEffortSupported && (
+            <ErrorNotice
+              className="mb-2"
+              message={i18nT('pages.chatSidebar.bulk_effort_default_unavailable')}
+              testId="bulk-effort-config-error"
+            />
+          )}
           {bulkRunningCount > 0 && (
             <label className="flex items-center gap-2 text-[12px] text-muted mb-2 cursor-pointer">
               {/* aria-labelledby, not aria-label: the name is the visible
@@ -9234,9 +9429,51 @@ function ChatSidebar({
               max-two-buttons-per-row, and an inline notice sharing the row
               collapses to one character per line at sidebar width. */}
           <ErrorNotice message={bulkModelError} className="mb-2" testId="bulk-model-error" />
+          {bulkModelNotice && (
+            <div className="text-muted text-[12px] mb-2" role="status" data-testid="bulk-model-notice">{bulkModelNotice}</div>
+          )}
+          {/* The button's count, split where the decision is made: how many of
+              those sessions lose their conversation to a model change and how
+              many keep it under an effort-only change -- and WHICH ones, listed
+              under each count by the name their row carries, so the reader can
+              see the exact conversation a reset would wipe before pressing
+              Switch. A bare tally could not be checked against the list. Each
+              part stands on its own and renders only when non-empty; the reset
+              heading carries the same warning colour as the description's
+              "resets its conversation", so the red applies to named sessions
+              rather than to an unknown subset. Plain text, not a control: the
+              names are already here, so there is nothing to drill into. */}
+          {bulkModelPick && bulkAffectedCount > 0 && (
+            <div className="text-muted text-[12px] mb-2" data-testid="bulk-switch-split">
+              {/* Retry mode only: the split lists what a retry WOULD do (the retry
+                  re-sends the unscoped switch and the server re-evaluates the fleet),
+                  not a record of what already happened -- without this lead-in a reader
+                  cannot tell a prediction from history. Ordinary first-run mode shows
+                  the same split with no heading. */}
+              {bulkRetryMode && (
+                <div className="mb-1" data-testid="bulk-retry-split-heading">{i18nT('pages.chatSidebar.bulk_retry_split_heading')}</div>
+              )}
+              {bulkSplit.reset.length > 0 && (
+                <div data-testid="bulk-switch-reset">
+                  <div className="text-danger">{i18nT('pages.chatSidebar.bulk_switch_reset_count', { count: bulkSplit.reset.length })}</div>
+                  <ul className="mt-1 mb-2 max-h-24 overflow-y-auto pl-4">
+                    {bulkSplit.reset.map(s => <li key={s.key} className="truncate py-0.5" title={bulkSessionName(s)}>{bulkSessionName(s)}</li>)}
+                  </ul>
+                </div>
+              )}
+              {bulkSplit.keep.length > 0 && (
+                <div data-testid="bulk-switch-keep">
+                  <div>{i18nT('pages.chatSidebar.bulk_switch_keep_count', { count: bulkSplit.keep.length })}</div>
+                  <ul className="mt-1 mb-2 max-h-24 overflow-y-auto pl-4">
+                    {bulkSplit.keep.map(s => <li key={s.key} className="truncate py-0.5" title={bulkSessionName(s)}>{bulkSessionName(s)}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex items-center gap-2 justify-end">
-            <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkModelError('') }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
-            <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModelPick || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); bulkModelMutation.mutate({ model: bulkModelPick, skipRunning: bulkSkipRunning }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
+            <Btn className="text-[12px] px-3 py-1" onClick={() => { setBulkModelOpen(false); setBulkModel(''); setBulkEffort(BULK_EFFORT_KEEP); setBulkModelError(''); setBulkModelNotice(''); setBulkRetryKeys(null) }}>{i18nT('pages.chatSidebar.cancel')}</Btn>
+            <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={!bulkModelPick || bulkAffectedCount === 0 || bulkModelMutation.isPending} onClick={() => { setBulkModelError(''); setBulkModelNotice(''); bulkModelMutation.mutate({ model: bulkModelPick, skipRunning: bulkSkipRunning, effort: bulkEffortPick }) }}>{bulkModelMutation.isPending ? i18nT('pages.chatSidebar.switching') : bulkRetryMode ? i18nT('pages.chatSidebar.bulk_retry_session', { count: bulkAffectedCount }) : i18nT('pages.chatSidebar.switch_session', { count: bulkAffectedCount })}</Btn>
           </div>
         </div>
       )}

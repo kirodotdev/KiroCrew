@@ -3079,7 +3079,7 @@ class TestStreamEventsExtension:
         switch_msg = JsonRpcMessage(method=METHOD_AGENT_SWITCHED, params={"agentName": "planner"})
         complete_msg = JsonRpcMessage(id=1, result={"status": "complete"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "agent_switched", switch_msg
             yield "complete", complete_msg
 
@@ -3115,7 +3115,7 @@ class TestStreamEventsExtension:
         )
         complete_msg = JsonRpcMessage(id=1, result={"status": "complete"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "compaction", compact_msg
             yield "complete", complete_msg
 
@@ -3147,7 +3147,7 @@ class TestStreamEventsExtension:
         clear_msg = JsonRpcMessage(method=METHOD_CLEAR_STATUS, params={"sessionId": "s1"})
         complete_msg = JsonRpcMessage(id=1, result={"status": "complete"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "clear", clear_msg
             yield "complete", complete_msg
 
@@ -3182,7 +3182,7 @@ class TestStreamEventsExtension:
         )
         complete_msg = JsonRpcMessage(id=1, result={"status": "complete"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "mcp_oauth_request", oauth_msg
             yield "complete", complete_msg
 
@@ -3218,7 +3218,7 @@ class TestStreamEventsExtension:
         )
         complete_msg = JsonRpcMessage(id=1, result={"status": "complete"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "mcp_oauth_request", bad_msg
             yield "complete", complete_msg
 
@@ -3267,7 +3267,7 @@ class TestStreamEventsExtension:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", interrupt_msg
             # No "complete" — simulates kiro-cli leaving the prompt hanging.
 
@@ -3305,7 +3305,7 @@ class TestStreamEventsExtension:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", interrupt_msg
             # No "complete" — without the fix, the generator would never exit.
 
@@ -3340,7 +3340,7 @@ class TestStreamEventsExtension:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", interrupt_msg
             # No "complete" — would otherwise raise AcpTimeoutError on loop exit.
 
@@ -3385,7 +3385,7 @@ class TestStreamEventsExtension:
         )
         complete_msg = JsonRpcMessage(method="session/prompt", id=1, result={})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", quoted_msg
             yield "complete", complete_msg
 
@@ -3440,7 +3440,7 @@ class TestStreamEventsExtension:
         )
         complete_msg = JsonRpcMessage(method="session/prompt", id=1, result={})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", thinking_msg
             yield "complete", complete_msg
 
@@ -3487,7 +3487,7 @@ class TestStreamEventsExtension:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", interrupt_msg
 
         client.ensure_ready = AsyncMock()
@@ -3557,7 +3557,7 @@ class TestStreamEventsExtension:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", interrupt_msg
             # No "complete" — simulates kiro-cli leaving the prompt hanging.
 
@@ -3978,7 +3978,7 @@ class TestStopReasonPopulated:
         client = AcpClient()
         complete_msg = JsonRpcMessage(id=1, result={"stopReason": "cancelled"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "complete", complete_msg
 
         client.ensure_ready = AsyncMock()
@@ -4001,7 +4001,7 @@ class TestStopReasonPopulated:
         client = AcpClient()
         complete_msg = JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "complete", complete_msg
 
         client.ensure_ready = AsyncMock()
@@ -4024,7 +4024,7 @@ class TestStopReasonPopulated:
         client = AcpClient()
         complete_msg = JsonRpcMessage(id=1, result={"status": "ok"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "complete", complete_msg
 
         client.ensure_ready = AsyncMock()
@@ -4051,7 +4051,7 @@ class TestWaitTurnDone:
         client = AcpClient()
         complete_msg = JsonRpcMessage(id=1, result={"stopReason": "cancelled"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "complete", complete_msg
 
         client.ensure_ready = AsyncMock()
@@ -4240,7 +4240,7 @@ class TestSendPipeErrors:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", text_msg
             # No "complete" — simulates kiro-cli going silent after text.
 
@@ -4290,7 +4290,7 @@ class TestSendPipeErrors:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", text_msg
             yield "update", tool_msg
             # No "complete" — tool is running, loop ends (simulates timeout).
@@ -4335,7 +4335,7 @@ class TestSendPipeErrors:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", text_msg
             yield "permission", perm_msg
             # No "complete" — waiting for user approval, loop ends.
@@ -4407,7 +4407,7 @@ class TestSendPipeErrors:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", text1
             yield "update", tool_msg
             yield "update", result_msg
@@ -4472,7 +4472,7 @@ class TestSendPipeErrors:
             },
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", text_msg
             yield "update", usage_msg
             # No "complete" — simulates kiro-cli going silent.
@@ -5374,7 +5374,7 @@ class TestDispatchEventsExtended:
         )
         complete_msg = JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "permission", perm_msg
             yield "complete", complete_msg
 
@@ -5412,7 +5412,7 @@ class TestDispatchEventsExtended:
         )
         complete_msg = JsonRpcMessage(id=1, result={})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", tool_msg
             yield "complete", complete_msg
 
@@ -5442,7 +5442,7 @@ class TestDispatchEventsExtended:
             id=1, result={"data": {"agent": {"name": "planner"}}, "message": ""}
         )
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "complete", complete_msg
 
         client._prompt_loop = fake_prompt_loop
@@ -5470,7 +5470,7 @@ class TestDispatchEventsExtended:
         client = AcpClient()
         error_msg = JsonRpcMessage(id=1, error={"code": -1, "message": "boom"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "error", error_msg
 
         client._prompt_loop = fake_prompt_loop
@@ -6702,7 +6702,7 @@ class TestStreamCommand:
 
         complete_msg = JsonRpcMessage(id=5, result={"message": "compacted", "data": {}})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "complete", complete_msg
 
         client._prompt_loop = fake_prompt_loop
@@ -6738,7 +6738,7 @@ class TestReadPromptResponse:
         )
         complete_msg = JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", text_msg
             yield "update", text_msg2
             yield "complete", complete_msg
@@ -6754,7 +6754,7 @@ class TestReadPromptResponse:
 
         client = AcpClient()
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             # yields nothing — simulates timeout
             return
             yield  # make it an async generator
@@ -6771,7 +6771,7 @@ class TestReadPromptResponse:
         client = AcpClient()
         error_msg = JsonRpcMessage(id=1, error={"code": -1, "message": "fail"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "error", error_msg
 
         client._prompt_loop = fake_prompt_loop
@@ -6835,7 +6835,7 @@ class TestPromptLoopReleasesTurnDone:
         complete_msg = JsonRpcMessage(id=1, result={})
         client.approve_tool = AsyncMock()
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "permission", perm_msg
             yield "complete", complete_msg
 
@@ -6977,7 +6977,7 @@ class TestToolStallWatchdog:
         monkeypatch.setattr(client, "_read_new_tool_results_sync", lambda: [])
         complete_msg = JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "complete", complete_msg
 
         client._prompt_loop = fake_prompt_loop  # type: ignore[assignment]
@@ -7014,7 +7014,7 @@ class TestToolStallWatchdog:
         update_msg = JsonRpcMessage(method=METHOD_SESSION_UPDATE, params={})
         complete_msg = JsonRpcMessage(id=1, result={})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "update", update_msg
             yield "complete", complete_msg
 
@@ -7130,7 +7130,7 @@ class TestSendMessageStreamBranches:
         meta_msg = JsonRpcMessage(method=METHOD_METADATA, params={"contextUsagePercentage": 75.0})
         complete_msg = JsonRpcMessage(id=1, result={})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "metadata", meta_msg
             yield "complete", complete_msg
 
@@ -7155,7 +7155,7 @@ class TestSendMessageStreamBranches:
         )
         complete_msg = JsonRpcMessage(id=1, result={})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "compaction", compact_msg
             yield "complete", complete_msg
 
@@ -7176,7 +7176,7 @@ class TestSendMessageStreamBranches:
 
         client = AcpClient()
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             # Empty generator — simulates timeout
             return
             yield
@@ -12700,7 +12700,7 @@ class TestCompactionFailureTurnBudget:
 
         client = AcpClient()
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             # The budget fired: the loop stops reading with no `complete`.
             client._compaction_failed_turn = True
             if False:  # pragma: no cover - keeps this an async generator
@@ -12731,7 +12731,7 @@ class TestCompactionFailureTurnBudget:
 
         client = AcpClient()
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             client._stale_eligible = True
             client._compaction_failed_turn = True
             if False:  # pragma: no cover - keeps this an async generator
@@ -12770,7 +12770,7 @@ class TestCompactionFailureTurnBudget:
         )
         complete_msg = JsonRpcMessage(id=1, result={"stopReason": "end_turn"})
 
-        async def fake_prompt_loop(req_id, timeout):
+        async def fake_prompt_loop(req_id, timeout, *, admission=None):
             yield "compaction", compact_msg
             yield "complete", complete_msg
 

@@ -323,15 +323,23 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(skip).toBeChecked()
   })
 
-  it('reports a partial failure and keeps the panel open', async () => {
+  it('reports a partial failure, names the session, and flips the button to Retry', async () => {
     mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
     renderSidebar({ slots: SLOTS })
     await openHeaderPanel('Switch all to model…')
     fireEvent.click(screen.getByRole('option', { name: /auto/i }))
     fireEvent.click(screen.getByText(/^Switch 1 session$/))
-    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true))
-    expect(await screen.findByText('1 session failed to switch')).toBeTruthy()
+    // Third argument = the effort pick; undefined (Keep) leaves each session's own.
+    await waitFor(() => expect(mocks.chatSlotsModel).toHaveBeenCalledWith('auto', true, undefined))
+    // The failure notice now names WHICH session failed, not just a count.
+    const notice = await screen.findByTestId('bulk-model-error')
+    expect(notice).toHaveTextContent('1 session hit an error while switching, so nothing changed for it: Idle A')
+    // Panel stays open in retry mode: the label flips to "Retry N", where N is
+    // the ordinary affected count (the idle k-a; the running k-b is excluded by
+    // skip-running). The retry re-sends the whole-fleet switch -- the label
+    // changes, it does not scope the request.
     expect(screen.getByText('Switch All Sessions')).toBeTruthy()
+    expect(screen.getByText(/^Retry 1 session$/)).toBeTruthy()
   })
 
   it('closes when the switch fully succeeds', async () => {

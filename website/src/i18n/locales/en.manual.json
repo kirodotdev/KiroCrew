@@ -4757,8 +4757,10 @@
       "last_7_days": "Last 7 Days",
       "dashboard_source": "Dashboard",
       "connected_to": "Connected to {{label}}",
-      "session_failed_to_switch_one": "{{count}} session failed to switch",
-      "session_failed_to_switch_other": "{{count}} sessions failed to switch",
+      "session_failed_to_switch_one": "{{count}} session hit an error while switching, so nothing changed for it: {{names}}.",
+      "session_failed_to_switch_other": "{{count}} sessions hit an error while switching, so nothing changed for them: {{names}}.",
+      "bulk_switch_effort_deferred_one": "{{count}} session keeps its current effort until its next restart, then switches to the effort you picked: {{names}}.",
+      "bulk_switch_effort_deferred_other": "{{count}} sessions keep their current effort until their next restart, then switch to the effort you picked: {{names}}.",
       "session_source": "Session",
       "new": "New",
       "new_chat": "New chat",
@@ -4849,7 +4851,9 @@
       "sort_filter_sessions_hidden_one": "Sort & filter sessions — {{count}} hidden folder not shown",
       "sort_filter_sessions_hidden_other": "Sort & filter sessions — {{count}} hidden folders not shown",
       "show_hidden_folders_from_board_one": "{{count}} hidden folder is not shown — open sort & filter to bring it back.",
-      "show_hidden_folders_from_board_other": "{{count}} hidden folders are not shown — open sort & filter to bring them back."
+      "show_hidden_folders_from_board_other": "{{count}} hidden folders are not shown — open sort & filter to bring them back.",
+      "bulk_retry_session_one": "Retry {{count}} session",
+      "bulk_retry_session_other": "Retry {{count}} sessions"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

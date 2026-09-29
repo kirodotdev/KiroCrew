@@ -140,6 +140,50 @@ def _codex_acp_1_11(applied: list[tuple[str, str]], *, refuse_effort: set[str] =
     return _set
 
 
+async def _effort_busy_after_model(config_id: str, value: str) -> None:
+    """A codex ``set_config_option`` double whose model half lands and whose
+    effort half meets a turn that holds the session (``TurnLockBusy``)."""
+    from kiro_crew.acp.client import TurnLockBusy
+
+    if config_id == "model":
+        if value not in BARE_MODELS:
+            raise AcpError("JSON-RPC error: Invalid params", code=-32602)
+        return
+    raise TurnLockBusy("ACP turn is busy; retry after the active turn finishes")
+
+
+def _slot_model_state(slot, provider):
+    """A dashboard state holding *slot* whose live session is *provider*."""
+    from kiro_crew.dashboard.state import DashboardState
+
+    state = MagicMock(spec=DashboardState)
+    state._slots = {slot.key: slot}
+    state.push_slots_update = MagicMock()
+    state.broadcast_context_usage = MagicMock()
+    state.sessions = MagicMock()
+    state.sessions.reset = AsyncMock(return_value=True)
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    return state
+
+
+def _slot_model_app(state):
+    """The single-slot model route, behind the dashboard-user auth marker."""
+    from aiohttp import web
+
+    from kiro_crew.dashboard.chat import api_chat_slot_model
+
+    @web.middleware
+    async def dashboard_auth_marker(request, handler):
+        if "app" not in request:
+            request["app"] = ""
+        return await handler(request)
+
+    app = web.Application(middlewares=[dashboard_auth_marker])
+    app["state"] = state
+    app.router.add_post("/api/chat/slots/{slot}/model", api_chat_slot_model)
+    return app
+
+
 # ── the seam itself ──
 
 
@@ -269,6 +313,148 @@ class TestAdvertisedPairSwitch:
 
         with pytest.raises(AcpError, match="process died"):
             await client.set_model("openai.gpt-6-astra[max]")
+
+    @pytest.mark.asyncio
+    async def test_a_busy_turn_lock_on_the_effort_write_keeps_the_model_switch(
+        self, tmp_path
+    ) -> None:
+        """Model half LANDED, then a prompt took the turn lock before the effort
+        half: the adapter runs the bare model at its own effort, so the switch
+        happened and must be recorded as the bare id -- the same outcome as a
+        refused effort. Raising here would make the dashboard answer 409 with
+        the slot on its OLD model while the agent already runs the new one."""
+        from kiro_crew.acp.client import TurnLockBusy
+
+        client = _codex_client(tmp_path)
+        applied: list[tuple[str, str]] = []
+
+        async def _set(config_id: str, value: str) -> None:
+            applied.append((config_id, value))
+            if config_id == "model":
+                if value not in BARE_MODELS:
+                    raise AcpError("JSON-RPC error: Invalid params", code=-32602)
+                return
+            raise TurnLockBusy("ACP turn is busy; retry after the active turn finishes")
+
+        client.set_config_option = _set  # type: ignore[method-assign]
+
+        await client.set_model("openai.gpt-6-astra[max]")
+
+        assert applied == [
+            ("model", "openai.gpt-6-astra[max]"),
+            ("model", "openai.gpt-6-astra"),
+            (CODEX_EFFORT, "max"),
+        ]
+        assert client._model == "openai.gpt-6-astra"
+        assert client._resolved_model_id == "openai.gpt-6-astra"
+
+    @pytest.mark.asyncio
+    async def test_a_busy_turn_lock_on_the_model_write_still_propagates(self, tmp_path) -> None:
+        """Nothing landed: the busy signal must reach the caller untouched, so the
+        dashboard answers its clean 409 and the slot keeps the model it is on."""
+        from kiro_crew.acp.client import TurnLockBusy
+
+        client = _codex_client(tmp_path)
+
+        async def _set(config_id: str, value: str) -> None:
+            if config_id == "model" and value not in BARE_MODELS:
+                raise AcpError("JSON-RPC error: Invalid params", code=-32602)
+            raise TurnLockBusy("ACP turn is busy; retry after the active turn finishes")
+
+        client.set_config_option = _set  # type: ignore[method-assign]
+
+        with pytest.raises(TurnLockBusy):
+            await client.set_model("openai.gpt-6-astra[max]")
+
+        assert client._model == "openai.gpt-6-astra[high]"
+
+    @pytest.mark.asyncio
+    async def test_a_busy_effort_write_through_the_slot_handler_is_a_live_switch(
+        self, tmp_path
+    ) -> None:
+        """End to end through ``api_chat_slot_model``: the live session now runs
+        the bare model, so the pick commits (200, no reset, no rollback) instead
+        of the 409 that would leave the slot showing its old model."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        client = _codex_client(tmp_path)
+        client.set_config_option = _effort_busy_after_model  # type: ignore[method-assign]
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.is_claude_backend = False
+        provider.has_active_turn.return_value = False
+        provider.client = client
+        # The new model has no effort selector to re-apply, so the effort reapply
+        # after the switch is a persisted no-op and the split alone decides.
+        provider.supports_effort = MagicMock(return_value=False)
+
+        slot = _ChatSlot("test")
+        slot.model = "openai.gpt-6-astra[high]"
+        state = _slot_model_state(slot, provider)
+
+        async with TestClient(TestServer(_slot_model_app(state))) as http:
+            resp = await http.post(
+                "/api/chat/slots/test/model", json={"model": "openai.gpt-6-astra[max]"}
+            )
+            assert resp.status == 200, await resp.text()
+        # The live session serves the bare model; the slot commits the pick
+        # instead of rolling back to a model the agent does not run.
+        assert client._model == "openai.gpt-6-astra"
+        assert slot.model == "openai.gpt-6-astra[max]"
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_busy_effort_reapply_after_a_landed_switch_commits_the_pick(
+        self, tmp_path
+    ) -> None:
+        """The slot has its OWN effort and the new model supports effort. The live
+        switch lands (bare model on the wire), then the slot-effort re-apply meets
+        the turn that took the session. The agent already runs the new model, so
+        the pick commits (200, no reset, no rollback) and the slot keeps its own
+        effort setting for the next cold start, so the slot never shows a model
+        the agent does not run."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.acp.client import TurnLockBusy
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        client = _codex_client(tmp_path)
+        client.set_config_option = _effort_busy_after_model  # type: ignore[method-assign]
+
+        # The turn starts while the switch is in flight: idle at the pre-check,
+        # busy by the time the effort re-apply asks for the session.
+        turn = {"running": False}
+
+        def _change_effort(level: str) -> bool:
+            turn["running"] = True
+            raise TurnLockBusy("ACP turn is busy; retry after the active turn finishes")
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.is_claude_backend = False
+        provider.has_active_turn.side_effect = lambda: turn["running"]
+        provider.client = client
+        provider.served_model = "openai.gpt-6-astra"
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.change_effort = AsyncMock(side_effect=_change_effort)
+
+        slot = _ChatSlot("test")
+        slot.model = "openai.gpt-6-astra[high]"
+        slot.reasoning_effort = "high"
+        state = _slot_model_state(slot, provider)
+
+        async with TestClient(TestServer(_slot_model_app(state))) as http:
+            resp = await http.post(
+                "/api/chat/slots/test/model", json={"model": "openai.gpt-6-astra[max]"}
+            )
+            assert resp.status == 200, await resp.text()
+
+        provider.change_effort.assert_awaited_once_with("high")
+        assert client._model == "openai.gpt-6-astra"
+        assert slot.model == "openai.gpt-6-astra[max]"
+        assert slot.reasoning_effort == "high"
+        state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_pair_whose_model_half_is_unknown_is_still_typed(self, tmp_path) -> None:
@@ -532,6 +718,41 @@ class TestTheSessionHandleTakesTheSameSplit:
             (CODEX_EFFORT, "max"),
         ]
         assert applied_id == "openai.gpt-6-astra[max]"
+
+    @pytest.mark.asyncio
+    async def test_a_handle_keeps_the_bare_model_when_the_effort_write_meets_a_busy_lock(
+        self,
+    ) -> None:
+        """Same seam, same contract: the handle records the bare model that
+        landed rather than raising a busy signal over a switch that happened."""
+        from kiro_crew.acp.client import TurnLockBusy
+
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = ACP_BACKEND_CODEX
+        handle._config_options = CODEX_1_11_SESSION_NEW["configOptions"]
+        handle._advertised_model_ids = MagicMock(return_value=["openai.gpt-6-astra[max]"])
+
+        async def _set(config_id: str, value: str) -> None:
+            if config_id == "model":
+                if value not in BARE_MODELS:
+                    raise AcpError("JSON-RPC error: Invalid params", code=-32602)
+                return
+            raise TurnLockBusy("ACP turn is busy; retry after the active turn finishes")
+
+        handle.set_config_option = _set
+        handle.supports_config_option = lambda config_id: any(
+            opt["id"] == config_id for opt in CODEX_1_11_SESSION_NEW["configOptions"]
+        )
+        handle._push_model_config_option = lambda model_id, *, strict: (
+            AcpSessionHandle._push_model_config_option(handle, model_id, strict=strict)
+        )
+
+        applied_id = await AcpSessionHandle._push_model_config_option(
+            handle, "openai.gpt-6-astra[max]", strict=True
+        )
+
+        assert applied_id == "openai.gpt-6-astra"
 
     @pytest.mark.asyncio
     async def test_a_non_member_handle_never_takes_the_split(self) -> None:

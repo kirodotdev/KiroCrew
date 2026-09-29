@@ -1170,12 +1170,41 @@ KAS sends no `_kiro.dev/mcp/server_initialized` frame when a sign-in completes; 
 | `send_message_stream(msg)` | Yields text chunks, auto-approves (CLI) |
 | `stream_events(msg)` | Yields `AcpEvent` objects, caller handles permissions (dashboard) |
 | `approve_tool(id)` / `reject_tool(id)` | Tool permission responses |
-| `send_command(cmd)` | Slash commands (e.g. `/compact`), returns response text |
-| `command_result(cmd)` | Kiro-only native command result including structured `data`; internal callers must reduce it before external use |
+| `send_command(cmd)` | Slash commands (e.g. `/compact`), returns response text; its default `_turn_lock` wait shares the existing 60 s response budget and returns the same empty timeout result |
+| `command_result(cmd)` | Kiro-only native command result including structured `data`; internal callers must reduce it before external use; a default lock-wait timeout raises the same `AcpTimeoutError` as its response timeout |
 | `cancel_session()` | Cancel in-flight operation |
-| `wait_turn_done(timeout)` | Wait for the current prompt to finish; returns `stop_reason` or raises `asyncio.TimeoutError` |
-| `has_active_turn()` | Returns `True` while a prompt is in flight and not yet complete |
+| `wait_turn_done(timeout)` | Wait for admitted prompts and the current native turn to finish; returns `stop_reason` or raises `asyncio.TimeoutError` |
+| `has_active_turn()` | Returns `True` while an admitted prompt or native turn is in flight and not cancelled |
+| `has_unfinished_turn()` | Returns `True` for admitted prompts and unacknowledged native turns, independent of cancel state; shutdown drain uses this wider signal |
 | `shutdown()` | Kill kiro-cli process |
+
+Prompt entry registers `_admitted_prompt_count` before `ensure_ready()`. The
+registration therefore covers process spawn and a prompt waiting behind a command
+that owns `_turn_lock`, not only the interval after `_prompt_loop()` begins. Public
+prompt APIs pass one idempotent release callback through the explicit
+`_prompt_loop(..., *, admission=...)` argument; no task-local context owns the
+handoff. Startup failure/cancellation releases it at the public boundary, while lock
+acquisition or cancellation there releases it in the loop. `wait_turn_done()` and
+`has_unfinished_turn()` read the admitted count together with `_turn_done`, preserving
+Stop's cancelled-before-write terminal while preventing shutdown from overlooking a
+prompt that can still open a native turn.
+
+`send_command()` and `command_result()` use one
+`_COMMAND_RESPONSE_TIMEOUT_SECS` budget for the default `_turn_lock` acquisition and
+response wait. Explicit effort pushes keep their shorter caller-supplied lock bound
+and `TurnLockBusy`, because the effort reconciliation layer needs that typed
+contention result.
+
+`set_config_option()` bounds its default `_turn_lock` acquisition the same way
+(`_COMMAND_RESPONSE_TIMEOUT_SECS`): a config write is the same kind of non-prompt
+request, so a `None` timeout would otherwise wait the whole turn. The model-switch
+path (`set_model` → `_push_model_config_option`, plus its effort-split) runs several
+such writes in sequence. A prompt admitted in a gap before any write lands surfaces
+`TurnLockBusy`, which the dashboard maps to its 409 `turn_in_flight` rather than
+falling through to a reset that would tear the conversation down. Once the model
+half has landed, a busy effort-split write or a busy effort re-apply keeps the
+switch: the session runs the new model at its current effort, and the slot's
+effort applies at the next fresh start.
 
 The Connections authenticated Test action is the only application consumer of
 `command_result`. Its agent-SDK driver resolves the operator's configured

@@ -43,6 +43,7 @@ vi.mock('../api/client', () => ({
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
     dashboardConfig: vi.fn().mockResolvedValue({ quick_send: false }),
+    kirocrewConfig: vi.fn().mockResolvedValue({ agent: {} }),
     planAction: vi.fn().mockResolvedValue({ ok: true }),
   },
   SEARCH_MIN_CHARS: 2,

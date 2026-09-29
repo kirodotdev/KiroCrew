@@ -509,6 +509,17 @@ class TestEffortControl:
         provider._client.supports_config_option = MagicMock(return_value=True)
         return provider
 
+    def test_current_effort_override_reads_current_model_pin(self):
+        provider = self._effort_provider(backend="", model="claude-opus-4.7")
+        provider._effort_per_model = {
+            "claude-opus-4.7": "high",
+            "gpt-5.6-sol": "xhigh",
+        }
+
+        assert provider.current_effort_override() == "high"
+        provider._client._model = "unconfigured-model"
+        assert provider.current_effort_override() is None
+
     @pytest.mark.asyncio
     async def test_kiro_change_effort_pushes_slash_command_and_overlay(self):
         provider = self._effort_provider(backend="", model="claude-opus-4.7")
@@ -691,6 +702,29 @@ class TestEffortControl:
         assert ok is None
         assert provider._effort_per_model["claude-opus-4.7"] == "high"
         provider._client.send_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_kiro_clear_to_default_turn_busy_keeps_cold_start_default(self):
+        import inspect
+
+        from kiro_crew.acp.client import TurnLockBusy
+
+        provider = self._effort_provider(backend="", model="claude-opus-4.7")
+        provider._effort_per_model = {"claude-opus-4.7": "high"}
+        provider._effort_defaults = {"claude-opus-4.7": "low"}
+        provider._client.send_command = AsyncMock(side_effect=TurnLockBusy("busy"))
+        persisted: list[str | None] = []
+
+        def _record_overlay(self_, *, timeout):
+            persisted.append(self_._resolve_effort())
+            return True
+
+        with patch.object(type(provider), "_apply_effort_overlay", _record_overlay):
+            with pytest.raises(TurnLockBusy):
+                await provider.clear_effort()
+
+        assert provider._effort_per_model == {}, inspect.getfile(type(provider))
+        assert persisted == ["low"]
 
     @pytest.mark.asyncio
     async def test_kiro_effort_rollback_follows_the_file_when_the_rewrite_fails(self):

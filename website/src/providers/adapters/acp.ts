@@ -39,12 +39,6 @@ function learnWindow(name: string, window: number): void {
   if (name && Number.isFinite(window) && window > 0) LIVE_WINDOWS[name] = window
 }
 
-/** Narrow view of GET /api/config/kirocrew — only the fields the composer needs
- *  to resolve what a new session will actually run on. */
-interface KirocrewAgentConfig {
-  agent?: { model?: string; reasoning_effort?: string }
-}
-
 // Persist the last SUCCESSFUL live /api/models list so a transient backend
 // failure (a creds/token hiccup, or a cold `--list-models` spawn exceeding the
 // gateway's timeout → 503) degrades to the real, last-known-good list instead
@@ -239,33 +233,6 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const d = await api.agentResolvedModel(agentName)
       return d?.model || ''
-    } catch {
-      return ''
-    }
-  }
-
-  /** KiroCrew's configured default model (Settings → Chat → Default Model).
-   *  '' when unset or "auto" — both mean "no explicit default", so callers fall
-   *  through to the agent-file model exactly as the backend does. */
-  async resolveDefaultModel(): Promise<string> {
-    try {
-      const c = (await api.kirocrewConfig()) as KirocrewAgentConfig
-      const m = c?.agent?.model || ''
-      return m === 'auto' ? '' : m
-    } catch {
-      return ''
-    }
-  }
-
-  /** KiroCrew's configured default reasoning effort (Settings → Chat). '' means
-   *  no default, i.e. the model picks its own. A per-slot override outranks it,
-   *  matching ConfigLoader._acp()'s `reasoning_effort_override or default`.
-   *  `readConfig` supplies the gateway config body from the caller's shared
-   *  `['kirocrewConfig']` query, avoiding a second GET at boot. */
-  async resolveDefaultEffort(readConfig: () => Promise<unknown>): Promise<string> {
-    try {
-      const c = (await readConfig()) as KirocrewAgentConfig
-      return c?.agent?.reasoning_effort || ''
     } catch {
       return ''
     }

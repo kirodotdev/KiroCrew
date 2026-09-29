@@ -415,7 +415,8 @@ class TestSendMessageStreamFoldsRefusal:
         c.ensure_ready = AsyncMock()
         c._send_prompt = AsyncMock(return_value=1)
 
-        async def _loop(req_id, timeout):
+        # send_message_stream passes the prompt's admission handle through.
+        async def _loop(req_id, timeout, *, admission=None):
             yield (
                 "metadata",
                 JsonRpcMessage(method="_kiro.dev/metadata", params=dict(INCIDENT_FRAME)),

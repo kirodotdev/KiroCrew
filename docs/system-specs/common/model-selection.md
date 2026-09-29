@@ -279,7 +279,9 @@ its own once the cache refreshes with a list that carries it.
   fallback. The pair shape alone is never sufficient. Existing pair pins display
   as their base model; an unset effort control remains Default until the user
   chooses an override. Picking a model stores the base ID; the backend's existing
-  effort reapply path keeps a slot override in force. Other backends' model IDs,
+  effort reapply path keeps a slot override in force; when that re-apply meets a
+  running turn, the override takes effect at the session's next fresh start.
+  Other backends' model IDs,
   including Claude window suffixes such as `[1m]`, remain intact.
 - `dashboard.model_picker_hidden_models` is a presentation preference over that
   advertised set. It filters only the interactive ChatPage and ChatPane pickers;

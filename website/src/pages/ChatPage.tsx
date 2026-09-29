@@ -345,7 +345,6 @@ import type { ChatMessage } from '../types'
 import { shouldMountSidePanel, isSidePanelHidden, sidePanelDockMotion } from './chat/sidePanelMount'
 import type { ParsedSubagentCompletion } from './chat/subagentCompletion'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
-import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
@@ -4559,19 +4558,29 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
   // — so the composer must show the inherited value rather than a bare
   // "Default", which read as "the model decides" and hid the real setting.
-  const readKirocrewConfig = useKirocrewConfigReader()
-  const { data: _defaultEffort } = useQuery({
-    queryKey: ['default-effort', provider.id],
-    queryFn: () => provider.resolveDefaultEffort(readKirocrewConfig),
+  // Read from the shared ['kirocrewConfig'] entry: queries never go stale on
+  // their own here (staleTime: Infinity), and that entry is the one the
+  // Settings save writes and the server's refresh broadcast invalidates, so a
+  // change made in Settings shows without a reload.
+  const { data: _kirocrewCfg, isError: kirocrewConfigIsError } = useQuery({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
     enabled: provider.capabilities.reasoningEffort,
   })
-  const defaultEffort = _defaultEffort || ''
+  const defaultEffort: string = provider.capabilities.reasoningEffort
+    ? _kirocrewCfg?.agent?.reasoning_effort || ''
+    : ''
+  // The active slot's own effort (its override, or a legacy model-suffix
+  // level); empty means the composer inherits the Settings default. The
+  // effective value, the picker's current row and the config-read-failure
+  // notice all read this one expression.
+  const slotEffort = currentSlot?.reasoning_effort || legacyCodexEffort(
+    currentSlot?.model || '', '', codexPairModels,
+  )
   // Effort actually in force for the active slot: per-slot override, else the
   // configured default. Display only — the slot's raw value still drives the
   // picker so "no override" stays distinguishable from an explicit pick.
-  const effectiveEffort = currentSlot?.reasoning_effort || legacyCodexEffort(
-    currentSlot?.model || '', '', codexPairModels,
-  ) || defaultEffort
+  const effectiveEffort = slotEffort || defaultEffort
   // Branch label for the active project chip. The user can check out a
   // different branch outside the dashboard at any time, so this refetches on a
   // slow interval and on window focus rather than being read once. A failure
@@ -8395,6 +8404,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
+              {/* Stacked above the transcript like the status bars, so nothing
+                  overlapping the dock band shaves the notice's top border. */}
+              {/* Only while the composer's effort inherits the Settings default:
+                  a slot with its own effort shows that level whatever the read
+                  did, so the notice would describe a control that is not there. */}
+              {effortSupported && kirocrewConfigIsError && !slotEffort && (
+                <div
+                  className="px-4 pb-1.5 mx-auto w-full relative z-[2]"
+                  style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
+                >
+                  {/* No hand-off: this notice sits directly above the composer,
+                      whose draft the hand-off navigation would discard — the same
+                      reason ChatPane omits it. One shared presentation (boxed
+                      block, no Ask-the-agent) across both surfaces. */}
+                  <ErrorNotice
+                    message={i18nT('pages.chatPage.default_effort_settings_unavailable')}
+                    testId="default-effort-config-error"
+                  />
+                </div>
+              )}
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
               <div ref={inputAreaRef} className="relative z-10 dock-inert">
               {/* The refused-press answer sits directly above the composer,
@@ -9124,7 +9153,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 // this machine's when it reports one.
                 hasEffort={!!(activeSlot && effortSupported)}
                 slot={activeSlot}
-                currentEffort={currentSlot?.reasoning_effort || legacyCodexEffort(currentSlot?.model || '', '', codexPairModels)}
+                currentEffort={slotEffort}
                 defaultEffort={defaultEffort}
                 effortLevelsOverride={effortLevelsOverride}
                 onManageModels={modelPickerConfigured ? undefined : () => {

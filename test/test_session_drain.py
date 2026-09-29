@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -170,6 +170,77 @@ async def test_drain_noop_when_no_active_turn(cfg):
 
     assert n == 0
     assert p.cancel_calls == []  # idle sessions are never cancelled
+
+
+@pytest.mark.asyncio
+async def test_drain_counts_prompt_parked_in_ensure_ready(cfg, tmp_path):
+    """A prompt admitted before process startup is visible to shutdown drain."""
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.providers.acp import AcpProvider
+
+    ready_entered = asyncio.Event()
+    release_ready = asyncio.Event()
+    client = AcpClient(work_dir=tmp_path)
+    client._session_id = "session-1"
+    client._process = None
+
+    async def _ensure_ready() -> None:
+        ready_entered.set()
+        await release_ready.wait()
+
+    client.ensure_ready = AsyncMock(side_effect=_ensure_ready)
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._client = client
+    provider.essential_delivery = MagicMock()
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+    _inject(mgr, "s1", provider)
+
+    prompt = asyncio.create_task(_collect_client_events(client.stream_events("hello")))
+    await asyncio.wait_for(ready_entered.wait(), timeout=1.0)
+    assert client.has_unfinished_turn() is True
+
+    assert await mgr.drain_active_turns(timeout=0.02) == 1
+
+    prompt.cancel()
+    release_ready.set()
+    await asyncio.gather(prompt, return_exceptions=True)
+    assert client.has_unfinished_turn() is False
+
+
+@pytest.mark.asyncio
+async def test_drain_counts_prompt_waiting_behind_command_lock(cfg, tmp_path):
+    """A prompt waiting for command ownership is visible before it writes."""
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.providers.acp import AcpProvider
+
+    client = AcpClient(work_dir=tmp_path)
+    client._session_id = "session-1"
+    client._process = MagicMock(returncode=None)
+    client._process.stdin.drain = AsyncMock()
+    client.ensure_ready = AsyncMock()
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._client = client
+    provider.essential_delivery = MagicMock()
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+    _inject(mgr, "s1", provider)
+
+    await client._turn_lock.acquire()
+    prompt = asyncio.create_task(_collect_client_events(client.stream_events("hello")))
+    for _ in range(100):
+        if client.has_active_turn():
+            break
+        await asyncio.sleep(0)
+    assert client.has_unfinished_turn() is True
+
+    assert await mgr.drain_active_turns(timeout=0.02) == 1
+
+    client._turn_lock.release()
+    await asyncio.wait_for(prompt, timeout=1.0)
+    assert client.has_unfinished_turn() is False
+
+
+async def _collect_client_events(events):
+    return [event async for event in events]
 
 
 @pytest.mark.asyncio
