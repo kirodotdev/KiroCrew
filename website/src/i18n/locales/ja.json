@@ -16690,7 +16690,13 @@
       "team_state_idle_since": "待機中 · 最終アクティブ {{ago}}",
       "team_state_idle": "待機中",
       "team_today_week": "実行回数：今日 {{today}} · 今週 {{week}}",
-      "teams_load_failed": "チームを読み込めませんでした。"
+      "teams_load_failed": "チームを読み込めませんでした。",
+      "schedules_tab": "スケジュール",
+      "schedules_heading": "このクルーメイトを起こすもの",
+      "schedules_blurb": "誰も頼まなくても、このクルーメイトを自分で動かすスケジュールです。",
+      "schedules_count_title": "{{total}} 件中 {{active}} 件のスケジュールが有効",
+      "schedules_empty": "このクルーメイトを自動で起こすものはまだありません。",
+      "schedules_leave_draft": "ページを離れて、書きかけのスケジュールを破棄しますか？"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

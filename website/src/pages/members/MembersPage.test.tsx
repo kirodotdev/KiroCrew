@@ -68,6 +68,22 @@ vi.mock('../../api/client', () => ({
     // `dashboard.crewmate_threads` (reply threads) is read from the shared config
     // query; an empty config is the default -- the flag is OFF.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
+    // The Schedules chip's count and its tab body read the whole cron list and
+    // filter it per crewmate (`wakesCrew`). Resolved-and-empty is the state every
+    // case not about schedules wants: the chip reads 0/0, which is an ANSWER of
+    // none — an unstubbed reject would instead make it unknown and drop the badge,
+    // and the strip assertions here would then pass for the wrong reason.
+    crons: vi.fn(() => Promise.resolve({ jobs: [] })),
+    // `wakesCrew`'s default-crew fallback needs to know which crew is the default,
+    // or every unbound job in the install would be attributed to whichever
+    // crewmate happens to be open.
+    defaultAgent: vi.fn(() => Promise.resolve({ default_agent: 'kirocrew' })),
+    // The schedule row's own controls (pause / run now), reached through
+    // `useCronActions` once the Schedules tab is open.
+    toggleCron: vi.fn(() => Promise.resolve({})),
+    runCron: vi.fn(() => Promise.resolve({})),
+    cancelCron: vi.fn(() => Promise.resolve({})),
+    cronToChat: vi.fn(() => Promise.resolve({})),
     // New crewmate dialog's option reads (installed agents, workspaces) and its
     // create write. Quiet defaults — one custom agent list item and one
     // workspace — so the dialog renders without its own options-failed notice
@@ -835,7 +851,7 @@ describe('MembersPage thread', () => {
   })
 })
 
-describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', () => {
+describe('MembersPage side panel (Notes / Work log / Dashboard / Schedules) and edit jump', () => {
   it('a starred:true frame flips the Starred filter count and membership at page level without a roster refetch', async () => {
     // The page-level Starred count and filter read the MERGED list (rows +
     // pushed roster projection), so a `member_projection` frame that stars a
@@ -992,7 +1008,12 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await screen.findByTestId('member-notes')
     for (const id of CREW_PANEL_TAB_IDS) {
       fireEvent.click(screen.getByTestId(`side-panel-leading-tab-${id}`))
-      const body = await screen.findByTestId('side-panel-leading-body')
+      // The body for THIS tab, by its `data-leading-id`, not "the" leading body: a
+      // visited Crew Dashboard is kept mounted-and-hidden, so once the loop passes it
+      // there is more than one leading body in the tree and a singular query throws.
+      const bodies = await screen.findAllByTestId('side-panel-leading-body')
+      const body = bodies.find((b) => b.getAttribute('data-leading-id') === id)
+      expect(body, `no leading body for ${id}`).toBeDefined()
       expect(body).not.toHaveTextContent(/memory store/i)
       expect(body).not.toHaveTextContent(/private memory/i)
       expect(body).not.toHaveTextContent(/configured memory store is unavailable/i)
@@ -1080,9 +1101,9 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-notes')
-    // Leading block: Notes, Work log, Dashboard; pinned: Artifacts, Files — and NOT Changes.
+    // Leading block: Notes, Work log, Dashboard, Schedules; pinned: Artifacts, Files — and NOT Changes.
     expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual([
-      'Notes', 'Work log', 'Dashboard', 'Artifacts', 'Files',
+      'Notes', 'Work log', 'Dashboard', 'Schedules', 'Artifacts', 'Files',
     ])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
@@ -1184,7 +1205,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     // In flight: thread still renders the cached key, panel is summary-only.
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     // Confirmed: the slot-bound views return.
@@ -1218,7 +1239,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     // …while its BODY is the same mounted element, on the same key — not
     // unmounted, not re-keyed to the empty slot.
@@ -1270,13 +1291,13 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     act(() => { resolveFirst({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
     // Still unbound after the stale answer: the refusal stands, no slot-bound views.
     await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
     expect(screen.getByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules'])
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
 
@@ -1284,7 +1305,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     // The roster binding says `member-oncall`, but the thread endpoint refuses
     // (a stale binding whose canonical key an ordinary slot now occupies). The
     // panel must not aim Side chat / Artifacts / Files at that occupant: with no
-    // confirmed slot, only the slot-free Notes / Work log / Dashboard chips are on the strip and the
+    // confirmed slot, only the slot-free Notes / Work log / Dashboard / Schedules chips are on the strip and the
     // + menu offers nothing slot-bound. A remembered member restores on
     // arrival (a fresh visit no longer auto-opens anyone, #11763), so the
     // refused open is that restore.
@@ -1292,7 +1313,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { thread: new Error('409') })
     await screen.findByText(/Could not open this crewmate's chat/i)
     expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
@@ -1321,7 +1342,7 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
@@ -1340,7 +1361,10 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard']),
+      // Every slot-bound view is withheld while the thread is unconfirmed, so
+      // only the host's own leading tabs remain -- Schedules among them: it
+      // reads the crewmate's jobs by `member_id`, not through the slot.
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Notes', 'Work log', 'Dashboard', 'Schedules']),
     )
     localStorage.setItem(ownedKey, '500')
     localStorage.removeItem(SIDE_PANEL_WIDTH_KEY)

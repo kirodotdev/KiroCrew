@@ -62,7 +62,22 @@ def _archive(state, caller, peer, *, messages=2, title="") -> str:
     key = peer.key
     asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=key))
     assert key not in state._slots
-    assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    meta = state.conversation_log.get_metadata(f"dashboard:{key}")
+    assert meta.get("closed")
+    # Backdate the close so it is strictly BEFORE any resume the caller then runs.
+    #
+    # `clear_closed`'s compare-and-clear refuses when `closed_at >= resume_started_at`,
+    # conservative on purpose so a close landing at the resume's own boundary keeps its
+    # marker. Both values come from `time.time()`, whose resolution is the platform's:
+    # on Windows that is the ~15.6 ms interrupt clock, so a close and a resume a few
+    # microseconds apart return the IDENTICAL float, the guard reads equal, and the
+    # marker stays. Linux returns a finer value per call, so the same pair compares
+    # strictly ordered there and the platform decides whether these tests see a clear.
+    # The precondition they mean is "this session is closed BEFORE the resume begins",
+    # so state it here rather than leaving clock granularity to imply it.
+    state.conversation_log.update_metadata(
+        f"dashboard:{key}", {"closed_at": float(meta["closed_at"]) - 60.0}
+    )
     return key
 
 

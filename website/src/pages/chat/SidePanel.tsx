@@ -265,6 +265,25 @@ export interface SidePanelLeadingTab {
   keepMounted?: boolean
   /** Body; query-only views normally mount just while active. */
   render: () => ReactNode
+  /** Optional count / status pill after the label, for a tab whose headline
+   *  fact is worth reading WITHOUT opening it (the Crewmates page's Schedules
+   *  count). The host owns the node so it can distinguish an answer of none
+   *  from an unreadable list; omit it rather than passing a zero that would
+   *  assert "none" about a list that failed to load. */
+  badge?: ReactNode
+  /** Asked before the strip switches AWAY from this tab, for a body that holds
+   *  unsaved work. Only the ACTIVE tab's hook is consulted, and answering false
+   *  refuses the switch.
+   *
+   *  It exists because only the active leading tab's body is mounted, so every
+   *  other chip is a destruction path for an editor living in this one — and the
+   *  host cannot see a chip click to guard it. Opt-in: a tab that declares
+   *  nothing behaves exactly as before, which is every tab but the Crewmates
+   *  page's Schedules.
+   *
+   *  May answer asynchronously, because the honest answer is usually a themed
+   *  confirm dialog (`useConfirm`) rather than a synchronous guess. */
+  onBeforeLeave?: () => boolean | Promise<boolean>
 }
 
 interface SidePanelProps {
@@ -476,7 +495,6 @@ export default function SidePanel({
   // A permanent panel has no close control and answers Escape with nothing —
   // the views' `onToggle` still needs a function, so it gets a no-op.
   const closable = !!onClose
-  const closePanel = useCallback(() => { onClose?.() }, [onClose])
   // App-contributed side-panel tabs from the installed-app manifests. Empty ⇒
   // the "+" menu and launcher show nothing extra and the strip renders no app tab.
   // A host that withholds `'app'` (the Members page before its thread is
@@ -555,6 +573,31 @@ export default function SidePanel({
   }, [hiddenViews])
   // Restored terminal chips wait for the liveness ruling too, as the dock's do.
   const terminalsPending = usePanelTerminalsPending()
+  // Every chip click routes through here so the tab being LEFT can refuse, which is
+  // what `SidePanelLeadingTab.onBeforeLeave` is for: only the active leading tab's
+  // body is mounted, so switching to any other chip destroys an editor living in it.
+  // A tab that declares no hook takes the old path exactly, so this is inert for the
+  // chat page and for every crewmate tab but Schedules.
+  const leadingTabsRef = useRef(leadingTabs)
+  leadingTabsRef.current = leadingTabs
+  const requestActive = useCallback(async (id: string, currentId: string | null) => {
+    if (id === currentId) return
+    const leaving = leadingTabsRef.current?.find(t => t.id === currentId)
+    if (leaving?.onBeforeLeave && !(await leaving.onBeforeLeave())) return
+    setActive(id)
+  }, [setActive])
+  // Opening any OTHER tab leaves the active leading one just as clicking a chip does, so
+  // the + menu, the launcher cards and an app-tab row ask the same question. Every path
+  // that can make a different tab active runs through this.
+  // Returns the active leading tab's hook, or null when there is nothing to ask. Callers
+  // branch on null and stay SYNCHRONOUS: awaiting an answer nobody has to give would make
+  // every tab-opening gesture on every host async, including the chat page, which has no
+  // leading tabs at all.
+  const activeLeadingIdRef = useRef<string | null>(null)
+  const leavingHook = useCallback(() => {
+    const leaving = leadingTabsRef.current?.find(t => t.id === activeLeadingIdRef.current)
+    return leaving?.onBeforeLeave ?? null
+  }, [])
   const visibleTabs = useMemo(() => (hiddenViews || terminalsPending
     ? tabs.filter(t => !isWithheld(t.kind) && !(terminalsPending && t.kind === 'terminal'))
     : tabs), [tabs, hiddenViews, isWithheld, terminalsPending])
@@ -573,6 +616,16 @@ export default function SidePanel({
   // withholds every slot view for the moment its thread POST is in flight), and
   // a stored focus on Files must come back as Files once the views return.
   useEffect(() => { onActiveTabChange?.(activeId) }, [activeId, onActiveTabChange])
+  activeLeadingIdRef.current = activeId
+  // Closing the panel destroys the active tab's body exactly as switching away from it
+  // does -- the host stops mounting the panel at all -- so it asks the same question a
+  // chip click asks. Without this the close control and the narrow-viewport scrim were
+  // the one way out that dropped an unsaved schedule draft with no confirm.
+  const closePanel = useCallback(async () => {
+    const leaving = leadingTabsRef.current?.find(t => t.id === activeId)
+    if (leaving?.onBeforeLeave && !(await leaving.onBeforeLeave())) return
+    onClose?.()
+  }, [onClose, activeId])
   const pinnedTabs = useMemo(() => visibleTabs.filter(t => (PINNED_VIEWS as string[]).includes(t.id)), [visibleTabs])
   const dynamicTabs = useMemo(() => visibleTabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id)), [visibleTabs])
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
@@ -583,9 +636,19 @@ export default function SidePanel({
   // of the affordance.
   const openProjectTerminal = useCallback(() => { openTerminal({ cwd: projectDir }) }, [openTerminal, projectDir])
   const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
-    if (kind === 'terminal') openProjectTerminal()
-    else openView(kind)
-  }, [openProjectTerminal, openView])
+    const run = () => {
+      if (kind === 'terminal') openProjectTerminal()
+      else openView(kind)
+    }
+    const ask = leavingHook()
+    if (!ask) { run(); return }
+    void Promise.resolve(ask()).then(ok => { if (ok) run() })
+  }, [openProjectTerminal, openView, leavingHook])
+  const requestPanelTab = useCallback((d: PanelTabDescriptor) => {
+    const ask = leavingHook()
+    if (!ask) { openPanelTab(d); return }
+    void Promise.resolve(ask()).then(ok => { if (ok) openPanelTab(d) })
+  }, [openPanelTab, leavingHook])
   // Closing a terminal tab kills its PTY (server) and disposes local state. The
   // server delete goes through a React Query mutation (use-react-query
   // guideline); the synchronous WS + xterm teardown stays in disposeTerminalSession.
@@ -932,8 +995,21 @@ export default function SidePanel({
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the
-            gap instead of over a neighbour. */}
-        <div className="flex items-end gap-2 shrink-0 -mb-px">
+            gap instead of over a neighbour.
+
+            SCROLLS, same class set as the dynamic tablist below (`min-w-0
+            overflow-x-auto scrollbar-none`), and deliberately NOT `shrink-0`:
+            a host may add leading chips ahead of the three pinned ones, and at
+            a narrow width (320px, where the Crewmates overlay takes the whole
+            window) an unshrinkable group pushes its own last chip AND the
+            trailing strip controls — + menu, dock toggle, close — past the
+            panel root's `overflow-hidden` edge, where nothing at that width
+            brings them back. The chips inside stay `shrink-0`: they scroll,
+            they never squeeze. */}
+        <div
+          className="flex items-end gap-2 min-w-0 overflow-x-auto scrollbar-none -mb-px"
+          data-testid="side-panel-fixed-tabs"
+        >
           {/* The host's leading tabs, ahead of the pinned views: non-closable
               chips, never Reorder items — they are the strip's identity, not
               documents. ALWAYS labelled (`pinned={false}`): several icon-only
@@ -947,11 +1023,12 @@ export default function SidePanel({
                   key={lt.id}
                   tab={{ title: lt.title }}
                   icon={lt.icon}
+                  badge={lt.badge}
                   active={lt.id === activeId}
                   closable={false}
                   pinned={false}
                   host
-                  onSelect={() => setActive(lt.id)}
+                  onSelect={() => { void requestActive(lt.id, activeId) }}
                   onClose={() => {}}
                   testId={`side-panel-leading-tab-${lt.id}`}
                 />
@@ -959,7 +1036,7 @@ export default function SidePanel({
             </div>
           )}
           {pinnedTabs.map(t => (
-            <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => setActive(t.id)} onClose={() => {}} />
+            <TabChip key={t.id} tab={t} active={t.id === activeId} closable={false} pinned onSelect={() => { void requestActive(t.id, activeId) }} onClose={() => {}} />
           ))}
         </div>
         {/* Chrome's separator rule, extended to the pinned↔dynamic divider: a
@@ -998,7 +1075,7 @@ export default function SidePanel({
               // background already delineates it).
               separator={i > 0 && t.id !== activeId && dynamicTabs[i - 1].id !== activeId}
               instantLayout={resizing || slotSwitched || dimAnimating}
-              onSelect={() => setActive(t.id)}
+              onSelect={() => { void requestActive(t.id, activeId) }}
               onClose={() => handleCloseTab(t.id)}
             />
           ))}
@@ -1049,7 +1126,7 @@ export default function SidePanel({
                   <DropdownMenuItem
                     key={d.kind}
                     className="gap-2.5 py-2"
-                    onSelect={() => openPanelTab(d)}
+                    onSelect={() => requestPanelTab(d)}
                   >
                     <span className="text-muted shrink-0">{appIcon(d.icon)}</span>
                     <span className="flex-1">{d.menuLabel}</span>
@@ -1096,7 +1173,7 @@ export default function SidePanel({
         {closable && (
         <button
           className="pi-morph flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-          onClick={closePanel}
+          onClick={() => { void closePanel() }}
           title={i18nT('pages.chat.sidePanel.close_panel')}
           aria-label={i18nT('pages.chat.sidePanel.close_panel')}
         >
@@ -1160,7 +1237,7 @@ export default function SidePanel({
                 <button
                   key={d.kind}
                   className="flex flex-col items-start gap-1.5 px-3.5 py-3 rounded-xl border border-border bg-transparent hover:bg-bg-hover hover:border-border-strong text-left cursor-pointer transition-colors"
-                  onClick={() => openPanelTab(d)}
+                  onClick={() => requestPanelTab(d)}
                 >
                   <div className="flex items-center gap-2.5 w-full text-text">
                     <span className="shrink-0 opacity-80">{appIcon(d.icon)}</span>
@@ -1224,7 +1301,7 @@ export default function SidePanel({
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
                   view={t.kind as 'changes' | 'issues' | 'links' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'crewlog' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
-                  open onToggle={closePanel} slot={slot}
+                  open onToggle={() => { void closePanel() }} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   sources={sources}
                   selectedSourceUrl={selectedSourceUrl}
@@ -1739,7 +1816,7 @@ function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onC
   )
 }
 
-function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = false, host = false, icon, testId }: {
+function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = false, host = false, icon, badge, testId }: {
   /** A stored tab, or — for the host's leading tab — just a title: that chip has
    *  no `kind` (it is not a `PanelTab`) and brings its own `icon`. */
   tab: Pick<PanelTab, 'title'> & Partial<Pick<PanelTab, 'kind' | 'sessionId' | 'path'>>
@@ -1749,6 +1826,10 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
   host?: boolean
   /** Overrides the kind-derived glyph. Required when `tab.kind` is absent. */
   icon?: ReactNode
+  /** Count / status pill rendered after the label. Only ever shown while the
+   *  label is (an icon-only chip has no room and the pill would read as part of
+   *  the glyph). */
+  badge?: ReactNode
   testId?: string
 }) {
   // App-tab glyphs come from the manifest descriptor (resolved by name); a built-in
@@ -1807,6 +1888,9 @@ function TabChip({ tab, active, onSelect, onClose, closable = true, pinned = fal
             ? <TerminalTabTitle sessionId={tab.sessionId} fallback={tab.title} />
             : tab.title}
         </span>
+      )}
+      {showLabel && badge != null && (
+        <span className="shrink-0" data-testid={testId ? `${testId}-badge` : undefined}>{badge}</span>
       )}
       {closable && (
         <div className="flex items-center gap-0.5 shrink-0">

@@ -17419,7 +17419,13 @@
       "team_state_idle_since": "Бездействует · активность {{ago}}",
       "team_state_idle": "Бездействует",
       "team_today_week": "Запусков: {{today}} сегодня · {{week}} за неделю",
-      "teams_load_failed": "Не удалось загрузить команды."
+      "teams_load_failed": "Не удалось загрузить команды.",
+      "schedules_tab": "Расписания",
+      "schedules_heading": "Что будит этого напарника",
+      "schedules_blurb": "Расписания, которые запускают этого напарника сами, без чьей-либо просьбы.",
+      "schedules_count_title": "Активно {{active}} из {{total}} расписаний",
+      "schedules_empty": "Пока ничто не будит этого напарника самостоятельно.",
+      "schedules_leave_draft": "Покинуть страницу и потерять начатое расписание?"
     },
     "tasksCapacityCard": {
       "title": "Задачи и ёмкость",

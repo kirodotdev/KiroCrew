@@ -16933,7 +16933,13 @@
       "team_state_idle_since": "Untätig · zuletzt aktiv {{ago}}",
       "team_state_idle": "Untätig",
       "team_today_week": "Läufe: {{today}} heute · {{week}} diese Woche",
-      "teams_load_failed": "Teams konnten nicht geladen werden."
+      "teams_load_failed": "Teams konnten nicht geladen werden.",
+      "schedules_tab": "Zeitpläne",
+      "schedules_heading": "Was diesen Crewmate weckt",
+      "schedules_blurb": "Zeitpläne, die diesen Crewmate von selbst starten, ohne dass jemand fragt.",
+      "schedules_count_title": "{{active}} von {{total}} Zeitplänen aktiv",
+      "schedules_empty": "Diesen Crewmate weckt noch nichts von selbst.",
+      "schedules_leave_draft": "Die Seite verlassen und den begonnenen Zeitplan verwerfen?"
     },
     "tasksCapacityCard": {
       "title": "Aufgaben & Kapazität",

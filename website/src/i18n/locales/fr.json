@@ -17176,7 +17176,13 @@
       "team_state_idle_since": "Inactif · dernière activité {{ago}}",
       "team_state_idle": "Inactif",
       "team_today_week": "Exécutions : {{today}} aujourd’hui · {{week}} cette semaine",
-      "teams_load_failed": "Impossible de charger les équipes."
+      "teams_load_failed": "Impossible de charger les équipes.",
+      "schedules_tab": "Planifications",
+      "schedules_heading": "Ce qui réveille ce coéquipier",
+      "schedules_blurb": "Les planifications qui démarrent ce coéquipier sans que personne le demande.",
+      "schedules_count_title": "{{active}} planification(s) active(s) sur {{total}}",
+      "schedules_empty": "Rien ne réveille encore ce coéquipier de lui-même.",
+      "schedules_leave_draft": "Quitter la page et perdre la planification en cours d’écriture ?"
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

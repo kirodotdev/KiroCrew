@@ -7616,7 +7616,13 @@
       "team_state_idle_since": "Idle · last active {{ago}}",
       "team_state_idle": "Idle",
       "team_today_week": "Runs: {{today}} today · {{week}} this week",
-      "teams_load_failed": "Could not load teams."
+      "teams_load_failed": "Could not load teams.",
+      "schedules_tab": "Schedules",
+      "schedules_heading": "What wakes this crewmate",
+      "schedules_blurb": "Schedules that start this crewmate on its own, with nobody asking.",
+      "schedules_count_title": "{{active}} active of {{total}} schedules",
+      "schedules_empty": "Nothing wakes this crewmate on its own yet.",
+      "schedules_leave_draft": "Leave the page and lose the schedule you were writing?"
     },
     "migrationPage": {
       "app_migration": "App Migration",

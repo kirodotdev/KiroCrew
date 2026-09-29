@@ -6,7 +6,7 @@ created: 2026-09-22
 last-audited: 2026-09-22
 audited-at: 87553ba866
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914]
+implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897, 14914, 14925]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -247,6 +247,27 @@ Decided:
 - Manager metaphor: Notes is the team wiki, Work log is the weekly report,
   Dashboard is the project board.
 
+Amendment (2026-09-29, CREW-18721):
+
+- The per-crewmate panel gains a **fourth tab, Schedules**, after Dashboard. It
+  lists only that crewmate's OWN schedules — the ones whose `member_id` is this
+  crewmate — and its chip carries a live/total count badge, omitted entirely when
+  the crewmate has none or the read fails.
+- A schedule belonging to no crewmate stays on `/schedule` and appears on no
+  crewmate's tab. `/schedule` remains the full cross-crewmate view, unchanged.
+- **Create is available wherever a crewmate's schedules are shown**, so the tab
+  carries the create form. This narrows the decision above, which sent creation to
+  the Schedule page or the detail page: it applies to the removed Crew summary
+  tab's dialog, not to this one. The form is draft-safe — every gesture that would
+  unmount it asks first (`onBeforeLeave`), a create in flight refuses, and a window
+  resize that re-docks the panel keeps the form mounted rather than discarding it.
+- Unchanged by this amendment: the removal of the Crew summary tab, and the three
+  original tabs, their order and the tab the panel opens on.
+- Grounds: CREW-18721, a later product requirement that a crewmate's own schedules
+  are visible on that crewmate and not only on `/schedule`. It supersedes this
+  screen's read surface; the section 7 acceptance clause "offers exactly Notes,
+  Work log, Dashboard" reads as those three plus Schedules from this date.
+
 ### 07 Reply threads (P1)
 
 Decided:
@@ -366,7 +387,8 @@ The launch is complete when, on main:
   crewmate panel or the first-run flow says "Agent Capabilities", "Agent
   template", "crew member" or "Runs on".
 - The crewmate panel opens on Notes and offers exactly Notes, Work log,
-  Dashboard.
+  Dashboard — plus Schedules, per the section 06 amendment of 2026-09-29
+  (CREW-18721).
 - A new install reaches a crewmate's first greeting through either the
   four-step flow or New crewmate without seeing a settings form.
 - An install carrying crewmates an earlier sync generated loses, on its first

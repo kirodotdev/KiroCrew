@@ -17176,7 +17176,13 @@
       "team_state_idle_since": "Inattivo · ultima attività {{ago}}",
       "team_state_idle": "Inattivo",
       "team_today_week": "Esecuzioni: {{today}} oggi · {{week}} questa settimana",
-      "teams_load_failed": "Impossibile caricare i team."
+      "teams_load_failed": "Impossibile caricare i team.",
+      "schedules_tab": "Pianificazioni",
+      "schedules_heading": "Cosa sveglia questo compagno",
+      "schedules_blurb": "Pianificazioni che avviano questo compagno da sole, senza che nessuno lo chieda.",
+      "schedules_count_title": "{{active}} pianificazioni attive su {{total}}",
+      "schedules_empty": "Ancora niente sveglia questo compagno da solo.",
+      "schedules_leave_draft": "Uscire dalla pagina e perdere la pianificazione che stavi scrivendo?"
     },
     "tasksCapacityCard": {
       "title": "Attività e capacità",

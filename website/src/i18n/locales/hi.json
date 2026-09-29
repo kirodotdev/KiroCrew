@@ -16933,7 +16933,13 @@
       "team_state_idle_since": "खाली · आख़िरी बार {{ago}} सक्रिय",
       "team_state_idle": "खाली",
       "team_today_week": "रन: आज {{today}} · इस हफ़्ते {{week}}",
-      "teams_load_failed": "टीमें लोड नहीं हो सकीं।"
+      "teams_load_failed": "टीमें लोड नहीं हो सकीं।",
+      "schedules_tab": "शेड्यूल",
+      "schedules_heading": "इस क्रूमेट को क्या जगाता है",
+      "schedules_blurb": "ये शेड्यूल इस क्रूमेट को खुद ही चालू कर देते हैं, कोई कहे बिना।",
+      "schedules_count_title": "{{total}} शेड्यूल में से {{active}} सक्रिय",
+      "schedules_empty": "इस क्रूमेट को अभी कुछ भी अपने आप नहीं जगाता।",
+      "schedules_leave_draft": "पेज छोड़ो और जो शेड्यूल लिख रहे थे उसे खो दो?"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",

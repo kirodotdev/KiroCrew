@@ -16690,7 +16690,13 @@
       "team_state_idle_since": "空闲 · 上次活跃于 {{ago}}",
       "team_state_idle": "空闲",
       "team_today_week": "运行次数：今天 {{today}} · 本周 {{week}}",
-      "teams_load_failed": "无法加载团队。"
+      "teams_load_failed": "无法加载团队。",
+      "schedules_tab": "定时任务",
+      "schedules_heading": "什么会唤醒这位队友",
+      "schedules_blurb": "这些定时任务会在没人过问的情况下自己叫醒这位队友。",
+      "schedules_count_title": "{{total}} 个定时任务中 {{active}} 个已启用",
+      "schedules_empty": "还没有任何东西会自动唤醒这位队友。",
+      "schedules_leave_draft": "离开页面并丢弃正在编写的定时任务？"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

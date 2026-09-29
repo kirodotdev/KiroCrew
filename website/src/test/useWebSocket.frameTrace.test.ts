@@ -1034,6 +1034,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "refresh with history": [
     'action dashboard/triggerRefresh undefined',
     'query invalidateQueries ["cron-jobs"]',
+    'query invalidateQueries ["crons"]',
     'query invalidateQueries ["cron-history-all"]',
     'query invalidateQueries ["spawn-list"]',
     'query invalidateQueries ["sessions-context"]',
@@ -1305,6 +1306,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "sessions_restarting and refine": [
     'action dashboard/triggerRefresh undefined',
     'query invalidateQueries ["cron-jobs"]',
+    'query invalidateQueries ["crons"]',
     'query invalidateQueries ["cron-history-all"]',
     'query invalidateQueries ["spawn-list"]',
     'query invalidateQueries ["sessions-context"]',
@@ -1321,6 +1323,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["artifact-folders"]',
     'action dashboard/triggerRefresh undefined',
     'query invalidateQueries ["cron-jobs"]',
+    'query invalidateQueries ["crons"]',
     'query invalidateQueries ["cron-history-all"]',
     'query invalidateQueries ["spawn-list"]',
     'query invalidateQueries ["sessions-context"]',

@@ -71,6 +71,12 @@ export async function healRedactionSwitchAfterReconnect(qc: QueryClient): Promis
  */
 export function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['cron-jobs'] })
+  // Prefix match on purpose: `['crons', 'crew-wake', <crew>]` caches the one global cron
+  // payload once per crewmate whose schedules pane has been opened (the crew editor's and
+  // the Crewmates panel's). Invalidating only `['cron-jobs']` refreshed the Schedule page
+  // and left every one of those entries stale, so a schedule changed anywhere else kept
+  // its old status under each crewmate until that entry happened to refetch.
+  qc.invalidateQueries({ queryKey: ['crons'] })
   qc.invalidateQueries({ queryKey: ['cron-history-all'] })
   qc.invalidateQueries({ queryKey: ['spawn-list'] })
   qc.invalidateQueries({ queryKey: ['sessions-context'] })

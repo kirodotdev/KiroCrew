@@ -17176,7 +17176,13 @@
       "team_state_idle_since": "Ocioso · última atividade {{ago}}",
       "team_state_idle": "Ocioso",
       "team_today_week": "Execuções: {{today}} hoje · {{week}} esta semana",
-      "teams_load_failed": "Não foi possível carregar as equipes."
+      "teams_load_failed": "Não foi possível carregar as equipes.",
+      "schedules_tab": "Agendamentos",
+      "schedules_heading": "O que acorda este colega",
+      "schedules_blurb": "Agendamentos que iniciam este colega por conta própria, sem ninguém pedir.",
+      "schedules_count_title": "{{active}} de {{total}} agendamentos ativos",
+      "schedules_empty": "Ainda nada acorda este colega por conta própria.",
+      "schedules_leave_draft": "Sair da página e perder o agendamento que você estava escrevendo?"
     },
     "tasksCapacityCard": {
       "title": "Tarefas e capacidade",

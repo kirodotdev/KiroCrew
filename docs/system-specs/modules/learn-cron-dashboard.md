@@ -197,6 +197,25 @@ errors retain their separate recovery guidance. At execution, the job's captured
 context reaches the runtime and every worker before provider startup. Continuation
 keeps that member. Ordinary jobs without a member retain their existing V1 behavior.
 
+`member_id` is the only per-crewmate GROUPING key the dashboard has, and it is the
+one the surfaces group by. `GET /api/crons` returns it (`null` for a job with no
+member), and the server offers no member filter or server-side grouping, so every
+per-crewmate list is a client-side filter over the whole payload through one shared
+predicate, `wakesCrew(job, crew, isDefaultCrew, memberId)`: durable `member_id` first -- compared against the crewmate's IMMUTABLE id, since `bind_cron_memory` rewrites the client's value to the canonical one before persisting -- then a
+multi-entry `agent_sequence`, then the template in `agent`, and finally the default
+crew for a job bound to nothing. `script` and `command` jobs are excluded — they run
+a file, not a crew, so no crew attribution exists to report. Two surfaces read that
+predicate through one query key (`crewWakeQueryKey`): the crew editor's Schedules
+pane and the Crewmates panel's Schedules tab, which mount the same component. The
+last fallback is the one place the two differ, and the component takes which it
+wants as one question from its host: the editor asks what the crew will run and so
+takes the fallback, while the panel asks what wakes this crewmate and does not, so
+a job with no `member_id` AND no bound agent or sequence appears on no crewmate's
+tab and stays on `/schedule`; a legacy job attributed by `agent` alone still shows
+on that crewmate's tab, because only the fallback is withheld. See
+[crew-mode](crew-mode.md). Grouping a job under a crewmate never migrates it and
+never grants that crewmate's store.
+
 Member-scoped execution does not require a protected filesystem or memory grant.
 Legacy V1 cron dispatch snapshots its selectors before resolving configuration
 off-loop; supplied canonical execution records require no configuration reread.

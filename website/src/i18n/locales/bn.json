@@ -16933,7 +16933,13 @@
       "team_state_idle_since": "নিষ্ক্রিয় · শেষ সক্রিয় {{ago}}",
       "team_state_idle": "নিষ্ক্রিয়",
       "team_today_week": "রান: আজ {{today}} · এই সপ্তাহে {{week}}",
-      "teams_load_failed": "দলগুলো লোড করা যায়নি।"
+      "teams_load_failed": "দলগুলো লোড করা যায়নি।",
+      "schedules_tab": "সময়সূচি",
+      "schedules_heading": "এই ক্রুমেটকে কী জাগায়",
+      "schedules_blurb": "এই সময়সূচিগুলো কেউ না বললেও এই ক্রুমেটকে নিজে থেকেই চালু করে।",
+      "schedules_count_title": "{{total}}টি সময়সূচির মধ্যে {{active}}টি সক্রিয়",
+      "schedules_empty": "এই ক্রুমেটকে এখনও কিছুই নিজে থেকে জাগায় না।",
+      "schedules_leave_draft": "পৃষ্ঠা ছেড়ে যাবেন এবং যে সময়সূচি লিখছিলেন তা হারাবেন?"
     },
     "tasksCapacityCard": {
       "title": "কাজ ও সামর্থ্য",

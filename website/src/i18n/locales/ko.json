@@ -16690,7 +16690,13 @@
       "team_state_idle_since": "대기 · 마지막 활동 {{ago}}",
       "team_state_idle": "대기",
       "team_today_week": "실행 횟수: 오늘 {{today}} · 이번 주 {{week}}",
-      "teams_load_failed": "팀을 불러올 수 없습니다."
+      "teams_load_failed": "팀을 불러올 수 없습니다.",
+      "schedules_tab": "일정",
+      "schedules_heading": "이 크루메이트를 깨우는 것",
+      "schedules_blurb": "아무도 요청하지 않아도 이 크루메이트를 스스로 시작하는 일정입니다.",
+      "schedules_count_title": "전체 {{total}}개 일정 중 {{active}}개 활성",
+      "schedules_empty": "이 크루메이트를 스스로 깨우는 것이 아직 없습니다.",
+      "schedules_leave_draft": "페이지를 벗어나 작성 중인 일정을 버리시겠습니까?"
     },
     "tasksCapacityCard": {
       "title": "작업 및 용량",

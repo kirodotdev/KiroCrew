@@ -17176,7 +17176,13 @@
       "team_state_idle_since": "Inactivo · última actividad {{ago}}",
       "team_state_idle": "Inactivo",
       "team_today_week": "Ejecuciones: {{today}} hoy · {{week}} esta semana",
-      "teams_load_failed": "No se pudieron cargar los equipos."
+      "teams_load_failed": "No se pudieron cargar los equipos.",
+      "schedules_tab": "Programaciones",
+      "schedules_heading": "Qué despierta a este compañero",
+      "schedules_blurb": "Programaciones que ponen en marcha a este compañero sin que nadie lo pida.",
+      "schedules_count_title": "{{active}} de {{total}} programaciones activas",
+      "schedules_empty": "Todavía nada despierta a este compañero por su cuenta.",
+      "schedules_leave_draft": "¿Salir de la página y perder la programación que estabas escribiendo?"
     },
     "tasksCapacityCard": {
       "title": "Tareas y capacidad",

@@ -14,7 +14,7 @@ type Channel = {
    *  Back guard needs to know there is something at stake before the user
    *  presses anything, and asking to find out would pop a confirm over a
    *  keystroke. */
-  publishStake: (atStake: boolean) => void
+  publishStake: (atStake: boolean, publisher: object) => void
   subscribeStake: (listener: (atStake: boolean) => void) => () => void
 }
 
@@ -55,32 +55,55 @@ const NavigationLeaveGuardContext = React.createContext<Channel | null>(null)
  * the draft so no exit destroys it — is tracked in #8010.
  */
 export function NavigationLeaveGuardProvider({ children }: { children: React.ReactNode }) {
-  // One slot, not a registry: exactly one page is on screen at a time, so two
-  // simultaneous registrants cannot exist. Cleanup is identity-checked, which
-  // is what stops an outgoing page's unmount from clearing the incoming page's
-  // guard if the two ever interleave.
-  const guard = React.useRef<NavigationLeaveGuard | null>(null)
+  // A SET, not one slot. One page is on screen at a time, but a page can hold two
+  // surfaces that each own a draft -- the Crewmates page holds the New crewmate dialog
+  // and the side panel's Schedules create form -- and a single slot made the second
+  // registrant silently clobber the first, so whichever mounted last was the only draft
+  // still protected. Each registration removes only its own entry on cleanup, so an
+  // outgoing surface cannot clear an incoming one's guard.
+  const guards = React.useRef(new Set<NavigationLeaveGuard>())
   // Kept in refs and pushed to listeners rather than held in state: the answer
   // flips on the keystroke that first dirties a draft, and state here would
   // re-render the whole app under this provider to tell one listener.
   const stake = React.useRef(false)
+  // Who is currently holding work. A set rather than one boolean for the reason spelled
+  // out on `publishStake` below.
+  const stakeHolders = React.useRef(new Set<object>())
   const stakeListeners = React.useRef(new Set<(atStake: boolean) => void>())
   const channel = React.useMemo<Channel>(() => ({
     register: g => {
-      guard.current = g
-      return () => { if (guard.current === g) guard.current = null }
+      guards.current.add(g)
+      return () => { guards.current.delete(g) }
     },
     // A page with nothing at stake registers no guard and this is a bare
     // `true`. The guard may show a confirm, so callers must only ever ask from
     // an event handler — never during render.
-    ask: () => guard.current?.() !== false,
-    publishStake: atStake => {
-      if (stake.current === atStake) return
-      stake.current = atStake
+    //
+    // Every registered guard is asked and one `false` vetoes, but asking STOPS at
+    // that first refusal: each guard may raise its own confirm, and a user who
+    // has already said "stay" must not then be asked about a second draft for a
+    // navigation that is no longer going to happen. Iterated over a copy, since a
+    // guard's own confirm can unmount a surface and mutate the set.
+    ask: () => {
+      for (const g of [...guards.current]) {
+        if (g() === false) return false
+      }
+      return true
+    },
+    // Per PUBLISHER, for the same reason `register` keeps a set: one page can hold two
+    // drafts, and with a single shared boolean whichever surface published `false` last
+    // disarmed the Back guard for the other one's still-typed draft. The channel's answer
+    // is whether ANY publisher is holding work.
+    publishStake: (atStake, publisher) => {
+      if (atStake) stakeHolders.current.add(publisher)
+      else stakeHolders.current.delete(publisher)
+      const next = stakeHolders.current.size > 0
+      if (stake.current === next) return
+      stake.current = next
       // Iterated over a copy: a listener may unsubscribe from inside its own
       // callback, and mutating the live set mid-iteration would skip the next
       // listener.
-      for (const listener of [...stakeListeners.current]) listener(atStake)
+      for (const listener of [...stakeListeners.current]) listener(next)
     },
     subscribeStake: listener => {
       stakeListeners.current.add(listener)
@@ -122,16 +145,23 @@ export function useRegisterNavigationLeaveGuard(guard: NavigationLeaveGuard) {
  * earlier — before any gesture — so it can arm itself while there is something
  * to lose and stay completely out of the history stack while there is not. A
  * page that registers a guard but publishes no stake keeps its old behaviour:
- * every wired in-app exit asks, and Back does not.
+ * every wired in-app exit asks, and Back does not — which is why a surface
+ * holding a draft should publish, not merely register. Each caller is its own
+ * publisher, so two surfaces on one page cannot disarm each other.
  */
 export function usePublishNavigationStake(atStake: boolean) {
   const channel = React.useContext(NavigationLeaveGuardContext)
-  React.useEffect(() => { channel?.publishStake(atStake) }, [channel, atStake])
+  // Identity for this caller, stable across renders — the channel keys the set on it.
+  const self = React.useRef({})
+  React.useEffect(() => { channel?.publishStake(atStake, self.current) }, [channel, atStake])
   // Unmount-only, and deliberately NOT folded into the effect above, whose
   // cleanup also runs on every flip of `atStake`: a page that is gone holds
   // nothing, and leaving its last `true` published would keep the Back guard
   // armed for a draft that no longer exists.
-  React.useEffect(() => () => { channel?.publishStake(false) }, [channel])
+  React.useEffect(() => {
+    const id = self.current
+    return () => { channel?.publishStake(false, id) }
+  }, [channel])
 }
 
 const ALWAYS_MAY_LEAVE = () => true
