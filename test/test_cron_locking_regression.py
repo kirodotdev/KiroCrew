@@ -1232,6 +1232,42 @@ class TestTerminalStateMergeLocked:
         assert cancelled.last_error and "Cancelled" in cancelled.last_error
 
     @pytest.mark.asyncio
+    async def test_cancel_clears_a_command_jobs_previous_result(self, tmp_path: Path) -> None:
+        """A cancelled command run that produced nothing must not persist the last
+        run's output beside its error, even when that run left its produced marker
+        set. Output a started run did produce is kept, and an agent job keeps its
+        result as dedup context.
+        """
+        with patch("kiro_crew.cron.cron_script.kill_running_process", return_value=False):
+            svc = CronService(base_dir=tmp_path)
+            cmd = svc.add_job(name="cmd-job", message="", command="echo hi", every_secs=60)
+            produced = svc.add_job(name="produced", message="", command="echo hi", every_secs=60)
+            agent = svc.add_job(name="agent-job", message="m", every_secs=60)
+            for job in (cmd, produced, agent):
+                job.last_status = "ok"
+                job.last_result = "previous run output"
+            svc._save()
+            cmd.result_produced = True  # left over from the previous run
+            produced.set_run_result("this run output")
+
+            for job in (cmd, produced, agent):
+                claim = svc._claim_run(job.id, "scheduled")
+                if job is produced:
+                    claim.started_monotonic = time.monotonic()
+                assert await svc.cancel(job.id) is True
+
+        reloaded = CronService(base_dir=tmp_path)
+        cancelled_cmd = reloaded.get_job(cmd.id)
+        assert cancelled_cmd is not None and cancelled_cmd.last_status == "error"
+        assert cancelled_cmd.last_result == ""
+        cancelled_produced = reloaded.get_job(produced.id)
+        assert cancelled_produced is not None
+        assert cancelled_produced.last_result == "this run output"
+        cancelled_agent = reloaded.get_job(agent.id)
+        assert cancelled_agent is not None
+        assert cancelled_agent.last_result == "previous run output"
+
+    @pytest.mark.asyncio
     async def test_terminal_merge_is_offloaded_and_keeps_loop_ticking(
         self, tmp_path: Path
     ) -> None:

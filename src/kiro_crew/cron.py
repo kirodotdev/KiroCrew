@@ -879,6 +879,7 @@ class CronService:
                         last_error=last_error,
                         last_run_ts=last_run_ts,
                         run_generation=generation,
+                        result_produced=taken.started_monotonic is not None and job.result_produced,
                     )
                 except Exception:
                     logger.exception("Reaper: failed to persist state for cron %s", job_id)
@@ -1586,6 +1587,7 @@ class CronService:
                         last_error=last_error,
                         last_run_ts=last_run_ts,
                         run_generation=generation,
+                        result_produced=claim.started_monotonic is not None and job.result_produced,
                     )
                 except Exception:
                     logger.exception("Cancel: failed to persist state for cron %s", job_id)
@@ -4190,6 +4192,7 @@ class CronService:
         last_error: str,
         last_run_ts: float,
         run_generation: int,
+        result_produced: bool = False,
     ) -> None:
         """Persist a job's terminal runtime state under the store lock.
 
@@ -4218,8 +4221,9 @@ class CronService:
         accepted in that gap can complete and merge first; applying the older
         record would persist that run's success as the cancellation or timeout
         that came before it. Returning early here skips nothing owed: unlike
-        ``_merge_job_result`` this helper writes only the three status fields,
-        and the save after them has nothing to record once they are skipped.
+        ``_merge_job_result`` this helper writes only the three status fields
+        (plus clearing a command/script job's carried result), and the save
+        after them has nothing to record once they are skipped.
         """
         with self._file_lock():
             self._sync()
@@ -4240,6 +4244,12 @@ class CronService:
             target.last_status = last_status
             target.last_error = last_error
             target.last_run_ts = last_run_ts
+            # A command/script run that produced nothing must not show the
+            # previous run's result beside this error. The caller passes the
+            # flag because a reload in _sync() drops the runtime-only marker.
+            # Agent jobs keep theirs on purpose as dedup context.
+            if (target.command or target.script) and not result_produced:
+                target.last_result = ""
             # BACKGROUND writer: reached from the reaper timeout and user
             # cancel. An unreadable store must not abort the reaper loop.
             try:
