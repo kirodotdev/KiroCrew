@@ -3199,9 +3199,10 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
 }
-/* The same rules, on the user's own switch (Settings -> Display -> "Reduce
-   glass transparency", `data-reduce-transparency` set by
-   utils/reduceTransparency.ts and by the index.html bootstrap). A media query
+/* The same rules, on the user's own switch (Settings -> Display -> View ->
+   "Translucent panels", opt-in: `data-reduce-transparency="on"` is the DEFAULT, set by
+   utils/liquidGlass.ts and by the index.html bootstrap until the user turns
+   the glass on, so a fresh browser renders solid cards). A media query
    and an attribute cannot share one selector, so the block above is mirrored
    line for line here; ChatInput.liquidGlass.test.tsx pins that the two bodies
    are identical, so a rule added to one cannot be forgotten in the other. The

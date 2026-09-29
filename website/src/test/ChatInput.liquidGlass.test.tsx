@@ -155,9 +155,10 @@ describe('composer liquid glass', () => {
     }
   })
 
-  it('offers a Reduce glass transparency switch that mirrors the OS fallback rule for rule', () => {
-    // The switch (Settings -> Display -> Theme) sets data-reduce-transparency
-    // on <html>; index.css applies exactly the rules it applies under the OS's
+  it('offers an opt-in Translucent panels switch whose off state mirrors the OS fallback rule for rule', () => {
+    // Glass is opt-in. The switch (Settings -> Display -> View) keeps
+    // data-reduce-transparency="on" on <html> until the user turns glass on;
+    // index.css applies exactly the rules it applies under the OS's
     // prefers-reduced-transparency query. A media query and an attribute cannot
     // share a selector, so the block is mirrored -- and this pins that the two
     // bodies are the same rules, so one cannot drift from the other.
@@ -177,10 +178,20 @@ describe('composer liquid glass', () => {
       const expected = selectors.split(',').map(sel => PREFIX + sel.trim()).join(',') + '{' + body
       expect(mirrored[i]).toBe(expected)
     }
-    // The bootstrap applies the stored choice before hydration (no flash), the
-    // hook owns it after, and the Display panel shows the switch.
-    expect(INDEX_HTML).toMatch(/localStorage\.getItem\('mc-reduce-transparency'\) === 'on'\) document\.documentElement\.dataset\.reduceTransparency = 'on'/)
-    expect(DISPLAY_PANEL_SRC).toMatch(/<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.reduce_transparency'\)\}\n\s+description=\{i18nT\('pages\.settings\.displayPanel\.reduce_transparency_desc'\)\}\n\s+checked=\{reduceTransparency\}\n\s+onChange=\{setReduceTransparency\}/)
+    // The bootstrap applies the stored choice before hydration (no flash) and
+    // defaults to SOLID -- the attribute goes on unless the key says glass is
+    // on, and an unreadable store counts as off; the hook owns it after, and
+    // the Display panel shows the switch.
+    expect(INDEX_HTML).toMatch(/var lg = false; try \{ lg = localStorage\.getItem\('mc-liquid-glass'\) === 'on'; \} catch \(e\) \{\}\n\s+if \(!lg\) document\.documentElement\.dataset\.reduceTransparency = 'on';/)
+    expect(INDEX_HTML).not.toContain('mc-reduce-transparency')
+    // On the View card beside the interface style, not at the foot of the
+    // Theme card (stacked fields under captions, where a switch row read as a
+    // different kind of control). The user-facing name is never the primitive's.
+    expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{v => setUIMode\(v as 'chat' \| 'cli'\)\} \/>\n(?:\s+\{\/\*[\s\S]*?\*\/\}\n)?\s+<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)/)
+    expect(DISPLAY_PANEL_SRC).toMatch(/<SettingsToggle\n\s+label=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels'\)\}\n\s+description=\{i18nT\('pages\.settings\.displayPanel\.translucent_panels_desc'\)\}\n\s+checked=\{liquidGlass\}\n\s+onChange=\{setLiquidGlass\}/)
+    expect(DISPLAY_PANEL_SRC).not.toMatch(/liquid_glass/)
+    // The live preview follows the row: the real primitive over a skeleton transcript.
+    expect(DISPLAY_PANEL_SRC).toMatch(/onChange=\{setLiquidGlass\}\n\s+\/>\n\s+<TranslucentPanelsPreview placeholder=\{i18nT\('components\.chatInput\.message_placeholder', \{ bot: botName \}\)\} \/>/)
   })
 
   // Every glass surface, the session composer included, wears the neutral

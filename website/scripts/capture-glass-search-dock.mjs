@@ -16,6 +16,11 @@ import { mkdirSync } from 'node:fs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
 import { screenshotWithCaret } from './lib/screenshot-with-caret.mjs'
 
+/** Liquid Glass is opt-in (Settings -> Display); the harness turns it on the
+ *  way a user would, on top of whatever else a scene seeds. */
+const GLASS_ON = { 'mc-liquid-glass': 'on' }
+const stubGlass = (page, opts) => stubDashboardApi(page, { ...opts, localStorageEntries: { ...GLASS_ON, ...(opts.localStorageEntries || {}) } })
+
 
 const BASE = process.env.BASE || 'http://127.0.0.1:6811'
 const OUT = process.argv[2] || '../temp-screenshots/glass-search-dock'
@@ -147,7 +152,7 @@ async function scenes(browser, theme) {
   // Folders + the running-only filter chip active: chips float over the rows.
   const folders = [{ id: 'fa', name: 'Design', order: 0, collapsed: false }, { id: 'fb', name: 'Kiro Drive', order: 1, collapsed: false }]
   const foldered = slots.map((s, i) => ({ ...s, running: i % 2 === 0, folder_id: i < 8 ? 'fa' : i < 14 ? 'fb' : '' }))
-  await stubDashboardApi(page, { slots: foldered, folders, theme, extra, localStorageEntries: { 'mc-session-running-only': '1' } })
+  await stubGlass(page, { slots: foldered, folders, theme, extra, localStorageEntries: { 'mc-session-running-only': '1' } })
   await page.goto(`${BASE}/`, { waitUntil: 'networkidle' })
   const lane = page.getByTestId('tree-view-lane')
   await lane.waitFor({ state: 'visible', timeout: 20000 })
@@ -166,7 +171,7 @@ async function scenes(browser, theme) {
   // A fresh page, because the stub re-seeds its localStorage entries on every load.
   const p1 = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 })
   logPageProblems(p1)
-  await stubDashboardApi(p1, { slots: foldered, folders, theme, extra })
+  await stubGlass(p1, { slots: foldered, folders, theme, extra })
   await p1.goto(`${BASE}/`, { waitUntil: 'networkidle' })
   const lane1 = p1.getByTestId('tree-view-lane')
   await lane1.waitFor({ state: 'visible', timeout: 20000 })
@@ -187,7 +192,7 @@ async function scenes(browser, theme) {
   // A list-level notice in the dock: the remote-instances read fails.
   const p2 = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 })
   logPageProblems(p2)
-  await stubDashboardApi(p2, {
+  await stubGlass(p2, {
     slots, theme, localStorageEntries: { 'mc-preview-instance-sessions': '1' },
     extra: async (path, route) => {
       if (path === '/api/instances') { await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"tunnel closed"}' }); return true }
@@ -209,7 +214,7 @@ async function scenes(browser, theme) {
   logPageProblems(p3)
   const tags = [{ id: 'todo', name: 'ToDo', color: '#3b82f6', order: 0, status: true }, { id: 'done', name: 'Done', color: '#10b981', order: 1, status: true }]
   const columns = [{ id: 'c1', name: 'To do', tag_ids: ['todo'], mode: 'any', order: 0, include_untagged: true }, { id: 'c2', name: 'Done', tag_ids: ['done'], mode: 'any', order: 1, include_untagged: false }]
-  await stubDashboardApi(p3, {
+  await stubGlass(p3, {
     slots, theme, localStorageEntries: { 'mc-chat-config': JSON.stringify({ tagColumnsEnabled: true }) },
     extra: async (path, route) => {
       if (path === '/api/chat/tags') { await json(route, tags); return true }
@@ -226,7 +231,7 @@ async function scenes(browser, theme) {
   // The roster's notice in the dock: a star write that the gateway refused.
   const p4 = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 })
   logPageProblems(p4)
-  await stubDashboardApi(p4, {
+  await stubGlass(p4, {
     slots, theme,
     extra: async (path, route) => {
       if (/^\/api\/(config\/kirocrew\/)?agents\/[^/]+$/.test(path) && route.request().method() !== 'GET') { await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"config file is read-only"}' }); return true }
@@ -259,7 +264,7 @@ try {
     THEME.mode = theme
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 })
     logPageProblems(page)
-    await stubDashboardApi(page, { slots, theme, extra })
+    await stubGlass(page, { slots, theme, extra })
 
     // Sessions sidebar
     await page.goto(`${BASE}/`, { waitUntil: 'networkidle' })

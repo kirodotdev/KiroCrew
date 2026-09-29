@@ -1888,18 +1888,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "display.reduce-glass-transparency",
-    "label": "Reduce glass transparency",
-    "labelKey": "pages.settings.displayPanel.reduce_transparency",
-    "description": "Show the frosted glass panes (the message box, the suggestion chips, the Settings search) as solid cards. Same look the app uses when your system asks for less transparency.",
-    "tab": "display",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "theme"
-    }
-  },
-  {
     "id": "display.theme",
     "label": "Theme",
     "labelKey": "pages.settings.displayPanel.theme",
@@ -1909,6 +1897,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "sub": "theme"
+    }
+  },
+  {
+    "id": "display.translucent-panels",
+    "label": "Translucent panels",
+    "labelKey": "pages.settings.displayPanel.translucent_panels",
+    "description": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them. Off, they are solid cards.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
     }
   },
   {

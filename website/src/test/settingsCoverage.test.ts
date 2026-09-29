@@ -76,6 +76,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',
   'ThemeDroppedRulesNotice.tsx': 'informational notice, zero controls',
+  'TranslucentPanelsPreview.tsx': 'aria-hidden illustration under the Translucent panels switch (registry id display.translucent-panels, on DisplayPanel); it holds no control of its own',
   'WebhooksPanel.tsx': 'status summary card; the real controls live on the /webhooks page',
 }
 

@@ -14789,8 +14789,8 @@
         "custom_font_detect_denied": "글꼴 접근이 허용되지 않았습니다. 이미 감지된 글꼴은 목록에 유지되며, 여전히 아무 글꼴 이름이나 입력할 수 있습니다.",
         "custom_font_ligatures": "합자 사용",
         "custom_font_ligatures_desc": "사용자 지정 글꼴에 합자가 있으면 프로그래밍 합자(=>, !=, ->)를 렌더링합니다. 메시지의 코드와 diff는 영향을 받지 않습니다.",
-        "reduce_transparency": "유리 투명도 줄이기",
-        "reduce_transparency_desc": "반투명 유리 패널(메시지 입력란, 제안 칩, 설정 검색)을 불투명한 카드로 표시합니다. 시스템에서 투명도 줄이기를 켰을 때와 같은 모습입니다."
+        "translucent_panels": "반투명 패널",
+        "translucent_panels_desc": "상단 바, 탭 바, 메시지 입력란, 제안 칩, 검색란을 아래로 스크롤되는 내용이 비치는 반투명 유리로 표시합니다. 끄면 불투명한 카드가 됩니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

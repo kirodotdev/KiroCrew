@@ -14789,8 +14789,8 @@
         "custom_font_detect_denied": "未授予字体访问权限——列表会保留已检测到的字体，你仍可以输入任意字体名称。",
         "custom_font_ligatures": "启用连字",
         "custom_font_ligatures_desc": "当自定义字体包含连字时，渲染编程连字（=>、!=、->）。消息中的代码和差异不受影响。",
-        "reduce_transparency": "降低玻璃透明度",
-        "reduce_transparency_desc": "把毛玻璃面板（消息输入框、建议标签、设置搜索框）显示为实色卡片。效果与系统开启“降低透明度”时一致。"
+        "translucent_panels": "半透明面板",
+        "translucent_panels_desc": "把顶栏、标签栏、消息输入框、建议标签和搜索框显示为毛玻璃，下面滚动的内容会透出来。关闭时它们是实色卡片。"
       },
       "importPanel": {
         "agent_data": "代理数据",

@@ -15239,8 +15239,8 @@
         "custom_font_detect_denied": "Accesso ai caratteri non concesso: l’elenco mantiene i caratteri già rilevati e puoi comunque digitare qualsiasi nome di carattere.",
         "custom_font_ligatures": "Abilita le legature",
         "custom_font_ligatures_desc": "Mostra le legature di programmazione (=>, !=, ->) quando il carattere personalizzato le ha. Il codice e i diff nei messaggi non sono interessati.",
-        "reduce_transparency": "Riduci la trasparenza del vetro",
-        "reduce_transparency_desc": "Mostra i pannelli in vetro smerigliato (la casella del messaggio, i chip dei suggerimenti, la ricerca delle Impostazioni) come schede opache. È lo stesso aspetto che l’app usa quando il tuo sistema chiede meno trasparenza."
+        "translucent_panels": "Pannelli traslucidi",
+        "translucent_panels_desc": "Mostra la barra superiore, la barra delle schede, la casella del messaggio, i chip dei suggerimenti e i campi di ricerca come vetro smerigliato sopra il contenuto che scorre sotto. Disattivato, sono schede opache."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

@@ -15239,8 +15239,8 @@
         "custom_font_detect_denied": "No se concedió acceso a las fuentes: la lista mantiene las fuentes ya detectadas y aún puedes escribir cualquier nombre de fuente.",
         "custom_font_ligatures": "Activar ligaduras",
         "custom_font_ligatures_desc": "Renderiza las ligaduras de programación (=>, !=, ->) cuando la fuente personalizada las tiene. El código y los diffs de los mensajes no se ven afectados.",
-        "reduce_transparency": "Reducir la transparencia del cristal",
-        "reduce_transparency_desc": "Muestra los paneles de cristal esmerilado (el cuadro de mensaje, los chips de sugerencias, la búsqueda de Ajustes) como tarjetas sólidas. Es el mismo aspecto que usa la app cuando tu sistema pide menos transparencia."
+        "translucent_panels": "Paneles translúcidos",
+        "translucent_panels_desc": "Muestra la barra superior, la barra de pestañas, el cuadro de mensaje, los chips de sugerencias y los campos de búsqueda como cristal esmerilado sobre el contenido que se desplaza debajo. Desactivado, son tarjetas opacas."
       },
       "importPanel": {
         "agent_data": "Datos del agente",
