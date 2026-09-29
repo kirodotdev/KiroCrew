@@ -2953,6 +2953,8 @@ class AutoNudgeService:
         ``False`` means another mutation already consumed the pending replacement,
         so the rollback deliberately leaves that newer state untouched.
         """
+        from kiro_crew import autonudge_judge as _judge
+
         removed: NudgeLoop | None = None
         prior: NudgeLoop | None = None
         async with _maintenance_lock(self._base_dir):
@@ -2986,6 +2988,11 @@ class AutoNudgeService:
                     )
                     raise
                 removed = self.remove_sync(loop_id, persist=False, emit=False)
+                # The snapshot above is the commit: the failed row is out of the store
+                # for good, so its judge stash and loss notice go with it. Its self-arm
+                # entry is the authorizer's to withdraw, so the shared hook that pairs
+                # the two does not run here and the forget is spelled out.
+                _judge.forget_pr_bodies(loop_id)
                 if prior is not None:
                     self._loops[prior.id] = prior
                     if restore_prior_provider_credentials:
@@ -3885,8 +3892,21 @@ class AutoNudgeService:
         exists to defeat. Revocation therefore keys on the one fact the store
         cannot forge: the loop is being removed. A loop with no entry costs one
         offloaded read (``forget_self_arm`` writes only when it deletes).
+
+        The judge's per-loop remark stash and loss notice go here too, for the
+        same reason this is where trust goes: every caller reaches this line only
+        AFTER the store committed the removal, and a rollback that puts a loop
+        back never does. Forgetting at the ``_loops.pop`` instead would strip a
+        restored loop of a stash its next tick still owes a fire for, and read
+        the missing prose as a whole reading. The owner is known here, so only
+        the loop-id-keyed judge state goes; the judge's forgotten state and its
+        take counter exist for a notice whose owner is NOT known and stay as
+        they are.
         """
+        from kiro_crew import autonudge_judge as judge
+
         self._revoke_self_arm(loop.id)
+        judge.forget_pr_bodies(loop.id)
 
     @staticmethod
     def _revoke_self_arm(loop_id: str) -> None:
