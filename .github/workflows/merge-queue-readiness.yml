@@ -1,0 +1,368 @@
+name: Merge Queue Readiness
+
+# The merge queue's required check.
+#
+# Ruleset `protected-branches` requires exactly one status check on main,
+# `PR Readiness`, and the merge queue needs that same check reported on every
+# merge group's temporary commit before it lands the group. pr-readiness.yml
+# cannot report it there: it is keyed on a pull request number, and it folds
+# in the AI review lanes, which do not run on a merge group and should not --
+# a merge group is the PR's already-reviewed diff replayed onto the main it
+# will actually land on, so the only question left is whether the tests still
+# pass on THAT tree. This workflow answers that one question: it waits for
+# every test workflow a push to main would run on the merge group's commit --
+# CI, Fast Gate, Build, Internal Content Scan Gate, Python Client Tests and
+# Main Ratchet Audit -- and reports their joint verdict under the required
+# check's name. The list is the push-to-main set minus the two macOS legs
+# (ci.yml's boot matrix and build.yml's desktop build), which stay on main's
+# own post-merge run: a hosted mac runner has waited hours at this repository's
+# merge rate, and a wait of that size inside the queue holds every group behind
+# it.
+#
+# A SEPARATE FILE on purpose, triggered by nothing but `merge_group`. A job by
+# this name inside ci.yml, even behind `if: github.event_name == 'merge_group'`,
+# would still create a `PR Readiness` check run on every pull request head with
+# conclusion `skipped` -- and GitHub treats a skipped required check as
+# satisfied, so the pull-request gate would open for any head whose real
+# readiness status had not been published yet. A workflow that never fires on
+# pull_request creates no check run on a pull request head at all.
+#
+# Hosted runner, deliberately. This job polls; it runs no tests, so it does not
+# need the fleet's size, and the fleet's webhook admits jobs by actor and
+# workflow shape this file has no measured history with. The poll budget below
+# starts when the job starts, so hosted runner queue time does not eat into it.
+# The budget is the polled lanes' own ceiling, not their typical time: a CI run
+# is ~25-30 minutes on the fleet, but ci.yml's longest `needs` chain of job
+# caps is 100 minutes (changes and await-fast-gate in parallel 15 ->
+# backend-test 60 -> coverage-combine 15 -> coverage-gate 10), so a shorter
+# budget would dequeue a pull request whose lanes were about to go green. The
+# 150-minute budget is that chain plus room for a rerun of the failed jobs.
+# test_ci_fleet_routing_expression_parity.py holds the budget above that sum. Keep the ruleset's
+# merge-queue "status check timeout" at 180 minutes or more: this budget plus a
+# slow hosted pickup.
+#
+# Only a verdict fails the group. A run that concluded without success has its
+# failed jobs rerun, up to MAX_RERUNS times per workflow, and fails the group
+# only when its last attempt still does not succeed: a flaky shard or a lost
+# runner then costs one rerun instead of an ejection, and an ejection rebuilds
+# every group queued behind this one, so the retry has to happen here, before
+# the check fails. A run still absent after the appear window fails the group
+# because the verdict can never be read. A failed API call -- a read or a rerun
+# request; a rate limit, a 5xx, a reset, or a listing that has lost a run it
+# showed a tick earlier -- is retried until the budget runs out, so one bad
+# answer from the API cannot dequeue a green group or spend a rerun.
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One group per merge-group ref. A merge group is never superseded by a
+  # newer revision of itself, so nothing here should ever cancel.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    # The job name IS the check name the ruleset requires. Renaming it silently
+    # stops satisfying branch protection for every queued pull request.
+    name: PR Readiness
+    runs-on: ubuntu-latest
+    # Above the poll's TOTAL_BUDGET below, so the step's own error names the
+    # slow lane rather than the job cap cutting it off.
+    timeout-minutes: 155
+    permissions:
+      # actions:write is what lets this read the other workflows' runs AND
+      # rerun their failed jobs (`gh run rerun --failed`); read alone would
+      # turn every flaky shard into an ejection. It grants nothing on the
+      # repository's contents. Job-level permissions REPLACE the top-level
+      # grant, so contents:read is restated.
+      actions: write
+      contents: read
+    steps:
+      - name: Wait for every test workflow on this merge group
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # On a merge_group event github.sha IS the merge group's head commit
+          # and github.ref_name is its `gh-readonly-queue/main/pr-N-<sha>` ref.
+          # The polled workflows run on that same commit, and a merge group's
+          # commit is created for that group alone, so `head_sha` plus
+          # `event=merge_group` identifies its runs; the poll does not depend on
+          # how the API spells a run's `head_branch`. BRANCH only names the
+          # group in the log.
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+          WORKFLOWS: ci.yml fast-gate.yml build.yml internal-content-scan-gate.yml client-py.yml main-ratchet-audit.yml
+        run: |
+          set -uo pipefail
+
+          # Every polled workflow starts from the same webhook, so their runs
+          # may not be visible for the first seconds. APPEAR_BUDGET covers that
+          # race; after it, a run the API lists as absent is a real
+          # misconfiguration and fails.
+          # TOTAL_BUDGET is 150 minutes: ci.yml's 100-minute longest chain of
+          # job caps (changes | await-fast-gate 15 -> backend-test 60 ->
+          # coverage-combine 15 -> coverage-gate 10) plus slack for the shards'
+          # own pickup and a rerun of the failed jobs. The ruleset's merge-queue
+          # status-check timeout has to stay at 180 minutes or more so that this
+          # budget plus a slow hosted pickup fits inside it.
+          # MAX_RERUNS: one rerun clears ~90% of flaky failures and a second
+          # almost all the rest; a third made the queue slower in simulation,
+          # because a real failure then takes longer to eject while everything
+          # queued behind it waits to be rebuilt.
+          APPEAR_BUDGET=300
+          TOTAL_BUDGET=9000
+          MAX_RERUNS=2
+          # One runs listing per tick serves all six workflows, and the tick is
+          # 60 s while a run may still be appearing, 180 s once all are seen
+          # (CI takes ~25 minutes, so the slow tick costs at most ~3 minutes).
+          # The repository's installation token is shared by every workflow:
+          # at 40 queued groups that is 40 x 1 call / 180 s ~ 800 calls an
+          # hour, where one listing per workflow every 120 s would be ~4,800+.
+          APPEAR_TICK=60
+          SEEN_TICK=180
+          started="$(date +%s)"
+
+          read -r -a workflows <<<"$WORKFLOWS"
+
+          errfile="$(mktemp)"
+          trap 'rm -f "$errfile"' EXIT
+
+          # This tick's one listing of every merge_group run on the commit,
+          # read by read_listing; empty when the read failed.
+          listing=""
+          listing_error=""
+
+          read_listing() {
+            if listing="$(gh api --method GET "repos/$REPO/actions/runs" \
+                  -f "head_sha=$SHA" -f "event=merge_group" -f per_page=100 2>"$errfile")"; then
+              listing_error=""
+              return 0
+            fi
+            listing=""
+            listing_error="$(api_error)"
+            return 1
+          }
+
+          # Prints one JSON line: workflow $1's latest run for this commit on
+          # this ref in the tick's listing, or `null` when it holds none.
+          # Returns non-zero when the listing could not be read or parsed, with
+          # the error's head in $errfile, so the caller can tell "there is no
+          # run" from "the run could not be read" -- the two must not share a
+          # verdict.
+          latest_run() {
+            if [ -n "$listing_error" ]; then
+              printf '%s' "$listing_error" >"$errfile"
+              return 1
+            fi
+            if ! printf '%s' "$listing" | jq -c --arg path ".github/workflows/$1" \
+                  '[(.workflow_runs // [])[] | select(.path == $path)]
+                   | if length == 0 then null else max_by(.id) end' \
+                  2>"$errfile"; then
+              return 1
+            fi
+          }
+
+          # A rate-limited call is not an answer. Sleep until the limit resets
+          # (from `gh api rate_limit`, which does not count against it), plus
+          # jitter so the queued groups do not all wake on the same second,
+          # capped by what is left of the budget. A secondary limit carries no
+          # reset there, so it waits a minute. Either way it is never a verdict
+          # and never a spent rerun: the caller has already marked the
+          # workflow errored.
+          backoff=0
+          note_rate_limit() {
+            grep -qiE 'rate limit|HTTP 429' "$errfile" || return 0
+            local now reset wait left
+            now="$(date +%s)"
+            reset="$(gh api rate_limit --jq '.resources.core.reset' 2>/dev/null || echo "")"
+            case "$reset" in ''|*[!0-9]*) reset=$((now + 60)) ;; esac
+            [ "$reset" -gt "$now" ] || reset=$((now + 60))
+            wait=$((reset - now + RANDOM % 30 + 1))
+            left=$((TOTAL_BUDGET - (now - started)))
+            [ "$left" -ge 1 ] || left=1
+            [ "$wait" -le "$left" ] || wait="$left"
+            [ "$wait" -le "$backoff" ] || backoff="$wait"
+            echo "::warning::API rate limit hit; it resets at epoch $reset." \
+                 "Sleeping ${wait}s before the next tick."
+          }
+
+          api_error() {
+            head -c 200 "$errfile" | tr '\n' ' '
+          }
+
+          # Workflows whose run has been listed, as `wf=run_id` words, and how
+          # many there are. A run cannot vanish from the API, so an empty
+          # listing for a workflow here is a bad answer, not an absent run.
+          # A plain string rather than an associative array, and the array
+          # expansions below guarded with `${a[@]+"${a[@]}"}`: the repository's
+          # workflow scripts must also run under bash 3.2 (see
+          # test_workflow_array_expansion_bash32.py).
+          seen_runs=""
+          seen_count=0
+
+          seen_run_id() {
+            word_value "$seen_runs" "$1"
+          }
+
+          # Prints the value of `$2=` in the word list $1; non-zero when absent.
+          word_value() {
+            local word
+            # shellcheck disable=SC2086 -- deliberate word split of the list.
+            for word in $1; do
+              case "$word" in "$2="*) printf '%s' "${word#*=}"; return 0 ;; esac
+            done
+            return 1
+          }
+
+          # Reruns issued per workflow, and the attempt each was requested
+          # from, as `wf=N` words in the same plain-string style. The run id
+          # stays the same across attempts, so the seen-run logic above holds;
+          # `requested_from` stops a rerun from being requested twice while
+          # the listing still shows the attempt it replaces.
+          rerun_counts=""
+          requested_from=""
+
+          set_word() {
+            local list="$1" key="$2" value="$3" word out=""
+            # shellcheck disable=SC2086 -- deliberate word split of the list.
+            for word in $list; do
+              case "$word" in "$key="*) ;; *) out="$out $word" ;; esac
+            done
+            printf '%s' "$out $key=$value"
+          }
+
+          while :; do
+            elapsed=$(( $(date +%s) - started ))
+            done_list=""
+            pending=""
+            missing=""
+            errored=""
+            backoff=0
+            if ! read_listing; then
+              printf '%s' "$listing_error" >"$errfile"
+              note_rate_limit
+            fi
+
+            for wf in ${workflows[@]+"${workflows[@]}"}; do
+              if ! latest="$(latest_run "$wf")"; then
+                echo "::warning::$wf: could not read its runs on $SHA:" \
+                     "$(api_error). Retrying on the next tick."
+                errored="$errored $wf"
+                continue
+              fi
+              if [ "$latest" = "null" ] || [ -z "$latest" ]; then
+                if seen_id="$(seen_run_id "$wf")"; then
+                  echo "::warning::$wf: run $seen_id was listed earlier" \
+                       "but this listing holds no run for $SHA. Treating the" \
+                       "answer as an API error and retrying."
+                  errored="$errored $wf"
+                else
+                  missing="$missing $wf"
+                fi
+                continue
+              fi
+              run_id="$(printf '%s' "$latest" | jq -r '.id')"
+              status="$(printf '%s' "$latest" | jq -r '.status')"
+              conclusion="$(printf '%s' "$latest" | jq -r '.conclusion // ""')"
+              url="$(printf '%s' "$latest" | jq -r '.html_url')"
+              attempt="$(printf '%s' "$latest" | jq -r '.run_attempt // 1')"
+              if ! seen_run_id "$wf" >/dev/null; then
+                seen_runs="$seen_runs $wf=$run_id"
+                seen_count=$((seen_count + 1))
+              fi
+              if [ "$status" != "completed" ]; then
+                pending="$pending $wf($status)"
+                continue
+              fi
+              if [ "$conclusion" != "success" ]; then
+                reruns="$(word_value "$rerun_counts" "$wf" || echo 0)"
+                if [ "$(word_value "$requested_from" "$wf" || echo 0)" = "$attempt" ]; then
+                  # The rerun was accepted, but the listing still shows the
+                  # attempt it replaces: wait for the new attempt to start.
+                  pending="$pending $wf(rerun-requested)"
+                  continue
+                fi
+                # CI's await-fast-gate fails at once on a failed Fast Gate, so a
+                # CI rerun before Fast Gate has recovered would spend CI's
+                # attempts on the gate. Hold CI until Fast Gate's latest run has
+                # succeeded; if Fast Gate never does, its own verdict fails the
+                # group.
+                if [ "$wf" = "ci.yml" ]; then
+                  if ! gate="$(latest_run fast-gate.yml)"; then
+                    echo "::warning::fast-gate.yml: could not read its runs on $SHA:" \
+                         "$(api_error). Retrying on the next tick."
+                    errored="$errored $wf"
+                    continue
+                  fi
+                  if [ "$(printf '%s' "$gate" | jq -r '"\(.status // "")/\(.conclusion // "")"')" \
+                       != "completed/success" ]; then
+                    pending="$pending $wf(after-fast-gate)"
+                    continue
+                  fi
+                fi
+                # The attempt number is the API's, so a rerun someone else
+                # started still counts toward the cap.
+                if [ "$reruns" -ge "$MAX_RERUNS" ] || [ "$attempt" -gt "$MAX_RERUNS" ]; then
+                  echo "::error::$wf concluded '$conclusion' on merge group $SHA" \
+                       "($url) on attempt $attempt, after $reruns rerun(s) of its" \
+                       "failed jobs. The group is not cleared to merge."
+                  exit 1
+                fi
+                if ! gh run rerun "$run_id" --failed -R "$REPO" >/dev/null 2>"$errfile"; then
+                  echo "::warning::$wf: could not rerun the failed jobs of $url:" \
+                       "$(api_error). Retrying on the next tick."
+                  note_rate_limit
+                  errored="$errored $wf"
+                  continue
+                fi
+                reruns=$((reruns + 1))
+                rerun_counts="$(set_word "$rerun_counts" "$wf" "$reruns")"
+                requested_from="$(set_word "$requested_from" "$wf" "$attempt")"
+                echo "::warning::$wf concluded '$conclusion' on attempt $attempt" \
+                     "($url). Rerunning its failed jobs as attempt $((attempt + 1))" \
+                     "(rerun $reruns of $MAX_RERUNS)."
+                pending="$pending $wf(rerun)"
+                continue
+              fi
+              done_list="$done_list $wf"
+            done
+
+            if [ -n "$missing" ] && [ "$elapsed" -ge "$APPEAR_BUDGET" ]; then
+              echo "::error::No merge_group run found for$missing on $SHA ($BRANCH)" \
+                   "after ${elapsed}s. The verdict cannot be read, so the group is" \
+                   "not cleared to merge."
+              exit 1
+            fi
+
+            if [ -z "$missing" ] && [ -z "$pending" ] && [ -z "$errored" ] \
+               && [ "$seen_count" -eq "${#workflows[@]}" ]; then
+              echo "Every polled workflow succeeded on $SHA. Clearing the group."
+              exit 0
+            fi
+
+            if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
+              echo "::error::Still waiting on${missing}${pending}${errored} after" \
+                   "${elapsed}s. Failing closed rather than clearing the group" \
+                   "unverified."
+              exit 1
+            fi
+
+            echo "t+${elapsed}s: done:${done_list:- -} pending:${pending:- -}" \
+                 "missing:${missing:- -} errored:${errored:- -}"
+
+            # Poll fast only while a run may still be appearing; once every
+            # workflow has a run, a completion is minutes away at best and a
+            # slower tick spares the API budget that the read itself depends on.
+            if [ "$backoff" -gt 0 ]; then
+              sleep "$backoff"
+            elif [ "$seen_count" -eq "${#workflows[@]}" ]; then
+              sleep "$SEEN_TICK"
+            else
+              sleep "$APPEAR_TICK"
+            fi
+          done

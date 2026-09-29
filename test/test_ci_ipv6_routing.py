@@ -234,7 +234,11 @@ def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
     download = _step(jobs, "coverage-combine", "Download required IPv6")
     assert download["with"] == {"name": "coverage-ipv6"}
     gate = jobs["coverage-gate"]
-    assert "backend-test-ipv6" in gate["needs"] and gate["if"] == "${{ always() }}"
+    assert (
+        "backend-test-ipv6" in gate["needs"]
+        and gate["if"]
+        == "${{ always() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}"
+    )
     guard = _step(jobs, "coverage-gate", "Require upstream")
     assert guard["env"]["IPV6"] == "${{ needs.backend-test-ipv6.result }}"
 

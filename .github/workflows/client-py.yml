@@ -17,6 +17,13 @@ on:
     paths:
       - "packages/kirocrew-client-py/**"
       - ".github/workflows/client-py.yml"
+  # The merge queue's required check waits on this run, so every merge group
+  # gets one. `paths:` is not honoured on merge_group, and that is acceptable:
+  # the suite is ten minutes on a hosted runner and the point of the queue is
+  # that everything main's own push would test has passed before the commit
+  # lands.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch: {}
 
 permissions:

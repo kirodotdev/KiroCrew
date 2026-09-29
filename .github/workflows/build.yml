@@ -5,24 +5,36 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue tests each PR against the main it will actually land on.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # PRs cancel superseded revisions: only a PR's tip commit needs a verdict.
-  # main does not, so let an in-flight run finish instead of killing it.
-  # This does NOT produce a verdict per commit. The group still permits one
-  # pending run, and GitHub evicts that pending run when a newer one queues
-  # (a documented GitHub concurrency behavior). With a ~19min run and a
-  # ~1.4min median merge gap, main gets periodic verdicts instead of none.
+  # PRs share a group per ref and cancel superseded revisions: only a PR's tip
+  # commit needs a verdict. A push to main gets a group per COMMIT only while
+  # the repository variable MERGE_QUEUE_ENABLED is 'true': that push path is
+  # only the macOS desktop build the merge queue cannot afford (see
+  # desktop-matrix), so each landed commit gets exactly one macOS build and no
+  # run is evicted by the next merge. With the variable unset a push builds the
+  # full set, and the per-ref group stays as it is today: one running plus one
+  # pending, and a later push evicts the pending one, so concurrent main builds
+  # can never pile up hosted macOS jobs.
+  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-wheel:
     name: Build Wheel
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Skipped on a push to main only while the repository variable
+    # MERGE_QUEUE_ENABLED is 'true': the merge group built this wheel and the
+    # Windows installer that consumes it on this exact tree, so that push path
+    # is the macOS desktop build only. With the variable unset a push to main
+    # builds everything.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -243,11 +255,21 @@ jobs:
   # breakage, and cannot be cross-compiled. The macos-15 leg bills at ~10x and
   # its UNIQUE coverage is macOS packaging (DMG, universal/Rosetta, mac
   # electron-builder), so on a pull_request it builds only when a macOS-
-  # packaging input changed; push / release events always build it. The release
-  # lane (build-desktop.yml) still ships every platform unconditionally.
+  # packaging input changed. A merge group NEVER builds it: the pull request
+  # already did when its packaging inputs changed, and a mac runner wait of
+  # hours inside the queue would time out the group's required check and
+  # dequeue a green pull request. A push to main depends on the repository
+  # variable MERGE_QUEUE_ENABLED: set to 'true', the push builds ONLY the mac
+  # leg -- the merge group built both Linux legs on this exact tree, and the
+  # mac build is the one artifact the queue cannot afford to wait for, so main
+  # pays for it after landing, once per commit, never evicted. Unset, the push
+  # builds all three, because no merge group vouched for this tree. The admin
+  # sets the variable in the same operation as enabling the queue in the
+  # ruleset and unsets it with unticking the queue. The release lane
+  # (build-desktop.yml) still ships every platform unconditionally.
   desktop-matrix:
     name: Resolve desktop matrix
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: read
@@ -280,12 +302,19 @@ jobs:
               - '.github/workflows/build-desktop.yml'
       - id: compute
         env:
-          IS_PR: ${{ github.event_name == 'pull_request' }}
+          EVENT: ${{ github.event_name }}
           DESKTOP_CHANGED: ${{ steps.filter.outputs.desktop }}
+          # The string 'true' or 'false': an unset variable compares unequal
+          # to 'true', so the expression is never empty under `set -u`.
+          QUEUE_ON: ${{ vars.MERGE_QUEUE_ENABLED == 'true' }}
         run: |
-          # Linux legs are unconditional; macos-15 only when a packaging-relevant
-          # path changed on a PR (always on push / non-PR events).
-          if [ "$IS_PR" != "true" ] || [ "$DESKTOP_CHANGED" = "true" ]; then
+          # push to main, queue variable set: macos-15 alone. push to main,
+          # queue variable unset: all three legs. pull_request: both Linux
+          # legs, plus macos-15 when a packaging-relevant path changed.
+          # merge_group: both Linux legs, never macos-15.
+          if [ "$EVENT" = "push" ] && [ "$QUEUE_ON" = "true" ]; then
+            echo 'os=["macos-15"]' >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = "push" ] || { [ "$EVENT" = "pull_request" ] && [ "$DESKTOP_CHANGED" = "true" ]; }; then
             echo 'os=["macos-15","ubuntu-22.04","ubuntu-22.04-arm"]' >> "$GITHUB_OUTPUT"
           else
             echo 'os=["ubuntu-22.04","ubuntu-22.04-arm"]' >> "$GITHUB_OUTPUT"
@@ -300,11 +329,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Resolved by the desktop-matrix job: both Linux arches always (Linux
-        # cannot be cross-compiled -- build-desktop.sh RUNS the interpreter it
-        # provisions -- so each arch needs its own runner), plus macos-15 when a
-        # macOS-packaging input changed or on any non-PR event. build-desktop.yml
-        # stays the release matrix that ships every platform unconditionally.
+        # Resolved by the desktop-matrix job: on a PR or merge group both Linux
+        # arches (Linux cannot be cross-compiled -- build-desktop.sh RUNS the
+        # interpreter it provisions -- so each arch needs its own runner), plus
+        # macos-15 on a PR when a macOS-packaging input changed; on a push to
+        # main macos-15 alone when MERGE_QUEUE_ENABLED is 'true', all three
+        # otherwise. build-desktop.yml stays the release matrix that
+        # ships every platform unconditionally.
         os: ${{ fromJSON(needs.desktop-matrix.outputs.os) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

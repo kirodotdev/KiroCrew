@@ -111,7 +111,11 @@ def test_the_coverage_artifact_is_required_by_combine_and_gate(jobs):
     assert download["with"] == {"name": ARTIFACT}
     assert f"test -f {DATA_FILE} ||" in _step(jobs, "coverage-combine", "Combine into")["run"]
     gate = jobs["coverage-gate"]
-    assert JOB in gate["needs"] and gate["if"] == "${{ always() }}"
+    assert (
+        JOB in gate["needs"]
+        and gate["if"]
+        == "${{ always() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}"
+    )
     guard = _step(jobs, "coverage-gate", "Require upstream")
     assert guard["env"]["KERNEL_LOCK_OWNER"] == f"${{{{ needs.{JOB}.result }}}}"
 

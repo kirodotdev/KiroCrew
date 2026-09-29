@@ -41,6 +41,7 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _FAST_GATE = _REPO_ROOT / ".github" / "workflows" / "fast-gate.yml"
+_BUILD = _REPO_ROOT / ".github" / "workflows" / "build.yml"
 
 # The gates the split moved. Named explicitly rather than derived from the
 # file, so a gate silently DROPPED during a future edit fails here. scrub-lint is
@@ -60,6 +61,23 @@ _GATE_JOBS = (
     "cwd-relative-repo-reads",
     "harness-parity",
     "docs-lint",
+)
+# Every job in fast-gate.yml, in file order: the moved gates plus the one gate
+# that was born there. Explicit for the same reason as _GATE_JOBS -- a job added
+# without the push/variable clause would be the one job left running on a
+# queue-on push, and a file-derived list would admit it silently.
+_FAST_GATE_JOBS = _GATE_JOBS[:-1] + ("memory-store-seam", "docs-lint")
+
+#: The exact `if` clause that trims a job off the push path while the repository
+#: variable MERGE_QUEUE_ENABLED is 'true', and keeps it there while it is unset.
+_PUSH_SKIP_CLAUSE = "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
+#: The exact clause under which the boot leg admits a push with no needs to lean on.
+_PUSH_ADMIT_CLAUSE = "github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true'"
+#: The exact run-level concurrency group of every workflow a push to main runs:
+#: a group per COMMIT only on the queue-on push, the per-ref group otherwise.
+_PUSH_GROUP_EXPR = (
+    "${{ " + _PUSH_ADMIT_CLAUSE + " && format('{0}-{1}', github.workflow, github.sha)"
+    " || format('{0}-{1}', github.workflow, github.ref) }}"
 )
 
 # DENY-BY-DEFAULT: every job in ci.yml must wait for the barrier unless it is
@@ -118,6 +136,77 @@ def barrier_step(ci: dict) -> dict:
     return steps[0]
 
 
+def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
+    jobs = ci["jobs"]
+    skipped_on_push = {
+        name for name, spec in jobs.items() if _PUSH_SKIP_CLAUSE in str(spec.get("if", ""))
+    }
+    assert skipped_on_push == {
+        "changes",
+        "await-fast-gate",
+        "coverage-gate",
+        "frontend-coverage-merge",
+    }
+    # A bare `!= 'push'` anywhere else would trim a job off the push path with
+    # the variable unset, which is the state this contract keeps at full matrix.
+    bare = {
+        name
+        for name, spec in jobs.items()
+        if "github.event_name != 'push'" in str(spec.get("if", ""))
+    }
+    assert (
+        bare == skipped_on_push
+    ), f"push-skips not gated on MERGE_QUEUE_ENABLED: {bare - skipped_on_push}"
+
+    for name, spec in jobs.items():
+        if name in skipped_on_push or name == "e2e-boot-matrix":
+            continue
+        needs = spec.get("needs") or []
+        direct_needs = {needs} if isinstance(needs, str) else set(needs)
+        assert direct_needs & {"changes", "await-fast-gate"}, (
+            f"{name} does not directly need changes or await-fast-gate, so a push "
+            "could reach it after those jobs skip"
+        )
+        guard = str(spec.get("if", ""))
+        assert (
+            "always()" not in guard and "!cancelled()" not in guard
+        ), f"{name} overrides the skipped dependency with {guard!r} and can run on push"
+
+    boot = jobs["e2e-boot-matrix"]
+    boot_guard = str(boot["if"])
+    assert _PUSH_ADMIT_CLAUSE in boot_guard
+    assert "!cancelled()" in boot_guard
+    # The admission is the whole conjunction, never a bare push: with the
+    # variable unset a push must go through the needs like every other event.
+    assert boot_guard.count("github.event_name == 'push'") == 1
+    assert "(github.event_name == 'push' ||" not in boot_guard
+
+    matrix_os = str(boot["strategy"]["matrix"]["os"])
+    sides = matrix_os.split("||")
+    assert (
+        len(sides) == 3
+    ), f"expected non-push / queue-on / queue-off matrix split, got: {matrix_os}"
+    non_push_side, queue_on_side, queue_off_side = sides
+    assert "github.event_name != 'push'" in non_push_side
+    assert "vars.MERGE_QUEUE_ENABLED == 'true'" in queue_on_side
+    assert "&&" not in queue_off_side, "the fallback literal must be unguarded"
+
+    def platforms(side: str) -> list[str]:
+        start = side.index("[")
+        end = side.index("]", start) + 1
+        parsed = json.loads(side[start:end])
+        assert isinstance(parsed, list) and all(isinstance(item, str) for item in parsed)
+        return parsed
+
+    non_push_platforms = platforms(non_push_side)
+    queue_on_platforms = platforms(queue_on_side)
+    queue_off_platforms = platforms(queue_off_side)
+    assert non_push_platforms == ["ubuntu-latest", "windows-latest"]
+    assert queue_on_platforms == ["macos-15"]
+    assert queue_off_platforms == ["ubuntu-latest", "macos-15", "windows-latest"]
+    assert not any("macos" in platform for platform in non_push_platforms)
+
+
 class TestTheGatesLiveInTheGateWorkflow:
     def test_all_gates_are_in_fast_gate_and_none_left_in_ci(
         self, ci: dict, fast_gate: dict
@@ -130,23 +219,79 @@ class TestTheGatesLiveInTheGateWorkflow:
         assert not strays, f"gate job(s) back in ci.yml, racing the matrix again: {strays}"
 
     @pytest.mark.parametrize("job", tuple(_workflow(_FAST_GATE)["jobs"]))
-    def test_every_gate_is_unconditional(self, fast_gate: dict, job: str) -> None:
+    def test_every_gate_skips_only_the_queued_push(self, fast_gate: dict, job: str) -> None:
         # A `needs:` lets a failed sibling skip it and an `if:` lets a diff shape
-        # dodge it. These gates are cheap precisely so that neither is needed.
+        # dodge it. The ONE condition a gate may carry is the exact push/variable
+        # clause: on a push to main while MERGE_QUEUE_ENABLED is 'true' the merge
+        # group already ran every gate on this tree, so the push run skips
+        # whole -- and then neither this workflow nor ci.yml requests a fleet
+        # slot on the queue-on push path (only fleet-labelled jobs can be
+        # orphaned; build.yml's matrix resolver and the heal-exempt ratchet
+        # audit are what remain). Equality, not containment: an extra `&&` term is a way
+        # to dodge, and `==`/`!=` swapped would skip every PR instead.
         spec = fast_gate["jobs"][job]
         assert "needs" not in spec, f"{job} gained a dependency and can now be skipped"
-        assert "if" not in spec, f"{job} gained a condition and can now be dodged"
+        assert (
+            spec.get("if") == _PUSH_SKIP_CLAUSE
+        ), f"{job} must carry exactly the push/variable clause, got {spec.get('if')!r}"
+
+    def test_the_queued_push_run_is_all_skipped_not_failed(self, fast_gate: dict) -> None:
+        # Job by job above, and here as a whole: the job list is pinned so a gate
+        # ADDED without the clause (which would be the one job left running on the
+        # queue-on push, holding a fleet slot) fails, and so does one dropped.
+        assert tuple(fast_gate["jobs"]) == _FAST_GATE_JOBS
+        carrying = {
+            name for name, spec in fast_gate["jobs"].items() if spec.get("if") == _PUSH_SKIP_CLAUSE
+        }
+        assert carrying == set(_FAST_GATE_JOBS)
+        # No barrier or aggregate job exists to turn a skipped sibling into a
+        # failure: nothing in the file has a `needs:` at all.
+        assert not any("needs" in spec for spec in fast_gate["jobs"].values())
 
     def test_the_gate_workflow_matches_ci_triggers(self, ci: dict, fast_gate: dict) -> None:
+        """Re-derived stronger: pin both workflows' complete, identical trigger dictionaries."""
         # `on` is a YAML 1.1 boolean, so PyYAML keys the trigger block on True.
-        ci_on = ci.get("on", ci.get(True))
-        fg_on = fast_gate.get("on", fast_gate.get(True))
-        assert fg_on == ci_on, (
-            "Fast Gate's triggers drifted from ci.yml's. They must match: a WIDER "
-            "filter newly reviews fork PRs on a non-main base (the fork reviewers key "
-            "on this workflow), and a NARROWER one leaves await-fast-gate waiting for "
-            "a run that never starts."
+        ci_on = dict(ci.get("on", ci.get(True)))
+        fg_on = dict(fast_gate.get("on", fast_gate.get(True)))
+        expected = {
+            "push": {"branches": ["main"]},
+            "pull_request": {"branches": ["main"]},
+            "merge_group": {"types": ["checks_requested"]},
+        }
+        assert ci_on == expected
+        # Fast Gate runs on a push too: with MERGE_QUEUE_ENABLED unset, ci.yml's
+        # barrier consumes that run before the full push matrix.
+        assert fg_on == expected, (
+            "Fast Gate's triggers drifted from ci.yml's. A WIDER filter newly reviews "
+            "fork PRs on a non-main base (the fork reviewers key on this workflow), and "
+            "a NARROWER one leaves await-fast-gate waiting for a run that never starts."
         )
+        assert list(fg_on) == list(expected), "keep the trigger order matching ci.yml"
+
+    @pytest.mark.parametrize("path", [_CI, _FAST_GATE, _BUILD], ids=lambda p: p.name)
+    def test_a_push_is_grouped_per_commit_only_while_the_queue_is_on(self, path: Path) -> None:
+        """Re-derived stronger: the exact concurrency block, on every workflow a push runs.
+
+        With MERGE_QUEUE_ENABLED unset a push runs the FULL matrix, so it must keep
+        today's per-ref group: one running plus one pending, later pushes evict the
+        pending one. A per-SHA group there would let N concurrent main matrices hold
+        2N hosted macOS jobs with nothing evicting or queueing them. Only the trimmed
+        queue-on push (one macOS leg per commit) earns a group per commit.
+        """
+        assert _workflow(path)["concurrency"] == {
+            "group": _PUSH_GROUP_EXPR,
+            "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+        }
+        # The variable gates the per-SHA arm only; the per-ref fallback is unguarded.
+        sha_arm, _, ref_arm = _PUSH_GROUP_EXPR.partition(" || ")
+        assert sha_arm.startswith("${{ " + _PUSH_ADMIT_CLAUSE + " && ")
+        assert "github.sha" in sha_arm and "github.sha" not in ref_arm
+        assert "vars." not in ref_arm and "github.ref" in ref_arm
+
+    def test_a_push_to_main_reaches_exactly_the_macos_boot_leg(self, ci: dict) -> None:
+        """Re-derived stronger: pin the push path job by job under both states of
+        MERGE_QUEUE_ENABLED -- trimmed to the mac boot leg when set, full matrix when unset."""
+        _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci)
 
 
 class TestFastGatePythonRuntime:

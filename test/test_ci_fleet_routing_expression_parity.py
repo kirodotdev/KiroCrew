@@ -3,23 +3,45 @@
 Actor admission here is an availability decision: an unlisted actor or missing
 repository variable gets a hosted runner, not a queued job the webhook rejects.
 AWS webhook filtering remains the security boundary. Fast Gate computes this
-inline because its gates must not depend on another job or skip themselves.
+inline because its gates must not depend on another job, and the only condition
+they carry is the merge-queue push skip pinned below.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
+
+# The one `if:` a Fast Gate job carries: skip a push to main only while the
+# repository variable MERGE_QUEUE_ENABLED is 'true', when the merge group
+# already ran the gate on that exact tree.
+_FAST_GATE_PUSH_SKIP_CLAUSE = "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
 
 _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id)"
 _CANONICAL_ROUTING_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE
     + " && (github.event_name == 'push' || (github.event_name == 'pull_request' && "
+    "(github.event.action == 'opened' || github.event.action == 'synchronize') && "
+    "github.event.pull_request.head.repo.full_name == github.repository)) && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
+)
+# The workflows the merge queue runs. A merge_group run's actor is the person
+# who queued the pull request, so the same actor predicate admits it; the event
+# is named so a merge group's jobs reach the fleet instead of falling to hosted.
+_CANONICAL_MERGE_GROUP_ROUTING_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && (github.event_name == 'push' || github.event_name == 'merge_group' || "
+    "(github.event_name == 'pull_request' && "
     "(github.event.action == 'opened' || github.event.action == 'synchronize') && "
     "github.event.pull_request.head.repo.full_name == github.repository)) && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
@@ -36,6 +58,16 @@ _CANONICAL_DISPATCH_EXPR = (
     "${{ github.repository == 'kirodotdev/KiroCrew' && "
     + _ACTOR_PREDICATE
     + " && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
+)
+# The ratchet audit: push, manual dispatch, and the merge group, which is the
+# integrated tree one step before it lands.
+_CANONICAL_DISPATCH_MERGE_GROUP_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || "
+    "github.event_name == 'merge_group') && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
     "|| 'ubuntu-latest' }}"
 )
@@ -116,7 +148,18 @@ _PUSH_ONLY_WORKFLOWS = {
     "build-wheel.yml",
     "dependency-vulnerability.yml",
 }
-_DISPATCH_WORKFLOWS = {"pages.yml", "main-ratchet-audit.yml"}
+_DISPATCH_WORKFLOWS = {"pages.yml"}
+_DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
+# The fleet-routed workflows that declare a `merge_group` trigger.
+_MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
+# merge_group-triggered workflows with no fleet route: the queue's required
+# check (a hosted poll), the OIDC content scan (a reusable-workflow call) and
+# the hosted Python client suite.
+_MERGE_GROUP_HOSTED_WORKFLOWS = {
+    "merge-queue-readiness.yml",
+    "internal-content-scan-gate.yml",
+    "client-py.yml",
+}
 
 # Resolver consumers pin their complete expressions, including hosted fallbacks.
 # Backend shards, backend lint, frontend tests and bundle size use large Linux
@@ -165,7 +208,59 @@ def _expected_inline_expression(workflow_name: str) -> str:
         return _CANONICAL_PUSH_EXPR
     if workflow_name in _DISPATCH_WORKFLOWS:
         return _CANONICAL_DISPATCH_EXPR
+    if workflow_name in _DISPATCH_MERGE_GROUP_WORKFLOWS:
+        return _CANONICAL_DISPATCH_MERGE_GROUP_EXPR
+    if workflow_name in _MERGE_GROUP_WORKFLOWS:
+        return _CANONICAL_MERGE_GROUP_ROUTING_EXPR
     return _CANONICAL_ROUTING_EXPR
+
+
+def test_merge_group_trigger_parity() -> None:
+    """A workflow names merge_group in its routing iff it is triggered by it.
+
+    The routing expression admits `merge_group` only where the event can occur;
+    a workflow triggered by merge_group but routed with the plain expression
+    would send every merge group's jobs to hosted runners, and one routed for
+    merge_group without the trigger claims an event it never receives.
+    """
+    triggered: set[str] = set()
+    for path in _all_workflow_files():
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        triggers = workflow.get(True, workflow.get("on"))
+        if isinstance(triggers, dict) and "merge_group" in triggers:
+            triggered.add(path.name)
+    assert triggered == (
+        _MERGE_GROUP_WORKFLOWS | _DISPATCH_MERGE_GROUP_WORKFLOWS | _MERGE_GROUP_HOSTED_WORKFLOWS
+    )
+
+
+def test_merge_queue_readiness_polls_every_merge_group_workflow() -> None:
+    """The queue's required check waits on exactly the workflows the queue runs.
+
+    A workflow that gains the `merge_group` trigger without joining the poll
+    would run on the group and still be ignored by its verdict; one polled
+    without the trigger would never appear and fail every group at the appear
+    window. The env is the one place the list lives in code, so it is pinned
+    to the trigger set here rather than restated.
+    """
+    workflow = yaml.safe_load(
+        (_WORKFLOWS_DIR / "merge-queue-readiness.yml").read_text(encoding="utf-8")
+    )
+    (job,) = workflow["jobs"].values()
+    assert job["name"] == "PR Readiness", "the job name is the ruleset's required check"
+    (step,) = job["steps"]
+    polled = set(step["env"]["WORKFLOWS"].split())
+    triggered = {
+        path.name
+        for path in _all_workflow_files()
+        if "merge_group"
+        in (
+            (lambda w: w.get(True, w.get("on")) or {})(
+                yaml.safe_load(path.read_text(encoding="utf-8"))
+            )
+        )
+    }
+    assert polled == triggered - {"merge-queue-readiness.yml"}
 
 
 def test_every_copy_of_the_routing_expression_matches_the_canonical_one() -> None:
@@ -228,19 +323,26 @@ def test_every_ci_yml_resolver_consumer_reads_the_resolver_not_a_literal() -> No
     assert observed_consumers == _EXPECTED_RESOLVER_CONSUMER_JOBS
 
 
-def test_all_fast_gates_remain_unconditional() -> None:
+def test_all_fast_gates_skip_only_the_queued_push() -> None:
+    """Every gate keeps the fleet route and carries exactly one condition.
+
+    The one `if:` a gate may carry is the push/variable clause: with the merge
+    queue on, a push to main already had every gate run on its merge group, so
+    the push run skips whole and holds no fleet job an orphan could sit on. Pinned
+    by equality so an extra term cannot dodge a gate on a PR or a merge group.
+    """
     workflow = yaml.safe_load((_WORKFLOWS_DIR / "fast-gate.yml").read_text(encoding="utf-8"))
     assert workflow["jobs"]
     for job_id, spec in workflow["jobs"].items():
         assert "needs" not in spec, job_id
-        assert "if" not in spec, job_id
-        assert spec["runs-on"] == _CANONICAL_ROUTING_EXPR, job_id
+        assert spec.get("if") == _FAST_GATE_PUSH_SKIP_CLAUSE, job_id
+        assert spec["runs-on"] == _CANONICAL_MERGE_GROUP_ROUTING_EXPR, job_id
 
 
 def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
     workflow = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
     changes = workflow["jobs"]["changes"]
-    expected_eligibility = _CANONICAL_ROUTING_EXPR.split(" && format(", 1)[0] + " }}"
+    expected_eligibility = _CANONICAL_MERGE_GROUP_ROUTING_EXPR.split(" && format(", 1)[0] + " }}"
     steps = {step.get("id"): step for step in changes["steps"]}
     for step_id, output, os_name in (
         ("runner", "linux_runner_large", "linux"),
@@ -258,3 +360,294 @@ def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
         assert f'echo "{output}=$LABEL instance-size:large"' in script
         hosted = "ubuntu-latest" if os_name == "linux" else "windows-latest"
         assert f'echo "{output}={hosted}"' in script
+
+
+def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
+    """The poll's TOTAL_BUDGET must outlast the slowest chain of ci.yml job caps.
+
+    The budget is a ceiling on how long a green merge group may take before the
+    queue's required check gives up on it. ci.yml's longest `needs` chain of
+    `timeout-minutes` is that ceiling's floor: raise a shard cap without raising
+    the budget and a slow-but-green group is dequeued. The job's own
+    `timeout-minutes` must in turn exceed the budget, so the step's error -- not
+    the job cap -- is what names the lane still pending.
+    """
+    import re
+
+    readiness = yaml.safe_load(
+        (_WORKFLOWS_DIR / "merge-queue-readiness.yml").read_text(encoding="utf-8")
+    )
+    (job,) = readiness["jobs"].values()
+    (step,) = job["steps"]
+    match = re.search(r"^\s*TOTAL_BUDGET=(\d+)\s*$", step["run"], re.MULTILINE)
+    assert match, "TOTAL_BUDGET must be a literal integer assignment in the poll"
+    budget_minutes = int(match.group(1)) / 60
+
+    ci = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    jobs = ci["jobs"]
+
+    def longest_path(job_id: str) -> int:
+        spec = jobs[job_id]
+        needs = spec.get("needs", [])
+        needs = [needs] if isinstance(needs, str) else list(needs)
+        upstream = max((longest_path(n) for n in needs), default=0)
+        return upstream + int(spec["timeout-minutes"])
+
+    critical_path = max(longest_path(job_id) for job_id in jobs)
+    assert budget_minutes >= critical_path, (
+        f"TOTAL_BUDGET is {budget_minutes:.0f} min but ci.yml's longest needs-chain "
+        f"of timeout-minutes is {critical_path} min; raise the budget with the cap"
+    )
+    assert int(job["timeout-minutes"]) > budget_minutes
+
+
+def _readiness_job() -> dict:
+    workflow = yaml.safe_load(
+        (_WORKFLOWS_DIR / "merge-queue-readiness.yml").read_text(encoding="utf-8")
+    )
+    (job,) = workflow["jobs"].values()
+    return job
+
+
+def test_merge_queue_readiness_rollout_values() -> None:
+    """The poll's budget, rerun cap and job cap are the rollout's numbers.
+
+    The ruleset's status-check timeout (180 minutes) is set from these, so a
+    change here is a change to the documented rollout and must move with it.
+    """
+    import re
+
+    job = _readiness_job()
+    (step,) = job["steps"]
+    values = dict(re.findall(r"^\s*(TOTAL_BUDGET|MAX_RERUNS)=(\d+)\s*$", step["run"], re.MULTILINE))
+    assert values == {"TOTAL_BUDGET": "9000", "MAX_RERUNS": "2"}
+    assert job["timeout-minutes"] == 155
+
+
+def test_merge_queue_readiness_may_rerun_failed_jobs_and_nothing_more() -> None:
+    """Rerunning needs actions:write; the job holds no other write scope.
+
+    `gh run rerun --failed` reruns only the jobs that failed, so a flaky shard
+    costs one shard's time and the jobs that passed are not run again.
+    """
+    job = _readiness_job()
+    assert job["permissions"] == {"actions": "write", "contents": "read"}
+    (step,) = job["steps"]
+    reruns = [line.strip() for line in step["run"].splitlines() if "gh run rerun" in line]
+    assert reruns, "the poll must rerun a failed run's jobs"
+    assert all("--failed" in line for line in reruns), reruns
+
+
+_FAKE_GH = r"""
+import json, sys, time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+args = sys.argv[2:]
+scenario = json.loads((root / "scenario.json").read_text())
+options = scenario.pop("_options", {})
+state_file = root / "state.json"
+state = json.loads(state_file.read_text()) if state_file.exists() else {}
+ids = {wf: 1000 + i for i, wf in enumerate(sorted(scenario))}
+with (root / "calls.log").open("a") as log:
+    log.write(" ".join(args) + "\n")
+
+def save():
+    state_file.write_text(json.dumps(state))
+
+def wf_state(wf):
+    return state.setdefault(wf, {"attempt": 1, "phase": "done", "errors": 0})
+
+if args[:2] == ["api", "rate_limit"]:
+    print(int(time.time()) + options.get("reset_in", 5))
+    sys.exit(0)
+
+if args[:2] == ["run", "rerun"]:
+    run_id = int(args[2])
+    with (root / "reruns.log").open("a") as log:
+        log.write(" ".join(args) + "\n")
+    (wf,) = [w for w, i in ids.items() if i == run_id]
+    st = wf_state(wf)
+    if st["errors"] < scenario[wf].get("rerun_errors", 0):
+        st["errors"] += 1
+        save()
+        print("HTTP 502: Bad Gateway", file=sys.stderr)
+        sys.exit(1)
+    st["attempt"] += 1
+    # The listing lags the rerun by a tick, then shows the attempt running.
+    st["phase"] = "lag"
+    save()
+    sys.exit(0)
+
+listed = state.get("_listings", 0)
+state["_listings"] = listed + 1
+if listed < options.get("rate_limited_listings", 0):
+    save()
+    print("gh: API rate limit exceeded for installation. (HTTP 403)", file=sys.stderr)
+    sys.exit(1)
+runs = []
+for wf in scenario:
+    st = wf_state(wf)
+    attempt = st["attempt"]
+    shown, status = attempt, "completed"
+    if st["phase"] == "lag":
+        shown, st["phase"] = attempt - 1, "running"
+    elif st["phase"] == "running":
+        status, st["phase"] = "in_progress", "done"
+    runs.append({
+        "id": ids[wf], "path": f".github/workflows/{wf}",
+        "head_branch": "gh-readonly-queue/main/pr-1-abc-as-the-api-spells-it",
+        "status": status, "run_attempt": shown,
+        "conclusion": scenario[wf]["attempts"][shown - 1] if status == "completed" else None,
+        "html_url": f"https://example.invalid/runs/{ids[wf]}",
+    })
+save()
+print(json.dumps({"workflow_runs": runs}))
+"""
+
+
+def _run_readiness(
+    tmp_path: Path, scenario: dict[str, dict], options: dict | None = None
+) -> tuple[int, str, list[str]]:
+    """Run the real poll step against a fake `gh` that plays out `scenario`.
+
+    Each workflow lists the conclusion of every attempt it will make, and how
+    many rerun requests the API refuses first; `sleep` is a no-op so the
+    ticks run back to back.
+    """
+    import json
+    import subprocess
+    import sys
+
+    job = _readiness_job()
+    (step,) = job["steps"]
+    workflows = step["env"]["WORKFLOWS"].split()
+    full: dict = {wf: scenario.get(wf, {"attempts": ["success"]}) for wf in workflows}
+    full["_options"] = options or {}
+    (tmp_path / "scenario.json").write_text(json.dumps(full))
+    (tmp_path / "fake_gh.py").write_text(_FAKE_GH)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" "{tmp_path / "fake_gh.py"}" "{tmp_path}" "$@"\n'
+    )
+    (bin_dir / "sleep").write_text(f'#!/bin/sh\necho "$1" >> "{tmp_path / "sleeps.log"}"\n')
+    for tool in ("gh", "sleep"):
+        (bin_dir / tool).chmod(0o755)
+    # cwd, TMPDIR and HOME inside tmp_path, so nothing the step writes (its
+    # mktemp error file, a gh config, a relative path a later edit adds) lands
+    # outside the test's own directory.
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "TMPDIR": str(tmp_path),
+        "HOME": str(tmp_path),
+        "REPO": "kirodotdev/KiroCrew",
+        "SHA": "abc",
+        "BRANCH": "gh-readonly-queue/main/pr-1-abc",
+        "WORKFLOWS": step["env"]["WORKFLOWS"],
+    }
+    proc = subprocess.run(
+        ["bash", "-c", step["run"]],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    log = tmp_path / "reruns.log"
+    reruns = log.read_text().splitlines() if log.exists() else []
+    return proc.returncode, proc.stdout + proc.stderr, reruns
+
+
+_needs_bash_and_jq = pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None or shutil.which("jq") is None,
+    reason="executes the poll step; needs a POSIX bash and jq on PATH",
+)
+
+
+@_needs_bash_and_jq
+def test_a_failed_first_attempt_is_rerun_not_ejected(tmp_path: Path) -> None:
+    code, out, reruns = _run_readiness(tmp_path, {"ci.yml": {"attempts": ["failure", "success"]}})
+    assert code == 0, out
+    assert reruns == ["run rerun 1001 --failed -R kirodotdev/KiroCrew"], reruns
+    assert "Rerunning its failed jobs as attempt 2 (rerun 1 of 2)" in out
+
+
+@_needs_bash_and_jq
+def test_the_group_fails_only_after_the_third_attempt(tmp_path: Path) -> None:
+    code, out, reruns = _run_readiness(
+        tmp_path, {"build.yml": {"attempts": ["failure", "timed_out", "cancelled"]}}
+    )
+    assert code == 1, out
+    assert len(reruns) == 2, reruns
+    assert "concluded 'cancelled'" in out and "on attempt 3, after 2 rerun(s)" in out
+
+
+@_needs_bash_and_jq
+def test_a_refused_rerun_request_is_retried_and_not_counted(tmp_path: Path) -> None:
+    code, out, reruns = _run_readiness(
+        tmp_path, {"ci.yml": {"attempts": ["failure", "failure", "success"], "rerun_errors": 1}}
+    )
+    # Three requests: the refused one, then the two that count.
+    assert code == 0, out
+    assert len(reruns) == 3, reruns
+    assert "could not rerun the failed jobs" in out
+
+
+@_needs_bash_and_jq
+def test_ci_is_not_rerun_until_fast_gate_has_recovered(tmp_path: Path) -> None:
+    """CI's await-fast-gate fails at once on a failed Fast Gate, so a CI rerun
+    started first would spend CI's attempts on a gate that has not recovered."""
+    code, out, reruns = _run_readiness(
+        tmp_path,
+        {
+            "ci.yml": {"attempts": ["failure", "success"]},
+            "fast-gate.yml": {"attempts": ["failure", "success"]},
+        },
+    )
+    assert code == 0, out
+    # Run ids follow the sorted workflow names: ci.yml is 1001, fast-gate.yml 1003.
+    assert [line.split()[2] for line in reruns] == ["1003", "1001"], reruns
+
+
+def test_merge_queue_readiness_reads_one_listing_per_tick() -> None:
+    """One combined runs listing serves every polled workflow.
+
+    The installation token is shared by every workflow in the repository, and
+    40 queued groups each listing six workflows on their own would starve it.
+    """
+    import re
+
+    job = _readiness_job()
+    (step,) = job["steps"]
+    run = step["run"]
+    assert "actions/workflows/" not in run, "a per-workflow runs listing is back"
+    assert len(re.findall(r'gh api --method GET "repos/\$REPO/actions/runs"', run)) == 1
+    ticks = dict(
+        re.findall(r"^\s*(APPEAR_TICK|SEEN_TICK|APPEAR_BUDGET)=(\d+)\s*$", run, re.MULTILINE)
+    )
+    assert ticks == {"APPEAR_TICK": "60", "SEEN_TICK": "180", "APPEAR_BUDGET": "300"}
+
+
+@_needs_bash_and_jq
+def test_a_green_group_costs_one_listing_per_tick(tmp_path: Path) -> None:
+    code, out, _ = _run_readiness(tmp_path, {"ci.yml": {"attempts": ["failure", "success"]}})
+    assert code == 0, out
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    listings = [c for c in calls if "actions/runs" in c]
+    ticks = (tmp_path / "sleeps.log").read_text().split()
+    # Every tick but the last sleeps, and each tick read exactly one listing.
+    assert len(listings) == len(ticks) + 1, (calls, ticks)
+    assert set(ticks) == {"180"}, ticks
+
+
+@_needs_bash_and_jq
+def test_a_rate_limited_listing_backs_off_until_the_reset(tmp_path: Path) -> None:
+    code, out, reruns = _run_readiness(tmp_path, {}, {"rate_limited_listings": 2, "reset_in": 400})
+    assert code == 0, out
+    assert reruns == []
+    assert out.count("::warning::API rate limit hit; it resets at epoch") == 2, out
+    sleeps = [int(x) for x in (tmp_path / "sleeps.log").read_text().split()]
+    # Two backoffs to the reset plus at most 30 s of jitter; neither is a verdict.
+    assert len(sleeps) == 2 and all(399 <= s <= 431 for s in sleeps), sleeps

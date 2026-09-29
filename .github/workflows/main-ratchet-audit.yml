@@ -34,12 +34,13 @@ name: Main Ratchet Audit
 # This workflow separates MEASUREMENT from JUDGMENT. It runs ONLY the cheap
 # ratchet / ceiling / baseline gates, UNCONDITIONALLY (both surfaces, no
 # only_backend/only_frontend guard) and NEVER cancelled, so every push to main
-# gets a ratchet verdict attributed to THAT push. It deliberately does NOT
-# change ci.yml's concurrency or full-run budget (full serialization / a merge
-# queue is a maintainer CI-budget ruling) and does NOT add another full run
-# (test-durations.yml already pays the weekly full-suite runner minutes on
-# main; only the verdict was missing). The added runner minutes here are only
-# the individually-cheap ratchet lanes.
+# gets a ratchet verdict attributed to THAT push, and every merge group gets
+# one BEFORE it lands: the merge queue's required check
+# (merge-queue-readiness.yml) waits on this run. It deliberately does NOT
+# change ci.yml's concurrency and does NOT add another full run of its own (the
+# merge queue runs the full suite on the integrated tree; test-durations.yml
+# already pays the weekly full-suite runner minutes on main). The added runner
+# minutes here are only the individually-cheap ratchet lanes.
 #
 # The gate commands below are the same commands ci.yml's backend-lint,
 # frontend-lint and bundle-size jobs run, so the audit and the PR gates cannot
@@ -64,8 +65,12 @@ on:
     branches: [main]
   # PRs are deliberately NOT a trigger: a pull request already runs these exact
   # gates against its own diff in ci.yml. This lane's whole value is evaluating
-  # them on main's INTEGRATED tree, which only a push (or a manual dispatch)
-  # produces.
+  # them on main's INTEGRATED tree, which a push, a manual dispatch, or a merge
+  # group produces. A merge group IS that integrated tree one step before it
+  # lands, and the merge queue's required check waits on this run, so ratchet
+  # drift is caught before the commit reaches main rather than reported after.
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch: {}
 
 permissions:
@@ -86,7 +91,7 @@ concurrency:
 jobs:
   ratchet-gates:
     name: Backend ratchet & baseline gates
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 25
     env:
       # Judge the integrated tree, not a diff. See the scope note in the header:
@@ -210,7 +215,7 @@ jobs:
 
   frontend-ceiling:
     name: Frontend eslint ceiling
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,7 +293,7 @@ jobs:
     # job -- so the sanctioned spelling here is the canonical one, and the heap
     # flag below is left exactly as ci.yml sets it rather than compensated for
     # with an off-convention label.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -336,7 +341,7 @@ jobs:
   report:
     name: Render ratchet verdict
     needs: [ratchet-gates, frontend-ceiling, bundle-ceiling]
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # always() so the verdict is rendered even when a gate job failed; the push
     # guard keeps a manual workflow_dispatch from mutating the tracking issue.

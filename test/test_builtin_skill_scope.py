@@ -312,16 +312,20 @@ class TestTheCommittedTreeAgrees:
         assert "python3 scripts/check_builtin_skill_scope.py --test" in gate
         assert "python3 scripts/check_builtin_skill_scope.py\n" in gate
 
-    def test_the_gate_is_unconditional(self) -> None:
+    def test_the_gate_skips_only_the_queued_push(self) -> None:
         """Both halves of the wiring: the invocation above, and the job carrying
         it running on every event the workflow fires on. A ``needs:`` would let a
         failed sibling skip it, and an ``if:`` (a path filter's surface output,
         say) would let a diff shape dodge it -- either one turns the absolute,
-        baseline-free rule into one that only sometimes runs.
+        baseline-free rule into one that only sometimes runs. The one condition
+        it carries, by exact text, skips a push to main only while the merge
+        queue is on -- the merge group already ran this gate on that tree.
         """
         workflow = yaml.safe_load(
             (ROOT / ".github" / "workflows" / "fast-gate.yml").read_text(encoding="utf-8")
         )
         job = workflow["jobs"]["builtin-skill-scope"]
         assert "needs" not in job, "builtin-skill-scope gained a dependency and can now be skipped"
-        assert "if" not in job, "builtin-skill-scope gained a condition and can now be dodged"
+        assert (
+            job.get("if") == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
+        ), "builtin-skill-scope's condition is not exactly the merge-queue push skip"

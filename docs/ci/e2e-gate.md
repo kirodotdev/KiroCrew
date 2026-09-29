@@ -1054,8 +1054,9 @@ and the plane's `a/**` artifacts and `h/**/*.log` pod logs from under that
 basetemp; on a default run the scenario globs simply match nothing.
 
 Three facts about WHEN the label takes effect, all consequences of `ci.yml`
-listening only for `push` and `pull_request` (`opened`, `synchronize`,
-`reopened`) and deliberately not for `labeled` -- the same choice `ci-full-run`
+listening only for `push`, `pull_request` (`opened`, `synchronize`,
+`reopened`) and `merge_group` -- on which a run has no PR labels, so the suite
+stays off -- and deliberately not for `labeled` -- the same choice `ci-full-run`
 makes, because a `labeled` trigger re-runs the whole workflow on every bot label:
 
 - The label must be on the PR BEFORE the `opened` or `synchronize` event that

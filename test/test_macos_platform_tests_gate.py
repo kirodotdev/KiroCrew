@@ -68,8 +68,10 @@ class TestThePullRequestPathInstantiatesNoMacRunner:
             if "macos" not in f"{runs_on}{matrix_os}".lower():
                 continue
             # The one permitted shape: a runner list that macOS enters only when
-            # the event is NOT a pull request.
-            if name == "e2e-boot-matrix" and "github.event_name == 'pull_request'" in matrix_os:
+            # the event is a push to main -- so neither a pull request nor a
+            # merge group, whose wait would hold every queued PR behind it,
+            # ever provisions one.
+            if name == "e2e-boot-matrix" and "github.event_name != 'push'" in matrix_os:
                 continue
             offenders.append(name)
 
@@ -82,7 +84,9 @@ class TestThePullRequestPathInstantiatesNoMacRunner:
         )
 
     def test_the_boot_matrix_keeps_macos_off_the_pull_request_leg_only(self) -> None:
-        # Not just "the expression mentions pull_request": the two branches are
+        """Re-derived stronger: every push-side literal (queue variable set or unset)
+        carries macos-15; only the non-push side, read first, is mac-free."""
+        # Not just "the expression mentions pull_request": the branches are
         # read, so an inverted condition (macOS on PRs, not on main) fails here
         # rather than in a three-hour queue.
         matrix_os = _load("ci.yml")["jobs"]["e2e-boot-matrix"]["strategy"]["matrix"]["os"]
@@ -90,6 +94,9 @@ class TestThePullRequestPathInstantiatesNoMacRunner:
 
         assert "macos" not in pull_request_side.lower()
         assert "macos-15" in push_side
+        push_literals = [side for side in push_side.split("||") if "[" in side]
+        assert len(push_literals) == 2, f"expected a queue-on and a queue-off literal: {push_side}"
+        assert all("macos-15" in side for side in push_literals)
         # Still a real gateway boot on the other two platforms in front of a PR: a
         # Windows-only delegation break that every unit test mocked past is the
         # escape this job exists for, and only a real boot can see it.

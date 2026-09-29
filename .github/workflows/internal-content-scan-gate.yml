@@ -14,9 +14,9 @@ name: Internal Content Scan Gate
 # `push` to main stays as the backstop for anything that reaches the branch
 # without a pull request.
 #
-# `merge_group` fires only when a merge queue exists, and this repository has none
-# configured, so today it fires zero times. It is kept because it is the trigger a
-# queue would use and costs nothing idle -- do NOT read it as coverage.
+# `merge_group` scans the merge queue's temporary commit, the tree that actually
+# lands on main. merge-queue-readiness.yml waits on this run alongside CI, Fast
+# Gate and Build, so a red here holds the group the way it holds a pull request.
 #
 # A FORK PR is not scanned by THIS file: GitHub issues no OIDC token to a fork
 # head, so the job would fail at role assumption every time. The job-level `if`

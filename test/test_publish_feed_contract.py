@@ -269,15 +269,22 @@ def test_linux_lane_verifies_artifact_architecture_before_publishing() -> None:
 
 
 def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
-    """PR desktop-build coverage policy.
+    """Re-derived stronger: pin every branch's exact platforms and selecting
+    event, with the push branch split on the repository variable
+    ``MERGE_QUEUE_ENABLED``.
 
-    Linux (both arches) builds on EVERY PR -- it is comparatively cheap and
-    cannot be cross-compiled, so a broken arch must be caught before merge, not
-    only at nightly. The macos-15 leg bills at ~10x and its unique coverage is
-    macOS packaging, so on a PR it builds only when a macOS-packaging input
-    changed (the ``desktop-matrix`` job's paths filter); push / release always
-    build it. The release lane (``build-desktop.yml``) still ships every
-    platform unconditionally, so nothing macOS ever reaches users unbuilt.
+    Linux (both arches) builds on EVERY PR and merge group -- it is
+    comparatively cheap and cannot be cross-compiled, so a broken arch must be
+    caught before merge, not only at nightly. The macos-15 leg bills at ~10x
+    and its unique coverage is macOS packaging, so on a PR it builds only when
+    a macOS-packaging input changed (the ``desktop-matrix`` job's paths
+    filter), never on a merge group. On a push to main it builds ALONE only
+    while ``MERGE_QUEUE_ENABLED`` is ``'true'`` -- the merge group already
+    built both Linux legs on that exact tree, and the push is where main pays
+    for the one leg the queue cannot afford to wait for; with the variable
+    unset a push builds all three, because no merge group vouched for the
+    tree. The release lane (``build-desktop.yml``) still ships every platform
+    unconditionally, so nothing macOS ever reaches users unbuilt.
     """
     pr = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
     release = yaml.safe_load((WORKFLOWS / "build-desktop.yml").read_text(encoding="utf-8"))
@@ -297,21 +304,64 @@ def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
     )
     compute = next((s for s in jobs["desktop-matrix"]["steps"] if s.get("id") == "compute"), None)
     assert compute is not None, "desktop-matrix must have a `compute` step emitting os="
-    os_lines = [ln for ln in compute["run"].splitlines() if "os=[" in ln]
+    # The queue variable reaches the script as a fixed 'true'/'false' string, so
+    # the shell comparison below never sees an unset name.
+    assert compute["env"]["QUEUE_ON"] == "${{ vars.MERGE_QUEUE_ENABLED == 'true' }}"
+    assert compute["env"]["EVENT"] == "${{ github.event_name }}"
+    script_lines = compute["run"].splitlines()
+    os_lines = [line for line in script_lines if "os=[" in line]
     assert os_lines, "the compute step must emit at least one os= matrix list"
 
-    # Linux is UNCONDITIONAL: both arches appear in every branch the script emits.
-    for ln in os_lines:
-        assert (
-            '"ubuntu-22.04"' in ln and '"ubuntu-22.04-arm"' in ln
-        ), f"both Linux arches must be in every PR desktop matrix branch: {ln}"
-    # macOS is GATED: it must be buildable (packaging-relevant PR / push) but must
-    # NOT appear in every branch, or the 10x build still runs on every PR.
-    with_mac = [ln for ln in os_lines if '"macos-15"' in ln]
-    assert with_mac, "macos-15 must still build on packaging-relevant PRs and pushes"
-    assert len(with_mac) < len(os_lines), (
-        "macos-15 must be gated -- at least one branch (a non-packaging PR) must "
-        "omit it, or the 10x macOS build still runs on every PR"
+    def platforms(line: str) -> tuple[str, ...]:
+        payload = line.split("os=", 1)[1].split("'", 1)[0]
+        parsed = yaml.safe_load(payload)
+        assert isinstance(parsed, list) and all(isinstance(item, str) for item in parsed)
+        return tuple(parsed)
+
+    by_platforms = {platforms(line): line for line in os_lines}
+    assert (
+        len(os_lines) == len(by_platforms) == 3
+    ), f"expected exactly three unique desktop-matrix branches, got: {os_lines}"
+    assert set(by_platforms) == {
+        ("macos-15",),
+        ("macos-15", "ubuntu-22.04", "ubuntu-22.04-arm"),
+        ("ubuntu-22.04", "ubuntu-22.04-arm"),
+    }, f"desktop-matrix branches drifted from their exact platform sets: {set(by_platforms)}"
+
+    def nearest_guard(line: str) -> str:
+        line_at = script_lines.index(line)
+        return next(
+            candidate.strip()
+            for candidate in reversed(script_lines[:line_at])
+            if candidate.lstrip().startswith(("if ", "elif ", "else"))
+        )
+
+    mac_only_guard = nearest_guard(by_platforms[("macos-15",)])
+    assert mac_only_guard.startswith("if "), (
+        "the mac-only branch must be tested FIRST, or the all-three push branch "
+        f"below would shadow it, got: {mac_only_guard}"
+    )
+    assert '"$EVENT" = "push"' in mac_only_guard and '"$QUEUE_ON" = "true"' in mac_only_guard, (
+        "the mac-only branch must be selected by a push WITH the queue variable "
+        f"set, got: {mac_only_guard}"
+    )
+
+    all_platforms_guard = nearest_guard(
+        by_platforms[("macos-15", "ubuntu-22.04", "ubuntu-22.04-arm")]
+    )
+    assert '"$EVENT" = "push"' in all_platforms_guard, (
+        "a push with the queue variable unset must build all three, got: " f"{all_platforms_guard}"
+    )
+    assert '"$EVENT" = "pull_request"' in all_platforms_guard
+    assert '"$DESKTOP_CHANGED" = "true"' in all_platforms_guard
+    assert (
+        "$QUEUE_ON" not in all_platforms_guard
+    ), "the all-three push arm is the queue-unset fallback; it must not re-test the variable"
+
+    linux_only_guard = nearest_guard(by_platforms[("ubuntu-22.04", "ubuntu-22.04-arm")])
+    assert linux_only_guard == "else", (
+        "the Linux-only matrix must be the fallback for merge groups and "
+        f"non-packaging PRs, got: {linux_only_guard}"
     )
 
 

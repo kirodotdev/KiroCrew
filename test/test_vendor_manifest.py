@@ -272,7 +272,9 @@ def test_ci_wires_the_manifest_gate() -> None:
     Unconditionality is asserted structurally rather than as a substring, because
     the property this test protects is not that the script name appears
     somewhere — it is that no ``needs:`` and no ``if:`` can keep the job from
-    running on a given diff.
+    running on a given diff. The one condition it carries, by exact text, skips
+    a push to main only while the merge queue is on, when the merge group already
+    verified this exact tree; no diff shape enters it.
     """
     path = _REPO_ROOT / ".github" / "workflows" / "fast-gate.yml"
     text = path.read_text(encoding="utf-8")
@@ -282,4 +284,6 @@ def test_ci_wires_the_manifest_gate() -> None:
 
     job = yaml.safe_load(text)["jobs"]["vendor-manifest"]
     assert "needs" not in job, "vendor-manifest gained a dependency and can now be skipped"
-    assert "if" not in job, "vendor-manifest gained a condition and can now be dodged"
+    assert (
+        job.get("if") == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
+    ), "vendor-manifest's condition is not exactly the merge-queue push skip"

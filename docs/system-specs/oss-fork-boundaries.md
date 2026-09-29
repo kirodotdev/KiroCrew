@@ -144,8 +144,9 @@ Two paths produce that one verdict, because a fork head receives no OIDC token:
 | a fork | `fork-internal-content-scan.yml`, Stage 2 | runs privileged from the default branch after `Fast Gate`, never checks out or executes fork code, and posts a check-run under the same `Internal Content Scan` name |
 
 `push` to `main` stays as the backstop for anything reaching the branch without a
-pull request. `merge_group` is declared but fires zero times — this repository has
-no merge queue — and is kept only because it is the trigger a queue would use.
+pull request. `merge_group` scans the merge queue's temporary commit, the tree that
+actually lands on `main`; `merge-queue-readiness.yml` waits on it alongside CI, Fast
+Gate and Build, so a red there holds the group as it holds a pull request.
 
 Two lanes are marked ineligible rather than pending, the same treatment CodeQL
 gets: a **stacked** PR (base is another feature branch) never starts the

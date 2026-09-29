@@ -5,18 +5,25 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The merge queue tests each PR against the main it will actually land on.
+  # A merge_group run is what makes "every PR was green" imply "main is green".
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # PRs cancel superseded revisions: only a PR's tip commit needs a verdict.
-  # main does not, so let an in-flight run finish instead of killing it.
-  # This does NOT produce a verdict per commit. The group still permits one
-  # pending run, and GitHub evicts that pending run when a newer one queues
-  # (a documented GitHub concurrency behavior). With a ~19min run and a
-  # ~1.4min median merge gap, main gets periodic verdicts instead of none.
+  # PRs share a group per ref and cancel superseded revisions: only a PR's tip
+  # commit needs a verdict. A push to main gets a group per COMMIT only while
+  # the repository variable MERGE_QUEUE_ENABLED is 'true': that push path is
+  # the one macOS leg the merge queue cannot give it (see e2e-boot-matrix), so
+  # each landed commit gets exactly one macOS verdict and no run is evicted by
+  # the next merge. With the variable unset a push runs the full matrix, and
+  # the per-ref group stays as it is today: one running plus one pending, and a
+  # later push evicts the pending one, so concurrent main matrices can never
+  # pile up hosted macOS jobs. A merge group's ref is unique to the group.
+  group: ${{ github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true' && format('{0}-{1}', github.workflow, github.sha) || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # There is deliberately no BACKEND_DESELECTS here any more. Eleven files used to be
@@ -53,7 +60,14 @@ jobs:
   # flags false and runs the full matrix (fails safe).
   changes:
     name: Detect changed surface
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Skipped on a push to main only while the repository variable
+    # MERGE_QUEUE_ENABLED is 'true': the merge queue ran this workflow's full
+    # matrix on the merge group whose tree IS this commit, so the push re-runs
+    # nothing but the macOS boot leg below, which needs no surface detection.
+    # With the variable unset a push to main runs this job and the full matrix
+    # behind it. Every heavy job `needs` this one, so skipping it skips them all.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     # 15, not 5: the job's own work is seconds, but its `fetch-depth: 0`
     # checkout (paths-filter and the leaf resolver diff against the merge base
     # with local git) is a full-history fetch of a large repository, and on a
@@ -115,7 +129,11 @@ jobs:
           # drops out, which is correct for surface detection -- that surface
           # is unchanged relative to base -- and any wider change set still
           # pushes toward the full matrix. push events never consult `token`,
-          # so main builds are unchanged.
+          # so main builds are unchanged. On a merge_group event the pinned
+          # build takes `merge_group.base_sha` as the base and
+          # `merge_group.head_sha` as the head (its main.ts `case 'merge_group'`)
+          # and diffs them with local git, so the group is measured against the
+          # main it will land on -- no token, no API call, same as a PR.
           token: ''
           # 'some-with-excludes': a file matches a filter when it matches at
           # least one pattern AND none of the negated ones. That lets `backend`
@@ -204,20 +222,23 @@ jobs:
         id: leaf
         env:
           FULL_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The base the diff is scoped against: the PR's base on a pull
+          # request, the group's base on a merge group, empty on a push (which
+          # has no base to scope against and takes the full suite).
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
         run: |
           set -uo pipefail
           leaf_tests=false
           # BOTH must be pre-initialized: the heredoc below expands each one
           # unconditionally, while they are assigned only in the `else` branch. A
-          # push build (no PR base) and a `ci-full-run` PR both take the `if`
+          # push build (no base commit) and a `ci-full-run` PR both take the `if`
           # branch, so an uninitialized variable there dies on `set -u` and takes
           # the whole `changes` job -- and every job that needs it -- with it,
           # breaking the very full-matrix escape hatch this branch exists to serve.
           targets=""
           gates=""
           if [ "$FULL_RUN" = "true" ] || [ -z "${BASE_SHA:-}" ]; then
-            echo "Full suite: ci-full-run label set, or no PR base (push build)."
+            echo "Full suite: ci-full-run label set, or no base commit for this event (push build)."
           else
             rc=0
             targets="$(SCOPED_TESTS_BASE_REF="$BASE_SHA" \
@@ -243,13 +264,15 @@ jobs:
             echo "GATE_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # Same-repository push/PR AND an actor admitted by the fleet webhook.
-      # Missing CODEBUILD_ACTOR_IDS fails toward hosted, never a queued fleet
-      # job the webhook cannot accept. The webhook remains an independent fence.
+      # Same-repository push/PR/merge-group AND an actor admitted by the fleet
+      # webhook. A merge_group run's actor is the person who queued the PR, so
+      # the same list admits it. Missing CODEBUILD_ACTOR_IDS fails toward
+      # hosted, never a queued fleet job the webhook cannot accept. The webhook
+      # remains an independent fence.
       - name: Pick the Linux runner label
         id: runner
         env:
-          ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
+          ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
           LABEL: codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ "$ELIGIBLE" = "true" ]; then
@@ -263,7 +286,7 @@ jobs:
       - name: Pick the Windows runner label
         id: windows-runner
         env:
-          ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
+          ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
           LABEL: codebuild-kirocrew-gha-windows-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ "$ELIGIBLE" = "true" ]; then
@@ -331,7 +354,12 @@ jobs:
   # run anyway and the log would claim it was cleared to.
   await-fast-gate:
     name: Await Fast Gate
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true': the
+    # merge group ran Fast Gate on this exact tree and nothing on the trimmed
+    # push path needs the barrier. With the variable unset, Fast Gate runs on
+    # the push too (fast-gate.yml has a push trigger) and this job consumes it.
+    if: github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
       # actions:read is what lets this read another workflow's runs. Job-level
@@ -2088,7 +2116,9 @@ jobs:
     # the fail-closed guarantee (including the `if-no-files-found: error` upload
     # guard this workflow relies on). The first step below converts any
     # non-success upstream result into an explicit failure.
-    if: ${{ always() }}
+    # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true', where
+    # the matrix it judges does not run.
+    if: ${{ always() && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true') }}
     steps:
       - name: Require upstream coverage jobs to have succeeded
         env:
@@ -2356,7 +2386,7 @@ jobs:
           # `check-i18n-strings.mjs` falls back from the merge base to the base tip for
           # exactly that reason, and EXITS NON-ZERO if a configured ref cannot be
           # resolved rather than skipping itself green.
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         # `npm run i18n:check` is a RUNNER (`website/scripts/i18n-check.mjs`), not an `&&`
         # chain: it executes all six scripts and reports the eleven checks they contain in
         # one table, because `&&` short-circuits and a PR only ever learned about its first
@@ -2435,7 +2465,7 @@ jobs:
         # report either way.
         working-directory: website
         env:
-          PHANTOM_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          PHANTOM_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           # Absolute path: this step's working-directory is `website`.
           PHANTOM_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
@@ -2715,7 +2745,7 @@ jobs:
           # "gate nobody watched go red" failure mode their own docs warn about.
           # Same expression as `frontend-lint`: the base branch on a PR, the commit the
           # push replaced on a push to main.
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
           REDUCED: ${{ steps.scope.outputs.reduced }}
           TARGETS_FILE: ${{ runner.temp }}/frontend-targets.txt
         # `actions/checkout` fetches depth 1, so the base is not present and
@@ -2787,6 +2817,7 @@ jobs:
     # to fix. A skipped shard set has nothing to stitch; a FAILED one still does.
     if: >-
       ${{ !cancelled()
+      && (github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true')
       && needs.frontend-test.result != 'skipped'
       && needs.changes.outputs.only_backend != 'true' }}
     # CodeBuild-hosted runner (pilot), default size: a merge is one process
@@ -3093,7 +3124,7 @@ jobs:
         shell: bash
         working-directory: website
         env:
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
         run: |
           I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
             "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
@@ -3341,20 +3372,42 @@ jobs:
   e2e-boot-matrix:
     name: E2E Gateway Boot (${{ matrix.os }})
     needs: [changes, await-fast-gate]
+    # On a pull request or merge group this runs behind the barrier like every
+    # heavy job. On a push to main with the repository variable
+    # MERGE_QUEUE_ENABLED set to 'true' it is the ONLY job that runs: `changes`
+    # and `await-fast-gate` are skipped there, so the condition admits that push
+    # outright. Any other event, including a push with the variable unset,
+    # requires both needs to have succeeded.
+    if: >-
+      ${{ !cancelled()
+      && ((github.event_name == 'push' && vars.MERGE_QUEUE_ENABLED == 'true')
+          || (needs.changes.result == 'success'
+              && needs.await-fast-gate.result == 'success')) }}
     strategy:
       # Each OS is its own verdict. A Windows-only regression must not hide
       # behind a cancelled macOS leg, which is exactly the shape of the escape
       # this job exists for.
       fail-fast: false
       matrix:
-        # macos-15 is on the push-to-main path only. It is the same queue story as
-        # the moved pytest lane: the mac leg waited ~200 minutes for a runner on
-        # every pull request, and it is the only leg that did. On main the wait
-        # costs nobody a merge, and nightly's `pod-scenarios` boots a real
-        # service-managed gateway on macos-15 as well, so the real-Darwin boot
-        # remains covered twice -- just never in front of a pull request.
-        os: ${{ fromJSON(github.event_name == 'pull_request'
+        # Three matrices, one per state. Not a push (pull request, merge group):
+        # Linux and Windows, no mac. The mac leg waited ~200 minutes for a
+        # runner on every pull request, and it is the only leg that did; that
+        # wait would hold every PR behind it in the merge queue too. A push to
+        # main with MERGE_QUEUE_ENABLED 'true': macos-15 alone -- the merge
+        # group booted the Linux and Windows legs on this exact tree, and the
+        # mac wait on main costs nobody a merge. A push to main with the
+        # variable unset: all three, because no merge group vouched for this
+        # tree. The admin sets the variable in the same operation as enabling
+        # the queue in the ruleset, and unsets it with unticking the queue, so
+        # main never runs with the trimmed matrix and no queue. Nightly's
+        # `pod-scenarios` boots a real service-managed gateway on macos-15 as
+        # well, so the real-Darwin boot is covered twice on main either way --
+        # just never in front of a pull request. `&&` binds tighter than `||`
+        # in GitHub expressions, so this reads as three guarded literals.
+        os: ${{ fromJSON(github.event_name != 'push'
           && '["ubuntu-latest","windows-latest"]'
+          || vars.MERGE_QUEUE_ENABLED == 'true'
+          && '["macos-15"]'
           || '["ubuntu-latest","macos-15","windows-latest"]') }}
     # Keep matrix.os stable: names, readiness windows and artifact names use it.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && (needs.changes.outputs.linux_runner_large || 'ubuntu-latest') || matrix.os == 'windows-latest' && (needs.changes.outputs.windows_runner || 'windows-latest') || matrix.os }}
