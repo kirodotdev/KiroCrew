@@ -1872,7 +1872,7 @@ class AcpProvider(LLMProvider):
                         )
             else:
                 self._effort_per_model[model] = _prev
-                if not self._apply_effort_overlay():
+                if not await asyncio.to_thread(self._apply_effort_overlay):
                     # Same divergence the branch above guards: the file keeps the
                     # level the live push never applied and construction re-seeds
                     # from it, so the map follows the file rather than reporting
@@ -2035,8 +2035,11 @@ class AcpProvider(LLMProvider):
             await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
         # Re-apply the overlay on every (re)start to cover resume / model swap.
         # (no-op for claude backend — that path applies effort live below.)
-        self._apply_effort_overlay()
-        self._apply_tool_search_overlay()
+        # Off the loop: the cli.json lock is shared with sibling threads and
+        # processes, and an acquire on the loop thread makes one attempt and
+        # never waits, so a brief overlap would refuse the write.
+        await asyncio.to_thread(self._apply_effort_overlay)
+        await asyncio.to_thread(self._apply_tool_search_overlay)
 
         if self.is_acp_runtime_backend:
             # ── Kiro unified path: AcpRuntime + AcpSessionHandle ──

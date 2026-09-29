@@ -436,7 +436,7 @@ class TestWindowsLocking:
         lock = tmp_path / "timeout.lock"
         lock.write_text("")
         with open(lock, "r+") as handle:
-            with pytest.raises(OSError, match=r"within 2\.5s"):
+            with pytest.raises(OSError, match=r"limit 2\.5s"):
                 with pc.file_lock(handle.fileno(), timeout=2.5):
                     pytest.fail("body must not run without the lock")
 
