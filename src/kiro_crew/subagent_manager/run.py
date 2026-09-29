@@ -803,16 +803,23 @@ class RunEventCoordinator(ManagerComponent):
             except Exception:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
 
-    def _queued_depth_impl(self, parent_session_key: str) -> int:
+    def _queued_depth_impl(self, parent_session_key: str, *, for_dispatch: bool = False) -> int:
         """Number of spawns currently queued for *parent_session_key* (waiting
-        behind the concurrency cap / stagger gate, not yet started)."""
+        behind the concurrency cap / stagger gate, not yet started).
+
+        *for_dispatch* is the chip's reading: a row the pump has popped and is
+        about to claim is not shown as waiting. Every other caller -- the
+        reset-deferral guards above all -- keeps the default and counts it, since
+        it is still this parent's accepted work until the claim lands."""
         in_window = sum(
             1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
         )
         # Rows queued in the store but outside the in-memory window are still
         # this parent's waiting work; the chip and the reset-deferral guards
         # must see them.
-        return in_window + self._manager._admission.taskq_overflow(parent_session_key)
+        return in_window + self._manager._admission.taskq_overflow(
+            parent_session_key, for_dispatch=for_dispatch
+        )
 
     async def _queued_depth_async_impl(self, parent_session_key: str) -> int:
         """:meth:`_queued_depth_impl` with its store count on the writer thread."""
@@ -954,7 +961,7 @@ class RunEventCoordinator(ManagerComponent):
         admission = manager._admission
         store = admission.taskq_store()
         if store is None or not type(admission).pump_off_loop:
-            depth = manager._queued_depth(parent_session_key)
+            depth = manager._queued_depth(parent_session_key, for_dispatch=True)
             loop.create_task(manager._fire_event("subagent_queued", info, _extra(depth)))
             return
         # The store half of the count (rows outside the window) runs on the
@@ -964,7 +971,7 @@ class RunEventCoordinator(ManagerComponent):
         in_window = sum(
             1 for q in manager._queue if q.get("parent_session_key", "") == parent_session_key
         )
-        exclude_ids = admission.taskq_excluded_ids()
+        exclude_ids = admission.taskq_dispatch_excluded_ids()
         live_store = store
 
         async def _emit() -> None:

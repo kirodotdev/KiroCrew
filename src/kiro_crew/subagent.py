@@ -3232,6 +3232,10 @@ class SubagentManager:
         # own, and without this memory each re-emit would flip a memory-deferred
         # wave back to the default (concurrency) text.
         self._queue_wait: dict[str, dict[str, Any]] = {}
+        # Rows the pump has popped from the window but not yet claimed. Their
+        # durable state is still QUEUED, so without this set every store-backed
+        # depth read between pop and claim counts them as waiting.
+        self._dispatching_ids: set[str] = set()
         # Batch ids whose spawn_batch_started event has already fired.
         self._seen_batches: set[str] = set()
         # Submission accounting per wave: batch_id -> (submitted, expected).
@@ -5318,8 +5322,8 @@ class SubagentManager:
     async def _fire_event(self, etype: str, info: SubagentInfo, extra: dict | None = None) -> None:
         return await self._run_events._fire_event_impl(etype, info, extra)
 
-    def _queued_depth(self, parent_session_key: str) -> int:
-        return self._run_events._queued_depth_impl(parent_session_key)
+    def _queued_depth(self, parent_session_key: str, *, for_dispatch: bool = False) -> int:
+        return self._run_events._queued_depth_impl(parent_session_key, for_dispatch=for_dispatch)
 
     async def _queued_depth_async(self, parent_session_key: str) -> int:
         return await self._run_events._queued_depth_async_impl(parent_session_key)
