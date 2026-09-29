@@ -128,7 +128,9 @@ def _make_app(
         middlewares.append(_identity)
     app = web.Application(middlewares=middlewares)
     if dashboard_user is not None:
-        app["state"] = SimpleNamespace(owner_id="owner")
+        app["state"] = SimpleNamespace(
+            owner_id="owner", broadcast_ws=lambda *a, **k: None
+        )
     register_app_routes(app)
     return app
 
@@ -2082,10 +2084,7 @@ class TestEnableBranches:
 
         monkeypatch.setattr(routes_mod, "on_app_enable", _hooks)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
-        app = _make_app(dashboard_user="owner")
-        # A real dashboard state carries broadcast_ws; the hook wiring reads it.
-        app["state"].broadcast_ws = lambda *a, **k: None
-        async with TestClient(TestServer(app)) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 200
             issues = (await resp.json())["hooks"]["health_status"]["issues"]
@@ -2284,10 +2283,7 @@ class TestRepeatedToggleIsIdempotent:
         monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _script)
         monkeypatch.setattr(routes_mod, "on_app_enable", _hooks)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("backend"))
-        app = _make_app(dashboard_user="owner")
-        # A real dashboard state carries broadcast_ws; the hook wiring reads it.
-        app["state"].broadcast_ws = lambda *a, **k: None
-        async with TestClient(TestServer(app)) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             first = await client.post(f"/api/apps/{APP}/enable")
             assert first.status == 200
             assert calls == ["backend", "onEnable", "hooks"]
