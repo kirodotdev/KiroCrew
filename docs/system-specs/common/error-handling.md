@@ -2,9 +2,9 @@
 
 ## Principles
 
-1. Custom exceptions in `acp/client.py` for ACP protocol/prompt errors, in
-   `acp/session_handle.py` for runtime/transport errors, and in `acp/runtime.py`
-   for runtime binding and session-start errors
+1. Custom exceptions in `acp/transport_errors.py` (re-exported by `acp/client.py`)
+   for ACP protocol/prompt errors, in `acp/session_handle.py` for runtime/transport
+   errors, and in `acp/runtime.py` for runtime binding and session-start errors
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
@@ -14,7 +14,7 @@ Two independent families. `AcpError` covers protocol and prompt-level failures;
 `AcpRuntimeError` covers the process and request transport underneath it.
 
 ```
-AcpError (base, acp/client.py)          — carries `transient`, the retry verdict
+AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verdict
 ├── AcpTimeoutError        — prompt timed out, has partial_output
 ├── AcpPermissionNeeded    — tool approval required
 ├── AcpProcessDied         — kiro-cli exited unexpectedly
@@ -83,8 +83,9 @@ that could replace the code.
 
 ## Backend Error Classification
 
-`acp/client.py` rewrites raw JSON-RPC backend errors into actionable user text
-(`_format_acp_error`) and decides retry-eligibility (`_is_transient_raw_error`).
+`acp/transport_errors.py` (re-exported by `acp/client.py`) rewrites raw JSON-RPC
+backend errors into actionable user text (`_format_acp_error`) and decides
+retry-eligibility (`_is_transient_raw_error`).
 Both key off the SAME module-level `_RE_*` patterns so wording and retry verdict
 never drift. Notable terminal (non-retryable) classes:
 

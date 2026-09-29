@@ -15,22 +15,24 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import importlib
 import json
 import logging
 import os
 import re
 import signal
-import subprocess
+import subprocess  # noqa: F401  (read at call time by the process-table helpers)
 import sys
-import threading
 import time
 import uuid
-import weakref
+import weakref  # noqa: F401  (read at call time by session-start admission)
 from collections import deque
 from pathlib import Path
-from typing import Any, Awaitable, Callable, NamedTuple, TypeVar
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
 from kiro_crew import acp_tool_gate, agent_scratch, platform_compat, runtime_death
+from kiro_crew.acp import runtime_process_tree, runtime_start
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
     attach_kas_custom_agents,
@@ -45,25 +47,12 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.client import (
-    _RESPONSE_WRITE_BOUND_SECS,
-    _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
-    ChildRecord,
-    OversizeLineUnrecoverable,
     _apply_pod_home_remap,
-    _capture_child_records,
-    _drain_oversize_line,
-    _get_child_pids,
     _is_safe_oauth_url,
     _KiroExecutableTrustError,
     _loggable_request_id,
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
-    is_auth_failure_output,
-    is_sandbox_init_failure_output,
-    registration_throttle_line,
-    response_write_window_secs,
-    write_notification_best_effort,
-    write_response_frame_bounded,
 )
 from kiro_crew.acp.harness import (
     HarnessAdapter,
@@ -89,6 +78,18 @@ from kiro_crew.acp.mcp_session_report import (
     roster_names,
     sanitize_sink_text,
 )
+from kiro_crew.acp.runtime_process_tree import ChildRecord, _capture_child_records, _get_child_pids
+from kiro_crew.acp.runtime_start import (
+    _INIT_NOTIFICATION_BUFFER_LIMIT,
+    _SESSION_NEW_TIMEOUT,
+    _START_COLLECT_TIMEOUT_DEFAULT,
+    StartCollector,
+    StartPermit,
+    _cold_start_counts,
+    _resolve_start_collect_timeout,
+    _split_init_frames,
+    session_start_gate_counts,
+)
 from kiro_crew.acp.session_handle import (
     NATIVE_CHILD_ROSTER_CAP,
     AcpRequestTimeout,
@@ -104,6 +105,20 @@ from kiro_crew.acp.session_mcp import (
     agent_spec_snapshot,
     session_mcp_disabled_tools,
     session_mcp_server_is_disabled,
+)
+from kiro_crew.acp.transport_errors import (
+    is_auth_failure_output,
+    is_sandbox_init_failure_output,
+    registration_throttle_line,
+)
+from kiro_crew.acp.transport_framing import (
+    _RESPONSE_WRITE_BOUND_SECS,
+    _RESPONSE_WRITE_MIN_PROGRESS_BYTES,
+    OversizeLineUnrecoverable,
+    _drain_oversize_line,
+    response_write_window_secs,
+    write_notification_best_effort,
+    write_response_frame_bounded,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -377,8 +392,8 @@ _MCP_URL_NOT_OPENED = -32000
 # throttled kiro-cli is alive and making progress, only slowly, so the fixed
 # budget above kills work that would have finished; each retry then pays the
 # same startup into the same throttle and deepens it. Three times the plain
-# budget, not unbounded: the cold-start semaphore below is held for the whole
-# wait. The value MUST stay strictly below the subagent startup watchdog
+# budget, not unbounded: the cold-start semaphore (``runtime_start``) is held for
+# the whole wait. The value MUST stay strictly below the subagent startup watchdog
 # (``subagent._STARTUP_TIMEOUT_SECS``, 120s from ``_exec_started``): a
 # subagent's ``info._pid`` is recorded only after ``provider.start()`` returns,
 # i.e. after this handshake, so the watchdog sees "no runtime yet" for the
@@ -387,273 +402,6 @@ _MCP_URL_NOT_OPENED = -32000
 # precedes the handshake, so ``AcpRuntimeOverloaded`` is what the caller sees
 # rather than a reaper kill. ``test_agents_slice_admission`` pins the ordering.
 _INIT_TIMEOUT_UNDER_THROTTLE = 90.0
-# One gateway event loop owns many independent SessionManager and worker-pool
-# callers. Keep their expensive subprocess spawn + initialize handshakes behind
-# one low process-wide-per-loop bound; worker pools use the same default.
-_COLD_START_MAX_CONCURRENT = 2
-
-
-class _ColdStartAdmission:
-    """Loop-affine admission state for runtime spawn + initialize."""
-
-    def __init__(self, limit: int) -> None:
-        self.semaphore = asyncio.Semaphore(limit)
-        self.active = 0
-        self.queued = 0
-
-    async def acquire(self) -> float:
-        started = time.monotonic()
-        self.queued += 1
-        acquired = False
-        try:
-            await self.semaphore.acquire()
-            acquired = True
-        finally:
-            self.queued -= 1
-        if acquired:
-            self.active += 1
-        return (time.monotonic() - started) * 1000.0
-
-    def release(self) -> None:
-        self.active = max(0, self.active - 1)
-        self.semaphore.release()
-
-
-# asyncio synchronization primitives are loop-affine. Gateways normally have one
-# loop, while tests and embedded callers can create several; keying by loop keeps
-# the production bound gateway-wide without binding a semaphore to the wrong loop.
-_cold_start_admissions: weakref.WeakKeyDictionary[
-    asyncio.AbstractEventLoop, weakref.ReferenceType[_ColdStartAdmission]
-] = weakref.WeakKeyDictionary()
-_cold_start_admissions_lock = threading.Lock()
-
-
-def _cold_start_admission() -> _ColdStartAdmission:
-    loop = asyncio.get_running_loop()
-    with _cold_start_admissions_lock:
-        admission_ref = _cold_start_admissions.get(loop)
-        admission = admission_ref() if admission_ref is not None else None
-        if admission is None:
-            admission = _ColdStartAdmission(_COLD_START_MAX_CONCURRENT)
-            _cold_start_admissions[loop] = weakref.ref(admission)
-        return admission
-
-
-def _cold_start_counts() -> tuple[int, int]:
-    """Current-loop active and queued starts for bounded diagnostics."""
-    admission = _cold_start_admission()
-    return admission.active, admission.queued
-
-
-# ── Session-start gate (RFC §4.4) ─────────────────────────────────────────────
-#
-# ``_ColdStartAdmission`` above bounds runtime spawn + initialize. This bounds
-# the OTHER expensive start: ``session/new`` on an already-running runtime,
-# which blocks while kiro-cli initializes the session's MCP servers. Under a
-# burst of subagent starts every session/new competes for the same process,
-# each one gets slower, and the 90s budget is hit by requests that would have
-# completed in isolation -- a timeout that says nothing about the runtime's
-# health. The gate keeps at most ``agent.session_start_concurrency`` (default 2)
-# session/new requests outstanding per event loop; waiters queue in FIFO order.
-# It is a FIXED semaphore on purpose: the adaptive loop lives in the gatewayd
-# spawn gate and the execution-cap controller, and two adapting loops on one
-# resource oscillate. The same gate serves every harness (kiro-cli, KAS, a
-# later Claude host): it wraps ``create_session``, which every backend's
-# session start runs through.
-_SESSION_START_CONCURRENCY_DEFAULT = 2
-_SESSION_START_CONCURRENCY_FLOOR = 1
-
-# How many of the gate's permits are RESERVED for a ``session/new`` that has not
-# gone out yet, expressed as a shortfall from the limit: a
-# :class:`StartCollector` may hold at most ``limit - this`` permits.
-#
-# Without the reservation the gate starves. A timed-out start does not release
-# its permit -- it hands it to a collector that keeps it for
-# ``agent.start_collect_timeout_secs`` (default 300 s) -- so at the default
-# limit of 2, two slow starts park BOTH permits for five minutes and every
-# session/new on the whole gateway queues behind them, including the retries
-# those failures produce, whose own timeouts create more collectors. Observed on
-# an operator host: one member slot spent 15 consecutive auto-nudge cycles on
-# ``session/new timed out after 90s (0/10 MCP server(s) reported)`` while no new
-# agent process was ever spawned -- every attempt was waiting in this queue.
-#
-# Reserving one permit bounds what the collecting population can claim instead
-# of letting it become the whole gate. A collector denied the hand-off still
-# runs and still owns its request (the session it may yet receive is still
-# adopted or torn down); it simply does not hold back-pressure it cannot
-# release. At ``limit == 1`` the ceiling is 0, so no collector holds a permit --
-# which is the only reading of "always keep one free" that a single-permit gate
-# admits.
-_COLLECTOR_PERMIT_HEADROOM = 1
-
-
-def _resolve_session_start_concurrency() -> int:
-    """Snapshot ``agent.session_start_concurrency`` from config (off-loop caller)."""
-    try:
-        from kiro_crew.config import KiroCrewConfig
-
-        cfg = KiroCrewConfig.load()
-        return max(_SESSION_START_CONCURRENCY_FLOOR, int(cfg.agent.session_start_concurrency))
-    except Exception:
-        logger.debug("session_start_concurrency unreadable -- using default", exc_info=True)
-        return _SESSION_START_CONCURRENCY_DEFAULT
-
-
-def _record_session_start(start_t0: float, *, ok: bool, attributable_timeout: bool = False) -> None:
-    """Feed one ``session/new`` outcome to the adaptive controller, when one runs.
-
-    The controller is process-wide (``adaptive.controller.current``); without
-    one this is a no-op. ``key`` groups the samples by the start kind so a slow
-    ACP handshake reads apart from a slow MCP backend spawn.
-    """
-    try:
-        from kiro_crew.adaptive.controller import current as _current_controller
-
-        controller = _current_controller()
-        if controller is None:
-            return
-        controller.record_start(
-            (time.monotonic() - start_t0) * 1000.0,
-            ok=ok,
-            attributable_timeout=attributable_timeout,
-            key="acp:session/new",
-        )
-    except Exception:
-        logger.debug("session start sample not recorded", exc_info=True)
-
-
-class SessionStartGate:
-    """Loop-affine FIFO semaphore around ``session/new``.
-
-    ``acquire()`` returns a :class:`StartPermit` carrying the queue wait in
-    milliseconds so the caller can set the run's start clock at gate EXIT --
-    time spent waiting here is queue time and must not count against the
-    session-start budget or the startup watchdog. ``StartPermit.release()`` is
-    idempotent, which is what makes "released exactly once on every path"
-    checkable: ``releases`` counts real releases.
-    """
-
-    def __init__(self, limit: int) -> None:
-        self.limit = max(_SESSION_START_CONCURRENCY_FLOOR, int(limit))
-        self._semaphore = asyncio.Semaphore(self.limit)
-        self.active = 0
-        self.queued = 0
-        self.releases = 0
-        # Permits currently held by a StartCollector rather than by a live
-        # ``session/new``. Bounded by ``collector_hold_ceiling`` so a fresh start
-        # always has somewhere to go -- see _COLLECTOR_PERMIT_HEADROOM.
-        self.collector_holds = 0
-
-    @property
-    def collector_hold_ceiling(self) -> int:
-        """How many permits :class:`StartCollector` instances may hold at once."""
-        return max(0, self.limit - _COLLECTOR_PERMIT_HEADROOM)
-
-    async def acquire(self) -> "StartPermit":
-        started = time.monotonic()
-        self.queued += 1
-        try:
-            await self._semaphore.acquire()
-        finally:
-            self.queued -= 1
-        self.active += 1
-        return StartPermit(self, (time.monotonic() - started) * 1000.0)
-
-    def _reserve_collector_hold(self) -> bool:
-        """Claim one collector hold, or refuse when the ceiling is reached."""
-        if self.collector_holds >= self.collector_hold_ceiling:
-            return False
-        self.collector_holds += 1
-        return True
-
-    def _release(self, *, collector_held: bool = False) -> None:
-        if collector_held:
-            self.collector_holds = max(0, self.collector_holds - 1)
-        self.active = max(0, self.active - 1)
-        self.releases += 1
-        self._semaphore.release()
-
-
-class StartPermit:
-    """One acquired gate slot; ``release()`` is a no-op after the first call."""
-
-    def __init__(self, gate: SessionStartGate, queue_wait_ms: float) -> None:
-        self._gate = gate
-        self.queue_wait_ms = queue_wait_ms
-        self.released = False
-        # True once a StartCollector owns this permit for the rest of its life,
-        # which is what the gate counts against ``collector_hold_ceiling``.
-        self.collector_held = False
-
-    def hold_for_collector(self) -> bool:
-        """Let a :class:`StartCollector` keep this permit, if the gate allows it.
-
-        False when the permit is already released or already collector-held, or
-        when collectors hold the gate's whole collector budget. The caller then
-        releases the permit itself and gives the collector none: the collector is
-        still created and still owns its request, but a start that has not gone
-        out yet is never made to queue behind one that already gave up.
-        """
-        if self.released or self.collector_held:
-            return False
-        if not self._gate._reserve_collector_hold():
-            return False
-        self.collector_held = True
-        return True
-
-    def release(self) -> bool:
-        if self.released:
-            return False
-        self.released = True
-        self._gate._release(collector_held=self.collector_held)
-        return True
-
-
-_session_start_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, SessionStartGate] = (
-    weakref.WeakKeyDictionary()
-)
-_session_start_gates_lock = threading.Lock()
-
-
-async def session_start_gate() -> SessionStartGate:
-    """The current loop's gate, sized from config the first time it is asked for.
-
-    Config is resolved off-loop (``KiroCrewConfig.load`` is disk I/O) unless the
-    live watcher's snapshot is armed. The size is fixed for the loop's lifetime;
-    ``agent.session_start_concurrency`` is ``restart=True``. The gate is a
-    strong value keyed weakly by loop, so it lives exactly as long as its loop.
-    """
-    loop = asyncio.get_running_loop()
-    with _session_start_gates_lock:
-        gate = _session_start_gates.get(loop)
-    if gate is not None:
-        return gate
-    snap = live.snapshot()
-    limit: int | None = None
-    if snap is not None:
-        try:
-            limit = int(snap.agent.session_start_concurrency)
-        except Exception:
-            limit = None
-    if limit is None:
-        limit = await asyncio.to_thread(_resolve_session_start_concurrency)
-    with _session_start_gates_lock:
-        gate = _session_start_gates.get(loop)
-        if gate is None:
-            gate = SessionStartGate(limit)
-            _session_start_gates[loop] = gate
-    return gate
-
-
-def session_start_gate_counts() -> tuple[int, int]:
-    """``(active, queued)`` for the current loop's gate; ``(0, 0)`` when none exists."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return (0, 0)
-    with _session_start_gates_lock:
-        gate = _session_start_gates.get(loop)
-    return (gate.active, gate.queued) if gate is not None else (0, 0)
 
 
 class _PendingRequests(dict):
@@ -705,242 +453,6 @@ class AcpSessionStartTimeout(AcpRequestTimeout):
         # not answer in time; see AcpRequestTimeout.session_start_failed.
         self.session_start_failed = True
 
-
-# Bounds every init-frame holder below. A frame is staged only while the session
-# id that would claim it is still unknown, so one that nobody ever claims must
-# not accumulate for the runtime's life.
-_INIT_NOTIFICATION_BUFFER_LIMIT = 100
-
-
-def _split_init_frames(
-    staged: "deque[JsonRpcMessage]", session_id: str
-) -> tuple[list[JsonRpcMessage], "deque[JsonRpcMessage]"]:
-    """Partition staged init frames into *session_id*'s and everyone else's.
-
-    An empty *session_id* claims NOTHING: a start whose request never answered
-    has no id to match on, and matching everything there would hand it a
-    concurrent start's registrations.
-    """
-    matched: list[JsonRpcMessage] = []
-    retained: deque[JsonRpcMessage] = deque(maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT)
-    for msg in staged:
-        params = msg.params if isinstance(msg.params, dict) else {}
-        if session_id and str(params.get("sessionId") or "") == session_id:
-            matched.append(msg)
-        else:
-            retained.append(msg)
-    return matched, retained
-
-
-StartAdopter = Callable[[str, dict[str, Any]], Awaitable[bool]]
-
-START_OUTCOME_ADOPTED = "adopted"
-START_OUTCOME_TORN_DOWN = "torn_down"
-START_OUTCOME_ABANDONED = "abandoned"
-START_OUTCOME_RUNTIME_DEAD = "runtime_dead"
-START_OUTCOME_ERROR = "error"
-
-
-class StartCollector:
-    """Owns a ``session/new`` whose answer outlived the caller's budget.
-
-    Created by :meth:`AcpRuntime.create_session` on timeout. Holds the adopted
-    request future and the gate permit, and waits up to ``timeout``
-    (``agent.start_collect_timeout_secs``) for the answer:
-
-    * late result + an adopter registered -> the adopter decides; ``True``
-      means the session continues under its original owner (``adopted``);
-    * late result, no adopter (or the adopter declined) -> the session is torn
-      down through the runtime's normal per-session teardown (``torn_down``),
-      never by killing the shared runtime;
-    * the runtime dies -> nothing to tear down (``runtime_dead``);
-    * the cleanup deadline passes -> the request is dropped (``abandoned``).
-
-    Whichever path settles it releases the gate permit exactly once and
-    unregisters the collector. ``settled`` is an ``asyncio.Event`` for callers
-    that want to wait for the verdict.
-
-    It also holds the MCP-init frames its session may still send, because those
-    frames name a session id nobody can claim until this request answers -- see
-    :meth:`stage_init_frame`.
-    """
-
-    def __init__(
-        self,
-        runtime: "AcpRuntime",
-        req_id: int,
-        future: "asyncio.Future[dict[str, Any]]",
-        *,
-        permit: "StartPermit | None",
-        timeout: float,
-        context: dict[str, Any] | None = None,
-        memory_mode: str = "persistent",
-    ) -> None:
-        self._runtime = runtime
-        self.req_id = req_id
-        self._future = future
-        self._permit = permit
-        self.timeout = float(timeout)
-        self.context = dict(context or {})
-        self.memory_mode = memory_mode
-        self._adopter: StartAdopter | None = None
-        self.outcome: str | None = None
-        self.session_id: str = ""
-        self.settled = asyncio.Event()
-        self._task: asyncio.Task[None] | None = None
-        self.created_at = time.monotonic()
-        self._staged_init: deque[JsonRpcMessage] = deque(maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT)
-
-    def start(self) -> "StartCollector":
-        if self._task is None:
-            self._task = asyncio.ensure_future(self._run())
-        return self
-
-    @property
-    def is_settled(self) -> bool:
-        return self.settled.is_set()
-
-    def adopt(self, adopter: StartAdopter) -> bool:
-        """Register who takes the session if it arrives late; False once settled."""
-        if self.is_settled:
-            return False
-        self._adopter = adopter
-        return True
-
-    def gate_released(self) -> bool:
-        return self._permit is None or self._permit.released
-
-    def seed_init_frames(self, staged: "deque[JsonRpcMessage]") -> None:
-        """Copy the frames the timed-out start already staged into this collector.
-
-        A copy, not a move: a CONCURRENT start's frames sit in the same runtime
-        deque and only the id inside a frame says whose it is, so both holders
-        keep every candidate and each claims by id (:meth:`take_init_frames`).
-        """
-        self._staged_init.extend(staged)
-
-    def stage_init_frame(self, msg: JsonRpcMessage) -> None:
-        """Hold one MCP-init frame that may belong to this start's late session.
-
-        Held HERE rather than in the runtime's own staging deque because
-        ``_mcp_init_progress`` reads that one un-keyed, by server NAME: a frame
-        left there past its own init scope would be reported as the next
-        session-start timeout's progress, which is the one diagnostic that has to
-        stay attributable.
-        """
-        self._staged_init.append(msg)
-
-    def take_init_frames(self, session_id: str) -> list[JsonRpcMessage]:
-        """Take the staged frames that name *session_id*, leaving the rest."""
-        matched, self._staged_init = _split_init_frames(self._staged_init, session_id)
-        return matched
-
-    def drop_init_frames(self) -> None:
-        """Forget the staged frames: no claimant is left."""
-        self._staged_init.clear()
-
-    async def _run(self) -> None:
-        outcome = START_OUTCOME_ERROR
-        try:
-            try:
-                resp = await asyncio.wait_for(asyncio.shield(self._future), timeout=self.timeout)
-            except asyncio.TimeoutError:
-                self._runtime._pending_requests.pop(self.req_id, None)
-                if not self._future.done():
-                    self._future.cancel()
-                # A dead runtime is dead whichever clock fired first. ``_mark_dead``
-                # resolves this future with ``AcpRuntimeDead``, so the arm below
-                # names the death only when that resolution WON the race against
-                # this timeout -- and on a slow host it loses, which would report
-                # the one outcome an operator can act on ("the process is gone")
-                # as the one they cannot ("it never answered"). The runtime's own
-                # flag is not a clock, so read that instead of ordering two.
-                if self._runtime._dead:
-                    outcome = START_OUTCOME_RUNTIME_DEAD
-                    logger.warning(
-                        "start collector: session/new req_id=%d unanswered after %gs and the "
-                        "runtime is dead; settling as runtime_dead",
-                        self.req_id,
-                        self.timeout,
-                    )
-                    return
-                outcome = START_OUTCOME_ABANDONED
-                logger.warning(
-                    "start collector: session/new req_id=%d never answered within %gs; "
-                    "attempt abandoned",
-                    self.req_id,
-                    self.timeout,
-                )
-                return
-            except AcpRuntimeDead:
-                outcome = START_OUTCOME_RUNTIME_DEAD
-                return
-            except Exception:
-                logger.debug(
-                    "start collector: session/new req_id=%d failed late",
-                    self.req_id,
-                    exc_info=True,
-                )
-                return
-            session_id = str((resp or {}).get("sessionId") or "")
-            self.session_id = session_id
-            if not session_id:
-                return
-            adopted = False
-            if self._adopter is not None:
-                try:
-                    adopted = bool(await self._adopter(session_id, resp))
-                except Exception:
-                    logger.warning(
-                        "start collector: adopter for late session %s raised; tearing down",
-                        session_id,
-                        exc_info=True,
-                    )
-                    adopted = False
-            if adopted:
-                outcome = START_OUTCOME_ADOPTED
-                return
-            try:
-                await self._runtime._teardown_late_session(session_id)
-            finally:
-                if self.memory_mode != "persistent":
-                    await asyncio.to_thread(AcpSessionHandle.cleanup_transcript_files, session_id)
-            outcome = START_OUTCOME_TORN_DOWN
-        finally:
-            self.outcome = outcome
-            # Settled on EVERY outcome: an adopted session already took its own
-            # frames, and on any other outcome nothing will ever claim them.
-            # Holding them would keep one attempt's registrations alive for the
-            # runtime's life.
-            self.drop_init_frames()
-            released = self._permit.release() if self._permit is not None else False
-            self._runtime._start_collectors.pop(self.req_id, None)
-            logger.info(
-                "start collector settled: req_id=%d outcome=%s session=%s gate_released=%s "
-                "after %.1fs",
-                self.req_id,
-                outcome,
-                self.session_id or "-",
-                released,
-                time.monotonic() - self.created_at,
-            )
-            self.settled.set()
-
-
-# Session start (session/new, session/load) gets its own budget because kiro-cli
-# blocks the response while it initializes the session's MCP servers, and a
-# remote server pending OAuth holds that initialization for its FULL 30s
-# authorization wait. _REQUEST_TIMEOUT is also 30s, so sharing it turns session
-# start into a race the client usually loses: kiro-cli creates the session, the
-# client gives up a beat earlier, and the slot dies. This must stay comfortably
-# ABOVE the backend's 30s OAuth wait plus the initialization tail that follows
-# it (observed: remaining servers register within ~1s after the wait; a
-# 71-server agent with no pending OAuth completes in ~14s) — do NOT "tidy" it
-# back down to _REQUEST_TIMEOUT.
-# This is the built-in default AND floor; ``agent.session_start_timeout_secs``
-# raises it for agents whose MCP fleet legitimately needs longer (see
-# _resolve_session_start_timeout below).
-_SESSION_NEW_TIMEOUT = 90.0
 
 # Caps for the MCP progress line attached to a session-start timeout: a
 # 70-server agent must not turn one error into a multi-kilobyte string, and
@@ -1177,350 +689,6 @@ def _drop_key_part(value: object) -> str:
     # the flush logs it, so a slice taken first could sever a credential at
     # the cut into a fragment that matches none of the redactor's patterns.
     return redact_backend_text(value)[:_DROP_SUMMARY_KEY_MAX_CHARS]
-
-
-def _get_rss_mb(pid: int) -> float | None:
-    """Get resident set size (RSS) of a process in MiB, or None if unavailable.
-
-    Linux: reads /proc/<pid>/status. macOS (no /proc): shells out to
-    ``ps -o rss= -p <pid>`` (ps reports RSS in KiB on both platforms).
-    Windows: WorkingSetSize through the ``platform_compat`` shim, since no
-    ``ps`` is resolvable there. Returns None on any failure (missing /proc,
-    permission error, process gone, ps not found) so callers can treat
-    "unknown" the same as "not over threshold" rather than raising.
-    """
-    if sys.platform == "linux":
-        try:
-            with open(f"/proc/{pid}/status") as f:
-                for line in f:
-                    if line.startswith("VmRSS:"):
-                        # Format: "VmRSS:\t   123456 kB"
-                        parts = line.split()
-                        return int(parts[1]) / 1024.0
-        except (OSError, IndexError, ValueError):
-            return None
-        return None
-
-    if platform_compat.IS_WINDOWS:
-        # Windows ships no `ps` in the fixed system directories the POSIX
-        # fallback below resolves through (trusted_system_bin ignores PATH on
-        # purpose), so that fallback can only ever answer None here. Read
-        # WorkingSetSize via GetProcessMemoryInfo through the shim instead.
-        # The watchdog's RSS-recycle ceiling does not depend on this branch —
-        # _get_rss_tree_mb serves Windows from proc_rss_tree_mb_for_pid and
-        # never calls this function — so this keeps a direct single-pid read
-        # honest for a direct caller.
-        rss = platform_compat.proc_rss_bytes_for_pid(pid)
-        return None if rss is None else rss / (1024.0 * 1024.0)
-
-    # macOS / other: no /proc, fall back to ps (mirrors the sysctl/ps pattern
-    # used elsewhere in this codebase for darwin system info).
-    ps_bin = platform_compat.trusted_system_bin("ps")
-    if ps_bin is None:
-        return None
-    try:
-        out = (
-            subprocess.check_output([ps_bin, "-o", "rss=", "-p", str(pid)], timeout=2)
-            .decode()
-            .strip()
-        )
-        return int(out) / 1024.0
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-
-
-def _own_children(pid: int) -> list[int]:
-    """Direct children of *pid*, asked of the kernel one thread at a time."""
-    kids: list[int] = []
-    try:
-        entries = os.listdir(f"/proc/{pid}/task")
-    except OSError:
-        return kids
-    for tid in entries:
-        try:
-            with open(f"/proc/{pid}/task/{tid}/children") as f:
-                tokens = f.read().split()
-        except OSError:
-            continue
-        for tok in tokens:
-            try:
-                kids.append(int(tok))
-            except ValueError:
-                continue
-    return kids
-
-
-def _iter_descendant_pids(
-    pid: int,
-    max_depth: int | None = None,
-    *,
-    children: "dict[int, list[int]] | None" = None,
-) -> list[int]:
-    """Return ``[pid, *descendants]`` (Linux only), best-effort.
-
-    Walks ``/proc/<pid>/task/<tid>/children`` breadth-first. Returns ``[pid]``
-    when the interface is unavailable. Used so RSS accounting can cover a
-    sandbox launcher's exec'd child — see _get_rss_tree_mb().
-
-    ``max_depth`` bounds the walk in generations below *pid*: ``None`` is the
-    whole subtree, ``0`` is *pid* alone, ``1`` adds its direct children. The queue
-    carries each pid's own depth rather than the loop tracking a level, so a
-    process reachable at two depths is counted once, at whichever it is reached
-    first — the same single-visit rule the unbounded walk has.
-
-    ``children`` supplies a parent map (``platform_compat.proc_child_map``) to
-    read the edges from instead of asking the kernel per process. Same walk and
-    same rules; only where an edge comes from changes. It is for a caller that
-    needs MANY roots' trees in one pass: the kernel route costs one read per
-    thread of every process visited, which a per-root caller pays again on every
-    root, while one map answers all of them. A map that is missing a process
-    yields the root alone for it, exactly as an unreadable ``children`` file does.
-    """
-    order: list[int] = []
-    visited: set[int] = set()
-    queue: list[tuple[int, int]] = [(pid, 0)]
-    while queue:
-        p, depth = queue.pop()
-        if p in visited:
-            continue
-        visited.add(p)
-        order.append(p)
-        if max_depth is not None and depth >= max_depth:
-            continue
-        for cpid in children.get(p, ()) if children is not None else _own_children(p):
-            if cpid not in visited:
-                queue.append((cpid, depth + 1))
-    return order
-
-
-#: A whole-machine process table: ``(children_by_ppid, rss_kib_by_pid)``.
-_ProcessTable = tuple[dict[int, list[int]], dict[int, int]]
-
-#: How long one ``ps -A`` snapshot may be reused.
-#:
-#: This exists because the snapshot is WHOLE-MACHINE while its consumer asks
-#: per-pid. ``session_memory._blocking_sample`` samples every live runtime pid in
-#: one pass, so an uncached snapshot enumerated every process on the host once
-#: PER SESSION — 8 sessions on a host with ~150 MCP processes meant 8 full
-#: process-table walks every 5s, serialized in one worker. Measured cost on a
-#: typical Mac (875 procs): ~33ms per ``ps -Ao``, so 8 walks ≈ 272ms duty cycle
-#: per 5s poll — linear amplification that wastes a thread worker and grows with
-#: session count (macOS only: the Linux branch above uses ``/proc`` directly and
-#: never spawns anything).
-#:
-#: One second is chosen against the two consumers, not arbitrarily: the Sessions
-#: panel polls at 5s and the watchdog's RSS ceiling is a multi-GB threshold
-#: checked on a timer, so neither can tell a 1s-old measurement from a fresh
-#: one — while a sampling pass over N pids completes well inside the window and
-#: therefore pays for exactly one snapshot.
-_PS_TABLE_TTL_S = 1.0
-
-_ps_table_lock = threading.Lock()
-#: ``(monotonic_taken_at, table)``, or None before the first snapshot. A cached
-#: FAILURE is not stored — a transient ``ps`` error must not pin every caller to
-#: the single-pid fallback for a whole second.
-_ps_table_cache: tuple[float, _ProcessTable] | None = None
-
-
-def _reset_ps_table_cache() -> None:
-    """Drop the memoized process table. Test seam: the cache is keyed on wall
-    time only, so a test that fakes ``ps`` output would otherwise inherit the
-    previous test's snapshot."""
-    global _ps_table_cache
-    with _ps_table_lock:
-        _ps_table_cache = None
-
-
-def _ps_process_table() -> _ProcessTable | None:
-    """One ``ps -Ao pid=,ppid=,rss=`` snapshot as a parent map + RSS map.
-
-    Memoized for :data:`_PS_TABLE_TTL_S` so a caller that needs the tree for many
-    pids pays for ONE process-table walk rather than one per pid. Returns None
-    when ``ps`` is unavailable or fails, so callers fall back to a single-pid
-    read instead of reporting a phantom-empty tree.
-
-    The snapshot is taken under the lock rather than merely published under it:
-    concurrent first-callers would otherwise each spawn ``ps`` before any of them
-    stored a result, which is the exact amplification this cache exists to
-    remove.
-    """
-    global _ps_table_cache
-    with _ps_table_lock:
-        cached = _ps_table_cache
-        if cached is not None and (time.monotonic() - cached[0]) < _PS_TABLE_TTL_S:
-            return cached[1]
-        ps_bin = platform_compat.trusted_system_bin("ps")
-        if ps_bin is None:
-            return None
-        try:
-            out = (
-                subprocess.check_output([ps_bin, "-Ao", "pid=,ppid=,rss="], timeout=2)
-                .decode()
-                .strip()
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        children: dict[int, list[int]] = {}
-        rss_kib: dict[int, int] = {}
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) < 3:
-                continue
-            try:
-                cpid, ppid, rss = int(parts[0]), int(parts[1]), int(parts[2])
-            except ValueError:
-                continue
-            children.setdefault(ppid, []).append(cpid)
-            rss_kib[cpid] = rss
-        table: _ProcessTable = (children, rss_kib)
-        _ps_table_cache = (time.monotonic(), table)
-        return table
-
-
-def _rss_tree_mb_for_pids(pids: list[int]) -> float | None:
-    """Sum RSS (MiB) over pids already walked (Linux), or None if none answered.
-
-    Split out of _get_rss_tree_mb so a caller that ALREADY holds the descendant
-    set can sum it without walking again. Nearly all of the cost is the walk,
-    not the sum: measured over 245 live session trees of 2 to 31 processes, the
-    walk took a median 10.3ms while summing RSS over the set it returned took
-    0.8ms. So a caller that needs both the set and the total, and cannot hand
-    the set over, walks twice and roughly doubles its own cost.
-    """
-    total = 0.0
-    found = False
-    for p in pids:
-        r = _get_rss_mb(p)
-        if r is not None:
-            total += r
-            found = True
-    return total if found else None
-
-
-def _get_rss_tree_mb(
-    pid: int, max_depth: int | None = None, *, pids: list[int] | None = None
-) -> float | None:
-    """Sum RSS (MiB) of *pid* and its descendants, or None if unavailable.
-
-    ``max_depth`` bounds the sum in generations below *pid*, for a host that
-    declares one through ``SpawnPlan.rss_depth``. ``None``, the default, is
-    the whole subtree and is what every kiro-family host uses.
-
-    Windows answers None for any bounded request rather than a subtree total. The
-    bound is not available there: the tree is summed through
-    ``proc_rss_tree_mb_for_pid``, whose lineage-VALIDATED walk returns a flat set
-    of genuine descendants with no generation attached, and the naive parent-map
-    walk that would carry depth is the unsafe one that walk exists to avoid.
-    Answering with the subtree instead would judge a bounded host's ceiling
-    against an unbounded measurement — and for a host that declares a bound
-    because its subtree is dominated by a per-session fleet, that reads as a leak
-    on the first session and recycles a healthy process. None is the "unknown, do
-    not judge" answer this probe's caller already handles, so the age ceiling
-    still governs while the RSS ceiling abstains.
-
-    On Linux the kirocrew-lite background runtime is spawned through the
-    namespace sandbox launcher, which ``fork()``s: ``self._pid`` is the
-    launcher parent (small, stable, blocked in ``waitpid``) while the real
-    kiro-cli that accumulates multi-GB RSS is a child. Measuring only
-    ``self._pid`` therefore misses the growth entirely, so we sum the whole
-    descendant tree.
-
-    On macOS the tree is walked too, and it is NOT redundant: kiro-cli spawns
-    MCP-server / tool children there exactly as it does on Windows (see that
-    branch's note), so measuring only ``pid`` under-reports a session's real
-    footprint and blinds the watchdog's leak ceiling. The macOS tree is NOT "just
-    the process itself" — believing otherwise is what makes the per-pid
-    whole-machine snapshot look free.
-
-    ``pids`` lets a caller that has ALREADY walked the descendants hand the set
-    over so it is not walked a second time. Linux only, because that is the one
-    branch whose total is reached from a pid list at all.
-    """
-    if sys.platform == "linux":
-        if pids is None:
-            pids = _iter_descendant_pids(pid, max_depth)
-        return _rss_tree_mb_for_pids(pids)
-
-    if platform_compat.IS_WINDOWS:
-        if max_depth is not None:
-            # See the docstring: no depth-carrying validated walk exists here, and
-            # a subtree total would be judged against a bounded host's ceiling.
-            return None
-        # Windows spawns kiro-cli WITHOUT a launcher fork, but it still spawns
-        # MCP-server / tool children that can leak. Sum the tree via
-        # proc_rss_tree_mb_for_pid, which enumerates descendants through
-        # descendant_termination_handles — the lineage-VALIDATED walk (exact
-        # creation/exit-time edge checks across two snapshots). A raw Toolhelp
-        # parent-map walk is unsafe here: th32ParentProcessID is never cleared
-        # when a parent dies and Windows recycles PIDs, so it would sum unrelated
-        # subtrees rooted at a recycled PID into a kill/health decision. The
-        # validated walk always counts the root, so an unreadable descendant
-        # (another session / higher integrity) narrows the total rather than
-        # producing a phantom-low tree attached to a recycled root.
-        return platform_compat.proc_rss_tree_mb_for_pid(pid)
-
-    # macOS / other: sum the descendant subtree rooted at pid off a SHARED
-    # whole-machine snapshot (ps reports RSS in KiB). The snapshot is memoized in
-    # _ps_process_table, so sampling N pids costs one process-table walk, not N.
-    table = _ps_process_table()
-    if table is None:
-        return _get_rss_mb(pid)
-    children, rss_kib = table
-    if pid not in rss_kib:
-        return None
-    total_kib = 0
-    visited: set[int] = set()
-    queue: list[tuple[int, int]] = [(pid, 0)]
-    while queue:
-        p, depth = queue.pop()
-        if p in visited:
-            continue
-        visited.add(p)
-        total_kib += rss_kib.get(p, 0)
-        if max_depth is not None and depth >= max_depth:
-            continue
-        queue.extend((c, depth + 1) for c in children.get(p, []))
-    return total_kib / 1024.0
-
-
-#: ``agent.start_collect_timeout_secs`` built-in default: how long a
-#: StartCollector keeps a timed-out session/new before abandoning the attempt.
-_START_COLLECT_TIMEOUT_DEFAULT = 300.0
-
-
-def _resolve_start_collect_timeout() -> float:
-    """Snapshot ``agent.start_collect_timeout_secs`` from config (off-loop caller)."""
-    try:
-        from kiro_crew.config.loader import KiroCrewConfig
-
-        cfg = KiroCrewConfig.load()
-        return max(10.0, float(cfg.agent.start_collect_timeout_secs))
-    except Exception:
-        logger.debug("start_collect_timeout_secs unreadable -- using default", exc_info=True)
-        return _START_COLLECT_TIMEOUT_DEFAULT
-
-
-def _resolve_session_start_timeout() -> float:
-    """Snapshot ``agent.session_start_timeout_secs`` from config.
-
-    Function-level import (mirrors ``_load_watchdog_settings`` in
-    session_handle.py) avoids the config -> dashboard -> acp import cycle;
-    any failure falls back to the built-in default rather than breaking a
-    runtime. The loader clamps the on-disk value to
-    [SESSION_START_TIMEOUT_MIN, SESSION_START_TIMEOUT_MAX]; the ``max`` here
-    is belt-and-braces so a degraded load can never shrink the budget below
-    the built-in floor — a session-start budget under the backend's 30s OAuth
-    wait recreates the race that floor exists to prevent.
-    """
-    try:
-        # circular import: config.loader -> dashboard -> session -> acp
-        from kiro_crew.config.loader import KiroCrewConfig
-
-        cfg = KiroCrewConfig.load()
-        return max(_SESSION_NEW_TIMEOUT, float(cfg.agent.session_start_timeout_secs))
-    except Exception:
-        logger.debug("session-start timeout load failed — using default", exc_info=True)
-        return _SESSION_NEW_TIMEOUT
 
 
 def _ref_spec_snapshot(agent: str | None, work_dir: str | Path) -> dict[str, Any] | None:
@@ -2193,7 +1361,10 @@ class AcpRuntime:
                 return None
 
         rss_mb = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), _get_rss_tree_mb, self._pid, self._max_rss_depth
+            subprocess_executor(),
+            runtime_process_tree._get_rss_tree_mb,
+            self._pid,
+            self._max_rss_depth,
         )
         if self._max_rss_depth is not None:
             # A bounded scope rests on a structural fact about the host's process
@@ -2487,7 +1658,7 @@ class AcpRuntime:
             raise AcpRuntimeError("Runtime already spawned")
         self._process_tree_confirmed_dead = False
 
-        admission = _cold_start_admission()
+        admission = runtime_start._cold_start_admission()
         wait_ms = await admission.acquire()
         logger.info(
             "acp_cold_start stage=queue_wait outcome=admitted wait_ms=%.1f "
@@ -5451,7 +4622,7 @@ class AcpRuntime:
 
     def _stdin_write_lock(self) -> asyncio.Lock:
         """The one lock every stdin write on this runtime takes (see
-        ``await_under_no_progress_bound`` in client.py for why the bound needs
+        ``await_under_no_progress_bound`` in transport_framing for why the bound needs
         it). Created on first use so a runtime built without ``__init__`` (test
         doubles) has one."""
         lock = getattr(self, "_stdin_lock", None)
@@ -6413,7 +5584,9 @@ class AcpRuntime:
                     "session-start timeout snapshot unreadable — using cache", exc_info=True
                 )
         if self._session_start_timeout is None:
-            self._session_start_timeout = await asyncio.to_thread(_resolve_session_start_timeout)
+            self._session_start_timeout = await asyncio.to_thread(
+                runtime_start._resolve_session_start_timeout
+            )
         if getattr(self, "_start_collect_timeout", None) is None:
             # Same off-loop resolve, so the timeout path (which cannot block on
             # disk) finds the collector's cleanup budget already cached.
@@ -6942,7 +6115,7 @@ class AcpRuntime:
             # right after the answer (the rest of session setup is not what the
             # gate protects), on a timeout by the collector that now owns the
             # request, on any other failure here.
-            gate = await session_start_gate()
+            gate = await runtime_start.session_start_gate()
             if on_gate_queued is not None:
                 try:
                     on_gate_queued()
@@ -6969,11 +6142,11 @@ class AcpRuntime:
             if not session_id:
                 # One failed start, one sample: the ``except`` below records it.
                 raise AcpRuntimeError(f"session/new did not return sessionId: {resp}")
-            _record_session_start(start_t0, ok=True)
+            runtime_start._record_session_start(start_t0, ok=True)
         except AcpRequestTimeout as exc:
             # A start that outlived its budget is the congestion signal the
             # controller keys its decrease on (attributable timeout).
-            _record_session_start(start_t0, ok=False, attributable_timeout=True)
+            runtime_start._record_session_start(start_t0, ok=False, attributable_timeout=True)
             # Read the staged MCP reports before the finally below clears them.
             stalled = self._session_start_stalled(exc, METHOD_SESSION_NEW, wire_servers)
             collector = self._collect_late_start(
@@ -7001,7 +6174,7 @@ class AcpRuntime:
             raise AcpSessionStartTimeout(str(stalled), collector=collector) from exc
         except BaseException:
             permit.release()
-            _record_session_start(start_t0, ok=False)
+            runtime_start._record_session_start(start_t0, ok=False)
             raise
         finally:
             buffered_init = self._finish_session_init(session_id)
@@ -8199,3 +7372,177 @@ class AcpRuntime:
                 exc if self.recording_allowed else type(exc).__name__,
                 exc_info=self.recording_allowed,
             )
+
+
+# --------------------------------------------------------------------------- #
+# Compatibility facade. The module-level code for the RSS and process-table helpers
+# and session-start admission lives in the owner modules imported above, and every
+# name that moved stays readable as ``kiro_crew.acp.runtime.<name>``:
+#
+# * A moved name this module's own code reads, and that nothing patches through
+#   this module, is an ordinary import above: the owner's object, bound here.
+# * Every other moved name is FORWARDED. ``__getattr__`` reads it from its owner,
+#   and ``_ReExportModule`` sends a write or delete there, so a patch of
+#   ``kiro_crew.acp.runtime.<name>`` reaches the owner's own callers. A forwarded name
+#   is absent from this module's namespace on purpose -- a binding here would
+#   shadow the owner for every later read -- and this module's code reads it as
+#   ``<owner>.<name>``.
+# * The modules the moved code probes with (``os``, ``platform_compat``,
+#   ``subprocess``, ``sys``, ``time``, ``weakref``) and the two session-handle names
+#   the start collector uses stay bound here. Each helper listed in the facade
+#   test's ``_SEAM_IMPORTS`` imports them from this module when it runs, so a test
+#   that rebinds one on ``kiro_crew.acp.runtime`` reaches the moved caller as it did
+#   before the move.
+#
+# ``test/test_acp_refactor_facade.py`` pins both halves: a name a test patches
+# through this module is forwarded, and a forwarded name is never bound here.
+# --------------------------------------------------------------------------- #
+#: Owner module -> every name this module forwards to it.
+_EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
+    "kiro_crew.acp.runtime_process_tree": (
+        "_get_rss_mb",
+        "_own_children",
+        "_iter_descendant_pids",
+        "_ProcessTable",
+        "_PS_TABLE_TTL_S",
+        "_ps_table_lock",
+        "_ps_table_cache",
+        "_reset_ps_table_cache",
+        "_ps_process_table",
+        "_rss_tree_mb_for_pids",
+        "_get_rss_tree_mb",
+    ),
+    "kiro_crew.acp.runtime_start": (
+        "_COLD_START_MAX_CONCURRENT",
+        "_ColdStartAdmission",
+        "_cold_start_admissions",
+        "_cold_start_admissions_lock",
+        "_cold_start_admission",
+        "_SESSION_START_CONCURRENCY_DEFAULT",
+        "_SESSION_START_CONCURRENCY_FLOOR",
+        "_COLLECTOR_PERMIT_HEADROOM",
+        "_resolve_session_start_concurrency",
+        "_record_session_start",
+        "SessionStartGate",
+        "_session_start_gates",
+        "_session_start_gates_lock",
+        "session_start_gate",
+        "StartAdopter",
+        "START_OUTCOME_ADOPTED",
+        "START_OUTCOME_TORN_DOWN",
+        "START_OUTCOME_ABANDONED",
+        "START_OUTCOME_RUNTIME_DEAD",
+        "START_OUTCOME_ERROR",
+        "_resolve_session_start_timeout",
+    ),
+}
+
+
+def _index_exports() -> dict[str, str]:
+    """Invert the owner table into forwarded name -> owner."""
+    return {name: owner for owner, names in _EXPORTS_BY_OWNER.items() for name in names}
+
+
+#: Forwarded name -> the dotted NAME of its owner, never the module object: the owner
+#: is read from :data:`sys.modules` on each use, so a module purged and imported again
+#: is seen at once instead of this table forwarding to the old copy.
+_EXPORTS: dict[str, str] = _index_exports()
+
+
+def _owner(name: str) -> ModuleType:
+    """Return the module that owns forwarded *name*, resolved on each access.
+
+    ``importlib.import_module`` answers from :data:`sys.modules`, the one place a
+    module is stored, so a purged or replaced owner is seen at once; and it waits on
+    that module's import lock while its body is still running, where a bare
+    ``sys.modules`` read would hand a second thread a half-built owner.
+    """
+    return importlib.import_module(_EXPORTS[name])
+
+
+# Hidden from type checkers: mypy types every unknown attribute of a module that
+# defines ``__getattr__`` as ``Any``, so a mistyped ``runtime.<name>`` would type-check.
+# mypy sees the forwarded names through the ``TYPE_CHECKING`` imports below instead.
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> Any:
+        """Read a forwarded name from the module that owns it (:pep:`562`)."""
+        if name not in _EXPORTS:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        return getattr(_owner(name), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
+
+
+class _ReExportModule(ModuleType):
+    """Send a write or delete of a forwarded name to the module that owns it.
+
+    Binding it here instead would shadow the owner for every later read, because
+    ``__getattr__`` runs only for a name this module does not hold. Forwarded, a
+    ``monkeypatch`` or ``mock.patch`` round-trips: ``mock.patch`` restores a name this
+    module does not hold by deleting it and setting it back. With ``create=True`` it
+    skips the set, which would leave the owner without the name, so
+    ``test/test_acp_refactor_create_guard.py`` fails on any such patch. Every other
+    name, a module this one imports included, is an ordinary attribute write: tests
+    rebind those on purpose, for the code that stays here and for the moved helpers
+    listed in the facade test's ``_SEAM_IMPORTS``, which read ``os``,
+    ``platform_compat``, ``subprocess``, ``sys``, ``time``, ``weakref``,
+    ``AcpSessionHandle`` and ``AcpRuntimeDead`` from this module at call time.
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _EXPORTS:
+            setattr(_owner(name), name, value)
+        else:
+            super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _EXPORTS:
+            delattr(_owner(name), name)
+        else:
+            super().__delattr__(name)
+
+
+# Installed last, so the forwarding is live for every caller but never runs while this
+# module is still binding its own names.
+sys.modules[__name__].__class__ = _ReExportModule
+
+if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
+    from kiro_crew.acp.runtime_process_tree import (  # noqa: F401
+        _PS_TABLE_TTL_S,
+        _get_rss_mb,
+        _get_rss_tree_mb,
+        _iter_descendant_pids,
+        _own_children,
+        _ProcessTable,
+        _ps_process_table,
+        _ps_table_cache,
+        _ps_table_lock,
+        _reset_ps_table_cache,
+        _rss_tree_mb_for_pids,
+    )
+    from kiro_crew.acp.runtime_start import (  # noqa: F401
+        _COLD_START_MAX_CONCURRENT,
+        _COLLECTOR_PERMIT_HEADROOM,
+        _SESSION_START_CONCURRENCY_DEFAULT,
+        _SESSION_START_CONCURRENCY_FLOOR,
+        START_OUTCOME_ABANDONED,
+        START_OUTCOME_ADOPTED,
+        START_OUTCOME_ERROR,
+        START_OUTCOME_RUNTIME_DEAD,
+        START_OUTCOME_TORN_DOWN,
+        SessionStartGate,
+        StartAdopter,
+        _cold_start_admission,
+        _cold_start_admissions,
+        _cold_start_admissions_lock,
+        _ColdStartAdmission,
+        _record_session_start,
+        _resolve_session_start_concurrency,
+        _resolve_session_start_timeout,
+        _session_start_gates,
+        _session_start_gates_lock,
+        session_start_gate,
+    )

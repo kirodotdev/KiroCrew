@@ -175,6 +175,8 @@ _SCANNED_MODULES = [
     # redactor -- so the behavioural pin for it lives in
     # test_acp_client.py::test_credential_straddling_the_bound_is_still_redacted.
     "src/kiro_crew/acp/client.py",
+    # The client's error formatter and classifiers, with their redactor calls.
+    "src/kiro_crew/acp/transport_errors.py",
     "src/kiro_crew/dashboard/handlers/artifacts.py",
     "src/kiro_crew/dashboard/handlers/discover.py",
     "src/kiro_crew/mcp_tools/control.py",
