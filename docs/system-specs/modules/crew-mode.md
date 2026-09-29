@@ -1202,6 +1202,11 @@ Three rules define that list, and each is load-bearing:
 - The response carries `default_agent` and `guidance` so the model has an
   explicit fallback and a high-confidence bar rather than inferring one.
 
+An entry carries `display_name` when the crew has a label that differs from
+its key, and so does each `route_crew` match and `unavailable` entry. The user names a crew by that
+label while `spawn_run(crew=...)` takes the key, so without it a renamed crew
+cannot be matched to the user's words.
+
 **Bind** (`crew` names a roster entry):
 
 ```json
@@ -1210,7 +1215,9 @@ Three rules define that list, and each is load-bearing:
            "memory_store": "oncall-mem", "model": ""}}
 ```
 
-An unknown name answers `{"error": "unknown crew '…'", "available": "…"}`. The
+An unknown name answers `{"error": "unknown crew '…'", "available": "…"}`, where
+`available` lists every key, each followed by `(display_name)` when that label
+differs from it, so a label passed as `crew=` can be mapped to its key. The
 membership test against `cfg.agents` is the deny-by-default gate;
 `SELECT_CREW_SCHEMA` deliberately does not impose a name grammar, because crew
 creation only strips the name, so a stricter schema would list a crew in the
@@ -1290,7 +1297,7 @@ name, and it resolves an empty crew too so the concrete template stays inside
 | `website/src/components/RestartButton.cov80.test.tsx` | Apply & Restart asks first, naming what stays (chats and history) and what stops (a reply in progress); declined does nothing, and the confirmed paths (success, failure, in-flight, MCP reconcile) run with the ask answered yes |
 | `test/test_chat_agent_kind.py` | `agent_kind` on slot create and switch: template picks skip the member store pin, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |
 | `test/test_open_slots_persistence.py` (`test_restore_carries_the_agent_selection_namespace`) | A template-picked slot restores as a template pick; an unknown persisted kind reads as name-only |
-| `test/test_select_crew.py` | Roster excludes the default crew and every triggerless crew, carries `default_agent` plus guidance; a named crew returns its bindings; an unknown name returns `error` plus `available`; the schema accepts spaces and dots in a crew name |
+| `test/test_select_crew.py` | Roster excludes the default crew and every triggerless crew, carries `default_agent` plus guidance; an entry and a `route_crew` match or `unavailable` entry carry `display_name` only when it differs from the key; a named crew returns its bindings; an unknown name returns `error` plus `available`, each key followed by its differing label; the schema accepts spaces and dots in a crew name |
 | `test/test_crew_reasoning_effort.py` | Per-crew effort reaches a crew dispatch |
 | `test/test_members.py`, `test/test_members_dm_thread.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads, briefing endpoint |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |

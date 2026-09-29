@@ -89,3 +89,56 @@ def test_schema_accepts_crew_names_with_spaces_and_dots():
     for name in ("on call", "crew.v2", "team-a"):
         cleaned = validate_tool_args({"crew": name}, SELECT_CREW_SCHEMA)
         assert cleaned["crew"] == name
+
+
+def _labelled_cfg(tmp_path: Path) -> Path:
+    p = _write_cfg(tmp_path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    # A crew whose label differs from its id.
+    data["agents"]["launch-notes"] = {
+        "kiro_agent": "kirocrew",
+        "display_name": "Release Notes",
+        "triggers": "release notes, changelog",
+    }
+    # A label equal to its key carries nothing new and is not repeated.
+    data["agents"]["oncall"]["display_name"] = "oncall"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    return p
+
+
+def test_roster_carries_display_name_beside_the_dispatch_key(tmp_path):
+    p = _labelled_cfg(tmp_path)
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        out = json.loads(mcp_core._do_select_crew(""))
+    crews = {c["name"]: c for c in out["crews"]}
+    assert crews["launch-notes"]["display_name"] == "Release Notes"
+    assert "display_name" not in crews["oncall"]
+    assert "display_name" in out["guidance"]
+
+
+def test_route_crew_matches_carry_display_name(tmp_path):
+    p = _labelled_cfg(tmp_path)
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        out = json.loads(mcp_core._do_route_crew("write the release notes"))
+    top = out["matches"][0]
+    assert (top["crew"], top["display_name"]) == ("launch-notes", "Release Notes")
+
+
+def test_route_crew_unavailable_entries_carry_display_name(tmp_path):
+    p = _labelled_cfg(tmp_path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["agents"]["launch-notes"]["memory_store"] = "missing-store"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        out = json.loads(mcp_core._do_route_crew("write the release notes"))
+    refused = {u["crew"]: u for u in out["unavailable"]}
+    assert refused["launch-notes"]["display_name"] == "Release Notes"
+
+
+def test_unknown_crew_error_lists_labels_beside_keys(tmp_path):
+    p = _labelled_cfg(tmp_path)
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
+        out = json.loads(mcp_core._do_select_crew("Release Notes"))
+    assert "error" in out
+    assert "launch-notes (Release Notes)" in out["available"]
+    assert "oncall (oncall)" not in out["available"]

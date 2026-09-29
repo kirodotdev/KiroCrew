@@ -2441,6 +2441,24 @@ def _crew_memory_unavailable_reason(error: UnknownMemoryStore) -> str:
     return redact_local_paths(redact(str(error)))[0][:1000]
 
 
+def _with_display_name(entry: dict[str, Any], key: str, agent: Any) -> dict[str, Any]:
+    """Add the crew's dashboard label to a routing entry when it has one.
+
+    The user names a crew by the label the dashboard shows; the model must
+    dispatch by the key. Without the label beside the key, a crew whose label
+    differs from its id cannot be matched to the user's words.
+    """
+    label = (getattr(agent, "display_name", "") or "").strip()
+    if label and label != key:
+        entry["display_name"] = label
+    return entry
+
+
+def _key_with_label(key: str, label: str | None) -> str:
+    """Render one ``available`` item: the key, then its label when it has one."""
+    return f"{key} ({label})" if label else key
+
+
 def _do_route_crew(task: str) -> str:
     """Rank the crews whose triggers match *task* (the route_crew tool body).
 
@@ -2471,15 +2489,25 @@ def _do_route_crew(task: str) -> str:
         try:
             binding = resolve_agent_bindings(cfg, name, validate_memory_files=False)
         except UnknownMemoryStore as exc:
-            unavailable.append({"crew": name, "reason": _crew_memory_unavailable_reason(exc)})
+            unavailable.append(
+                _with_display_name(
+                    {"crew": name, "reason": _crew_memory_unavailable_reason(exc)},
+                    name,
+                    cfg.agents[name],
+                )
+            )
             continue
         matches.append(
-            {
-                "crew": name,
-                "score": round(score, 3),
-                "description": (cfg.agents[name].description or "").strip(),
-                "memory_store": binding.memory_store_name,
-            }
+            _with_display_name(
+                {
+                    "crew": name,
+                    "score": round(score, 3),
+                    "description": (cfg.agents[name].description or "").strip(),
+                    "memory_store": binding.memory_store_name,
+                },
+                name,
+                cfg.agents[name],
+            )
         )
     return json.dumps(
         {
@@ -2518,7 +2546,7 @@ def _do_select_crew(crew: str) -> str:
     default = cfg.default_agent
     if not crew:
         roster = [
-            {"name": n, "triggers": c.triggers}
+            _with_display_name({"name": n, "triggers": c.triggers}, n, c)
             for n, c in cfg.agents.items()
             if n != default and c.triggers.strip()
         ]
@@ -2530,13 +2558,21 @@ def _do_select_crew(crew: str) -> str:
                     "Select a crew ONLY when its triggers clearly and specifically "
                     "match the task with high confidence. If no crew is a strong "
                     "match (or the list is empty), do NOT route — use the default "
-                    "crew. Crews without triggers are intentionally omitted."
+                    "crew. Crews without triggers are intentionally omitted. "
+                    "The user may refer to a crew by its display_name; always "
+                    "pass its name to spawn_run(crew=...)."
                 ),
             },
             ensure_ascii=False,
         )
     if crew not in cfg.agents:
-        available = ", ".join(sorted(cfg.agents)) or "(none)"
+        available = (
+            ", ".join(
+                _key_with_label(k, _with_display_name({}, k, cfg.agents[k]).get("display_name"))
+                for k in sorted(cfg.agents)
+            )
+            or "(none)"
+        )
         return json.dumps(
             {"error": f"unknown crew '{crew}'", "available": available},
             ensure_ascii=False,
