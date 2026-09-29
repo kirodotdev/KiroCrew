@@ -408,10 +408,16 @@ function ChatSidebar({
     searchRanked, folderNameMatchIds,
   } = useSearchMatches({ slotFilter, slotSearchRanks, folders, isFolderHidden })
 
+  // Is the search box in use? A query is an explicit request for a specific
+  // session, so it wins over the browsing filters: the folder filter below, and
+  // the tag filter and status chips inside the row model (`makeDimensions`), all
+  // go inert while this is true. The chips stay set and the dock draws them
+  // paused; clearing the search resumes them unchanged.
+  const slotSearchActive = slotFilter.trim() !== ''
   // The folder filter goes inert while searching, in BOTH views: a query must
   // reach every match, so an unchecked folder can never become a search dead
   // end. Everything that consults the filter routes through this flag.
-  const folderFilterActive = slotFilter.trim() === '' && filterHiddenFolders.size > 0
+  const folderFilterActive = !slotSearchActive && filterHiddenFolders.size > 0
 
   // While a drag is in flight the row model keeps the filtered list it had when the
   // drag started, so the lanes hold still under the pointer.
@@ -479,7 +485,7 @@ function ChatSidebar({
   // Caption shown at the top of the pinned band only when a filter that exempts
   // pinned rows narrows the list (the row model decides which ones) and the search
   // box is empty. Passed into scope so createListLanes can render it.
-  const pinnedBandCaption = pinnedExemptNarrowing && slotFilter.trim() === ''
+  const pinnedBandCaption = pinnedExemptNarrowing && !slotSearchActive
     ? i18nT('pages.chatSidebar.pinned_always_shown')
     : undefined
   // `laneSlots` is the Local lanes' rows: `filteredSlots` minus every row a crew
@@ -867,7 +873,7 @@ function ChatSidebar({
     setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey: pickSort, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,
     manualOrderError, setManualOrderError,
-    showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders,
+    showAllFolders, shownCrewGroups, shownCrewRowCount, shownCrewRows, sidebarRows, slotFilter, slotFolders, slotSearchActive,
     sortError, sortKey, staleCollapseMs, staleExpanded, startsAutomaticSection, staticRows, stripEdges,
     subagentApprovalCounts, suppressMenuRestore, tagById, tagColumnsEnabled, tagFilterRows, tagsData,
     tagsQueryFailed, tintAgents, toggleCollapse, toggleColumnCollapse, toggleCrewCollapsed, toggleFilter,

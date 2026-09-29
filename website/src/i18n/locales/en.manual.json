@@ -6133,6 +6133,7 @@
       "filter_hide_named": "Hide sessions matching {{filter}}",
       "filter_unhide_named": "Stop hiding {{filter}} sessions",
       "hiding_named_filter": "Hiding {{filter}}",
+      "filter_paused_while_searching": "Paused while searching",
       "sort_newest": "Newest",
       "sort_oldest": "Oldest",
       "sort_created_newest": "Created (Newest)",

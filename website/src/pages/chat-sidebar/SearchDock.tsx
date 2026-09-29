@@ -5,7 +5,7 @@
  *  capsule, holds the active filter chips (tags, models, status, hides) and the
  *  list-level notices (seed, crew names, read failures, close refusal, folder
  *  writes and order, create, rename, title, peer sessions). */
-import { Fragment } from 'react'
+import { Fragment, useId } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -143,6 +143,50 @@ function RemoteCrewNamesError() {
   )
 }
 
+/** The tag filter's one aggregate chip: every active tag as a swatch plus its name,
+ *  one click clears them all. Not a `FilterChip`, whose label is a string, but it
+ *  wears the same paused mark (pause glyph, dashed border) with `pausedLabel`, the
+ *  reason the search lifted it, as tooltip and `aria-describedby` text: the person
+ *  did not choose this pause, and focus never shows a native tooltip. */
+function TagFilterChip({ tags, clearLabel, pausedLabel, onClear }: {
+  tags: { id: string; name: string; color: string }[]
+  clearLabel: string
+  pausedLabel?: string
+  onClear: () => void
+}) {
+  const pausedId = useId()
+  return (
+    <button
+      type="button"
+      data-testid="tag-filter-chip"
+      className={`inline-flex items-center gap-1 max-w-full pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors bg-bg-elevated/60 border border-border text-muted hover:text-text${pausedLabel ? ' border-dashed' : ''}`}
+      onClick={onClear}
+      // Paused keeps the clear action in the hover text, as `FilterChip` does.
+      title={pausedLabel ? `${pausedLabel} · ${clearLabel}` : clearLabel}
+      aria-label={clearLabel}
+      aria-describedby={pausedLabel ? pausedId : undefined}
+    >
+      {pausedLabel && <Pause size={11} className="shrink-0" aria-hidden="true" />}
+      {pausedLabel && <span id={pausedId} className="sr-only">{pausedLabel}</span>}
+      {/* Swatch carries the colour, the name stays in body text: a pale
+          tag on this surface can fall near 2:1 contrast at 11px. */}
+      <span className="truncate inline-flex items-center gap-1.5">
+        {tags.map(t => (
+          <span key={t.id} className="inline-flex items-center gap-1">
+            <span
+              aria-hidden="true"
+              className="w-2 h-2 shrink-0 rounded-full border border-border"
+              style={{ background: t.color }}
+            />
+            {t.name}
+          </span>
+        ))}
+      </span>
+      <X size={11} className="shrink-0" />
+    </button>
+  )
+}
+
 /** The dock's two slots, field first, as `ListDock` takes them. */
 export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode; shelf: React.ReactNode } {
   const { activeFilters, activeModelKeys, activeModelRows, activeTagIds, activeTagNames, autoTitleError,
@@ -157,7 +201,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
     renameError, seedError, seedStateLanesMutation, selectRecentPreset, setAllFiltersPaused,
     setAutoTitleError, setFilterSortOpen, setFolderActionError, setFolderOfflineNotice, setManualOrderError, setModelFilterExcluded, setNewChatError,
     setPinnedOrderError, setRecentAmountDraft, setRenameError, setSeedError, setSlotFilter, setSortKey, setStaleCollapseMs,
-    setToggleSaveFailed, showAllFolders, slotFilter, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
+    setToggleSaveFailed, showAllFolders, slotFilter, slotSearchActive, sortError, sortKey, staleCollapseMs, tagFilterRows, toggleFilter,
     toggleFolderFilter, toggleFoldersShelved, toggleHideFilter, toggleModelFilter, toggleSaveFailed,
     toggleTagFilter } = shell
   const field = (
@@ -930,6 +974,16 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         )}
       />
   )
+  // The search pause wears the SAME mark as the menu pause (one vocabulary for
+  // "set but not narrowing"), plus the reason, since the person did not choose
+  // this one. A chip already paused from the menu owes no explanation: the
+  // search is not what lifted it, and clearing the search would not resume it.
+  const searchPausedLabel = slotSearchActive && !filtersPaused ? i18nT('pages.chatSidebar.filter_paused_while_searching') : undefined
+  // The on-screen reason for the paused mark: one line for the whole shelf, shown
+  // while the search pauses at least one chip. The tooltip still names the clear.
+  const searchPausedCaption = slotSearchActive && (
+    activeTagIds.size > 0 || (searchPausedLabel !== undefined && SESSION_FILTERS.some(filterDef => activeFilters.has(filterDef.key)))
+  )
   const shelf = (
         <>
       {/* One aggregate chip in its OWN row, never per-tag chips in the row below.
@@ -938,30 +992,12 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           Tag colours survive as spans inside this single control. */}
       {activeTagIds.size > 0 && (
         <div className="px-3 pb-1">
-          <button
-            type="button"
-            data-testid="tag-filter-chip"
-            className="inline-flex items-center gap-1 max-w-full pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors bg-bg-elevated/60 border border-border text-muted hover:text-text"
-            onClick={clearTagFilter}
-            title={i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
-            aria-label={i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
-          >
-            {/* Swatch carries the colour, the name stays in body text: a pale
-                tag on this surface can fall near 2:1 contrast at 11px. */}
-            <span className="truncate inline-flex items-center gap-1.5">
-              {tagFilterRows.filter(({ tag: t }) => activeTagIds.has(t.id)).map(({ tag: t }) => (
-                <span key={t.id} className="inline-flex items-center gap-1">
-                  <span
-                    aria-hidden="true"
-                    className="w-2 h-2 shrink-0 rounded-full border border-border"
-                    style={{ background: t.color }}
-                  />
-                  {t.name}
-                </span>
-              ))}
-            </span>
-            <X size={11} className="shrink-0" />
-          </button>
+          <TagFilterChip
+            tags={tagFilterRows.filter(({ tag: t }) => activeTagIds.has(t.id)).map(({ tag: t }) => t)}
+            clearLabel={i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
+            pausedLabel={slotSearchActive ? i18nT('pages.chatSidebar.filter_paused_while_searching') : undefined}
+            onClear={clearTagFilter}
+          />
         </div>
       )}
       {/* The model filter's one chip, in its own row for the same AUTOSDE reason
@@ -993,10 +1029,11 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
           <div className="px-3 pb-1">
             <FilterChip
               testId="filter-chip-crew"
-              label={`${filterLabel}${slotCount > 0 ? ` (${slotCount})` : ''}`}
+              label={`${filterLabel}${slotCount > 0 && !searchPausedLabel ? ` (${slotCount})` : ''}`}
               color="var(--accent)"
               gradient
               paused={filtersPaused}
+              pausedLabel={searchPausedLabel}
               clearLabel={i18nT('pages.chatSidebar.clear_named_filter', { filter: filterLabel })}
               onClear={() => toggleFilter('crew')}
             />
@@ -1017,15 +1054,21 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
               <FilterChip
                 key={filterDef.key}
                 testId={`filter-chip-${filterDef.key}`}
-                label={`${filterLabel}${filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}${slotCount > 0 ? ` (${slotCount})` : ''}`}
+                label={`${filterLabel}${filterDef.key === 'recent' ? ` · ${formatRecentWindow(recentWindowMs)}` : ''}${slotCount > 0 && !searchPausedLabel ? ` (${slotCount})` : ''}`}
                 color={filterDef.color}
                 paused={filtersPaused}
+                pausedLabel={searchPausedLabel}
                 clearLabel={clearLabel}
                 onClear={() => toggleFilter(filterDef.key)}
               />
             )
           })}
         </div>
+      )}
+      {searchPausedCaption && (
+        <p data-testid="filters-paused-caption" className="px-3 pb-1 text-[11px] text-muted">
+          {i18nT('pages.chatSidebar.filter_paused_while_searching')}
+        </p>
       )}
       {/* The hides, as ONE aggregate chip in their own row, for the same reason as
           the tag chip: the row above holds the base branch's filter chips and must

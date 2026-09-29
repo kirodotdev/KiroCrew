@@ -581,6 +581,13 @@ function makeDimensions(
   // A paused set keeps its chips but narrows nothing, so the whole status dimension
   // goes inert while the pause is on.
   const activeStatus = status.paused ? [] : (Object.keys(matches) as SessionFilterKey[]).filter(key => status.active.has(key))
+  // Is the search box in use? A query is an explicit request for a specific session,
+  // so it wins over the browsing filters: the tag filter and the status chips go
+  // inert while this is true (the folder filter does the same through
+  // `folders.active`, which the sidebar derives from the same trim), and the search
+  // dimension itself narrows only when this is true, so the three cannot disagree
+  // about when a search starts. The chips stay set: clearing the search resumes them.
+  const searching = search.text.trim() !== ''
   // A pinned session is one the person chose to keep in sight, and the pinned band is
   // the stable top of the list (`laneOrder`). The two property filters (tags, status
   // chips) therefore exempt it: the band stays, the narrowed rows sit under it, and the
@@ -591,59 +598,82 @@ function makeDimensions(
   // (never pinned) is never exempt. `narrows` is untouched: the list IS narrowed; the
   // pinned rows are exempt from it.
   const pinnedBypass = matches.pinned
+  // Does the search keep this row? Text search: title and source links, never
+  // key/agent once the backend has ranked (rows it excluded) -- a badge id is a
+  // card-visible PROPERTY. Only meaningful while `searching`.
+  const searchKeeps = (slot: Slot): boolean => {
+    const q = search.text.toLowerCase()
+    // The row's own CONTAINER matched by name: the query named the folder, so
+    // everything filed in it is what was asked for. A peer row is never in a
+    // local folder.
+    const container = folderOf(slot)
+    if (search.folderMatches && container && search.folderMatches.has(container)) return true
+    const titleMatch = (slot.title || '').toLowerCase().includes(q)
+    // Both id spellings match by PREFIX, so progressive typing works while an
+    // interior run of the digits -- an accident, not an id -- does not.
+    const sourceMatch = (slot.source_links ?? []).some(link =>
+      String(link.number).startsWith(q)
+      || chipLabel(link).toLowerCase().startsWith(q))
+    // The ranks are LOCAL keys: a peer row matches on its own visible fields.
+    if (searchRanks) {
+      const key = localKeyOf(slot)
+      return (key !== null && searchRanks.has(key)) || titleMatch || sourceMatch
+    }
+    return sourceMatch
+      || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
+  }
+  // While searching, the tag and status `hides` answer only for a row the SEARCH
+  // drops. List membership (`excluded`) is the wrong test there: the model filter and
+  // the status hides keep narrowing during a search, so a row one of them dropped
+  // would read as hidden by the paused chips and its reveal would wipe them.
+  const searchDrops = (slot: Slot) => !searchKeeps(slot)
   return [
     {
-      // Tags. Unlike the folder filter this does NOT go inert while searching: it
-      // is a session property, so it behaves like the Unread/Pinned status chips.
-      filtersRow: slot => tags.resolved.size === 0 || pinnedBypass(slot) || (slot.tags ?? []).some(id => tags.resolved.has(id)),
-      narrows: () => tags.resolved.size > 0,
+      // Tags. Inert while searching, like the folder filter and the status chips
+      // below: a query must reach every match, so a tag the row does not carry can
+      // never become a search dead end. While searching, `hides` answers only for a
+      // row the SEARCH drops (`searchDrops`, not list membership): the reveal clears the search in the same one pass, that
+      // resumes this filter, and the resumed filter would hide the revealed row on
+      // the next commit, after the pass that could have cleared it. A row the search
+      // keeps is already on screen, and the filter stays set for when it resumes.
+      filtersRow: slot => searching || tags.resolved.size === 0 || pinnedBypass(slot) || (slot.tags ?? []).some(id => tags.resolved.has(id)),
+      narrows: () => !searching && tags.resolved.size > 0,
       exemptsPinned: true,
-      // The pinned exemption is restated here because this predicate does not go
-      // through `excluded`: a reveal of a pinned row must not clear a tag filter that
-      // was never hiding it.
-      hides: slot => tags.raw.size > 0 && !pinnedBypass(slot) && !(slot.tags ?? []).some(id => tags.raw.has(id)),
+      // The pinned exemption is restated here because this predicate never asks list
+      // membership: a reveal of a pinned row must not clear a tag filter that was
+      // never hiding it.
+      hides: slot => tags.raw.size > 0 && !pinnedBypass(slot) && (!searching || searchDrops(slot))
+        && !(slot.tags ?? []).some(id => tags.raw.has(id)),
       clear: () => clears.tags(),
     },
     {
-      // Text search: title and source links, never key/agent once the backend has
-      // ranked (rows it excluded) -- a badge id is a card-visible PROPERTY.
-      filtersRow: slot => {
-        if (!search.text) return true
-        const q = search.text.toLowerCase()
-        // The row's own CONTAINER matched by name: the query named the folder, so
-        // everything filed in it is what was asked for. A peer row is never in a
-        // local folder.
-        const container = folderOf(slot)
-        if (search.folderMatches && container && search.folderMatches.has(container)) return true
-        const titleMatch = (slot.title || '').toLowerCase().includes(q)
-        // Both id spellings match by PREFIX, so progressive typing works while an
-        // interior run of the digits -- an accident, not an id -- does not.
-        const sourceMatch = (slot.source_links ?? []).some(link =>
-          String(link.number).startsWith(q)
-          || chipLabel(link).toLowerCase().startsWith(q))
-        // The ranks are LOCAL keys: a peer row matches on its own visible fields.
-        if (searchRanks) {
-          const key = localKeyOf(slot)
-          return (key !== null && searchRanks.has(key)) || titleMatch || sourceMatch
-        }
-        return sourceMatch
-          || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
-      },
-      narrows: () => Boolean(search.text),
+      // Text search (see `searchKeeps`). `hides` asks the same predicate, not list
+      // membership: a row the model filter or a status hide dropped is not the
+      // search's doing, and clearing the search for it would resume the chips.
+      filtersRow: slot => !searching || searchKeeps(slot),
+      narrows: () => searching,
       exemptsPinned: false,
-      hides: (slot, excluded) => Boolean(search.text) && excluded(slot),
+      hides: slot => searching && searchDrops(slot),
       clear: () => clears.search(),
     },
     {
       // Status chips. Active chips OR together: a row passes when any active chip
       // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`).
+      // Inert while searching too, for the same reason as tags above; `activeStatus`
+      // is already empty while the chips are paused from the menu.
       // `hides` restates the exemption too: `excluded` is list membership, not this
       // dimension's verdict, so a pinned row the SEARCH dropped would otherwise read as
-      // hidden by the chips and a reveal would clear them.
-      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
-      narrows: () => activeStatus.length > 0,
+      // hidden by the chips and a reveal would clear them. While searching it answers,
+      // like the tag `hides`, only for a row the search drops (`searchDrops`, not list
+      // membership), and then only when the per-row chip predicate says the RESUMED
+      // chips will hide it. Chips paused from the menu are not
+      // in `activeStatus`, so they hide nothing here either: clearing the search does
+      // not resume them.
+      filtersRow: slot => searching || activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
+      narrows: () => !searching && activeStatus.length > 0,
       exemptsPinned: true,
-      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
+      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot)
+        && (searching ? searchDrops(slot) && !activeStatus.some(key => matches[key](slot)) : excluded(slot)),
       clear: () => clears.status(),
     },
     {
@@ -675,7 +705,8 @@ function makeDimensions(
       clear: () => clears.hides(),
     },
     {
-      // Model. A session property like tags, so it is not suspended by search. The
+      // Model. Not suspended by search, unlike the tag and status chips above; the
+      // same rule for this dimension and the status hides is #26027. The
       // vocabulary is the row list itself (no async fetch), so the selection is
       // settled on the same render as the rows: one predicate serves both roles.
       // No pinned exemption: the filter exists to find every session on a model,
@@ -709,8 +740,8 @@ function filterRows(rows: Slot[], dimensions: FilterDimension[], laneOrder: Side
     .sort(laneOrder)
 }
 
-/** Search and status defer to list membership: both rank against backend state
- *  (relevance, unread) that a single row cannot answer for alone. */
+/** Outside a search, the status chips defer to list membership: `unread` ranks
+ *  against backend state a single row cannot answer for alone. */
 function makeRevealRegistry(dimensions: FilterDimension[], filteredSlots: Slot[]): RevealBlockingFilter[] {
   const shown = new Set(filteredSlots.map(sessionRowIdentity))
   const excluded = (slot: Slot) => !shown.has(sessionRowIdentity(slot))
