@@ -507,7 +507,7 @@ every other mirrored harness.
 |---|---|---|---|
 | `name` | resolves `--agent` | wire `id` | roster only |
 | `description` | roster only | wire field | roster only |
-| `prompt` | read from disk | inlined over the wire | Crew sends its own persona prompt |
+| `prompt` | read from disk | inlined over the wire | Crew injects it at session start; the built-in agent gets the Kiro Crew persona |
 | `model` | honoured, `"auto"` resolvable | not projected | `cc_model` sidecar instead |
 | `tools` | honoured | wire field; absent means NO tools | roster only |
 | `allowedTools` | honoured | translated to `permissions` | not read |

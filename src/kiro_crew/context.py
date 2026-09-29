@@ -4712,11 +4712,12 @@ class ContextBuilder:
         """
         is_custom = bool(agent) and agent != "kirocrew"
         agent_prompt: str
-        if is_cc and (not is_custom or not private_owner):
+        if is_cc and not is_custom:
             # CC gets the same Kiro Crew persona prompt as kiro — including
             # the Output Format rules (diff blocks, image embeds, OPTIONS)
             # which are dashboard UI contracts, not kiro-specific. Only the
             # kiro-cli *branding* references are rewritten to claude code.
+            # A custom agent keeps its own prompt on every provider.
             try:
                 pp = _prompt_path(mode=mode)
                 agent_prompt = pp.read_text(encoding="utf-8")
