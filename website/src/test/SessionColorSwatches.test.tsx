@@ -210,4 +210,50 @@ describe('SessionColorSwatches', () => {
     expect(after?.color_hex).toBe('#a1b2c3')
     expect(after?.color_index ?? null).toBe(null)
   })
+
+  it('a rejected write on a session that left the list reports nothing, while a present one is named', async () => {
+    // The absent row used to read as "no colour", so a rejected CLEAR reported an
+    // undo of a row that no longer exists while a rejected palette pick stayed
+    // silent. Both are silent now; a session still listed keeps its report.
+    const { sseSlots, removeSlotOptimistic } = await import('../store/dashboardSlice')
+    const { __resetActionFailureForTests, useActionFailure } = await import('../utils/actionFailure')
+    const { renderHook, act } = await import('@testing-library/react')
+    __resetActionFailureForTests()
+    const { result } = renderHook(() => useActionFailure())
+
+    // CLEAR, then the session closes mid-flight, then the gateway refuses.
+    store.dispatch(sseSlots([{ key: SLOT, title: 'zzq-colour', color_index: 2, color_hex: null } as never]))
+    let rejectClear: (e: Error) => void = () => {}
+    mocks.clearSlotColor.mockImplementation(() => new Promise((_r, rej) => { rejectClear = rej }))
+    const clearView = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={2} />)
+    fireEvent.click(screen.getByLabelText('No color'))
+    await waitFor(() => expect(mocks.clearSlotColor).toHaveBeenCalledWith(SLOT))
+    act(() => { store.dispatch(removeSlotOptimistic(SLOT)) })
+    await act(async () => { rejectClear(new Error('boom')); await new Promise(r => setTimeout(r, 30)) })
+    expect(result.current.failure).toBeNull()
+    clearView.unmount()
+
+    // SET, same sequence: already silent, and must stay so.
+    store.dispatch(sseSlots([{ key: SLOT, title: 'zzq-colour', color_index: null, color_hex: null } as never]))
+    let rejectSet: (e: Error) => void = () => {}
+    mocks.setSlotColor.mockImplementation(() => new Promise((_r, rej) => { rejectSet = rej }))
+    const setView = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getAllByRole('button')
+      .filter(b => !['No color', 'Custom color'].includes(b.getAttribute('aria-label') ?? ''))[0])
+    await waitFor(() => expect(mocks.setSlotColor).toHaveBeenCalledWith(SLOT, 0))
+    act(() => { store.dispatch(removeSlotOptimistic(SLOT)) })
+    await act(async () => { rejectSet(new Error('boom')); await new Promise(r => setTimeout(r, 30)) })
+    expect(result.current.failure).toBeNull()
+    setView.unmount()
+
+    // A session still listed: the rejected CLEAR is reported, and by name.
+    store.dispatch(sseSlots([{ key: SLOT, title: 'zzq-colour', color_index: 2, color_hex: null } as never]))
+    mocks.clearSlotColor.mockRejectedValue(new Error('boom'))
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={2} />)
+    fireEvent.click(screen.getByLabelText('No color'))
+    await waitFor(() => expect(result.current.failure?.message).toBe('The color change was undone.'))
+    expect(result.current.failure?.subject).toBe('zzq-colour')
+    store.dispatch(sseSlots([]))
+  })
+
 })

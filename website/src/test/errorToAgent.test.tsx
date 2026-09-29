@@ -423,6 +423,27 @@ describe('chat hand-off channel', () => {
 })
 
 describe('ErrorNotice', () => {
+  it('forwards an agent hand-off gate in every rendered button placement', async () => {
+    for (const props of [
+      { variant: 'inline' as const },
+      { variant: 'block' as const, actionPlacement: 'below' as const },
+      { variant: 'block' as const, actionPlacement: 'beside' as const },
+    ]) {
+      const gate = vi.fn()
+      const { unmount } = render(
+        <ErrorNotice message="disk is full" askAgent askAgentGate={gate} {...props} />,
+      )
+
+      await userEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+      expect(gate).toHaveBeenCalledOnce()
+      expect(gate).toHaveBeenCalledWith(expect.any(Function))
+      expect(navigated).toEqual([])
+      expect(consumeChatHandoff()).toBeNull()
+      unmount()
+    }
+  })
+
   it('leaves click propagation unchanged outside menu hosts', async () => {
     const onParentClick = vi.fn()
     render(
