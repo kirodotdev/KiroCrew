@@ -1460,8 +1460,8 @@ backend paths persist it: the accepted-steer row via
 `steer_into_running_turn` — which normalizes the raw client value at entry
 (`normalize_send_id`: the URL-safe id alphabet within `SEND_ID_MAX_LEN`, AND
 nothing the canonical credential scanner would redact, since the value reaches
-slot history and the `steer_push` broadcast without the outbound redaction the
-message text goes through; anything failing either gate is treated as absent,
+slot history and the `steer_push` broadcast unredacted, whatever the message
+text's own origin; anything failing either gate is treated as absent,
 never truncated) and also echoes it on the `steer_push`
 broadcast — and the raced new-turn row via the generic client-meta persistence
 in `api_chat`. Resolution is id-first everywhere text used to be the key: the
@@ -1478,6 +1478,20 @@ travels — no schema bump, and a send without one keeps the exact prior row,
 payload, and scan behavior. Pinned by the sendId tests in
 `test_chat_steer.py`, `chatThinkingSteerBoundary.test.ts`, and
 `ChatSliceCoverageSecondPass.test.tsx`.
+
+**Queued and steered text is shown by origin.** The session's own human's text
+reaches the pending queue and steer egresses as typed -- the `queue_push`,
+`queue_edit` and `queue_cancel` frames, the `queue[]` view, the persisted steer
+row and the `steer_push` card -- the same rule an ordinary send's row follows
+(a `role == "user"` row is stored and served unredacted). Every other origin (a `session_send` peer, an
+app, a channel, an entry restored from disk, which carries no provenance) is
+display-redacted. The single decision is `chat_delivery.queued_text_for_display`,
+with a queue entry's origin read by `queue_entry_is_user_origin`: the
+`_directive_user_origin` stamp without `_directive_channel_origin` (a linked
+Slack channel's message carries both). The drain is outside that rule:
+`_start_next_queued_turn` redacts a queued entry before it becomes the next
+turn's input and row, and its `queue_pop` frame carries that same redacted text.
+Pinned by `test_queued_user_text_display.py`.
 
 **Send identity through the REQUEUE path (#6751).** A steer whose turn dies
 before kiro-cli confirms it does not persist its own row: the teardown degrades

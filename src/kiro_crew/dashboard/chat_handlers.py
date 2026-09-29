@@ -49,8 +49,10 @@ from kiro_crew.dashboard.chat_delivery import (
     TURN_ACTOR_META_KEY,
     attachment_meta,
     normalize_send_id,
+    queue_entry_is_user_origin,
     queue_entry_view,
     queue_for_next_turn,
+    queued_text_for_display,
     start_queue_persist,
     steer_into_running_turn,
 )
@@ -1049,9 +1051,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             meta=_hold_meta,
             directive_user_origin=not bool(request_app),
         )
-        _c, _ = redact_exfiltration_urls(message)
-        _c, _ = redact_credentials(_c)
-        _redacted = _redact_for_display(_c)
+        _redacted = queued_text_for_display(message, user_origin=not bool(request_app))
         warn_if_not_durable(slot._queue, qid, slot.key)
         # Start the durable write here too, not only in the busy-slot branch.
         # This branch holds an IDLE slot, so no drain is coming to write the
@@ -2944,12 +2944,16 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     display_title = slot.display_title
     # Shallow copies, so the off-loop render below reads a frozen entry while
     # the loop keeps editing the live one; the view helper does the redaction.
+    # The two origin stamps ride along because the view reads them to decide
+    # whether an entry is shown as typed (`queue_entry_is_user_origin`).
     queue_snapshot = [
         {
             "id": q["id"],
             "content": q["content"],
             "kind": q.get("kind", ""),
             "meta": dict(q.get("meta") or {}),
+            "_directive_user_origin": q.get("_directive_user_origin", False),
+            "_directive_channel_origin": q.get("_directive_channel_origin", False),
         }
         for q in slot._queue
     ]
@@ -5844,12 +5848,18 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_cancel")
     if denied is not None:
         return denied
+    # Read the entry's origin before removing it: a cancel puts the text back in
+    # the composer, so a redacted copy of the user's own words would replace the
+    # link they typed with a placeholder.
+    _user_origin = queue_entry_is_user_origin(
+        next((i for i in slot._queue if i["id"] == queue_id), None)
+    )
     content = slot.queue_remove_by_id(queue_id)
     if content is None:
         return web.json_response({"error": "queue item not found"}, status=404)
     _remove_queued_by_id(slot.messages, queue_id)
     slot.invalidate_source_links()
-    _redacted = _redact_for_display(content)
+    _redacted = queued_text_for_display(content, user_origin=_user_origin)
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
     state.push_slots_update()
     sel().log_tool_invocation(
@@ -5902,7 +5912,7 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         content = stored
     _edit_queued_by_id(slot.messages, queue_id, content)
     slot.invalidate_source_links()
-    _redacted = _redact_for_display(content)
+    _redacted = queued_text_for_display(content, user_origin=queue_entry_is_user_origin(entry))
     frame: dict[str, Any] = {"slot": name, "queue_id": queue_id, "content": _redacted}
     # The edit prunes and renumbers the entry's attachment lists alongside the
     # text (`prune_attachment_meta`), so the frame carries the lists the

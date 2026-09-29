@@ -433,7 +433,8 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "`POST /api/chat` uses. Two boundaries in one call: the text is persisted "
         "into the slot's transcript and broadcast to every connected browser as a "
         "`steer_push` / `queue_push` card, so the scan happens here, before either "
-        "boundary.",
+        "boundary, for every origin except the session's own human, whose text is "
+        "shown as typed like an ordinary send's row.",
     ),
     (
         "Session control read",

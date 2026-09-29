@@ -135,6 +135,53 @@ def sanitize_outbound(text: str) -> str:
     return sanitized
 
 
+def queued_text_for_display(text: str, *, user_origin: bool) -> str:
+    """The form a queued or steered message is shown in.
+
+    The session's own human sees their words as typed, which is the rule an
+    ordinary send already follows: ``chat_persistence`` stores and serves a
+    ``role == "user"`` row unredacted on both the write and the read path, and
+    that row reaches every surface allowed to read the slot, apps holding a
+    slot scope included. Text waiting in the queue, or steered into a running
+    turn, is the same text from the same author, so its card and its cancel
+    restore reach those same surfaces in the same form. A queued entry is still
+    redacted where the drain turns it into the next turn's input and row
+    (``chat_runner._start_next_queued_turn``); this helper decides only what the
+    pending card shows.
+
+    Anything else -- a ``session_send`` peer, an app's own message, a channel --
+    is not the session's own human and keeps the full display redaction. An app
+    route that relays text the human typed in the app's UI (spec builder's
+    message route, for one) stamps it as user origin and shows it as typed, the
+    same as the composer. ``user_origin``
+    defaults to nothing here on purpose: every caller states it, so a new caller
+    cannot get the unredacted form by omission.
+    """
+    return text if user_origin else _redact_for_display(text)
+
+
+def queue_entry_is_user_origin(item: dict[str, Any] | None) -> bool:
+    """Whether a queue entry was typed by the session's own human in the dashboard.
+
+    ``_directive_user_origin`` alone does not say that: a message from an
+    allowed user in a linked Slack channel carries it TOGETHER with
+    ``_directive_channel_origin``, and that author is not the dashboard's
+    reader. So the entry must carry the user stamp and not the channel one.
+    It must also carry no producer ``kind``: a recovery requeue
+    (``chat_runner._queue_recovery``) inherits the turn's user stamp, yet its
+    text is host-built from tool titles and command input, so it is not what
+    the human typed.
+    An entry without the user stamp (a peer, an app's own message, or one restored from disk,
+    where neither stamp is kept) is not the human's and stays redacted.
+    """
+    return bool(
+        item
+        and item.get("_directive_user_origin")
+        and not item.get("_directive_channel_origin")
+        and not item.get("kind")
+    )
+
+
 def _row_has_delivery_id(slot: Any, delivery_id: str) -> bool:
     """Whether a durable row already carries *delivery_id* in its meta.
 
@@ -198,22 +245,26 @@ def find_written_steer_row(
     transition and truthfully leaves its row `written` forever. Patching it would
     mark a steer consumed that never was.
 
-    Otherwise resolved by the SANITIZED content of this exact message plus a
-    still-`written` state. SEVERAL rows can match, because those hard-killed rows
+    Otherwise resolved by the row content plus a still-`written` state. The row
+    holds this message as typed when the session's own human steered it, and the
+    SANITIZED form when a peer did (``steer_into_running_turn``), so either
+    spelling identifies it. SEVERAL rows can match, because those hard-killed rows
     stay `written` for the slot's life, so the tie is broken by asking how many
     LIVE steers could own one: *siblings* is the in-flight message list (the slot's
     pending steers by default; the requeue passes the batch it captured before
     clearing). When exactly one of them sanitizes to this target, the NEWEST match
-    is unambiguously this steer's row and every older one is a dead row.
+    is unambiguously this steer's row and every older one is a dead row. The
+    count is taken on the sanitized form for both spellings: it can only
+    over-count, which leaves a row `written` rather than patching the wrong one.
 
     When two or more LIVE steers share the sanitized content, this returns None and
     the rows keep `written`. That is the residual redaction collision: the
-    in-flight guard admits one steer per RAW text while the row stores the
-    SANITIZED text, so two steers differing only in credential material are both
-    admitted with byte-identical rows -- the same injectivity loss ``steer_settle``
-    documents for its own keys. Understating a state is recoverable; claiming the
-    wrong message was the one the turn consumed is not. Real identity for a pending
-    steer is a separate refactor.
+    in-flight guard admits one steer per RAW text while a peer steer's row stores
+    the SANITIZED text, so two peer steers differing only in credential material
+    are both admitted with byte-identical rows -- the same injectivity loss
+    ``steer_settle`` documents for its own keys. Understating a state is
+    recoverable; claiming the wrong message was the one the turn consumed is not.
+    Real identity for a pending steer is a separate refactor.
     """
     if message in getattr(slot, "_steer_delivery_ids", {}):
         # Registered but not yet persisted: this steer owns no row, so every
@@ -228,12 +279,16 @@ def find_written_steer_row(
             getattr(slot, "key", "?"),
         )
         return None
+    # A composer steer's row holds the text as typed, a peer steer's the sanitized
+    # form (see ``steer_into_running_turn``), so either spelling identifies it. The
+    # sibling count above stays on the sanitized form: it can only over-count
+    # collisions, which leaves a row `written` rather than patching the wrong one.
     matches = [
         m
         for m in slot.messages
         if isinstance(m.get("meta"), dict)
         and m["meta"].get("steerState") == STEER_STATE_WRITTEN
-        and m.get("content") == target
+        and m.get("content") in (target, message)
     ]
     # Newest wins: an older match is a row whose own steer already died without
     # transitioning, so it cannot be this one.
@@ -705,12 +760,14 @@ async def steer_into_running_turn(
         meta["sendId"] = send_id
     if attachments:
         meta.update(attachments)
-    # Store the sanitized form — raw content must never reach an external
-    # surface — so the steer survives a page reload via the dirty-flush cycle.
-    _row = slot.append("user", sanitized, "msg msg-u", ts=ts, meta=meta)
+    # The row survives a page reload via the dirty-flush cycle. The session's own
+    # human's steer is stored as typed, like an ordinary send's row; a peer's is
+    # stored sanitized, because its text has no human author to be its reader.
+    _row_content = message if user_origin else sanitized
+    _row = slot.append("user", _row_content, "msg msg-u", ts=ts, meta=meta)
     push_payload: dict[str, Any] = {
         "slot": slot.key,
-        "content": _redact_for_display(sanitized),
+        "content": queued_text_for_display(_row_content, user_origin=user_origin),
         "ts": ts,
         # Same state the row carries, so a live client and a page reload agree.
         # A later `chat_message_update` moves a `written` row to consumed or
@@ -830,7 +887,7 @@ def queue_for_next_turn(
     )
     push: dict[str, Any] = {
         "slot": slot.key,
-        "content": _redact_for_display(sanitize_outbound(message)),
+        "content": queued_text_for_display(message, user_origin=directive_user_origin),
         "ts": datetime.now(timezone.utc).isoformat(),
         "queue_id": qid,
     }
@@ -1002,8 +1059,12 @@ def attachment_meta(user_meta: dict | None) -> dict[str, list[str]]:
 
 
 def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
-    """The wire form of one queue entry: ``id``, display-redacted ``content``, and
-    ``meta`` holding its attachment lists when it carries any.
+    """The wire form of one queue entry: ``id``, ``content``, and ``meta``
+    holding its attachment lists when it carries any.
+
+    ``content`` passes :func:`queued_text_for_display`: as typed for an entry
+    the session's own human wrote (:func:`queue_entry_is_user_origin`),
+    display-redacted for every other origin.
 
     One serializer for the three slot-detail ``queue[]`` sites (the
     ``queue_edit`` frame reads the same lists off its entry directly, having
@@ -1015,10 +1076,16 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
     use for these lists, so the client reads one shape however the entry
     reaches it; it is omitted, not emptied, for an entry without attachments
     so that entry's shape is unchanged. The lists pass
-    :func:`attachment_meta`, which redacts each path like the content beside
-    it.
+    :func:`attachment_meta`, which redacts each path whatever the entry's
+    origin, so a user-origin entry's paths stay redacted even though its
+    ``content`` does not.
     """
-    view: dict[str, Any] = {"id": item["id"], "content": _redact_for_display(item["content"])}
+    view: dict[str, Any] = {
+        "id": item["id"],
+        "content": queued_text_for_display(
+            item["content"], user_origin=queue_entry_is_user_origin(item)
+        ),
+    }
     attachments = attachment_meta(item.get("meta"))
     if attachments:
         view["meta"] = attachments

@@ -115,6 +115,7 @@ from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR
 from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     find_written_steer_row,
+    queued_text_for_display,
 )
 from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_steering_dirs,
@@ -7927,10 +7928,10 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _mark_steer_row_state(state, slot, steer_msg, STEER_STATE_REQUEUED, requeued)
         # Raw-at-rest by design: slot._queue is a DELIVERY payload (the drained
         # entry becomes the next turn's LLM input), matching every other queue
-        # producer (queue_append in chat_handlers / messaging). All dashboard
-        # egresses redact: the three "queue" response sites in chat_handlers
-        # apply _redact_for_display, and every queue_* broadcast (including the
-        # queue_push below) sanitizes. Sanitizing at insert would corrupt the
+        # producer (queue_append in chat_handlers / messaging). The dashboard
+        # egresses go through `queued_text_for_display`: the session's own
+        # human's text is shown as typed, like an ordinary send's row, and every
+        # other origin is display-redacted. Sanitizing at insert would corrupt the
         # delivered message relative to the normal queue path.
         #
         # Carry the delivery id the steer registered under. The drain unions every
@@ -7999,18 +8000,17 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # into the ordinary drop rather than inheriting the exemption. An app slot's
         # steers stay unexempted as before.
         _origin = bool(getattr(slot, "_steer_user_origin", {}).pop(steer_msg, False))
+        _requeue_user_origin = _origin and not bool(getattr(slot, "_app", ""))
         qid = slot.queue_insert(
             0,
             steer_msg,
             meta=_meta,
-            directive_user_origin=_origin and not bool(getattr(slot, "_app", "")),
+            directive_user_origin=_requeue_user_origin,
         )
         try:
-            content, _ = redact_exfiltration_urls(steer_msg)
-            content, _ = redact_credentials(content)
             _push: dict = {
                 "slot": slot.key,
-                "content": _redact_for_display(content),
+                "content": queued_text_for_display(steer_msg, user_origin=_requeue_user_origin),
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "queue_id": qid,
             }
@@ -8936,7 +8936,9 @@ async def _start_next_queued_turn(
         # `chat_message` echo follows for a user row), so the attachment lists
         # the entry carries travel with it -- without them the rebuilt row
         # resolves `[attached_file N]` markers by whitespace and a spaced path
-        # is truncated until the next reload.
+        # is truncated until the next reload. The text stays redacted whatever
+        # its origin: it stands for the row this drain writes from `next_msg`,
+        # which is redacted above and is also the text the turn receives.
         _pop: dict = {
             "slot": slot.key,
             "content": _redact_for_display(content),
