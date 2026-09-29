@@ -3977,9 +3977,9 @@ function ChatInput({
           fused to the composer's top shares its pane instead of meeting it at a
           seam; it is always mounted so an approval landing never remounts the
           editor. It wears the same neutral `glass-shadow` as every other glass
-          pane (focus = the material's own edge + shadow step, no theme color), and
-          adds the approval glow while a decision is pending: the glow takes the
-          shadow slot, the edge focus step stays on. */}
+          pane (and, like every glass pane, does not change on focus -- no theme
+          color, no step; the caret is the indicator), and adds the approval glow
+          while a decision is pending: the glow takes the shadow slot. */}
       <Glass
         radius={16}
         data-testid="composer-dock"
@@ -4285,11 +4285,11 @@ function ChatInput({
         exit={{ opacity: 0, height: 0 }}
         transition={{ type: 'spring', damping: 26, stiffness: 280, mass: 0.7 }}
         // This element clips its content for the height:0 exit, and it paints
-        // no shadow or focus cue of its own: both belong to the Glass dock pane
-        // that wraps it (`.glass-shadow`, index.css) — the shadow is outside this
-        // clip, and focus is the pane's own edge + shadow step, no theme color.
+        // no shadow of its own: it belongs to the Glass dock pane that wraps it
+        // (`.glass-shadow`, index.css) and sits outside this clip. The pane does
+        // not change on focus (maintainer decision; the caret is the indicator).
         // With an approval box attached above, that pane wears `approval-glow`,
-        // whose warn glow takes the shadow slot while the focus step stays.
+        // whose warn glow takes the shadow slot.
         style={{ overflow: 'hidden' }}
       >{/* File drag-and-drop target. Drag-drop is inherently pointer-only; the
            keyboard-accessible path is the "Attach files" button that opens the
@@ -4454,7 +4454,7 @@ function ChatInput({
           data-composer-typo
           // Chromium paints no `text-overflow` on a `::placeholder`, so the cut tail
           // fades out instead, the way the app's other cut edges do.
-          className={/* focus-cue-ok: the cue is the dock pane's `.glass-shadow:focus-within` step (stronger side lines + deeper shadow, index.css); a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-hidden min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${placeholderIsHint ? 'placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] placeholder:[-webkit-mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]' : ''} ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
+          className={/* focus-cue-ok: maintainer decision -- the glass dock holding this textarea does not change on focus (no ring, no colour, no shadow step; index.css `.glass-shadow`), and a ring on the textarea itself is not wanted either; the caret is the composer's focus indicator. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-hidden min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${placeholderIsHint ? 'placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] placeholder:[-webkit-mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]' : ''} ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
           placeholder={activePlaceholder}
           readOnly={optimizing}

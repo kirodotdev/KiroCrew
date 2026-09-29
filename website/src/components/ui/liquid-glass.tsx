@@ -464,7 +464,7 @@ function LiquidGlassImpl(
             inset: -frost * 2,
             display: "block",
             background: TINT,
-            // `--glass-tint` steps on hover / focus / accent (index.css); ease it.
+            // `--glass-tint` steps on hover / accent (index.css); ease it.
             transition: "background-color 0.15s ease",
             backdropFilter: `blur(${frost}px) saturate(1.55)`,
             WebkitBackdropFilter: `blur(${frost}px) saturate(1.55)`,

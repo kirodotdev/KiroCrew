@@ -14,6 +14,8 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { screenshotWithCaret } from './lib/screenshot-with-caret.mjs'
+
 
 const BASE = process.env.BASE || 'http://127.0.0.1:6811'
 const OUT = process.argv[2] || '../temp-screenshots/glass-search-dock'
@@ -269,6 +271,24 @@ try {
     await assertDockControlsHit(page, `sessions/${theme}`)
     const sidebar = page.locator('.sidebar-inner').first()
     await sidebar.screenshot({ path: `${OUT}/sessions-rest-${theme}.png` })
+    // Focus changes nothing on the glass field (maintainer decision): same
+    // shadow, same side line, same tint; the caret is the indicator. Read the
+    // pane before and after the input takes focus and photograph the focused
+    // state beside the resting one.
+    {
+      const pane = page.getByTestId('search-field-glass').first()
+      const read = () => pane.evaluate(el => ({ shadow: getComputedStyle(el).boxShadow, edge: getComputedStyle(el).getPropertyValue('--glass-edge').trim(), tint: getComputedStyle(el).getPropertyValue('--glass-tint').trim() }))
+      const rest = await read()
+      await page.getByPlaceholder('Search sessions').focus()
+      await page.waitForTimeout(300)
+      const focus = await read()
+      if (!(await page.getByPlaceholder('Search sessions').evaluate(el => document.activeElement === el))) throw new Error(`sessions/${theme}: search input did not take focus`)
+      for (const k of ['shadow', 'edge', 'tint']) if (focus[k] !== rest[k]) throw new Error(`sessions/${theme}: pane ${k} changed on focus (${rest[k]} -> ${focus[k]}); a glass pane must not change on focus`)
+      if (!(await screenshotWithCaret(sidebar, { path: `${OUT}/sessions-focused-${theme}.png` }, page.getByPlaceholder('Search sessions')))) throw new Error(`sessions/${theme}: no caret caught in the focused field frame`)
+      console.log(`sessions/${theme}: focus leaves the field unchanged -- shadow ${focus.shadow}; edge ${focus.edge}; tint ${focus.tint}`)
+      await page.mouse.click(640, 400)
+      await page.waitForTimeout(200)
+    }
     await lane.evaluate(el => { el.scrollTop = 34 })
     await page.waitForTimeout(400)
     await sidebar.screenshot({ path: `${OUT}/sessions-scrolled-${theme}.png` })

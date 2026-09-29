@@ -84,10 +84,10 @@ the page is not a hover at all in this theme; hover states use `bg-bg-hover`.
 **Polarity-fixed variables are not roles.** A few `index.css` variables are read
 from `data-mode` (the polarity `useTheme` paints), not from the theme, and a pack
 cannot override them: `--glass-tint`, `--glass-band`,
-`--glass-edge`, `--glass-edge-focus` and `--glass-hairline` — the fill (the same
-fill whether the pane is focused or not), the top/bottom light bands, the side-line /
-in-pane-divider hairline, the stronger side line a focused pane swaps in, and
-the half-pixel dark sliver outside each lit band that
+`--glass-edge` and `--glass-hairline` — the fill, the top/bottom light bands, the
+side-line / in-pane-divider hairline, and the half-pixel dark sliver outside each
+lit band (none has a focus form: a pane looks the same whether or not a control
+inside it has focus) that
 the Liquid Glass surfaces (the composer dock and everything in it, the mobile
 Settings search capsule, the session list's and the crew roster's search field)
 lay over their blurred backdrop (the pane draws no ring:

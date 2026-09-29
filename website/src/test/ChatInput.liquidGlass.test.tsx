@@ -38,9 +38,9 @@ describe('composer liquid glass', () => {
   })
 
   // With an approval box fused above, the bar and the composer share the ONE
-  // dock pane: the wrapper stays transparent (no seam, no notch), keeps its
-  // focus-within accent brightening, and the dock swaps its halo for the
-  // approval glow so the pending decision is what lights up.
+  // dock pane: the wrapper stays transparent (no seam, no notch), and the dock
+  // swaps its shadow for the approval glow so the pending decision is what
+  // lights up.
   it('keeps the wrapper on the shared pane and lights the approval glow while an approval is attached', () => {
     const store = createTestStore({
       chat: {
@@ -98,9 +98,9 @@ describe('composer liquid glass', () => {
     for (const layer of dock.querySelectorAll<HTMLElement>(':scope > span[aria-hidden="true"]')) expect(layer.style.zIndex).toBe('-1')
   })
 
-  it('defines the glass tokens (tint, band, edge, focus edge, hairline) for both polarities', () => {
-    expect(INDEX_CSS).toMatch(/:root \{ --glass-tint: rgba\(30, 30, 34, 0\.40\); --glass-band: rgba\(255, 255, 255, 0\.22\); --glass-edge: rgba\(255, 255, 255, 0\.14\); --glass-edge-focus: rgba\(255, 255, 255, 0\.55\); --glass-hairline: rgba\(0, 0, 0, 0\.50\); \}/)
-    expect(INDEX_CSS).toMatch(/\[data-mode="light"\] \{ --glass-tint: rgba\(240, 240, 240, 0\.45\); --glass-band: rgba\(255, 255, 255, 1\); --glass-edge: rgba\(0, 0, 0, 0\.24\); --glass-edge-focus: rgba\(0, 0, 0, 0\.60\); --glass-hairline: rgba\(0, 0, 0, 0\.20\); \}/)
+  it('defines the glass tokens (tint, band, edge, hairline) for both polarities, none with a focus form', () => {
+    expect(INDEX_CSS).toMatch(/:root \{ --glass-tint: rgba\(30, 30, 34, 0\.40\); --glass-band: rgba\(255, 255, 255, 0\.22\); --glass-edge: rgba\(255, 255, 255, 0\.14\); --glass-hairline: rgba\(0, 0, 0, 0\.50\); \}/)
+    expect(INDEX_CSS).toMatch(/\[data-mode="light"\] \{ --glass-tint: rgba\(240, 240, 240, 0\.45\); --glass-band: rgba\(255, 255, 255, 1\); --glass-edge: rgba\(0, 0, 0, 0\.24\); --glass-hairline: rgba\(0, 0, 0, 0\.20\); \}/)
   })
 
   it('stands the context shelf on a short fade to page colour', () => {
@@ -140,8 +140,8 @@ describe('composer liquid glass', () => {
     // The material's edges live in the hidden layers, so a solid pane has no
     // edge of its own -- a white card on a white page vanished. One hairline of
     // the app's --border token as an inset outline, the same on the composer
-    // and on a chip, and nothing changes it on focus (the shadow step is the
-    // cue) -- as every card looked before the glass. prefers-contrast paints
+    // and on a chip, and nothing changes it on focus (a pane does not change
+    // on focus in any mode) -- as every card looked before the glass. prefers-contrast paints
     // its own 1px --text outline.
     for (const block of [/@supports not \(\(backdrop-filter[\s\S]*?\n\}/, /@media \(prefers-reduced-transparency: reduce\)\{[\s\S]*?\n\}/]) {
       const rule = INDEX_CSS.match(block)?.[0] ?? ''
@@ -184,20 +184,19 @@ describe('composer liquid glass', () => {
   })
 
   // Every glass surface, the session composer included, wears the neutral
-  // `glass-shadow`: focus is the deeper shadow PLUS the brighter focus tint and
-  // darker side lines, never a theme-colored glow or ring. The tint step is for
-  // neutral panes only: an accent / warn pane keeps its hue while a control
-  // inside it has focus. A pending approval takes the shadow slot for its warm
-  // glow and leaves the focus step on.
-  it('gives every glass pane the same neutral focus cue, no accent glow', () => {
-    expect(INDEX_CSS).toMatch(/\.glass-shadow:focus-within \{ box-shadow: 0 0 18px rgba\(0, 0, 0, 0\.14\); \}/)
-    expect(INDEX_CSS).toMatch(/\.glass-shadow\.approval-glow, \.glass-shadow\.approval-glow:focus-within \{ box-shadow: var\(--approval-shadow\); \}/)
+  // `glass-shadow`, and the material does NOT change when a control inside it
+  // has focus: no accent glow or ring, no brighter tint, no darker side lines,
+  // no deeper shadow (maintainer decision -- a focused pane is the same glass
+  // as a resting one; the caret is the composer's focus indicator). A pending
+  // approval takes the shadow slot for its warm glow.
+  it('leaves every glass pane unchanged on focus, no accent glow', () => {
+    expect(INDEX_CSS).toMatch(/\.glass-shadow \{ box-shadow: 0 0 18px rgba\(0, 0, 0, 0\.06\); transition: box-shadow 0\.18s ease; \}/)
+    expect(INDEX_CSS).toMatch(/\[data-mode="dark"\] \.glass-shadow \{ box-shadow: 0 0 18px rgba\(0, 0, 0, 0\.30\); \}/)
+    expect(INDEX_CSS).toMatch(/\.glass-shadow\.approval-glow \{ box-shadow: var\(--approval-shadow\); \}/)
     expect(INDEX_CSS).toMatch(/@media \(prefers-reduced-motion:reduce\)\{\.approval-glow\{animation:none;--glow-strength:\.6\}\}/)
-    // Focus steps the tint AND darkens the side lines (--glass-edge-focus); the
-    // capsule's neutral focus cue is that pair, never an accent ring.
-    // Focus steps the side lines (--glass-edge-focus) and deepens the shadow;
-    // the tint stays put (a focused pane is the same glass as a resting one).
-    expect(INDEX_CSS).toMatch(/\.glass-shadow:focus-within:not\(\.glass-accent, \.glass-warn\) \{ --glass-edge: var\(--glass-edge-focus\); \}/)
+    // No focus rule of any kind on the pane, and no focus form of any token.
+    expect(INDEX_CSS).not.toMatch(/\.glass-shadow[^{]*:focus-within/)
+    expect(INDEX_CSS).not.toContain('--glass-edge-focus')
     expect(INDEX_CSS).not.toContain('--glass-tint-focus')
     expect(INDEX_CSS).not.toContain('composer-halo')
     expect(INDEX_CSS).not.toMatch(/\.glass-shadow[^{]* \{[^}]*--accent/)
@@ -238,8 +237,8 @@ describe('composer liquid glass', () => {
       expect(rule, String(block)).not.toContain('[aria-hidden="true"]{ display:none')
       // No extra ring on focus in any solid mode -- no 2px outline, no accent
       // (the maintainer's rule holds in every mode; the composer had a 1px
-      // border before the glass and that is enough). The shadow step still
-      // applies everywhere.
+      // border before the glass and that is enough). A pane does not change
+      // on focus anywhere.
       expect(rule, String(block)).not.toMatch(/focus-within\{[^}]*var\(--accent\)/)
       expect(rule, String(block)).not.toMatch(/focus-within\{[^}]*outline:2px/)
     }

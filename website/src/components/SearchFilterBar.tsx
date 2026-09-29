@@ -17,9 +17,9 @@ import { cn } from '../lib/utils'
  * 10px radius) and floats over the list inside a `ListDock`,
  * so the rows scroll under it the way the transcript scrolls under the
  * composer. The `<input>` inside is transparent: the pane IS the field's
- * surface, and `.glass-shadow:focus-within` (index.css) is its focus cue —
- * the tint steps opaque and the side lines darken, the same cue the composer
- * and the mobile Settings capsule give, so the input carries no ring of its own.
+ * surface. Like every glass pane (the composer, the mobile Settings capsule)
+ * it does not change on focus -- maintainer decision, no ring, no tint or edge
+ * step; the caret is the indicator -- so the input carries no ring of its own.
  *
  * Trailing controls are 24px (`w-6`) buttons in a `gap-0.5` row 4px from the
  * field's right edge. The input's right padding and the clear button's
@@ -58,7 +58,7 @@ export function SearchFilterBar({
       <Glass variant="chip" radius={FIELD_RADIUS} className="glass-shadow w-full" data-testid="search-field-glass">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden="true" />
         <input
-          /* focus-cue-ok: the cue is the Glass host's `.glass-shadow:focus-within` (index.css) — the tint steps opaque and the side lines darken, the composer's and the Settings capsule's cue; a ring on the input would double-paint one control. */
+          /* focus-cue-ok: maintainer decision -- the Glass host does not change on focus (no ring, no tint or edge step, never the accent), the same rule as the composer and the mobile Settings capsule; the caret is the indicator, and a ring on the input itself is not wanted. */
           className="w-full bg-transparent border-none rounded-full pl-8 py-1.5 text-text text-[13px] font-body outline-hidden placeholder:text-muted/70"
           placeholder={placeholder}
           value={value}

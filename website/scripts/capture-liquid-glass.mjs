@@ -17,6 +17,8 @@ import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { serveDist } from './lib/serve-dist.mjs'
 import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-api.mjs'
+import { screenshotWithCaret } from './lib/screenshot-with-caret.mjs'
+
 
 const OUT = process.argv[2] || '../temp-screenshots/liquid-glass'
 const SLOT = 'chat-glass'
@@ -373,23 +375,22 @@ async function main() {
       const restBorder = await wrapEl.evaluate(el => getComputedStyle(el).borderTopColor)
       await page.getByLabel('Message input').first().click()
       await page.waitForTimeout(300)
-      // Focus is the pane's edges and shadow: the neutral shadow deepens and
-      // the side lines step, the tint stays put (a focused pane is the same
-      // glass as a resting one), and NOTHING turns the theme colour -- no
-      // accent glow on the dock, no accent border on the wrapper.
+      // Focus changes NOTHING on the pane (maintainer decision): same shadow,
+      // same tint, same side lines, and the wrapper border stays transparent --
+      // no accent glow, no accent border, no neutral step either. The caret is
+      // the composer's focus indicator.
       const focusDock = await dockEl.evaluate(el => ({ shadow: getComputedStyle(el).boxShadow, tint: getComputedStyle(el).getPropertyValue('--glass-tint').trim(), edge: getComputedStyle(el).getPropertyValue('--glass-edge').trim() }))
       const focusBorder = await wrapEl.evaluate(el => getComputedStyle(el).borderTopColor)
-      if (focusDock.shadow === restDock.shadow) throw new Error(`chat/${theme}: dock shadow unchanged on focus (${focusDock.shadow})`)
-      if (!/^rgba\(0, 0, 0, [\d.]+\) 0px 0px 18px 0px$/.test(focusDock.shadow)) throw new Error(`chat/${theme}: focused dock shadow is not the neutral glass-shadow: ${focusDock.shadow}`)
+      if (!/^rgba\(0, 0, 0, [\d.]+\) 0px 0px 18px 0px$/.test(restDock.shadow)) throw new Error(`chat/${theme}: dock shadow is not the neutral glass-shadow: ${restDock.shadow}`)
+      if (focusDock.shadow !== restDock.shadow) throw new Error(`chat/${theme}: dock shadow changed on focus (${restDock.shadow} -> ${focusDock.shadow}); the pane must not change on focus`)
       if (focusDock.tint !== restDock.tint) throw new Error(`chat/${theme}: dock tint changed on focus (${restDock.tint} -> ${focusDock.tint}); a focused pane is the same glass as a resting one`)
-      if (focusDock.edge === restDock.edge) throw new Error(`chat/${theme}: dock side line unchanged on focus (${focusDock.edge})`)
-      if (focusBorder !== restBorder) throw new Error(`chat/${theme}: wrapper border changed on focus (${restBorder} -> ${focusBorder}); the accent focus border is back -- the composer's focus cue must be the glass, not a themed border`)
-      console.log(`chat/${theme}: focus shadow ${restDock.shadow} -> ${focusDock.shadow}; edge ${restDock.edge} -> ${focusDock.edge}; tint ${focusDock.tint} (unchanged); border ${focusBorder} (unchanged)`)
+      if (focusDock.edge !== restDock.edge) throw new Error(`chat/${theme}: dock side line changed on focus (${restDock.edge} -> ${focusDock.edge}); the pane must not change on focus`)
+      if (focusBorder !== restBorder) throw new Error(`chat/${theme}: wrapper border changed on focus (${restBorder} -> ${focusBorder}); the accent focus border is back`)
+      console.log(`chat/${theme}: focus leaves the pane unchanged -- shadow ${focusDock.shadow}; edge ${focusDock.edge}; tint ${focusDock.tint}; border ${focusBorder}`)
     }
     if (variant === 'approval') {
-      // A pending decision keeps the warm glow in the shadow slot, and the
-      // textarea must still get a focus cue: the edge step rides under the
-      // glow (WCAG 2.4.7 -- no state without a visible cue).
+      // A pending decision keeps the warm glow in the shadow slot at rest and
+      // while the textarea has focus; the pane itself does not change on focus.
       await page.mouse.click(700, 200)
       await page.waitForTimeout(300)
       const dockEl = page.getByTestId('composer-dock').first()
@@ -401,18 +402,37 @@ async function main() {
       if (/rgba\(0, 0, 0, [\d.]+\) 0px 0px 18px 0px/.test(rest.shadow)) throw new Error(`chat/${theme}/approval: the neutral glass-shadow displaced the approval glow at rest (${rest.shadow})`)
       if (/rgba\(0, 0, 0, [\d.]+\) 0px 0px 18px 0px/.test(focus.shadow)) throw new Error(`chat/${theme}/approval: the neutral glass-shadow displaced the approval glow on focus (${focus.shadow})`)
       if (focus.tint !== rest.tint) throw new Error(`chat/${theme}/approval: dock tint changed on focus (${rest.tint} -> ${focus.tint})`)
-      if (focus.edge === rest.edge) throw new Error(`chat/${theme}/approval: dock edge unchanged on focus while a decision is pending (${focus.edge})`)
-      console.log(`chat/${theme}/approval: edge ${rest.edge} -> ${focus.edge}; tint ${focus.tint} (unchanged); shadow stays the glow`)
-      await page.screenshot({
-        path: `${OUT}/composer-${theme}-approval-focused-crop.png`,
-        clip: { x: Math.max(0, box.x - 40), y: Math.max(0, box.y - 140), width: box.width + 80, height: box.height + 180 },
-      })
+      if (focus.edge !== rest.edge) throw new Error(`chat/${theme}/approval: dock edge changed on focus (${rest.edge} -> ${focus.edge}); the pane must not change on focus`)
+      // (The glow pulses, so its two reads differ by design; the two checks above
+      // already pin that neither read is the neutral glass-shadow.)
+      console.log(`chat/${theme}/approval: focus leaves the pane unchanged -- edge ${focus.edge}; tint ${focus.tint}; shadow stays the glow`)
+      // The glow pulses inside this clip, so the caret probe is the textarea
+      // alone. While a decision is pending the textarea may refuse focus (the
+      // approval bar owns the keyboard); then there is no caret to catch and the
+      // frame is taken plain.
+      const approvalClip = { x: Math.max(0, box.x - 40), y: Math.max(0, box.y - 140), width: box.width + 80, height: box.height + 180 }
+      const ta = page.getByLabel('Message input').first()
+      if (await ta.evaluate(el => document.activeElement === el)) {
+        // Best effort here: this frame documents the glow, and the caret is
+        // asserted on the plain composer scene above.
+        if (!(await screenshotWithCaret(page, { path: `${OUT}/composer-${theme}-approval-focused-crop.png`, clip: approvalClip }, ta))) console.log(`chat/${theme}/approval: no caret caught within the attempt window; frame taken without it`)
+      } else {
+        console.log(`chat/${theme}/approval: textarea does not hold focus while a decision is pending; plain frame`)
+        await page.screenshot({ path: `${OUT}/composer-${theme}-approval-focused-crop.png`, clip: approvalClip })
+      }
     }
     await page.screenshot({ path: `${OUT}/composer-${theme}${variant ? '-' + variant : ''}.png` })
-    await page.screenshot({
+    const cropOpts = {
       path: `${OUT}/composer-${theme}${variant ? '-' + variant : ''}-crop.png`,
       clip: { x: Math.max(0, box.x - 40), y: Math.max(0, box.y - 260), width: box.width + 80, height: box.height + 300 },
-    })
+    }
+    if (!variant) {
+      // The textarea holds focus here and the caret is the only indicator, so
+      // the frame must show it.
+      if (!(await screenshotWithCaret(page, cropOpts, page.getByLabel('Message input').first()))) throw new Error(`chat/${theme}: no caret caught in the focused composer frame`)
+    } else {
+      await page.screenshot(cropOpts)
+    }
     console.log('wrote', `${OUT}/composer-${theme}${variant ? '-' + variant : ''}.png`)
     await context.close()
   }
@@ -437,23 +457,31 @@ async function main() {
     const restEdge = await halo.evaluate(el => getComputedStyle(el).getPropertyValue('--glass-edge').trim())
     await page.screenshot({ path: `${OUT}/settings-capsule-${theme}.png` })
     console.log('wrote', `${OUT}/settings-capsule-${theme}.png`)
-    // Focused: the capsule's focus cue is the shadow box deepening (neutral, no
-    // accent — that glow is the composer's alone; the input itself has no
-    // outline), so the shadow must change when the input takes focus.
+    // Focused: the capsule does not change (maintainer decision) -- same
+    // shadow, same side lines, no accent, no outline on the input; the caret is
+    // the indicator. Assert the pane is untouched by focus.
     await search.tap()
     await page.waitForTimeout(400)
     const focused = await search.evaluate(el => document.activeElement === el)
     if (!focused) throw new Error(`settings/${theme}: search input did not take focus`)
     const focusShadow = await halo.evaluate(el => getComputedStyle(el).boxShadow)
-    if (focusShadow === restShadow) throw new Error(`settings/${theme}: halo glow unchanged on focus (${focusShadow})`)
-    console.log(`settings/${theme}: halo ${restShadow} -> ${focusShadow}`)
-    // ... and the side lines step to `--glass-edge-focus` (the tint stays put),
-    // so the focused capsule is told apart from the resting one by its edges.
+    if (focusShadow !== restShadow) throw new Error(`settings/${theme}: capsule shadow changed on focus (${restShadow} -> ${focusShadow})`)
     const focusEdge = await halo.evaluate(el => getComputedStyle(el).getPropertyValue('--glass-edge').trim())
-    if (focusEdge === restEdge) throw new Error(`settings/${theme}: side line unchanged on focus (${focusEdge})`)
-    console.log(`settings/${theme}: edge ${restEdge} -> ${focusEdge}`)
+    if (focusEdge !== restEdge) throw new Error(`settings/${theme}: side line changed on focus (${restEdge} -> ${focusEdge})`)
+    console.log(`settings/${theme}: focus leaves the capsule unchanged -- shadow ${focusShadow}; edge ${focusEdge}`)
     await page.screenshot({ path: `${OUT}/settings-capsule-${theme}-focused.png` })
     console.log('wrote', `${OUT}/settings-capsule-${theme}-focused.png`)
+    // The capsule up close, rest and focused, so the caret -- the only thing
+    // that differs -- is visible to a reader of the attachment (a 3x phone
+    // frame shrinks it to a hairline).
+    const cbox = await halo.boundingBox()
+    const cclip = { x: Math.max(0, cbox.x - 24), y: Math.max(0, cbox.y - 24), width: cbox.width + 48, height: cbox.height + 48 }
+    if (!(await screenshotWithCaret(page, { path: `${OUT}/settings-capsule-${theme}-focused-crop.png`, clip: cclip }, search))) throw new Error(`settings/${theme}: no caret caught in the focused capsule frame`)
+    console.log('wrote', `${OUT}/settings-capsule-${theme}-focused-crop.png`)
+    await search.evaluate(el => el.blur())
+    await page.waitForTimeout(300)
+    await page.screenshot({ path: `${OUT}/settings-capsule-${theme}-rest-crop.png`, clip: cclip })
+    console.log('wrote', `${OUT}/settings-capsule-${theme}-rest-crop.png`)
     await context.close()
   }
 
@@ -469,9 +497,9 @@ async function main() {
     if (dialogs) throw new Error(`settings-desktop/${theme}: ${dialogs} unexpected dialog(s) open`)
     await page.screenshot({ path: `${OUT}/settings-desktop-${theme}.png` })
     console.log('wrote', `${OUT}/settings-desktop-${theme}.png`)
-    // The desktop search bar's focus is neutral like the glass panes': the
-    // shared `focus-ring` shape, but a darker border and a soft neutral halo,
-    // never the theme accent. Focus via the keyboard so :focus-visible matches
+    // The desktop search bar is a boxed input, not a glass pane, so it keeps
+    // a focus ring: the shared `focus-ring` shape, but a darker border and a
+    // soft neutral halo, never the theme accent. Focus via the keyboard so :focus-visible matches
     // the way it does for a typing affordance, then read the computed ring.
     const search = page.locator('.settings-search input').first()
     if (!(await search.count())) throw new Error(`settings-desktop/${theme}: search bar missing`)

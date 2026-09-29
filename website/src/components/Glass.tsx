@@ -34,11 +34,12 @@
  * the caller's state, not the material's. A hue is mixed INTO the tint with `glass-accent`
  * (picked chip, tip card) or `glass-warn` (incognito chip), and `glass-hover`
  * brightens an interactive pane a step on hover — all three swap `--glass-tint`
- * on the host (index.css), so the pane stays the same material. Focus is the
- * shared `.glass-shadow:focus-within` step — the tint and the side lines step
- * up, the shadow deepens — on every pane alike: the material never lights up
- * in the theme color. The optics are not open for override here — change the
- * recipe, not the call site.
+ * on the host (index.css), so the pane stays the same material. Focus changes
+ * NOTHING on the pane — no theme colour, no brighter tint, no darker side
+ * lines, no deeper shadow (maintainer decision): a focused pane is the same
+ * glass as a resting one, and the focus indicator is the caret, or the app's
+ * own `:focus-visible` ring on a pane that is itself the control. The optics
+ * are not open for override here — change the recipe, not the call site.
  */
 import { forwardRef, type ReactElement, type Ref } from 'react'
 import { LiquidGlass, type GlassHostTag, type LiquidGlassOwnProps, type LiquidGlassProps } from './ui/liquid-glass'

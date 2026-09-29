@@ -197,8 +197,8 @@ ANCESTOR_CUE = re.compile(r"\bfocus-within:([a-z0-9-]+(?:\[[^\]]*\])?)")
 # it silenced the composer textarea in `components/ChatInput.tsx` back when its
 # wrapper's `focus-within:border-accent/50` lived only in the final else-branch
 # of a ternary, so three persistent modes really rendered with no regional cue
-# (that cue is gone; the textarea now declares its dock pane's `.glass-shadow`
-# tint + edge step as its cue via a `focus-cue-ok` comment).
+# (that cue is gone; the textarea now carries a `focus-cue-ok` comment recording
+# the maintainer decision that its glass dock pane does not change on focus).
 ANCESTOR_CUE_WINDOW = 4
 
 

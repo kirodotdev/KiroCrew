@@ -2480,10 +2480,10 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    and the extra class raises specificity so the two never stack. */
 .focus-ring:focus-visible{outline:none;border-color:var(--ring);
   box-shadow:0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
-/* The Settings search bar (pages/settings/SettingsSearch.tsx) keeps the ring's
-   shape but not its colour: like every glass pane, its focus is the control
-   stepping clearer -- a stronger neutral border and a neutral halo -- never
-   the theme accent. The border is 60% text over the border token, which clears
+/* The desktop Settings search bar (pages/settings/SettingsSearch.tsx) is a boxed
+   input, not a glass pane, so it keeps a focus ring -- the shared shape with a
+   neutral colour: a stronger neutral border and a neutral halo, never the theme
+   accent. The border is 60% text over the border token, which clears
    WCAG 1.4.11's 3:1 against the field, the page and the resting border in both
    polarities (dark #98989b: 5.9:1 on --bg-elevated, 5.2:1 on --border; light
    #818186: 3.9:1 / 3.1:1); --border-strong alone measured 1.4-1.6:1, a ring in
@@ -2994,17 +2994,15 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * --glass-hairline, a half-pixel dark sliver just OUTSIDE the top and bottom
  * edges (the reference's bands sit on a very thin dark line). --glass-edge is
  * also the hairline for a DIVIDER inside a pane (the approval bar meeting the
- * composer, the split chip's seam). --glass-edge-focus is the side line a
- * focused `.glass-shadow` pane swaps in (the same ink at roughly twice the
- * alpha, so the two side lines read as the focus ring the material otherwise
- * has none of), neutral, never the theme color. The tint does NOT step on
- * focus: a focused pane is the same glass as a resting one (maintainer
- * decision -- the earlier brighter focus tint composited to ~70 over the dark
- * page against a resting ~28 and read as a pale slab); the side lines and the
- * deeper shadow are the whole cue. The light tint is a neutral grey, not a
- * bluish one, at 45%: the blue cast read as dirt on a white page. */
-:root { --glass-tint: rgba(30, 30, 34, 0.40); --glass-band: rgba(255, 255, 255, 0.22); --glass-edge: rgba(255, 255, 255, 0.14); --glass-edge-focus: rgba(255, 255, 255, 0.55); --glass-hairline: rgba(0, 0, 0, 0.50); }
-[data-mode="light"] { --glass-tint: rgba(240, 240, 240, 0.45); --glass-band: rgba(255, 255, 255, 1); --glass-edge: rgba(0, 0, 0, 0.24); --glass-edge-focus: rgba(0, 0, 0, 0.60); --glass-hairline: rgba(0, 0, 0, 0.20); }
+ * composer, the split chip's seam). None of these tokens has a focus form: a
+ * focused pane is the same glass as a resting one (maintainer decision -- the
+ * earlier brighter focus tint composited to ~70 over the dark page against a
+ * resting ~28 and read as a pale slab, and a side-line / shadow step read as a
+ * second material; the caret is the focus indicator on the composer). The light
+ * tint is a neutral grey, not a bluish one, at 45%: the blue cast read as dirt
+ * on a white page. */
+:root { --glass-tint: rgba(30, 30, 34, 0.40); --glass-band: rgba(255, 255, 255, 0.22); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50); }
+[data-mode="light"] { --glass-tint: rgba(240, 240, 240, 0.45); --glass-band: rgba(255, 255, 255, 1); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20); }
 
 /* Tint steps for a Liquid Glass pane (components/Glass.tsx). Every surface in
  * the composer dock — the composer, the follow-up chips, the tip / suggestion /
@@ -3056,30 +3054,22 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 
 /* Neutral rest shadow for EVERY glass pane — the session composer, the mobile
  * Settings capsule, the tip / suggestion / question cards. Offset-free spread,
- * no theme-coloured focus glow anywhere: the material has one focus cue, and it
- * is never the accent (the composer's old accent halo and its accent wrapper
- * border are gone).
- * Focus-within deepens the shadow one step AND, on a neutral pane, swaps the
- * side line for `--glass-edge-focus` (the same ink, about twice the alpha): the
- * shadow step alone read as zero delta on the capsule screenshots, so the edges
- * step with it. The tint stays put -- a focused pane is the same glass as a
- * resting one. Neutral on purpose, no theme color anywhere.
+ * and the SAME shadow whether or not a control inside the pane has focus: the
+ * material does not change on focus at all -- no accent glow, no brighter
+ * tint, no darker side lines, no deeper shadow (maintainer decision; each of
+ * those was tried and each read as a second, whiter box on the transcript).
+ * The focus indicator on the composer is the caret; on a glass button it is
+ * the app's own `:focus-visible` ring. The composer's old accent halo and its
+ * accent wrapper border are gone.
  * Where the material is solidified (the three fallback blocks at the end of
  * this file, and the user's Reduce-glass-transparency switch) none of these
  * layers paint; a solid pane wears the app's 1px --border outline like every
  * card did before the glass -- one token, the same on the composer and on a
- * chip, unchanged on focus. No extra ring, no accent, in any mode; the shadow
- * step is the focus cue there. */
+ * chip, unchanged on focus. */
 .glass-shadow { box-shadow: 0 0 18px rgba(0, 0, 0, 0.06); transition: box-shadow 0.18s ease; }
 [data-mode="dark"] .glass-shadow { box-shadow: 0 0 18px rgba(0, 0, 0, 0.30); }
-.glass-shadow:focus-within { box-shadow: 0 0 18px rgba(0, 0, 0, 0.14); }
-/* Neutral panes only: an accent / warn pane carries its hue in its side lines
-   too, and the focus step must not overwrite it while a control has focus. */
-.glass-shadow:focus-within:not(.glass-accent, .glass-warn) { --glass-edge: var(--glass-edge-focus); }
-[data-mode="dark"] .glass-shadow:focus-within { box-shadow: 0 0 18px rgba(0, 0, 0, 0.55); }
-/* A pending approval swaps the pane's rest / focus shadow for the warm glow,
-   at rest and while focused; the tint + edge focus step above still applies. */
-.glass-shadow.approval-glow, .glass-shadow.approval-glow:focus-within { box-shadow: var(--approval-shadow); }
+/* A pending approval swaps the pane's shadow for the warm glow. */
+.glass-shadow.approval-glow { box-shadow: var(--approval-shadow); }
 
 /* The composer dock's two wrapper boxes (ChatPage.tsx) span the pane but hold
    nothing of their own: every child is its own content column. The wrappers
@@ -3147,8 +3137,6 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   .liquid-glass.glass-accent{ background:color-mix(in srgb, var(--accent) 14%, var(--bg-elevated)) !important }
   .liquid-glass.glass-warn{ background:color-mix(in srgb, var(--warn) 12%, var(--bg-elevated)) !important }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
-  /* The focus cue of a neutral pane (tint + side-line step) lives in the hidden
-     layers, so a solidified pane holding focus gets the standard ring. */
   /* Floating notification panes (the banner, the bell popover's rows) sit OVER
      page content, so they solidify to the card color, not the page background.
      They are Glass panes too, so this rule follows `.liquid-glass` and wins. */
@@ -3192,7 +3180,8 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    layers, so a solid pane has no edge of its own, and on a light page a white
    card on a white page simply vanished (the follow-up chips read as bare text).
    The same --border token every card wore before the glass, on the composer
-   and on a chip alike, unchanged on focus-within (the shadow step is that cue).
+   and on a chip alike, unchanged on focus-within (a pane does not change on
+   focus in any mode; the caret is the indicator).
    The pane outline is `!important`, so the app's keyboard ring (`:focus-visible`
    in @layer base) would lose to it on the glass BUTTONS -- the follow-up chips,
    the memory chip, the jump-to-bottom pill -- and a Tabbed chip would paint
@@ -3244,8 +3233,6 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   .liquid-glass:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px !important }
   :root{ --glass-edge:var(--text) }
   .liquid-glass>[data-liquid-glass-layer]{ display:none !important }
-  /* Outranks the 1px pane outline above (same importance, higher specificity),
-     so a focused capsule reads as focused, not merely delimited. */
 }
 
 /* ── Mono-family compensation ─────────────────────────────────────────────
