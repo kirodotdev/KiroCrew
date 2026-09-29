@@ -4052,7 +4052,16 @@ async def api_file_raw(request: web.Request) -> web.Response:
         _log("denied", path)
         return web.json_response({"error": "file content is not a recognized format"}, status=403)
     _log("success", path)
-    headers = {"Content-Type": content_type, "X-Content-Type-Options": "nosniff"}
+    # inline (not attachment) keeps the PDF/image rendering in the viewer's
+    # <iframe>/<img>, while naming the file so the browser's native Download /
+    # Save-as saves under the real name instead of "file-raw" -- the last
+    # segment of this endpoint's URL. Sibling parity with api_file_stream.
+    safe_name = urllib.parse.quote(os.path.basename(path), safe="")
+    headers = {
+        "Content-Type": content_type,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": f"inline; filename*=UTF-8''{safe_name}",
+    }
     if content_type == "image/svg+xml":
         headers["Content-Security-Policy"] = "script-src 'none'; style-src 'unsafe-inline'"
     return web.Response(body=data, headers=headers)
