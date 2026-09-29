@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
@@ -640,7 +641,7 @@ class TestLaunchAndLifecycleBoundary:
         monkeypatch.setattr(routes, "_run_lifecycle_script", _unexpected_async)
         monkeypatch.setattr(routes, "on_app_enable", _unexpected_async)
 
-        async with TestClient(TestServer(_route_app())) as client:
+        async with TestClient(TestServer(as_owner(_route_app()))) as client:
             response = await client.post("/api/apps/execution-test-app/enable")
             assert response.status == 400
             body = await response.json()

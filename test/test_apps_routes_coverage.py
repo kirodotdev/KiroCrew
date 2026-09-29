@@ -1937,6 +1937,33 @@ class TestEnableRefusesAppTokens:
         assert routes_mod.get_app(APP)["sessionApprovalConsentPending"] is True
 
     @pytest.mark.asyncio
+    async def test_non_owner_dashboard_user_cannot_enable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Enabling registers the app's agents, skills, MCP servers and crons and
+        # starts its backend, so a signed-in non-owner dashboard user is refused
+        # with 403 owner_only even without a consent body, and nothing runs.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, setup={"onEnable": "echo should-not-run"})
+        reached: list[str] = []
+
+        async def _script(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            reached.append("on_enable_script")
+            return {"output": "", "failed": False}
+
+        monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _script)
+        monkeypatch.setattr(
+            routes_mod, "start_app_backend", lambda n: reached.append("start_app_backend")
+        )
+        async with TestClient(TestServer(_make_app(dashboard_user="guest"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "owner_only"
+        assert reached == []
+        assert routes_mod.get_app(APP)["enabled"] is False
+
+    @pytest.mark.asyncio
     async def test_pending_consent_requires_disclosure_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1991,7 +2018,7 @@ class TestEnableBranches:
 
         monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _must_not_run)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 200
             body = await resp.json()
@@ -2010,7 +2037,7 @@ class TestEnableBranches:
         monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _failed)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
         monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 400
             body = await resp.json()
@@ -2031,7 +2058,7 @@ class TestEnableBranches:
 
         monkeypatch.setattr(routes_mod, "on_app_enable", _boom)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 200
             body = await resp.json()
@@ -2055,7 +2082,10 @@ class TestEnableBranches:
 
         monkeypatch.setattr(routes_mod, "on_app_enable", _hooks)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
-        async with TestClient(TestServer(_make_app())) as client:
+        app = _make_app(dashboard_user="owner")
+        # A real dashboard state carries broadcast_ws; the hook wiring reads it.
+        app["state"].broadcast_ws = lambda *a, **k: None
+        async with TestClient(TestServer(app)) as client:
             resp = await client.post(f"/api/apps/{APP}/enable")
             assert resp.status == 200
             issues = (await resp.json())["hooks"]["health_status"]["issues"]
@@ -2066,7 +2096,7 @@ class TestEnableBranches:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post("/api/apps/ghost/enable")
             assert resp.status == 404
 
@@ -2254,7 +2284,10 @@ class TestRepeatedToggleIsIdempotent:
         monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _script)
         monkeypatch.setattr(routes_mod, "on_app_enable", _hooks)
         monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("backend"))
-        async with TestClient(TestServer(_make_app())) as client:
+        app = _make_app(dashboard_user="owner")
+        # A real dashboard state carries broadcast_ws; the hook wiring reads it.
+        app["state"].broadcast_ws = lambda *a, **k: None
+        async with TestClient(TestServer(app)) as client:
             first = await client.post(f"/api/apps/{APP}/enable")
             assert first.status == 200
             assert calls == ["backend", "onEnable", "hooks"]
@@ -4780,8 +4813,9 @@ async def test_enable_does_not_re_register_after_the_backend_starts(
         ),
     )
 
-    async with TestClient(TestServer(_make_app())) as client:
-        await client.post(f"/api/apps/{APP}/enable", json={})
+    async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+        resp = await client.post(f"/api/apps/{APP}/enable", json={})
+        assert resp.status == 200
 
     assert called == [], "enable re-registered after start; the adoption path owns that"
 

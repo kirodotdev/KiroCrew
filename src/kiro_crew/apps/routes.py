@@ -1904,6 +1904,13 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             status=403,
         )
 
+    # local import: avoids a circular import with dashboard.handlers
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "app_enable")
+    if denied is not None:
+        return denied
+
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
