@@ -1864,6 +1864,7 @@
         "persistence_enabled": true,
         "inject_memory": true,
         "inject_lessons": true,
+        "inject_lessons_per_turn": false,
         "inject_activity": true,
         "migrated": false
       }
@@ -2264,6 +2265,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.inject_lessons_per_turn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lessons Per Message",
+      "help": "On each follow-up message, add up to three stored lessons that match it and have not been shown in the session yet. The session-start block holds only what fits its budget; this adds the rest as the topic reaches them. Requires inject_lessons.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "memory.inject_activity",

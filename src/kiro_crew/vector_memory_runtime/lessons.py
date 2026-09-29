@@ -935,25 +935,10 @@ def get_lessons_context(
     # out-of-scope is not reported as "omitted" -- omitted means "did not fit
     # the budget", and conflating the two would tell the model that rules it
     # should never see are being kept from it for space.
-    entries: list[tuple[dict, str]] = []
     with store._db_lock:
         store._check_recall_query(recall_query)
         lesson_rows = store._eligible_rows(store.get_lessons(), "directive")
-    for row in lesson_rows:
-        try:
-            decoded = json.loads(row["value_json"])
-        except (TypeError, ValueError, RecursionError):
-            # One unreadable row must not fail every context build; the key
-            # names the row to repair, the value is left out of the log.
-            logger.warning("Skipping lesson %r: stored value_json does not decode", row["key"])
-            continue
-        text = _renderable_lesson_text(decoded, row["key"])
-        if not text:
-            continue
-        scope = _lesson_scope(decoded)
-        if scope and not project_scope_satisfied(scope, project_dir):
-            continue
-        entries.append((row, text))
+    entries = _renderable_entries(lesson_rows, project_dir)
     if not entries:
         return ""
     if background:
@@ -1152,6 +1137,107 @@ def get_lessons_context(
     return render(selected)
 
 
+def _renderable_entries(
+    lesson_rows: list[dict], project_dir: str | Path | None
+) -> list[tuple[dict, str]]:
+    """``(row, text)`` for every row that renders and is in scope for *project_dir*."""
+    entries: list[tuple[dict, str]] = []
+    for row in lesson_rows:
+        try:
+            decoded = json.loads(row["value_json"])
+        except (TypeError, ValueError, RecursionError):
+            # One unreadable row must not fail every context build; the key
+            # names the row to repair, the value is left out of the log.
+            logger.warning("Skipping lesson %r: stored value_json does not decode", row["key"])
+            continue
+        text = _renderable_lesson_text(decoded, row["key"])
+        if not text:
+            continue
+        scope = _lesson_scope(decoded)
+        if scope and not project_scope_satisfied(scope, project_dir):
+            continue
+        entries.append((row, text))
+    return entries
+
+
+#: Request words in ``lesson_keywords``' stop list and words of two letters or
+#: fewer are ignored. Each remaining request word is matched once through its
+#: stem. A follow-up message earns a lesson only when they share at least
+#: ``_TURN_LESSON_TERMS`` distinct stems that are each rare: found in at most
+#: ``_TURN_LESSON_RARITY`` of the N stored lessons, and never fewer than one, so
+#: a small store still admits a lesson through words no other lesson carries.
+#: Rarity is a count of distinct stems, not a sum of their weights: a sum lets
+#: one word found in a single lesson admit it alone, and lets a store of a few
+#: hundred lessons count an ordinary word as rare.
+_TURN_LESSON_TERMS = 2
+_TURN_LESSON_RARITY = 0.01
+
+
+def turn_lessons(
+    store: VectorMemoryStore,
+    query_text: str,
+    *,
+    shown: Callable[[str], bool],
+    project_dir: str | Path | None = None,
+    max_rows: int,
+    max_chars: int,
+    render_lesson: Callable[[str], str] | None = None,
+) -> list[tuple[str, str]]:
+    """``(key, text)`` of the lessons a follow-up message should add, best first.
+
+    Every eligible, in-scope lesson is a candidate, rules and findings alike,
+    except those *shown* reports as already in the session. Request words in
+    ``lesson_keywords``' stop list and words of two letters or fewer are ignored.
+    Each remaining request word is matched once, through its stem. A lesson is
+    admitted only when it shares at least ``_TURN_LESSON_TERMS`` distinct stems
+    with the message, each found in at most ``_TURN_LESSON_RARITY`` of the stored
+    lessons (and never fewer than one lesson); admitted lessons are ordered by
+    the summed rarity weight of every shared stem over the square root of their
+    length, the startup order, and taken while their rendered forms fit
+    *max_rows* and *max_chars*. A lesson too long for the room left is skipped,
+    not a stop. No embedding is spent.
+    """
+    if not query_text.strip() or max_rows <= 0:
+        return []
+    with store._db_lock:
+        lesson_rows = store._eligible_rows(store.get_lessons(), "directive")
+    entries = _renderable_entries(lesson_rows, project_dir)
+    if not entries:
+        return []
+    query_stems = {_stem_one(word) for word in store._lesson_keywords(query_text.lower())}
+    row_tokens = _row_stem_tokens_for_scan(len(entries))
+    shared_by_row, sizes, document_frequency = _shared_lesson_stems(
+        entries, query_stems, row_tokens
+    )
+    rows = len(entries)
+    rare_stems = {
+        stem
+        for stem, count in document_frequency.items()
+        if count <= max(1, _TURN_LESSON_RARITY * rows)
+    }
+    weight = _rarity_weights(rows, document_frequency)
+    admitted = [
+        (sum(weight[stem] for stem in shared) / math.sqrt(sizes[index]), index)
+        for index, shared in enumerate(shared_by_row)
+        if len(shared & rare_stems) >= _TURN_LESSON_TERMS and not shown(entries[index][1])
+    ]
+    # Stable, so equal scores keep the stored newest-first order.
+    admitted.sort(key=lambda pair: -pair[0])
+    chosen: list[tuple[str, str]] = []
+    used = 0
+    for _, index in admitted:
+        if len(chosen) == max_rows:
+            break
+        row, text = entries[index]
+        rendered = render_lesson(text) if render_lesson is not None else text
+        size = len(rendered) + 3  # "- " prefix and newline
+        if used + size > max_chars:
+            continue
+        chosen.append((row["key"], text))
+        used += size
+    return chosen
+
+
 def rank_lessons(
     store: VectorMemoryStore,
     entries: list[tuple[dict, str]],
@@ -1225,9 +1311,37 @@ def _lexical_lesson_scores(
     Every weight is positive, since ``df <= N``, so any overlap still outranks
     none: ordering is unchanged for a zero-overlap row, and the findings tier's
     admission test (``any_lesson_overlap``) still agrees with this ranking.
-    Document frequency is counted only for tokens the request carries, over row
-    token sets ``row_tokens`` already memoises, so no row is re-stemmed.
     """
+    masses, sizes = _lexical_lesson_weights(entries, query_words, row_tokens)
+    return [mass / math.sqrt(size) if mass else 0.0 for mass, size in zip(masses, sizes)]
+
+
+def _lexical_lesson_weights(
+    entries: list[tuple[dict, str]],
+    query_words: set[str],
+    row_tokens: Callable[[str], frozenset[str]],
+) -> tuple[list[float], list[int]]:
+    """Per entry, the summed rarity weight of its tokens in *query_words*, and its length.
+
+    Rarity is ``log((N + 1) / (df + 0.5))`` over *entries*. Document frequency
+    is counted only for tokens the request carries, over row token sets
+    ``row_tokens`` already memoises, so no row is re-stemmed. A row's length is
+    its number of distinct words, so an inflection does not make it look longer.
+    """
+    shared_by_row, sizes, document_frequency = _shared_lesson_stems(
+        entries, query_words, row_tokens
+    )
+    weight = _rarity_weights(len(entries), document_frequency)
+    return [sum(weight[token] for token in shared) for shared in shared_by_row], sizes
+
+
+def _shared_lesson_stems(
+    entries: list[tuple[dict, str]],
+    query_words: set[str],
+    row_tokens: Callable[[str], frozenset[str]],
+) -> tuple[list[frozenset[str]], list[int], dict[str, int]]:
+    """Per entry, its tokens in *query_words* and its number of distinct words; and,
+    for each such token, the number of entries carrying it."""
     shared_by_row: list[frozenset[str]] = []
     sizes: list[int] = []
     document_frequency: dict[str, int] = {}
@@ -1239,14 +1353,14 @@ def _lexical_lesson_scores(
         sizes.append(len(set(re.findall(r"\w+", normalized_text))))
         for token in shared:
             document_frequency[token] = document_frequency.get(token, 0) + 1
-    rows = len(entries)
-    weight = {
+    return shared_by_row, sizes, document_frequency
+
+
+def _rarity_weights(rows: int, document_frequency: dict[str, int]) -> dict[str, float]:
+    """``log((N + 1) / (df + 0.5))`` per token: the fewer of the *rows* carry it, the heavier."""
+    return {
         token: math.log((rows + 1) / (count + 0.5)) for token, count in document_frequency.items()
     }
-    return [
-        sum(weight[token] for token in shared) / math.sqrt(size) if shared else 0.0
-        for shared, size in zip(shared_by_row, sizes)
-    ]
 
 
 def any_lesson_overlap(

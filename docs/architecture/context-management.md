@@ -205,6 +205,7 @@ it adds:
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |
+| `[Learned corrections — relevant to this message …]` | vector `turn_lessons` | `memory.inject_lessons_per_turn` (off by default), `lessons` group, not temporary or minimal; up to 3 lessons / 2,000 chars the session has not been shown |
 | `[Hook context:]` | `hooks.on_message` returning `HOOK_INJECT_CONTEXT` | matching hook |
 | `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions |
 | `[CURRENT USER REQUEST …]` + the user's text | the turn | always last |
