@@ -3465,6 +3465,100 @@ session-scoped conftest pin read at each worker's first test. `under_measured` w
 probe's own event budget on tests that spawn real children. Nothing touched the live data
 home or the checkout.
 
+### What a fifteenth five-run pass found (macOS host, five workers, 152,063 tests per run)
+
+macOS (Apple silicon, 48 GiB), five rounds of the backend suite under the sweep skill's
+per-test probe on a test-only worktree off one commit, `-n 5` niced with a 4 GiB memory
+watchdog floor, the results directory inside the worktree but outside every test root;
+plus the vitest and electron suites once per round. Backend: 151,100 to 151,104 passed,
+3 to 7 failed, 0 errors, 946 skipped, 29 to 40 minutes per round (the 40 was round one,
+under the unpatched probe); vitest 41,106 passed and electron 2,298 passed every round;
+minimum available memory 14.6 GiB; the watchdog never fired. Two tests were red in all
+five rounds and are the host, not the suite (`test_kiro_cli_pin.py`'s two shadowed-`PATH`
+cases: the desktop app exports its bundled `kiro-cli` directory to every child, the test
+process was started from a dashboard session and inherited it, and `known_kiro_cli_dirs`
+ranks that directory FIRST -- the product behaving correctly; the fake host now drops the
+variable too). Everything else red was a race that went green in at least one round.
+
+The generalisable lesson this time: **a process-lifetime pool created lazily during a
+test is not that test's leak, and a probe that says otherwise is measuring scheduling.**
+Seventy-three of the eighty-five `leaked_child` records were the shared
+`executors.path_resolve_executor()` pool's two children, charged to whichever test first
+resolved a path after the previous teardown; every `env_leak` was the session temp-root
+fence landing on a worker's first and last test; every `thread_leak` but one was a named
+`mc-*` pool warming once. Read the record for WHO spawned the thing before reading the
+test for a bug -- and when the owner turns out to be a pool, fix the pool.
+
+- **A shutdown that races its own reaper refills the slot it just emptied.**
+  `SubprocessPoolExecutor.shutdown` set the stop flag and killed every child, while the
+  reaper thread -- the ONLY thing that spawns -- was mid-tick past its second stop check
+  and spawned into the slot a moment later. Measured as a `sleep(3600)` test child alive
+  at teardown in four rounds of four (`test_subprocess_pool.py::TestCallerBudget`), as 18
+  of 80 shut-down-at-once pools keeping a live child in a stress probe, and as the
+  `mc-pathres-reaper` children behind most of cluster E. `shutdown` now joins the reaper
+  (bounded, `_SHUTDOWN_REAPER_JOIN_SECS`) BEFORE the kill loop, skipping the join only
+  when the caller is the reaper itself; the same probe reads 0 of 80 after. A
+  `test/conftest.py` session fixture (the `test/` suite, not the built-in app tests) now
+  also calls `shutdown_maintenance_executor()` at session end, so the
+  shared pools are reaped where the leak reporting can see it rather than at `atexit`.
+- **A nonexclusive `O_CREAT` open can lose the create race on Darwin.** Two writers on a
+  fresh log directory -- the SEL background writer's first flush and a `prune` -- both
+  opened the chain-lock sidecar with `O_CREAT`; one came back `ENOENT` for a bare
+  `security_events.lock` and the prune was skipped, so `test_sel.py`'s concurrent chain
+  read 23 of 24 (rounds 1-3) and `test_sel_prune_streaming.py` lost appends (rounds 1, 4,
+  5). Same shape as the decision log's create. `_open_lock_sidecar` now creates
+  EXCLUSIVELY first and reopens without `O_CREAT` when a sibling won; a leaf that vanishes
+  between the two calls is a genuine `ENOENT`, left to the caller.
+- **A kill gate that answers for a neighbour's lease.** `runtime_ownership` keeps one
+  process-wide lease table and the kill gate refuses any pid found in it; test doubles
+  reuse a handful of pids (`4242` appears in about two hundred files), so a lease left by
+  an earlier test on the same worker made `test_cron_reaper.py` and
+  `test_subagent_force_stop_audit.py` read `outcome == "refused"` where they assert the
+  failed-kill wording -- three reds in one round, green in four. An autouse conftest reset
+  now clears both tables on both sides of every test.
+- **A wall-clock barrier as a race detector.** `spec_builder/tests/test_routes.py`'s
+  tombstone race parked both writers on a `threading.Barrier(3, timeout=10)`, but once the
+  first holds `_INDEX_LOCK` the second can never reach the barrier, so the CORRECT code
+  paid the full 10 s `BrokenBarrierError` every run and told pass from fail by elapsed
+  time. It now parks the first reader on an `Event`, signals the second writer's arrival
+  at the lock through the facade, and asserts exactly one read happened while parked --
+  0.3 s, and both planted races still fail.
+- **`Popen.kill()` is a shutdown, not a reap.** 7,765 `os.kill` events in runs 2-5 were
+  walked by caller: 5,629 were signal 0 through `platform_compat`'s liveness helpers,
+  2,136 were `Popen`/`asyncio.Process` kills or start-id-pinned helpers at a child the
+  test or production spawned inside the test, and 0 were a signal at a pid the test did
+  not create. The census (not a fix) is the deliverable; the probe still cannot tie a kill
+  to a spawn because spawn events carry no pid.
+- **A `monkeypatch.chdir` leaves the descriptor `cwd=None`.** 155 real `git` spawns from
+  two files (`auto_improvement/tests/test_suite_scope.py`, `test_prepare_pr_green_age.py`)
+  ran with the worker's cwd changed under them, indistinguishable to a per-spawn audit from
+  a spawn in the checkout. Both production helpers keep `cwd=None` by contract and already
+  expose the seam, so the tests now pin it: `runner=partial(subprocess.run, cwd=...)`, or
+  the script module's `subprocess` binding replaced with a namespace whose `run` carries
+  `cwd`. One spawn remains suite-wide, the rootdir conftest's one-time sandbox probe; it
+  now runs in the profile's own temp dir.
+- **An object whose constructor opened SQLite, dropped without a close.** `SubagentManager`
+  (`tasks.db`), `KnowledgeStore` touched from a worker thread (per-thread connections, so
+  `close()` releases only the caller's), `SkillsLoader` built inline: +3 to +9 descriptors
+  per test, GC-timed, in eleven files. Every one already had a production close path;
+  `close_subagent_managers` joins `close_skills_loaders` as an opt-in `test/conftest.py`
+  fixture and replaces ten identical module-level copies, `_close_all_for_tests()` is used
+  where another thread held a connection, and `close_skills_loaders` now joins the closed
+  loader's `skill-catalog-refresh` worker so a thread probe sees it gone.
+
+What was flagged and read before being left alone. `under_measured` and 54,197
+`checkout_write` records in round one were the probe (bare filenames pytest's
+`rmtree`-by-descriptor hands the audit hook, glued to the repo root; fixed before round
+two). `host_write` was the hypothesis example database the conftest redirects to
+`~/.cache`. `kill` is the census above. `thread_leak` outside the one `SkillsLoader` case
+was `mc-embed`, `mc-recall`, `mc-maint`, `mc-mcpprobe`, `mc-subproc` and `sel-writer`
+warming to their caps. `slow` was the suite's own budgets, plus the five
+`test_subagent_force_stop_audit.py` cases at 30 s each -- a missing `_RESET_TIMEOUT` pin,
+which the concurrent fourteenth pass (native Windows, three rounds) found and fixes in
+[#15061](https://github.com/kirodotdev/KiroCrew/pull/15061), together with the
+`test_connections_mint.py` tenancy stub behind the same refused-kill wording the conftest
+reset above floors.
+
 ## Running the suite: the defaults, and how to narrow safely
 
 The checkpoint run before a commit is the change-related set on both surfaces,

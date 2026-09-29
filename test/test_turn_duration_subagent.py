@@ -131,9 +131,14 @@ async def _spawn_and_capture(stream_factory) -> list[dict]:
             return_value="claude-opus-5",
         ),
     ):
-        info = mgr.spawn("measure my turn")
-        assert info is not None
-        await mgr._tasks[info.id]
+        try:
+            info = mgr.spawn("measure my turn")
+            assert info is not None
+            await mgr._tasks[info.id]
+        finally:
+            # Construction opened the durable task queue (``tasks.db`` + ``-wal`` +
+            # ``-shm``); nothing else in this test closes it.
+            mgr.close()
     return captured
 
 

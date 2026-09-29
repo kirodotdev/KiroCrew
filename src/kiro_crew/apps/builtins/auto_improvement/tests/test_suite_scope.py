@@ -15,7 +15,9 @@ it fails OPEN to whole-tree behavior whenever a scope cannot be established.
 
 from __future__ import annotations
 
+import functools
 import os
+import subprocess
 from pathlib import Path
 
 from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo.profile import (
@@ -23,6 +25,7 @@ from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo.profile impor
     PytestBuildGate,
     _suite_scope_for_globs,
 )
+from kiro_crew.apps.builtins.auto_improvement.spine import scope as scope_util
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -141,6 +144,31 @@ class TestUnresolvableScopeRefuses:
         )
         return root
 
+    @staticmethod
+    def _profile_git_runs_in(monkeypatch, clone: Path) -> None:
+        """Pin the profile's scope diff so its ``git`` spawns with ``cwd=clone``.
+
+        The profile calls ``scope.scoped_relpaths(clone, base)``, which addresses the
+        clone with ``-C`` and passes no ``cwd`` on purpose (a missing clone must stay
+        git's rc=128, not a ``FileNotFoundError`` before git runs), so left alone that
+        git inherits the process cwd -- the pytest worker's, which is this checkout.
+        ``scoped_relpaths`` already takes its spawn as an injectable ``runner``; the
+        profile does not expose it, so the module attribute the profile reads is
+        rebound to the same function with a cwd-carrying runner. Real git still
+        answers -- these tests are about git's own verdict on an unresolvable ref and
+        on an empty diff -- only the descriptor changes. A ``chdir`` would move the
+        process there too, but leaves the descriptor ``cwd=None``, which a per-spawn
+        probe cannot tell from a spawn that really did run in the checkout.
+        """
+        monkeypatch.setattr(
+            scope_util,
+            "scoped_relpaths",
+            functools.partial(
+                scope_util.scoped_relpaths,
+                runner=functools.partial(subprocess.run, cwd=str(clone)),
+            ),
+        )
+
     def test_an_unresolvable_scope_base_refuses_to_build_the_profile(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -149,10 +177,7 @@ class TestUnresolvableScopeRefuses:
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as gp
 
         clone = self._repo(tmp_path / "clone")
-        # The profile's own ``scope.scoped_relpaths`` addresses the clone with ``-C`` and
-        # passes no ``cwd``, so that git inherits the process cwd -- by default the
-        # pytest worker's, which is this checkout. Pin it to the scratch clone.
-        monkeypatch.chdir(clone)
+        self._profile_git_runs_in(monkeypatch, clone)
         # Matches on the CONSEQUENCE, not the cause: the guard deliberately does not
         # distinguish "does not resolve" from "resolves but cannot be diffed" (both widen
         # the fence identically), so asserting cause-specific wording would pin a
@@ -181,7 +206,7 @@ class TestUnresolvableScopeRefuses:
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as gp
 
         clone = self._repo(tmp_path / "clone")
-        monkeypatch.chdir(clone)  # see the sibling above: the profile's git inherits cwd
+        self._profile_git_runs_in(monkeypatch, clone)
         prof = gp.GitHubRepoProfile(
             clone_path=clone, pr_queue_dir=tmp_path / "queue", scope_base="HEAD"
         )

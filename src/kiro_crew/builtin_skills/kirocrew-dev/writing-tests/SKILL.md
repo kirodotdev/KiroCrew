@@ -735,3 +735,32 @@ The consequence for how you write a test:
       which is a loosened ratchet (`a-ratchet-may-only-tighten`); probe the host through
       the bash the script will run under, not `shutil.which`, and prefer the real binary
       where that bash has one
+- [ ] A leaked child whose spawning thread is a NAMED pool reaper (`mc-*-reaper`) is the
+      shared `executors` pool warming, not the test's child: the fix is at the pool (a
+      `shutdown` that joins its reaper BEFORE the kill loop, so a tick past its stop check
+      cannot refill the slot it just emptied) and at session end
+      (`shutdown_maintenance_executor()` in a `test/conftest.py` fixture), never a reap in
+      the first test that happened to trigger it
+- [ ] Two writers creating one sidecar on a fresh directory open it `O_CREAT | O_EXCL` first
+      and reopen without `O_CREAT` on `FileExistsError`: a nonexclusive `O_CREAT` can lose
+      the create race on Darwin with a bare `ENOENT` for the leaf, and a `prune` or flush
+      that swallows it silently skips its work (`_open_lock_sidecar`)
+- [ ] A test double's pid (`4242`) is a shared name across hundreds of files, so any
+      process-wide table keyed by pid (`runtime_ownership`'s leases and tenancy) is reset on
+      BOTH sides of every test by a `test/conftest.py` autouse fixture; a kill-gate assertion
+      that reads `refused` where it expects the failed-kill wording is a neighbour's lease,
+      not the gate
+- [ ] A race detector never parks on a `threading.Barrier(..., timeout=)` a correct
+      interleaving cannot reach: the correct code then pays the whole timeout every run and
+      pass is told from fail by elapsed time. Park on an `Event`, signal the arrival you are
+      waiting for through the seam under test, and assert the event count while parked
+- [ ] `monkeypatch.chdir` does not put a `cwd` on the spawn: the descriptor still says
+      `cwd=None`, indistinguishable to a per-spawn audit from a spawn in the checkout. Pin the
+      helper's seam instead -- `runner=partial(subprocess.run, cwd=...)`, or the script
+      module's `subprocess` binding replaced with a namespace whose `run` carries `cwd`
+- [ ] An object whose constructor opens SQLite (`SubagentManager` -> `tasks.db`,
+      `KnowledgeStore` per thread, `SkillsLoader` -> the skill index) is closed through its
+      production close path at teardown -- `test/conftest.py`'s `close_subagent_managers` /
+      `close_skills_loaders` opt-in fixtures, `opened(...)`, or `_close_all_for_tests()` when
+      ANOTHER thread held a connection (`close()` is per-thread) -- never left to the cyclic
+      collector, whose timing is what makes the descriptor count flap between runs

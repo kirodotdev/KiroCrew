@@ -266,7 +266,11 @@ class TestReclaimOrphansStillSweeps:
                 sweeper.join(5)
         assert read_result and read_result[0] is not None
         assert not _source_exists(path, "orphan")
-        s.close()
+        # The sweep ran on its own thread and opened its own connection; ``close()``
+        # is per-thread and would leave that one (``k.db`` + ``-wal`` + ``-shm``)
+        # open until the cyclic collector ran. Same seam in every test below that
+        # hands the store to another thread.
+        s._close_all_for_tests()
 
 
 class _QuiescentStore:
@@ -434,7 +438,7 @@ class TestSweepWaitsForIngestion:
         finally:
             if sweeper is not None:
                 sweeper.join(5)
-            store.close()
+            store._close_all_for_tests()
 
     def test_an_ingest_starting_while_the_sweep_holds_the_window_waits(self, tmp_path):
         store = KnowledgeStore(str(tmp_path / "k.db"))
@@ -455,7 +459,7 @@ class TestSweepWaitsForIngestion:
         finally:
             if ingester is not None:
                 ingester.join(5)
-            store.close()
+            store._close_all_for_tests()
 
     def test_bounded_wait_skips_and_logs_when_ingestion_never_drains(self, tmp_path, caplog):
         path = str(tmp_path / "k.db")
@@ -471,7 +475,7 @@ class TestSweepWaitsForIngestion:
             assert _source_exists(path, "orphan"), "a skipped sweep still deleted rows"
             assert any("maintenance skipped" in r.message for r in caplog.records)
         finally:
-            store.close()
+            store._close_all_for_tests()
 
     def test_pre_boot_orphan_is_reclaimed_when_nothing_is_ingesting(self, tmp_path):
         path = str(tmp_path / "k.db")
@@ -481,7 +485,7 @@ class TestSweepWaitsForIngestion:
             _kick_worker(store)()
             assert not _source_exists(path, "orphan")
         finally:
-            store.close()
+            store._close_all_for_tests()
 
     @pytest.mark.parametrize(
         "status", ["pending", "pending_confirmation", "syncing", "active", "paused"]
@@ -504,7 +508,7 @@ class TestSweepWaitsForIngestion:
             assert _source_exists(path, fresh)
             assert not _source_exists(path, "done")
         finally:
-            store.close()
+            store._close_all_for_tests()
 
     @pytest.mark.parametrize("status", ["synced", "error", "missing"])
     def test_a_finished_itemless_source_is_reclaimed(self, tmp_path, status):
@@ -515,7 +519,7 @@ class TestSweepWaitsForIngestion:
             _kick_worker(store)()
             assert not _source_exists(path, "done")
         finally:
-            store.close()
+            store._close_all_for_tests()
 
     def test_sweep_deletes_in_short_writer_transactions(self, tmp_path):
         """A knowledge write issued on the event loop while the sweep runs waits
@@ -558,7 +562,7 @@ class TestSweepWaitsForIngestion:
             assert _source_exists(path, artifact)
             assert not _source_exists(path, "done")
         finally:
-            store.close()
+            store._close_all_for_tests()
 
     def test_ingest_file_holds_the_gate_for_its_whole_run(self, tmp_path):
         """The pipeline's public entry brackets the whole ingest: while it is
@@ -617,7 +621,7 @@ class TestSweepWaitsForIngestion:
             elapsed = asyncio.run(scenario())
             assert elapsed < 0.5, f"nested hold waited {elapsed:.2f}s behind the window"
         finally:
-            store.close()
+            store._close_all_for_tests()
 
     def test_public_ingestion_in_flight_holds_the_gate_across_a_caller_span(self, tmp_path):
         """A caller that looks up a source and ingests into it later holds
@@ -647,7 +651,7 @@ class TestSweepWaitsForIngestion:
             with store.maintenance_window(timeout=0.05) as quiescent:
                 assert quiescent is True, "the gate stayed held after the caller returned"
         finally:
-            store.close()
+            store._close_all_for_tests()
 
 
 class TestWatcherReReadsUnderTheGate:
@@ -689,7 +693,7 @@ class TestWatcherReReadsUnderTheGate:
             pipeline.ingest_file.assert_not_awaited()
             assert store.db.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0
         finally:
-            store.close()
+            store._close_all_for_tests()
 
 
 class TestHandoffJoinsTheHoldersAdmission:
@@ -736,7 +740,7 @@ class TestHandoffJoinsTheHoldersAdmission:
             assert elapsed < 2.0, f"hand-off waited {elapsed:.2f}s behind the window"
             assert window_result == [True], "the window did not get its turn after the holds"
         finally:
-            store.close()
+            store._close_all_for_tests()
 
     def test_the_admission_covers_only_the_first_hold(self, tmp_path):
         """The task's later, separate holds wait like any other entrant."""
@@ -755,4 +759,4 @@ class TestHandoffJoinsTheHoldersAdmission:
         try:
             assert asyncio.run(scenario()) is False
         finally:
-            store.close()
+            store._close_all_for_tests()

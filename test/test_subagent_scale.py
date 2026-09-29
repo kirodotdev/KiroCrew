@@ -41,6 +41,11 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 # ``_isolate_subagents_dir`` fixture in ``conftest.py``.
 
 
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers):
+    """Every manager built here is closed at teardown; the body is in ``conftest``."""
+
+
 # ── 1. Coalescer ─────────────────────────────────────────────────────
 
 

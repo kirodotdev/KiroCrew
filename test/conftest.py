@@ -1119,6 +1119,46 @@ def _reset_live_execution_records():
 
 
 @pytest.fixture(autouse=True)
+def _reset_runtime_ownership_tables(request):
+    """A kill gate must answer for THIS test's leases, not a neighbour's.
+
+    ``runtime_ownership`` keeps one process-wide lease table and one tenancy
+    table -- there is one registry per gateway -- and the kill gate refuses any
+    pid found in either. Test doubles reuse a handful of pids (``4242`` appears
+    in about two hundred files), so a lease or tenancy left behind by an
+    earlier test on the same xdist worker makes a later reaper test read
+    ``runtime still leased by another tenant`` and ``outcome == "refused"`` in
+    place of the failed-kill wording it asserts. Measured under a macOS
+    sweep as three same-worker reds in one run (``test_cron_reaper``,
+    ``test_subagent_force_stop_audit`` x2) that passed in the other four.
+    Reset on both sides, like the per-module resets those suites already carry,
+    so a test that raises mid-lease cannot hand its pid to the next one.
+
+    A file whose last test READS the table to prove the file left it clean -- the
+    positive control beside ``test_runtime_reconcile``'s leak scan -- must see the
+    table as its own tests left it, or that read passes vacuously against a table
+    the predecessor's teardown wiped. Such a file opts out MODULE-WIDE with
+    ``pytestmark = pytest.mark.keep_runtime_ownership_tables`` and carries its own
+    intra-file resets; marking the reading test alone would not do, since the
+    wipe that matters is the one at the previous test's teardown.
+    """
+    if request.node.get_closest_marker("keep_runtime_ownership_tables") is not None:
+        yield
+        return
+
+    def clear():
+        module = sys.modules.get("kiro_crew.runtime_ownership")
+        if module is not None:
+            module._reset_for_tests()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_session_switch_locks(monkeypatch):
     """Tests reuse session keys across loops; the gateway has one serving loop."""
     import weakref
@@ -1205,6 +1245,71 @@ def close_skills_loaders(monkeypatch):
     finally:
         for loader in created:
             loader.close()
+        # ``close()`` wakes the ``skill-catalog-refresh`` worker to exit but does
+        # not join it, by design (a daemon walk may outlive a short-lived loader
+        # in production). A per-test thread probe reads the still-exiting worker
+        # as a leak, so the join here -- bounded -- is what proves it left.
+        for loader in created:
+            worker = loader._catalog_worker
+            if worker is not None:
+                worker.join(timeout=_CATALOG_WORKER_JOIN_SECS)
+
+
+#: Ceiling for joining a closed loader's catalog worker; it exits on its next wake.
+_CATALOG_WORKER_JOIN_SECS = 5.0
+
+
+@pytest.fixture
+def close_subagent_managers(monkeypatch):
+    """Close every ``SubagentManager`` built while the test runs.
+
+    Construction opens the durable task queue (``tasks.db`` + ``-wal`` + ``-shm``,
+    inline under the ``open_store_off_loop=False`` floor above) and ``cancel_all``
+    never releases it, so a manager a test merely drops keeps three descriptors
+    until the cyclic collector runs -- a macOS sweep measured +3..+9
+    per test, GC-timed, across four files that build managers inline. Tracks every
+    instance through ``SubagentManager.__init__`` and calls ``close()`` at
+    teardown. Opt-in like ``close_skills_loaders`` and for the same reason; a
+    module that builds managers inline requests it from a one-line module-level
+    autouse fixture instead of carrying its own copy of this body.
+    """
+    import kiro_crew.subagent as _subagent_mod
+
+    created: list = []
+    orig_init = _subagent_mod.SubagentManager.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_subagent_mod.SubagentManager, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for mgr in created:
+            try:
+                mgr.close()
+            except Exception:  # pragma: no cover - a half-built manager
+                pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _shut_down_shared_pools_in_session():
+    """Reap the lazily created shared executors before the session ends.
+
+    ``executors.path_resolve_executor()`` is a process-lifetime
+    ``SubprocessPoolExecutor`` created by whichever test first resolves a path
+    after the previous teardown; its reaper thread (``mc-pathres-reaper``) spawns
+    two children that live until ``atexit``. A sweep attributed
+    those children to 73 unrelated tests across 17 files as ``leaked_child``,
+    because the pool's own shutdown ran after every per-test observation. Closing
+    it here puts the reap inside the session, where the leak reporting can see
+    it, and leaves nothing for ``atexit`` to do.
+    """
+    yield
+    from kiro_crew import executors as _executors
+
+    _executors.shutdown_maintenance_executor()
 
 
 @pytest.fixture(autouse=True)

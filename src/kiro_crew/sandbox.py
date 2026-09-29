@@ -7910,6 +7910,13 @@ def _probe_sandbox_exec() -> bool:
             [sb, "-f", profile_path, target],
             capture_output=True,
             timeout=_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS,
+            # Pinned to the profile's own temp dir: the probe runs /usr/bin/true
+            # and reads nothing, so it has no claim on the caller's cwd -- and a
+            # spawn with cwd=None is indistinguishable, to a per-spawn audit,
+            # from one that ran in the checkout under test (the one class-7
+            # descriptor a per-spawn sweep reads, charged to an arbitrary
+            # first test on every worker).
+            cwd=os.path.dirname(profile_path),
         )
         if r.returncode != 0:
             detail = r.stderr.decode(errors="replace").strip()

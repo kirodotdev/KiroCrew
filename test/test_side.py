@@ -103,6 +103,12 @@ def _published_readonly_spec(monkeypatch):
     return stub_readonly_spec_publisher(monkeypatch)
 
 
+@pytest.fixture
+def _close_skills_loaders(close_skills_loaders):
+    """Close each loader and join its catalog worker after the requesting test."""
+    return close_skills_loaders
+
+
 #: What a frozen clock reads. Any fixed instant does; a recognisable one makes an
 #: accidental real-clock read obvious in a failure diff.
 _FROZEN_NOW = datetime(2026, 1, 2, 3, 4, 5)
@@ -135,7 +141,9 @@ def _freeze_context_clock(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_memory_isolation_byte_equal_after_round_trip(tmp_path, monkeypatch):
+async def test_memory_isolation_byte_equal_after_round_trip(
+    tmp_path, monkeypatch, _close_skills_loaders
+):
     """Parent build_session_context is byte-equal pre/post a /side round-trip."""
     _stub_run_side_turn(monkeypatch)
     _freeze_context_clock(monkeypatch)
@@ -150,6 +158,8 @@ async def test_memory_isolation_byte_equal_after_round_trip(tmp_path, monkeypatc
 
     builder = ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "ws"),
+        # Construction opens the skill search index; the module fixture closes
+        # the loader and joins its catalog worker at teardown.
         skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
         lessons=LessonStore(base_dir=tmp_path / "lessons"),
         conversation_log=state.conversation_log,

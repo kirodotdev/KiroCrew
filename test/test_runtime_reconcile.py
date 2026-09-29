@@ -59,6 +59,14 @@ import pytest
 from kiro_crew import runtime_ownership as ro
 from kiro_crew import runtime_reconcile as rr
 
+# The rootdir conftest wipes runtime_ownership's tables on both sides of every
+# test. This file does its own intra-file isolation with explicit
+# ``ro._reset_for_tests()`` calls, and its positive control at the end reads the
+# table to prove the earlier tests left it clean -- a wipe at ANY test's teardown
+# would empty it first and make that read vacuous. Module-wide, not per test,
+# because the predecessor's teardown is the wipe that matters.
+pytestmark = pytest.mark.keep_runtime_ownership_tables
+
 # ── the reconciler core ───────────────────────────────────────────────────────
 
 
@@ -3921,6 +3929,11 @@ def test_every_tenancy_claim_in_this_file_is_bound_and_released() -> None:
 @pytest.mark.asyncio
 async def test_the_tenancy_table_is_empty_for_this_files_pids_at_the_end() -> None:
     """POSITIVE CONTROL for the scan: the pids this file claims are free afterwards.
+
+    Reads the table as the earlier tests in this file left it (the module-level
+    ``keep_runtime_ownership_tables`` mark keeps the rootdir conftest from wiping it
+    at every test boundary); wiped, the assertion below would hold against an empty
+    table and prove nothing.
 
     The scan reads text; this reads the table, so a scan that matched nothing -- a
     renamed accessor, a typo in the needle -- cannot pass while every claim leaks.

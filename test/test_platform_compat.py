@@ -7957,3 +7957,78 @@ class TestStripExtendedLengthPrefix:
         monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
         workflow_memory._allocator_path(tmp_path / "run-ids.json", tmp_path)
         assert calls, "workflow_memory did not reach the shared fold"
+
+
+class TestOpenCreateOrExisting:
+    """The one create-or-open every lock sidecar shares (SEL chain lock, decision
+    log, app-deps provisioning lock): elect one creator, hand contenders the
+    creator's inode, never recreate a leaf that vanished."""
+
+    def test_absent_name_is_created_with_the_mode(self, tmp_path):
+        target = tmp_path / "x.lock"
+        fd = pc.open_create_or_existing(target, os.O_RDWR, 0o600)
+        try:
+            assert target.exists()
+            if pc.IS_POSIX:
+                assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o600
+        finally:
+            os.close(fd)
+
+    def test_existing_name_is_opened_not_truncated(self, tmp_path):
+        target = tmp_path / "x.lock"
+        target.write_bytes(b"held")
+        fd = pc.open_create_or_existing(target, os.O_RDWR)
+        try:
+            assert os.read(fd, 8) == b"held"
+        finally:
+            os.close(fd)
+
+    def test_a_missing_parent_is_the_callers_enoent(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            pc.open_create_or_existing(tmp_path / "gone" / "x.lock", os.O_RDWR)
+
+    @pytest.mark.skipif(not pc.IS_POSIX, reason="dir_fd is a POSIX openat feature")
+    def test_descriptor_relative_open_lands_under_the_pin(self, tmp_path):
+        dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fd = pc.open_create_or_existing("x.lock", os.O_RDWR, 0o600, dir_fd=dir_fd)
+            try:
+                assert os.fstat(fd).st_ino == (tmp_path / "x.lock").stat().st_ino
+            finally:
+                os.close(fd)
+        finally:
+            os.close(dir_fd)
+
+    def test_racing_creators_all_hold_one_inode(self, tmp_path):
+        """Forty threads race to create the same absent name, many rounds: every
+        caller comes back with a descriptor, and every descriptor names the one
+        inode -- the property a nonexclusive ``O_CREAT`` does not give on Darwin."""
+        for round_no in range(20):
+            target = tmp_path / f"race-{round_no}.lock"
+            gate = threading.Barrier(40)
+            fds: list[int] = []
+            errors: list[BaseException] = []
+            lock = threading.Lock()
+
+            def contend() -> None:
+                try:
+                    gate.wait(timeout=10)
+                    fd = pc.open_create_or_existing(target, os.O_RDWR, 0o600)
+                    with lock:
+                        fds.append(fd)
+                except BaseException as exc:  # noqa: BLE001 - recorded for the assert
+                    with lock:
+                        errors.append(exc)
+
+            threads = [threading.Thread(target=contend) for _ in range(40)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+            try:
+                assert not errors, errors
+                assert len(fds) == 40
+                assert len({os.fstat(fd).st_ino for fd in fds}) == 1
+            finally:
+                for fd in fds:
+                    os.close(fd)

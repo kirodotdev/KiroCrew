@@ -25,6 +25,11 @@ from kiro_crew.subagent import SubagentInfo, SubagentManager
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers):
+    """Every manager built here is closed at teardown; the body is in ``conftest``."""
+
+
 def _mock_sessions(served_model: str) -> MagicMock:
     """A mock SessionManager whose provider serves *served_model* and streams
     nothing (zero turns) — enough to drive ``_run_inner`` end to end."""

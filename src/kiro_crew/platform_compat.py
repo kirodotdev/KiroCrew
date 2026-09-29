@@ -1134,17 +1134,48 @@ def open_lock_file(path: "str | os.PathLike[str]") -> Iterator[int]:
     can observe or produce an empty lock file and crash out of the critical
     section — the loss lands only on a specific interleaving, which is why it
     read as shard flake rather than a deterministic failure.
-    ``O_RDWR | O_CREAT`` creates-or-opens in one syscall and never truncates.
+    The create-or-open is :func:`open_create_or_existing`, which never
+    truncates and is race-safe against a sibling creating the same name.
 
     Yields the raw integer fd, ready for :func:`file_lock` /
     :func:`flock_exclusive`. The lock file's CONTENT is never meaningful to
     the lock itself; this exists so contenders cannot watch it flicker empty.
     """
-    fd = os.open(os.fspath(path), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_create_or_existing(path, os.O_RDWR, 0o644)
     try:
         yield fd
     finally:
         os.close(fd)
+
+
+def open_create_or_existing(
+    path: "str | os.PathLike[str]",
+    flags: int,
+    mode: int = 0o644,
+    *,
+    dir_fd: int | None = None,
+) -> int:
+    """Open *path*, creating it when absent, race-safe against a sibling creator.
+
+    A nonexclusive ``O_CREAT`` open of an absent name can come back ``ENOENT``
+    on Darwin when two callers race to create it -- the create is not the atomic
+    "make or find" the flag reads as. So the name is created EXCLUSIVELY first
+    and, when a sibling already made it, opened again WITHOUT ``O_CREAT`` so the
+    sibling's inode is the one both hold. A leaf that vanishes between those two
+    calls is a genuine ``ENOENT``, left to the caller: recreating it here would
+    hand two writers two different inodes under one lock name.
+
+    *flags* carries everything but the create bits (``O_RDWR``, ``O_NOFOLLOW``,
+    ``O_APPEND``, ...). *dir_fd* makes the open descriptor-relative, so a caller
+    that pinned the directory keeps its pin anchoring the open. Returns the raw
+    integer fd; the caller owns it. Shared by the SEL chain lock, the decision
+    log and the app-deps provisioning lock, which all hit the same race.
+    """
+    name = os.fspath(path)
+    try:
+        return os.open(name, flags | os.O_CREAT | os.O_EXCL, mode, dir_fd=dir_fd)
+    except FileExistsError:
+        return os.open(name, flags, mode, dir_fd=dir_fd)
 
 
 def acquire_lock(fd: int, *, exclusive: bool = True) -> None:

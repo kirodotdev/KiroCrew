@@ -124,10 +124,16 @@ def _fake_base_port() -> int:
     shared resource between parallel test processes, and the loser of the race reports
     "no hold was taken" -- a real-looking failure with an unrelated cause. Bands are
     40 wide, which is far more than the two or three ports any one case allocates.
+
+    The bands sit BELOW every platform's ephemeral range (Linux hands out 32768-60999,
+    macOS and Windows 49152-65535): a sibling worker that binds port 0 -- a dozen
+    test files do -- is handed a port from that range by the kernel, and a band
+    inside it is a port the sibling can be given at the very moment the guard here
+    goes to take it, which the guard then reports as the port already bound.
     """
     worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
     index = int(worker[2:]) if worker.startswith("gw") and worker[2:].isdigit() else 0
-    return 53700 + index * 40
+    return 23700 + index * 40
 
 
 def _mgr(tmp_path, monkeypatch, *, mint=None):

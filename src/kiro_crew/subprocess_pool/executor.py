@@ -172,6 +172,12 @@ _CHILD_SOURCE = _read_child_source(_CHILD_SCRIPT)
 # reclaimed.
 DEFAULT_REQUEST_CEILING_SECS = 20.0
 
+# How long ``shutdown`` waits for the reaper thread to finish its current tick
+# before it kills the children.  One tick is a poll of every slot plus at most one
+# ``Popen`` per slot (~11 ms each, more on a loaded host), so this is a ceiling
+# against a wedged host rather than a wait anyone expects to spend.
+_SHUTDOWN_REAPER_JOIN_SECS = 5.0
+
 
 class SubprocessPoolUnavailable(RuntimeError):
     """The child could not answer: it died, was killed at the ceiling, or faulted.
@@ -820,6 +826,14 @@ class SubprocessPoolExecutor(Executor):
                 break
             for child in list(self._children):
                 if child.ensure_spawned():
+                    if self._shutdown.is_set():
+                        # ``shutdown`` set the flag while this tick was already
+                        # past its checks; its kill loop may have run before the
+                        # ``Popen`` above, so the child it never saw is reaped by
+                        # the thread that made it. This is what closes the refill
+                        # window even when the join in ``shutdown`` times out.
+                        child.kill()
+                        continue
                     self._enqueue(child)
             self._note_spawn_errors()
 
@@ -1073,6 +1087,24 @@ class SubprocessPoolExecutor(Executor):
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
         self._shutdown.set()
         self._wake.set()
+        # The reaper is the ONLY thing that spawns, and it works from a tick that
+        # checks ``_shutdown`` twice and then spawns every empty slot. A tick already
+        # past that second check keeps going, so a kill loop that ran concurrently
+        # could empty a slot and have the reaper refill it a moment later with a
+        # child nothing ever signals -- measured under a hygiene sweep as
+        # a ``sleep(3600)`` test child still alive at teardown in every round, and
+        # as 18 of 80 shut-down-at-once pools keeping a live child. So the reaper is
+        # joined FIRST: bounded, because it wakes on the event set above and one
+        # tick is a poll of each slot plus at most one ``Popen`` per slot. Only the
+        # calling thread may not join itself (``atexit`` never runs on it; a caller
+        # inside a submitted callable could).
+        if self._reaper is not threading.current_thread():
+            self._reaper.join(timeout=_SHUTDOWN_REAPER_JOIN_SECS)
+            if self._reaper.is_alive():
+                logger.warning(
+                    "subprocess-pool reaper did not stop within %.1fs of shutdown",
+                    _SHUTDOWN_REAPER_JOIN_SECS,
+                )
         self._fallback.shutdown(wait=wait, cancel_futures=cancel_futures)
         self._bounded_readers.shutdown(wait=False, cancel_futures=True)
         for child in self._children:
