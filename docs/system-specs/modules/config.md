@@ -2969,6 +2969,25 @@ config sections cannot enter configuration through this path.
 
 `DashboardConfig.crewmates_onboarded` records that the four-step "Meet CrewMates"
 flow (`website/src/components/MeetCrewmatesFlow.tsx`) was finished or dismissed.
+The four steps introduce goal ownership, choose a name and starting setup,
+collect the desired outcome and run schedule, and confirm the goal and next run.
+The shared chapter shell hides floating decorative mascots below `sm` so they
+cannot overlap the headline or body in the stacked mobile header.
+Examples describe outcomes (issue triage, current release notes, passing checks),
+not event triggers. The introduction explains chats, dashboards, notes and
+requests for a human decision; it does not promise uninterrupted execution.
+The daily schedule accepts a minute-precision `HH:mm` time, defaulting to
+`09:00`, with the browser's IANA timezone displayed beside it. Daily jobs set
+`strict_schedule: true` so random jitter cannot shift the chosen time. That zone is
+captured once per opening and used for both the cron and confirmation. An
+empty or invalid daily time prevents both button and Enter submissions before
+any create request. Hourly and on-demand choices do not require a time.
+Back preserves the selected time; reopening resets it. The ready screen repeats
+the submitted goal as plain text and formats the chosen time in the UI locale.
+The today/tomorrow label is calculated when creation completes, at minute
+precision; the selected minute itself counts as passed. Failed schedule writes
+show their recovery notice without a next-run claim. This flow creates a crew
+and optional recurring schedule, not a separate goal-completion control loop.
 Whether the workspace has seen the flow is the ONLY condition on showing it:
 existing crewmates and custom agents do not suppress it (`useMeetCrewmatesGate`
 reads neither the roster nor the installed agents). It opens once, at the first

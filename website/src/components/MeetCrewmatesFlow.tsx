@@ -10,7 +10,7 @@ import { ApiError } from '../api/apiError'
 import { cronJobsQuery } from '../api/cronJobsQuery'
 import { parseErrorCode } from '../utils/errorReport'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
-import { compareText } from '../i18n/format'
+import { compareText, fmtTime } from '../i18n/format'
 import CrewAvatar, { seededTraits } from './CrewAvatar'
 import ErrorNotice from './ErrorNotice'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
@@ -23,10 +23,10 @@ import { Btn, Input, SendBtn, Toggle } from './ui'
  * instead; `App` gates the two on the same fact so they never both fire).
  *
  * Four steps in the shipped split-screen chapter chrome:
- *   1. Meet CrewMates            what a crewmate is + three examples
- *   2. Name your first crewmate  name (prefilled) + Built from
- *   3. Give <Name> a job         what it looks after / when / where it reports
- *   4. <Name> is ready           big avatar + when it starts
+ *   1. Give a crewmate a goal       what a crewmate is + three example goals
+ *   2. Choose a name                name (prefilled) + Built from
+ *   3. What should <Name> achieve?  the goal / when (daily time) / where it reports
+ *   4. <Name> is ready              big avatar + the goal + when it next runs
  *
  * Create (step 3 → 4) is two existing writes: POST /api/agents (the crewmate,
  * with its own memory allocated by the server) and, unless "Only when I ask" was
@@ -64,11 +64,15 @@ export function isValidCrewmateName(name: string): boolean {
 /** The create route's name refusals, shown under the name field on step 2. */
 const NAME_REFUSAL_CODES = new Set(['invalid_member_name', 'credential_shaped_name'])
 const JOB_MAX = 200
-/** The hour the "Every morning" schedule fires at, in the browser's zone. */
-const MORNING_HOUR = 9
+/** The default time of the "Every day" schedule, in the browser's zone. */
+export const DEFAULT_DAILY_TIME = '09:00'
+/** A 24-hour `HH:mm`, what a native `<input type="time">` yields without `step`. */
+const DAILY_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
 /** The built-in agent every crewmate can be built from. */
 const DEFAULT_TEMPLATE = 'kirocrew'
 
+// `morning` stays the stored value of the daily choice for compatibility; it
+// is shown as "Every day" and fires at the picked time.
 type WhenChoice = 'morning' | 'hourly' | 'ask'
 const WHEN_CHOICES: readonly WhenChoice[] = ['morning', 'hourly', 'ask']
 // Literal keys, never assembled: the dead-key and dynamic-key gates read the
@@ -110,11 +114,63 @@ interface InstalledAgentRow {
   private_to?: string
 }
 
-/** Schedule body for the chosen "When", or null for on-demand. */
-export function scheduleFor(when: WhenChoice, timeZone: string): { cron?: string; every?: number; timezone?: string } | null {
-  if (when === 'morning') return { cron: `0 ${MORNING_HOUR} * * *`, timezone: timeZone }
+/** `HH:mm` as hour and minute, or null for anything else (including empty). */
+export function parseDailyTime(time: string): { hour: number; minute: number } | null {
+  const m = DAILY_TIME_RE.exec(time)
+  if (!m) return null
+  return { hour: Number(m[1]), minute: Number(m[2]) }
+}
+
+/**
+ * Schedule body for the chosen "When", or null for on-demand. The daily choice
+ * fires at `time` (`HH:mm`) in `timeZone`. An invalid time throws: the flow
+ * validates it before any write and must never fall back to another hour.
+ */
+export function scheduleFor(
+  when: WhenChoice,
+  timeZone: string,
+  time: string = DEFAULT_DAILY_TIME,
+): { cron?: string; every?: number; timezone?: string; strict_schedule?: boolean } | null {
+  if (when === 'morning') {
+    const parsed = parseDailyTime(time)
+    if (!parsed) throw new Error(`invalid daily time: ${time}`)
+    return { cron: `${parsed.minute} ${parsed.hour} * * *`, timezone: timeZone, strict_schedule: true }
+  }
   if (when === 'hourly') return { every: 3600 }
   return null
+}
+
+/** Minutes since midnight of `now` on the wall clock of `timeZone`. */
+function minutesInZone(now: Date, timeZone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now)
+    const hour = Number(parts.find(p => p.type === 'hour')?.value)
+    const minute = Number(parts.find(p => p.type === 'minute')?.value)
+    if (Number.isFinite(hour) && Number.isFinite(minute)) return (hour % 24) * 60 + minute
+  } catch {
+    // An unknown zone falls through to the browser's own clock.
+  }
+  return now.getHours() * 60 + now.getMinutes()
+}
+
+/**
+ * Whether the first daily run at `time` in `timeZone` is still ahead TODAY at
+ * `now`, to the minute. The run's own minute counts as passed: at 09:00 the
+ * 09:00 run is already firing, so the next one is tomorrow's.
+ */
+export function nextRunIsToday(time: string, timeZone: string, now: Date): boolean {
+  const parsed = parseDailyTime(time)
+  if (!parsed) return false
+  return minutesInZone(now, timeZone) < parsed.hour * 60 + parsed.minute
+}
+
+/** `HH:mm` as the active locale writes a clock time (en `9:00 AM`, de `09:00`). */
+export function formatDailyTime(time: string): string {
+  const parsed = parseDailyTime(time)
+  if (!parsed) return time
+  // A fixed UTC instant formatted in UTC: the wall time is exactly the one
+  // picked, whatever zone the browser runs in.
+  return fmtTime(Date.UTC(2000, 0, 1, parsed.hour, parsed.minute), { timeZone: 'UTC' })
 }
 
 function browserTimeZone(): string {
@@ -184,6 +240,12 @@ export default function MeetCrewmatesFlow({
   const [builtFrom, setBuiltFrom] = useState(DEFAULT_TEMPLATE)
   const [job, setJob] = useState(() => t('components.meetCrewmatesFlow.example_radar_task'))
   const [when, setWhen] = useState<WhenChoice>('morning')
+  // The daily time as the native time input holds it (`HH:mm`, or '' while
+  // cleared). Kept across Back; reset on every opening.
+  const [dailyTime, setDailyTime] = useState(DEFAULT_DAILY_TIME)
+  // The zone captured once per opening: the hint, the schedule body and the
+  // ready step's "next run" all read this one value, so they cannot disagree.
+  const [timeZone, setTimeZone] = useState(browserTimeZone)
   // "Its own chat": whether each run gets a chat of its own in the sidebar
   // (`hide_in_chat: false`). Slack is not a choice: a connected Slack always
   // receives the run (the runtime's owner-DM leg), so that row only tells the
@@ -209,6 +271,10 @@ export default function MeetCrewmatesFlow({
   // `issue-radar`). The Crew Members page addresses and seeds a crewmate by
   // this key, never by the label.
   const [createdKey, setCreatedKey] = useState('')
+  // What the ready step summarises: the goal as submitted and, for a daily
+  // schedule, the time and whether its first run is still today.
+  const [createdGoal, setCreatedGoal] = useState('')
+  const [createdDaily, setCreatedDaily] = useState<{ time: string; today: boolean } | null>(null)
   // Direction of the last step change, for the slide.
   const dirRef = useRef(1)
 
@@ -229,12 +295,16 @@ export default function MeetCrewmatesFlow({
     setBuiltFrom(DEFAULT_TEMPLATE)
     setJob(tRef.current('components.meetCrewmatesFlow.example_radar_task'))
     setWhen('morning')
+    setDailyTime(DEFAULT_DAILY_TIME)
+    setTimeZone(browserTimeZone())
     setReportChat(true)
     setCreateError(null)
     setNameError(null)
     setSchedule('saved')
     setCreatedName('')
     setCreatedKey('')
+    setCreatedGoal('')
+    setCreatedDaily(null)
   }, [open])
 
   const { data: installed, isError: installedFailed } = useQuery<InstalledAgentRow[]>({
@@ -275,6 +345,10 @@ export default function MeetCrewmatesFlow({
     mutationFn: async () => {
       const crewmate = trimmed
       const jobText = job.trim()
+      const time = dailyTime
+      // Computed BEFORE the crewmate write: an invalid daily time throws here,
+      // so nothing is created (the button and Enter are gated on it as well).
+      const spec = scheduleFor(when, timeZone, time)
       // The crewmate's IDENTITY is held only from a clean create response: the
       // immutable `member_id` the server allocated with its member memory
       // (`member_config_for_id` resolves it; a display name or slug is never
@@ -299,7 +373,6 @@ export default function MeetCrewmatesFlow({
       if (r?.error) throw new Error(r.error)
       const identity = r?.member_id
       if (!identity) throw new Error('create returned no identity')
-      const spec = scheduleFor(when, browserTimeZone())
       // `none`: the user chose "Only when I ask", so there is no schedule to
       // report on. `saved` is reserved for a schedule that actually exists.
       let outcome: 'saved' | 'refused' | 'unknown' | 'none' = spec ? 'saved' : 'none'
@@ -348,15 +421,18 @@ export default function MeetCrewmatesFlow({
           }
         }
       }
-      return { crewmate, key: r.name || crewmate, outcome }
+      return { crewmate, key: r.name || crewmate, goal: jobText, time, daily: !!spec?.cron, outcome }
     },
-    onSuccess: ({ crewmate, key, outcome }) => {
+    onSuccess: ({ crewmate, key, goal, time, daily, outcome }) => {
       // The roster lives under the crew-registry prefix; the Schedule page
       // under its own key.
       qc.invalidateQueries({ queryKey: ['kirocrew-agents'] })
       qc.invalidateQueries({ queryKey: cronJobsQuery.queryKey })
       setCreatedName(crewmate)
       setCreatedKey(key)
+      setCreatedGoal(goal)
+      // "Today" is decided when the schedule is confirmed, not at render.
+      setCreatedDaily(daily ? { time, today: nextRunIsToday(time, timeZone, new Date()) } : null)
       setSchedule(outcome)
       dirRef.current = 1
       setStep(4)
@@ -472,7 +548,8 @@ export default function MeetCrewmatesFlow({
     ariaLabel: t('components.meetCrewmatesFlow.aria_label'),
     panelHeadline: t('components.meetCrewmatesFlow.panel_headline'),
     panelBody: t('components.meetCrewmatesFlow.panel_body'),
-    panelFootnote: t('components.meetCrewmatesFlow.panel_footnote'),
+    // The shell still types the footnote as required; this flow has none.
+    panelFootnote: '',
   }
 
   // One step slides out, the next slides in. The step counter in the eyebrow
@@ -532,7 +609,6 @@ export default function MeetCrewmatesFlow({
             </li>
           ))}
         </ul>
-        <p className="mt-4 text-[13px] leading-relaxed text-muted">{t('components.meetCrewmatesFlow.step1_footnote')}</p>
       </>
     )
     footer = (
@@ -548,7 +624,7 @@ export default function MeetCrewmatesFlow({
   } else if (step === 2) {
     body = (
       <>
-        {title(t('components.meetCrewmatesFlow.step2_title'), t('components.meetCrewmatesFlow.step2_body'))}
+        {title(t('components.meetCrewmatesFlow.step2_title'))}
         <div className="flex items-start gap-5">
           <div className="shrink-0 pt-5" data-testid="meet-crewmates-avatar">
             <CrewAvatar seed={displayName} size={72} />
@@ -682,6 +758,12 @@ export default function MeetCrewmatesFlow({
     )
   } else if (step === 3) {
     const jobOk = !!job.trim()
+    // Only the daily choice has a time; hourly and on-demand ignore it.
+    const timeOk = when !== 'morning' || parseDailyTime(dailyTime) !== null
+    const canCreate = jobOk && timeOk && !busy
+    const submit = () => {
+      if (canCreate) create.mutate()
+    }
     body = (
       <>
         {title(t('components.meetCrewmatesFlow.step3_title', { name: displayName }), t('components.meetCrewmatesFlow.step3_body'))}
@@ -699,7 +781,7 @@ export default function MeetCrewmatesFlow({
           disabled={busy}
           className="w-full text-[13px]"
           data-testid="meet-crewmates-job"
-          {...ime.bindEnter({ onEnter: () => { if (jobOk && !busy) create.mutate() } })}
+          {...ime.bindEnter({ onEnter: submit })}
         />
         <div className="mt-5">
           <label htmlFor="meet-crewmates-when" className={FIELD_LABEL_CLS}>
@@ -715,6 +797,35 @@ export default function MeetCrewmatesFlow({
             aria-label={t('components.meetCrewmatesFlow.when_label')}
           />
         </div>
+        {when === 'morning' && (
+          <div className="mt-5">
+            <label htmlFor="meet-crewmates-time" className={FIELD_LABEL_CLS}>
+              {t('components.meetCrewmatesFlow.time_label')}
+            </label>
+            <Input
+              id="meet-crewmates-time"
+              type="time"
+              value={dailyTime}
+              onChange={e => setDailyTime(e.target.value)}
+              required
+              disabled={busy}
+              aria-invalid={timeOk ? undefined : true}
+              aria-describedby={timeOk ? 'meet-crewmates-timezone' : 'meet-crewmates-time-error meet-crewmates-timezone'}
+              className="w-full min-h-[44px] text-[13px]"
+              data-testid="meet-crewmates-time"
+              {...ime.bindEnter({ onEnter: submit })}
+            />
+            {!timeOk && (
+              /* A validation hint like the name field's: nothing failed yet. */
+              <p id="meet-crewmates-time-error" className="mt-2 text-[12px] text-warn-fg" data-testid="meet-crewmates-time-error">
+                {t('components.meetCrewmatesFlow.error_time_shape')}
+              </p>
+            )}
+            <p id="meet-crewmates-timezone" className="mt-1.5 text-[12px] text-muted" data-testid="meet-crewmates-timezone">
+              {t('components.meetCrewmatesFlow.timezone_hint', { timezone: timeZone })}
+            </p>
+          </div>
+        )}
         <div className="mt-5">
           <div id="meet-crewmates-reports-label" className={FIELD_LABEL_CLS}>
             {t('components.meetCrewmatesFlow.reports_label')}
@@ -800,7 +911,7 @@ export default function MeetCrewmatesFlow({
         <Btn type="button" className="h-9 rounded-lg px-4" disabled={busy} onClick={() => go(2)} data-testid="meet-crewmates-back">
           {t('components.meetCrewmatesFlow.back')}
         </Btn>
-        <SendBtn type="button" disabled={!jobOk || busy} onClick={() => create.mutate()} data-testid="meet-crewmates-create">
+        <SendBtn type="button" disabled={!canCreate} onClick={submit} data-testid="meet-crewmates-create">
           {busy
             ? t('components.meetCrewmatesFlow.creating', { name: displayName })
             : t('components.meetCrewmatesFlow.create', { name: displayName })}
@@ -809,15 +920,20 @@ export default function MeetCrewmatesFlow({
     )
   } else {
     const failed = schedule === 'refused' || schedule === 'unknown'
-    const startsKey = failed
-      ? 'components.meetCrewmatesFlow.ready_change_later'
-      : when === 'morning'
-        ? new Date().getHours() < MORNING_HOUR
-          ? 'components.meetCrewmatesFlow.ready_starts_morning_today'
-          : 'components.meetCrewmatesFlow.ready_starts_morning'
-        : when === 'hourly'
-          ? 'components.meetCrewmatesFlow.ready_starts_hourly'
-          : 'components.meetCrewmatesFlow.ready_starts_ask'
+    // A failed schedule gets no "starts" line at all: only the goal and the
+    // failure notice below, never a guessed next run.
+    const startsLine = failed
+      ? null
+      : createdDaily
+        ? t(
+            createdDaily.today
+              ? 'components.meetCrewmatesFlow.ready_starts_morning_today'
+              : 'components.meetCrewmatesFlow.ready_starts_morning',
+            { name: createdName, time: formatDailyTime(createdDaily.time), timezone: timeZone },
+          )
+        : schedule === 'saved'
+          ? t('components.meetCrewmatesFlow.ready_starts_hourly', { name: createdName })
+          : t('components.meetCrewmatesFlow.ready_starts_ask', { name: createdName })
     body = (
       <div className="flex flex-col items-center pt-10 text-center" data-testid="meet-crewmates-ready">
         <div data-testid="meet-crewmates-avatar">
@@ -826,21 +942,21 @@ export default function MeetCrewmatesFlow({
         <h1 tabIndex={-1} className="mt-8 text-2xl font-semibold text-text-strong outline-hidden" data-testid="meet-crewmates-title">
           {t('components.meetCrewmatesFlow.step4_title', { name: createdName })}
         </h1>
-        <p className="mt-3 text-sm leading-relaxed text-muted">
-          {t(startsKey, { name: createdName })}
-          {schedule === 'saved' && (
-            <>
-              <br />
-              {t(reportChat ? 'components.meetCrewmatesFlow.ready_where' : 'components.meetCrewmatesFlow.ready_where_hidden', { name: createdName })}
-            </>
-          )}
-          {!failed && (
-            <>
-              <br />
-              {t('components.meetCrewmatesFlow.ready_change_later')}
-            </>
-          )}
+        {/* The goal is user text: a plain text node, never markup. */}
+        <p className="mt-3 max-w-md text-sm leading-relaxed text-text break-words" data-testid="meet-crewmates-ready-goal">
+          {t('components.meetCrewmatesFlow.ready_goal', { goal: createdGoal })}
         </p>
+        {startsLine && (
+          <p className="mt-2 text-sm leading-relaxed text-muted" data-testid="meet-crewmates-ready-starts">
+            {startsLine}
+            {schedule === 'saved' && (
+              <>
+                <br />
+                {t(reportChat ? 'components.meetCrewmatesFlow.ready_where' : 'components.meetCrewmatesFlow.ready_where_hidden', { name: createdName })}
+              </>
+            )}
+          </p>
+        )}
         {failed && (
           /* The crewmate exists and nothing typed is unsaved, so the hand-off
              is on (`errors-use-error-notice`); it closes the flow the way "Open

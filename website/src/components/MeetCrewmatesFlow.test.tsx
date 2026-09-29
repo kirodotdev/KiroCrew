@@ -1,8 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { useLocation } from 'react-router-dom'
 import { renderWithProviders } from '../test/helpers'
-import MeetCrewmatesFlow, { builtFromOptions, isValidCrewmateName, scheduleFor } from './MeetCrewmatesFlow'
+import MeetCrewmatesFlow, {
+  builtFromOptions,
+  formatDailyTime,
+  isValidCrewmateName,
+  nextRunIsToday,
+  parseDailyTime,
+  scheduleFor,
+} from './MeetCrewmatesFlow'
 import { hasNoCrewmates } from '../hooks/useMeetCrewmatesGate'
 import { seededTraits } from './CrewAvatar'
 import { api } from '../api/client'
@@ -73,6 +80,10 @@ const createCron = vi.mocked(api.createCron)
 const members = vi.mocked(api.members)
 
 const next = () => fireEvent.click(screen.getByTestId('meet-crewmates-next'))
+const RADAR_GOAL = 'Keep new GitHub issues triaged and flag those that need a decision'
+const setTime = (value: string) => fireEvent.change(screen.getByTestId('meet-crewmates-time'), { target: { value } })
+/** The zone the flow captures, read the same way the component reads it. */
+const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
 describe('MeetCrewmatesFlow', () => {
   beforeEach(() => {
@@ -127,7 +138,7 @@ describe('MeetCrewmatesFlow', () => {
     expect(screen.getByTestId('meet-crewmates-next')).toBeDisabled()
     fireEvent.change(name, { target: { value: 'Radar' } })
     next()
-    expect(screen.getByTestId('meet-crewmates-title')).toHaveTextContent('Give Radar a job')
+    expect(screen.getByTestId('meet-crewmates-title')).toHaveTextContent('What should Radar achieve?')
   })
 
   it('entering a step seats focus on a control INSIDE the new step (never on the outgoing one)', () => {
@@ -148,7 +159,7 @@ describe('MeetCrewmatesFlow', () => {
     renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
     next()
     fireEvent.click(screen.getByTestId('meet-crewmates-back'))
-    expect(screen.getByTestId('meet-crewmates-title')).toHaveTextContent('Meet CrewMates')
+    expect(screen.getByTestId('meet-crewmates-title')).toHaveTextContent('Give a crewmate a goal to own')
   })
 
   it('Create posts the crewmate with the job as its description, then a silent schedule bound to it, persists "done" and keeps the ready step open', async () => {
@@ -162,7 +173,7 @@ describe('MeetCrewmatesFlow', () => {
     expect(createAgent).toHaveBeenCalledWith({
       name: 'Radar',
       kiro_agent: 'kirocrew',
-      description: 'Triage new GitHub issues every morning',
+      description: RADAR_GOAL,
       source: 'kirocrew',
       avatar: { kind: 'ghost', traits: seededTraits('Radar') },
     })
@@ -171,14 +182,17 @@ describe('MeetCrewmatesFlow', () => {
     // Bound by the immutable identity the create returned, never the display name.
     expect(cronBody.member_id).toBe('radar-id')
     expect(cronBody.agent).toBe('kirocrew')
+    // The untouched daily time is 09:00 in the browser's zone.
     expect(cronBody.cron).toBe('0 9 * * *')
+    expect(cronBody.timezone).toBe(browserZone())
     // Delivery is mechanical: a non-silent run rings the bell, opens as the
     // crewmate's chat in the sidebar ("Its own chat" on) and reaches a
     // connected Slack through the runtime's own leg.
     expect(cronBody.silent).toBe(false)
     expect(cronBody.hide_in_chat).toBe(false)
-    expect(String(cronBody.message)).toContain('Triage new GitHub issues every morning')
+    expect(String(cronBody.message)).toContain(RADAR_GOAL)
     expect(await screen.findByTestId('meet-crewmates-ready')).toHaveTextContent('Radar is ready')
+    expect(screen.getByTestId('meet-crewmates-ready-goal')).toHaveTextContent(`Goal: ${RADAR_GOAL}`)
     expect(onCreated).toHaveBeenCalledTimes(1)
     // The host closes on onDone only; the ready step must still be on screen.
     expect(onDone).not.toHaveBeenCalled()
@@ -300,19 +314,23 @@ describe('MeetCrewmatesFlow', () => {
     fireEvent.click(screen.getByTestId('meet-crewmates-create'))
     expect(await screen.findByTestId('meet-crewmates-ready')).toHaveTextContent('Radar is ready')
     expect(screen.getByTestId('meet-crewmates-schedule-error')).toHaveTextContent('its schedule was not saved')
+    // No invented next run on a failed schedule: only the goal and the notice.
+    expect(screen.getByTestId('meet-crewmates-ready-goal')).toHaveTextContent(`Goal: ${RADAR_GOAL}`)
+    expect(screen.queryByTestId('meet-crewmates-ready-starts')).toBeNull()
+    expect(screen.getByTestId('meet-crewmates-ready')).not.toHaveTextContent('Next run')
   })
 
   it('a schedule write with no answer is reconciled against the Schedule list: only the exact job asked for means saved', async () => {
     createCron.mockRejectedValueOnce(new Error('network'))
     // Same identity, same name, same message, same schedule: this IS the job.
-    vi.mocked(api.crons).mockResolvedValueOnce({ jobs: [{ id: 'j1', name: 'Radar: standing job', message: 'Triage new GitHub issues every morning', member_id: 'radar-id', cron_expr: '0 9 * * *' } as never] })
+    vi.mocked(api.crons).mockResolvedValueOnce({ jobs: [{ id: 'j1', name: 'Radar: standing job', message: RADAR_GOAL, member_id: 'radar-id', cron_expr: '0 9 * * *' } as never] })
     renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
     next()
     next()
     fireEvent.click(screen.getByTestId('meet-crewmates-create'))
     expect(await screen.findByTestId('meet-crewmates-ready')).toHaveTextContent('Radar is ready')
     expect(screen.queryByTestId('meet-crewmates-schedule-error')).toBeNull()
-    expect(screen.getByTestId('meet-crewmates-ready')).toHaveTextContent('Radar starts')
+    expect(screen.getByTestId('meet-crewmates-ready-starts')).toHaveTextContent('Next run:')
   })
 
   it('a schedule write with no answer and no job on the Schedule list is reported as maybe-unsaved, pointing at the Schedule page', async () => {
@@ -329,11 +347,11 @@ describe('MeetCrewmatesFlow', () => {
     createCron.mockRejectedValueOnce(new Error('network'))
     vi.mocked(api.crons).mockResolvedValueOnce({ jobs: [
       // Right identity and name, but not the schedule asked for: an older job.
-      { id: 'j1', name: 'Radar: standing job', message: 'Triage new GitHub issues every morning', member_id: 'radar-id', every_secs: 3600 } as never,
+      { id: 'j1', name: 'Radar: standing job', message: RADAR_GOAL, member_id: 'radar-id', every_secs: 3600 } as never,
       // Right identity, another job entirely.
       { id: 'j2', name: 'Radar: standing job', message: 'Something else', member_id: 'radar-id', cron_expr: '0 9 * * *' } as never,
       // The exact job, but on a same-named crewmate with another identity.
-      { id: 'j3', name: 'Radar: standing job', message: 'Triage new GitHub issues every morning', member_id: 'radar', cron_expr: '0 9 * * *' } as never,
+      { id: 'j3', name: 'Radar: standing job', message: RADAR_GOAL, member_id: 'radar', cron_expr: '0 9 * * *' } as never,
     ] })
     renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
     next()
@@ -349,16 +367,197 @@ describe('MeetCrewmatesFlow', () => {
       renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
       next()
       next()
-      fireEvent.change(screen.getByRole('combobox', { name: 'When' }), { target: { value: 'ask' } })
+      fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'ask' } })
       fireEvent.click(screen.getByTestId('meet-crewmates-create'))
     } finally {
       touch.value = false
     }
     const ready = await screen.findByTestId('meet-crewmates-ready')
     expect(createCron).not.toHaveBeenCalled()
-    expect(ready).toHaveTextContent('Radar is waiting in its chat')
+    expect(screen.getByTestId('meet-crewmates-ready-starts')).toHaveTextContent('Send a message to start working on this goal.')
     expect(ready).not.toHaveTextContent('Schedule page')
     expect(screen.queryByTestId('meet-crewmates-schedule-error')).toBeNull()
+    expect(screen.getByTestId('meet-crewmates-ready-goal')).toHaveTextContent(`Goal: ${RADAR_GOAL}`)
+  })
+
+  describe('daily time', () => {
+    const toStep3 = () => {
+      renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
+      next()
+      next()
+    }
+
+    it('the daily choice reads "Every day" and offers a labelled native time input (09:00, 44px, with the zone)', () => {
+      touch.value = true
+      try {
+        toStep3()
+        const when = screen.getByRole('combobox', { name: 'Run' }) as HTMLSelectElement
+        // The stored value stays `morning` for compatibility; the label is new.
+        expect(when.value).toBe('morning')
+        expect(when.options[when.selectedIndex].textContent).toBe('Every day')
+      } finally {
+        touch.value = false
+      }
+      const time = screen.getByLabelText('Time') as HTMLInputElement
+      expect(time).toBe(screen.getByTestId('meet-crewmates-time'))
+      expect(time.type).toBe('time')
+      expect(time.value).toBe('09:00')
+      expect(time.className).toContain('min-h-[44px]')
+      expect(screen.getByTestId('meet-crewmates-timezone')).toHaveTextContent(`Time zone: ${browserZone()}`)
+      expect(time.getAttribute('aria-describedby')).toContain('meet-crewmates-timezone')
+    })
+
+    it('a custom time becomes the cron minute and hour, in the captured zone', async () => {
+      toStep3()
+      setTime('07:05')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(createCron).toHaveBeenCalledTimes(1))
+      const body = createCron.mock.calls[0][0] as Record<string, unknown>
+      expect(body.cron).toBe('5 7 * * *')
+      expect(body.timezone).toBe(browserZone())
+    })
+
+    it('a selected late-night time disables jitter so the run stays at that time', async () => {
+      toStep3()
+      setTime('23:30')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(createCron).toHaveBeenCalledTimes(1))
+      expect(createCron.mock.calls[0][0]).toMatchObject({
+        cron: '30 23 * * *', timezone: browserZone(), strict_schedule: true,
+      })
+    })
+
+    it('midnight and the last minute of the day map to their own cron fields', async () => {
+      toStep3()
+      setTime('00:00')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(createCron).toHaveBeenCalledTimes(1))
+      expect((createCron.mock.calls[0][0] as Record<string, unknown>).cron).toBe('0 0 * * *')
+    })
+
+    it('an empty daily time blocks the button, Enter in either field, and every write', async () => {
+      toStep3()
+      setTime('')
+      expect(screen.getByTestId('meet-crewmates-create')).toBeDisabled()
+      expect(screen.getByTestId('meet-crewmates-time-error')).toHaveTextContent('Choose a valid time.')
+      expect(screen.getByTestId('meet-crewmates-time')).toHaveAttribute('aria-invalid', 'true')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      fireEvent.keyDown(screen.getByTestId('meet-crewmates-job'), { key: 'Enter' })
+      fireEvent.keyDown(screen.getByTestId('meet-crewmates-time'), { key: 'Enter' })
+      // Give any stray mutation a chance to start before asserting none did.
+      await new Promise(r => setTimeout(r, 0))
+      expect(createAgent).not.toHaveBeenCalled()
+      expect(createCron).not.toHaveBeenCalled()
+      // A valid time clears the hint and the button comes back; Enter now creates.
+      setTime('18:30')
+      expect(screen.queryByTestId('meet-crewmates-time-error')).toBeNull()
+      expect(screen.getByTestId('meet-crewmates-create')).toBeEnabled()
+      fireEvent.keyDown(screen.getByTestId('meet-crewmates-time'), { key: 'Enter' })
+      await waitFor(() => expect(createCron).toHaveBeenCalledTimes(1))
+      expect((createCron.mock.calls[0][0] as Record<string, unknown>).cron).toBe('30 18 * * *')
+    })
+
+    it('an invalid daily time does not affect hourly or on-demand', async () => {
+      touch.value = true
+      try {
+        toStep3()
+        setTime('')
+        expect(screen.getByTestId('meet-crewmates-create')).toBeDisabled()
+        fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'hourly' } })
+        expect(screen.queryByTestId('meet-crewmates-time')).toBeNull()
+        expect(screen.getByTestId('meet-crewmates-create')).toBeEnabled()
+        fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'ask' } })
+        expect(screen.getByTestId('meet-crewmates-create')).toBeEnabled()
+        fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'hourly' } })
+        fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      } finally {
+        touch.value = false
+      }
+      await waitFor(() => expect(createCron).toHaveBeenCalledTimes(1))
+      const body = createCron.mock.calls[0][0] as Record<string, unknown>
+      expect(body.every).toBe(3600)
+      expect(body.cron).toBeUndefined()
+    })
+
+    it('the picked time survives Back and is reset on the next opening', () => {
+      const { rerender } = renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
+      next()
+      next()
+      setTime('21:15')
+      fireEvent.click(screen.getByTestId('meet-crewmates-back'))
+      next()
+      expect((screen.getByTestId('meet-crewmates-time') as HTMLInputElement).value).toBe('21:15')
+      rerender(<MeetCrewmatesFlow open={false} onDone={vi.fn()} onCreated={vi.fn()} />)
+      rerender(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
+      next()
+      next()
+      expect((screen.getByTestId('meet-crewmates-time') as HTMLInputElement).value).toBe('09:00')
+    })
+
+    it('every step-3 control is disabled while the create is in flight', async () => {
+      let release: (v: { ok: boolean; name: string; memory_store: string; member_id: string }) => void = () => {}
+      createAgent.mockImplementationOnce(() => new Promise(r => { release = r }))
+      toStep3()
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(screen.getByTestId('meet-crewmates-time')).toBeDisabled())
+      expect(screen.getByTestId('meet-crewmates-job')).toBeDisabled()
+      expect(screen.getByTestId('meet-crewmates-create')).toBeDisabled()
+      expect(screen.getByTestId('meet-crewmates-back')).toBeDisabled()
+      const reportSwitch = screen.getByRole('switch', { name: 'Its own chat' })
+      expect(reportSwitch).toHaveAttribute('aria-disabled', 'true')
+      fireEvent.click(reportSwitch)
+      expect(reportSwitch).toHaveAttribute('aria-checked', 'true')
+      release({ ok: true, name: 'Radar', memory_store: 'm1', member_id: 'radar-id' })
+      await screen.findByTestId('meet-crewmates-ready')
+    })
+
+    describe('ready step next run', () => {
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+      // Only Date is faked, so react-query and waitFor keep their real timers.
+      const at = (h: number, m: number, s = 0) => {
+        const d = new Date()
+        d.setHours(h, m, s, 0)
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(d)
+      }
+      const createAt = async (time: string) => {
+        toStep3()
+        setTime(time)
+        fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+        return screen.findByTestId('meet-crewmates-ready-starts')
+      }
+
+      it('a time still ahead today says today, with the picked time and zone', async () => {
+        at(10, 29, 59)
+        const line = await createAt('10:30')
+        expect(line).toHaveTextContent(`Next run: today at ${formatDailyTime('10:30')} (${browserZone()}).`)
+      })
+
+      it('the exact current minute has already fired: tomorrow', async () => {
+        at(10, 30, 0)
+        const line = await createAt('10:30')
+        expect(line).toHaveTextContent(`Next run: tomorrow at ${formatDailyTime('10:30')} (${browserZone()}).`)
+      })
+
+      it('a time earlier today says tomorrow', async () => {
+        at(23, 0)
+        const line = await createAt('09:00')
+        expect(line).toHaveTextContent(`Next run: tomorrow at ${formatDailyTime('09:00')}`)
+      })
+    })
+  })
+
+  it('the ready step shows the goal as plain text, never markup', async () => {
+    renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
+    next()
+    next()
+    fireEvent.change(screen.getByTestId('meet-crewmates-job'), { target: { value: '<b>Ship</b> & tell' } })
+    fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+    const goal = await screen.findByTestId('meet-crewmates-ready-goal')
+    expect(goal).toHaveTextContent('Goal: <b>Ship</b> & tell')
+    expect(goal.querySelector('b')).toBeNull()
   })
 
   it.each(['Issue Radar', '雷达', '-radar'])('a free-form name (%s) is accepted and sent as typed', async name => {
@@ -485,9 +684,42 @@ describe('MeetCrewmatesFlow', () => {
 
 describe('MeetCrewmatesFlow helpers', () => {
   it('scheduleFor maps the When choice to a cron body', () => {
-    expect(scheduleFor('morning', 'Asia/Shanghai')).toEqual({ cron: '0 9 * * *', timezone: 'Asia/Shanghai' })
+    // Default time is 09:00.
+    expect(scheduleFor('morning', 'Asia/Shanghai')).toEqual({ cron: '0 9 * * *', timezone: 'Asia/Shanghai', strict_schedule: true })
+    expect(scheduleFor('morning', 'Europe/Berlin', '07:05')).toEqual({ cron: '5 7 * * *', timezone: 'Europe/Berlin', strict_schedule: true })
+    expect(scheduleFor('morning', 'UTC', '00:00')).toEqual({ cron: '0 0 * * *', timezone: 'UTC', strict_schedule: true })
+    expect(scheduleFor('morning', 'UTC', '23:59')).toEqual({ cron: '59 23 * * *', timezone: 'UTC', strict_schedule: true })
     expect(scheduleFor('hourly', 'UTC')).toEqual({ every: 3600 })
     expect(scheduleFor('ask', 'UTC')).toBeNull()
+    // The time is irrelevant, even when invalid, for hourly and on-demand.
+    expect(scheduleFor('hourly', 'UTC', '')).toEqual({ every: 3600 })
+    expect(scheduleFor('ask', 'UTC', 'nope')).toBeNull()
+  })
+
+  it('scheduleFor refuses an invalid daily time instead of falling back to another hour', () => {
+    for (const bad of ['', '9:00', '24:00', '12:60', '12:30:00', 'noon']) {
+      expect(() => scheduleFor('morning', 'UTC', bad)).toThrow()
+    }
+  })
+
+  it('parseDailyTime accepts only HH:mm', () => {
+    expect(parseDailyTime('09:00')).toEqual({ hour: 9, minute: 0 })
+    expect(parseDailyTime('23:59')).toEqual({ hour: 23, minute: 59 })
+    expect(parseDailyTime('')).toBeNull()
+    expect(parseDailyTime('9:5')).toBeNull()
+  })
+
+  it('nextRunIsToday compares at minute precision in the given zone', () => {
+    const utc = (h: number, m: number, s = 0) => new Date(Date.UTC(2026, 8, 29, h, m, s))
+    expect(nextRunIsToday('09:00', 'UTC', utc(8, 59, 59))).toBe(true)
+    expect(nextRunIsToday('09:00', 'UTC', utc(9, 0, 0))).toBe(false)
+    expect(nextRunIsToday('09:00', 'UTC', utc(9, 0, 30))).toBe(false)
+    expect(nextRunIsToday('00:00', 'UTC', utc(0, 0))).toBe(false)
+    expect(nextRunIsToday('23:59', 'UTC', utc(23, 58))).toBe(true)
+    // 08:30 UTC is 16:30 in Shanghai: 09:00 there has passed, 17:00 has not.
+    expect(nextRunIsToday('09:00', 'Asia/Shanghai', utc(8, 30))).toBe(false)
+    expect(nextRunIsToday('17:00', 'Asia/Shanghai', utc(8, 30))).toBe(true)
+    expect(nextRunIsToday('', 'UTC', utc(0, 0))).toBe(false)
   })
 
   it('builtFromOptions puts the built-in first and drops private copies and kirocrew-lite', () => {

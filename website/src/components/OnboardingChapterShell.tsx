@@ -63,8 +63,8 @@ function FloatingGhost({
 export function ShellAside({ copy }: { copy: ShellAsideCopy }) {
   return (
     <aside className="relative flex min-h-[248px] w-full shrink-0 overflow-hidden bg-accent text-accent-fg sm:min-h-0 sm:w-[36%]">
-      <FloatingGhost className="-left-8 top-[24%] h-24 w-20 rotate-90 lg:h-28 lg:w-24" delay={0.15} rotate={90} />
-      <FloatingGhost className="-right-5 top-5 h-28 w-20 -rotate-12 lg:h-36 lg:w-28" delay={0.35} rotate={-12} />
+      <FloatingGhost className="-left-8 top-[24%] hidden h-24 w-20 rotate-90 sm:block lg:h-28 lg:w-24" delay={0.15} rotate={90} />
+      <FloatingGhost className="-right-5 top-5 hidden h-28 w-20 -rotate-12 sm:block lg:h-36 lg:w-28" delay={0.35} rotate={-12} />
       {/* Peeks in 2rem from the panel edge: the mascot is near-white and the
           copy column paints in near-white too, so any overlap renders text
           white-on-white. The visible sliver stays inside the panel's own
