@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -2941,6 +2941,15 @@ function ChatSidebar({
     searchRanked, folderNameMatchIds,
   } = useSearchMatches({ slotFilter, slotSearchRanks, folders, isFolderHidden })
 
+  // Is the search box in use? A query is an explicit request for a specific
+  // session, so it wins over the browsing filters: the folder filter, the tag
+  // filter and the status chips all go inert while this is true, and each of
+  // them reads THIS flag rather than trimming `slotFilter` itself. One trim, so
+  // the three cannot disagree about when a search starts.
+  const slotSearchActive = slotFilter.trim() !== ''
+  // `aria-describedby` target for the aggregate tag chip's paused text below.
+  const tagChipPausedId = useId()
+
   /**
    * THE single declaration of every filter dimension. `filteredSlots`,
    * `listNarrowed`, and `revealBlockingFilters` all derive from this list, so
@@ -2973,11 +2982,16 @@ function ChatSidebar({
     const activeFilterDefs = SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key))
     return [
       {
-        // Tags. Unlike the folder filter this does NOT go inert while
-        // searching: it is a session property, so it behaves like the
-        // Unread/Pinned status chips.
-        filtersRow: slot => activeTagIds.size === 0 || (slot.tags ?? []).some(id => activeTagIds.has(id)),
-        narrows: () => activeTagIds.size > 0,
+        // Tags. Inert while searching, like the folder filter and the status
+        // chips below: a query must reach every match, so a tag the row does
+        // not carry can never become a search dead end. `hides` stays LIVE
+        // while searching, on purpose: the reveal effect clears every hiding
+        // dimension in one pass and then waits for the row to render. Clearing
+        // the search resumes this filter, so a tag `hides` that went inert with
+        // the filter would let the resumed filter hide the revealed row on the
+        // next commit, after the one pass that could have cleared it.
+        filtersRow: slot => slotSearchActive || activeTagIds.size === 0 || (slot.tags ?? []).some(id => activeTagIds.has(id)),
+        narrows: () => !slotSearchActive && activeTagIds.size > 0,
         // Raw `filterTagIds`, not resolved `activeTagIds`, and not behind
         // `excluded`: mid-flight nothing is filtered, so the row is re-hidden.
         hides: slot => filterTagIds.size > 0 && !(slot.tags ?? []).some(id => filterTagIds.has(id)),
@@ -2987,7 +3001,7 @@ function ChatSidebar({
         // Text search: title + source links, never key/agent (rows the backend
         // excluded) — a badge id is a card-visible PROPERTY, like tags above.
         filtersRow: slot => {
-          if (!slotFilter) return true
+          if (!slotSearchActive) return true
           const q = slotFilter.toLowerCase()
           // The slot's own CONTAINER matched by name: the query named the folder,
           // so everything filed in it is what was asked for. Checked before the
@@ -3012,16 +3026,23 @@ function ChatSidebar({
           return sourceMatch
             || ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(q)
         },
-        narrows: () => Boolean(slotFilter),
-        hides: (slot, excluded) => Boolean(slotFilter) && excluded(slot),
+        narrows: () => slotSearchActive,
+        hides: (slot, excluded) => slotSearchActive && excluded(slot),
         clear: () => setSlotFilter(''),
       },
       {
         // Status chips (SESSION_FILTERS). Active chips OR together: a row
-        // passes when any active chip's predicate matches it.
-        filtersRow: slot => activeFilterDefs.length === 0 || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
-        narrows: () => activeFilters.size > 0,
-        hides: (slot, excluded) => activeFilters.size > 0 && excluded(slot),
+        // passes when any active chip's predicate matches it. Inert while
+        // searching, for the same reason as tags above.
+        filtersRow: slot => slotSearchActive || activeFilterDefs.length === 0 || activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot)),
+        narrows: () => !slotSearchActive && activeFilters.size > 0,
+        // Live while searching, like the tag `hides` above. `excluded` (list
+        // membership) is the wrong answer during a search, because the search
+        // bypass keeps the row in the list; the per-row predicate is the one
+        // that says whether the RESUMED chips will hide it.
+        hides: (slot, excluded) => activeFilters.size > 0 && (slotSearchActive
+          ? !activeFilterDefs.some(filterDef => _derivedLookup[filterDef.key](slot))
+          : excluded(slot)),
         clear: () => {
           // Persisted like toggleFilter: remount re-reads the stored '1' and
           // would silently restore the filter that hides this row.
@@ -3061,7 +3082,7 @@ function ChatSidebar({
         },
       },
     ]
-  }, [activeFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, setActiveFilters, setFilterHiddenFolders])
+  }, [activeFilters, activeTagIds, filterTagIds, clearTagFilter, slotFilter, slotSearchActive, folderNameMatchIds, searchRanked, _derivedLookup, filterHiddenSubtree, folders, slotFolders, setActiveFilters, setFilterHiddenFolders])
 
   // State and in the memo deps on purpose, not a ref: a frozen run caches its
   // stale list against new deps, so clearing a ref would invalidate nothing.
@@ -3183,7 +3204,7 @@ function ChatSidebar({
   // The folder filter goes inert while searching, in BOTH views: a query must
   // reach every match, so an unchecked folder can never become a search dead
   // end. Everything that consults the filter routes through this flag.
-  const folderFilterActive = slotFilter.trim() === '' && filterHiddenFolders.size > 0
+  const folderFilterActive = !slotSearchActive && filterHiddenFolders.size > 0
 
   // Is the list narrowed at all? Derived from filterDimensions: a dimension
   // participates through its required `narrows` field, so this site cannot
@@ -5427,14 +5448,20 @@ function ChatSidebar({
           Tag colours survive as spans inside this single control. */}
       {activeTagIds.size > 0 && (
         <div className="px-3 pb-1">
+          {/* Dimmed while searching: the filter is still on, but the search
+              dimension has made it inert (see `filterDimensions`), and a chip
+              at full strength would claim a narrowing that is not happening. */}
           <button
             type="button"
             data-testid="tag-filter-chip"
-            className="inline-flex items-center gap-1 max-w-full pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors bg-bg-elevated/60 border border-border text-muted hover:text-text"
+            className={`inline-flex items-center gap-1 max-w-full pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors bg-bg-elevated/60 border border-border text-muted hover:text-text${slotSearchActive ? ' opacity-50' : ''}`}
             onClick={clearTagFilter}
-            title={i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
+            title={slotSearchActive ? `${i18nT('pages.chatSidebar.filter_paused_while_searching')} · ${i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}` : i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
             aria-label={i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
+            aria-describedby={slotSearchActive ? tagChipPausedId : undefined}
           >
+            {slotSearchActive && <Pause size={10} className="shrink-0" aria-hidden="true" />}
+            {slotSearchActive && <span id={tagChipPausedId} className="sr-only">{i18nT('pages.chatSidebar.filter_paused_while_searching')}</span>}
             {/* Swatch carries the colour, the name stays in body text: a pale
                 tag on this surface can fall near 2:1 contrast at 11px. */}
             <span className="truncate inline-flex items-center gap-1.5">
@@ -5470,6 +5497,7 @@ function ChatSidebar({
                 color={filterDef.color}
                 clearLabel={clearLabel}
                 onClear={() => toggleFilter(filterDef.key)}
+                pausedLabel={slotSearchActive ? i18nT('pages.chatSidebar.filter_paused_while_searching') : undefined}
               />
             )
           })}
@@ -5690,7 +5718,6 @@ function ChatSidebar({
             {(() => {
               const tree = lineage
               if (!tree) return null
-              const searching = slotFilter.trim() !== ''
               // Keyed by identity, exactly as `lineage` is: a raw-key map would let a
               // federated peer row overwrite the local row it collides with, so one
               // session would vanish and the other would render twice.
@@ -5770,7 +5797,7 @@ function ChatSidebar({
                 for (const kid of kids) emit(kid, depth + 1)
               }
 
-              if (searching) {
+              if (slotSearchActive) {
                 // Flattened: every match at depth 0, in the lane's order, with no
                 // chevrons. Matches the flat lane's answer to the same question.
                 for (const s of flatSlots) {
