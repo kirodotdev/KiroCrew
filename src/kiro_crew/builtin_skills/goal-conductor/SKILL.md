@@ -170,6 +170,16 @@ read `<crew-home>/skills/kirocrew-dev/prepare-pr/SKILL.md` (`<crew-home>` is
 `KIROCREW_HOME` when set, else `~/.kiro/crew`) and follow its loop to drive
 the PR to review-ready. Optional — the worker's own method is fine too.
 
+**A large item's seed may name `workflow_run`.** You see the item's size
+before the worker does. When it has several dependent phases or many
+independent pieces AND a failed piece should re-run without redoing the rest,
+add one line: run it with `workflow_run` (check `workflow_library_list` for a
+saved one first) and put the run id in `artifacts`. A run's steps do not
+inherit the worker's directory, so for an item in a checkout the line also says
+every step passes that checkout as `ctx.agent(cwd=)`. Leave the line out for a
+single task or a one-shot fan-out; the worker does those itself. This is
+advice to the worker: you still never call `workflow_run` yourself.
+
 **Bind BEFORE you seed.** The opposite order — seed first, record after —
 protects against a ledger row with no session behind it. This one protects
 against a running worker with no binding, and that is the failure the worker can
