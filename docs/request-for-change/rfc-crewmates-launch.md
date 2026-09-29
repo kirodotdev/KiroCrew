@@ -6,7 +6,7 @@ created: 2026-09-22
 last-audited: 2026-09-22
 audited-at: 87553ba866
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806, 12924]
+implementation-prs: [12797, 12798, 12805, 12806, 12924, 14897]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -143,25 +143,40 @@ second — so a wrong guess costs one click and loses nothing.
 ### 03 Pruning the crewmates an earlier release generated
 
 Why: releases before #12224 called the agent sync on every chat mount, and that
-sync made a crewmate out of every custom agent under `~/.kiro/agents` — a
-`config.agents` row with no `member_id`, on the shared memory store. An
-existing install can therefore carry one crewmate per custom agent, most of
-them never opened. The launch review first decided a user-facing opt-in step
-here; the product owner replaced it on 2026-09-23 with the decision below.
+sync made a crewmate out of every agent spec it discovered — the person's own
+under `~/.kiro/agents` and every package-installed one — as a `config.agents`
+row with no `member_id`, on the shared memory store, stamped with the spec's
+discovery source (`builtin`, `package`, or `aim`, the package source's older
+name). An existing install can therefore carry one crewmate per synced agent,
+most of them never opened. The launch review first decided a user-facing
+opt-in step here; the product owner replaced it on 2026-09-23 with the decision
+below, and it was revised on 2026-09-28 to cover package-installed agents and
+to say what "chatted with" means.
 
 Decided:
 
 - No user-facing step. A one-time migration runs at gateway startup: a
   crewmate that an earlier sync generated (empty `member_id`, the shared
-  `default` store, bound to a custom agent of the person's own — never the
-  runtime's own, a package's or a private copy) and that was never chatted
-  with is removed from the roster. Only the config row goes; the agent file
-  under `~/.kiro/agents` and any transcript stay.
+  `default` store, bound to an installed spec of the person's own or of a
+  package — never one of the runtime's own agents (a Kiro Crew-owned spec, or
+  a row stamped `kirocrew`), a private copy, or a spec that is no longer
+  installed) and that was never chatted with is removed from
+  the roster. Only the config row goes; the agent file and any transcript
+  stay.
+- "Chatted with" means the crewmate's own thread on the Crewmates page holds a
+  turn, in its live transcript or an archived segment. A session elsewhere that
+  ran the agent (a sub-agent, a cron job, an app slot, a plain chat), an
+  activity record, or a thread that was opened and never written to does not
+  count.
+- A crewmate the person created (a `member_id` is set) is never removed,
+  whether or not it was ever chatted with.
 - A generated crewmate the person did chat with stays exactly as it is, on its
   V1 binding. A memory binding is identity and is chosen only at creation; the
   migration does not provision or rebind.
-- If chat history cannot be read, nothing is removed and the pass runs again
-  next boot. A marker records a completed pass so it runs once.
+- A crewmate whose thread cannot be read is kept and named in the marker; the
+  rest of the pass still runs. A marker records a completed pass so it runs
+  once; the revised rule writes a new marker name, so an install the first
+  pass left untouched gets one more run.
 - A person with custom agents and no crewmate is served by screen 02's empty
   state and **New crewmate**; there is no offer to add agents in bulk.
 
@@ -169,12 +184,20 @@ Reasoning: the generated rows are leftover state, not a choice the person
 made, so removing the unused ones needs no confirmation; a binding is identity,
 so the kept ones are not rewritten; there is no screen to maintain, translate
 or review; and the removal drops nothing the person made — every agent file
-stays, and one click re-enrols any of them. A generated row the person edited
-but never chatted with (a model, a picture, triggers) still matches the rule
-and is removed with those edits; that is accepted: the row itself is the
-sync's, not the person's, and the crewmate the edits describe is one click
-away. Member-aware edits that stamp `member_id` or allocate a store take the
-row out of the rule.
+stays, and one click re-enrols any of them. A package-installed agent is
+enrolled by the same sync as a person's own, so its generated row is the
+same leftover state; the runtime's own agents and uninstalled specs are left
+out because nothing re-enrols them in one click. Only a turn on the crewmate's
+own page counts as chatting, because that thread is the crewmate: another
+session running the same agent file is a template use, and it survives the
+removal untouched. One unreadable thread keeps only its own crewmate, so a
+single bad file cannot hold the whole roster back on every boot. A description
+edit does not protect a never-chatted generated row: the description is the
+spec's copy, and the crewmate it describes is one click away. Any other edit
+the person made -- a model, a picture, triggers, a colour, a star, a workspace,
+a team, a local override in `config.local.json` -- takes the row out of the
+rule, as do the member-aware edits that stamp `member_id` or allocate a store:
+each is the person's own act on that row, so the row is theirs.
 
 ### 04 Crewmate detail page
 
@@ -308,7 +331,8 @@ this document:
   the first tab, Notes, by the existing unknown-focus rule.
 - The startup prune is gated by a marker file in the config directory, written
   once a pass completes; it removes only never-chatted rows with no `member_id`
-  on the shared store, and touches no agent file or transcript.
+  on the shared store bound to an installed spec of the person's own or of a
+  package, and touches no agent file or transcript.
 - Threads and teams add new storage beside the existing transcript and roster;
   nothing existing changes shape.
 
@@ -324,9 +348,10 @@ The launch is complete when, on main:
 - A new install reaches a crewmate's first greeting through either the
   four-step flow or New crewmate without seeing a settings form.
 - An install carrying crewmates an earlier sync generated loses, on its first
-  start and once, exactly the rows § 03 names: never chatted with, no
-  `member_id`, the shared store, bound to a custom agent of the person's own.
-  Chatted rows, package-sourced rows and every agent file are untouched.
+  start and once, exactly the rows § 03 names: never chatted with on the
+  Crewmates page, no `member_id`, the shared store, bound to an installed spec
+  of the person's own or of a package. Chatted rows, created crewmates,
+  runtime-owned and spec-less rows and every agent file are untouched.
 - A crewmate's chat contains no auto-nudge, cron or sub-agent envelope rows.
 
 ## 8. PRs implementing this
@@ -337,6 +362,9 @@ Open at the time of writing:
   API half (screen 07).
 - [#12798](https://github.com/kirodotdev/KiroCrew/pull/12798) — one-time
   startup prune of sync-generated crewmates (screen 03).
+- [#14897](https://github.com/kirodotdev/KiroCrew/pull/14897) — the revised
+  § 03 rule: package-sourced rows and the Crewmates-page definition of
+  "chatted with".
 - [#12805](https://github.com/kirodotdev/KiroCrew/pull/12805) — crewmate
   panel: Notes, Work log, Dashboard (screen 06).
 - [#12806](https://github.com/kirodotdev/KiroCrew/pull/12806) — Customize
