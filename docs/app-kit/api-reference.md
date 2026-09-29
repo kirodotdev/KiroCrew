@@ -361,6 +361,12 @@ call `await client.authenticate()` before the first request; the context manager
 does not exchange the secret automatically. The same exchange refreshes a token
 after a 401/403 response.
 
+The Gateway names its authentication cookie from the Host header it receives,
+falling back to its own listen port. The Python client normally derives that name
+from `base_url`. For a port-less URL or a reverse proxy that strips or rewrites
+Host, pass `cookie_port=<gateway listen port>` to `KiroCrewClient`; the override
+applies to both HTTP requests and WebSocket handshakes created by `create_ws()`.
+
 ### Authentication
 
 | Method | Returns | Description |
@@ -399,9 +405,13 @@ after a 401/403 response.
 | `onToolCall(cb)` | `() => void` | Receive tool call events |
 | `onConnectionChange(cb)` | `() => void` | Connection state changes |
 | `onRaw(cb)` | `() => void` | All parsed WebSocket events |
-| `onRawMessage(cb)` | `() => void` | All raw WebSocket messages |
 
 All `on*` methods return an unsubscribe function.
+
+The Python client's `on_slot(slot_id, event_type, callback)` dispatches by
+`data.slot` for ordinary slot-bound frames. `slot_title` and `session_summary`
+instead carry the slot identifier as `data.key`; slot-scoped listeners handle
+both wire shapes.
 
 WebSocket event types: `chat_chunk`, `chat_done`, `chat_message`, `chat_error`,
 `tool_call`, `notification`, `slots`, `slot_title`, `dashboard`, `log`, `refresh`,
@@ -664,9 +674,9 @@ startup call, and teardown is the only thing that stops it.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `approveAction(slotId, taskId)` | `—` (no body) | Approve a pending tool action |
+| `approveAction(slotId, taskId, pattern?)` | `—` (no body) | Approve a pending tool action; command/base trust requires the pending card pattern |
 | `rejectAction(slotId, taskId)` | `—` (no body) | Reject a pending tool action |
-| `resolveApproval(approvalId, approved)` | `—` (no body) | Resolve an approval by ID |
+| `resolveApproval(approvalId, action, slotId?, pattern?)` | `—` (no body) | Resolve an approval by ID; `trust_command` and `trust_base` require `pattern` |
 | `getApprovalMode()` | `'auto'` \| `'interactive'` | Get current approval mode |
 | `setApprovalMode(mode)` | `—` (no body) | Set approval mode |
 
@@ -810,6 +820,18 @@ after entering the context. Local loopback requests need no token. Setting
 `app_name` alone only locates the app secret; it does not authenticate during
 `__aenter__`.
 
+Token authentication uses the Gateway's port-scoped `mc_token_<port>` cookie. If
+`base_url` omits the port, the client uses the scheme default (443 for HTTPS/WSS,
+80 for HTTP/WS). A Gateway receiving a Host header without a port instead keys
+the cookie to its own listen port, so a port-less URL matches only when the
+Gateway listens on the scheme-default port. Pass an explicit port when it listens
+elsewhere, including behind a reverse proxy that removes the port from Host.
+
+Core requests retry 429 responses for every HTTP method. They retry 5xx responses and
+transport failures only for `GET`, `PUT`, and `DELETE`; `POST` and `PATCH` are not replayed
+when the server may already have applied them. A 401/403 refusal may still refresh authentication
+and replay once because the Gateway rejected the request before applying it.
+
 ### Method Reference
 
 The left column is the endpoint label used in the sections above; the right
@@ -818,10 +840,14 @@ column is the shipped Python method, in `snake_case` per Python convention.
 Rows marked *not implemented* are Gateway endpoints the shipped Python client
 does not wrap yet. Call those endpoints directly with `aiohttp` (or any HTTP
 client) using the paths in
-[Gateway REST API Endpoints](#gateway-rest-api-endpoints). The client also ships
-no WebSocket surface, so the `connect` / `disconnect` / `on*` handlers in
-[WebSocket Events](#websocket-events) are endpoint documentation for a raw
-WebSocket connection rather than client methods.
+[Gateway REST API Endpoints](#gateway-rest-api-endpoints).
+
+`create_ws()` returns a `WsClient` bound to `/api/ws` with this client's auth
+cookie. Its listeners (`on(type, cb)`, `on_slot(slot, type, cb)`, `on_raw`, and
+`on_connection_change`) each return an unsubscribe function;
+`connect()` starts a background reconnect loop with exponential backoff and
+`disconnect()` stops it for good. When the client can refresh its token, it
+does so before each reconnect.
 
 | API surface | Python |
 |-----------|--------|
@@ -831,34 +857,38 @@ WebSocket connection rather than client methods.
 | `createSlot(name, agent?)` | `create_slot(name, agent="")` |
 | `listSlots()` | `list_slots()` |
 | `deleteSlot(id)` | `delete_slot(id)` |
-| `getSlotHistory(id, limit?)` | *not implemented — call the endpoint* |
+| `getSlotHistory(id, limit?)` | `get_slot_history(id, limit=50)` |
 | `sendMessage(id, msg)` | `send_message(id, msg)` |
+| `streamChat(id, msg)` | `stream_chat(id, msg)` → async iterator of chunk dicts; an SSE response ends only at `[DONE]` (transport failure or earlier clean close raises `NETWORK_ERROR` without retry), while a successful JSON queue, steer, or orchestrator-control receipt is yielded once and ends the iterator |
+| `stopSlot(id, force?)` | `stop_slot(id, force=False)` |
+| `editResend(id, content, opts)` | `edit_resend(id, content, *, index=None, ts=None)` |
 | `spawn(task, agent?)` | `spawn(task, agent="")` |
 | `spawnMany(tasks, agents?)` | `spawn_many(tasks, agents=None)` |
-| `listSubagents()` | *client wrapper expects a bare list, but `GET /api/spawn` returns `{agents}`; call it directly and read `agents`* |
+| `listSubagents()` | `list_subagents()` (reads `agents`) |
 | `getSubagentStatus(id)` | `get_subagent_status(id)` |
 | `addCron(name, opts)` | `add_cron(name, **opts)` |
-| `listCrons()` | *client wrapper expects a bare list, but `GET /api/crons` returns `{jobs, server_tz}`; call it directly and read `jobs`* |
-| `updateCron(id, opts)` | *client wrapper currently uses `PUT`, but the Gateway route is `PATCH`; call `PATCH /api/crons/{id}` directly* |
+| `listCrons()` | `list_crons()` (reads `jobs`) |
+| `updateCron(id, opts)` | `update_cron(id, **opts)` (`PATCH`) |
 | `removeCron(id)` | `remove_cron(id)` |
 | `pauseCron(id)` | `pause_cron(id)` |
 | `resumeCron(id)` | `resume_cron(id)` |
 | `addLesson(rule, cat, scope?)` | `add_lesson(rule, cat, scope="")` |
-| `listLessons()` | *client wrapper expects a bare list, but `GET /api/lessons` returns `{lessons, total, ...}`; call it directly and read `lessons`* |
+| `listLessons()` | `list_lessons()` (reads `lessons`) |
 | `removeLesson(query)` | `remove_lesson(query)` |
 | `sendNotification(text, opts?)` | `send_notification(text, **opts)` |
-| `listNotifications()` | *not implemented — call the endpoint* |
-| `ackNotifications()` | *not implemented — call the endpoint* |
-| `approveAction(slot, task)` | *not implemented — call the endpoint* |
-| `rejectAction(slot, task)` | *not implemented — call the endpoint* |
-| `resolveApproval(id, ok)` | *not implemented — call the endpoint* |
+| `listNotifications()` | `list_notifications()` → `{notifications, unread}` |
+| `ackNotifications()` | `ack_notification(ts)` / `ack_all_notifications()` |
+| `approveAction(slot, task, pattern?)` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
+| `rejectAction(slot, task)` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
+| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", pattern="")`; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
+| `listApprovals()` | `list_approvals()` |
 | `getApprovalMode()` | *not implemented — call the endpoint* |
-| `setApprovalMode(mode)` | *not implemented — call the endpoint* |
-| `listModels()` | *not implemented — call the endpoint* |
-| `setSlotModel(slot, model)` | *not implemented — call the endpoint* |
-| `getGatewayConfig(key)` | *not implemented — call the endpoint* |
-| `setGatewayConfig(key, val)` | *not implemented — call the endpoint* |
-| `listMcpServers()` | *client wrapper currently calls an unregistered path; call `GET /api/mcp` directly* |
+| `setApprovalMode(mode)` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |
+| `listModels()` | `list_models()` |
+| `setSlotModel(slot, model)` | `set_slot_model(slot, model)` |
+| `getGatewayConfig(key)` | `get_gateway_config(key)`; `key` is one of `GATEWAY_CONFIG_KEYS` (`kirocrew`, `stt`, `theme`, `default-agent`) |
+| `setGatewayConfig(key, val)` | `set_gateway_config(key, val)` (`PUT`, same keys) |
+| `listMcpServers()` | `list_mcp_servers()` (`GET /api/mcp`) |
 | `registerMcpServer(def)` | `register_mcp_server(name, cmd, args?, env?)` |
 | `removeMcpServer(name)` | `remove_mcp_server(name)` |
 | `registerAppMcp(name, entry)` | *not implemented — call the endpoint* |
@@ -873,15 +903,17 @@ WebSocket connection rather than client methods.
 | `getAppDataDir()` | `get_app_data_dir()` → `Path` |
 | `getAppConfig()` | `get_app_config()` |
 | `setAppConfig(cfg)` | `set_app_config(cfg)` |
-| `memorySearch(q, topK?)` | `memory_search(q, top_k=8)` |
+| `memorySearch(q, topK?)` | `memory_search(q, top_k=8)` (sent as `limit`, capped at 50) |
+| `transcribe(audio)` | `transcribe(audio_bytes, *, filename=, content_type=)` → text; transport failures raise `NETWORK_ERROR` without retry |
+| `connect()` / `on*` | `create_ws()` → `WsClient` (see above) |
 | `injectContext(slot, content, opts?)` | `inject_context(slot, content, *, source?, ephemeral?, max_age?)` |
 | `flushPendingContext(slot)` | `flush_pending_context(slot)` |
 | `setDefaultSlot(slot)` | `set_default_slot(slot)` |
 
-The standalone package exports only `KiroCrewClient`, `KiroCrewError`, and
-`ErrorCode`. It does not export `AppManifest`, `AppLifecycle`, `GatewayManager`,
-proxy-auth helpers, or a WebSocket client. Validate manifests through the main
-package's install path, manage the Gateway with the `kirocrew` CLI, and use
+The standalone package exports `KiroCrewClient`, `KiroCrewError`, `ErrorCode`,
+`WsClient`, `WsEvent` and `GATEWAY_CONFIG_KEYS`. It does not export
+`AppManifest`, `AppLifecycle`, `GatewayManager` or proxy-auth helpers. Validate
+manifests through the main package's install path, manage the Gateway with the `kirocrew` CLI, and use
 `kiro_crew.apps.proxy_auth` only from a backend that can import the main package.
 
 ---
@@ -898,9 +930,9 @@ All `kirocrew-client` errors are `KiroCrewError` instances with `code`,
 | `VALIDATION_ERROR` | Invalid input | No |
 | `NOT_FOUND` | 404 response | No |
 | `RATE_LIMITED` | 429 response | Yes (Retry-After or backoff) |
-| `SERVER_ERROR` | 5xx response | Yes (exponential backoff) |
-| `NETWORK_ERROR` | Timeout or connection failure | Yes (exponential backoff) |
-| `WS_DISCONNECTED` | Reserved enum value; the current client has no WebSocket surface and does not emit it | No |
+| `SERVER_ERROR` | 5xx response | `GET`/`PUT`/`DELETE`: yes; `POST`/`PATCH`: no |
+| `NETWORK_ERROR` | Timeout, connection failure, or truncated chat stream | Core `GET`/`PUT`/`DELETE`: yes; core `POST`/`PATCH`, `stream_chat`, and `transcribe`: no |
+| `WS_DISCONNECTED` | Reserved enum value; `WsClient` reconnects on its own and does not raise it | No |
 
 ```python
 from kirocrew_client import KiroCrewError

@@ -9,7 +9,15 @@ Usage::
         status = await mc.get_status()
         await mc.send_message("slot-1", "hello")
 """
-from kirocrew_client.client import KiroCrewClient
+from kirocrew_client.client import GATEWAY_CONFIG_KEYS, KiroCrewClient
 from kirocrew_client.errors import KiroCrewError, ErrorCode
+from kirocrew_client.ws_client import WsClient, WsEvent
 
-__all__ = ["KiroCrewClient", "KiroCrewError", "ErrorCode"]
+__all__ = [
+    "GATEWAY_CONFIG_KEYS",
+    "KiroCrewClient",
+    "KiroCrewError",
+    "ErrorCode",
+    "WsClient",
+    "WsEvent",
+]

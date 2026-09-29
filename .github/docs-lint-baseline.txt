@@ -45,7 +45,6 @@ dead-identifier	docs/app-kit/api-reference.md	listSubagents
 dead-identifier	docs/app-kit/api-reference.md	maxAgeSecs
 dead-identifier	docs/app-kit/api-reference.md	memorySearch
 dead-identifier	docs/app-kit/api-reference.md	onConnectionChange
-dead-identifier	docs/app-kit/api-reference.md	onRawMessage
 dead-identifier	docs/app-kit/api-reference.md	onToolCall
 dead-identifier	docs/app-kit/api-reference.md	pauseCron
 dead-identifier	docs/app-kit/api-reference.md	pendingContextCount
