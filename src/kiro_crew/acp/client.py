@@ -7550,7 +7550,9 @@ class AcpClient:
                         await self._cleanup_failed_live_spawn()
                         self._reset_state()
                         raise AcpError(
-                            host_auth.signed_out_message(self.backend), transient=False
+                            host_auth.signed_out_message(self.backend),
+                            transient=False,
+                            user_worded=True,
                         ) from exc
                     if attempt == 0:
                         logger.warning("ACP init failed (%s), retrying with fresh process...", exc)
