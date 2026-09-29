@@ -1012,7 +1012,7 @@ class TestRegistryLeavesASiblingsDirectory:
             provider.context_usage_pct = lambda: 0.0  # type: ignore[method-assign]
             provider.context_window_tokens = lambda: 0  # type: ignore[method-assign]
             provider.has_active_turn = lambda: False  # type: ignore[method-assign]
-            provider.runtime_info = lambda: (None, None)  # type: ignore[method-assign]
+            provider.runtime_abort_target = lambda: None  # type: ignore[method-assign]
             made.append(provider)
             return provider
 

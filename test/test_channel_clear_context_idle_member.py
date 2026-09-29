@@ -32,7 +32,7 @@ def _provider_factory(*, active_turn: bool):
         provider.is_alive = MagicMock(return_value=True)
         provider.is_process_alive = MagicMock(return_value=True)
         provider.has_active_turn = MagicMock(return_value=active_turn)
-        provider.runtime_info = MagicMock(return_value=(None, None))
+        provider.runtime_abort_target = MagicMock(return_value=None)
         return provider
 
     return factory

@@ -2549,12 +2549,17 @@ class AcpProvider(LLMProvider):
         return self._client.is_responsive()
 
     def is_process_alive(self) -> bool:
-        """True if the underlying OS process has not exited (ignores I/O staleness)."""
+        """True if the runtime process has not exited (ignores I/O staleness).
+
+        Process-level by name as well as by behaviour, and shared by every session
+        the client hosts. Do not read it as "my session is usable" -- see
+        :meth:`is_alive`.
+        """
         return self._client.is_process_alive()
 
     @property
     def process_instance(self) -> str:
-        """Per-spawn identity of the client's current child process (see base).
+        """Per-spawn identity of the client's current runtime process (see base).
 
         A direct read on purpose: a `getattr` hedge would convert a future
         wiring break into "no banner is ever live", indistinguishable from
@@ -2591,7 +2596,11 @@ class AcpProvider(LLMProvider):
 
     @property
     def exit_code(self) -> int | None:
-        """Process exit code, or None if still running."""
+        """The runtime process's exit code, or None if still running.
+
+        One code per process, so every session the client hosted reads the same
+        one: it explains a runtime's death, never one session's stop.
+        """
         return self._client.exit_code
 
     @property
@@ -2623,12 +2632,6 @@ class AcpProvider(LLMProvider):
         session on that process active, not just this one.
         """
         self._client.touch_activity()
-
-    def runtime_info(self) -> tuple[int | None, str | None]:
-        """Return (runtime_pid, gateway_socket_path) for abort propagation."""
-        pid = getattr(self._client, "_pid", None)
-        socket_path = getattr(self._client, "_mcp_gateway_socket", None)
-        return (pid, socket_path)
 
     @property
     def session_id(self) -> str:

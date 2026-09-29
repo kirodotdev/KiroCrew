@@ -32,9 +32,14 @@ from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.essential_delivery import EssentialDelivery
 
+# The abort address a provider mints. Safe at module scope despite this module's
+# import-light rule: ``abort`` imports only ``mcp_gateway.transport`` outside the
+# standard library, and that module is already loaded by the time this one is.
+from kiro_crew.mcp_gateway.abort import RuntimeAbortTarget
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    # Type-only: this module's runtime imports are deliberately just acp.types
-    # and constants, and recovery.ladder pulls in mcp_gateway + metrics.
+    # Type-only: this module's runtime imports are deliberately narrow, and
+    # recovery.ladder pulls in metrics.
     from pathlib import Path
 
     from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
@@ -297,28 +302,45 @@ class LLMProvider(ABC):
         return "no_turn"
 
     def is_alive(self) -> bool:
-        """Return True if the provider's backing process/connection is alive."""
+        """Return True if the provider's backing runtime/connection is alive.
+
+        RUNTIME-level, not session-level: a runtime is one process, and it may
+        serve several sessions at once. So this answers "is the process behind me
+        standing", which a co-tenant's activity can keep true after this
+        session's own work is over. A caller that needs to know whether THIS
+        session may still be served asks the registry for its lease, not this.
+        """
         return True
 
     def is_process_alive(self) -> bool:
-        """Process-level liveness check (skips activity-staleness heuristics).
+        """Runtime liveness read off the OS, skipping activity-staleness heuristics.
 
         Defaults to ``is_alive``. Providers backed by a child process (ACP)
         override this to inspect the OS-level state directly.
+
+        Same scope caveat as ``is_alive``, and sharper here because the reading is
+        the operating system's: the answer describes one process, so on a shared
+        runtime every tenant gets the same True and no tenant learns anything
+        about its own standing from it.
         """
         return self.is_alive()
 
     @property
     def process_instance(self) -> str:
-        """Identity of the provider's CURRENT child process instance.
+        """Identity of the CURRENT runtime process serving this provider.
 
         ``""`` for providers not backed by a child process, and for a
-        process-backed provider whose child is gone. Process-backed providers
-        override this with a per-spawn token so a resource minted by one child
-        (an MCP OAuth authorize link, whose loopback listener and PKCE verifier
-        live in that process) can be recognized as dead once the child is —
+        process-backed provider whose process is gone. Process-backed providers
+        override this with a per-spawn token so a resource minted inside one
+        process (an MCP OAuth authorize link, whose loopback listener and PKCE
+        verifier live there) can be recognized as dead once the process is —
         equality across spawns must be impossible, which is why the ACP session
         id (reused by resume on a new process) can never serve here.
+
+        A process fact, so every session on a shared runtime reads the SAME
+        token. That is what makes it sound for "is this still the process I
+        observed" and unsound for "is this my session": it answers the first
+        question and must never be folded into a session identity.
         """
         return ""
 
@@ -334,7 +356,13 @@ class LLMProvider(ABC):
 
     @property
     def exit_code(self) -> int | None:
-        """Last child-process exit code, or None if no process or still running."""
+        """The runtime process's last exit code; None with no process or still running.
+
+        A runtime fact: the code describes how one process ended, which is the
+        same answer for every session that was being served on it. So it explains
+        a runtime's death, never why one particular session stopped — a session
+        that merely lost its lease has no exit code of its own.
+        """
         return None
 
     @property
@@ -378,16 +406,45 @@ class LLMProvider(ABC):
         return ""
 
     def touch_activity(self) -> None:
-        """Refresh provider activity timestamp without I/O. Default no-op."""
+        """Refresh the RUNTIME's activity timestamp without I/O. Default no-op.
+
+        The stamp lives on the process, so on a shared runtime one session
+        touching it marks every session on that process active. Idle-expiry
+        therefore reads a runtime's idleness, not a session's, and a surface that
+        needs the latter keeps its own clock.
+        """
         return None
 
-    def runtime_info(self) -> tuple[int | None, str | None]:
-        """Return (runtime_pid, gateway_socket_path) for abort propagation.
+    def runtime_abort_target(self) -> RuntimeAbortTarget | None:
+        """This session's runtime as an opaque abort address, or ``None``.
 
-        Subclasses that manage a child process override this to return the
-        real values. Base returns (None, None) which disables abort push.
+        Handed to ``mcp_gateway.abort.schedule_abort_for`` unopened. The target is
+        deliberately opaque because a runtime is one process serving possibly
+        several sessions: a session that could read its pid here could also
+        attribute that process to itself, and the abort seam is the one place the
+        pid legitimately reaches a wire.
+
+        ``None`` means no runtime of this provider's own is reachable, and the
+        abort push is skipped. The default walks the private process fields a
+        provider outside this tree may expose (``_client._pid`` with
+        ``_client._mcp_gateway_socket``) so such a provider keeps its abort push
+        without declaring anything; a provider in this tree overrides instead.
+
+        A provider whose runtime is reached some OTHER way overrides this. The
+        default only knows the ``_client`` shape, so an override is how a provider
+        with a different one keeps its abort push.
+
+        Scope note carried from the wire: the frame names a PROCESS, so aborting
+        it cancels in-flight tool calls for every session on that process. At a
+        runtime cap of 1 the process has one tenant and the two scopes coincide.
         """
-        return (None, None)
+        client = getattr(self, "_client", None)
+        if client is None:
+            return None
+        return RuntimeAbortTarget.build(
+            getattr(client, "_pid", None),
+            getattr(client, "_mcp_gateway_socket", None),
+        )
 
     def billing_stats(self) -> object | None:
         """The live per-turn billing stats object, or None when unmetered.
@@ -537,8 +594,14 @@ class LLMProvider(ABC):
 
     @property
     def work_scratch_dir(self) -> "Path | None":
-        """The ``$KIROCREW_SCRATCH`` directory the process serving this session
+        """The ``$KIROCREW_SCRATCH`` directory the RUNTIME serving this session
         exposes, or ``None`` when it has none.
+
+        A runtime fact: the directory was allocated for a process, so every
+        session sharing that process answers with the same path and the tree they
+        form has one work directory between them. That is the intent — a spawned
+        child joins the directory it was given — and it is also why the path is
+        not a place to keep anything scoped to a single session.
 
         Read by whoever spawns a process on this session's behalf (a companion
         runtime, a dedicated sub-agent process) so that process mounts the SAME

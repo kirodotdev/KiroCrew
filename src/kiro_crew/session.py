@@ -150,7 +150,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
-from kiro_crew.mcp_gateway.abort import schedule_abort
+from kiro_crew.mcp_gateway.abort import schedule_abort_for
 from kiro_crew.member_memory_auth import prune_legacy_member_pid_bindings
 from kiro_crew.messaging.link import (
     UNBIND_REASON_SESSION_DESTROYED,
@@ -1289,7 +1289,7 @@ class SessionManager:
                 _provider_uses_kiro_identity_store(provider)
             ),
             get_audit_logger=lambda: sel(),
-            schedule_abort=lambda *args, **kwargs: schedule_abort(*args, **kwargs),
+            schedule_runtime_abort=lambda *args, **kwargs: schedule_abort_for(*args, **kwargs),
             monotonic=lambda: time.monotonic(),
         )
 

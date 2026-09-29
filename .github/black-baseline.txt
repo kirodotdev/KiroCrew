@@ -227,7 +227,6 @@ src/kiro_crew/knowledge/spend.py
 src/kiro_crew/knowledge/store.py
 src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
-src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
 src/kiro_crew/mcp_gateway/backend.py

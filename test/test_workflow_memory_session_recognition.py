@@ -22,7 +22,7 @@ async def test_workflow_memory_recognition_tracks_registration(prefix):
     provider = AsyncMock()
     provider.is_process_alive = lambda: True
     provider.has_active_turn = lambda: False
-    provider.runtime_info = lambda: (None, None)
+    provider.runtime_abort_target = lambda: None
     sessions = SessionManager(KiroCrewConfig(), provider_factory=lambda *args, **kwargs: provider)
     state = SimpleNamespace(sessions=sessions, _slots={}, _restricted_keys=set())
     key = f"{prefix}:wf_1:0"

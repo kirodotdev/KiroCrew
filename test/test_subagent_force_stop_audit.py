@@ -3312,7 +3312,7 @@ class TestTheReapFencesTheKey:
             provider.context_usage_pct = lambda: 0.0
             provider.context_window_tokens = lambda: 0
             provider.has_active_turn = lambda: False
-            provider.runtime_info = lambda: (None, None)
+            provider.runtime_abort_target = lambda: None
             provider.shutdown = AsyncMock()
 
             async def _gated_start(*_args: Any, **_kwargs: Any) -> None:

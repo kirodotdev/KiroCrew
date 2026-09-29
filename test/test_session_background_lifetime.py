@@ -45,7 +45,7 @@ def _mock_provider_factory():
         m.context_usage_unknown = lambda: False
         m.context_window_tokens = lambda: 0
         m.has_active_turn = lambda: False
-        m.runtime_info = lambda: (None, None)
+        m.runtime_abort_target = lambda: None
         m.stream_command = MagicMock(side_effect=_empty_provider_stream)
         return m
 

@@ -250,7 +250,7 @@ class SessionLifecycleDeps:
     The facade should pass forwarding callables, rather than captured module
     globals, for every patch-sensitive dependency.  That keeps patches such as
     ``kiro_crew.session.build_provider_factory`` and
-    ``kiro_crew.session.schedule_abort`` effective after service construction.
+    ``kiro_crew.session.schedule_abort_for`` effective after service construction.
     """
 
     logger: logging.Logger
@@ -271,7 +271,8 @@ class SessionLifecycleDeps:
     provider_has_unfinished_turn: Callable[[Any], bool]
     provider_uses_kiro_identity_store: Callable[[Any], bool]
     get_audit_logger: Callable[[], Any]
-    schedule_abort: Callable[..., None]
+    #: Abort push addressed by the opaque target a provider mints, never by a pid.
+    schedule_runtime_abort: Callable[..., None]
     monotonic: Callable[[], float]
 
 
@@ -2573,44 +2574,43 @@ class SessionLifecycleService:
         return "hard"
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None:
-        """Best-effort gateway abort for a session's runtime process."""
+        """Best-effort gateway abort for the runtime serving ``key``.
+
+        The provider answers with an opaque target or with ``None``, and this
+        layer never opens it. Holding one already means the address is complete
+        and routable, so there is nothing here to validate and no pid to read:
+        the runtime is one process that may serve several sessions, and a session
+        able to name that process could attribute it to itself.
+        """
         logger = self._deps.logger
         try:
-            pid, socket_path = session.provider.runtime_info()
+            target = session.provider.runtime_abort_target()
 
-            if pid is None:
-                client = getattr(session.provider, "_client", None)
-                pid = getattr(client, "_pid", None) if client else None
-            if socket_path is None:
-                client = getattr(session.provider, "_client", None)
-                socket_path = getattr(client, "_mcp_gateway_socket", None) if client else None
-
-            if isinstance(pid, int) and pid > 1 and socket_path:
+            if target is not None:
                 # Audit at the decision point: downstream logging happens only
-                # if the fire-and-forget gateway abort eventually succeeds.
+                # if the fire-and-forget gateway abort eventually succeeds. The
+                # target names itself, so the record says which runtime was asked
+                # without this layer deriving it.
                 try:
                     self._deps.get_audit_logger().log_api_access(
                         caller="session",
                         operation="mcp-gateway.abort-initiated",
                         outcome="initiated",
                         source="session",
-                        resources=f"pid={pid} session={key}",
+                        resources=f"{target.audit_label} session={key}",
                         error="reason=hard-stop",
                     )
                 except Exception:  # pragma: no cover - audit cannot block kill
                     logger.debug("SEL audit for abort initiation failed", exc_info=True)
-                self._deps.schedule_abort(
-                    socket_path,
-                    [pid],
+                self._deps.schedule_runtime_abort(
+                    target,
                     reason=f"hard-stop session={key}",
                 )
             else:
                 logger.warning(
-                    "abort-push skipped for %s: no runtime pid/socket resolved "
-                    "(pid=%r socket=%r) — in-flight tool calls will not be cancelled",
+                    "abort-push skipped for %s: the provider named no reachable "
+                    "runtime — in-flight tool calls will not be cancelled",
                     key,
-                    pid,
-                    socket_path,
                 )
         except Exception:
             logger.debug("_send_abort_for_session failed for %s", key, exc_info=True)
