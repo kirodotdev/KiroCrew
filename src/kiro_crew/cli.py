@@ -2919,7 +2919,7 @@ Examples:
     agent_create.add_argument(
         "--name",
         required=True,
-        help="Agent id, or a free-form name (kept as the display name of a derived id)",
+        help="Agent id, or any name: shown as typed, stored under a URL-safe id",
     )
     agent_create.add_argument("--display-name", default="", help="Label the dashboard shows")
     agent_create.add_argument("--kiro-agent", default="kirocrew", help="Kiro agent name")

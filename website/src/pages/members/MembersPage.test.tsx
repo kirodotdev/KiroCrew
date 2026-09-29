@@ -3230,6 +3230,36 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
   })
 
+  it('a free-form name opens the crewmate under the id the server answered and greets it by the name it shows', async () => {
+    const membersMock = api.members as ReturnType<typeof vi.fn>
+    await renderPage([row()])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Launch Notes' } })
+    ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: true, name: 'launch-notes' })
+    membersMock.mockResolvedValue({
+      members: [row(), row({ name: 'launch-notes', slug: 'launch-notes', display_name: 'Launch Notes' })],
+      default_agent: 'kirocrew',
+    })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('launch-notes'))
+    await waitFor(() => expect(currentUrl()).toBe('/members?member=launch-notes'))
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [message] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(message).toContain('Launch Notes')
+    expect(message).not.toContain('launch-notes')
+  })
+
+  it('a name another crewmate shows is refused up front, like a taken key', async () => {
+    await renderPage([row({ display_name: 'Oncall Sentinel' })])
+    expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
+    await openDialog()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Oncall Sentinel' } })
+    fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Oncall Sentinel')
+    expect(api.createKirocrewAgent).not.toHaveBeenCalled()
+  })
+
   it('while the create is in flight every control locks — the Advanced toggle and its fields included', async () => {
     let finish: (v: { ok: true }) => void = () => {}
     ;(api.createKirocrewAgent as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))

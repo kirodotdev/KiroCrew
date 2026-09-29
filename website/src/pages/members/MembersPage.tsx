@@ -692,9 +692,14 @@ export default function MembersPage() {
   // error after a good read keeps showing the last roster.
   const rosterQuery = useQuery(membersRosterQuery)
   const rows = rosterQuery.data ?? EMPTY_ROSTER
-  // The raw roster's names (not the filtered/projected list): what the create
-  // dialog refuses up front, and the premise of its post-failure reconcile.
-  const existingNames = useMemo(() => rows.map((r) => r.name), [rows])
+  // The raw roster's keys and shown names (not the filtered/projected list):
+  // what the create dialog refuses up front, and the premise of its
+  // post-failure reconcile. The server refuses a name another crewmate shows
+  // as well as a taken key (`members.key_new_crew`).
+  const existingNames = useMemo(
+    () => rows.flatMap((r) => (r.display_name ? [r.name, r.display_name] : [r.name])),
+    [rows],
+  )
   const loaded = rosterQuery.data !== undefined || rosterQuery.isError
   const loadError = rosterQuery.data === undefined && rosterQuery.isError
   // ONE source of truth for the roster fields the page derives from (starred
@@ -1344,9 +1349,13 @@ export default function MembersPage() {
       if (greet && !postCreateErrorRef.current && !otherFollowUp) {
         pendingGreets.current.delete(m.name)
         if (pageMounted.current) {
+          // Greet the crewmate by the name it shows: a crewmate made from a
+          // free-form name is keyed by a derived id (`launch-notes`) and shows
+          // the typed text as its label.
+          const shown = m.display_name?.trim() || greet.name
           const message = greet.job
-            ? t('pages.membersPage.greeting_seed_with_job', { name: greet.name, job: greet.job })
-            : t('pages.membersPage.greeting_seed', { name: greet.name })
+            ? t('pages.membersPage.greeting_seed_with_job', { name: shown, job: greet.job })
+            : t('pages.membersPage.greeting_seed', { name: shown })
           void seedGreeting(greet, r.slot_key, message)
         }
       }

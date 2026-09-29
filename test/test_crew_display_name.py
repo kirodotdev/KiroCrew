@@ -207,7 +207,6 @@ class TestCreateEndpoint:
         status, data = await self._post({"name": "Release Writer", "kiro_agent": "kirocrew"}, cfg)
         assert status == 200
         assert data["name"] == "release-writer"
-        assert data["display_name"] == "Release Writer"
         agents = cfg.written["doc"]["agents"]
         assert list(agents) == ["release-writer"]
         assert agents["release-writer"]["display_name"] == "Release Writer"
@@ -219,14 +218,16 @@ class TestCreateEndpoint:
             {"name": "Release Writer", "kiro_agent": "kirocrew", "display_name": "Scribe"}, cfg
         )
         assert status == 200
-        assert (data["name"], data["display_name"]) == ("release-writer", "Scribe")
+        assert data["name"] == "release-writer"
+        assert cfg.written["doc"]["agents"]["release-writer"]["display_name"] == "Scribe"
 
     @pytest.mark.asyncio
     async def test_id_shaped_name_is_the_key_unchanged(self):
         cfg = self._fake_config()
         status, data = await self._post({"name": "Scribe_2", "kiro_agent": "kirocrew"}, cfg)
         assert status == 200
-        assert (data["name"], data["display_name"]) == ("Scribe_2", "")
+        assert data["name"] == "Scribe_2"
+        assert cfg.written["doc"]["agents"]["Scribe_2"]["display_name"] == ""
 
     @pytest.mark.asyncio
     async def test_derived_id_skips_a_taken_id(self):
@@ -235,6 +236,40 @@ class TestCreateEndpoint:
         status, data = await self._post({"name": "Release Writer", "kiro_agent": "kirocrew"}, cfg)
         assert status == 200
         assert data["name"] == "release-writer-2"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # An explicit label on an id-shaped name is what the crew shows.
+            {"name": "scribe2", "display_name": "Release Writer"},
+            # A free-form name with an explicit label shows the label, not the name.
+            {"name": "Launch Notes", "display_name": "Release Writer"},
+        ],
+    )
+    async def test_an_explicit_label_another_crew_shows_is_taken(self, body):
+        cfg = self._fake_config()
+        cfg.agents["legacy"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", display_name="Release Writer"
+        )
+        status, data = await self._post({**body, "kiro_agent": "kirocrew"}, cfg)
+        assert status == 409
+        assert data["code"] == "agent_exists"
+        assert cfg.saved == []
+
+    @pytest.mark.asyncio
+    async def test_a_free_form_name_is_free_when_its_explicit_label_is(self):
+        """The check is on what the crew will show: a typed name another crew
+        shows is fine when this crew shows a different label."""
+        cfg = self._fake_config()
+        cfg.agents["legacy"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", display_name="Release Writer"
+        )
+        status, data = await self._post(
+            {"name": "Release Writer", "display_name": "Scribe", "kiro_agent": "kirocrew"}, cfg
+        )
+        assert status == 200
+        assert data["name"] == "release-writer"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

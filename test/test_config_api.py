@@ -326,10 +326,9 @@ class TestAgentCrudProperties:
                     # the label of a derived id.
                     key = create_data["name"]
                     if is_crew_id(name):
-                        assert (key, create_data["display_name"]) == (name, "")
+                        assert key == name
                     else:
                         assert is_crew_id(key)
-                        assert create_data["display_name"] == name
 
                     # List and verify
                     resp = await client.get("/api/agents")
@@ -338,6 +337,7 @@ class TestAgentCrudProperties:
                     agents_by_name = {a["name"]: a for a in data["agents"]}
                     assert key in agents_by_name
                     created = agents_by_name[key]
+                    assert created["display_name"] == ("" if is_crew_id(name) else name)
                     assert created["kiro_agent"] == kiro_agent
                     assert created["workspace"] == workspace
                     assert created["memory_store"] == private_store
