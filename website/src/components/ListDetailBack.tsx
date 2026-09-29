@@ -14,13 +14,18 @@ import { ArrowLeft } from 'lucide-react'
  * out of the pane on a touch device, and 44 is what Apple's HIG builds to
  * (44pt default, 28pt floor) and what Fluent and Primer recommend for mobile.
  * WCAG 2.2 SC 2.5.8's 24px is a floor to clear, not a target to design to.
+ *
+ * `disabled` is for callers that gate `onBack` (an in-flight save): the
+ * control must read as unavailable, not look live and do nothing.
  */
-export default function ListDetailBack({ label, onBack }: { label: string; onBack: () => void }) {
+export default function ListDetailBack({ label, onBack, disabled = false }: { label: string; onBack: () => void; disabled?: boolean }) {
   return (
     <button
       type="button"
       onClick={onBack}
-      className="flex shrink-0 items-center gap-1 min-h-11 -ml-1 px-2 rounded-md bg-transparent border-none text-[13px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer transition-colors focus-ring"
+      disabled={disabled}
+      aria-disabled={disabled || undefined}
+      className="flex shrink-0 items-center gap-1 min-h-11 -ml-1 px-2 rounded-md bg-transparent border-none text-[13px] text-muted enabled:hover:text-text enabled:hover:bg-bg-hover cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 transition-colors focus-ring"
     >
       <ArrowLeft size={14} aria-hidden="true" className="lucide-inline" />
       {label}

@@ -960,7 +960,11 @@ describe('SkillsTab update/delete failure surfacing', () => {
       // Back is the editor's only other exit on a phone; taking it mid-save
       // would unmount the pane that renders the save's failure. (While the
       // save is in flight the button reads its pending label.)
-      fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
+      const back = screen.getByRole('button', { name: 'Skills' })
+      // It must also read as unavailable, not look live and do nothing.
+      expect(back).toBeDisabled()
+      expect(back).toHaveAttribute('aria-disabled', 'true')
+      fireEvent.click(back)
       expect(screen.getByText('Saving…')).toBeInTheDocument()
     } finally {
       isMobileMock.value = false
