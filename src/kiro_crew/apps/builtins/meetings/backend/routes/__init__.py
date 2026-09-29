@@ -209,10 +209,12 @@ def register_routes(app: web.Application) -> None:
         route(require_owner("meetings.start")(lifecycle_routes.handle_start_meeting)),
     )
     router.add_post(
-        BASE + "/meetings/{meeting_id}/status", route(lifecycle_routes.handle_meeting_status)
+        BASE + "/meetings/{meeting_id}/status",
+        route(require_owner("meetings.status")(lifecycle_routes.handle_meeting_status)),
     )
     router.add_post(
-        BASE + "/meetings/{meeting_id}/stop", route(lifecycle_routes.handle_stop_meeting)
+        BASE + "/meetings/{meeting_id}/stop",
+        route(require_owner("meetings.stop")(lifecycle_routes.handle_stop_meeting)),
     )
     router.add_get(
         BASE + "/meetings/{meeting_id}/transcript",
@@ -238,14 +240,18 @@ def register_routes(app: web.Application) -> None:
     )
     router.add_post(
         BASE + "/meetings/{meeting_id}/attachments",
-        route(lifecycle_routes.handle_attachments),
+        route(require_owner("meetings.attachments")(lifecycle_routes.handle_attachments)),
     )
 
     # Per-meeting agent control
     router.add_post(
-        BASE + "/meetings/{meeting_id}/agents", route(agents_routes.handle_toggle_agent)
+        BASE + "/meetings/{meeting_id}/agents",
+        route(require_owner("meetings.toggle_agent")(agents_routes.handle_toggle_agent)),
     )
-    router.add_post(BASE + "/meetings/{meeting_id}/mute", route(agents_routes.handle_mute_agent))
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/mute",
+        route(require_owner("meetings.mute_agent")(agents_routes.handle_mute_agent)),
+    )
     router.add_post(
         BASE + "/meetings/{meeting_id}/dispatch",
         route(require_owner("meetings.dispatch")(agents_routes.handle_dispatch_text)),
@@ -254,7 +260,10 @@ def register_routes(app: web.Application) -> None:
         BASE + "/meetings/{meeting_id}/message",
         route(require_owner("meetings.message")(agents_routes.handle_agent_message)),
     )
-    router.add_post(BASE + "/meetings/{meeting_id}/reset", route(agents_routes.handle_reset_agents))
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/reset",
+        route(require_owner("meetings.reset_agents")(agents_routes.handle_reset_agents)),
+    )
 
     # Import an existing recording. A transcript PRODUCER, like /dispatch — it needs a
     # live meeting for the same reason, and shares `_common.dispatch_line`.

@@ -1,5 +1,8 @@
 """The Meetings write routes that change a meeting or drive its agents are owner-only.
 
+The dictionary and calendar-sync writes stay open: the meetings skill tells
+agents to call them over the internal transport, which carries no owner claim.
+
 An allow-listed channel user holds a dashboard token whose ``app`` claim is ``""``
 but whose subject is not the owner; an app token carries a non-empty ``app``.
 Both must be refused by ``_common.require_owner`` before a handler runs, while
@@ -42,6 +45,12 @@ GATED = {
     ("DELETE", "/meetings/{meeting_id}/tasks"): "meetings.delete_task",
     ("POST", "/meetings/{meeting_id}/tasks/file"): "meetings.file_task",
     ("POST", "/meetings/{meeting_id}/tasks/review"): "meetings.review_task",
+    ("POST", "/meetings/{meeting_id}/status"): "meetings.status",
+    ("POST", "/meetings/{meeting_id}/stop"): "meetings.stop",
+    ("POST", "/meetings/{meeting_id}/attachments"): "meetings.attachments",
+    ("POST", "/meetings/{meeting_id}/agents"): "meetings.toggle_agent",
+    ("POST", "/meetings/{meeting_id}/mute"): "meetings.mute_agent",
+    ("POST", "/meetings/{meeting_id}/reset"): "meetings.reset_agents",
 }
 
 CALLERS = {
