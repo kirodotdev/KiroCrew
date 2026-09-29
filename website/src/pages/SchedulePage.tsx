@@ -252,7 +252,16 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
 export default function SchedulePage() {
   const [jobs, setJobs] = useState<CronJob[]>([])
   const dispatch = useAppDispatch()
-  const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
+  const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading, settled: rosterSettled } = useAgents(0)
+  // A pinned agent is stored as its `member_id`; the column shows the crew's
+  // display name. Until the catalog has answered there is no roster to resolve
+  // it through, so the label waits instead of flashing the id on every visit
+  // (the same gate the channel rail applies).
+  // A REJECTED catalog fetch settles too, with an empty list: that is not a
+  // roster to resolve through (every stored id would print raw), so the
+  // Agent column keeps holding its text until a retry lands -- the channel
+  // rail's rule.
+  const roster = rosterSettled && (!rosterError || agents.length > 0) ? agents : undefined
   // A recovered roster must not be recovered for this form alone. `useAgents`
   // holds PER-INSTANCE state, and the app shell keeps its own copy (App.tsx
   // feeds it to the agent-cycle shortcuts), so a retry that refreshed only this
@@ -467,7 +476,10 @@ export default function SchedulePage() {
     }
   }, [load, setActionError])
   const { armedId: confirmDeleteId, arm: armDelete, confirm: confirmDelete, isDeleting } = useArmedDelete(performDelete)
-  const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')+' '+(j.model||'')+' '+(j.session_key||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter])
+  // The filter haystack carries the agent's DISPLAY name alongside the stored
+  // handle: the Agent column renders the name, so typing what is on screen
+  // must match (the stored value may be an opaque member_id).
+  const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')+' '+(roster ? agentOrDefaultLabel(j.agent, defaultAgent, roster) : '')+' '+(j.model||'')+' '+(j.session_key||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter, roster, defaultAgent])
   const scheduleComparators = useMemo(() => ({
     name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
     // Clock time first, so `9:00 AM` precedes `1:00 PM` -- the label sorts wrongly
@@ -945,12 +957,15 @@ export default function SchedulePage() {
                     schedule/timezone pair in the next column. The agent's model
                     is tooltip-only: at this width it truncated to noise, and the
                     detail dialog shows it in full. */}
-                <TableCell className="truncate" title={j.script ? j.script : j.command ? j.command : `${agentOrDefaultLabel(j.agent, defaultAgent)}${j.model ? ` · ${j.model}` : ''}`}>
+                <TableCell className="truncate" title={j.script ? j.script : j.command ? j.command : [!j.agent || roster ? agentOrDefaultLabel(j.agent, defaultAgent, roster) : '', j.model || ''].filter(Boolean).join(' · ')}>
                   {j.script ? <span className="font-medium text-[var(--accent)]">{i18nT('pages.schedulePage.script_python')}</span>
                     : j.command ? <span className="font-medium text-[var(--warn)]">{i18nT('pages.schedulePage.command_shell')}</span>
                     : <>
-                        <span className="text-muted">{i18nT('pages.schedulePage.agent')}</span>
-                        <span className="block truncate text-[11px] text-muted">{agentOrDefaultLabel(j.agent, defaultAgent)}</span>
+                        {/* The separator belongs to the name line: while the name is
+                            held (roster not settled) the kind stands alone, never
+                            "agent ·" pointing at nothing. */}
+                        <span className="text-muted">{i18nT('pages.schedulePage.agent')}{(!j.agent || roster) ? ' ·' : ''}</span>
+                        {(!j.agent || roster) && <span className="block truncate text-[11px] text-muted">{agentOrDefaultLabel(j.agent, defaultAgent, roster)}</span>}
                       </>}
                 </TableCell>
                 {/* The compact label in the cell, the verbose one in the

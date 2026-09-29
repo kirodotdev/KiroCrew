@@ -643,6 +643,38 @@ class TestSlotEffectiveAgent:
         assert default_alias == "default"
         assert loader.resolve_effective_agent("researcher") == "default"
 
+    def test_a_slot_under_a_members_old_key_is_not_a_substitution(self, monkeypatch) -> None:
+        """The snapshot carries every handle a slot may hold for a member.
+
+        A pre-upgrade session is still pinned under the member's old key, which
+        the migration left as its ``display_name`` (and in ``legacy_keys``).
+        Published from the keys alone, that handle misses the alias set and the
+        resolver claims the default was substituted -- on every such session of
+        every re-keyed member, for a substitution that never happened.
+        """
+        import dataclasses
+
+        import kiro_crew.config.loader as loader
+
+        cfg = dataclasses.replace(
+            loader.KiroCrewConfig(),
+            agents={
+                "alice-7f3": loader.KiroCrewAgentConfig(
+                    kiro_agent="kirocrew", display_name="Alice", legacy_keys=["alice"]
+                ),
+                "default": loader.KiroCrewAgentConfig(kiro_agent="kirocrew"),
+            },
+            default_agent="default",
+        )
+        loader.publish_agent_alias_snapshot(cfg)
+        aliases, _, _ = loader.agent_alias_snapshot()
+        assert {"alice-7f3", "Alice", "alice"} <= aliases
+        # "" is "honored, nothing to report"; the default name is the claim.
+        self._pin(monkeypatch, aliases=set(aliases), default_alias="default", materialized=set())
+        assert loader.resolve_effective_agent("Alice") == ""
+        assert loader.resolve_effective_agent("alice") == ""
+        assert loader.resolve_effective_agent("nobody") == "default"
+
     def test_snapshot_is_published_as_one_immutable_triple(self, monkeypatch) -> None:
         """Why the read path needs no lock, as a gate rather than a comment.
 

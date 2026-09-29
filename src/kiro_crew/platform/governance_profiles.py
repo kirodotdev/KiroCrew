@@ -1064,6 +1064,56 @@ def reset_store() -> None:
         _PROFILE_GENERATION += 1
 
 
+def task_bound_snapshot() -> tuple[Dict[str, str], bool]:
+    """``(bind id -> profile name, complete)`` for every ``task`` bind the store holds.
+
+    In-memory, from the store's current snapshot -- no filesystem walk, so the
+    member-identity re-key can consult it from :meth:`KiroCrewConfig.load` on
+    the event loop. ``complete`` is ``False`` whenever the snapshot cannot be
+    trusted to name every bind: the store has never loaded (another thread owns
+    the first load), or a profile file is present but its bind could not be
+    recovered (unreadable, invalid encoding, no salvageable bind). The re-key
+    then refuses to move any record, because a bind it could not read might
+    name the key that record would leave; a lenient host that tolerates the
+    broken file keeps its records where they are until the file is fixed.
+    """
+    if not _STORE.resolved():
+        return {}, False
+    snap = _STORE.snapshot()
+    bound = {
+        bind_id: name for (bind_type, bind_id), name in snap.by_bind.items() if bind_type == "task"
+    }
+    return bound, not snap.unrecoverable
+
+
+def stale_task_binds(plan: Dict[str, str]) -> tuple[list[tuple[str, str, str]], bool]:
+    """``([(profile, bound id, member_id)...], complete)`` for every ``task`` bind spelled as a key in *plan*.
+
+    READ-ONLY on purpose. ``profiles/`` is the governance keystone -- sandbox
+    read-only, because a write there lets an agent choose its own ceiling --
+    while ``config.json`` is agent-writable. A bind rewrite derived from
+    ``config.json`` (a record's key move, its ``legacy_keys``) would therefore be
+    a write primitive from the writable file onto the read-only one: a record
+    that spells a bound id as its own earlier key would have the administrator's
+    profile moved onto ITS id at the next boot. So nothing here writes. The
+    member-identity migration calls this with ``old key -> member_id`` moves and
+    logs the binds it names, every boot, until the operator re-points them; a
+    ``task`` bind resolves by exact id only (see :func:`resolve_active_scope`).
+    Same source and same ``complete`` flag as :func:`task_bound_snapshot`: a
+    profile whose bind could not be recovered makes the report incomplete, and
+    the caller says so rather than reading silence as "nothing stale".
+    """
+    if not plan:
+        return [], True
+    bound, complete = task_bound_snapshot()
+    stale = [
+        (name, bound_id, plan[bound_id])
+        for bound_id, name in sorted(bound.items())
+        if bound_id in plan and plan[bound_id] != bound_id
+    ]
+    return stale, complete
+
+
 def get_store_profile(name: str) -> Optional[Profile]:
     """Return a profile by file stem (read-only; used by ``policy``/``profile`` CLI)."""
     return _STORE.get(name)
@@ -1385,6 +1435,16 @@ def resolve_active_scope(
     def _for_bind(bind: Bind) -> Optional[Profile]:
         name = snap.by_bind.get((bind.type, bind.id))
         return snap.by_name.get(name) if name else None
+
+    # A ``task`` bind resolves by EXACT id only. ``config.agents`` is keyed by
+    # ``member_id`` and that key is what a session's ``agent`` and a spawn's
+    # ``task`` carry; a profile still bound to a member's earlier key is
+    # REPORTED by the identity migration (:func:`stale_task_binds`) for the
+    # operator to re-point -- never rewritten, and never matched through the
+    # member's ``display_name`` or ``legacy_keys``. Both are agent-writable
+    # config fields, and either reading them here or writing ``profiles/`` from
+    # them would let a record select a task profile -- which outranks the
+    # surface profile -- by spelling itself as one.
 
     if app:
         prof = _for_bind(Bind(type="app", id=app))

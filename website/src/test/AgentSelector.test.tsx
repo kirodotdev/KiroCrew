@@ -45,4 +45,51 @@ describe('AgentSelector', () => {
     render(<AgentSelector agents={agents} defaultAgent="coding" value="" onChange={() => {}} />)
     expect(screen.getByText('coding')).toBeInTheDocument()
   })
+
+  describe('a crew with a display name', () => {
+    const crews: KiroCrewAgent[] = [
+      ...agents,
+      {
+        name: 'Release Writer',
+        member_id: 'release-writer',
+        display_name: 'Release Writer',
+        kiro_agent: 'kirocrew',
+        workspace: 'default',
+        memory_store: 'member-release-writer',
+      },
+    ]
+
+    it('dispatches the member_id, never the label, so a rename cannot strand the slot', () => {
+      const onChange = vi.fn()
+      render(<AgentSelector agents={crews} defaultAgent="coding" value="coding" onChange={onChange} />)
+      fireEvent.click(screen.getByLabelText('Switch agent'))
+      fireEvent.click(screen.getByText('Release Writer'))
+      expect(onChange).toHaveBeenCalledWith('release-writer')
+    })
+
+    it('shows the label for a slot that stores the member_id', () => {
+      render(<AgentSelector agents={crews} defaultAgent="coding" value="release-writer" onChange={() => {}} />)
+      expect(screen.getByText('Release Writer')).toBeInTheDocument()
+      fireEvent.click(screen.getByLabelText('Switch agent'))
+      expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Release Writer')
+    })
+
+    it('still matches an older slot that stored the label', () => {
+      render(<AgentSelector agents={crews} defaultAgent="coding" value="Release Writer" onChange={() => {}} />)
+      fireEvent.click(screen.getByLabelText('Switch agent'))
+      expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Release Writer')
+    })
+
+    it('keeps the member_id readable beside a label that covers it', () => {
+      // `agent=` in spawn params, crons and the CLI all address the id, so the
+      // row shows it next to the label -- the id, not the roster's `name`
+      // (which is the label itself and would never differ from it).
+      render(<AgentSelector agents={crews} defaultAgent="coding" value="coding" onChange={() => {}} />)
+      fireEvent.click(screen.getByLabelText('Switch agent'))
+      const row = screen.getByRole('option', { name: /Release Writer/ })
+      expect(row).toHaveTextContent('release-writer')
+      // A template row has one handle; no chip repeats it.
+      expect(screen.getByRole('option', { name: /^coding/ })).not.toHaveTextContent(/coding.*coding/)
+    })
+  })
 })

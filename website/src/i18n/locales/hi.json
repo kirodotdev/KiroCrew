@@ -10068,7 +10068,8 @@
       "failed_to_dismiss_agent": "एजेंट हटाने में विफल",
       "failed_to_update_agent": "एजेंट अपडेट करने में विफल",
       "failed_to_close_channel": "चैनल बंद करने में विफल",
-      "failed_to_clear_context": "संदर्भ साफ़ करने में विफल"
+      "failed_to_clear_context": "संदर्भ साफ़ करने में विफल",
+      "roster_names_failed": "एजेंट के नाम लोड नहीं हो सके — सिर्फ़ भूमिकाएँ दिख रही हैं।"
     },
     "chat": {
       "activityViewer": {
@@ -13868,7 +13869,7 @@
       "view_executions": "निष्पादन",
       "view_list": "सूची",
       "add_job": "जॉब जोड़ें",
-      "agent": "एजेंट ·",
+      "agent": "एजेंट",
       "and_their_run_history_this_action_cannot_be_undo": "और उनका रन इतिहास। यह क्रिया पूर्ववत नहीं की जा सकती।",
       "ask_in_chat": "चैट में पूछें",
       "batch_delete_failed": "बैच डिलीट विफल",

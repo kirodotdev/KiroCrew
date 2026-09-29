@@ -149,6 +149,14 @@ def crew_config(tmp_path, monkeypatch):
     loader_mod._invalidate_config_cache()
     config = KiroCrewConfig.load()
     _materialize_private_stores(config)
+    # Reloaded: the saved document keys each crew by the member_id the store
+    # allocation minted (``coding-crew``), with the seeded name as its
+    # ``display_name``. Routing answers that key as ``crew``; ``select_crew`` and
+    # ``spawn_run(crew=...)`` accept either handle.
+    loader_mod._invalidate_config_cache()
+    config = KiroCrewConfig.load()
+    assert set(config.agents) == {"kirocrew", "coding-crew", "email-crew"}
+    assert config.agents["coding-crew"].display_name == "coding crew"
     yield config
     loader_mod._invalidate_config_cache()
 
@@ -160,20 +168,20 @@ class TestRouteCrew:
         from kiro_crew import mcp_core
 
         legacy = replace(
-            crew_config.agents["coding crew"],
+            crew_config.agents["coding-crew"],
             member_id="broken-member",
             memory_store="missing-store",
         )
         crew_config.agents = {"legacy": legacy, **crew_config.agents}
-        for name in ("legacy", "coding crew", "email crew"):
+        for name in ("legacy", "coding-crew", "email-crew"):
             crew_config.agents[name].triggers = "fix the bug"
         monkeypatch.setattr(mcp_core.KiroCrewConfig, "load", lambda: crew_config)
 
         out = json.loads(mcp_core._do_route_crew("fix the bug"))
 
-        assert [item["crew"] for item in out["matches"]] == ["coding crew", "email crew"]
+        assert [item["crew"] for item in out["matches"]] == ["coding-crew", "email-crew"]
         assert [item["memory_store"] for item in out["matches"]] == [
-            crew_config.agents[name].memory_store for name in ("coding crew", "email crew")
+            crew_config.agents[name].memory_store for name in ("coding-crew", "email-crew")
         ]
         assert [item["crew"] for item in out["unavailable"]] == ["legacy"]
         assert "missing-store" in out["unavailable"][0]["reason"]
@@ -183,11 +191,11 @@ class TestRouteCrew:
     def test_all_unavailable_is_distinct_from_no_trigger_match(self, crew_config, monkeypatch):
         from kiro_crew import mcp_core
 
-        crew_config.agents["coding crew"].memory_store = "default"
+        crew_config.agents["coding-crew"].memory_store = "default"
         monkeypatch.setattr(mcp_core.KiroCrewConfig, "load", lambda: crew_config)
         out = json.loads(mcp_core._do_route_crew("fix the bug"))
         assert out["matches"] == []
-        assert [item["crew"] for item in out["unavailable"]] == ["coding crew"]
+        assert [item["crew"] for item in out["unavailable"]] == ["coding-crew"]
         assert "do not substitute Global" in out["guidance"]
         unmatched = json.loads(mcp_core._do_route_crew("weather in Tokyo"))
         assert unmatched["matches"] == unmatched["unavailable"] == []
@@ -242,16 +250,18 @@ class TestRouteCrew:
         from kiro_crew import mcp_core
 
         out = json.loads(mcp_core._do_route_crew("please fix the bug in the parser"))
-        assert [m["crew"] for m in out["matches"]] == ["coding crew"]
-        assert out["matches"][0]["memory_store"] == crew_config.agents["coding crew"].memory_store
+        assert [m["crew"] for m in out["matches"]] == ["coding-crew"]
+        assert out["matches"][0]["display_name"] == "coding crew"
+        assert out["matches"][0]["memory_store"] == crew_config.agents["coding-crew"].memory_store
         assert out["matches"][0]["description"] == "Owns the codebase"
 
     def test_an_email_task_routes_to_the_email_crew(self, crew_config):
         from kiro_crew import mcp_core
 
         out = json.loads(mcp_core._do_route_crew("draft a reply to this inbox thread"))
-        assert [m["crew"] for m in out["matches"]] == ["email crew"]
-        assert out["matches"][0]["memory_store"] == crew_config.agents["email crew"].memory_store
+        assert [m["crew"] for m in out["matches"]] == ["email-crew"]
+        assert out["matches"][0]["display_name"] == "email crew"
+        assert out["matches"][0]["memory_store"] == crew_config.agents["email-crew"].memory_store
 
     def test_no_match_reports_the_default_and_no_crew(self, crew_config):
         from kiro_crew import mcp_core
@@ -278,8 +288,8 @@ class TestDelegationCarriesTheCrewsStore:
 
         coding = resolve_agent_bindings(crew_config, "coding crew").memory_store_name
         email = resolve_agent_bindings(crew_config, "email crew").memory_store_name
-        assert coding == crew_config.agents["coding crew"].memory_store
-        assert email == crew_config.agents["email crew"].memory_store
+        assert coding == crew_config.agents["coding-crew"].memory_store
+        assert email == crew_config.agents["email-crew"].memory_store
         assert coding != email
 
     def test_a_crew_name_is_not_a_template_name(self, crew_config):
@@ -291,7 +301,7 @@ class TestDelegationCarriesTheCrewsStore:
         """
         from kiro_crew.context import _target_key
 
-        store = crew_config.agents["coding crew"].memory_store
+        store = crew_config.agents["coding-crew"].memory_store
         _, via_crew = _target_key(None, store)
         assert via_crew == store
         key_via_agent, via_agent = _target_key(None, None)
@@ -343,7 +353,7 @@ class TestDelegationCarriesTheCrewsStore:
 
         # This test opens the real owned store but never starts a provider.
         # Host sandbox capability is covered by the member execution tests.
-        store_name = crew_config.agents["coding crew"].memory_store
+        store_name = crew_config.agents["coding-crew"].memory_store
         builder = ContextBuilder()
         try:
             await prepare_store_vectors(builder, store_name)

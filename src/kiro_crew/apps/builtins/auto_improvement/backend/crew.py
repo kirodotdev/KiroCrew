@@ -12,7 +12,9 @@ from typing import Any
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.execution_context import member_config_for_id
+from kiro_crew.members import member_display_name, member_handle_holders
 from kiro_crew.memory_stores import (
+    _allocate_member_id,
     persist_member_config,
     provision_member_memory,
     require_member_memory_store,
@@ -72,6 +74,16 @@ def resolve_role(role: str, identity: str):
     return config, name, member
 
 
+def _member_labelled(config, label: str):
+    """``(key, record)`` of the one member whose display name is *label*, else ``(label, None)``."""
+    matches = [
+        (key, member)
+        for key, member in config.agents.items()
+        if member_display_name(key, member) == label
+    ]
+    return matches[0] if len(matches) == 1 else (label, None)
+
+
 def ensure_team() -> dict[str, str]:
     """Create missing roles once; retain member edits, IDs, rules and memory."""
     with _team_lock:
@@ -81,24 +93,42 @@ def ensure_team() -> dict[str, str]:
                 resolve_role(role, identities[role])
                 continue
             config = KiroCrewConfig.load()
-            existing = config.agents.get(spec.name)
+            # Adopt the member the owner SEES as the role name: the record whose
+            # display name is ``spec.name``. A retired or renamed member keeps
+            # its ``member_id`` key for good, so a fresh role member may be
+            # keyed ``<name>-<suffix>`` and is addressed by ``key`` below.
+            key, existing = _member_labelled(config, spec.name)
             if existing is None:
+                # The role name must be FREE before it is published as a
+                # display name: a retired member that still holds it as its
+                # key (or a legacy key) would shadow the replacement behind
+                # key-first resolution, and two records labelled with it are
+                # ambiguous. ``persist_member_config`` refuses both under the
+                # config lock; refusing here first names the record to delete.
+                holders = member_handle_holders(spec.name, config.agents)
+                if holders:
+                    raise ValueError(
+                        f"Crew Member name {spec.name!r} is still held by {holders[0]!r}; "
+                        "delete that member to recreate the role"
+                    )
                 member = KiroCrewAgentConfig(
                     kiro_agent=spec.template,
                     description=spec.description,
                     source=store.APP_NAME,
+                    display_name=spec.name,
                 )
-                config.agents[spec.name] = member
+                key = _allocate_member_id(config, spec.name)
+                config.agents[key] = member
                 previous_store = member.memory_store
                 previous_id = member.member_id
                 try:
-                    provision_member_memory(config, spec.name)
-                    persist_member_config(config, spec.name, create=True)
+                    provision_member_memory(config, key)
+                    persist_member_config(config, key, create=True)
                 except BaseException:
                     if member.memory_store != previous_store:
                         retire_unpublished_allocation(
                             config,
-                            spec.name,
+                            key,
                             member.memory_store,
                             previous_store=previous_store,
                             previous_member_id=previous_id,
@@ -107,7 +137,7 @@ def ensure_team() -> dict[str, str]:
                 existing = member
             if existing.source != store.APP_NAME or existing.kiro_agent != spec.template:
                 raise ValueError(f"Crew Member {spec.name!r} already belongs to another purpose")
-            require_member_memory_store(config, spec.name)
+            require_member_memory_store(config, key)
             if not existing.member_id:
                 raise ValueError(f"Crew Member {spec.name!r} has no private member identity")
             identities[role] = existing.member_id

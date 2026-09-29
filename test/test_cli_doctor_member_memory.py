@@ -279,6 +279,29 @@ def test_memory_binding_diagnostic_skips_nondispatchable_record(members, capsys)
     assert writes == []
 
 
+def test_memory_binding_diagnostic_skips_a_credential_shaped_key_behind_a_clean_label(
+    members, capsys
+):
+    # The binding line prints the KEY (``_safe_display`` is ``repr``, not
+    # redaction), so the gate must vet the printed spelling, not only the label
+    # dispatch would use.
+    cfg, home, private_store, writes = members
+    key = "AKIAIOSFODNN7EXAMPLE"
+    cfg.agents[key] = KiroCrewAgentConfig(member_id=key, display_name="Benign Label")
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    issues: list[str] = []
+
+    cli_doctor._doctor_member_memory_bindings(cfg, issues)
+
+    output = capsys.readouterr().out
+    assert "'default' -> 'default': valid binding" in output
+    assert key not in output
+    assert "Benign Label" not in output
+    assert issues == []
+    assert writes == []
+
+
 def _composition_failed(monkeypatch):
     """Model the host doctor is exempted to diagnose: no composed platform.
 

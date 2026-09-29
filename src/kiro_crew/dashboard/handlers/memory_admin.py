@@ -44,6 +44,7 @@ from aiohttp import web
 from kiro_crew import memory_backup, memory_schema
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.members import member_record
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     declared_store_names,
@@ -256,7 +257,10 @@ def _list_stores_blocking() -> list[dict[str, Any]]:
         rows[-1]["owner_member"] = owner
         # Reuse the roster's validated avatar descriptor and exact member name.
         # A store UUID is storage identity, never the seed for a different face.
-        member = config.agents.get(owner)
+        # ``owner_member`` is the display name; ``owner_member_id`` the key.
+        member = config.agents.get(getattr(record, "owner_member_id", "")) or member_record(
+            owner, config
+        )
         rows[-1]["owner_avatar"] = member.avatar if member is not None else {}
         rows[-1]["memory_version"] = getattr(record, "memory_version", 1)
     return rows

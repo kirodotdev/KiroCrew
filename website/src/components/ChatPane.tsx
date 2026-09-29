@@ -32,7 +32,7 @@ import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
 import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
-import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { agentOrDefaultLabel, isHandleOf } from '../utils/agentLabel'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import ModelDropdownList from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
@@ -554,7 +554,9 @@ export default function ChatPane({
   // This pane takes no project prop, so read THIS slot's project from the store:
   // it scopes which project-local agents exist, so a project change must refetch.
   const paneProject = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey)?.project || undefined)
-  const { agents: installedAgents, choices: catalogChoices, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey, paneProject)
+  const { agents: installedAgents, choices: catalogChoices, defaultAgent, settled: agentsSettledFlag } = useAgents(agentsRefreshTrigger, slotKey, paneProject)
+  // Only an explicit `false` holds the label: a roster source without the flag has answered.
+  const agentsSettled = agentsSettledFlag !== false
   // The picker lists every catalog row (a member and a template of one name
   // are two rows). A roster source that exposes only the folded list -- one
   // row per name -- is still a complete, if namespace-blind, catalog.
@@ -1915,9 +1917,9 @@ export default function ChatPane({
           // SLOT's stored agent (not `paneAgentName`, which has already
           // collapsed empty->default) so an agent-less slot reads
           // `<default> · default` and a pinned one reads the bare alias (#8770).
-          agentLabel={agentOrDefaultLabel(paneSlot?.agent, paneEffectiveDefaultAgent)}
+          agentLabel={agentsSettled ? agentOrDefaultLabel(paneSlot?.agent, paneEffectiveDefaultAgent, installedAgents) : ''}
           agentIsInheritedDefault={!paneSlot?.agent && !!paneEffectiveDefaultAgent}
-          agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
+          agentSource={installedAgents.find((a) => isHandleOf(a, paneAgentName))?.source}
           modelName={shownModel}
           reasoningEffort={effectiveEffort}
           effortIsDefault={!paneSlot?.reasoning_effort && !legacyCodexEffort(paneSlot?.model || '', '', codexPairModels) && !!defaultEffort}

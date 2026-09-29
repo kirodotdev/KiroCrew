@@ -34,7 +34,9 @@ logger = logging.getLogger("kiro_crew.config.loader")
 
 #: The write-back migrations a load can find pending, as recorded by
 #: :meth:`KiroCrewConfig._load_resolved` and re-checked against the on-disk
-#: document by :func:`apply_document_migrations`.
+#: document by :func:`apply_document_migrations`. Member identity (the ``agents``
+#: keys) is deliberately NOT one of them: :func:`loader.migrate_member_identity`
+#: moves it once, off the load path.
 MIGRATE_WORKSPACES = "workspaces"
 MIGRATE_AGENTS = "agents"
 MIGRATE_DEFAULT_AGENT = "default_agent"
@@ -151,6 +153,15 @@ def apply_document_migrations(
         stored_agents = data.get("agents")
         known = stored_agents if isinstance(stored_agents, dict) else {}
         stored_default = data.get("default_agent")
+        # A default recorded by the member's display name names a key. Resolved
+        # through the loader's alias table (local import: this module is the
+        # loader's dependency, not the other way round).
+        from kiro_crew.config.loader import canonical_agent_key
+
+        canonical_default = canonical_agent_key(stored_default, known, {})
+        if canonical_default != stored_default:
+            data["default_agent"] = stored_default = canonical_default
+            changed = True
         if not isinstance(stored_default, str) or not stored_default or stored_default not in known:
             if "default" in known:
                 data["default_agent"] = "default"

@@ -309,6 +309,43 @@ def test_every_create_purges_the_name_inside_the_locked_mutation(owner_gateway, 
     assert "second" not in KiroCrewConfig.load().agents
 
 
+def test_a_rename_purges_the_new_label_inside_the_locked_mutation(owner_gateway, monkeypatch):
+    """Publishing a label is the other way a member can inherit a stale team
+    entry: a deleted crew's label whose best-effort drop failed still sits in
+    the document, and ``canonicalize_teams`` would map it onto whoever takes
+    that label next. The rename purges it before the record lands; an update
+    that keeps its label purges nothing; a purge that cannot run aborts the
+    rename with the label unchanged."""
+    from kiro_crew import crew_teams
+
+    cfg = owner_gateway
+    seen: list[str] = []
+    monkeypatch.setattr(crew_teams, "release_for_create", lambda name: seen.append(name))
+
+    cfg.agents["legacy"].display_name = "Legacy Crew"
+    persist_member_config(
+        cfg, "legacy", create=False, expected_store="default", changed_fields={"display_name"}
+    )
+    assert seen == ["Legacy Crew"]
+    assert KiroCrewConfig.load().agents["legacy"].display_name == "Legacy Crew"
+
+    # Same label again: nothing new is published, nothing is purged.
+    cfg.agents["legacy"].description = "unchanged label"
+    persist_member_config(cfg, "legacy", create=False, expected_store="default")
+    assert seen == ["Legacy Crew"]
+
+    def refuse(name: str) -> None:
+        raise crew_teams.TeamsUnavailable("teams store unavailable")
+
+    monkeypatch.setattr(crew_teams, "release_for_create", refuse)
+    cfg.agents["legacy"].display_name = "Renamed Again"
+    with pytest.raises(crew_teams.TeamsUnavailable):
+        persist_member_config(
+            cfg, "legacy", create=False, expected_store="default", changed_fields={"display_name"}
+        )
+    assert KiroCrewConfig.load().agents["legacy"].display_name == "Legacy Crew"
+
+
 def test_after_write_runs_only_once_the_registry_write_committed(owner_gateway, monkeypatch):
     """The hook the crew-teams drop rides: never before the rename, never when
     the mutation changed nothing, and a failed write never reaches it."""

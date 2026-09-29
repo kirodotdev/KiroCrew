@@ -14,7 +14,7 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
 import { isTouchDevice } from '../utils/isTouchDevice'
-import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { agentOrDefaultLabel, isHandleOf } from '../utils/agentLabel'
 import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
@@ -924,7 +924,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // transcripts. So the client must not OFFER them here either — same predicate
   // and same `executor` keying `selectContinuable` already uses for Resume.
   const activeSlotRemoteBound = slotIsRemoteBound(slots.find(s => s.key === activeSlot))
-  const { agents: installedAgents, choices: catalogChoices, defaultAgent } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
+  const { agents: installedAgents, choices: catalogChoices, defaultAgent, settled: agentsSettledFlag } = useAgents(refreshTrigger, activeSlot ?? undefined, activeSlotProject)
+  // Only an explicit `false` holds labels: a roster source without the flag has answered.
+  const agentsSettled = agentsSettledFlag !== false
   // The picker lists every catalog row (a member and a template of one name
   // are two rows). A roster source that exposes only the folded list -- one
   // row per name -- is still a complete, if namespace-blind, catalog.
@@ -4457,7 +4459,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The agent the composer's "set as default" row acts on: the active slot's
   // agent, else whichever agent a new session would open on.
   const _modelPinAgent = currentSlot?.agent || pendingAgent || defaultAgent || 'default'
-  const _modelPinCfg = installedAgents.find(a => a.name === _modelPinAgent)
+  const _modelPinCfg = installedAgents.find(a => isHandleOf(a, _modelPinAgent))
   // Writes agents.<name>.model in config.json. Invalidates the resolved-model
   // queries so a slot showing an inherited value picks the new pin up without a
   // reload; open sessions keep the model they already resolved.
@@ -7468,6 +7470,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             historyHasMore={historyHasMore}
             defaultAgent={defaultAgent}
             installedAgents={installedAgents}
+            installedAgentsSettled={agentsSettled}
             mode={mode}
             onWidthChange={setSidebarWidth}
             onDragChange={setSidebarDragging}
@@ -7517,6 +7520,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           historyHasMore={historyHasMore}
           defaultAgent={defaultAgent}
           installedAgents={installedAgents}
+          installedAgentsSettled={agentsSettled}
           mode={mode}
           onWidthChange={setSidebarWidth}
           onDragChange={setSidebarDragging}
@@ -8892,9 +8896,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // Uses the SLOT's stored agent (not `activeAgentName`, which has
               // already collapsed empty->default) so an agent-less slot reads
               // `<default> · default` and a pinned one reads the bare alias (#8770).
-              agentLabel={agentOrDefaultLabel(currentSlot?.agent, effectiveDefaultAgent)}
+              // Held until the roster has answered, so a member slot's stored id
+              // never flashes before its display name (same hold as the sidebar rows).
+              agentLabel={agentsSettled ? agentOrDefaultLabel(currentSlot?.agent, effectiveDefaultAgent, installedAgents) : ''}
               agentIsInheritedDefault={!currentSlot?.agent && !!effectiveDefaultAgent}
-              agentSource={effectiveAgents.find(a => a.name === activeAgentName)?.source}
+              agentSource={effectiveAgents.find(a => isHandleOf(a, activeAgentName))?.source}
               modelName={shownModel}
               // The served default is shown exactly when the pin alone would
               // have read `auto`; that is the inherited case the marker names.

@@ -100,10 +100,12 @@ class _GateMixin(ManagerComponent):
                 if execution.member_id is not None:
                     alias, selected = member_config_for_id(config, execution.member_id)
                 else:
-                    alias = execution.selection_name
-                    selected = config.agents.get(alias)
-                    if selected is None:
+                    from kiro_crew.members import resolve_member
+
+                    resolved_member = resolve_member(execution.selection_name, config)
+                    if resolved_member is None:
                         raise ValueError("selected member is unavailable")
+                    alias, selected = resolved_member
                 execution = replace(
                     execution,
                     template_id=selected.kiro_agent or "kirocrew",
@@ -133,7 +135,9 @@ class _GateMixin(ManagerComponent):
                     template_id=agent or inherited[1],
                 )
                 if inherited[0] == "member":
-                    selected = KiroCrewConfig.load().agents.get(inherited[1])
+                    from kiro_crew.members import member_record
+
+                    selected = member_record(inherited[1], KiroCrewConfig.load())
                     if selected is None:
                         raise ValueError("selected member is unavailable")
                     execution = replace(

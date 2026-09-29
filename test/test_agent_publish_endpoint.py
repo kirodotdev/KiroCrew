@@ -779,7 +779,7 @@ async def test_publish_rollback_keeps_destination_bound_by_another_crew(tmp_path
 
     # Force the rollback path: the rebind raises after dest was created, and
     # by then another crew has bound the destination name.
-    def _failing_rebind(crew, expected, new_target):
+    def _failing_rebind(crew, expected, new_target, **kwargs):
         cfg = KiroCrewConfig.load()
         cfg.agents["other-crew"] = KiroCrewAgentConfig(kiro_agent="reviewer-v2")
         cfg.save()

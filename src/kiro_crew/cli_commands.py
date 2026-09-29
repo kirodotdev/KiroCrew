@@ -78,6 +78,7 @@ from kiro_crew.config.loader import (
     config_local_path,
     config_path,
     materialize_workspace_dir,
+    raw_agent_key,
     read_config_for_update,
     read_local_secret,
     update_config_locked,
@@ -118,11 +119,19 @@ from kiro_crew.mcp_cron import (
     _vet_shell_command,
 )
 from kiro_crew.member_memory_auth import require_member_memory_creation
-from kiro_crew.members import MemberNameError, key_new_crew, validate_member_name
+from kiro_crew.members import (
+    MemberNameError,
+    document_default_names_member,
+    is_member_id_shaped,
+    member_display_name,
+    resolve_member,
+    validate_member_name,
+)
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     UnknownMemoryStore,
+    _allocate_member_id,
     memory_store_binding_defect,
     memory_store_namespace_lock,
     memory_store_version,
@@ -1426,8 +1435,10 @@ def _handle_agent(args: argparse.Namespace) -> None:
         )
         for name, agent in cfg.agents.items():
             marker = " *" if name == default else ""
+            label = member_display_name(name, agent)
+            shown = name if label == name else f"{name} ({label})"
             print(
-                f"{name + marker:<20} {agent.kiro_agent:<20} "
+                f"{shown + marker:<20} {agent.kiro_agent:<20} "
                 f"{agent.workspace:<15} {agent.memory_store:<15} "
                 f"{getattr(agent, 'source', 'kirocrew'):<12}"
             )
@@ -1441,14 +1452,28 @@ def _handle_agent(args: argparse.Namespace) -> None:
         except MemberNameError as exc:
             print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
             sys.exit(1)
-        # Same keying as POST /api/agents.
-        keyed = key_new_crew(
-            args.name, (getattr(args, "display_name", None) or "").strip(), cfg.agents
+        # Same keying as POST /api/agents: a free-form ``--name`` is the label
+        # and seeds the member_id; one that already is a member-id slug is the
+        # key as sent, with no label unless ``--display-name`` gives one.
+        display_name = (getattr(args, "display_name", None) or "").strip() or (
+            "" if is_member_id_shaped(args.name) else args.name
         )
-        if keyed.taken:
-            print(f"Error: agent '{keyed.taken}' already exists", file=sys.stderr)
+        if display_name and display_name != args.name:
+            if external_text_requires_redaction(display_name):
+                print("Error: invalid Crew Member name (credential-shaped text)", file=sys.stderr)
+                sys.exit(1)
+            try:
+                validate_member_name(display_name)
+            except MemberNameError as exc:
+                print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
+                sys.exit(1)
+        carried = [display_name or args.name]
+        if is_member_id_shaped(args.name) and args.name not in carried:
+            carried.append(args.name)
+        taken = next((h for h in carried if resolve_member(h, cfg) is not None), None)
+        if taken is not None:
+            print(f"Error: agent '{taken}' already exists", file=sys.stderr)
             sys.exit(1)
-        args.name, display_name = keyed.key, keyed.display_name
         if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
             print("Error: invalid kiro agent name", file=sys.stderr)
             sys.exit(1)
@@ -1464,24 +1489,35 @@ def _handle_agent(args: argparse.Namespace) -> None:
         # purges that INSIDE the registry's locked mutation, right before the
         # name is registered, on every create path; a purge that cannot be made
         # refuses the create (TeamsUnavailable, answered below).
-        cfg.agents[args.name] = KiroCrewAgentConfig(
+        # Keyed by the member_id from the first write; ``name`` is
+        # the display name. Same allocation the dashboard create route does.
+        try:
+            member_key = _allocate_member_id(cfg, args.name)
+        except UnknownMemoryStore as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if not display_name and member_key != args.name:
+            # Same as the dashboard route: a suffixed id keeps the typed name as
+            # the label, so the crew still answers to what the user typed.
+            display_name = args.name
+        cfg.agents[member_key] = KiroCrewAgentConfig(
             kiro_agent=args.kiro_agent,
             workspace=args.workspace,
             memory_store=memory_store,
             display_name=display_name,
         )
-        previous_store = cfg.agents[args.name].memory_store
-        previous_member_id = cfg.agents[args.name].member_id
+        previous_store = cfg.agents[member_key].memory_store
+        previous_member_id = cfg.agents[member_key].member_id
         try:
-            require_member_memory_creation(args.name)
-            provision_member_memory(cfg, args.name)
-            persist_member_config(cfg, args.name, create=True)
+            require_member_memory_creation(member_key)
+            provision_member_memory(cfg, member_key)
+            persist_member_config(cfg, member_key, create=True)
         except BaseException as exc:
-            allocated = cfg.agents[args.name].memory_store
+            allocated = cfg.agents[member_key].memory_store
             if allocated != previous_store:
                 retire_unpublished_allocation(
                     cfg,
-                    args.name,
+                    member_key,
                     allocated,
                     previous_store=previous_store,
                     previous_member_id=previous_member_id,
@@ -1500,15 +1536,18 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
         if display_name:
-            print(f"Created agent: {args.name} (display name: {display_name})")
+            print(f"Created agent: {member_key} (display name: {display_name})")
         else:
-            print(f"Created agent: {args.name}")
+            print(f"Created agent: {member_key}")
 
     elif action == "update":
-        if args.name not in cfg.agents:
+        resolved_member = resolve_member(args.name, cfg)
+        if resolved_member is None:
             print(f"Error: agent '{args.name}' not found", file=sys.stderr)
             sys.exit(1)
-        agent = cfg.agents[args.name]
+        # From here ``args.name`` is the key (member_id): the handle given may
+        # have been the display name.
+        args.name, agent = resolved_member
         prior_memory_store = agent.memory_store
         if args.memory_store is not None and args.memory_store != prior_memory_store:
             print("Error: a member's memory cannot be rebound or shared", file=sys.stderr)
@@ -1542,9 +1581,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
         print(f"Updated agent: {args.name}")
 
     elif action == "delete":
-        if args.name not in cfg.agents:
+        resolved_member = resolve_member(args.name, cfg)
+        if resolved_member is None:
             print(f"Error: agent '{args.name}' not found", file=sys.stderr)
             sys.exit(1)
+        args.name = resolved_member[0]
+        deleted_label = member_display_name(*resolved_member)
         if args.name == cfg.default_agent:
             print(
                 f"Error: cannot delete default agent '{args.name}'",
@@ -1554,17 +1596,20 @@ def _handle_agent(args: argparse.Namespace) -> None:
 
         def _mutate_agent_delete(doc: dict) -> dict:
             agents = coerce_dict_section(doc, "agents")
-            if args.name not in agents:
+            # The record lives where the on-disk document keeps it -- under its
+            # legacy key until ``migrate_member_identity`` moves it -- not
+            # necessarily under the canonical id the load answered.
+            stored = raw_agent_key(doc, args.name)
+            if stored not in agents:
                 raise _CliConflict(f"agent '{args.name}' not found")
             # Re-check the default in-lock, at the authoritative TOP-LEVEL key
-            # (loader reads `data.get("default_agent")`); the agent-section
-            # key is the migration-era location and is checked as well.
-            agent_section = doc.get("agent")
-            if doc.get("default_agent") == args.name or (
-                isinstance(agent_section, dict) and agent_section.get("default_agent") == args.name
-            ):
+            # (loader reads `data.get("default_agent")`) and the migration-era
+            # agent-section key, in ANY spelling the raw document may hold: the
+            # generic ``config set default_agent`` writes handles verbatim, so
+            # a display-name or legacy-key default still names this record.
+            if document_default_names_member(doc, args.name, stored):
                 raise _CliConflict(f"cannot delete default agent '{args.name}'")
-            del agents[args.name]
+            del agents[stored]
             return doc
 
         # Same best-effort drop as the dashboard delete route, and in the same
@@ -1578,6 +1623,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
         # create path (release_name), not here.
         def _drop_from_team() -> None:
             crew_teams.drop_member(args.name)
+            if deleted_label != args.name:
+                crew_teams.drop_member(deleted_label)
 
         with memory_store_namespace_lock():
             _locked_config_write(_mutate_agent_delete, after_write=_drop_from_team)

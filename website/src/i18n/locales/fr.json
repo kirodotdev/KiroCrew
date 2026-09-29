@@ -10211,7 +10211,8 @@
       "failed_to_dismiss_agent": "Échec du retrait de l'agent",
       "failed_to_update_agent": "Échec de la mise à jour de l'agent",
       "failed_to_close_channel": "Échec de la fermeture du canal",
-      "failed_to_clear_context": "Échec de l'effacement du contexte"
+      "failed_to_clear_context": "Échec de l'effacement du contexte",
+      "roster_names_failed": "Impossible de charger les noms des agents – seuls les rôles sont affichés."
     },
     "chat": {
       "activityViewer": {
@@ -14078,7 +14079,7 @@
       "view_executions": "Exécutions",
       "view_list": "Liste",
       "add_job": "Ajouter une tâche",
-      "agent": "agent ·",
+      "agent": "agent",
       "and_their_run_history_this_action_cannot_be_undo": "et leur historique d'exécution. Cette action est irréversible.",
       "ask_in_chat": "demander dans le chat",
       "batch_delete_failed": "Échec de la suppression par lot",

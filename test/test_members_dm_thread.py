@@ -3261,6 +3261,9 @@ async def test_running_private_thread_refuses_ownership_changed_during_read(
             elif fault == "store_version":
                 current.memory_stores[store].memory_version = 1
             elif fault == "store_owner":
+                # ``owner_member_id`` is the authoritative owner; the
+                # ``owner_member`` label is descriptive and may lag a rename.
+                current.memory_stores[store].owner_member_id = OTHER
                 current.memory_stores[store].owner_member = OTHER
             elif fault == "store_shared":
                 current.agents[OTHER] = KiroCrewAgentConfig(memory_store=store)
@@ -3471,6 +3474,50 @@ async def test_private_thread_reopen_rechecks_running_after_slot_lock(
             if task is not None:
                 await asyncio.wait_for(task, timeout=5)
             slot.task = None
+
+
+@pytest.mark.asyncio
+async def test_private_thread_reopen_accepts_an_idle_slot_pinned_under_the_label(
+    tmp_path, monkeypatch
+):
+    """An idle DM slot whose ``agent`` is the crew's display name reopens.
+
+    A thread rehydrated from history written before the key was the identity
+    carries the label as ``slot.agent``. It names the same member, so the entry
+    check lets it through and the assignment is published; the post-assignment
+    identity recheck must judge it the same way -- an exact-key comparison
+    there would answer ``409 member_slot_conflict`` on EVERY open. And the open
+    must leave the slot pinned under the KEY: the send path compares the
+    binding's ``member`` (a key) to ``slot.agent`` by exact equality, so a label
+    left in place would 409 the very next turn instead.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers import agents
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+
+    cfg = KiroCrewConfig.load()
+    cfg.agents[CREW] = KiroCrewAgentConfig(kiro_agent=CREW, display_name="Code Reviewer")
+    store = await asyncio.to_thread(provision_member_memory, cfg, CREW)
+    await asyncio.to_thread(cfg.save)
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(agents, "_refresh_session_defaults", AsyncMock())
+    async with TestClient(TestServer(_make_members_app(state))) as client:
+        first = await client.post(f"/api/members/{CREW}/thread")
+        assert first.status == 200, await first.text()
+        opened = await first.json()
+        slot = state._slots[opened["slot_key"]]
+        slot.task = None
+        slot.agent = "Code Reviewer"
+        reopened = await client.post(f"/api/members/{CREW}/thread")
+        body = await reopened.json()
+        assert reopened.status == 200, body
+        assert body == opened
+        assert state._slots[slot.key] is slot
+        assert slot.agent == CREW
+        assert (await asyncio.to_thread(read_dm_binding, CREW))["member"] == slot.agent
+        assert slot.memory_store == store
+        assert await asyncio.to_thread(read_private_session_store, f"dashboard:{slot.key}") == store
 
 
 @pytest.mark.asyncio

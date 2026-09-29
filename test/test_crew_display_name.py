@@ -201,12 +201,14 @@ class TestCreateEndpoint:
     @pytest.mark.asyncio
     async def test_free_form_name_becomes_the_label_of_a_derived_id(self):
         """An older client sends only `name`. A free-form one keys the crew by
-        a derived id and keeps the typed text as the label, and the answer
-        names the id so the client can address what it made."""
+        a derived id and keeps the typed text as the label; the answer carries
+        the id as ``member_id`` (``name`` echoes the label) so the client can
+        address what it made."""
         cfg = self._fake_config()
         status, data = await self._post({"name": "Release Writer", "kiro_agent": "kirocrew"}, cfg)
         assert status == 200
-        assert data["name"] == "release-writer"
+        assert data["member_id"] == "release-writer"
+        assert data["name"] == "Release Writer"
         agents = cfg.written["doc"]["agents"]
         assert list(agents) == ["release-writer"]
         assert agents["release-writer"]["display_name"] == "Release Writer"
@@ -218,16 +220,31 @@ class TestCreateEndpoint:
             {"name": "Release Writer", "kiro_agent": "kirocrew", "display_name": "Scribe"}, cfg
         )
         assert status == 200
-        assert data["name"] == "release-writer"
+        assert data["member_id"] == "release-writer"
+        assert data["name"] == "Scribe"
         assert cfg.written["doc"]["agents"]["release-writer"]["display_name"] == "Scribe"
 
     @pytest.mark.asyncio
     async def test_id_shaped_name_is_the_key_unchanged(self):
+        # A name that already is a member-id slug is the key as sent, with no
+        # label of its own (the roster shows the key).
+        cfg = self._fake_config()
+        status, data = await self._post({"name": "scribe-2", "kiro_agent": "kirocrew"}, cfg)
+        assert status == 200
+        assert data["member_id"] == "scribe-2"
+        assert data["name"] == "scribe-2"
+        assert cfg.written["doc"]["agents"]["scribe-2"]["display_name"] == ""
+
+    @pytest.mark.asyncio
+    async def test_an_agent_id_that_is_not_a_slug_is_a_free_form_name(self):
+        # ``Scribe_2`` passes the agent-id grammar but a member's key is the slug
+        # its DM binding lives under, so it seeds ``scribe-2`` and stays the label.
         cfg = self._fake_config()
         status, data = await self._post({"name": "Scribe_2", "kiro_agent": "kirocrew"}, cfg)
         assert status == 200
+        assert data["member_id"] == "scribe-2"
         assert data["name"] == "Scribe_2"
-        assert cfg.written["doc"]["agents"]["Scribe_2"]["display_name"] == ""
+        assert cfg.written["doc"]["agents"]["scribe-2"]["display_name"] == "Scribe_2"
 
     @pytest.mark.asyncio
     async def test_derived_id_skips_a_taken_id(self):
@@ -235,7 +252,7 @@ class TestCreateEndpoint:
         cfg.agents["release-writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
         status, data = await self._post({"name": "Release Writer", "kiro_agent": "kirocrew"}, cfg)
         assert status == 200
-        assert data["name"] == "release-writer-2"
+        assert data["member_id"] == "release-writer-2"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -269,7 +286,8 @@ class TestCreateEndpoint:
             {"name": "Release Writer", "display_name": "Scribe", "kiro_agent": "kirocrew"}, cfg
         )
         assert status == 200
-        assert data["name"] == "release-writer"
+        assert data["member_id"] == "release-writer"
+        assert data["name"] == "Scribe"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -290,28 +308,6 @@ class TestCreateEndpoint:
 
 
 class TestCrewIdDerivation:
-    @pytest.mark.parametrize(
-        "name, expected",
-        [("Release Writer", "release-writer"), ("Café Bot!", "cafe-bot"), ("a" * 100, "a" * 56)],
-    )
-    def test_slugs_the_name(self, name, expected):
-        from kiro_crew.members import crew_id_for_display_name
-
-        assert crew_id_for_display_name(name, set()) == expected
-
-    def test_name_with_no_slug_characters_derives_from_its_hash(self):
-        from kiro_crew.members import crew_id_for_display_name, is_crew_id
-
-        first = crew_id_for_display_name("数据助手", set())
-        assert first.startswith("crew-") and is_crew_id(first)
-        assert crew_id_for_display_name("代码助手", set()) != first
-
-    def test_suffixes_past_taken_ids(self):
-        from kiro_crew.members import crew_id_for_display_name
-
-        taken = {"release-writer", "release-writer-2"}
-        assert crew_id_for_display_name("Release Writer", taken) == "release-writer-3"
-
     @pytest.mark.parametrize(
         "value, ok",
         [
@@ -343,8 +339,10 @@ class TestRosterSurfaces:
         app.router.add_get("/api/agents", api_kirocrew_agents)
         async with TestClient(TestServer(app)) as client:
             body = await (await client.get("/api/agents")).json()
-        row = next(a for a in body["agents"] if a["name"] == "labelled")
+        row = next(a for a in body["agents"] if a["member_id"] == "labelled")
         assert row["display_name"] == "Release Writer"
+        # ``name`` is the display name's alias for one release.
+        assert row["name"] == "Release Writer"
 
     @pytest.mark.asyncio
     async def test_credential_shaped_label_leaves_as_the_mask(self, tmp_path):
@@ -364,8 +362,10 @@ class TestRosterSurfaces:
         app.router.add_get("/api/agents", api_kirocrew_agents)
         async with TestClient(TestServer(app)) as client:
             body = await (await client.get("/api/agents")).json()
-        row = next(a for a in body["agents"] if a["name"] == "leaky")
+        row = next(a for a in body["agents"] if a["member_id"] == "leaky")
         assert row["display_name"] == _SENSITIVE_MASK
+        # The ``name`` alias falls back to the key rather than shipping the label.
+        assert row["name"] == "leaky"
         assert cred not in json.dumps(body)
 
 

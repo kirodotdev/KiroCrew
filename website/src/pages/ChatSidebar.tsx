@@ -113,7 +113,7 @@ import { deriveAutomationStatus, MONITOR_STATUS_KEYS } from '../monitoring/autom
 import MonitorRadar from '../components/MonitorRadar'
 
 import { i18nT } from '../i18n/t'
-import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { agentOrDefaultLabel, isHandleOf } from '../utils/agentLabel'
 import { useLaneScrollMemory } from '../hooks/useLaneScrollMemory'
 import { compareText, fmtDateFields, fmtList } from '../i18n/format'
 
@@ -1800,6 +1800,9 @@ interface SessionRowProps {
   isMobile: boolean
   colorMode: string
   installedAgents: AgentInfo[]
+  /** False while the roster is still loading: a member slot's stored id is held
+   *  (blank line) rather than flashed until the display name can be resolved. */
+  installedAgentsSettled?: boolean
   tagById: Record<string, ChatTag>
   paletteColors: string[]
   boost: PaletteBoost
@@ -1975,7 +1978,7 @@ const SessionRow = memo(function SessionRow({
   slot: s, showDivider, scope, navScope, holdContainer, conductor, isActive, connected, isOut, isPinned, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
   isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
-  defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
+  defaultAgent, mode, isMobile, colorMode, installedAgents, installedAgentsSettled = true, tagById, paletteColors, boost, boostFor,
   renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
   onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onAdoptPeerSession, adoptPending, adoptError,
   onOpenElsewhere,
@@ -2156,7 +2159,10 @@ const SessionRow = memo(function SessionRow({
     // The row's own empty-state placeholder is preserved: with no agent AND no
     // default there is nothing to mark, and the literal 'default' the helper
     // degrades to would be a boot-window claim rather than a label.
-    const agentDisplay = agentName ? agentOrDefaultLabel(s.agent, defaultAgent) : ''
+    // Held (blank) until the roster has answered, so a member slot's stored id
+    // never flashes before its display name -- the same hold the Schedule
+    // column and the channel rail apply.
+    const agentDisplay = agentName && installedAgentsSettled ? agentOrDefaultLabel(s.agent, defaultAgent, installedAgents) : ''
     // A DIVERGENCE, not a status: the row is advertising `agentName` while a
     // different agent answers the session — usually an app agent that was
     // removed, or one whose registration has not landed yet. Shown because the
@@ -2171,7 +2177,7 @@ const SessionRow = memo(function SessionRow({
     // and optimistically-added state that predates this field.
     const effectiveAgent = s.effective_agent ?? ''
     const agentDiverged = effectiveAgent !== '' && effectiveAgent !== agentName
-    const agentMeta = installedAgents.find(a => a.name === agentName)
+    const agentMeta = installedAgents.find(a => isHandleOf(a, agentName))
     const isPackageAgent = agentMeta?.source === 'package'
     const isBuiltin = agentMeta?.source === 'builtin'
     const agentColor = isPackageAgent ? 'text-[var(--aim)]' : isBuiltin ? 'text-muted' : 'text-muted'
@@ -2662,9 +2668,11 @@ const SessionRow = memo(function SessionRow({
     // EVERY origin (dashboard, channel, cron, subagent — anything with s.agent),
     // needs no event-loop config I/O, and re-tints live when the agent's color
     // is edited. An explicit per-session color_hex/color_index still wins.
-    const agentHex = (!customHex && ci == null && s.agent)
+    const slotAgent = s.agent
+    const agentHex = (!customHex && ci == null && slotAgent)
       ? (() => {
-          const c = installedAgents.find(a => a.name === s.agent)?.session_color
+          // slotAgent is a member_id for member slots; the roster's `name` is the label.
+          const c = installedAgents.find(a => isHandleOf(a, slotAgent))?.session_color
           return typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c) ? c : null
         })()
       : null
@@ -3282,6 +3290,8 @@ interface ChatSidebarProps {
   historyHasMore: boolean
   defaultAgent: string
   installedAgents: AgentInfo[]
+  /** False while the roster is still loading (see the row prop of the same name). */
+  installedAgentsSettled?: boolean
   mode?: string
   onWidthChange?: (w: number) => void
   onDragChange?: (dragging: boolean) => void
@@ -3582,7 +3592,7 @@ function ChatSidebar({
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
   slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
-  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
+  defaultAgent, installedAgents, installedAgentsSettled = true, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
   chatDropTarget, onDropSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -8018,7 +8028,7 @@ function ChatSidebar({
         // Framer's projection registry bounded at every total list size.
         rowAnimEnabled={rowAnimEnabled && orderStamp < SIDEBAR_DISPLACEMENT_WINDOW && !staticRows}
         defaultAgent={defaultAgent} mode={mode} isMobile={isMobile} colorMode={colorMode}
-        installedAgents={installedAgents} tagById={tagById}
+        installedAgents={installedAgents} installedAgentsSettled={installedAgentsSettled} tagById={tagById}
         paletteColors={paletteColors} boost={boost} boostFor={boostFor}
         renameInputRef={renameInputRef}
         onRenameStart={onRenameStart} onRenameChange={onRenameChange}
@@ -10945,7 +10955,7 @@ function ChatSidebar({
                 // Derive agent color the same way renderSessionRow does so history rows
                 // match the session-row visual language (agent name tinted by source).
                 const agentColorFor = (agentName: string): string => {
-                  const meta = installedAgents.find(a => a.name === agentName)
+                  const meta = installedAgents.find(a => isHandleOf(a, agentName))
                   if (meta?.source === 'package') return 'text-[var(--aim)]'
                   if (meta?.source === 'builtin') return 'text-muted'
                   return 'text-muted'
@@ -10959,7 +10969,7 @@ function ChatSidebar({
                   // back to the CURRENT default, which is a different fact from
                   // a session pinned to that same alias — the marker is what
                   // tells them apart (#6529).
-                  const agentDisplay = agentName ? agentOrDefaultLabel(s.agent, defaultAgent) : ''
+                  const agentDisplay = agentName && installedAgentsSettled ? agentOrDefaultLabel(s.agent, defaultAgent, installedAgents) : ''
                   const agentColor = agentColorFor(agentName)
                   const isDashboard = s.key.startsWith('dashboard')
                   const channel = slotChannelNamespace(s.key)

@@ -41,8 +41,20 @@ def _member_dispatchability(cfg: KiroCrewConfig) -> dict[str, bool] | None:
     the redaction that would have masked a credential-shaped one is exactly what
     failed. The two member sections fail closed on disclosure by skipping.
     """
+    from kiro_crew.members import member_display_name
+
     try:
-        return {name: cli_doctor.is_dispatchable_member_name(name) for name in cfg.agents}
+        # Both spellings must pass: the label is what dispatch checks, but the
+        # binding line below prints the KEY (``render._safe_display`` is
+        # ``repr``, not redaction), so a credential-shaped key behind a benign
+        # label must be counted without being printed.
+        return {
+            name: (
+                cli_doctor.is_dispatchable_member_name(name)
+                and cli_doctor.is_dispatchable_member_name(member_display_name(name, member))
+            )
+            for name, member in cfg.agents.items()
+        }
     except cli_doctor.PlatformCompositionError:
         return None
     except Exception:  # noqa: BLE001 -- doctor must survive a broken setup

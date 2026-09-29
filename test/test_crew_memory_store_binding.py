@@ -224,13 +224,24 @@ class TestDashboardMemberBinding:
                 "/api/agents", json={"name": "reviewer", "kiro_agent": "kirocrew"}
             )
             assert recreated.status == 200
-            new_store = (await recreated.json())["memory_store"]
+            recreated_body = await recreated.json()
+            new_store = recreated_body["memory_store"]
 
         cfg = KiroCrewConfig.load()
         assert new_store != old_store
         assert old_store in cfg.memory_stores
         assert cfg.memory_stores[old_store].owner_member == "reviewer"
-        assert cfg.agents["reviewer"].memory_store == new_store
+        # The retired store keeps the id ``reviewer``, so the successor is keyed
+        # by a suffixed id and reached by its display name; the two never share
+        # an identity, which is what keeps the old store's work from resolving
+        # to the new member.
+        from kiro_crew.members import resolve_member
+
+        key, successor = resolve_member("reviewer", cfg)
+        assert key == recreated_body["member_id"] != "reviewer"
+        assert successor.display_name == "reviewer"
+        assert successor.memory_store == new_store
+        assert "reviewer" not in cfg.agents
 
     @pytest.mark.asyncio
     async def test_failed_delete_save_preserves_the_member_binding(self, monkeypatch):

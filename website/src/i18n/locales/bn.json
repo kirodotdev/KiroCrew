@@ -10068,7 +10068,8 @@
       "failed_to_dismiss_agent": "এজেন্ট সরানো যায়নি",
       "failed_to_update_agent": "এজেন্ট আপডেট করা যায়নি",
       "failed_to_close_channel": "চ্যানেল বন্ধ করা যায়নি",
-      "failed_to_clear_context": "কনটেক্সট মুছা যায়নি"
+      "failed_to_clear_context": "কনটেক্সট মুছা যায়নি",
+      "roster_names_failed": "এজেন্টদের নাম লোড করা যায়নি — শুধু ভূমিকা দেখানো হচ্ছে।"
     },
     "chat": {
       "activityViewer": {
@@ -13868,7 +13869,7 @@
       "view_executions": "এক্সিকিউশন",
       "view_list": "তালিকা",
       "add_job": "জব যোগ করুন",
-      "agent": "এজেন্ট ·",
+      "agent": "এজেন্ট",
       "and_their_run_history_this_action_cannot_be_undo": "এবং সেগুলোর রান হিস্ট্রি। এই কাজটি ফেরানো যাবে না।",
       "ask_in_chat": "চ্যাটে জিজ্ঞাসা করুন",
       "batch_delete_failed": "একসঙ্গে মুছে ফেলা যায়নি",

@@ -28,6 +28,8 @@ describe('ChannelPage — Clear Context', () => {
     vi.mocked(api).channelGet = vi.fn().mockResolvedValue(mockChannel)
     vi.mocked(api).channelPresets = vi.fn().mockResolvedValue({ presets: [] })
     vi.mocked(api).channelClearContext = vi.fn().mockResolvedValue({ ok: true, cleared: ['Researcher'] })
+    // The agent rail resolves each role's stored crew handle against the roster.
+    vi.mocked(api).agentCatalog = vi.fn().mockResolvedValue({ agents: [], default_agent: '' })
   })
 
   it('renders Clear Context button in channel header', async () => {

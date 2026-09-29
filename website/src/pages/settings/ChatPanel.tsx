@@ -34,6 +34,7 @@ import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import { type KiroCrewAgent } from '../../components/AgentSelector'
+import { isHandleOf } from '../../utils/agentLabel'
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
  *
@@ -943,7 +944,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     queryFn: () => api.kirocrewAgents(),
   })
   const pinAgentName = agentsQ.data?.default_agent || 'default'
-  const pinAgent = agentsQ.data?.agents?.find(a => a.name === pinAgentName)
+  const pinAgent = agentsQ.data?.agents?.find(a => isHandleOf(a, pinAgentName))
   // Asked BY NAME, for the same agent the clear button below writes to, and
   // only once the roster has named it. An unnamed ask ("the server's default
   // agent") can answer for a different agent than a roster read that has not

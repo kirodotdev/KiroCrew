@@ -697,9 +697,12 @@ def require_member_memory_store(config, member: str, *, require_directory: bool 
     """Resolve the explicitly selected member, without guessing from a template."""
     if member == DEFAULT_MEMORY_STORE:
         return DEFAULT_MEMORY_STORE
-    agent = config.agents.get(member)
-    if agent is None:
+    from kiro_crew.members import resolve_member
+
+    resolved = resolve_member(member, config)
+    if resolved is None:
         raise UnknownMemoryStore(f"Unknown Crew Member {member!r}; Global was not used")
+    _key, agent = resolved
     store = require_memory_store(
         agent.memory_store, config=config, require_directory=require_directory
     )
@@ -732,9 +735,12 @@ def unusable_legacy_binding(config, member: str) -> str | None:
     Pure -- no filesystem call and no config load -- so the dashboard handler and
     the CLI can both ask with the config they already hold.
     """
-    agent = config.agents.get(member)
-    if agent is None:
+    from kiro_crew.members import resolve_member
+
+    resolved = resolve_member(member, config)
+    if resolved is None:
         return None
+    agent = resolved[1]
     store = agent.memory_store
     if store == DEFAULT_MEMORY_STORE:
         return None
@@ -814,9 +820,25 @@ def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> 
 
     The slug of the display name, with a random suffix only on collision. Deleted
     members retain their stores and DM bindings, so those identities reserve the
-    slug too. A live legacy agent with no ``member_id`` reserves its name-derived
-    slug until it is provisioned. Captured work and an existing legacy member must
-    never resolve to a newly created member that happens to share the name.
+    slug too: a retired store's ``owner_member_id`` and a retained binding both
+    stand for captured work that must never resolve to a newly created member
+    that happens to share the name. A live legacy agent with no ``member_id``
+    reserves its name-derived slug until it is provisioned. Every
+    ``config.agents`` KEY is reserved as well -- the map is keyed by
+    ``member_id``, so an id equal to another entry's key could never become
+    this member's key; a legacy identity-less record keyed by its name holds
+    that name for the same reason -- except under the upgrade, which lets the
+    migrating owner of a shared slug keep it (the identity-less namesake is
+    suffixed when it is provisioned, and the re-key leaves the mover where it
+    is stored until then). The entry stored under *member* itself is
+    exempt, so a record already keyed by the id it is about to receive keeps
+    it. Every other entry's non-empty ``display_name`` is reserved too, spelled
+    exactly as :func:`~kiro_crew.members.resolve_member` compares it: that
+    resolver prefers a key over a label, so an id equal to a live label would
+    silently capture every request addressed by that label. (Only a
+    slug-shaped label can ever equal a slug, so reserving them all costs
+    nothing and guesses nothing.) Every ``legacy_keys`` entry is reserved the
+    same way, since the resolver answers those handles too.
 
     ``refuse_damaged`` decides what a non-string identity elsewhere in the config
     means. Creating a member refuses outright, because a config that cannot be
@@ -855,7 +877,11 @@ def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> 
             return False
         return True
 
-    base = slug_for_name(member)
+    # A name that already is a member-id slug IS the key a client asked for;
+    # any other (free-form, or id-grammar but not slug-grammar) seeds a slug.
+    from kiro_crew.members import is_member_id_shaped
+
+    base = member if is_member_id_shaped(member) else slug_for_name(member)
     identities = []
     for name, item in config.agents.items():
         member_id = getattr(item, "member_id", "")
@@ -869,11 +895,77 @@ def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> 
     identities.extend(item.owner_member_id for item in config.memory_stores.values())
     if refuse_damaged and any(not isinstance(identity, str) for identity in identities):
         raise UnknownMemoryStore("Configured member identity must be a string; allocation refused")
+    identities.extend(
+        key
+        for key, item in config.agents.items()
+        if key != member
+        # The upgrade's shared-slug rule above, applied to the KEY spelling: an
+        # identity-less legacy record keyed by exactly this slug does not
+        # reserve it from the migrating owner (it is suffixed on provisioning).
+        and (refuse_damaged or getattr(item, "member_id", "") != "" or key != base)
+    )
+    identities.extend(
+        getattr(item, "display_name", "") for key, item in config.agents.items() if key != member
+    )
+    identities.extend(
+        legacy
+        for key, item in config.agents.items()
+        if key != member
+        for legacy in (getattr(item, "legacy_keys", None) or ())
+    )
     existing = {identity for identity in identities if isinstance(identity, str)}
-    member_id = base
-    while member_id in existing or dm_slug_is_reserved(member_id):
+
+    def _free(candidate: str) -> bool:
+        return candidate not in existing and not dm_slug_is_reserved(candidate)
+
+    if _free(base):
+        return base
+    # Deterministic first: ``-2``, ``-3``... past every reserved identity; the
+    # random tail is the last resort once those are exhausted.
+    for n in range(2, 100):
+        candidate = f"{base[:56].rstrip('-')}-{n}"
+        if _free(candidate):
+            return candidate
+    member_id = f"{base[:48]}-{uuid.uuid4().hex[:12]}"
+    while not _free(member_id):
         member_id = f"{base[:48]}-{uuid.uuid4().hex[:12]}"
     return member_id
+
+
+def store_owned_by_member(record, member: str, config) -> bool:
+    """Whether *record* (a ``MemoryStoreConfig``) names *member* (any handle of one crew) as owner.
+
+    The ONE spelling of that question for every reader that must agree with
+    the delete route's ownership check. ``owner_member_id`` is authoritative:
+    it is the immutable identity the store was minted for, and it equals the
+    member's key (or its ``member_id`` when a refused re-key left the record
+    under another key). ``owner_member`` is the label an EARLIER layout stamped
+    -- which was that member's config KEY at the time, since labels were the
+    keys -- so it is consulted only for a record with no id, and then as an
+    owner SPELLING through :func:`~kiro_crew.members.member_owns_private_copy`:
+    it names the member when it is the member's key, or an unambiguous key the
+    migration moved that same record from (``legacy_keys``). A display name is
+    never an owner spelling: labels are reusable, and reading the stamp by
+    label would hand a deleted crew's private store to whichever member later
+    took its name (the reuse hazard the fork sidecars refuse the same way).
+    """
+    from kiro_crew.members import member_owns_private_copy, resolve_member_id
+
+    if record is None or not isinstance(member, str) or not member:
+        return False
+    # *member* may arrive as any handle a caller admitted (a slot pick by display
+    # name reaches here uncanonicalized); the comparison is on the key.
+    member = resolve_member_id(member, config) or member
+    owner_id = getattr(record, "owner_member_id", "")
+    if isinstance(owner_id, str) and owner_id:
+        agent = getattr(config, "agents", {}).get(member)
+        return owner_id == member or (
+            agent is not None and getattr(agent, "member_id", "") == owner_id
+        )
+    label = getattr(record, "owner_member", "")
+    if not isinstance(label, str) or not label:
+        return False
+    return member_owns_private_copy(label, member, config)
 
 
 #: Ownership manifest an earlier member-store layout wrote beside ``memory.db``.
@@ -939,7 +1031,9 @@ def _require_private_member_database(path: Path) -> None:
         raise UnknownMemoryStore(f"{MEMORY_DB_FILE} is hard-linked to another file")
 
 
-def _legacy_member_database_identity(path: Path, store: str, alias: str) -> str:
+def _legacy_member_database_identity(
+    path: Path, store: str, alias: str, *accepted_owners: str
+) -> str:
     """The member id an unfinished upgrade already wrote into *path*, or ``""``.
 
     Read-only. Refuses a file that is not a member-lineage database, one whose
@@ -975,13 +1069,15 @@ def _legacy_member_database_identity(path: Path, store: str, alias: str) -> str:
                     (STORE_NAME_META_KEY, LEGACY_OWNER_MEMBER_META_KEY),
                 )
             )
+            # The legacy owner stamp is a DISPLAY name while the alias is the
+            # member_id key, so the record's label is accepted too.
             for key, expected in (
-                (STORE_NAME_META_KEY, store),
-                (LEGACY_OWNER_MEMBER_META_KEY, alias),
+                (STORE_NAME_META_KEY, (store,)),
+                (LEGACY_OWNER_MEMBER_META_KEY, (alias, *accepted_owners)),
             ):
-                if key in stamps and stamps[key] != expected:
+                if key in stamps and stamps[key] not in expected:
                     raise UnknownMemoryStore(
-                        f"{MEMORY_DB_FILE} records {key} {stamps[key]!r}, not {expected!r}"
+                        f"{MEMORY_DB_FILE} records {key} {stamps[key]!r}, not {expected[0]!r}"
                     )
         if "member_database" not in tables:
             return ""
@@ -1052,16 +1148,20 @@ def _legacy_member_store_candidates(config) -> dict[str, tuple[str, str, str]]:
             # the labels are writer-populated and a later rebinding can leave
             # them naming a member other than the one now bound.
             record_owner = getattr(record, "owner_member", "")
-            if record_owner and record_owner != alias:
+            # ``owner_member`` is the DISPLAY name; the key is the member_id,
+            # so a re-keyed record's owner still matches by label.
+            if record_owner and record_owner not in (alias, agent.display_name):
                 raise UnknownMemoryStore(
                     f"its record names owner_member {record_owner!r}, not {alias!r}"
                 )
             present, owner = _legacy_member_manifest_owner(directory)
-            if present and owner != alias:
+            if present and owner not in (alias, agent.display_name):
                 raise UnknownMemoryStore(
                     f"{LEGACY_MEMBER_MANIFEST} names owner {owner!r}, not {alias!r}"
                 )
-            member_id = _legacy_member_database_identity(directory / MEMORY_DB_FILE, name, alias)
+            member_id = _legacy_member_database_identity(
+                directory / MEMORY_DB_FILE, name, alias, agent.display_name
+            )
             # An identity the bound member already carries is this store's own
             # half-finished upgrade, not a conflict: the member's identity is
             # published before the store record's, so an interruption between
@@ -1365,6 +1465,12 @@ def _provision_member_memory(config, member: str) -> str:
     current = config.memory_stores.get(agent.memory_store)
     if current is not None and current.memory_version == 2:
         return require_member_memory_store(config, member)
+    # *member* is the ``config.agents`` key. The creation paths key a new record
+    # by the id they allocated for its display name before inserting it, so the
+    # allocation below (which exempts the entry's own key) returns that key and
+    # the record's id equals its key from the first write. A legacy record keyed
+    # by a name that is not a slug receives the slug of that name; the loader's
+    # member-key migration re-keys it on the next load.
     member_id = agent.member_id
     if member_id:
         raise UnknownMemoryStore("Existing member identity has no valid store; allocation refused")
@@ -1392,7 +1498,7 @@ def _provision_member_memory(config, member: str) -> str:
     agent.member_id = member_id
     agent.memory_store = name
     config.memory_stores[name] = MemoryStoreConfig(
-        owner_member=member, owner_member_id=member_id, memory_version=2
+        owner_member=agent.display_name or member, owner_member_id=member_id, memory_version=2
     )
     return name
 
@@ -1460,6 +1566,43 @@ def retire_unpublished_allocation(
     return removed
 
 
+def _overlay_files_agent_under(handle: str) -> bool:
+    """Whether ``config.local.json`` carries an ``agents`` entry keyed by *handle*.
+
+    The overlay is user-owned and never written back, so an entry filed under
+    a member's former label survives its rename; it follows the label through
+    ``canonicalize_overlay_agents`` (live labels win), which is why a label
+    with such an entry is not free for another member to take. Only an ABSENT
+    overlay reads as "no entry". A present overlay that cannot be read or
+    parsed raises :class:`UnknownMemoryStore`: answering ``False`` there would
+    let the caller retire the legacy handle, and once the user repairs the
+    file its entry would re-home onto whoever now holds the label.
+    """
+    import json
+
+    from kiro_crew.config.loader import config_local_path
+
+    path = config_local_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeError) as exc:
+        raise UnknownMemoryStore(
+            f"config.local.json could not be read ({exc}); repair it before "
+            f"reusing the name {handle!r}"
+        ) from exc
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise UnknownMemoryStore(
+            f"config.local.json is not valid JSON ({exc}); repair it before "
+            f"reusing the name {handle!r}"
+        ) from exc
+    agents = data.get("agents") if isinstance(data, dict) else None
+    return isinstance(agents, dict) and handle in agents
+
+
 @memory_store_namespace_lock()
 def persist_member_config(
     config,
@@ -1519,13 +1662,19 @@ def persist_member_config(
     )
 
     def mutate(data: dict) -> dict:
+        from kiro_crew.config.loader import raw_agent_key
+
         agents = data.setdefault("agents", {})
         stores = data.setdefault("memory_stores", {})
         if not isinstance(agents, dict) or not isinstance(stores, dict):
             raise UnknownMemoryStore("agent or memory store configuration is unreadable")
         if DEFAULT_MEMORY_STORE not in agents and DEFAULT_MEMORY_STORE in config.agents:
             agents[DEFAULT_MEMORY_STORE] = asdict(config.agents[DEFAULT_MEMORY_STORE])
-        current = agents.get(member)
+        # The record is patched where the document STORES it: under its legacy
+        # key until ``migrate_member_identity`` has moved it, never beside it
+        # under the id (which would leave two records for one member).
+        stored_key = member if create else raw_agent_key(data, member)
+        current = agents.get(stored_key)
         if create and member in agents:
             raise MemberAlreadyExists(
                 f"Crew Member {member!r} was created concurrently; reload the roster"
@@ -1548,11 +1697,95 @@ def persist_member_config(
             and current["member_id"] != config.agents[member].member_id
         ):
             raise UnknownMemoryStore("Member identity is immutable")
+        # Handle uniqueness is decided HERE, under the config lock, not by the
+        # caller's pre-lock snapshot. The dashboard, the CLI and an app's
+        # ``ensure_team`` serialize only on this flock, so two writers whose
+        # snapshots both showed a label free would otherwise commit a duplicate
+        # display name (``resolve_member`` then refuses the ambiguous handle)
+        # or, for a slug-shaped label, silently shadow the renamed member
+        # behind the other record's key. A create checks its key AND its
+        # label; a rename checks the label it publishes; unchanged labels are
+        # not re-litigated. The KEY is held by every spelling a record answers
+        # to (``member_handle_holders``): a retired key stays reserved so the
+        # overlay entries written under it keep naming the record the
+        # migration moved. The LABEL is held only by a live spelling
+        # (``member_live_holders``): a label another member merely remembers
+        # as a legacy alias -- the name it was renamed away from -- is free,
+        # and publishing it here retires that alias in the same write (the
+        # live namespace wins over aliases in every resolver, so the alias
+        # would resolve to nothing anyway). One exception fails closed: an
+        # overlay (``config.local.json``) entry still filed under that label
+        # would follow the label onto the NEW member, so the label is refused
+        # until the user re-files that entry. The writer's own record is
+        # always excepted.
+        from kiro_crew.members import member_handle_holders, member_live_holders
+
+        own_keys = {member, stored_key}
+        # Every spelling this record already answers to: an overlay entry filed
+        # under one of these is the member's OWN (it folds onto this record at
+        # load), so taking that handle back is not a reassignment.
+        own_handles = set(own_keys)
+        if isinstance(current, dict):
+            prior = current.get("display_name")
+            if isinstance(prior, str) and prior:
+                own_handles.add(prior)
+            for old in current.get("legacy_keys") or ():
+                if isinstance(old, str) and old:
+                    own_handles.add(old)
+        pending_label = agent_record.get("display_name")
+        contested: list[tuple[str, bool]] = []
+        if create:
+            contested.append((member, True))
+            if pending_label and pending_label != member:
+                contested.append((pending_label, False))
+        elif isinstance(current, dict) and pending_label:
+            prior_label = current.get("display_name") or stored_key
+            if pending_label != prior_label:
+                contested.append((pending_label, False))
+        for handle, is_key in contested:
+            holders = [key for key in member_handle_holders(handle, agents) if key not in own_keys]
+            live = holders if is_key else member_live_holders(handle, agents)
+            live = [key for key in live if key not in own_keys]
+            if live:
+                raise MemberAlreadyExists(
+                    f"Crew Member name {handle!r} was taken concurrently by "
+                    f"{live[0]!r}; reload the roster"
+                )
+            # The overlay is read, and the base document committed, under the
+            # OVERLAY's own lock too (taken inside the base lock, the order
+            # every other dual writer uses), so a ``config set --local``
+            # landing between this read and the commit cannot file an entry
+            # under a handle this write is about to publish. Checked for EVERY
+            # contested handle, not only one another record remembers: an
+            # overlay entry orphaned by a member delete (delete removes the base
+            # record, never the user-owned overlay) would otherwise re-home
+            # onto the new member at the next load and merge its fields in.
+            if handle not in own_handles:
+                _hold_overlay_lock()
+            if handle not in own_handles and _overlay_files_agent_under(handle):
+                if holders:
+                    raise MemberAlreadyExists(
+                        f"Crew Member name {handle!r} is still used by an entry in "
+                        f"config.local.json that belongs to {holders[0]!r}; re-file that "
+                        f"entry under {holders[0]!r} before reusing the name"
+                    )
+                raise MemberAlreadyExists(
+                    f"Crew Member name {handle!r} is still used by an entry in "
+                    "config.local.json that belongs to no current member; re-file or "
+                    "remove that entry before using the name"
+                )
+            for key in holders:
+                entry = agents.get(key)
+                if not isinstance(entry, dict):
+                    continue
+                recorded = entry.get("legacy_keys")
+                if isinstance(recorded, list) and handle in recorded:
+                    entry["legacy_keys"] = [old for old in recorded if old != handle]
         if store_record is not None:
             # Publish one immutable member/store pair under the ordinary config lock.
             for name, entry in agents.items():
                 if (
-                    name != member
+                    name not in (member, stored_key)
                     and isinstance(entry, dict)
                     and (
                         entry.get("memory_store") == store
@@ -1573,9 +1806,43 @@ def persist_member_config(
                 raise UnknownMemoryStore(f"memory store {store!r} ownership changed concurrently")
             stores[store] = {**(existing or {}), **store_record}
         if create:
+            # Both handles a team document may list a deleted predecessor by:
+            # the key, and the display name a fresh member takes over.
             crew_teams.release_for_create(member)
-        agents[member] = {**(current or {}), **agent_record}
+            label = config.agents[member].display_name
+            if label and label != member:
+                crew_teams.release_for_create(label)
+        elif isinstance(current, dict):
+            # A RENAME publishes a label too. A team document may still list
+            # that label for a deleted crew whose best-effort drop failed;
+            # without this purge ``canonicalize_teams`` would hand the renamed
+            # member that stale membership. The purge is skipped only when the
+            # label is a live key (then the entry is a real member, not a
+            # leftover), which the rename route has already refused anyway.
+            label = config.agents[member].display_name
+            prior_label = current.get("display_name") or stored_key
+            if label and label != prior_label and label != member and label not in agents:
+                crew_teams.release_for_create(label)
+        agents[stored_key] = {**(current or {}), **agent_record}
         return data
 
-    update_config_locked(mutate=mutate)
+    from contextlib import ExitStack
+
+    from kiro_crew.config.loader import _config_write_lock, config_local_path
+
+    overlay_guard = ExitStack()
+    overlay_held = False
+
+    def _hold_overlay_lock() -> None:
+        nonlocal overlay_held
+        if not overlay_held:
+            overlay_guard.enter_context(_config_write_lock(config_local_path()))
+            overlay_held = True
+
+    try:
+        # ``after_write`` runs inside the base lock once the rename has
+        # committed: the overlay stays locked from the check to that point.
+        update_config_locked(mutate=mutate, after_write=overlay_guard.close)
+    finally:
+        overlay_guard.close()
     _invalidate_config_cache()

@@ -411,7 +411,9 @@ def _load_watchdog_settings(crew_agent: str = "", cfg: Any = None) -> WatchdogSe
         w = cfg.watchdog
         raw = {key: float(getattr(w, key)) for key in _TURN_BOUNDED_WINDOWS}
         overridden = False
-        crew = cfg.agents.get(crew_agent) if crew_agent else None
+        from kiro_crew.members import member_record
+
+        crew = member_record(crew_agent, cfg) if crew_agent else None
         if crew is not None:
             if crew.watchdog_tool_stall_suspect_secs > 0:
                 raw["tool_stall_suspect_secs"] = float(crew.watchdog_tool_stall_suspect_secs)

@@ -10211,7 +10211,8 @@
       "failed_to_dismiss_agent": "Falha ao dispensar o agente",
       "failed_to_update_agent": "Falha ao atualizar o agente",
       "failed_to_close_channel": "Falha ao fechar o canal",
-      "failed_to_clear_context": "Falha ao limpar o contexto"
+      "failed_to_clear_context": "Falha ao limpar o contexto",
+      "roster_names_failed": "Não foi possível carregar os nomes dos agentes — mostrando apenas as funções."
     },
     "chat": {
       "activityViewer": {
@@ -14078,7 +14079,7 @@
       "view_executions": "Execuções",
       "view_list": "Lista",
       "add_job": "Adicionar job",
-      "agent": "agente ·",
+      "agent": "agente",
       "and_their_run_history_this_action_cannot_be_undo": "e seu histórico de execuções. Esta ação não pode ser desfeita.",
       "ask_in_chat": "pergunte no chat",
       "batch_delete_failed": "Falha na exclusão em lote",

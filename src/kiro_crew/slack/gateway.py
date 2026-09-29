@@ -11535,6 +11535,7 @@ class GatewayOrchestrator:
 
     def _initialize_memory_worker(self) -> bool:
         """Restore and open the already-wired memory objects after readiness."""
+        from kiro_crew.config.loader import migrate_member_identity
         from kiro_crew.context import reset_memory_caches
         from kiro_crew.memory_backup import apply_pending_member_restores
         from kiro_crew.memory_stores import repair_legacy_member_stores
@@ -11557,6 +11558,15 @@ class GatewayOrchestrator:
                     upgraded = repair_legacy_member_stores()
                     if upgraded:
                         logger.info("Upgraded member memory stores: %s", ", ".join(upgraded))
+                    # Same posture for member identity: ``KiroCrewConfig.load``
+                    # serves ``config.agents`` keyed by member_id in memory and
+                    # writes nothing; this one-shot moves the document, the
+                    # fork sidecar owners and the pictures under the config
+                    # lock, off the event loop, before any consumer resolves a
+                    # member. Idempotent; never raises.
+                    moved = migrate_member_identity()
+                    if any(moved.values()):
+                        logger.info("Keyed Crew Member records by member_id: %s", moved)
                     if startup.stopped:
                         return False
                     restored = apply_pending_member_restores(

@@ -64,7 +64,11 @@ def test_named_crew_returns_bindings(tmp_path):
     p = _write_cfg(tmp_path)
     with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=p):
         out = json.loads(mcp_core._do_select_crew("oncall"))
-    assert out["crew"] == "oncall"
+    # ``crew`` is the config.agents key (the member_id); the display
+    # name the caller passed rides along.
+    assert out["crew"] == "member-oncall"
+    assert out["member_id"] == "member-oncall"
+    assert out["display_name"] == "oncall"
     assert out["bound"]["kiro_agent"] == "oncall-agent"
     assert out["bound"]["memory_store"] == "oncall-mem"
     assert out["bound"]["workspace"].endswith("oncall")

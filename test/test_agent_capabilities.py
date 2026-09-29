@@ -1107,6 +1107,60 @@ def test_local_overlay_member_saves_in_overlay_and_preserves_base(editor):
     assert (home / "config.json").read_bytes() == base
 
 
+def test_overlay_entry_that_renames_its_own_label_still_saves_in_the_overlay(editor):
+    """An overlay entry keyed by the member's display name that ALSO replaces
+    that display name (and pins ``kiro_agent``) cannot be found in the MERGED
+    view -- there the label it is keyed by is absent. The snapshot must
+    canonicalize the overlay against the unmerged base, as the merge itself
+    does, so the binding write lands in ``config.local.json`` rather than in
+    ``config.json`` underneath the overlay entry that shadows it."""
+    service, home, specs, _ = editor
+    (home / "config.json").write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "a": {
+                        "member_id": "a",
+                        "display_name": "Alice",
+                        "kiro_agent": "parent",
+                        "workspace": "default",
+                        "memory_store": "default",
+                    }
+                },
+                "dashboard": {"bot_name": "unchanged"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    local = home / "config.local.json"
+    local.write_text(
+        json.dumps({"agents": {"Alice": {"display_name": "Alicia", "kiro_agent": "parent"}}}),
+        encoding="utf-8",
+    )
+    loader._invalidate_config_cache()
+    assert loader.KiroCrewConfig.load().agents["a"].display_name == "Alicia"
+    service.get("a")
+    base = (home / "config.json").read_bytes()
+    body = {
+        "revision": service.get("a")["revision"],
+        "enroll": True,
+        "operations": [],
+        "accept_parent": [],
+        "accept_members": [],
+    }
+    preview = service.preview("a", body)
+    service.put("a", {**body, "preview_token": preview["preview_token"]})
+    assert (home / "config.json").read_bytes() == base
+    overlay = json.loads(local.read_text(encoding="utf-8"))
+    assert set(overlay["agents"]) == {"Alice"}
+    assert overlay["agents"]["Alice"]["display_name"] == "Alicia"
+    target = overlay["agents"]["Alice"]["kiro_agent"]
+    assert target.startswith("crew-") and (specs / (target + ".json")).is_file()
+    loader._invalidate_config_cache()
+    assert loader.KiroCrewConfig.load().agents["a"].kiro_agent == target
+    assert service.get("a")["mode"] == "inherited"
+
+
 def test_reconcile_changes_ordinary_parent_fields_in_new_generation_only(editor):
     from kiro_crew.agent_capabilities import reconcile_member_capabilities
 

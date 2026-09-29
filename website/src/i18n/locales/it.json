@@ -10211,7 +10211,8 @@
       "failed_to_dismiss_agent": "Rimozione dell'agente non riuscita",
       "failed_to_update_agent": "Aggiornamento dell'agente non riuscito",
       "failed_to_close_channel": "Chiusura del canale non riuscita",
-      "failed_to_clear_context": "Cancellazione del contesto non riuscita"
+      "failed_to_clear_context": "Cancellazione del contesto non riuscita",
+      "roster_names_failed": "Impossibile caricare i nomi degli agenti: vengono mostrati solo i ruoli."
     },
     "chat": {
       "activityViewer": {
@@ -14078,7 +14079,7 @@
       "view_executions": "Esecuzioni",
       "view_list": "Elenco",
       "add_job": "Aggiungi job",
-      "agent": "agente ·",
+      "agent": "agente",
       "and_their_run_history_this_action_cannot_be_undo": "e la loro cronologia di esecuzione. L'azione non può essere annullata.",
       "ask_in_chat": "chiedi nella chat",
       "batch_delete_failed": "Eliminazione in blocco non riuscita",

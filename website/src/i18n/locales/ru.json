@@ -10354,7 +10354,8 @@
       "failed_to_dismiss_agent": "Не удалось убрать агента",
       "failed_to_update_agent": "Не удалось обновить агента",
       "failed_to_close_channel": "Не удалось закрыть канал",
-      "failed_to_clear_context": "Не удалось очистить контекст"
+      "failed_to_clear_context": "Не удалось очистить контекст",
+      "roster_names_failed": "Не удалось загрузить имена агентов — показаны только роли."
     },
     "chat": {
       "activityViewer": {
@@ -14288,7 +14289,7 @@
       "view_executions": "Запуски",
       "view_list": "Список",
       "add_job": "Добавить задачу",
-      "agent": "агент ·",
+      "agent": "агент",
       "and_their_run_history_this_action_cannot_be_undo": "и их историю запусков. Это действие нельзя отменить.",
       "ask_in_chat": "спросить в чате",
       "batch_delete_failed": "Не удалось удалить пакетно",

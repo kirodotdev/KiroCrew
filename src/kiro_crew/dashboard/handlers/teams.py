@@ -30,9 +30,14 @@ import logging
 from aiohttp import web
 
 from kiro_crew import crew_teams as teams_mod
+from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.members import _deny_app_caller, _member_name_is_addressable
+from kiro_crew.dashboard.handlers.members import (
+    _deny_app_caller,
+    _member_row_is_addressable,
+    member_roster_handle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,21 +106,60 @@ def _config_lock():
 
 
 def _known_crews(cfg: KiroCrewConfig) -> set[str]:
-    # The same filter the roster applies (``GET /api/members``): a config key
-    # that is not a dispatchable Crew Member display name has no roster row and
-    # cannot be on a team. Crew names are display text (``dr. eggbot`` is a
-    # crew), so the identifier grammar is not the test; the store's own
-    # ``MEMBER_NAME_MAX_CHARS`` -- the same display-name cap -- bounds the write.
-    return {name for name in cfg.agents if _member_name_is_addressable(name)}
+    # The same filter the roster applies (``GET /api/members``): a record with
+    # no handle the roster can show has no roster row and cannot be on a team.
+    # Crew names are display text (``dr. eggbot`` is a crew), so the identifier
+    # grammar is not the test; the store's own ``MEMBER_NAME_MAX_CHARS`` -- the
+    # same display-name cap -- bounds the write. ONE identity per crew: the
+    # ``config.agents`` key. A display-name handle reaches this set only through
+    # ``_canonical_handle``, so an id and its alias can never both validate.
+    return {
+        key for key, agent_cfg in cfg.agents.items() if _member_row_is_addressable(key, agent_cfg)
+    }
 
 
-def _registered_crews() -> set[str]:
-    """The registry as it is RIGHT NOW -- the store calls this inside its
+def _canonical_handle(cfg: KiroCrewConfig, handle: str) -> str:
+    """The stored identity (the key) for a submitted or stored member handle.
+
+    A handle naming no member is returned unchanged, so ``_validate_members``
+    refuses it as unknown and ``prune_unknown`` hides it.
+    """
+    return members_mod.resolve_member_id(handle, cfg) or handle
+
+
+class _Registry:
+    """The registry as it is RIGHT NOW -- the store calls ``known`` inside its
     document lock (``crew_teams.KnownCrews``), which is what closes the window
     between "the crew exists" and "the team is written" against a removal in
     another process: ``kirocrew agents delete`` holds the same lock around its
-    registry write, so it cannot land between the two."""
-    return _known_crews(KiroCrewConfig.load())
+    registry write, so it cannot land between the two. ``canonical`` maps every
+    handle through the same snapshot, loading one only when ``known`` was not
+    asked for (a remove-only update)."""
+
+    def __init__(self) -> None:
+        self._cfg: KiroCrewConfig | None = None
+
+    def known(self) -> set[str]:
+        self._cfg = KiroCrewConfig.load()
+        return _known_crews(self._cfg)
+
+    def config(self) -> KiroCrewConfig:
+        if self._cfg is None:
+            self._cfg = KiroCrewConfig.load()
+        return self._cfg
+
+    def canonical(self, handle: str) -> str:
+        return _canonical_handle(self.config(), handle)
+
+
+def _public_team(team: teams_mod.Team, cfg: KiroCrewConfig) -> dict:
+    """A team as the API answers it: members by the handle the roster shows."""
+    out = team.to_dict()
+    out["members"] = [
+        member_roster_handle(m, cfg.agents[m], cfg.agents) if m in cfg.agents else m
+        for m in team.members
+    ]
+    return out
 
 
 async def api_teams_list(request: web.Request) -> web.Response:
@@ -132,8 +176,9 @@ async def api_teams_list(request: web.Request) -> web.Response:
     # reached ``drop_member`` (the CLI, a package prune) is not answered as a
     # member. See ``crew_teams.prune_unknown``.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    teams = teams_mod.canonicalize_teams(teams, lambda m: _canonical_handle(cfg, m))
     teams = teams_mod.prune_unknown(teams, _known_crews(cfg))
-    return web.json_response({"teams": [t.to_dict() for t in teams]})
+    return web.json_response({"teams": [_public_team(t, cfg) for t in teams]})
 
 
 async def _read_body(request: web.Request) -> dict | web.Response:
@@ -172,12 +217,15 @@ async def api_teams_create(request: web.Request) -> web.Response:
         # as fresh as the store can make it against `kirocrew agent delete` in
         # another process.
         async with _config_lock():
+            registry = _Registry()
             team = await asyncio.to_thread(
                 teams_mod.create_team,
                 body.get("name"),
                 body.get("members", []),
-                known=_registered_crews,
+                known=registry.known,
+                canonical=registry.canonical,
             )
+            cfg = await asyncio.to_thread(registry.config)
     except teams_mod.TeamError as exc:
         return _team_error(exc)
     except teams_mod.TeamsUnreadable:
@@ -186,7 +234,7 @@ async def api_teams_create(request: web.Request) -> web.Response:
     except OSError:
         logger.warning("teams write failed", exc_info=True)
         return _write_failed()
-    return web.json_response({"team": team.to_dict()}, status=201)
+    return web.json_response({"team": _public_team(team, cfg)}, status=201)
 
 
 async def api_teams_update(request: web.Request) -> web.Response:
@@ -212,6 +260,7 @@ async def api_teams_update(request: web.Request) -> web.Response:
         return body
     try:
         async with _config_lock():  # see api_teams_create
+            registry = _Registry()
             team = await asyncio.to_thread(
                 teams_mod.update_team,
                 team_id,
@@ -219,8 +268,10 @@ async def api_teams_update(request: web.Request) -> web.Response:
                 members=body.get("members"),
                 add=body.get("add"),
                 remove=body.get("remove"),
-                known=_registered_crews,
+                known=registry.known,
+                canonical=registry.canonical,
             )
+            cfg = await asyncio.to_thread(registry.config)
     except teams_mod.TeamError as exc:
         return _team_error(exc)
     except teams_mod.TeamsUnreadable:
@@ -229,7 +280,7 @@ async def api_teams_update(request: web.Request) -> web.Response:
     except OSError:
         logger.warning("teams write failed", exc_info=True)
         return _write_failed()
-    return web.json_response({"team": team.to_dict()})
+    return web.json_response({"team": _public_team(team, cfg)})
 
 
 async def api_teams_delete(request: web.Request) -> web.Response:

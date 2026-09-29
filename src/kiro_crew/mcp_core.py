@@ -65,7 +65,7 @@ from kiro_crew.mcp_shared import (
 )
 from kiro_crew.mcp_tool_titles import with_titles
 from kiro_crew.mcp_tools import build_tool_list, dispatch
-from kiro_crew.members import record_activity
+from kiro_crew.members import member_display_name, record_activity, resolve_member_id
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key
 from kiro_crew.platform import redact_via_context as redact
@@ -2361,14 +2361,26 @@ def _do_route_crew(task: str) -> str:
     matches = []
     unavailable = []
     for name, score in ranked:
+        # ``name`` is the key (member_id); ``crew`` stays the handle
+        # ``spawn_run(crew=...)`` accepts, with the display name alongside.
+        label = member_display_name(name, cfg.agents[name])
         try:
             binding = resolve_agent_bindings(cfg, name, validate_memory_files=False)
         except UnknownMemoryStore as exc:
-            unavailable.append({"crew": name, "reason": _crew_memory_unavailable_reason(exc)})
+            unavailable.append(
+                {
+                    "crew": name,
+                    "member_id": name,
+                    "display_name": label,
+                    "reason": _crew_memory_unavailable_reason(exc),
+                }
+            )
             continue
         matches.append(
             {
                 "crew": name,
+                "member_id": name,
+                "display_name": label,
                 "score": round(score, 3),
                 "description": (cfg.agents[name].description or "").strip(),
                 "memory_store": binding.memory_store_name,
@@ -2411,7 +2423,14 @@ def _do_select_crew(crew: str) -> str:
     default = cfg.default_agent
     if not crew:
         roster = [
-            {"name": n, "triggers": c.triggers}
+            {
+                # ``name`` is the display name (an alias for one release);
+                # ``member_id`` is the key. ``select_crew(crew=...)`` takes either.
+                "name": member_display_name(n, c),
+                "member_id": n,
+                "display_name": member_display_name(n, c),
+                "triggers": c.triggers,
+            }
             for n, c in cfg.agents.items()
             if n != default and c.triggers.strip()
         ]
@@ -2428,12 +2447,16 @@ def _do_select_crew(crew: str) -> str:
             },
             ensure_ascii=False,
         )
-    if crew not in cfg.agents:
+    # The handle may be the member_id or the display name; from here ``crew``
+    # is the key, so the activity record and the binding name one record.
+    resolved_key = resolve_member_id(crew, cfg)
+    if resolved_key is None:
         available = ", ".join(sorted(cfg.agents)) or "(none)"
         return json.dumps(
             {"error": f"unknown crew '{crew}'", "available": available},
             ensure_ascii=False,
         )
+    crew = resolved_key
     try:
         b = resolve_agent_bindings(cfg, crew, validate_memory_files=False)
     except UnknownMemoryStore as exc:
@@ -2469,6 +2492,8 @@ def _do_select_crew(crew: str) -> str:
     return json.dumps(
         {
             "crew": crew,
+            "member_id": crew,
+            "display_name": member_display_name(crew, cfg.agents[crew]),
             "bound": {
                 "kiro_agent": b.kiro_agent,
                 "workspace": str(b.workspace_dir),

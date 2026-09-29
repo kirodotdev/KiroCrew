@@ -16,7 +16,9 @@ from collections.abc import Iterable, Iterator, Mapping
 from itertools import islice
 from pathlib import Path
 
-from kiro_crew import mcp_apps_render, model_registry
+from kiro_crew import mcp_apps_render
+from kiro_crew import members as members_mod
+from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import agent_model_map
 from kiro_crew.atomic_write import atomic_write
@@ -1527,7 +1529,7 @@ def _member_private_selection(
     selected = agent or config.default_agent
     if not selected or selected == "default":
         return "", ""
-    store = getattr(config.agents.get(selected), "memory_store", "")
+    store = getattr(members_mod.member_record(selected, config), "memory_store", "")
     if not isinstance(store, str) or not store:
         return "", ""
     if authorized_store is not None and named_store_or_empty(store) != named_store_or_empty(
@@ -1607,15 +1609,21 @@ def member_store_ownership_holds(config: KiroCrewConfig, member: str, entry_stor
     recorded identity matches the member's immutable id -- and comparing its
     answer with *entry_store* is the continuity check: a member repointed while
     the request waited owns something other than what the caller decided about. It is
-    deliberately blind to the record's ``owner_member`` NAME, which is what
+    deliberately blind to the record's OWNER fields, which are what
     :func:`session_control._store_is_member_owned` authorizes admission on, so
-    that field is compared here too: a reopen tolerating a stale name would
-    serve a thread the admission gate refuses.
+    they are compared here too through the same predicate
+    (:func:`memory_stores.store_owned_by_member`: ``owner_member_id`` first,
+    the ``owner_member`` label only as a legacy fallback): a reopen tolerating
+    a stale owner would serve a thread the admission gate refuses.
 
     Blocking: the identity check reads the store's database, so call it in a
     thread.
     """
-    from kiro_crew.memory_stores import UnknownMemoryStore, require_member_memory_store
+    from kiro_crew.memory_stores import (
+        UnknownMemoryStore,
+        require_member_memory_store,
+        store_owned_by_member,
+    )
 
     try:
         if require_member_memory_store(config, member) != entry_store:
@@ -1623,7 +1631,7 @@ def member_store_ownership_holds(config: KiroCrewConfig, member: str, entry_stor
     except UnknownMemoryStore:
         return False
     record = config.memory_stores.get(entry_store)
-    return record is not None and record.owner_member == member
+    return store_owned_by_member(record, member, config)
 
 
 async def pin_private_agent_store(
@@ -1915,7 +1923,7 @@ def _rehydrate_slot_from_history(
             )
         elif slot.agent:
             try:
-                mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
+                mc = members_mod.member_record(slot.agent, _restore_cfg) if _restore_cfg else None
                 kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
                 slot.model = kiro_model_map.get(kiro_name, "")
             except Exception:
@@ -2606,7 +2614,7 @@ def _apply_recent_session(
         )
     elif slot.agent:
         try:
-            mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
+            mc = members_mod.member_record(slot.agent, _restore_cfg) if _restore_cfg else None
             kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
             slot.model = kiro_model_map.get(kiro_name, "")
         except Exception:

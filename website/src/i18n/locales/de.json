@@ -10068,7 +10068,8 @@
       "failed_to_dismiss_agent": "Agent konnte nicht entfernt werden",
       "failed_to_update_agent": "Agent konnte nicht aktualisiert werden",
       "failed_to_close_channel": "Kanal konnte nicht geschlossen werden",
-      "failed_to_clear_context": "Kontext konnte nicht gelöscht werden"
+      "failed_to_clear_context": "Kontext konnte nicht gelöscht werden",
+      "roster_names_failed": "Agentennamen konnten nicht geladen werden – nur Rollen werden angezeigt."
     },
     "chat": {
       "activityViewer": {
@@ -13868,7 +13869,7 @@
       "view_executions": "Ausführungen",
       "view_list": "Liste",
       "add_job": "Job hinzufügen",
-      "agent": "Agent ·",
+      "agent": "Agent",
       "and_their_run_history_this_action_cannot_be_undo": "und ihren Ausführungsverlauf. Diese Aktion kann nicht rückgängig gemacht werden.",
       "ask_in_chat": "im Chat fragen",
       "batch_delete_failed": "Sammellöschung fehlgeschlagen",

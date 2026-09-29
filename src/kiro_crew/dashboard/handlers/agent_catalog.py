@@ -16,6 +16,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
+    _default_agent_handle,
     _name_would_be_masked,
     _roster_mask,
 )
@@ -128,13 +129,17 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     redact = state is None or not is_owner_dashboard_request(request)
     rows = []
     for name, member in config.agents.items():
-        row = _agent_roster_row(name, "global", member, redact=redact)
+        row = _agent_roster_row(name, "global", member, redact=redact, agents=config.agents)
         row["selection_kind"] = "member"
         rows.append(row)
     rows.extend(_template_row(agent) for agent in templates)
+    # Spelled the way the rows spell ``name`` (the display name), so
+    # ``row.name === default_agent`` marks the default row and the inherited-
+    # default chip reads the label, not the key.
+    default_handle = _default_agent_handle(config, config.default_agent)
     return web.json_response(
         {
             "agents": rows,
-            "default_agent": _roster_mask(config.default_agent) if redact else config.default_agent,
+            "default_agent": _roster_mask(default_handle) if redact else default_handle,
         }
     )

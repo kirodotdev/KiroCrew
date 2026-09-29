@@ -41,7 +41,7 @@ import os
 import stat
 import threading
 from pathlib import Path
-from typing import Iterator, MutableMapping
+from typing import Iterator, Mapping, MutableMapping
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
@@ -500,6 +500,99 @@ def set_fork_info(name: str, forked_from: str, private_to: str) -> None:
         entry[_PRIVATE_TO] = str(private_to)
         data[name] = entry
         _write(data)
+
+
+def rekey_private_owners(
+    plan: MutableMapping[str, str] | dict[str, str],
+    bound: Mapping[str, str] | None = None,
+) -> int:
+    """Rewrite every owner spelling found as a key of *plan* to that key's value.
+
+    Two fields name a member here: ``private_to`` on a fork, and ``member`` on
+    a publish receipt (kept after the template goes public so a lost HTTP
+    acknowledgement stays retryable). Both hold the owning crew's
+    ``config.agents`` KEY -- the member_id. A sidecar written when the map was
+    keyed by display name holds the display name in both; the config loader
+    passes the same ``old key -> member_id`` plan it applies to the agents map,
+    so ownership follows the record it belongs to.
+
+    *bound* -- ``member_id -> the template that record is bound to`` -- is the
+    corroboration: a plan key is a reusable LABEL, so an entry that merely
+    spells it is not proof the moved record owns the copy. A retired member's
+    copy can outlive its record (the delete-time cleanup keeps lineage it
+    cannot prove safe to drop) and a namesake created afterwards is keyed by
+    the same label pre-upgrade; rewriting that orphan would hand the deleted
+    member's private template to the newcomer, silently and for good. So a
+    ``private_to`` moves only on the template the moved record is bound to,
+    and a receipt only on the published template the record is bound to (or
+    the copy it was published from, mid-publish) -- the same one-template rule
+    :func:`claim_private_owner` applies on rename. An entry that fails the
+    check is left as written; the readers treat an unambiguous legacy spelling
+    as the owner meanwhile, and a human decides the rest.
+
+    Idempotent: a value already equal to a plan target is not a plan key and
+    is left alone. Returns the number of fields rewritten; a sidecar that
+    cannot be read is left as it is and reported by the caller, never guessed
+    at.
+    """
+    if not plan:
+        return 0
+    bindings = dict(bound or {})
+
+    def _corroborated(owner: str, *templates: object) -> bool:
+        binding = bindings.get(plan[owner])
+        return isinstance(binding, str) and bool(binding) and binding in templates
+
+    with _locked():
+        data = _read(strict=True)
+        changed = 0
+        for name, entry in data.items():
+            if not isinstance(entry, dict):
+                continue
+            owner = entry.get(_PRIVATE_TO)
+            if (
+                isinstance(owner, str)
+                and owner in plan
+                and plan[owner] != owner
+                and _corroborated(owner, name)
+            ):
+                entry[_PRIVATE_TO] = plan[owner]
+                changed += 1
+            receipt = entry.get("publish")
+            if isinstance(receipt, dict):
+                publisher = receipt.get("member")
+                if (
+                    isinstance(publisher, str)
+                    and publisher in plan
+                    and plan[publisher] != publisher
+                    and _corroborated(publisher, name, receipt.get("source"))
+                ):
+                    receipt["member"] = plan[publisher]
+                    changed += 1
+        if changed:
+            _write(data)
+    return changed
+
+
+def claim_private_owner(name: str, old_owner: str, new_owner: str) -> bool:
+    """Rewrite template *name*'s ``private_to`` from *old_owner* to *new_owner*.
+
+    The rename path's self-heal for ONE template: the copy bound to the member
+    being renamed may still record the member's display name as its owner when
+    the load-time rewrite could not land (a degraded load). Only an exact match
+    on *old_owner* is rewritten, and only on *name*, so no other entry -- a
+    retired member's copy that happened to share the label -- changes hands.
+    """
+    if not name or not old_owner or old_owner == new_owner:
+        return False
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict) or entry.get(_PRIVATE_TO) != old_owner:
+            return False
+        entry[_PRIVATE_TO] = str(new_owner)
+        _write(data)
+    return True
 
 
 def clear_fork_info(name: str) -> None:

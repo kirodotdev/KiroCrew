@@ -100,6 +100,81 @@ class TestAgentSyncPrune:
         cfg.save.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_prune_deletes_an_entry_written_by_an_earlier_build(self):
+        """The on-disk entry predates fields the dataclass gained since
+        (``display_name``, ``legacy_keys``); the snapshot is ``asdict`` and
+        carries them. Staleness is judged on the binding fields, so the entry
+        is still deleted from the document -- whole-dict equality would report
+        it pruned every sync and never remove it."""
+        from kiro_crew.dashboard.handlers.agents import _do_agents_sync
+
+        agents = {
+            "omni-reviewer": KiroCrewAgentConfig(kiro_agent="omni-reviewer", source="aim"),
+            "omni-aws": KiroCrewAgentConfig(kiro_agent="omni-aws", source="aim"),
+        }
+        cfg = _make_config(agents)
+        old_build_entry = {
+            "kiro_agent": "omni-reviewer",
+            "source": "aim",
+            "memory_store": "default",
+        }
+        written: dict = {}
+
+        def _fake_update_config_locked(*args, **kwargs):
+            doc: dict = {"agents": {"omni-reviewer": dict(old_build_entry)}, "memory_stores": {}}
+            result = kwargs["mutate"](doc)
+            written.update(result or {})
+            return result
+
+        request = MagicMock()
+        request.get.return_value = "dashboard"
+        with (
+            patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load", return_value=cfg),
+            patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents",
+                return_value=[_make_aim_agent("omni-aws")],
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.agents.update_config_locked",
+                new=_fake_update_config_locked,
+            ),
+            patch("kiro_crew.dashboard.handlers.agents._sel", return_value=MagicMock()),
+        ):
+            response = await _do_agents_sync(request)
+        body = json.loads(response.body)
+        assert body["pruned"] == ["omni-reviewer"]
+        assert "omni-reviewer" not in written["agents"]
+
+    def test_prune_entry_unchanged_judges_every_field_both_entries_carry(self):
+        from kiro_crew.dashboard.handlers.agents import _prune_entry_unchanged
+
+        snap = {
+            "kiro_agent": "a",
+            "source": "aim",
+            "memory_store": "",
+            "member_id": "",
+            "legacy_keys": [],
+            "description": "from the package",
+        }
+        # An older on-disk entry lacking fields the snapshot has is unchanged.
+        assert _prune_entry_unchanged({"kiro_agent": "a", "source": "aim"}, snap)
+        assert not _prune_entry_unchanged({"kiro_agent": "b", "source": "aim"}, snap)
+        assert not _prune_entry_unchanged(
+            {"kiro_agent": "a", "source": "aim", "member_id": "m"}, snap
+        )
+        # An operator edit to ANY shared field -- not only a binding field --
+        # between the snapshot and the lock is newer evidence; the row survives.
+        assert not _prune_entry_unchanged(
+            {"kiro_agent": "a", "source": "aim", "description": "edited"}, snap
+        )
+        # A concurrent edit whose only trace is a key the snapshot lacks is
+        # still newer evidence: live-only fields keep the row.
+        assert not _prune_entry_unchanged(
+            {"kiro_agent": "a", "source": "aim", "pinned": True}, snap
+        )
+        assert not _prune_entry_unchanged(None, snap)
+
+    @pytest.mark.asyncio
     async def test_prune_removes_a_starred_package_agent_too(self):
         """A star does not keep a spec-less row alive: the row is pruned like
         any other and a reinstall comes back un-starred (one click restores it)."""
@@ -388,3 +463,97 @@ class TestAgentSyncSkipsForks:
 
         assert body["synced"] == ["would-be-agent"]
         assert "would-be-agent" in cfg.agents
+
+
+class TestAgentSyncRefusesMemberHandles:
+    """A discovered spec whose name a Crew Member already answers to must not be
+    registered: ``resolve_member`` prefers a key over a label, so a package row
+    keyed by a member's display name (or a legacy key) would capture that
+    member's chat binding and send its turns to the shared Global store."""
+
+    @pytest.mark.asyncio
+    async def test_display_name_held_by_member_is_refused(self, caplog):
+        member = KiroCrewAgentConfig(
+            member_id="crew-writer", display_name="writer", kiro_agent="kirocrew"
+        )
+        cfg = _make_config({"crew-writer": member})
+
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.handlers.agents"):
+            body = await _run_sync(cfg, [_make_aim_agent("writer")])
+
+        assert body["synced"] == []
+        assert set(cfg.agents) == {"crew-writer"}
+        cfg.save.assert_not_called()
+        assert any("held by Crew Member(s) crew-writer" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_legacy_key_held_by_member_is_refused(self):
+        member = KiroCrewAgentConfig(
+            member_id="writer-a1b2c3d4e5f6",
+            display_name="Writer",
+            kiro_agent="kirocrew",
+            legacy_keys=["writer"],
+        )
+        cfg = _make_config({"writer-a1b2c3d4e5f6": member})
+
+        body = await _run_sync(cfg, [_make_aim_agent("writer")])
+
+        assert body["synced"] == []
+        assert "writer" not in cfg.agents
+        cfg.save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_free_name_is_still_registered(self):
+        """Control: the ONLY thing keeping the spec out is the member's handle."""
+        member = KiroCrewAgentConfig(
+            member_id="crew-writer", display_name="Writer", kiro_agent="kirocrew"
+        )
+        cfg = _make_config({"crew-writer": member})
+
+        body = await _run_sync(cfg, [_make_aim_agent("writer")])
+
+        assert body["synced"] == ["writer"]
+        assert "writer" in cfg.agents
+
+    @pytest.mark.asyncio
+    async def test_rename_landing_between_scan_and_lock_is_refused(self):
+        """The snapshot admitted the name; the in-lock document shows a member
+        renamed onto it since. The locked mutate must skip it, and the name
+        must leave ``synced`` (it was not registered)."""
+        from kiro_crew.dashboard.handlers.agents import _do_agents_sync
+
+        cfg = _make_config({})
+        request = MagicMock()
+        request.get.return_value = "dashboard"
+        written: dict = {}
+
+        def _locked_update(*args, **kwargs):
+            doc = {
+                "agents": {
+                    "crew-writer": {
+                        "member_id": "crew-writer",
+                        "display_name": "writer",
+                        "kiro_agent": "kirocrew",
+                    }
+                },
+                "memory_stores": {},
+            }
+            written["result"] = kwargs["mutate"](doc)
+            written["doc"] = doc
+            return written["result"]
+
+        with (
+            patch("kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load", return_value=cfg),
+            patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents",
+                return_value=[_make_aim_agent("writer")],
+            ),
+            patch("kiro_crew.dashboard.handlers.agents.update_config_locked", new=_locked_update),
+            patch("kiro_crew.dashboard.handlers.agents._sel", return_value=MagicMock()),
+        ):
+            response = await _do_agents_sync(request)
+
+        body = json.loads(response.body)
+        assert body["synced"] == []
+        assert written["result"] is None, "nothing to write: the only add was refused"
+        assert set(written["doc"]["agents"]) == {"crew-writer"}

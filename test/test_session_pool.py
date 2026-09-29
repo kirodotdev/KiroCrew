@@ -460,6 +460,39 @@ class TestGetOrCreatePoolIntegration:
         with pytest.raises(CapabilityStartupError, match="capability_member_missing"):
             prepare_runtime("kirocrew", "undeclared-crew", None)
 
+    def test_member_deleted_during_reconcile_refuses_with_the_closed_code(self):
+        """A writer can delete the member between the reconcile and the
+        workspace re-read; the refreshed record is then ``None`` and startup
+        must refuse with ``capability_member_missing`` -- the same closed code
+        the pre-check gives -- never an attribute error out of ``.workspace``."""
+        from kiro_crew import session_capabilities
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.session_capabilities import CapabilityStartupError, prepare_runtime
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["short-lived"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", memory_store="default"
+        )
+        cfg.save()
+
+        def _delete_then_reconcile(member: str) -> None:
+            live = KiroCrewConfig.load()
+            del live.agents[member]
+            live.save()
+
+        with (
+            patch.object(
+                session_capabilities.agent_state,
+                "get_capabilities",
+                return_value={"enrolled": True},
+            ),
+            patch.object(
+                session_capabilities, "reconcile_member_capabilities", _delete_then_reconcile
+            ),
+        ):
+            with pytest.raises(CapabilityStartupError, match="capability_member_missing"):
+                prepare_runtime("kirocrew", "short-lived", None)
+
     def test_corrupt_sidecar_refuses_declared_members_with_a_closed_code_only(self):
         """Enrollment lives in the one shared sidecar, so an unreadable file
         cannot prove a declared member is unenrolled: every declared member

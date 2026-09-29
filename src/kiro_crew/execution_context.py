@@ -386,13 +386,14 @@ def resolve_member_execution(
     validate_memory_files: bool = False,
 ) -> ExecutionContext:
     """Capture an explicitly selected existing member and its store together."""
+    from kiro_crew.members import resolve_member
     from kiro_crew.memory_stores import require_member_memory_store
 
-    alias, agent = (
-        (member, config.agents[member])
-        if member in config.agents
-        else member_config_for_id(config, member)
-    )
+    # The key (member_id) first, then the display name a slot may carry as
+    # its pinned agent; a persisted id that no key matches (an
+    # identity-less legacy key) last. All three name one record or nothing.
+    resolved = resolve_member(member, config)
+    alias, agent = resolved if resolved is not None else member_config_for_id(config, member)
     store = require_member_memory_store(config, alias, require_directory=validate_memory_files)
     declaration = config.memory_stores.get(store)
     member_id = getattr(agent, "member_id", "") or None

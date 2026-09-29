@@ -56,14 +56,27 @@ def test_enable_creates_two_private_members_and_preserves_edits():
 
 def test_rename_retains_role_and_identity():
     identities = crew.ensure_team()
+    key = crew.ROLES["discovery"].name
 
     def rename(data):
-        data["agents"]["my-scout"] = data["agents"].pop(crew.ROLES["discovery"].name)
+        data["agents"][key]["display_name"] = "my-scout"
         return data
 
     update_config_locked(mutate=rename)
     assert crew.ensure_team() == identities
-    assert crew.resolve_role("discovery", identities["discovery"])[1] == "my-scout"
+    _, name, member = crew.resolve_role("discovery", identities["discovery"])
+    assert (name, member.display_name) == (key, "my-scout")
+
+    # A document that still files the member under its display name is read
+    # the same way: the key is the identity, the old key the label.
+    def legacy_rename(data):
+        data["agents"]["my-scout"] = data["agents"].pop(key)
+        return data
+
+    update_config_locked(mutate=legacy_rename)
+    assert crew.ensure_team() == identities
+    assert crew.resolve_role("discovery", identities["discovery"])[1] == key
+    assert KiroCrewConfig.load().agents[key].display_name == "my-scout"
 
 
 def test_foreign_member_is_not_adopted():
@@ -717,14 +730,14 @@ def test_owner_recovery_preserves_healthy_role(tmp_path, damage):
         transcripts[role] = history.recent(key)
 
     def rename_engineer(data):
-        entry = data["agents"].pop(engineer_name)
+        entry = data["agents"][engineer_name]
         entry["description"] = "Owner's renamed healthy Engineer"
-        data["agents"]["my-engineer"] = entry
+        entry["display_name"] = "my-engineer"
         data["memory_stores"][entry["memory_store"]]["owner_member"] = "my-engineer"
         return data
 
     update_config_locked(mutate=rename_engineer)
-    healthy_record = asdict(KiroCrewConfig.load().agents["my-engineer"])
+    healthy_record = asdict(KiroCrewConfig.load().agents[engineer_name])
     assert crew.ensure_team() == identities
 
     if damage == "missing_store":
@@ -768,39 +781,58 @@ def test_owner_recovery_preserves_healthy_role(tmp_path, damage):
 
         update_config_locked(mutate=restore_template)
     else:
-        if damage == "missing_store":
-
-            def free_canonical_name(data):
-                data["agents"]["retained-scout"] = data["agents"].pop(scout_name)
-                data["memory_stores"][old_store]["owner_member"] = "retained-scout"
-                return data
-
-            update_config_locked(mutate=free_canonical_name)
-
         mapping = json.loads(mapping_before)
         del mapping["discovery"]
         store.write_json_atomic(crew._team_path(), mapping)
+        if damage == "missing_store":
+            # Moving the label off the retired scout is NOT enough: its key is
+            # still the role name, so a replacement labelled that way would be
+            # shadowed behind key-first resolution. Recovery names the holder
+            # and changes nothing.
+            def relabel_retired_scout(data):
+                data["agents"][scout_name]["display_name"] = "retained-scout"
+                data["memory_stores"][old_store]["owner_member"] = "retained-scout"
+                return data
+
+            update_config_locked(mutate=relabel_retired_scout)
+            relabelled_config = config_path().read_bytes()
+            with pytest.raises(ValueError, match=f"still held by {scout_name!r}"):
+                crew.ensure_team()
+            assert config_path().read_bytes() == relabelled_config
+            assert not crew._team_path().read_bytes().count(b"discovery")
+
+            def delete_retired_scout(data):
+                data["agents"].pop(scout_name)
+                return data
+
+            update_config_locked(mutate=delete_retired_scout)
 
     recovered = crew.ensure_team()
     config = KiroCrewConfig.load()
-    scout = config.agents[scout_name]
+    # The role member is the one LABELLED with the role name. The retired scout
+    # keeps the ``auto-improvement-scout`` id for good, so a replacement is keyed
+    # by a suffixed id and reached through its display name.
+    scout_key, scout = crew._member_labelled(config, scout_name)
+    assert scout is not None
     assert recovered == {
         "discovery": scout.member_id,
         "implementation": identities["implementation"],
     }
     assert crew.ensure_team() == recovered
-    assert crew.resolve_role("implementation", identities["implementation"])[1] == "my-engineer"
-    assert asdict(config.agents["my-engineer"]) == healthy_record
+    assert crew.resolve_role("implementation", identities["implementation"])[1] == engineer_name
+    assert asdict(config.agents[engineer_name]) == healthy_record
     if damage == "changed_template":
         assert recovered == identities
+        assert scout_key == scout_name
         assert asdict(scout) == scout_record
         assert set(config.memory_stores) == original_stores
     else:
+        assert scout_key != scout_name and scout.member_id == scout_key
         assert scout.member_id not in identities.values()
         assert scout.memory_store not in original_stores
         assert set(config.memory_stores) == original_stores | {scout.memory_store}
         assert config.memory_stores[scout.memory_store].memory_version == 2
-        assert crew.resolve_role("discovery", scout.member_id)[1] == scout_name
+        assert crew.resolve_role("discovery", scout.member_id)[1] == scout_key
         assert read_member_rules(scout.member_id, scout_name) == ""
         fresh_preferences = memory_stores_root() / scout.memory_store / "memory" / PREFERENCES_FILE
         assert "Retain discovery" not in fresh_preferences.read_text(encoding="utf-8")
@@ -808,7 +840,8 @@ def test_owner_recovery_preserves_healthy_role(tmp_path, damage):
     expected_declaration = dict(old_declaration)
     if damage == "missing_store":
         expected_declaration["owner_member"] = "retained-scout"
-        assert asdict(config.agents["retained-scout"]) == scout_record
+        # The retired scout is gone; its store declaration keeps the last label.
+        assert scout_name not in config.agents
         assert not roots["discovery"].exists()
     assert asdict(config.memory_stores[old_store]) == expected_declaration
     persisted = json.loads(config_path().read_text(encoding="utf-8"))
@@ -820,8 +853,7 @@ def test_owner_recovery_preserves_healthy_role(tmp_path, damage):
         assert (root / "memory" / PREFERENCES_FILE).read_text(encoding="utf-8") == (
             f"Retain {role} owner preferences\n"
         )
-        name = "my-engineer" if role == "implementation" else spec.name
-        assert read_member_rules(identities[role], name) == f"Retain {role} owner rules"
+        assert read_member_rules(identities[role], spec.name) == f"Retain {role} owner rules"
         assert history.recent(f"recovery-{role}") == transcripts[role]
         assert read_session_execution(f"recovery-{role}", required=True) == executions[role]
 
@@ -1071,16 +1103,32 @@ async def _run_governed_assignment(identities, monkeypatch, *, denied_agent):
     return judged, sessions
 
 
+def _adopt_scout_keyed(key: str) -> dict[str, str]:
+    """``ensure_team`` with the Scout pre-created under *key* (its member_id).
+
+    The member is LABELLED with the role name, so the app adopts it, while its
+    identity -- the config key every governance profile binds to -- differs
+    from the shared template, which is what these tests need to tell apart.
+    """
+    from kiro_crew.config.sections import KiroCrewAgentConfig
+    from kiro_crew.memory_stores import persist_member_config, provision_member_memory
+
+    spec = crew.ROLES["discovery"]
+    config = KiroCrewConfig.load()
+    config.agents[key] = KiroCrewAgentConfig(
+        kiro_agent=spec.template, source=store.APP_NAME, display_name=spec.name
+    )
+    provision_member_memory(config, key)
+    persist_member_config(config, key, create=True)
+    identities = crew.ensure_team()
+    assert identities["discovery"] == key
+    return identities
+
+
 @pytest.mark.asyncio
 async def test_renamed_member_is_governed_under_its_alias_not_its_template(tmp_path, monkeypatch):
-    identities = await asyncio.to_thread(crew.ensure_team)
+    identities = await asyncio.to_thread(_adopt_scout_keyed, "my-scout")
     template = crew.ROLES["discovery"].template
-
-    def rename(data):
-        data["agents"]["my-scout"] = data["agents"].pop(crew.ROLES["discovery"].name)
-        return data
-
-    await asyncio.to_thread(update_config_locked, mutate=rename)
 
     # A profile that denies the ALIAS refuses the request even though the template is allowed.
     judged, sessions = await _run_governed_assignment(

@@ -22,7 +22,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.sections import MemoryStoreConfig
-from kiro_crew.members import dm_binding_path, write_dm_binding
+from kiro_crew.members import dm_binding_path, member_record, resolve_member_id, write_dm_binding
 from kiro_crew.memory_stores import (
     MemberAlreadyExists,
     UnknownMemoryStore,
@@ -220,7 +220,9 @@ class TestPrivateOwnership:
         new_store = provision_member_memory(cfg, replacement)
         persist_member_config(cfg, replacement, create=True)
         loaded = KiroCrewConfig.load()
-        new_id = loaded.agents[replacement].member_id
+        # The retired store keeps ``code-review``, so the successor is keyed by
+        # a fresh id and reached through the name it was created under.
+        new_id = member_record(replacement, loaded).member_id
 
         with pytest.raises(UnknownMemoryStore, match="identity is missing"):
             member_config_for_id(loaded, captured.member_id)
@@ -254,6 +256,7 @@ class TestPrivateOwnership:
         cfg.agents["Code Review"].avatar = {"kind": "image", "v": 11}
         persist_member_config(cfg, "Code Review", create=True)
         cfg = KiroCrewConfig.load()
+        first_key = resolve_member_id("Code Review", cfg)
         cfg.agents["Code-Review"] = KiroCrewAgentConfig(avatar={"kind": "image", "v": 22})
         second = provision_member_memory(cfg, "Code-Review")
         persist_member_config(cfg, "Code-Review", create=True)
@@ -266,8 +269,8 @@ class TestPrivateOwnership:
         assert rows["default"]["owner_avatar"] == {}
 
         cfg = KiroCrewConfig.load()
-        cfg.agents["Code Review"].avatar = {"kind": "image", "v": 33}
-        persist_member_config(cfg, "Code Review", create=False, expected_store=first)
+        cfg.agents[first_key].avatar = {"kind": "image", "v": 33}
+        persist_member_config(cfg, first_key, create=False, expected_store=first)
         refreshed = {row["name"]: row for row in _list_stores_blocking()}
         assert refreshed[first]["owner_avatar"] == {"kind": "image", "v": 33}
         assert refreshed[second]["owner_avatar"] == rows[second]["owner_avatar"]

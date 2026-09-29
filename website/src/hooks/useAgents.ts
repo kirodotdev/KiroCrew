@@ -50,6 +50,11 @@ export const HIDE_CREWMATE_CHOICES = true
  * @returns `reload` — re-run the fetch. `refreshTrigger` cannot serve as the
  *   retry on a surface that passes a constant (the schedule form passes `0`),
  *   because the effect then never runs again for the life of the mount.
+ * @returns `settled` — the first catalog fetch has answered, one way or the
+ *   other. A surface that renders a STORED crew handle through the roster
+ *   (`agentDisplayLabel`) holds that text until then: before the answer the
+ *   only value it could show is the raw `member_id`, which is machine text
+ *   where a name belongs and would flash on every visit.
  * @returns `reloading` — a `reload` fetch is in flight. Without it a retry that
  *   fails AGAIN is invisible: `setError(true)` over an already-true value bails
  *   out of re-rendering, so the surface is pixel-identical after the click and
@@ -61,6 +66,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   const [defaultAgent, setDefaultAgent] = useState('')
   const [error, setError] = useState(false)
   const [reloading, setReloading] = useState(false)
+  const [settled, setSettled] = useState(false)
   const [reloadTick, setReloadTick] = useState(0)
   const reload = useCallback(() => {
     setReloading(true)
@@ -94,6 +100,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       setDefaultAgent(d.default_agent || '')
       setError(false)
       setReloading(false)
+      setSettled(true)
     }).catch(() => {
       // Still swallowed as far as throwing goes — a rejected catalog fetch must
       // not break the surface that asked for it — but no longer silent: the
@@ -104,6 +111,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       // Cleared on the failing path too, so a retry that fails again still
       // resolves visibly instead of leaving the caller pinned in "trying".
       setReloading(false)
+      setSettled(true)
     })
     return () => { cancelled = true }
   }, [refreshTrigger, sessionKey, projectDir, reloadTick])
@@ -116,7 +124,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     [choices],
   )
 
-  return { agents, choices: pickerChoices, defaultAgent, error, reload, reloading }
+  return { agents, choices: pickerChoices, defaultAgent, error, reload, reloading, settled }
 }
 
 /** One row per name, member first — see `agents` in the hook's docs. */

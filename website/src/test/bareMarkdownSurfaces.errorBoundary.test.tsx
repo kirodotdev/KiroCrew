@@ -58,6 +58,8 @@ describe('ChannelPage — message bodies are wrapped in MessageErrorBoundary', (
     vi.mocked(api).channelsList = vi.fn().mockResolvedValue({ channels: [channel] })
     vi.mocked(api).channelGet = vi.fn().mockResolvedValue(channel)
     vi.mocked(api).channelPresets = vi.fn().mockResolvedValue({ presets: [] })
+    // The agent rail resolves each role's stored crew handle against the roster.
+    vi.mocked(api).agentCatalog = vi.fn().mockResolvedValue({ agents: [], default_agent: '' })
   })
 
   it('a crashing message body degrades to the per-message fallback; siblings still render', async () => {

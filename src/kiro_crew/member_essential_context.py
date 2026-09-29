@@ -13,6 +13,7 @@ from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.members import member_record
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ def member_context_identity(member: str, *, member_is_id: bool = True) -> tuple[
     cfg = KiroCrewConfig.load()
     member_id = member
     if not member_is_id:
-        configured = cfg.agents.get(member)
+        configured = member_record(member, cfg)
         if configured is not None and not configured.member_id:
             return "", ""
         member_id = configured.member_id if configured else ""

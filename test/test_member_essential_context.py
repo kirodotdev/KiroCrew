@@ -748,14 +748,18 @@ def test_deleted_captured_member_never_renders_replacement_persona(env, entrypoi
 @pytest.mark.parametrize("entrypoint", ["message", "session"])
 @pytest.mark.parametrize("selected_v2", [False, True])
 def test_explicit_member_name_does_not_select_another_members_id(env, entrypoint, selected_v2):
+    """A display-name handle selects the member LABELLED with it, never a member
+    whose ``member_id`` happens to resemble it: the original keeps its id
+    ``writer`` under the label ``original-writer`` while the selected member is
+    keyed by its own id and labelled ``Writer Two``."""
     config = KiroCrewConfig.load()
-    config.agents["original-writer"] = config.agents.pop("writer")
-    config.agents["writer"] = KiroCrewAgentConfig(
-        kiro_agent="critic-runtime", description="EXPLICIT_NAME_PERSONA"
+    config.agents["writer"].display_name = "original-writer"
+    config.agents["writer-two"] = KiroCrewAgentConfig(
+        kiro_agent="critic-runtime", description="EXPLICIT_NAME_PERSONA", display_name="Writer Two"
     )
-    store = provision_member_memory(config, "writer") if selected_v2 else "default"
+    store = provision_member_memory(config, "writer-two") if selected_v2 else "default"
     config.save()
-    options = dict(member="writer", memory_store=store, project=str(env.project))
+    options = dict(member="Writer Two", memory_store=store, project=str(env.project))
     if entrypoint == "message":
         prompt, _ = env.builder.build_message("Use the selected member", True, **options)
     else:

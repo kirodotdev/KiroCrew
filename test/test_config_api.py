@@ -21,7 +21,7 @@ from kiro_crew.config.schema import (
     SCHEMA_REGISTRY,
     config_entry_to_dict,
 )
-from kiro_crew.members import is_crew_id, is_valid_member_name
+from kiro_crew.members import is_member_id_shaped, is_valid_member_name
 
 
 @pytest.fixture(autouse=True)
@@ -324,27 +324,40 @@ class TestAgentCrudProperties:
                     assert create_data["member_id"]
                     # An id-shaped name is the key as sent; a free-form one is
                     # the label of a derived id.
-                    key = create_data["name"]
-                    if is_crew_id(name):
+                    key = create_data["member_id"]
+                    if is_member_id_shaped(name):
                         assert key == name
                     else:
-                        assert is_crew_id(key)
+                        assert is_member_id_shaped(key)
+                    # ``name`` echoes the label, which falls back to the key.
+                    assert create_data["name"] == name
 
                     # List and verify
                     resp = await client.get("/api/agents")
                     assert resp.status == 200
                     data = await resp.json()
-                    agents_by_name = {a["name"]: a for a in data["agents"]}
-                    assert key in agents_by_name
-                    created = agents_by_name[key]
-                    assert created["display_name"] == ("" if is_crew_id(name) else name)
+                    agents_by_id = {a["member_id"]: a for a in data["agents"]}
+                    assert key in agents_by_id
+                    created = agents_by_id[key]
+                    # The roster's ``name`` and ``display_name`` are the label,
+                    # which falls back to the key for a crew with none.
+                    assert created["name"] == name
+                    assert created["display_name"] == name
                     assert created["kiro_agent"] == kiro_agent
                     assert created["workspace"] == workspace
                     assert created["memory_store"] == private_store
                     persisted = json.loads(tmp.read_text())
-                    assert persisted["agents"][key]["memory_store"] == private_store
+                    # Keyed by the immutable id; ``name`` is the display name.
+                    record = persisted["agents"][key]
+                    assert record["memory_store"] == private_store
+                    assert record.get("display_name", "") == (
+                        "" if is_member_id_shaped(name) else name
+                    )
                     store = persisted["memory_stores"][private_store]
-                    assert store["owner_member"] == key
+                    # ``owner_member_id`` is the authority; ``owner_member`` is the
+                    # label the store was stamped with.
+                    assert store["owner_member_id"] == key
+                    assert store["owner_member"] == name
                     assert store["memory_version"] == 2
         finally:
             tmp.unlink(missing_ok=True)
@@ -881,7 +894,7 @@ async def test_binding_only_update_serializes_against_generic_snapshot_save(tmp_
         async with TestClient(TestServer(_make_crud_app())) as client:
             loop = asyncio.get_running_loop()
 
-            def _owner_then_race(crew: str, target: str):
+            def _owner_then_race(crew: str, target: str, **kwargs):
                 # Runs in the generic path's worker thread while that
                 # path holds the config lock with a pre-rebind snapshot.
                 # Fire the fast-path switch for the OTHER crew here and
@@ -897,7 +910,7 @@ async def test_binding_only_update_serializes_against_generic_snapshot_save(tmp_
                         fired["task"].result(timeout=0.5)
                     except concurrent.futures.TimeoutError:
                         pass
-                return real_owner(crew, target)
+                return real_owner(crew, target, **kwargs)
 
             with unittest.mock.patch.object(
                 handlers, "_foreign_private_copy_owner", side_effect=_owner_then_race

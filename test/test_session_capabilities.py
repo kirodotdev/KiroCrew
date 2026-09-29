@@ -122,7 +122,7 @@ class FakeProvider(LLMProvider):
         return self.active
 
 
-def save(service, member="A", *, enroll=False, prompt=None):
+def save(service, member="a", *, enroll=False, prompt=None):
     request = {"revision": service.get(member)["revision"], "enroll": enroll}
     if prompt is not None:
         request["operations"] = [
@@ -145,7 +145,7 @@ def world(tmp_path, monkeypatch):
     cfg = KiroCrewConfig.load()
     cfg.workspaces[cfg.default_workspace] = WorkspaceConfig(dir=str(project))
     stores = {}
-    for name in ("A", "B"):
+    for name in ("a", "b"):
         cfg.agents[name] = KiroCrewAgentConfig(kiro_agent="parent")
         stores[name] = provision_member_memory(cfg, name)
     cfg.session.pool_size = 1
@@ -183,13 +183,13 @@ def dashboard_capability_world(world, tmp_path, monkeypatch):
     ):
         monkeypatch.setattr(config_loader, name, getattr(config_loader, name))
     service, cfg, factory, made, project, stores, log = world
-    cfg.default_agent = "A"
+    cfg.default_agent = "a"
     cfg.session.pool_size = 0
     cfg.session.eager_spawn = True
     cfg.save()
     save(service, enroll=True)
     cfg = KiroCrewConfig.load()
-    prepared = prepare_member_capabilities("A", str(project))
+    prepared = prepare_member_capabilities("a", str(project))
     template = "separate-template"
     specs = tmp_path / "agents"
     (specs / f"{template}.json").write_text(
@@ -218,7 +218,7 @@ def dashboard_capability_world(world, tmp_path, monkeypatch):
             provider = factory(key, **kwargs)
             # The external double declares the isolation requested by this
             # fixture. Allocation still validates the real protected assignment.
-            provider.member_context = key == "dashboard:A"
+            provider.member_context = key == "dashboard:a"
             provider.supported = supported
 
             async def stream(message, **stream_kwargs):
@@ -323,7 +323,7 @@ async def test_dashboard_template_keeps_namespace_through_real_manager(
         # Assert what the real allocation boundary gave the external process,
         # not just the agent argument that chat_runner gave SessionManager.
         assert [provider.template for provider in world.made] == [world.template], (
-            f"{entry}: real manager substituted default A's enrolled generation "
+            f"{entry}: real manager substituted default a's enrolled generation "
             f"{world.prepared['template']!r} for selected template {world.template!r}"
         )
         provider = world.made[0]
@@ -332,7 +332,7 @@ async def test_dashboard_template_keeps_namespace_through_real_manager(
         assert not provider.member_context
         assert await asyncio.to_thread(read_private_session_store, key) is None
         assert (
-            state.sessions.capability_runtime_view("A", world.prepared["revision"])["sessions"]
+            state.sessions.capability_runtime_view("a", world.prepared["revision"])["sessions"]
             == []
         )
         if entry == "eager":
@@ -357,20 +357,20 @@ async def test_dashboard_enrolled_member_controls_through_real_manager(
     """Keeping template chats ordinary must not bypass real member adoption or refusal."""
     world = dashboard_capability_world
     state = world.new_state(supported=supported)
-    key = "dashboard:A"
+    key = "dashboard:a"
     try:
         slot = await asyncio.wait_for(
-            _create_capability_dashboard_slot(state, "A", "A", world.project), 20
+            _create_capability_dashboard_slot(state, "a", "a", world.project), 20
         )
-        assert await asyncio.to_thread(session_agent_selection_kind, key, "A") == "member"
+        assert await asyncio.to_thread(session_agent_selection_kind, key, "a") == "member"
         await asyncio.wait_for(chat_runner._run_chat(state, slot, "Run the member."), 20)
         await asyncio.wait_for(drain_background_tasks(state), 15)
         assert len(world.made) == 1
         provider = world.made[0]
         assert provider.template == world.prepared["template"]
         assert provider.member_context is True
-        assert await asyncio.to_thread(read_private_session_store, key) == world.stores["A"]
-        view = state.sessions.capability_runtime_view("A", world.prepared["revision"])
+        assert await asyncio.to_thread(read_private_session_store, key) == world.stores["a"]
+        view = state.sessions.capability_runtime_view("a", world.prepared["revision"])
         if supported:
             assert provider.active == world.prepared["template"]
             assert provider.starts == 1
@@ -392,32 +392,32 @@ async def test_new_runtime_adopts_and_busy_session_keeps_old_version(world):
     service, cfg, factory, made, project, stores, log = world
     await asyncio.to_thread(save, service, enroll=True)
     manager = SessionManager(cfg, provider_factory=factory)
-    key = "dashboard:A"
+    key = "dashboard:a"
     before = await asyncio.to_thread(log.recent, key)
     try:
-        provider, is_new, resumed = await manager.get_or_create(key, agent="A", cwd=str(project))
-        first = await asyncio.to_thread(prepare_member_capabilities, "A", project)
+        provider, is_new, resumed = await manager.get_or_create(key, agent="a", cwd=str(project))
+        first = await asyncio.to_thread(prepare_member_capabilities, "a", project)
         assert is_new and not resumed
-        assert manager.capability_runtime_view("A", first["revision"])["status"] == "applied"
-        assert manager.get_agent(key) == "A"
+        assert manager.capability_runtime_view("a", first["revision"])["status"] == "applied"
+        assert manager.get_agent(key) == "a"
         assert not manager.is_session_sharing_eligible(key)
         assert not manager.consume_needs_reinjection(key)
         await asyncio.to_thread(save, service, prompt="new prompt")
-        latest = await asyncio.to_thread(prepare_member_capabilities, "A", project)
+        latest = await asyncio.to_thread(prepare_member_capabilities, "a", project)
         assert first["revision"] != latest["revision"]
-        view = manager.capability_runtime_view("A", latest["revision"])
+        view = manager.capability_runtime_view("a", latest["revision"])
         assert view["status"] == "pending" and view["sessions"][0]["busy"]
         assert provider.starts == 1 and provider.stops == 0
         manager.release(key)
-        again, is_new, resumed = await manager.get_or_create(key, agent="A", cwd=str(project))
+        again, is_new, resumed = await manager.get_or_create(key, agent="a", cwd=str(project))
         assert again is provider and not is_new and not resumed
         assert len(made) == 1
         manager.release(key)
         await manager.reset(key)
-        fresh, is_new, resumed = await manager.get_or_create(key, agent="A", cwd=str(project))
+        fresh, is_new, resumed = await manager.get_or_create(key, agent="a", cwd=str(project))
         assert fresh is not provider and is_new
-        assert manager.capability_runtime_view("A", latest["revision"])["status"] == "applied"
-        assert await asyncio.to_thread(read_private_session_store, key) == stores["A"]
+        assert manager.capability_runtime_view("a", latest["revision"])["status"] == "applied"
+        assert await asyncio.to_thread(read_private_session_store, key) == stores["a"]
         assert await asyncio.to_thread(log.recent, key) == before
         assert not manager._sessions[key].provider_switch_replay
         manager.release(key)
@@ -451,15 +451,15 @@ async def test_startup_failure_never_applies_and_real_retry_works(world, fault):
     manager = SessionManager(cfg, provider_factory=faulty_factory)
     try:
         with pytest.raises(RuntimeError):
-            await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        assert not manager.has_session("dashboard:A")
-        latest = await asyncio.to_thread(prepare_member_capabilities, "A", project)
-        assert manager.capability_runtime_view("A", latest["revision"])["status"] == "failed"
-        provider, new, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
+            await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        assert not manager.has_session("dashboard:a")
+        latest = await asyncio.to_thread(prepare_member_capabilities, "a", project)
+        assert manager.capability_runtime_view("a", latest["revision"])["status"] == "failed"
+        provider, new, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
         assert new and provider is made[-1]
-        assert manager.capability_runtime_view("A", latest["revision"])["status"] == "applied"
-        assert await asyncio.to_thread(read_private_session_store, "dashboard:A") == stores["A"]
-        manager.release("dashboard:A")
+        assert manager.capability_runtime_view("a", latest["revision"])["status"] == "applied"
+        assert await asyncio.to_thread(read_private_session_store, "dashboard:a") == stores["a"]
+        manager.release("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -470,19 +470,19 @@ async def test_runtime_status_tracks_process_and_handle_identity(world):
     await asyncio.to_thread(save, service, enroll=True)
     manager = SessionManager(cfg, provider_factory=factory)
     try:
-        provider, _, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        prepared = await asyncio.to_thread(prepare_member_capabilities, "A", project)
+        provider, _, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        prepared = await asyncio.to_thread(prepare_member_capabilities, "a", project)
         original_process, original_sid = provider.incarnation, provider.sid
         provider.incarnation = "replacement-process"
-        assert manager.capability_runtime_view("A", prepared["revision"])["status"] == "unverified"
+        assert manager.capability_runtime_view("a", prepared["revision"])["status"] == "unverified"
         provider.incarnation = original_process
         provider.sid = "new-handle-on-old-process"
-        assert manager.capability_runtime_view("A", prepared["revision"])["status"] == "unverified"
+        assert manager.capability_runtime_view("a", prepared["revision"])["status"] == "unverified"
         provider.sid = original_sid
-        assert manager.capability_runtime_view("A", prepared["revision"])["status"] == "applied"
-        manager._sessions["dashboard:A"].adopt_provider(provider)
-        assert manager.capability_runtime_view("A", prepared["revision"])["status"] == "pending"
-        manager.release("dashboard:A")
+        assert manager.capability_runtime_view("a", prepared["revision"])["status"] == "applied"
+        manager._sessions["dashboard:a"].adopt_provider(provider)
+        assert manager.capability_runtime_view("a", prepared["revision"])["status"] == "pending"
+        manager.release("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -490,11 +490,11 @@ async def test_runtime_status_tracks_process_and_handle_identity(world):
 @pytest.mark.asyncio
 async def test_same_parent_members_get_distinct_runtime_versions(world):
     service, cfg, factory, made, project, stores, _ = world
-    await asyncio.to_thread(save, service, "A", enroll=True)
-    await asyncio.to_thread(save, service, "B", enroll=True, prompt="B prompt")
+    await asyncio.to_thread(save, service, "a", enroll=True)
+    await asyncio.to_thread(save, service, "b", enroll=True, prompt="b prompt")
     manager = SessionManager(cfg, provider_factory=factory)
     try:
-        for member in ("A", "B"):
+        for member in ("a", "b"):
             key = "dashboard:" + member
             await manager.get_or_create(key, agent=member, cwd=str(project))
             manager.release(key)
@@ -522,8 +522,8 @@ async def test_actual_runtime_cwd_must_match_saved_project(world):
     manager = SessionManager(cfg, provider_factory=wrong_cwd_factory)
     try:
         with pytest.raises(CapabilityStartupError, match="cwd_changed"):
-            await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        assert not manager.has_session("dashboard:A")
+            await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        assert not manager.has_session("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -534,11 +534,11 @@ async def test_enrolled_member_without_cwd_uses_its_configured_workspace(world):
     await asyncio.to_thread(save, service, enroll=True)
     manager = SessionManager(cfg, provider_factory=factory)
     try:
-        provider, _, _ = await manager.get_or_create("dashboard:A", agent="A")
+        provider, _, _ = await manager.get_or_create("dashboard:a", agent="a")
         assert Path(provider.cwd) == project
-        prepared = await asyncio.to_thread(prepare_member_capabilities, "A", project)
-        assert manager.capability_runtime_view("A", prepared["revision"])["status"] == "applied"
-        manager.release("dashboard:A")
+        prepared = await asyncio.to_thread(prepare_member_capabilities, "a", project)
+        assert manager.capability_runtime_view("a", prepared["revision"])["status"] == "applied"
+        manager.release("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -548,18 +548,18 @@ async def test_private_task_uses_dedicated_provider_and_same_store(world):
     service, cfg, factory, _, project, stores, log = world
     await asyncio.to_thread(save, service, enroll=True)
     key = "taskrunner:capability-step"
-    await asyncio.to_thread(bind_private_session_store, key, stores["A"])
-    await asyncio.to_thread(log.update_metadata, key, {"memory_store": stores["A"]})
+    await asyncio.to_thread(bind_private_session_store, key, stores["a"])
+    await asyncio.to_thread(log.update_metadata, key, {"memory_store": stores["a"]})
     manager = SessionManager(cfg, provider_factory=factory)
     try:
         provider, new, _ = await manager.open_task_session(
-            "dashboard:A", key, agent="A", cwd=str(project)
+            "dashboard:a", key, agent="a", cwd=str(project)
         )
-        prepared = await asyncio.to_thread(prepare_member_capabilities, "A", project)
+        prepared = await asyncio.to_thread(prepare_member_capabilities, "a", project)
         assert new and provider.loaded_capability_template == prepared["template"]
-        assert manager.capability_runtime_view("A", prepared["revision"])["status"] == "applied"
+        assert manager.capability_runtime_view("a", prepared["revision"])["status"] == "applied"
         assert not manager._subagent_runtimes
-        assert await asyncio.to_thread(read_private_session_store, key) == stores["A"]
+        assert await asyncio.to_thread(read_private_session_store, key) == stores["a"]
         manager.release(key)
     finally:
         await manager.close_all(drain_timeout=0)
@@ -584,8 +584,8 @@ async def test_governance_change_during_startup_is_not_applied(world):
     manager = SessionManager(cfg, provider_factory=racing_factory)
     try:
         with pytest.raises(RuntimeError):
-            await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        assert not manager.has_session("dashboard:A")
+            await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        assert not manager.has_session("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -723,11 +723,11 @@ async def test_warm_process_is_not_claimed_for_enrolled_member(world):
     await warm.start()
     await manager._warm_pool.put((warm, time.monotonic()))
     try:
-        provider, new, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
+        provider, new, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
         assert new and provider is not warm
         assert manager._warm_pool.qsize() == 1
         assert warm.starts == 1 and warm.stops == 0
-        manager.release("dashboard:A")
+        manager.release("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -758,9 +758,9 @@ async def test_saved_bytes_changed_during_start_never_get_a_stamp(world):
     manager = SessionManager(cfg, provider_factory=tampering_factory)
     try:
         with pytest.raises(CapabilityError, match="materialization_changed"):
-            await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        assert not manager.has_session("dashboard:A")
-        assert manager.capability_runtime_view("A", "unknown")["status"] == "failed"
+            await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        assert not manager.has_session("dashboard:a")
+        assert manager.capability_runtime_view("a", "unknown")["status"] == "failed"
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -771,8 +771,8 @@ async def test_parent_update_reconciles_only_for_new_runtime(world):
     await asyncio.to_thread(save, service, enroll=True)
     manager = SessionManager(cfg, provider_factory=factory)
     try:
-        old, _, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        manager.release("dashboard:A")
+        old, _, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        manager.release("dashboard:a")
         old_file = old.specs / (old.template + ".json")
         old_bytes = await asyncio.to_thread(old_file.read_bytes)
 
@@ -783,18 +783,18 @@ async def test_parent_update_reconciles_only_for_new_runtime(world):
             path.write_text(json.dumps(spec), encoding="utf-8")
 
         await asyncio.to_thread(edit_parent)
-        same, new, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
+        same, new, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
         assert same is old and not new
-        manager.release("dashboard:A")
+        manager.release("dashboard:a")
         assert await asyncio.to_thread(old_file.read_bytes) == old_bytes
         key = "dashboard:A-new-runtime"
-        await asyncio.to_thread(bind_private_session_store, key, stores["A"])
-        await asyncio.to_thread(log.update_metadata, key, {"memory_store": stores["A"]})
-        fresh, new, _ = await manager.get_or_create(key, agent="A", cwd=str(project))
+        await asyncio.to_thread(bind_private_session_store, key, stores["a"])
+        await asyncio.to_thread(log.update_metadata, key, {"memory_store": stores["a"]})
+        fresh, new, _ = await manager.get_or_create(key, agent="a", cwd=str(project))
         assert new and fresh.template != old.template
         assert await asyncio.to_thread(old_file.read_bytes) == old_bytes
-        latest = await asyncio.to_thread(prepare_member_capabilities, "A", project)
-        view = manager.capability_runtime_view("A", latest["revision"])
+        latest = await asyncio.to_thread(prepare_member_capabilities, "a", project)
+        view = manager.capability_runtime_view("a", latest["revision"])
         assert [row["status"] for row in view["sessions"]] == ["pending", "applied"]
         assert old.stops == 0
         manager.release(key)
@@ -817,7 +817,7 @@ async def test_http_reports_observed_runtime_without_applying_preview(world):
     app["state"] = SimpleNamespace(owner_id="owner", sessions=manager, push_refresh=lambda _: None)
     app[_SERVICE] = service
     register(app)
-    endpoint = "/api/agents/A/capabilities"
+    endpoint = "/api/agents/a/capabilities"
     try:
         async with TestClient(TestServer(app)) as client:
             current = await (await client.get(endpoint)).json()
@@ -831,7 +831,7 @@ async def test_http_reports_observed_runtime_without_applying_preview(world):
             assert response.status == 200
             saved = await response.json()
             assert saved["runtime"]["status"] == "pending"
-            provider, _, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
+            provider, _, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
             current = await (await client.get(endpoint)).json()
             assert current["runtime"]["status"] == "applied"
             assert "warnings" not in current
@@ -858,9 +858,9 @@ async def test_http_reports_observed_runtime_without_applying_preview(world):
             assert newer["runtime"]["status"] == "pending"
             assert newer["runtime"]["saved_revision"] != current["runtime"]["saved_revision"]
             assert provider.starts == 1 and provider.stops == 0
-            manager.release("dashboard:A")
-            await manager.reset("dashboard:A")
-            fresh, _, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
+            manager.release("dashboard:a")
+            await manager.reset("dashboard:a")
+            fresh, _, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
             observed = await (await client.get(endpoint)).json()
             assert observed["runtime"]["status"] == "applied"
             assert observed["runtime"]["saved_revision"] == newer["runtime"]["saved_revision"]
@@ -875,7 +875,7 @@ async def test_http_reports_observed_runtime_without_applying_preview(world):
             broken = await (await client.get(endpoint)).json()
             assert broken["runtime"]["status"] == "failed"
             assert broken["runtime"]["error_code"] == "materialization_changed"
-            manager.release("dashboard:A")
+            manager.release("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -886,7 +886,7 @@ async def test_runtime_application_requires_mcp_registration_evidence(world, mon
 
     def enroll_with_connection():
         request = {
-            "revision": service.get("A")["revision"],
+            "revision": service.get("a")["revision"],
             "enroll": True,
             "operations": [
                 {
@@ -897,34 +897,34 @@ async def test_runtime_application_requires_mcp_registration_evidence(world, mon
                 }
             ],
         }
-        preview = service.preview("A", request)
-        service.put("A", {**request, "preview_token": preview["preview_token"]})
+        preview = service.preview("a", request)
+        service.put("a", {**request, "preview_token": preview["preview_token"]})
 
     await asyncio.to_thread(enroll_with_connection)
     manager = SessionManager(cfg, provider_factory=factory)
     try:
-        provider, _, _ = await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        prepared = await asyncio.to_thread(prepare_member_capabilities, "A", project)
+        provider, _, _ = await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        prepared = await asyncio.to_thread(prepare_member_capabilities, "a", project)
         revision = prepared["revision"]
-        assert manager.capability_runtime_view("A", revision)["status"] == "unverified"
+        assert manager.capability_runtime_view("a", revision)["status"] == "unverified"
         report = McpSessionReport()
         report.begin_session([])
         monkeypatch.setattr(provider, "mcp_session_report", lambda: report)
         report.record_event(EVENT_MCP_SERVER_INITIALIZED, "unrelated")
-        assert manager.capability_runtime_view("A", revision)["status"] == "unverified"
+        assert manager.capability_runtime_view("a", revision)["status"] == "unverified"
         report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, "docs", "private startup details")
-        failed = manager.capability_runtime_view("A", revision)
+        failed = manager.capability_runtime_view("a", revision)
         assert failed["status"] == "failed"
         assert failed["sessions"][0]["error_code"] == "capability_mcp_failed"
         assert "private startup details" not in json.dumps(failed)
         report.record_event(EVENT_MCP_OAUTH_REQUEST, "docs")
-        assert manager.capability_runtime_view("A", revision)["status"] == "pending"
+        assert manager.capability_runtime_view("a", revision)["status"] == "pending"
         report.record_event(EVENT_MCP_SERVER_INITIALIZED, "docs")
-        assert manager.capability_runtime_view("A", revision)["status"] == "applied"
+        assert manager.capability_runtime_view("a", revision)["status"] == "applied"
         report.record_unresolved_refs(["@missing"])
-        assert manager.capability_runtime_view("A", revision)["status"] == "failed"
+        assert manager.capability_runtime_view("a", revision)["status"] == "failed"
         assert provider.starts == 1 and provider.stops == 0
-        manager.release("dashboard:A")
+        manager.release("dashboard:a")
     finally:
         await manager.close_all(drain_timeout=0)
 
@@ -941,7 +941,7 @@ async def test_cold_start_never_publishes_malformed_persisted_transport(world, f
         parent["mcpServers"] = {"search": {"command": "search", "args": []}}
         parent_path.write_text(json.dumps(parent))
         save(service, enroll=True)
-        current = KiroCrewConfig.load().agents["A"].kiro_agent
+        current = KiroCrewConfig.load().agents["a"].kiro_agent
         path = agent_state._state_path()
         state = json.loads(path.read_text())
         broken = {"command": []}
@@ -962,8 +962,8 @@ async def test_cold_start_never_publishes_malformed_persisted_transport(world, f
     manager = SessionManager(cfg, provider_factory=factory)
     try:
         with pytest.raises(CapabilityStartupError, match="^capability_state_unreadable$"):
-            await manager.get_or_create("dashboard:A", agent="A", cwd=str(project))
-        assert not manager.has_session("dashboard:A")
+            await manager.get_or_create("dashboard:a", agent="a", cwd=str(project))
+        assert not manager.has_session("dashboard:a")
         assert made == []
 
         def unchanged():
@@ -983,23 +983,23 @@ def test_capability_runtime_facade_projects_owned_state_without_exporting_it():
 
     state = SessionRegistryState()
     attempt = {
-        "member": "A",
+        "member": "a",
         "status": "failed",
         "saved_revision": "saved",
         "error_code": "capability_startup_failed",
     }
     state.capability_failures.update({"failed": dict(attempt), "live": dict(attempt)})
     state.sessions["live"] = SimpleNamespace(
-        capability_member="A",
+        capability_member="a",
         loaded_capabilities=None,
         provider=object(),
         semaphore=asyncio.Semaphore(1),
     )
-    state.capability_failures["other"] = {**attempt, "member": "B"}
+    state.capability_failures["other"] = {**attempt, "member": "b"}
     manager = object.__new__(SessionManager)
     manager._allocation_state = state
-    view = manager.capability_runtime_view("A", "saved")
-    assert view == runtime_view(state, "A", "saved")
+    view = manager.capability_runtime_view("a", "saved")
+    assert view == runtime_view(state, "a", "saved")
     assert view["status"] == "failed"
     assert [(row["session_key"], row["status"]) for row in view["sessions"]] == [
         ("live", "pending"),
@@ -1011,3 +1011,56 @@ def test_capability_runtime_facade_projects_owned_state_without_exporting_it():
     assert set(state.sessions) == {"live"}
     assert manager.capability_runtime_view("absent", "")["status"] == "unverified"
     assert manager.capability_runtime_view("absent", "saved")["status"] == "pending"
+
+
+def test_capability_write_lands_on_the_legacy_record_when_the_rekey_has_not_persisted(
+    world, monkeypatch
+):
+    """The loader serves the id-keyed view on every load and writes nothing;
+    until ``migrate_member_identity`` runs the on-disk document still holds the
+    record under its legacy key. The binding write must patch THAT record, not
+    add a second id-keyed partial one beside it."""
+    service, cfg, _, _, project, _, _ = world
+    from kiro_crew.config import loader as loader_module
+    from kiro_crew.config.loader import update_config_locked
+
+    def relabel(data):
+        entry = data["agents"].pop("a")
+        entry["member_id"] = "a"
+        data["agents"]["Alpha Crew"] = entry
+        return data
+
+    update_config_locked(mutate=relabel)
+    loader_module._invalidate_config_cache()
+    assert set(KiroCrewConfig.load().agents) >= {"a"}
+    save(service, "a", enroll=True)
+    raw = json.loads(loader_module.config_path().read_text(encoding="utf-8"))
+    assert "Alpha Crew" in raw["agents"] and "a" not in raw["agents"], sorted(raw["agents"])
+    assert raw["agents"]["Alpha Crew"]["kiro_agent"] != "parent"
+    loader_module._invalidate_config_cache()
+    assert KiroCrewConfig.load().agents["a"].kiro_agent == raw["agents"]["Alpha Crew"]["kiro_agent"]
+
+
+def test_capabilities_saved_through_the_display_name_land_under_the_key(world):
+    """The roster hands the capabilities route the display name; every write
+    -- sidecar ownership, the spec, the config binding -- is keyed by the
+    member's ``config.agents`` key, and a later read by either handle agrees."""
+    service, cfg, _, _, project, _, _ = world
+
+    def label(data):
+        data["agents"]["a"]["display_name"] = "Alpha Crew"
+        return data
+
+    from kiro_crew.config.loader import update_config_locked
+
+    update_config_locked(mutate=label)
+    save(service, "Alpha Crew", enroll=True)
+    cfg = KiroCrewConfig.load()
+    target = cfg.agents["a"].kiro_agent
+    assert target != "parent"
+    assert "Alpha Crew" not in cfg.agents
+    assert agent_state.get_fork_info(target)["private_to"] == "a"
+    by_name = prepare_member_capabilities("Alpha Crew", str(project))
+    by_key = prepare_member_capabilities("a", str(project))
+    assert by_name == by_key and by_name["template"] == target
+    assert service.get("Alpha Crew")["mode"] == "inherited"

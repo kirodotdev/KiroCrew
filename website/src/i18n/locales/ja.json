@@ -9925,7 +9925,8 @@
       "failed_to_dismiss_agent": "エージェントの却下に失敗しました",
       "failed_to_update_agent": "エージェントの更新に失敗しました",
       "failed_to_close_channel": "チャネルを閉じられませんでした",
-      "failed_to_clear_context": "コンテキストのクリアに失敗しました"
+      "failed_to_clear_context": "コンテキストのクリアに失敗しました",
+      "roster_names_failed": "エージェント名を読み込めませんでした。役割のみ表示しています。"
     },
     "chat": {
       "activityViewer": {
@@ -13658,7 +13659,7 @@
       "view_executions": "実行履歴",
       "view_list": "リスト",
       "add_job": "ジョブを追加",
-      "agent": "エージェント ·",
+      "agent": "エージェント",
       "and_their_run_history_this_action_cannot_be_undo": "その実行履歴を完全に削除します。この操作は取り消せません。",
       "ask_in_chat": "チャットで質問",
       "batch_delete_failed": "一括削除に失敗しました",

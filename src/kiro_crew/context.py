@@ -63,10 +63,13 @@ from kiro_crew.members import (
     MemberSlugError,
     member_briefing_path,
     member_briefing_supported,
+    member_display_name,
+    member_handle_holders,
     member_lifecycle,
     member_turn_context,
     read_member_briefing,
     read_member_rules,
+    resolve_member,
     slug_for_name,
 )
 from kiro_crew.memory import MemoryStore
@@ -3631,6 +3634,11 @@ class ContextBuilder:
             elif member in cfg.agents and not getattr(cfg.agents[member], "member_id", ""):
                 slug = slug_for_name(member)
                 crew = cfg.agents[member]
+            elif (resolved_member := resolve_member(member, cfg)) is not None:
+                # A display-name handle (a slot pinned by display name): the key is
+                # the member_id, which is also the slug.
+                member, crew = resolved_member
+                slug = crew.member_id or slug_for_name(member)
             else:
                 alias, crew = member_config_for_id(cfg, member)
                 slug = member
@@ -3656,7 +3664,7 @@ class ContextBuilder:
         # (Missing file still reads as "" — the normal unbounded-by-choice
         # state — and the file is gateway-written atomically, so corruption
         # is an operator-level event, not a routine one.)
-        rules = read_member_rules(slug, member)
+        rules = read_member_rules(slug, member, cfg)
         # Layer-4 availability decides both the briefing read and the wording
         # around it (item 6 above, the placeholder below): where the pinned
         # briefing read fails closed (Windows — member_briefing_supported),
@@ -3682,7 +3690,21 @@ class ContextBuilder:
         # Every VARIABLE payload is scrubbed before the genuine headers are
         # minted around it — see _MEMBER_MARKER_RES for why this runs at
         # content time rather than in the structural-marker scan.
-        member = _scrub_member_payload(member)
+        # ``member`` is the config.agents KEY (the member_id) from here; the
+        # crew is addressed by its display name, so that is what its identity
+        # text says, while rules and briefing stay keyed by the slug/key. The
+        # label is used only when it addresses THIS record alone -- two records
+        # may share one (legal while labels were presentation-only), and
+        # ``resolve_member`` refuses to pick between them, so telling the agent
+        # its name is a shared label would hand it a handle every self-addressed
+        # route 404s on; the roster falls back to the key the same way.
+        if crew:
+            label = member_display_name(member, crew)
+            if member_handle_holders(label, cfg.agents) != [member]:
+                label = member
+            member = _scrub_member_payload(label)
+        else:
+            member = _scrub_member_payload(member)
         description = _scrub_member_payload(description)
         triggers = _scrub_member_payload(triggers)
         rules = _scrub_member_payload(rules)

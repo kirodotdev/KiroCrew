@@ -44,6 +44,7 @@ from kiro_crew.dashboard.handlers.agents import (
 ROSTER_ROW_KEYS = frozenset(
     {
         "name",
+        "member_id",
         "scope",
         "kiro_agent",
         "workspace",
@@ -64,14 +65,17 @@ ROSTER_ROW_KEYS = frozenset(
 # roster does not render, ``telegram_account`` is deprecated and inert, and
 # ``starred`` is a Crew Members roster preference that only ``GET /api/members``
 # renders (the crew manager has no star affordance).
-# ``member_id`` is execution attribution, not a template-picker field.
+# ``member_id`` is NOT withheld: it is the ``config.agents`` key and
+# ships as the row's identity beside ``display_name`` and the ``name`` alias.
 WITHHELD_RECORD_FIELDS = frozenset(
     {
-        "member_id",
         "watchdog_tool_stall_suspect_secs",
         "watchdog_tool_stall_hard_cap_secs",
         "telegram_account",
         "starred",
+        # Migration bookkeeping the resolver honours server-side; the browser
+        # addresses a crew by member_id or display_name and needs no history.
+        "legacy_keys",
     }
 )
 
@@ -105,8 +109,10 @@ def _seed_config_with_every_field_set() -> dict:
                 "triggers": "probe triggers",
                 "source": "kirocrew",
                 "session_color": "#abcdef",
+                # The key IS the member_id; a differing value would be
+                # re-keyed on load, moving the record this fixture addresses.
+                "member_id": "roster-probe",
                 # Withheld — must NOT appear in the response.
-                "member_id": "member-roster-probe",
                 "watchdog_tool_stall_suspect_secs": 111.0,
                 "watchdog_tool_stall_hard_cap_secs": 222.0,
                 "telegram_account": "probe-telegram-binding",
@@ -136,6 +142,8 @@ class TestRosterRowKeySet:
         # the right KEYS with empty values would pass a key-set assertion
         # while breaking every consumer.
         assert row["scope"] == "global"
+        assert row["member_id"] == "roster-probe"
+        assert row["display_name"] == "roster-probe"
         assert row["workspace"] == "probe-ws"
         assert row["memory_store"] == "probe-ms"
         assert row["model"] == "claude-opus-5"
@@ -292,7 +300,11 @@ class TestUnshowableValuesAreMasked:
     # ``TestAvatarIsShapeAllowlistedNotMasked``. Excluded here rather than
     # softening these assertions, so the rule for every other field stays
     # "the sentinel, exactly".
-    RECORD_FIELDS_SHIPPED = tuple(sorted(ROSTER_ROW_KEYS - {"name", "scope", "avatar"}))
+    # ``member_id`` is identity like ``name``: an allocator-minted slug, never
+    # user-authored text, so it is not run through the mask either.
+    RECORD_FIELDS_SHIPPED = tuple(
+        sorted(ROSTER_ROW_KEYS - {"name", "member_id", "scope", "avatar"})
+    )
 
     def _full(self) -> KiroCrewAgentConfig:
         return KiroCrewAgentConfig(
@@ -733,7 +745,13 @@ class TestCallerClassIsTheOwnerPredicate:
 
     def _seed(self, tmp_path: Path) -> Path:
         seed = _seed_config_with_every_field_set()
-        seed["agents"] = {f"crew-{self.PROBE}": seed["agents"]["roster-probe"]}
+        # The key IS the member_id: a differing id is re-keyed on load.
+        seed["agents"] = {
+            f"crew-{self.PROBE}": {
+                **seed["agents"]["roster-probe"],
+                "member_id": f"crew-{self.PROBE}",
+            }
+        }
         seed["default_agent"] = f"crew-{self.PROBE}"
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(seed), encoding="utf-8")

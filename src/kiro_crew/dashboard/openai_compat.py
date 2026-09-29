@@ -455,7 +455,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
         if slot.mode == "member":
             _member_cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            if slot.agent not in _member_cfg.agents:
+            if members_mod.resolve_member(slot.agent, _member_cfg) is None:
                 sel().log_api_access(
                     caller=request.remote or "",
                     operation="openai_compat.chat",

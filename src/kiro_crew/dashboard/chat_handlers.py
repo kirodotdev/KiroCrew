@@ -646,7 +646,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
     if slot.mode == "member":
         _member_cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        if slot.agent not in _member_cfg.agents:
+        if members_mod.resolve_member(slot.agent, _member_cfg) is None:
             sel().log_api_access(
                 caller=request.remote or "",
                 operation="chat_send",
@@ -7972,7 +7972,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             # on the next turn (slot advertises it, default answers — the
             # silent substitution this resolution exists to remove). Aliases keep the
             # reset: their project comes from their own workspace bindings.
-            is_project_agent = agent_name not in cfg.agents and agent_name in (
+            is_project_agent = members_mod.resolve_member(
+                agent_name, cfg
+            ) is None and agent_name in (
                 cached_project_agent_names(slot.project or None) or frozenset()
             )
             if not is_project_agent:

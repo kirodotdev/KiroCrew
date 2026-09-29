@@ -3245,9 +3245,14 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     # that already ran it. A no-op scan of the loaded config when there is
     # nothing to repair; never raises.
     if args.command not in ("gateway", "doctor") and not args.command.startswith("mcp-"):
+        from kiro_crew.config.loader import migrate_member_identity
         from kiro_crew.memory_stores import repair_legacy_member_stores
 
         repair_legacy_member_stores()
+        # Same rule for member identity: ``config.agents`` is keyed by member_id,
+        # a load serves that shape in memory without writing, and this one-shot
+        # moves the document (and the sidecar owners and pictures) once.
+        migrate_member_identity()
 
     # ── Process-isolation jail gate (CPP JailProvider seam) ──
     # For agent-bearing commands, give the active edition a chance to re-exec this

@@ -483,6 +483,53 @@ class TestApiMembersProjections:
         )
 
     @pytest.mark.asyncio
+    async def test_a_renamed_member_keeps_its_projection_and_write_through(
+        self, tmp_path, monkeypatch, live_config_stamp_matches
+    ):
+        """The header is write-once and the label is not: ownership is by KEY.
+
+        A log written under the key (or the member's earlier name) belongs to the
+        member however it is labelled today. Compared against the mutable label
+        it would blank the row for the life of the log and stop the config
+        write-through the moment the member is renamed.
+        """
+        cfg = _fake_config({CREW: _agent(model="claude-x", member_id=CREW)})
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
+        state = _make_state(tmp_path)
+        app = _members_app(state)
+        svc = get_service()
+        slug = members.slug_for_name(CREW)
+        svc.ensure(slug, CREW)  # header written under the key
+        async with TestClient(TestServer(app)) as client:
+            await client.get("/api/members")
+        seq_before = svc.last_seq(slug)
+        assert seq_before >= 0
+
+        # Rename: the label changes, the key (and the header) stay.
+        cfg.agents[CREW].display_name = "Reviewer Prime"
+        cfg.agents[CREW].model = "claude-y"
+        async with TestClient(TestServer(app)) as client:
+            data = await (await client.get("/api/members")).json()
+        row = data["members"][0]
+        assert row["name"] == "Reviewer Prime"
+        proj = row["projections"]
+        assert (
+            proj["asOfSeq"] >= 0 and proj["values"]
+        ), f"renamed member lost its projection: {proj}"
+        assert svc.last_seq(slug) > seq_before, "config write-through stopped after the rename"
+        assert svc.logged_name(slug) == CREW
+
+        # A header holding the member's LABEL (a log written before the record was
+        # keyed by id) proves ownership too; a stranger's name still does not.
+        other_slug = members.slug_for_name("archivist")
+        cfg.agents["archivist"] = _agent(member_id="archivist", display_name="The Archivist")
+        svc.ensure(other_slug, "The Archivist")
+        async with TestClient(TestServer(app)) as client:
+            data = await (await client.get("/api/members")).json()
+        by_slug = {r["slug"]: r["projections"] for r in data["members"]}
+        assert by_slug[other_slug]["asOfSeq"] >= 0 and by_slug[other_slug]["values"]
+
+    @pytest.mark.asyncio
     async def test_a_row_whose_log_belongs_to_another_member_gets_no_projection(
         self, tmp_path, monkeypatch
     ):

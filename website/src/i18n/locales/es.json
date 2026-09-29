@@ -10211,7 +10211,8 @@
       "failed_to_dismiss_agent": "No se pudo retirar al agente",
       "failed_to_update_agent": "No se pudo actualizar el agente",
       "failed_to_close_channel": "No se pudo cerrar el canal",
-      "failed_to_clear_context": "No se pudo borrar el contexto"
+      "failed_to_clear_context": "No se pudo borrar el contexto",
+      "roster_names_failed": "No se pudieron cargar los nombres de los agentes; solo se muestran los roles."
     },
     "chat": {
       "activityViewer": {
@@ -14078,7 +14079,7 @@
       "view_executions": "Ejecuciones",
       "view_list": "Lista",
       "add_job": "Añadir trabajo",
-      "agent": "agente ·",
+      "agent": "agente",
       "and_their_run_history_this_action_cannot_be_undo": "y su historial de ejecuciones. Esta acción no se puede deshacer.",
       "ask_in_chat": "preguntar en el chat",
       "batch_delete_failed": "Error al eliminar en lote",

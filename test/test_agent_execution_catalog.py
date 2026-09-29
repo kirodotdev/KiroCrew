@@ -99,6 +99,40 @@ async def test_catalog_keeps_namespaces_and_never_changes_registry(catalog):
 
 
 @pytest.mark.asyncio
+async def test_catalog_default_agent_is_spelled_like_the_default_row(catalog):
+    # ``default_agent`` is the ``config.agents`` KEY; the rows ship the display
+    # name as ``name``. The catalog's marker has to use the rows' spelling or
+    # ``row.name === default_agent`` never matches a migrated member and the
+    # inherited-default chip reads the slug.
+    catalog.config.agents["reviewer"].display_name = "Release Reviewer"
+    async with TestClient(TestServer(catalog.app)) as client:
+        result = await (await client.get("/api/agents/catalog")).json()
+    assert result["default_agent"] == "Release Reviewer"
+    assert any(
+        row["name"] == result["default_agent"] and row["member_id"] == "reviewer"
+        for row in result["agents"]
+        if row["selection_kind"] == "member"
+    )
+    assert "default_member_id" not in result
+
+
+@pytest.mark.asyncio
+async def test_catalog_falls_back_to_the_key_for_a_shared_label(catalog):
+    # Two records sharing one ``display_name`` (legal while labels were
+    # presentation-only) must not both ship it as ``name``: the picker folds
+    # rows by ``name`` and would drop one member. The roster row needs the
+    # whole ``agents`` map to see the collision.
+    catalog.config.agents["reviewer"].display_name = "Shared Label"
+    catalog.config.agents["retained-member"].display_name = "Shared Label"
+    async with TestClient(TestServer(catalog.app)) as client:
+        result = await (await client.get("/api/agents/catalog")).json()
+    members = [row for row in result["agents"] if row["selection_kind"] == "member"]
+    assert [row["name"] for row in members] == ["reviewer", "retained-member"]
+    assert all(row["display_name"] == "Shared Label" for row in members)
+    assert len({row["name"] for row in members}) == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("session_key", [None, "dashboard:ui", "chat-empty"])
 async def test_catalog_never_borrows_another_slots_project(catalog, session_key):
     headers = {"X-Session-Key": session_key} if session_key else {}

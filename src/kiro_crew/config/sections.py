@@ -3106,11 +3106,23 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Display Name",
-            "Optional label the dashboard shows instead of the agent's name. "
-            "Purely presentational: the name stays the immutable identity — it "
-            "keys this record, addresses /api/agents/{name}, and is what "
-            "dispatch, crons and spawn resolve — so renaming the label never "
-            "breaks a binding. Empty means the dashboard shows the name itself.",
+            "The crew's display name: free-form text the roster shows and every "
+            "handle route accepts. The record is keyed by member_id, the "
+            "immutable identity that addresses members/<id>/, the DM thread, "
+            "crons and memory, so renaming this field never breaks a binding. "
+            "Empty means the dashboard shows the member_id itself.",
+        ),
+    )
+    legacy_keys: list = field(
+        default_factory=list,
+        metadata=_meta(
+            "Legacy Keys",
+            "Keys this record was stored under before it was keyed by member_id "
+            "(its earlier display names). Written by the migration and by a rename "
+            "(the label a rename leaves behind becomes an alias; a label taken live "
+            "again is dropped); every handle route and the config.local.json merge "
+            "accept them, so an overlay entry or a saved handle spelled the old way "
+            "still names this member. Never edited by hand.",
         ),
     )
     description: str = field(

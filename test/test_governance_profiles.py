@@ -100,6 +100,83 @@ def test_agent_task_binding(profiles_dir):
     assert prof is not None and prof.name == "researcher"
 
 
+def test_task_binding_never_resolves_through_agent_writable_aliases(profiles_dir):
+    """A ``task`` bind outranks the surface bind, and ``display_name`` /
+    ``legacy_keys`` are config fields an agent can write on its own record. So a
+    record that spells itself as a bound task id must NOT select that profile:
+    task binds resolve by exact id only."""
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    cfg = KiroCrewConfig.load()
+    cfg.agents["scout-1a2b"] = KiroCrewAgentConfig(
+        kiro_agent="kirocrew", display_name="Scout", legacy_keys=["scout", "Scout"]
+    )
+    cfg.save()
+    _write(
+        profiles_dir,
+        "scout-ceiling",
+        {
+            "name": "scout-ceiling",
+            "bind": {"type": "task", "id": "Scout"},
+            "capabilities": {"spawn": {"enabled": False}},
+        },
+    )
+    assert gp.resolve_active_scope("dashboard:slot1", agent="scout-1a2b") is None
+    assert gp.resolve_active_scope("dashboard:slot1", task="scout-1a2b") is None
+    assert gp.resolve_active_scope("dashboard:slot1", agent="scout") is None
+    # The exact id still binds, as before.
+    exact = gp.resolve_active_scope("subagent:abc", agent="Scout")
+    assert exact is not None and exact.name == "scout-ceiling"
+
+
+def test_stale_task_binds_reports_and_writes_nothing(profiles_dir):
+    """``profiles/`` is the sandbox-read-only governance keystone and the plan is
+    derived from agent-writable ``config.json``, so a bind on a moved record is
+    REPORTED for the operator -- the file is never rewritten, other binds and
+    non-profile files are not read into the report either."""
+    _write(
+        profiles_dir,
+        "scout-ceiling",
+        {
+            "name": "scout-ceiling",
+            "bind": {"type": "task", "id": "Scout"},
+            "capabilities": {"spawn": {"enabled": False}},
+        },
+    )
+    _write(
+        profiles_dir,
+        "cron-tight",
+        {
+            "name": "cron-tight",
+            "bind": {"type": "surface", "id": "cron"},
+            "tools": {"mode": "allow", "allow": ["fs_read"]},
+        },
+    )
+    before = {p.name: p.read_bytes() for p in profiles_dir.iterdir()}
+
+    assert gp.stale_task_binds({"Scout": "scout-1a2b", "Other": "other-9"}) == (
+        [("scout-ceiling", "Scout", "scout-1a2b")],
+        True,
+    )
+    assert gp.task_bound_snapshot() == ({"Scout": "scout-ceiling"}, True)
+    assert {p.name: p.read_bytes() for p in profiles_dir.iterdir()} == before
+    assert not any(p.suffix == ".tmp" or p.name.endswith(".lock") for p in profiles_dir.iterdir())
+    # Nothing moved, so the exact id does not bind and the old spelling still does.
+    assert gp.resolve_active_scope("subagent:abc", agent="scout-1a2b") is None
+    exact = gp.resolve_active_scope("subagent:abc", agent="Scout")
+    assert exact is not None and exact.name == "scout-ceiling"
+    assert gp.stale_task_binds({}) == ([], True)
+    # A file present but unrecoverable makes BOTH readings incomplete: a bind
+    # that could not be read might name a key, so the caller must fail closed.
+    (profiles_dir / "notes.json").write_text("not a profile", encoding="utf-8")
+    gp.reset_store()
+    assert gp.task_bound_snapshot() == ({"Scout": "scout-ceiling"}, False)
+    assert gp.stale_task_binds({"Scout": "scout-1a2b"}) == (
+        [("scout-ceiling", "Scout", "scout-1a2b")],
+        False,
+    )
+
+
 def test_unattended_unproven_identity_denies_all(profiles_dir):
     # No bound profile, unattended surface (_hb), unproven → deny-all.
     prof = gp.resolve_active_scope("_hb")

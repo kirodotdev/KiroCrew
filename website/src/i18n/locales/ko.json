@@ -9925,7 +9925,8 @@
       "failed_to_dismiss_agent": "에이전트를 해제하지 못했습니다",
       "failed_to_update_agent": "에이전트를 업데이트하지 못했습니다",
       "failed_to_close_channel": "채널을 닫지 못했습니다",
-      "failed_to_clear_context": "컨텍스트를 지우지 못했습니다"
+      "failed_to_clear_context": "컨텍스트를 지우지 못했습니다",
+      "roster_names_failed": "에이전트 이름을 불러오지 못했습니다. 역할만 표시합니다."
     },
     "chat": {
       "activityViewer": {
@@ -13653,7 +13654,7 @@
     "schedulePage": {
       "actions": "작업",
       "add_job": "작업 추가",
-      "agent": "에이전트 ·",
+      "agent": "에이전트",
       "and_their_run_history_this_action_cannot_be_undo": "및 실행 기록을 영구히 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
       "ask_in_chat": "채팅으로 요청",
       "batch_delete_failed": "일괄 삭제에 실패했습니다",

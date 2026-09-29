@@ -9925,7 +9925,8 @@
       "failed_to_dismiss_agent": "移除代理失败",
       "failed_to_update_agent": "更新代理失败",
       "failed_to_close_channel": "关闭频道失败",
-      "failed_to_clear_context": "清除上下文失败"
+      "failed_to_clear_context": "清除上下文失败",
+      "roster_names_failed": "无法加载代理名字，仅显示角色。"
     },
     "chat": {
       "activityViewer": {
@@ -13658,7 +13659,7 @@
       "view_executions": "执行记录",
       "view_list": "列表",
       "add_job": "添加任务",
-      "agent": "代理 ·",
+      "agent": "代理",
       "and_their_run_history_this_action_cannot_be_undo": "及其运行历史。此操作无法撤销。",
       "ask_in_chat": "在聊天中询问",
       "batch_delete_failed": "批量删除失败",

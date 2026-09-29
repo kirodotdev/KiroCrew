@@ -37,6 +37,8 @@ describe('ChannelPage — listen-mode menu keyboard contract', () => {
     vi.mocked(api).channelGet = vi.fn().mockResolvedValue(mockChannel)
     vi.mocked(api).channelPresets = vi.fn().mockResolvedValue({ presets: [] })
     vi.mocked(api).channelUpdateAgent = vi.fn().mockResolvedValue({ ok: true })
+    // The agent rail resolves each role's stored crew handle against the roster.
+    vi.mocked(api).agentCatalog = vi.fn().mockResolvedValue({ agents: [], default_agent: '' })
   })
 
   const menuEl = () => document.querySelector('[role="menu"]') as HTMLElement | null

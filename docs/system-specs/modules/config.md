@@ -403,15 +403,84 @@ its provenance are owned by [memory-skills-hooks](memory-skills-hooks.md).
 ### Member identity and creation
 
 A V2 member has an immutable persisted `member_id`, independent of its editable
-config/display label. `MemoryStoreConfig.owner_member_id` and the database's
-`member_database` singleton record identify the same owner and store ID.
-`memory_version: 2` selects V2; legacy declarations default to V1. `owner_member`
-is descriptive display metadata, never execution authority. Templates and
+display name. **`config.agents` is keyed by `member_id`**; the free-form name the
+user sees is the record's `display_name` field:
+
+```json
+"agents": {
+  "crew-program-manager": {
+    "member_id": "crew-program-manager",
+    "display_name": "Crew Program Manager",
+    "kiro_agent": "kirocrew",
+    "workspace": "default",
+    "memory_store": "member-crew-program-manager-…"
+  }
+}
+```
+
+`member_id` is minted once at creation by `memory_stores._allocate_member_id`
+(the slug of the display name, suffixed only on collision with another id, a
+retired store's `owner_member_id`, an existing `config.agents` key, or another
+member's `display_name` -- the resolver prefers a key, so an id equal to a live
+label would capture that label's traffic) and is the key from the first write. A rename (`PUT /api/agents/{name}` with
+`display_name`, or the `kirocrew agent update` path) edits the field only: the
+key, `members/<member_id>/`, the DM slot key, cron `member_id` and the store's
+`owner_member_id` never move. `display_name` takes `members.validate_member_name`
+and must be unique across every handle (no other key or display name).
+
+**Handles.** Every user-facing lookup -- an `/api/agents/{name}` or
+`/api/members/{slug}?member=` parameter, a chat or `spawn_run` `crew=`, a cron
+`member_id`, a slot's pinned agent, `select_crew(crew=)` -- goes through
+`members.resolve_member(handle, config) -> (member_id, record) | None`: the key
+wins, then the unique record whose `display_name` equals the handle exactly,
+then the unique record whose `legacy_keys` holds it; a shared or unknown handle
+is `None` (404 / refused), never guessed.
+`members.member_slug(handle)` returns the key for either handle.
+
+**Migration (`migrate_member_identity`).** A pre-#13688 document keyed the map
+by the display name with the id inside. `KiroCrewConfig.load` is read-only for
+identity: on every load `plan_member_rekeys` serves every entry whose string
+`member_id` differs from its key under `key = member_id`, keeps the old key in
+`legacy_keys` (and as `display_name` when the record has none) and makes
+`default_agent` follow -- in memory, writing nothing. One writer moves the disk:
+`migrate_member_identity()` re-keys `config.json`, moves the fork sidecar's
+`private_to` owners (only on the template the record is bound to; a label is
+reusable, so an orphaned copy that merely spells it stays put) and every
+member's picture -- from any key it provably held, the key this run moved it
+from and each `legacy_keys` entry, onto its `member_id`; a display name is
+never a source -- once, under the config lock, and is idempotent and never
+raises. It runs
+off the event loop in the gateway's post-readiness memory worker and in the CLI
+prologue, so no manual command exists. An id already used
+as another entry's key, or claimed by two entries, is left as stored and logged;
+an entry with no `member_id` keeps its key. Only a move that survives vacates
+its key: a refused entry stays a key, so an entry whose id names it is refused
+in turn (to a fixed point), and the rewrite never files two entries under one
+key. The resolver (rule 3), `merge_config_documents` and the capability service
+fold a handle or `config.local.json` entry spelled as a remembered `legacy_keys`
+entry onto the member for good; a live key or display name always wins, and a
+key two records remember answers nobody. A writer patching one member into a
+raw document it read from disk uses `raw_agent_key` to file the patch under the
+key the record is stored under, so an unmigrated document never gains a second,
+id-keyed partial record beside the legacy one.
+
+`MemoryStoreConfig.owner_member_id` and the database's `member_database`
+singleton record identify the same owner and store ID; `owner_member` is the
+display name, descriptive metadata and never execution authority. Every reader
+that asks "does this member own this store" uses
+`memory_stores.store_owned_by_member`: `owner_member_id` decides, and the label
+is consulted only for an id-less legacy record, through `resolve_member`.
+`memory_version: 2` selects V2; legacy declarations default to V1. Templates and
 projects cannot select a member's memory.
 
-The template-picker roster withholds `member_id`; the full configuration view
-applies the same credential and exfiltration redaction to this hand-editable
-string as other member fields. Stored identity values remain unchanged.
+The rosters (`GET /api/agents`, `GET /api/members`, `select_crew`) carry
+`member_id` (the key, an allocator-minted slug that is never masked),
+`display_name` (masked like every other free-text field) and `name` -- an alias
+of the display name kept for one release so clients that address by `name` keep
+working; when the label would be masked, `name` falls back to the key so the row
+stays addressable. The full configuration view applies the same credential and
+exfiltration redaction to `display_name` as to other member fields. Stored
+identity values remain unchanged.
 
 `provision_member_memory(config, member)` allocates an exclusive random directory
 and creates a new SQLite database through `create_member_database`, plus the

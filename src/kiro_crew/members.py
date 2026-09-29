@@ -19,12 +19,12 @@ frequency counts taken from it stay stable.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import stat
-from collections.abc import Container, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -32,7 +32,12 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
-from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
+from kiro_crew.atomic_write import (
+    atomic_write,
+    fsync_dir,
+    read_bytes_with_retry,
+    replace_with_retry,
+)
 from kiro_crew.config.paths import data_home
 from kiro_crew.external_text import external_text_requires_redaction
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -406,14 +411,6 @@ def validate_member_name(name: object) -> str:
     return name
 
 
-#: Longest base a derived crew id keeps, leaving room for a ``-<n>`` suffix
-#: inside ``_AGENT_NAME_RE``'s 64-character cap.
-_CREW_ID_BASE_MAX_CHARS = 56
-
-#: Suffixes tried before a derived crew id falls back to the name's hash.
-_CREW_ID_SUFFIX_ATTEMPTS = 99
-
-
 def is_crew_id(value: object) -> bool:
     """Return whether *value* is shaped like a new crew's config key.
 
@@ -424,58 +421,16 @@ def is_crew_id(value: object) -> bool:
     return isinstance(value, str) and bool(_AGENT_NAME_RE.match(value))
 
 
-def crew_id_for_display_name(name: str, taken: Container[str]) -> str:
-    """Derive an unused crew id for a crew the user named *name*.
+def is_member_id_shaped(value: object) -> bool:
+    """Whether *value* can be a ``config.agents`` key as typed.
 
-    The id is a slug of the name, suffixed ``-2``, ``-3``... past any id in
-    *taken*. A name with no slug-safe characters (CJK, emoji) derives from its
-    hash, so two such names never share an id. Deterministic for a given
-    *name* and *taken*.
+    A member's key is its ``member_id`` -- the slug its DM binding, rules and
+    activity live under (:data:`_SLUG_RE`) -- so a typed name is kept as the
+    key only when it already IS such a slug. ``Scribe_2`` passes the agent-id
+    grammar (:func:`is_crew_id`) but not the slug grammar; it is a free-form
+    name and seeds the slug ``scribe-2`` instead.
     """
-    base = slugify(name)[:_CREW_ID_BASE_MAX_CHARS].strip("-")
-    if not base or base == slug_hash_fallback(name, "artifact"):
-        base = slug_hash_fallback(name, "crew")
-    for n in range(1, _CREW_ID_SUFFIX_ATTEMPTS + 1):
-        candidate = base if n == 1 else f"{base}-{n}"
-        if candidate not in taken and is_crew_id(candidate):
-            return candidate
-    return slug_hash_fallback(name, "crew")
-
-
-@dataclass(frozen=True)
-class NewCrewKey:
-    """How a crew being created is keyed and labelled.
-
-    ``taken`` is the name the user would see twice when the create must be
-    refused (``409 agent_exists``), else ``""``.
-    """
-
-    key: str
-    display_name: str
-    taken: str
-
-
-def key_new_crew(name: str, display_name: str, agents: Mapping[str, object]) -> NewCrewKey:
-    """Decide the config key and label for a crew created as *name*.
-
-    An id-shaped *name* is the key as sent. A free-form one is kept as the
-    label of an id :func:`crew_id_for_display_name` derives. An explicit
-    *display_name* is the label either way. The create is refused when the
-    key is taken, or when the name the crew would show (its label, else its
-    key) is exactly what another crew already shows. The one decision both
-    create surfaces (``POST /api/agents``, ``kirocrew agent create``) share.
-    """
-    if is_crew_id(name):
-        key, label = name, display_name
-        if key in agents:
-            return NewCrewKey(key, label, name)
-    else:
-        key, label = crew_id_for_display_name(name, agents), display_name or name
-    shown = label or key
-    for other_key, other in agents.items():
-        if (getattr(other, "display_name", "") or other_key) == shown:
-            return NewCrewKey(key, label, shown)
-    return NewCrewKey(key, label, "")
+    return isinstance(value, str) and bool(_SLUG_RE.match(value)) and is_crew_id(value)
 
 
 def is_valid_member_name(value: object) -> bool:
@@ -534,7 +489,218 @@ def is_configured_dispatchable_member(name: object, config=None) -> bool:
         from kiro_crew.config.loader import KiroCrewConfig
 
         config = KiroCrewConfig.load()
-    return name in config.agents and is_dispatchable_member_name(name)
+    resolved = resolve_member(name, config)
+    return resolved is not None and is_dispatchable_member_name(member_display_name(*resolved))
+
+
+def resolve_member(name_or_id: object, config=None):
+    """``(member_id, cfg)`` for a Crew Member named by id or display name, else ``None``.
+
+    ``config.agents`` is keyed by ``member_id``. Every user-facing handle -- an
+    API path segment, a chat ``crew=``, a cron ``member_id``, a spawn target, a
+    slot's pinned ``agent`` -- goes through here so no site guesses which of the
+    two it holds. Resolution order:
+
+    1. the key itself (the id -- always preferred, never ambiguous);
+    2. the unique member whose ``display_name`` equals the handle exactly;
+    3. the unique member whose ``legacy_keys`` (the keys the migration moved it
+       from -- its earlier names) contains the handle, so a handle a client or
+       an overlay saved before the re-key still names the member after it was
+       renamed away from that label.
+
+    A handle shared by two members, or matching nothing, is ``None``: a lookup
+    that cannot be answered uniquely is refused, never guessed. A legacy record
+    with no ``member_id`` keeps its name as the key, so it is found by rule 1
+    unchanged.
+    """
+    if not isinstance(name_or_id, str) or not name_or_id:
+        return None
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    agents = getattr(config, "agents", None)
+    if not isinstance(agents, dict):
+        return None
+    hit = agents.get(name_or_id)
+    if hit is not None:
+        return name_or_id, hit
+    matches = [
+        (key, cfg) for key, cfg in agents.items() if getattr(cfg, "display_name", "") == name_or_id
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        return None
+    remembered = [
+        (key, cfg)
+        for key, cfg in agents.items()
+        if name_or_id in (getattr(cfg, "legacy_keys", None) or ())
+    ]
+    return remembered[0] if len(remembered) == 1 else None
+
+
+def resolve_member_id(name_or_id: object, config=None) -> str | None:
+    """The ``config.agents`` key for a member handle, or ``None``."""
+    resolved = resolve_member(name_or_id, config)
+    return None if resolved is None else resolved[0]
+
+
+def member_record(name_or_id: object, config=None):
+    """The ``KiroCrewAgentConfig`` a member handle names, or ``None``.
+
+    The drop-in for ``config.agents.get(handle)`` at every site whose handle
+    may be a display name (a slot's pinned agent, a cron or messaging crew, a
+    spawn target) rather than the key.
+    """
+    resolved = resolve_member(name_or_id, config)
+    return None if resolved is None else resolved[1]
+
+
+def member_display_name(member_id: str, cfg) -> str:
+    """What the roster shows for one record: its ``display_name``, else its key."""
+    label = getattr(cfg, "display_name", "")
+    return label if isinstance(label, str) and label else member_id
+
+
+def member_handle_holders(handle: object, agents: object) -> list[str]:
+    """Every key in *agents* that *handle* would address -- by key, ``display_name`` or a legacy key.
+
+    The union of the three spellings :func:`resolve_member` answers, WITHOUT
+    the uniqueness rule: a registration guard asks "is this handle already
+    spoken for", and a handle two members share is spoken for twice, not
+    free. *agents* is either ``config.agents`` (dataclass records) or the raw
+    ``agents`` section of a config document (dicts), so the check can run on
+    the in-memory snapshot and again on the document inside the write lock.
+    """
+    if not isinstance(handle, str) or not handle or not isinstance(agents, dict):
+        return []
+
+    def _field(entry: object, name: str) -> object:
+        if isinstance(entry, dict):
+            return entry.get(name)
+        return getattr(entry, name, None)
+
+    holders: list[str] = []
+    for key, entry in agents.items():
+        if key == handle or _field(entry, "display_name") == handle:
+            holders.append(key)
+            continue
+        legacy = _field(entry, "legacy_keys")
+        if isinstance(legacy, (list, tuple)) and handle in legacy:
+            holders.append(key)
+    return holders
+
+
+def member_live_holders(handle: object, agents: object) -> list[str]:
+    """The keys in *agents* that hold *handle* LIVE -- as the key or as ``display_name``.
+
+    :func:`member_handle_holders` minus the legacy spellings. A registration
+    asks this one about the LABEL it publishes: a legacy key is only a
+    forwarding address for references written before a rename, and the live
+    namespace wins over it in every resolver, so a label another member
+    merely remembers is free to take -- taking it retires that alias. The KEY
+    a registration publishes is still checked against every spelling: a
+    retired key is reserved so an overlay entry written under it keeps
+    naming the record the migration moved.
+    """
+    if not isinstance(handle, str) or not handle or not isinstance(agents, dict):
+        return []
+
+    def _label(entry: object) -> object:
+        if isinstance(entry, dict):
+            return entry.get("display_name")
+        return getattr(entry, "display_name", None)
+
+    return [key for key, entry in agents.items() if key == handle or _label(entry) == handle]
+
+
+def document_default_names_member(doc: object, *member_keys: str) -> bool:
+    """Whether the raw config *doc* makes any of *member_keys* the default member.
+
+    A delete's in-lock re-check: the top-level ``default_agent`` (the key the
+    loader reads) and the migration-era ``agent.default_agent`` are both
+    consulted, and each spelling is expanded through
+    :func:`member_handle_holders` against the document's raw ``agents`` map.
+    The generic ``kirocrew config set default_agent <handle>`` writes the
+    value verbatim, so a default spelled as a display name or a legacy key
+    still names this record and must still refuse the delete; the caller
+    passes every key the record may be stored under (the member id and the
+    raw document key).
+    """
+    if not isinstance(doc, dict):
+        return False
+    keys = {key for key in member_keys if isinstance(key, str) and key}
+    if not keys:
+        return False
+    agents = doc.get("agents")
+    spellings: list[object] = [doc.get("default_agent")]
+    agent_section = doc.get("agent")
+    if isinstance(agent_section, dict):
+        spellings.append(agent_section.get("default_agent"))
+    for handle in spellings:
+        if not isinstance(handle, str) or not handle:
+            continue
+        if handle in keys:
+            return True
+        if any(holder in keys for holder in member_handle_holders(handle, agents)):
+            return True
+    return False
+
+
+def member_owns_private_copy(
+    owner: object, member_id: str, config=None, *, template: str | None = None
+) -> bool:
+    """Whether a fork sidecar's ``private_to`` spelling *owner* names *member_id*.
+
+    Ownership is the ``config.agents`` KEY. One more spelling is accepted: a
+    key the migration moved THIS record from (its ``legacy_keys``), when that
+    spelling is not a live key and no other record wears it as a label or a
+    legacy key -- the same unambiguity rule the loader applies before it
+    rewrites the sidecar. A boot whose sidecar rewrite could not land leaves
+    ``private_to`` at the legacy key until the next boot retries; the owner
+    keeps reset/publish on their own copy in between instead of being refused
+    it. A display name is never an owner spelling: labels are reusable, so an
+    owner read by label would follow the label to whoever wears it next.
+
+    *template*, when given, is the copy the spelling was read from, and the
+    legacy spelling then counts only on the template this record is BOUND to
+    (its ``kiro_agent``) -- the loader's corroboration for the rewrite, applied
+    to the read. A legacy key is a reused label too: a retired member's
+    orphaned copy still spelling it must not read as the namesake's own.
+    """
+    if not isinstance(owner, str) or not owner or not member_id:
+        return False
+    if owner == member_id:
+        return True
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    agents = getattr(config, "agents", None)
+    if not isinstance(agents, dict) or owner in agents:
+        return False
+    record = agents.get(member_id)
+    legacy = getattr(record, "legacy_keys", None) if record is not None else None
+    if not isinstance(legacy, (list, tuple)) or owner not in legacy:
+        return False
+    if template is not None and getattr(record, "kiro_agent", None) != template:
+        return False
+    return member_handle_holders(owner, agents) == [member_id]
+
+
+def same_member(a: object, b: object, config=None) -> bool:
+    """Whether two handles (id or display name) name the same configured member."""
+    if not isinstance(a, str) or not isinstance(b, str) or not a or not b:
+        return False
+    if a == b:
+        return True
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    left = resolve_member_id(a, config)
+    return left is not None and left == resolve_member_id(b, config)
 
 
 def member_pin_matches(mode: object, current_agent: object, requested_agent: object) -> bool:
@@ -545,6 +711,70 @@ def member_pin_matches(mode: object, current_agent: object, requested_agent: obj
         and isinstance(requested_agent, str)
         and requested_agent == current_agent
     )
+
+
+def avatars_root() -> Path:
+    """Directory of the crews' uploaded pictures (``run/avatars`` under the data home).
+
+    Shared by the dashboard's avatar routes and the config loader's member
+    re-key, which moves a picture filed under a legacy handle onto its id.
+    """
+    return data_home() / "run" / "avatars"
+
+
+def avatar_stem(member_id: str) -> str:
+    """Path-safe filename stem for a crew's picture: a digest of its ``member_id``.
+
+    The id is immutable, so a rename never moves a file, and two members
+    can never share a stem (ids are unique by construction). Pictures filed
+    under a display name or a legacy key by an earlier build are moved onto
+    the id stem by :func:`rekey_avatar_files`.
+    """
+    return hashlib.sha256(member_id.encode("utf-8")).hexdigest()
+
+
+def rekey_avatar_files(old_handle: str, member_id: str) -> int:
+    """Move every picture file stemmed by *old_handle* onto *member_id*'s stem.
+
+    Never overwrites: a variant already present under the id stem is kept and
+    the legacy source is left where it is, logged, so a second member whose
+    legacy handle folds onto the same stem cannot destroy an uploaded picture.
+    A source that cannot be moved is likewise left in place and logged; the
+    caller runs on every boot, so the move is retried until it lands.
+    Idempotent: a missing directory or an already-moved source moves nothing.
+    Returns the number of files moved.
+    """
+    if not old_handle or not member_id or old_handle == member_id:
+        return 0
+    root = avatars_root()
+    if not root.is_dir():
+        return 0
+    old_stem, new_stem = avatar_stem(old_handle), avatar_stem(member_id)
+    moved = 0
+    for path in sorted(root.glob(f"{old_stem}.*")):
+        if not path.is_file():
+            continue
+        target = root / f"{new_stem}{path.name[len(old_stem):]}"
+        if target.exists():
+            logger.warning(
+                "avatar file %s not moved onto member %r: %s already exists; "
+                "the legacy file is left in place",
+                path.name,
+                member_id,
+                target.name,
+            )
+            continue
+        try:
+            replace_with_retry(path, target)
+        except OSError:
+            logger.warning(
+                "could not move avatar file %s onto member %r; retried next boot",
+                path.name,
+                member_id,
+            )
+            continue
+        moved += 1
+    return moved
 
 
 def members_root() -> Path:
@@ -609,22 +839,28 @@ def slug_for_name(name: str) -> str:
 
 
 def member_slug(name: str, config=None) -> str:
-    """Use persisted member identity; legacy members retain their existing slug."""
+    """Use persisted member identity; legacy members retain their existing slug.
+
+    *name* is any member handle (``member_id`` key or display name). A member
+    with a persisted ``member_id`` answers that id -- the ``config.agents`` key
+    -- whichever handle named it. An identity-less legacy record, and a handle
+    that names no member, derive the slug from the name as before.
+    """
     if config is None:
         from kiro_crew.config.loader import KiroCrewConfig
 
         config = KiroCrewConfig.load()
-    agent = config.agents.get(name)
+    resolved = resolve_member(name, config)
+    key, agent = resolved if resolved is not None else (name, None)
     member_id = getattr(agent, "member_id", "") if agent else ""
-    return validate_slug(member_id) if member_id else slug_for_name(name)
+    return validate_slug(member_id) if member_id else slug_for_name(key)
 
 
 def _stable_member_slug(slug: str, name: str) -> bool:
     from kiro_crew.config.loader import KiroCrewConfig
 
-    cfg = KiroCrewConfig.load()
-    agent = cfg.agents.get(name)
-    return bool(agent and getattr(agent, "member_id", "") == slug)
+    resolved = resolve_member(name, KiroCrewConfig.load())
+    return bool(resolved and getattr(resolved[1], "member_id", "") == slug)
 
 
 def member_dir(slug: str) -> Path:
@@ -890,8 +1126,28 @@ def read_dm_binding(slug: str) -> dict | None:
         except ValueError:
             return None
         data["member"] = alias
-    elif slug_for_name(data["member"]) != slug:
-        return None
+    else:
+        # A binding written before the re-key names the member by the label
+        # it had then. Every reader compares ``member`` with the config key,
+        # so the label is canonicalized here -- once, on the way in -- when it
+        # still answers to the record filed under this slug (its
+        # ``display_name`` or a legacy key). Otherwise the legacy rule holds:
+        # any name that folds to this slug passes; anything else reads as
+        # absent. Config is loaded only on this legacy branch.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        try:
+            resolved = resolve_member(data["member"], KiroCrewConfig.load())
+        except Exception:
+            resolved = None
+        if (
+            resolved is not None
+            and resolved[0] != data["member"]
+            and getattr(resolved[1], "member_id", "") == slug
+        ):
+            data["member"] = resolved[0]
+        elif slug_for_name(data["member"]) != slug:
+            return None
     return data
 
 
@@ -1006,7 +1262,7 @@ class MemberRulesUnreadable(RuntimeError):
     """
 
 
-def read_member_rules(slug: str, member: str) -> str:
+def read_member_rules(slug: str, member: str, config=None) -> str:
     """Return *member*'s permanent rules text, or ``""`` when never set.
 
     Name-scoped, like every read of a lossy-slug file: the payload's recorded
@@ -1017,6 +1273,10 @@ def read_member_rules(slug: str, member: str) -> str:
     Missing file reads as ``""`` (the normal state). An EXISTING file that
     cannot be read or parsed raises :class:`MemberRulesUnreadable` — see its
     docstring for why that must not degrade to ``""``.
+
+    *config* (optional, the loaded ``KiroCrewConfig``) attributes a payload
+    recorded under a legacy label; omitted, it is loaded only when such a
+    payload is met.
 
     Blocking file IO: call via ``asyncio.to_thread`` from async code.
     """
@@ -1054,10 +1314,37 @@ def read_member_rules(slug: str, member: str) -> str:
             f"rewrite or clear the rules via PUT /api/members/{slug}/rules"
         )
     if data.get("member_id") != slug and data["member"] != member:
-        # A colliding slug's file holds another exact name's rules; for THIS
-        # member that is "never set", not an error.
-        return ""
+        # A payload written before the record carried a ``member_id`` names
+        # the member by the label it had then (``member_id: ""``, the
+        # display name in ``member``). After the re-key both requested
+        # handles are the id, so an exact-name compare would read the user's
+        # own safety boundary as "never set" -- silently, on the one layer
+        # whose absence nothing reports. A recorded label that still answers
+        # to THIS member (its ``display_name`` or a legacy key) attributes the
+        # file; a label another member now holds live does not (the live
+        # namespace wins, as in every resolver). A colliding slug's file
+        # holding another exact name's rules still reads as "never set".
+        if not _recorded_handle_names_member(data["member"], member, slug, config):
+            return ""
     return data["rules"].strip()
+
+
+def _recorded_handle_names_member(handle: str, member: str, slug: str, config) -> bool:
+    """Whether a sidecar's recorded *handle* still names the member ``(slug, member)``."""
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        try:
+            config = KiroCrewConfig.load()
+        except Exception:
+            return False
+    resolved = resolve_member(handle, config)
+    if resolved is None:
+        return False
+    key, record = resolved
+    if key in (member, slug):
+        return True
+    return getattr(record, "member_id", "") == slug and resolve_member_id(member, config) == key
 
 
 def write_member_rules(slug: str, *, member: str, text: str) -> None:

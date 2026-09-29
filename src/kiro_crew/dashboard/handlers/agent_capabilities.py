@@ -16,6 +16,7 @@ from kiro_crew.dashboard.handlers._shared import (
     skill_uri_for_key,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.members import resolve_member_id
 
 _SERVICE = web.AppKey("member_capability_service", CapabilityService)
 
@@ -60,7 +61,11 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
     if service is None:
         service = CapabilityService(_catalog, _connections)
         request.app[_SERVICE] = service
-    name = request.match_info["name"]
+    # The route carries any member handle (the roster hands it the display
+    # name); the service, the sidecar and the runtime registry all key the
+    # member by its ``config.agents`` key, so resolve once here. An unknown
+    # handle stays as-is and the service answers ``agent_not_found``.
+    name = await drained_to_thread(_canonical_handle, request.match_info["name"])
     try:
         if request.method == "GET":
             result = await drained_to_thread(service.get, name)
@@ -116,6 +121,11 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
         )
 
 
+def _canonical_handle(handle: str) -> str:
+    """The ``config.agents`` key for a member handle, or the handle itself when unknown."""
+    return resolve_member_id(handle, KiroCrewConfig.load()) or handle
+
+
 async def inherited_template_action(
     request: web.Request, member: str, action: str, publish_name: str = ""
 ) -> web.Response | None:
@@ -137,6 +147,7 @@ async def inherited_template_action(
         if service is None:
             service = CapabilityService(_catalog, _connections)
             request.app[_SERVICE] = service
+        member = await drained_to_thread(_canonical_handle, member)
         async with _get_config_lock():
             if action == "reset":
                 await drained_to_thread(service.reset, member, target)

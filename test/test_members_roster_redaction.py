@@ -63,7 +63,9 @@ def _members_app(state) -> web.Application:
 
 
 async def _roster(tmp_path, agents, memory_stores=None):
-    """Rows keyed by crew name, from a config the test controls outright."""
+    """Rows keyed by member id (the ``config.agents`` key), from a config the test
+    controls outright. ``name`` is the display name's alias, so the key is the
+    stable handle to index on."""
     fake = SimpleNamespace(
         agents=agents,
         default_agent=next(iter(agents)),
@@ -76,7 +78,7 @@ async def _roster(tmp_path, agents, memory_stores=None):
             resp = await client.get("/api/members")
             assert resp.status == 200
             body = await resp.json()
-    return {row["name"]: row for row in body["members"]}, body
+    return {row["member_id"]: row for row in body["members"]}, body
 
 
 class TestRecordStringsAreMasked:

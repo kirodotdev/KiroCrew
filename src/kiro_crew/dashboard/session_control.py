@@ -104,7 +104,7 @@ from kiro_crew.execution_context import (
 )
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.members import select_provider_backend
-from kiro_crew.memory_stores import named_store_or_empty
+from kiro_crew.memory_stores import named_store_or_empty, store_owned_by_member
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, ChannelLink, parse_session_key
 from kiro_crew.messaging.transport import DM_TARGET_PREFIX, sole_direct_target
 from kiro_crew.security import redact, redact_and_truncate
@@ -250,7 +250,7 @@ def _store_is_member_owned(store: str) -> bool:
     fields it reads are in-memory attributes of the loaded record.
 
     ``True`` requires ALL of: a record for *store*; ``memory_version == 2``; a
-    non-empty ``owner_member``; and that owner still an ACTIVE agent bound to
+    non-empty owner (``owner_member_id``, or the legacy ``owner_member`` label); and that owner still an ACTIVE agent bound to
     exactly this store (the live-binding test ``active_member_memory_stores``
     applies). A crew can be deleted while a chat slot bound to its store is still
     live — the store record is retained with ``owner_member`` set but the agent is
@@ -296,15 +296,18 @@ def _store_is_member_owned(store: str) -> bool:
     record = cfg.memory_stores.get(store)
     if record is None or getattr(record, "memory_version", 1) != 2:
         return False
-    owner = getattr(record, "owner_member", "")
-    if not owner:
+    if not (getattr(record, "owner_member_id", "") or getattr(record, "owner_member", "")):
         return False
     owners_bound_here = [
         member
         for member, agent in cfg.agents.items()
         if getattr(agent, "memory_store", None) == store
     ]
-    return owners_bound_here == [owner]
+    # Exactly one bound member, and the record names IT: ``owner_member_id``
+    # first, the ``owner_member`` label only for a record with no id
+    # (``store_owned_by_member``), so a renamed or re-keyed member keeps its
+    # member status and a member that later took the old label gains none.
+    return len(owners_bound_here) == 1 and store_owned_by_member(record, owners_bound_here[0], cfg)
 
 
 def _cron_caller(caller_key: str) -> bool:

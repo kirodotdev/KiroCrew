@@ -17,6 +17,7 @@ from typing import Any, Callable, cast
 
 from aiohttp import web
 
+from kiro_crew import members as members_mod
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.drivers.acp_vocab import NATIVE_CHILD_NOT_RESUMABLE
 from kiro_crew.atomic_write import atomic_write
@@ -711,12 +712,13 @@ async def api_spawn(request: web.Request) -> web.Response:
                 None, MemoryStoreRef("default"), "template", agent or "kirocrew"
             )
         config = await asyncio.to_thread(KiroCrewConfig.load) if crew else None
-        if crew and config is not None and crew not in config.agents:
+        crew_record = members_mod.member_record(crew, config) if crew and config else None
+        if crew and config is not None and crew_record is None:
             return web.json_response(
                 {"error": "The target member does not exist.", "code": "unknown_member"},
                 status=404,
             )
-        if crew and config is not None and not config.agents[crew].triggers.strip():
+        if crew and crew_record is not None and not crew_record.triggers.strip():
             return web.json_response(
                 {
                     "error": "The target member has not enabled delegated tasks.",

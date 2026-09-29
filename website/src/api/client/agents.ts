@@ -15,8 +15,12 @@ import type { ClientTransport } from './transport'
  *  are typed here, and extras pass through untyped by design so a new backend
  *  field is not a frontend break. */
 export interface MemberRosterRow {
-  /** Crew name — the display identity and the agent the DM thread pins to. */
+  /** Crew display name — the agent handle the DM thread pins to (the server
+   *  resolves it and `member_id` alike). Alias of `display_name` for one release. */
   name: string
+  /** The `config.agents` key: the crew's immutable identity. Optional: older
+   *  payloads predate the field. */
+  member_id?: string
   /** Stable path-safe slug deriving the member dir and the slot key. */
   slug: string
   /** The pinned DM thread's slot key ('' until first open / unbound). */
