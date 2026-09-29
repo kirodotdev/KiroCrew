@@ -334,6 +334,14 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             />
           </div>
         )}
+        {/* The rows body holds only running/tool/pending agents (`visibleList`)
+            plus an overflow row that is itself gated on there being hidden rows.
+            When the chip is mounted solely on a QUEUED count — the header's
+            `hasActive` term with running === 0 — `visibleList` is empty, so this
+            body has nothing to render and expanding it revealed only its own
+            `px-3 pb-2` padding as blank whitespace. Gate the whole body on
+            having a row: the header (counts + Stop all) still stands on its own. */}
+        {visibleList.length > 0 && (
         <div className={`px-3 pb-2 space-y-0.5${collapsed ? ' hidden' : ''}`}>
           {visibleList.map((a, i) => {
             const isLast = i === visibleList.length - 1 && hiddenCount === 0
@@ -449,6 +457,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             </button>
           )}
         </div>
+        )}
       </div>
     </div>
   )

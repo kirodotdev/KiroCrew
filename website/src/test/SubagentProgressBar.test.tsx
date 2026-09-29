@@ -381,3 +381,27 @@ describe('SubagentProgressBar — why the queued agents wait', () => {
       .toBe('Waiting to start — queued behind the concurrency limit')
   })
 })
+
+describe('SubagentProgressBar — expand renders no empty body', () => {
+  beforeEach(() => { vi.clearAllMocks(); try { localStorage.clear() } catch { /* not available in this env */ } })
+
+  it('renders no rows body when the chip is mounted only on a queued count', () => {
+    // The second bug in the report: expanding the chip while running===0 (only a
+    // queued tally) added vertical whitespace with nothing in it, because the
+    // rows body carried its px-3 pb-2 padding around an empty list. There must be
+    // no such body — the header (count + Stop all) stands alone.
+    const store = makeStore([])
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1 }))
+    renderBar(store)
+    // Header is present…
+    expect(screen.getByTestId('subagent-queued-count')).toBeInTheDocument()
+    // …but no row exists and no empty padded body is rendered.
+    expect(screen.queryAllByTestId('subagent-row')).toHaveLength(0)
+    expect(screen.queryByTestId('subagent-overflow-row')).toBeNull()
+  })
+
+  it('still renders the rows body when there is a running agent to show', () => {
+    renderBar(makeStore(['a1']))
+    expect(screen.getAllByTestId('subagent-row')).toHaveLength(1)
+  })
+})
