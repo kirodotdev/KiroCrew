@@ -735,7 +735,7 @@ describe('chat sidebar — conductor lane', () => {
       peer_id: 'peer-1', row_identity: `peer-1:${key}`,
       ...(parent ? { parent: { slot: parent, key: parent } } : {}),
     })
-    const { getByTestId } = renderSidebar([
+    const { getByTestId, getByPlaceholderText } = renderSidebar([
       { key: 'k-lead', title: 'Local lead', messages: 1, running: false, modified: 5000 },
       peer('k-lead', 'Peer lead', 4000),
       peer('k-w1', 'Peer worker 1', 3000, 'k-lead'),
@@ -753,8 +753,13 @@ describe('chat sidebar — conductor lane', () => {
     fireEvent.click(within(lane()).getByTestId('conductor-chevron-peer-1:k-lead'))
     expect(laneRows(lane())).toEqual(['k-lead', 'k-lead', 'k-w1', 'k-w2'])
     expect(within(lane()).queryByTestId('conductor-orphan-peer-1:k-w1')).toBeNull()
-    const w1 = lane().querySelector('[data-layout-id="slot-conductor-k-w1"]') ?? Array.from(lane().querySelectorAll('[data-slot-key="k-w1"]'))[0]
+    const w1 = lane().querySelector('[data-slot-key="k-w1"]')
     expect(w1?.getAttribute('data-conductor-depth')).toBe('1')
+    // Search flattens the tree; the peer child then wears the same "opened by"
+    // glyph a local child does, read off `parent.slot` -- the half the hub now
+    // forwards. Same query on the local twin as a control.
+    fireEvent.change(getByPlaceholderText(/search/i), { target: { value: 'worker' } })
+    expect(within(lane()).getByTestId('conductor-cites-parent-peer-1:k-w1')).toBeTruthy()
   })
 
   it('caps the indent past six levels and names the level in the tooltip', () => {

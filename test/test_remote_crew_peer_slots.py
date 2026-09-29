@@ -448,8 +448,8 @@ class TestPeerTextIsRedactedAndAllowlisted:
         assert "parent" not in by_key["lead"]
         assert "lineage_pending" not in by_key["lead"]
 
-    async def test_a_citation_without_a_string_key_is_no_citation(self, monkeypatch):
-        """``parent.key`` is dereferenced by the lane on every frame, so a peer
+    async def test_a_citation_with_neither_half_a_string_is_no_citation(self, monkeypatch):
+        """Both halves are dereferenced by the lane on every frame, so a peer
         answering ``"parent": "lead"`` or ``{"key": {}}`` must not reach it. Such a
         row is forwarded WITHOUT a parent, not dropped: the session is real, only
         its citation is unusable."""
@@ -457,16 +457,56 @@ class TestPeerTextIsRedactedAndAllowlisted:
         rows = [
             {"key": "a", "parent": "lead"},
             {"key": "b", "parent": {"key": {"nested": 1}}},
-            {"key": "c", "parent": {"slot": "lead"}},
+            {"key": "c", "parent": {"slot": 7, "key": None}},
             {"key": "d", "parent": None},
             {"key": "e", "parent": ["lead"]},
+            {"key": "f", "parent": {}},
         ]
         mgr = _manager(body=json.dumps(rows).encode())
 
         data = await _body(await hi.api_instances_chat_slots(_request(_state(mgr))))
 
-        assert [r["key"] for r in data] == ["a", "b", "c", "d", "e"]
+        assert [r["key"] for r in data] == ["a", "b", "c", "d", "e", "f"]
         assert all("parent" not in r for r in data)
+
+    async def test_the_orphan_citation_keeps_slot_when_key_is_gone(self, monkeypatch):
+        """``lineage_parents`` sends ``{"slot": <creator>, "key": null}`` for a
+        row whose creator has closed. That half feeds the lane's "opened by"
+        glyph and its move baseline, so it must cross with ``key`` omitted --
+        neither dropped as malformed nor padded with an empty ``key``."""
+        _enable_instances(monkeypatch)
+        rows = [{"key": "w", "parent": {"slot": "gone", "key": None}}]
+        mgr = _manager(body=json.dumps(rows).encode())
+
+        data = await _body(await hi.api_instances_chat_slots(_request(_state(mgr))))
+
+        assert data[0]["parent"] == {"slot": "gone"}
+
+    async def test_a_citation_naming_a_hub_driven_slot_is_dropped(self, monkeypatch):
+        """The route's contract is that no peer slot key of a hub-driven binding
+        crosses to the browser. The driven row itself is filtered; a peer session
+        that row OPENED still ships, and its citation would carry the same key by
+        another route. The citation goes, the child stays, as a root: its creator
+        is on screen as the LOCAL row that drives it, which the lane cannot hang
+        a peer row from anyway."""
+        _enable_instances(monkeypatch)
+        rows = [
+            {"key": "peer-chat-9", "title": "driven lead"},
+            {"key": "w1", "parent": {"slot": "peer-chat-9", "key": "peer-chat-9"}},
+            {"key": "w2", "parent": {"slot": "peer-chat-9", "key": None}},
+            {"key": "w3", "parent": {"slot": "other", "key": "other"}},
+        ]
+        mgr = _manager(body=json.dumps(rows).encode())
+        state = _state(mgr, {"chat-1": _remote_slot()})
+
+        data = await _body(await hi.api_instances_chat_slots(_request(state)))
+
+        by_key = {r["key"]: r for r in data}
+        assert set(by_key) == {"w1", "w2", "w3"}
+        assert "parent" not in by_key["w1"]
+        assert "parent" not in by_key["w2"]
+        assert by_key["w3"]["parent"] == {"slot": "other", "key": "other"}
+        assert "peer-chat-9" not in json.dumps(data)
 
     async def test_lineage_pending_is_forwarded_only_when_literally_true(self, monkeypatch):
         """The lane tests PRESENCE to skip a provisional frame when it records what
@@ -846,9 +886,9 @@ class TestTheRowCountIsBoundedNotOnlyTheByteCount:
         seen: list[object] = []
         real = hi._clean_peer_slot
 
-        def _spy(row):
+        def _spy(row, driven=()):
             seen.append(row)
-            return real(row)
+            return real(row, driven)
 
         monkeypatch.setattr(hi, "_clean_peer_slot", _spy)
         mgr = _manager(body=_rows(*[f"peer-{i}" for i in range(50)]))

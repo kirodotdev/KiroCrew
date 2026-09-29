@@ -147,19 +147,20 @@ describe('useInstanceSessions', () => {
 
     await waitFor(() => expect(result.current.rows).toHaveLength(3))
     const byKey = new Map(result.current.rows.map(r => [r.key, r]))
-    // Only `key` is kept: it is the one field the lane resolves.
-    expect(byKey.get('w1')?.parent).toEqual({ key: 'lead' })
+    // Both halves cross when present: `key` is what the lane nests on, `slot` is
+    // what the orphan glyph and the move baseline read.
+    expect(byKey.get('w1')?.parent).toEqual({ slot: 'lead', key: 'lead' })
     expect(byKey.get('w1')).not.toHaveProperty('lineage_pending')
     expect(byKey.get('w2')?.parent).toEqual({ key: 'lead' })
     expect(byKey.get('w2')?.lineage_pending).toBe(true)
     expect(byKey.get('lead')).not.toHaveProperty('parent')
   })
 
-  it('drops a citation whose key is not a string instead of letting the lane dereference it', async () => {
+  it('drops a citation with no string half instead of letting the lane dereference it', async () => {
     instanceChatSlotsMock.mockResolvedValue([
       { key: 'a', parent: 'lead' },
       { key: 'b', parent: { key: { nested: 1 } } },
-      { key: 'c', parent: { slot: 'lead' } },
+      { key: 'c', parent: { slot: 7, key: null } },
       { key: 'd', parent: null },
       { key: 'e', lineage_pending: 'yes' },
     ])
@@ -170,6 +171,14 @@ describe('useInstanceSessions', () => {
       expect(r).not.toHaveProperty('parent')
       expect(r).not.toHaveProperty('lineage_pending')
     }
+  })
+
+  it('keeps the orphan citation (slot without key) so the lane can draw who opened the row', async () => {
+    instanceChatSlotsMock.mockResolvedValue([{ key: 'w', parent: { slot: 'gone' } }])
+    const { result } = renderInstanceSessions(true, [CONNECTED])
+
+    await waitFor(() => expect(result.current.rows).toHaveLength(1))
+    expect(result.current.rows[0].parent).toEqual({ slot: 'gone' })
   })
 
   it('preserves row identity across unrelated rerenders after query data settles', async () => {
