@@ -6538,6 +6538,8 @@
         "custom_font_detect_denied": "Font access was not granted — the list keeps the fonts already detected, and you can still type any font name.",
         "custom_font_ligatures": "Enable ligatures",
         "custom_font_ligatures_desc": "Render programming ligatures (=>, !=, ->) when the custom font has them. Code and diffs in messages are unaffected.",
+        "reduce_transparency": "Reduce glass transparency",
+        "reduce_transparency_desc": "Show the frosted glass panes (the message box, the suggestion chips, the Settings search) as solid cards. Same look the app uses when your system asks for less transparency.",
         "terminal": "Terminal",
         "terminal_font_family": "Font",
         "terminal_font_family_desc": "Font for the built-in terminal. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders Powerline and prompt-theme glyphs.",

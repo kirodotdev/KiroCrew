@@ -14914,7 +14914,9 @@
         "custom_font_detect_none": "Keine weiteren Schriften über die bereits aufgeführten hinaus.",
         "custom_font_detect_denied": "Der Schriftzugriff wurde nicht gewährt – die Liste behält die bereits erkannten Schriften, und du kannst weiterhin einen beliebigen Schriftnamen eingeben.",
         "custom_font_ligatures": "Ligaturen aktivieren",
-        "custom_font_ligatures_desc": "Programmierligaturen (=>, !=, ->) rendern, wenn die benutzerdefinierte Schrift sie hat. Code und Diffs in Nachrichten sind nicht betroffen."
+        "custom_font_ligatures_desc": "Programmierligaturen (=>, !=, ->) rendern, wenn die benutzerdefinierte Schrift sie hat. Code und Diffs in Nachrichten sind nicht betroffen.",
+        "reduce_transparency": "Glastransparenz verringern",
+        "reduce_transparency_desc": "Zeigt die Milchglas-Flächen (Nachrichtenfeld, Vorschlags-Chips, Einstellungssuche) als undurchsichtige Karten. So sieht die App auch aus, wenn dein System weniger Transparenz verlangt."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

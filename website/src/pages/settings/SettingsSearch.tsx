@@ -169,7 +169,11 @@ export default function SettingsSearch() {
   }
 
   return (
-    <div ref={rootRef} className="relative shrink-0">
+    // `settings-search` (index.css) turns the boxed input's `focus-ring` neutral:
+    // Settings is where the user hunts for a switch, and its search bar wears
+    // the same rule as the glass panes -- focus is the control stepping clearer
+    // (darker border, soft neutral halo), never the theme colour.
+    <div ref={rootRef} className="settings-search relative shrink-0">
       {floating ? (
         // The capsule host owns the chrome, so this input stays borderless;
         // SearchInput has no way to drop its own box.
@@ -178,10 +182,9 @@ export default function SettingsSearch() {
           <input
             {...inputProps}
             // focus-cue-ok: the cue is the SidePanelLayout capsule's
-            // `.glass-shadow:focus-within` — the glass tint and its side lines
-            // step up (`--glass-tint-focus` / `--glass-edge-focus`) and the rest
-            // shadow deepens; under the solidifying fallbacks the same rule paints
-            // the standard accent outline. The ancestor sits in another file, so
+            // `.glass-shadow:focus-within` — the glass side lines step up
+            // (`--glass-edge-focus`) and the rest shadow deepens; under the solidifying fallbacks the same rule paints
+            // a neutral 2px outline (never the accent). The ancestor sits in another file, so
             // the gate can't see it.
             className="w-full bg-transparent border-none rounded-full pl-8 pr-4 py-2.5 text-[14px] text-text placeholder:text-muted focus:outline-hidden"
           />

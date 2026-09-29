@@ -15139,7 +15139,9 @@
         "custom_font_detect_none": "Aucune police en plus de celles déjà listées.",
         "custom_font_detect_denied": "L’accès aux polices n’a pas été accordé — la liste conserve les polices déjà détectées, et tu peux toujours taper n’importe quel nom de police.",
         "custom_font_ligatures": "Activer les ligatures",
-        "custom_font_ligatures_desc": "Affiche les ligatures de programmation (=>, !=, ->) lorsque la police personnalisée en possède. Le code et les diffs des messages ne sont pas affectés."
+        "custom_font_ligatures_desc": "Affiche les ligatures de programmation (=>, !=, ->) lorsque la police personnalisée en possède. Le code et les diffs des messages ne sont pas affectés.",
+        "reduce_transparency": "Réduire la transparence du verre",
+        "reduce_transparency_desc": "Affiche les panneaux en verre dépoli (la zone de message, les puces de suggestion, la recherche des Réglages) comme des cartes opaques. C’est le rendu que l’app adopte quand ton système demande moins de transparence."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

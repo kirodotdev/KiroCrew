@@ -240,6 +240,10 @@
     // chat layout when the user's preferred mode is 'cli'. Mirrors the
     // pattern used by data-theme bootstrapping. Synced by useUIMode.
     try { var u = localStorage.getItem('mc-ui'); if (u === 'cli') document.documentElement.dataset.ui = 'cli'; } catch (e) {}
+    // Set data-reduce-transparency before React hydrates so the Liquid Glass
+    // panes render solid on the first paint when the user turned the glass off
+    // in Settings -> Display. Key and value owned by src/utils/reduceTransparency.ts.
+    try { if (localStorage.getItem('mc-reduce-transparency') === 'on') document.documentElement.dataset.reduceTransparency = 'on'; } catch (e) {}
     // Set <html lang> from the cached language choice before React hydrates, so
     // assistive tech and :lang() CSS see the right language on the first paint
     // rather than 'en' briefly. Only the shape is validated here — the real

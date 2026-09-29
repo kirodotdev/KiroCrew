@@ -1103,6 +1103,13 @@
       "description": "Choose a color palette for your sidebar sessions."
     },
     {
+      "id": "display.reduce-glass-transparency",
+      "label": "Reduce glass transparency",
+      "tab": "display",
+      "route": "/settings/display?highlight=display.reduce-glass-transparency",
+      "description": "Show the frosted glass panes (the message box, the suggestion chips, the Settings search) as solid cards. Same look the app uses when your system asks for less transparency."
+    },
+    {
       "id": "display.theme",
       "label": "Theme",
       "tab": "display",

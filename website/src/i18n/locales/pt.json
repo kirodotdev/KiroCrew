@@ -15139,7 +15139,9 @@
         "custom_font_detect_none": "Nenhuma fonte além das já listadas.",
         "custom_font_detect_denied": "O acesso às fontes não foi concedido — a lista mantém as fontes já detectadas e você ainda pode digitar qualquer nome de fonte.",
         "custom_font_ligatures": "Ativar ligaduras",
-        "custom_font_ligatures_desc": "Renderiza as ligaduras de programação (=>, !=, ->) quando a fonte personalizada as tem. O código e os diffs nas mensagens não são afetados."
+        "custom_font_ligatures_desc": "Renderiza as ligaduras de programação (=>, !=, ->) quando a fonte personalizada as tem. O código e os diffs nas mensagens não são afetados.",
+        "reduce_transparency": "Reduzir a transparência do vidro",
+        "reduce_transparency_desc": "Mostra os painéis de vidro fosco (a caixa de mensagem, os chips de sugestão, a busca dos Ajustes) como cartões sólidos. É o mesmo visual que o app usa quando o seu sistema pede menos transparência."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

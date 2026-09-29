@@ -194,9 +194,11 @@ ANCESTOR_CUE = re.compile(r"\bfocus-within:([a-z0-9-]+(?:\[[^\]]*\])?)")
 # above its child, or within a short attribute list; every one of the wrapper-cued
 # elements in this tree sits at distance 1-4. A wider window starts exempting
 # elements whose nearest `focus-within:` belongs to a DIFFERENT wrapper -- at 20
-# it silences the composer textarea in `components/ChatInput.tsx`, whose
-# `focus-within:border-accent/50` lives only in the final else-branch of a
-# ternary, so three persistent modes really do render with no regional cue.
+# it silenced the composer textarea in `components/ChatInput.tsx` back when its
+# wrapper's `focus-within:border-accent/50` lived only in the final else-branch
+# of a ternary, so three persistent modes really rendered with no regional cue
+# (that cue is gone; the textarea now declares its dock pane's `.glass-shadow`
+# tint + edge step as its cue via a `focus-cue-ok` comment).
 ANCESTOR_CUE_WINDOW = 4
 
 

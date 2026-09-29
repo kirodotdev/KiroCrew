@@ -270,7 +270,11 @@ function specularRing(lightIntensity: number, radius: number): string {
     `color-mix(in srgb, var(--glass-band) ${Math.round(share * k)}%, transparent)`;
   const r1 = (radius * 0.7).toFixed(1);
   const r2 = (radius * 1.5).toFixed(1);
-  return `linear-gradient(to bottom, ${a(1)} 0px, ${a(0.35)} ${r1}px, transparent ${r2}px, transparent calc(100% - ${r2}px), ${a(0.35)} calc(100% - ${r1}px), ${a(1)} 100%)`;
+  // A 2px plateau at full strength before the fall-off: on a light page the
+  // band is white on near-white, and a single-pixel peak read as no band at
+  // all; two pixels of #ffffff inside the hairline is what the maintainer
+  // measured the reference at.
+  return `linear-gradient(to bottom, ${a(1)} 0px, ${a(1)} 2px, ${a(0.35)} ${r1}px, transparent ${r2}px, transparent calc(100% - ${r2}px), ${a(0.35)} calc(100% - ${r1}px), ${a(1)} calc(100% - 2px), ${a(1)} 100%)`;
 }
 
 type Size = { width: number; height: number };
@@ -448,7 +452,11 @@ function LiquidGlassImpl(
           third of their contrast while the top edge was flat, and a bare div did
           the same, so it is the engine, not this composition. The blurring box
           is therefore two blur radii larger than the pane on every side and the
-          pane clips it, so the under-blurred band lies outside what is shown. */}
+          pane clips it, so the under-blurred band lies outside what is shown.
+          saturate(1.55): a blurred backdrop reads foggy because blur averages
+          hues toward grey; the lift gives what shows through its colour back
+          (a white page is unchanged, an image or a colour block under the pane
+          keeps its life). */}
       <span aria-hidden="true" data-liquid-glass-layer="" style={{ ...layer, overflow: "hidden" }}>
         <span
           style={{
@@ -484,6 +492,15 @@ function LiquidGlassImpl(
           boxShadow: [
             `inset 1px 0 0 var(--glass-edge)`,
             `inset -1px 0 0 var(--glass-edge)`,
+            // The lit edges' crisp core: one full-strength pixel of the band
+            // colour just inside each hairline, top and bottom. The soft band
+            // below is masked to hug the outline and never reaches full
+            // strength at the very edge (a light page measured 252, not 255);
+            // this pixel does, so the edge inside the hairline IS the band
+            // colour -- #ffffff on a light page. Thins through the arcs like the
+            // side lines, so it never closes into a ring.
+            `inset 0 1px 0 var(--glass-band)`,
+            `inset 0 -1px 0 var(--glass-band)`,
             `0 -0.5px 0 0 var(--glass-hairline)`,
             `0 0.5px 0 0 var(--glass-hairline)`,
             `inset 0px ${bevel.toFixed(2)}px ${(bevel * 1.15).toFixed(2)}px ${(-bevel * 0.5).toFixed(

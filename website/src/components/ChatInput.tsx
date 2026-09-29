@@ -1516,6 +1516,14 @@ function ChatInput({
   // icon-only (agent/project) + drop the model effort label when space is tight.
   // Truncation handles the in-between cases.
   const [shelfWidth, setShelfWidth] = useState(9999)
+  // Border-box height of the shelf, handed to `.glass-shelf::before` as
+  // `--glass-shelf-h`: the fade under the shelf is positioned against the
+  // dock's input-area wrapper (so it spans exactly the dock root, which already
+  // stops short of the scrollbar gutter), not against the shelf, so it has to
+  // be told how tall the shelf is to start at the pane's bottom edge. 32px is
+  // the one-row shelf (pt-1 + h-7) for the first paint and for environments
+  // without ResizeObserver.
+  const [shelfHeight, setShelfHeight] = useState(32)
   const shelfRoRef = useRef<ResizeObserver | null>(null)
   const shelfRef = useCallback((el: HTMLDivElement | null) => {
     shelfRoRef.current?.disconnect()
@@ -1523,6 +1531,8 @@ function ChatInput({
     const ro = new ResizeObserver(entries => {
       const w = entries[0]?.contentRect.width
       if (typeof w === 'number') setShelfWidth(w)
+      const h = entries[0]?.borderBoxSize?.[0]?.blockSize ?? entries[0]?.target.getBoundingClientRect().height
+      if (typeof h === 'number' && h > 0) setShelfHeight(h)
     })
     ro.observe(el)
     shelfRoRef.current = ro
@@ -3955,12 +3965,14 @@ function ChatInput({
           approval bar, the notices, the composer and the collapsed bar, so a bar
           fused to the composer's top shares its pane instead of meeting it at a
           seam; it is always mounted so an approval landing never remounts the
-          editor. It carries the composer halo at rest and the approval glow
-          while a decision is pending (both are box-shadows, so one at a time). */}
+          editor. It wears the same neutral `glass-shadow` as every other glass
+          pane (focus = the material's own edge + shadow step, no theme color), and
+          adds the approval glow while a decision is pending: the glow takes the
+          shadow slot, the edge focus step stays on. */}
       <Glass
         radius={16}
         data-testid="composer-dock"
-        className={hasApproval ? 'approval-glow' : `composer-halo${memoryMode === 'temporary' ? ' composer-halo-aim' : memoryMode === 'incognito' ? ' composer-halo-warn' : ''}`}
+        className={hasApproval ? 'glass-shadow approval-glow' : 'glass-shadow'}
       >
       <AnimatePresence>
         {pendingApproval && approvalId && (
@@ -4261,17 +4273,12 @@ function ChatInput({
         animate={{ opacity: 1, height: 'auto' }}
         exit={{ opacity: 0, height: 0 }}
         transition={{ type: 'spring', damping: 26, stiffness: 280, mass: 0.7 }}
-        // The halo lives on THIS element, not on the bordered wrapper inside it:
-        // this element clips its content for the height:0 exit, and a child's
-        // box-shadow is content, so a halo drawn one level down is cut at the
-        // edge. An element's own shadow is outside its overflow clip. Radius
-        // mirrors the wrapper's so the halo hugs the same corners. With an
-        // approval box attached above, the wrapper has no top radius and the
-        // approval glow already lights the pair, so the halo stands down.
-        // Incognito and temporary modes paint the wrapper's border warn / aim
-        // at all times; the focus halo takes the same color there so the one
-        // control lights up in one color instead of an accent ring around a
-        // warn or aim edge.
+        // This element clips its content for the height:0 exit, and it paints
+        // no shadow or focus cue of its own: both belong to the Glass dock pane
+        // that wraps it (`.glass-shadow`, index.css) — the shadow is outside this
+        // clip, and focus is the pane's own edge + shadow step, no theme color.
+        // With an approval box attached above, that pane wears `approval-glow`,
+        // whose warn glow takes the shadow slot while the focus step stays.
         style={{ overflow: 'hidden' }}
       >{/* File drag-and-drop target. Drag-drop is inherently pointer-only; the
            keyboard-accessible path is the "Attach files" button that opens the
@@ -4280,7 +4287,7 @@ function ChatInput({
       <div
         data-testid="input-wrapper"
         ref={wrapperRef}
-        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent focus-within:border-accent/50'}`}
+        className={`${hasApproval ? 'rounded-b-2xl rounded-t-none' : 'rounded-2xl'} relative transition-colors overflow-hidden ${manualHeight !== null ? 'flex flex-col min-h-0' : ''} ${(memoryMode === 'incognito' || memoryMode === 'temporary') ? 'border-2' : 'border'} bg-transparent ${memoryMode === 'temporary' ? 'border-aim' : memoryMode === 'incognito' ? 'border-warn' : 'border-transparent'}`}
 
         data-tree-drop-active={treeDrop.state === 'accept' ? 'true' : undefined}
         data-tree-drop-refused={treeDrop.state === 'refuse' ? 'true' : undefined}
@@ -4425,7 +4432,7 @@ function ChatInput({
           data-composer-typo
           // Chromium paints no `text-overflow` on a `::placeholder`, so the cut tail
           // fades out instead, the way the app's other cut edges do.
-          className={/* focus-cue-ok: the cue is the composer shell's focus-within border-accent brightening; a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-hidden min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${placeholderIsHint ? 'placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] placeholder:[-webkit-mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]' : ''} ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
+          className={/* focus-cue-ok: the cue is the dock pane's `.glass-shadow:focus-within` step (stronger side lines + deeper shadow, index.css); a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-hidden min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${placeholderIsHint ? 'placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] placeholder:[-webkit-mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]' : ''} ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
           placeholder={activePlaceholder}
           readOnly={optimizing}
@@ -5109,7 +5116,14 @@ function ChatInput({
       )}
       </Glass>
 
-      {/* Context shelf — plain full-width row below input.
+      {/* Context shelf — plain full-width row below input, standing on the
+          `glass-shelf` fade (index.css): the dock floats over the transcript,
+          so without it the agent / project / model chips read against whatever
+          scrolls under them. The fade is positioned against ChatPage's
+          `relative z-10 dock-inert` wrapper (the shelf is deliberately not
+          positioned), so it spans the dock root — which stops short of the
+          scrollbar gutter — and sits behind the pane's shadow;
+          `--glass-shelf-h` tells it where the shelf starts.
           Stands down with the composer for the same reason it stands down for the
           ghost bar: agent, project, branch and model are context for WRITING, and
           the assembly is not being written in. Leaving it up was measured to cost
@@ -5124,7 +5138,7 @@ function ChatInput({
           // this the chip is silently invisible whenever no other pill happens
           // to be present — the control is declared, mounted and unreachable.
           !!sessionControls?.length) && (
-        <div ref={shelfRef} data-testid="composer-context-shelf" className="pt-1 flex items-center gap-2 min-w-0">
+        <div ref={shelfRef} data-testid="composer-context-shelf" className="glass-shelf pt-1 flex items-center gap-2 min-w-0" style={{ ['--glass-shelf-h' as string]: `${shelfHeight}px` }}>
           {/* App-contributed session controls live in their OWN group, not
               beside the agent/project chips. `max-two-buttons-per-row`
               (AUTOSDE.yaml, blocking) caps a horizontal group at 2 action
