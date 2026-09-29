@@ -101,7 +101,7 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, checkSessio
     ) =>
       post(`/api/artifacts/${encodeURIComponent(slug)}/settle`, body).then(j) as
         Promise<{ outcome: 'kept' | 'saved' | 'deleted' }>,
-    updateArtifact: (slug: string, body: { content?: string; name?: string; kind?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
+    updateArtifact: (slug: string, body: { content?: string; name?: string; kind?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean; expected_token?: string }) =>
       patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),
     deleteArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}`).then(j),
     // Artifact library folders

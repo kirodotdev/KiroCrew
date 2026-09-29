@@ -48,6 +48,19 @@ class ArtifactStillPublishedError(ArtifactError):
     """
 
 
+class ArtifactConflictError(ArtifactError):
+    """Raised by ``update(expected_token=...)`` when the content changed since that read.
+
+    Another writer -- a second dashboard window, an agent edit -- saved after the
+    caller read the content its token names. Carries the live token so
+    the client can refetch and re-base instead of overwriting the newer content.
+    """
+
+    def __init__(self, message: str, *, current_token: str) -> None:
+        super().__init__(message)
+        self.current_token = current_token
+
+
 class ArtifactReplacedError(ArtifactError):
     """Raised when a slug does not hold the artifact generation the caller named.
 
@@ -395,6 +408,18 @@ class Artifact:
     #: Tolerant-loaded from meta.json (older/other-kind artifacts default to
     #: ``None``).
     image: "ImageMetadata | None" = None
+    #: Optimistic-concurrency token for the current content, set by ``get()`` for
+    #: store-backed artifacts and by ``update()`` after a content write. Opaque:
+    #: HMAC-SHA256 keyed by :attr:`content_salt`, which never leaves the server,
+    #: so it reveals nothing about content the HTTP layer redacts. Clients echo it back as ``expected_token``.
+    #: ``None`` for versioned reads and live file-backed artifacts. Not persisted.
+    content_token: str | None = None
+    #: Per-artifact token domain, rotated on every content write so a token
+    #: minted for one write never equals a token for another -- a caller who can
+    #: write cannot save a guess and compare tokens to learn redacted content.
+    #: Persisted in meta.json; never serialized to clients. Artifacts that
+    #: predate it get one on their first current read.
+    content_salt: str = ""
 
     def to_dict(self, *, include_content: bool = False, persist: bool = False) -> dict[str, Any]:
         """Render as a JSON-friendly dict, optionally including the content blob.
@@ -407,6 +432,11 @@ class Artifact:
         d = asdict(self)
         if not include_content:
             d.pop("content", None)
+        # The token only means something next to the content it was minted for.
+        if persist or not include_content or not d.get("content_token"):
+            d.pop("content_token", None)
+        if not persist:
+            d.pop("content_salt", None)
         # slug_collided_with is an internal create-time signal read off the
         # attribute, never through this dict: a response that reports it composes
         # the key itself, and serializing it here would leak it into every later

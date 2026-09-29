@@ -334,9 +334,10 @@ class TestHttpContract:
 
         detail = await art_handlers.api_artifact_detail(_request(match={"slug": "doc"}))
         assert detail.status == 200
+        # A current read adds the stale-write token; create does not mint one.
         assert list(_body(detail)) == [
             k for k in created if k not in ("slug_collided_with", "theme_contrast_warning")
-        ]
+        ] + ["content_token"]
 
         gone = await art_handlers.api_artifact_delete(_request(match={"slug": "doc"}))
         assert (gone.status, _body(gone)) == (200, {"ok": True})

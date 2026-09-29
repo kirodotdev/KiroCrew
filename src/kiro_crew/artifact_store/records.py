@@ -11,6 +11,8 @@ fence; this module owns only their contents.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections.abc import Callable
 from dataclasses import fields as fields_of
 from pathlib import Path
@@ -28,6 +30,11 @@ from kiro_crew.artifact_store.model import (
 )
 from kiro_crew.deploy.webapp_types import webapp_metadata_from_dict
 from kiro_crew.publish_provider import DEFAULT_PROVIDER
+
+logger = logging.getLogger(__name__)
+
+#: Shape of a persisted ``content_salt``: 128 random bits as lowercase hex.
+_CONTENT_SALT_RE = re.compile(r"[0-9a-f]{32}")
 
 #: Allowed lifecycle event types. ``referenced`` records a chat impression of the
 #: artifact; the in-line save/update path emits ``created`` / ``edited`` /
@@ -165,6 +172,14 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         for vk_k, vk_v in raw_vk.items():
             if isinstance(vk_k, str) and isinstance(vk_v, str):
                 version_kinds[vk_k] = vk_v
+    # The salt keys the token HMAC; a malformed one is dropped and the next
+    # current read assigns a fresh one, like the other tolerated fields.
+    content_salt = raw.get("content_salt") or ""
+    if not isinstance(content_salt, str) or (
+        content_salt and _CONTENT_SALT_RE.fullmatch(content_salt) is None
+    ):
+        logger.warning("artifact meta.json content_salt malformed, resetting: %s", path)
+        content_salt = ""
     return Artifact(
         slug=str(slug),
         name=str(raw.get("name", slug)),
@@ -193,6 +208,7 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         version_kinds=version_kinds,
         webapp_metadata=webapp_metadata_from_dict(raw.get("webapp_metadata")),
         image=image,
+        content_salt=content_salt,
     )
 
 
