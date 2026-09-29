@@ -895,7 +895,7 @@ reaped only groups logs its own summary line, because the count the reap RETURNS
 leaders terminated and would otherwise be zero with nothing said.
 Ordering is deliberate — hooks first, so an app's `on_shutdown` still has its
 own backend alive. Stop targets come from the runtime tracking table
-(`apps/backend.py::spawned_backend_names`), never from persisted `enabled`
+(`apps/backend_runtime/tracking.py::spawned_backend_names`), never from persisted `enabled`
 metadata: the metadata filter is wrong in both directions (it would signal an
 **adopted** externally-managed backend, whose contract is to survive gateway
 exit and be re-adopted on the next start, and it would miss a still-running
@@ -961,9 +961,11 @@ None`) have no spawned root and are never tree-drained. Out of scope, settled by
 the design that landed the drain: a descendant that `setsid`s out of the POSIX
 group, and a kill-on-close Job Object.
 
-Writers: `apps/backend.py::_drain_exited_root_tree`, `_signal_backend_tree`,
-`_start_app_backend_body` (identity capture, `AppProcess.spawn_instance`),
-`stop_app_backend`, `_restart_exited_backend`, `_terminate_retired_spawn`. Pinned by
+Writers: `apps/backend_runtime/termination.py` (`_drain_exited_root_tree`,
+`_signal_backend_tree`, `stop_app_backend`, `_terminate_retired_spawn`),
+`apps/backend.py::_start_app_backend_body` (identity capture),
+`apps/backend_runtime/tracking.py` (`AppProcess.spawn_instance`),
+`apps/backend_runtime/restart.py::_restart_exited_backend`. Pinned by
 `test/test_app_backend_launcher_tree_drain.py`.
 
 The routes' async `app_lifecycle_lock` serializes route handlers only and does
@@ -1243,7 +1245,7 @@ Writers: `apps/dependency_ledger.py`, `apps/dependencies.py`;
 
 ### 11.1 Python runtime dependency installation is serialized
 
-Separately from capability resolution, `apps/backend.py::provision_app_deps`
+Separately from capability resolution, `apps/backend_runtime/provisioning.py::provision_app_deps`
 serializes each app's Python dependency install with `data/.kirocrew-deps.lock`.
 The installer and the data-preserving uninstall path in `apps/manager.py` both
 first create that lock with `O_CREAT | O_EXCL`. Only `FileExistsError`
@@ -2456,10 +2458,11 @@ way; the two update paths in `apps/routes.py` now match them, and
 For an adopted backend, where we hold no handle to poll, "we still track it"
 is the only honest answer and `healthy` is the load-bearing signal.
 
-Writers: `apps/backend.py` (`_health_check_loop`, `_watch_backend_health`,
-`_demote`, `_promote`, `_supervise_backend_health`, `_start_health_supervisor`,
-`_start_adopted_health_watch`, `AppProcess.is_running`), `apps/routes.py`
-(`handle_list_apps`).
+Writers: `apps/backend_runtime/supervision.py` (`_health_check_loop`,
+`_watch_backend_health`, `_supervise_backend_health`, `_start_health_supervisor`,
+`_start_adopted_health_watch`), `apps/backend_runtime/registration.py` (`_demote`,
+`_promote`), `apps/backend_runtime/tracking.py` (`AppProcess.is_running`),
+`apps/routes.py` (`handle_list_apps`).
 
 ## 18. An app UI is a dynamically imported ESM module, not an iframe
 
@@ -2596,6 +2599,80 @@ one-namespace writes, the import order, the three facade call sites, the reload 
 the `create=True` guard end to end.
 
 Writers: `apps/registry.py`, `apps/registry_pipeline/`.
+
+## 21. The app backend is composed by supervision owner
+
+The app backend supervises every gateway-managed backend process: the process table
+and its lifecycle generations, the dependency provisioning transaction, the spawn and
+adoption, the stops and tree drains, the startup reap, the health watch with its
+MCP transition and restart, and the boot wave. That behaviour is specified in §7.2,
+§11.1 and §17 above, in "Windows stale-backend cleanup capacity" below, and in
+[security](security.md). This section records which module owns which part, so a
+change lands in its owner.
+
+| Module under `src/kiro_crew/apps/` | Owns |
+|---|---|
+| `backend.py` | The facade: the only import path and patch surface, plus the spawn transaction (`start_app_backend`, `_start_app_backend`, `_clear_failed_spawn_state`, and `_start_app_backend_body` with the entry-point classification, child environment, sandbox wrap, and spawn and adoption records it builds) and `_pid_alive` |
+| `backend_runtime/tracking.py` | The process table: `AppProcess`, `_processes` under `_lock`, the STARTING placeholder's owner (`_spawn_publication_owner`), `_restart_attempts`, the lifecycle generation (`_advance_lifecycle_locked`), `_health_reconcile_lock`, the cross-process spawn flock, the wait on an in-flight spawn, and the table reads the proxy and routes use |
+| `backend_runtime/probe.py` | The loopback health probe: the `healthCheck` path gate, `HealthProbeOutcome`, and the failure detail and hint the logs print |
+| `backend_runtime/pidfile.py` | `app_backends.pids.json`: the start-identity probe, the read and the atomic write, the record, the identity-conditional forget, and the strict Windows retirement writer |
+| `backend_runtime/ports.py` | Port reservation (`_find_free_port`, `_reserve_free_port`, `_claim_port`) and listener attribution (the survival check, the bounded ancestry walk, the adoption owner capture), plus the recorded and unstopped port reads uninstall uses |
+| `backend_runtime/provisioning.py` | The dependency transaction: the no-follow requirements read, the stamp and ABI digests, `_PinnedDir`, staging, pip, the markers, the swap, the failure audit, and the activation gate `_deps_tree_stamp_current` |
+| `backend_runtime/termination.py` | Stopping a backend and draining a spawned tree: `stop_app_backend`, `_signal_backend_tree`, `_drain_exited_root_tree`, `_terminate_retired_spawn` |
+| `backend_runtime/stale_reap.py` | The startup reap of a prior generation's leaders and orphaned groups |
+| `backend_runtime/registration.py` | Health-gated MCP registration: `_set_backend_health`, `_gate_mcp_registration`, promote, demote and retry, tri-state enablement, and the disabled-app undo |
+| `backend_runtime/restart.py` | Restarting an exited backend: the activation re-vet, the backoff, the lifecycle-generation handoff (`_settle_superseding_start`), and the thread-waitable shutdown signal |
+| `backend_runtime/supervision.py` | The per-record supervisor thread: the startup poll, the standing watch, the ceiling revocation, and the adopted-owner rebind |
+| `backend_runtime/startup.py` | Boot: the reap, the resource reconcile, the vetting, the concurrent spawn wave with its fixed-port preclaim, and the deferred Dev Fleet spawn |
+
+Imports only point down this order: `tracking`, `probe`, `pidfile`, `ports`,
+`provisioning`, `termination`, `stale_reap`, `registration`, `restart`, `supervision`,
+`startup`, then `backend.py`. There is no cycle, and no owner imports the facade. The
+facade imports every owner at its own import, so an owner's `from ... import`
+bindings are taken once, as the one-module backend took them. `backend.py`
+re-exports every name an owner holds, one hop, so `routes.py`, `teardown.py`,
+`hooks_integration.py`, `bridges.py`, `manager.py`, `interpreter.py`,
+`cli_commands.py`, `member_memory_auth.py`, `platform_compat.py` and the dashboard
+server keep one import path.
+
+Every patch seam stays on the facade. A write to `backend.<name>` reaches every module
+that binds that name, and each owner reads its own bindings, so a
+`monkeypatch.setattr(bmod, ...)` or `mock.patch("kiro_crew.apps.backend.<name>")`
+reaches the call site in whichever owner makes the call. The mutable state is one
+object per name, defined once in its owner and imported by the owners that act on it,
+so `bmod._processes.clear()` empties the table every owner reads and replacing it
+through the facade reaches every holder. The two flags rebound with `global` each have
+one holder: `_warned_unconfined_cache` in `backend.py` and `_DEV_FLEET_DEFERRED` in
+`startup.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
+`importlib.reload(backend)` reloads each owner in layer order.
+`mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
+cannot undo, and a guard refuses it. The lock order is unchanged: `_health_reconcile_lock`
+first, then `_lock` or bridges' `_mcp_lock`.
+
+The placements are constraints rather than style. The spawn stays in `backend.py`
+because repository guards read it there by path: `test_internal_python_isolation.py`
+names `apps/backend.py::_start_app_backend_body`, `test_spawn_audit.py` names
+`apps/backend.py::_resolve_nvm_path`, and `test_app_off_contract.py`,
+`test_dev_fleet_app.py`, `test_frontend_edition_build.py`,
+`test_sandbox_dev_fleet_live_target.py`, `test_app_bridges.py` and
+`test_app_backend.py` read the spawn's record constructions and environment in the
+facade's source -- including what must NOT be there, so every record construction and
+none of the texts they forbid lives in an owner either. `_pid_alive` stays there because `test_windows_kill_probe_audit.py`
+reads it by path. Four owner call sites reach those residents at call time through
+`backend_runtime._facade()`, and nothing else refers to the facade:
+`termination._drain_exited_root_tree` and `stale_reap._reap_stale_app_backends`
+(`_pid_alive`), `restart._restart_exited_backend` (`_start_app_backend`), and
+`startup._start_backends_concurrently` (`start_app_backend`). The provisioning
+transaction's link-screen sites (`test/link_screen_sites.py`), its internal-Python
+spawn row (`test_internal_python_isolation.py`) and its `NON_EGRESS_REDACTION_MODULES`
+row name `apps/backend_runtime/provisioning.py`, whose pip stderr scrub is the
+backend's only redactor call. `test_app_backend_composition_contract.py` pins the
+surface, the one-namespace writes, the reach of every global a backend function reads,
+the import order, the four facade call sites, the reload and the `create=True` guard
+end to end, and `test_app_backend_refactor_characterization.py` pins the generation,
+ordering and identity guards that cross owners.
+
+Writers: `apps/backend.py`, `apps/backend_runtime/`.
 
 
 ## Windows stale-backend cleanup capacity

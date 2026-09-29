@@ -91,7 +91,7 @@ synthesis (`voice_reply.py`), the source-provider CLI spawns
 post-exec delivery, same refusal of a caller-supplied `preexec_fn`, and the same
 fallback to `preexec_fn` when a profile carries policy but no shim is available.
 The core gateway is migrated, including cron scripts (`cron_script.py`) and
-app-backend dependency installs (`apps/backend.py`), and so are the builtin app
+app-backend dependency installs (`apps/backend.py` npm, `apps/backend_runtime/provisioning.py` pip), and so are the builtin app
 backends under `apps/builtins/` and the two standalone scripts under
 `deploy/skills/`. No call site passes `resource_limit_preexec()` as `preexec_fn=`
 any more; the shrink-only ratchet in `test/test_spawn_preexec_guard.py` is empty

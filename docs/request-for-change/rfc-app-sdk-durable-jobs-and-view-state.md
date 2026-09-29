@@ -120,7 +120,7 @@ registration path.
 Together the two produce a record that contradicts the work it describes. At
 gateway startup `_reap_stale_app_backends` terminates a backend left by a prior
 gateway generation only when the pid's identity positively matches the recorded
-one; when identity cannot be confirmed the pid is left alone (`backend.py`,
+one; when identity cannot be confirmed the pid is left alone (`backend_runtime/stale_reap.py`,
 `_reap_stale_app_backends`). A backend spared by that check keeps executing, and
 the new gateway's reconciliation marks its runs `INTERRUPTED`, recording that the
 gateway restarted while the run was executing and that no runner is registered for

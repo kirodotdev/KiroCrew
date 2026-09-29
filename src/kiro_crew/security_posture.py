@@ -1634,7 +1634,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # credentials) before the provisioning failure is written to the
         # gateway log and to the app backend's own log file. Defensive
         # scrubbing at the point of capture, not an output boundary.
-        "apps/backend.py",
+        "apps/backend_runtime/provisioning.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier

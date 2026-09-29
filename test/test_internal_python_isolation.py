@@ -20,7 +20,7 @@ _SRC_ROOT = _REPO_ROOT / "src" / "kiro_crew"
 _INTERNAL_PYTHON_SPAWN_SITES = (
     ("platform_compat.py", "reexec_python_module"),
     ("agent.py", "_kirocrew_mcp_invocation"),
-    ("apps/backend.py", "_provision_app_deps_locked"),
+    ("apps/backend_runtime/provisioning.py", "_provision_app_deps_locked"),
     ("apps/backend.py", "_start_app_backend_body"),
     ("apps/bridges.py", "_pin_host_cli_command"),
     ("apps/bridges.py", "resolve_stdio_command"),
