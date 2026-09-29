@@ -1454,8 +1454,26 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
      tails for foreground gateways). Detach is per-platform: POSIX uses
      `start_new_session=True`; Windows uses `creationflags=DETACHED_PROCESS
      | CREATE_NEW_PROCESS_GROUP` (there is no setsid) — both via
-     `platform_compat`. The shell returns immediately and the user can
-     follow logs via `kirocrew logs -f`.
+     `platform_compat`. The spawn returns immediately, the command then
+     waits for readiness (next bullet), and the user can follow logs via
+     `kirocrew logs -f`.
+   - Report success only once the replacement answers `/api/ready` and its
+     run marker records a pid that differs from the previous gateway's pid
+     when one is known (`_wait_gateway_ready`). Only this fork path verifies
+     readiness before printing success. A replacement that exits prints
+     `Replacement gateway (pid N) died immediately (exit status S)` and exits
+     1 at once. One still running at the deadline prints `Replacement gateway
+     (pid N) did not become ready within Ns. It is still running but not
+     serving port P.` and exits 1. The readiness deadline is read from the
+     environment each time the fork path runs: it defaults to 60 s because a
+     loaded install can take 25-35 s to boot; `KIROCREW_RESTART_READY_TIMEOUT`
+     overrides it, fractional values round up to whole seconds, the result is
+     clamped to 15..180 s, and an unset, non-numeric, non-finite, zero or
+     negative value falls back to the default. When the deadline exceeds
+     15 s, the wait prints one `Still starting (Ns elapsed), continuing to
+     wait...` line on the first check after 15 s. The service path (step 1)
+     does not use this deadline and is unchanged. On both paths, the
+     token-URL wait after a successful restart keeps its fixed 15 s budget.
 3. SEL audit event logged with `via=service` or `via=fork pid=<n>` so
    the audit trail distinguishes the two paths.
 

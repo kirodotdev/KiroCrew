@@ -1097,6 +1097,16 @@ def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_restart_ready_timeout_override(_floor_monkeypatch):
+    """Keep a developer's ``KIROCREW_RESTART_READY_TIMEOUT`` out of every test.
+
+    ``kirocrew restart`` reads it on every call, and several test files drive
+    ``cli_server._restart`` directly.
+    """
+    _floor_monkeypatch.delenv("KIROCREW_RESTART_READY_TIMEOUT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_kiro_window_cache():
     """Give every test an EMPTY ``model_registry._KIRO_WINDOWS``, then restore it.
 

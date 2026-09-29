@@ -9,6 +9,7 @@ import http.client
 import io
 import json
 import logging
+import math
 import os
 import shlex
 import shutil
@@ -1042,7 +1043,44 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
 
 
 _RESTART_TOKEN_TTL = "20h"
-_RESTART_READY_TIMEOUT = 15  # seconds to wait for gateway to become ready
+_RESTART_TOKEN_WAIT = 15  # seconds to wait for a token after restart
+# Seconds the fork path waits for the replacement gateway to become ready. A
+# loaded install (many agent files and MCP servers to wrap at boot) routinely
+# needs 25-35s, so the default carries margin; KIROCREW_RESTART_READY_TIMEOUT
+# overrides it within the clamp. An early death still returns at once, so the
+# margin costs nothing on a refused startup.
+_RESTART_READY_TIMEOUT_DEFAULT = 60
+_RESTART_READY_TIMEOUT_MIN = 15
+_RESTART_READY_TIMEOUT_MAX = 180
+# Elapsed seconds after which the readiness wait prints one "still starting"
+# line on its next check.
+_RESTART_READY_SOFT_CHECKPOINT = 15
+
+
+def _resolve_restart_ready_timeout() -> int:
+    """Readiness deadline from ``KIROCREW_RESTART_READY_TIMEOUT``, clamped.
+
+    Read each time the fork path runs, not at import. Unset, non-numeric, non-finite,
+    zero or negative values fall back to :data:`_RESTART_READY_TIMEOUT_DEFAULT`;
+    fractional values are rounded UP to whole seconds (so the wait is never
+    shorter than what was asked for), and the result is clamped to
+    ``[_RESTART_READY_TIMEOUT_MIN, _RESTART_READY_TIMEOUT_MAX]`` so a typo
+    cannot make restart fail instantly or hang for an unbounded time.
+    """
+    raw = os.environ.get("KIROCREW_RESTART_READY_TIMEOUT", "")
+    try:
+        value = float(raw)
+    except ValueError:
+        return _RESTART_READY_TIMEOUT_DEFAULT
+    if not math.isfinite(value) or value <= 0:
+        return _RESTART_READY_TIMEOUT_DEFAULT
+    return max(_RESTART_READY_TIMEOUT_MIN, min(_RESTART_READY_TIMEOUT_MAX, math.ceil(value)))
+
+
+def _print_still_starting(elapsed: float) -> None:
+    print(f"⏳ Still starting ({int(elapsed)}s elapsed), continuing to wait...", flush=True)
+
+
 # Gap between readiness probes while waiting for the replacement gateway. Short
 # enough that a fast boot is reported promptly, long enough not to hammer the
 # starting gateway's event loop while it restores sessions.
@@ -1157,7 +1195,7 @@ def _wait_gateway_ready(
     * **Early death short-circuits the wait.** A replacement refused by the
       ``KIROCREW_HOME`` ownership guard exits within milliseconds; polling the
       port for the full timeout would turn a instantly-knowable failure into a
-      15s stall with a worse message. ``proc.poll()`` is used rather than a pid
+      full-deadline stall with a worse message. ``proc.poll()`` is used rather than a pid
       liveness probe because we are the child's parent, so it both detects the
       exit and yields the status the operator needs. (Same shape as ``pod``'s
       ``_wait_healthy`` bailing out on a dead unit instead of burning the wait.)
@@ -1169,15 +1207,26 @@ def _wait_gateway_ready(
       but not ready", sending the operator to look for a live process that no
       longer exists. The extra poll costs nothing and makes the two verdicts
       mutually exclusive in fact, not just by intention.
+
+    One "still starting" line is printed on the first check after
+    :data:`_RESTART_READY_SOFT_CHECKPOINT` seconds, if the deadline is still
+    ahead, so a slow boot does not look hung.
     """
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
+    checkpoint = start + _RESTART_READY_SOFT_CHECKPOINT
+    checkpoint_printed = False
     while True:
         status = proc.poll()
         if status is not None:
             return _READY_DIED, status
         if _probe_gateway_ready(port) == 200 and _replacement_is_serving(port, prior_pid):
             return _READY_OK, None
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if not checkpoint_printed and checkpoint <= now < deadline:
+            _print_still_starting(now - start)
+            checkpoint_printed = True
+        if now >= deadline:
             status = proc.poll()
             if status is not None:
                 return _READY_DIED, status
@@ -1187,7 +1236,7 @@ def _wait_gateway_ready(
 
 def _print_token_url(port: int) -> None:
     """Wait for the gateway to come up, then print a fresh token URL."""
-    deadline = time.monotonic() + _RESTART_READY_TIMEOUT
+    deadline = time.monotonic() + _RESTART_TOKEN_WAIT
     while time.monotonic() < deadline:
         try:
             secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
@@ -1509,12 +1558,13 @@ def _restart(cli_port: int | None = None) -> None:
     # ownership guard, crash on a bad config, or hang before it binds — all of
     # which would print the success line below and exit 0 with nothing serving.
     # Report success only once the NEW gateway answers, and audit what happened.
-    verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, _RESTART_READY_TIMEOUT)
+    ready_timeout = _resolve_restart_ready_timeout()
+    verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, ready_timeout)
     if verdict != _READY_OK:
         reason = (
             f"replacement_died exit={exit_status}"
             if verdict == _READY_DIED
-            else f"replacement_not_ready_within={int(_RESTART_READY_TIMEOUT)}s"
+            else f"replacement_not_ready_within={ready_timeout}s"
         )
         sel().log_api_access(
             caller="cli",
@@ -1534,7 +1584,7 @@ def _restart(cli_port: int | None = None) -> None:
         else:
             print(
                 f"❌ Replacement gateway (pid {pid}) did not become ready within "
-                f"{int(_RESTART_READY_TIMEOUT)}s. It is still running but not "
+                f"{ready_timeout}s. It is still running but not "
                 f"serving port {port}.\n"
                 f"   It may be slow to start or wedged during startup; nothing is "
                 f"serving the dashboard yet.\n"
