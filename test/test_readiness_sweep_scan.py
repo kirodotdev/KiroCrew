@@ -211,12 +211,17 @@ def test_newest_completed_and_newest_failed_are_separate_and_ignore_greens(
             _check("NEUTRAL", "2026-09-15T05:20:00Z"),
             _check("SKIPPED", "2026-09-15T05:21:00Z"),
             _check("FAILURE", "2026-09-15T05:30:00Z", status="IN_PROGRESS"),
+            _check(None, None, status="QUEUED"),
+            {"__typename": "StatusContext", "state": "PENDING"},
         ],
     )
     records, _, _ = _run(monkeypatch, FakeGh([_page([pr])]), capsys)
     record = records[0]
     assert record["newest_completed_check_at"] == "2026-09-15T05:21:00Z"
     assert record["newest_failed_check_at"] == "2026-09-15T05:05:00Z"
+    # The two unfinished CheckRuns and only those: a status context is not a
+    # check-run, and a completed one is not in flight whatever its conclusion.
+    assert record["checks_in_flight"] == 2
     assert record["checks_complete"] is True
 
 

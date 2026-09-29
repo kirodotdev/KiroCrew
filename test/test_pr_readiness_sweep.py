@@ -412,8 +412,14 @@ class Runner:
         description: str = "11 readiness check(s) still pending; waiting on CI (not started)",
         status_read_fails: bool = False,
         scan_mode: str = "full",
+        in_flight_checks: int = 0,
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
+
+        `in_flight_checks` adds that many check-runs still running on the head,
+        beside whatever completed one the other knobs describe. The default is a
+        head whose checks have all landed, so a delivery test is about the
+        evidence and not about whether the head has settled.
 
         `state=None` means the head SHA carries NO readiness status at all, which
         is the unpublished-verdict freeze mode.
@@ -470,6 +476,10 @@ class Runner:
                 }
             ]
         )
+        runs += [
+            {"status": "in_progress", "conclusion": None, "completed_at": None}
+            for _ in range(in_flight_checks)
+        ]
         # Slurped shape again: an array of PAGES, each `{"check_runs": [...]}`.
         # `extra_check_page` adds a second page so the pagination fix is exercised
         # rather than assumed -- unslurped, jq would emit one `max` per page.
@@ -720,6 +730,101 @@ def test_a_young_pending_with_later_evidence_is_delivered_on_the_next_tick(
     dispatched = runner.sweep(state="pending", status_at=published, check_completed_at=completed)
     assert len(dispatched) == 1
     assert "pr=2064" in dispatched[0]
+
+
+# ── A head still landing its lanes is not recomputed per lane ───────────────
+#
+# Readiness cannot leave pending until every monitored lane has completed, so a
+# recompute fired on each completion re-derives the same pending. A two-minute
+# sweep sees the twelve completions of one head on separate ticks; measured
+# live, that was eight recomputes per head where a fifteen-minute sweep saw one
+# or two, and the recomputes alone spent half the shared request pool.
+
+
+def _recent(minutes: int) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_a_pending_with_later_evidence_but_lanes_in_flight_waits(runner: Runner) -> None:
+    """Later evidence with a check-run still running: hold, the verdict cannot change yet."""
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at=_recent(4),
+            check_completed_at=_recent(1),
+            in_flight_checks=3,
+        )
+        == []
+    )
+
+
+def test_the_same_pending_is_delivered_once_the_last_lane_lands(runner: Runner) -> None:
+    """Zero check-runs in flight: the hold lifts and this is the ordinary delivery."""
+    assert (
+        len(
+            runner.sweep(
+                state="pending",
+                status_at=_recent(4),
+                check_completed_at=_recent(1),
+                in_flight_checks=0,
+            )
+        )
+        == 1
+    )
+
+
+def test_a_failing_completion_is_delivered_while_other_lanes_still_run(runner: Runner) -> None:
+    """Red is final. A red gate does not wait on the lanes beside the failed one."""
+    dispatched = runner.sweep(
+        state="pending",
+        status_at=_recent(4),
+        check_completed_at=_recent(1),
+        check_conclusion="failure",
+        in_flight_checks=3,
+    )
+    assert len(dispatched) == 1
+
+
+def test_a_failing_completion_below_the_floor_does_not_lift_the_hold(runner: Runner) -> None:
+    """The red that lifts the hold is one PAST the floor, like every other piece of evidence.
+
+    A failure the verdict already read (older than stamp minus lag) is not news;
+    the later GREEN completion is the only evidence here, and lanes are still
+    running, so the head waits. Pins that the red arm shares the floor rather
+    than re-firing on any failure ever recorded on the head.
+    """
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at=_recent(4),
+            check_completed_at=_recent(1),
+            extra_check_page=("failure", _recent(20)),
+            in_flight_checks=3,
+        )
+        == []
+    )
+
+
+def test_the_hold_on_an_unsettled_head_has_the_stale_backstop(runner: Runner) -> None:
+    """A queued orphan or a slow optional check must not hold the gate all day.
+
+    Past STALE_MINUTES the head is delivered in-flight or not: a recompute on a
+    head still owed a lane costs one run and re-derives pending, which is the
+    price of never freezing.
+    """
+    assert (
+        len(
+            runner.sweep(
+                state="pending",
+                status_at=_recent(16),
+                check_completed_at=_recent(1),
+                in_flight_checks=3,
+            )
+        )
+        == 1
+    )
 
 
 def test_a_pending_younger_than_the_lag_is_not_examined(runner: Runner) -> None:

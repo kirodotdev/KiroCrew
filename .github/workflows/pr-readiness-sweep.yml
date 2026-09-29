@@ -474,6 +474,10 @@ jobs:
             # evidence test reads as "none" exactly as it would with no checks.
             | (.newest_completed_check_at | epoch) as $newest
             | (.newest_failed_check_at | epoch) as $newest_fail
+            # Check-runs on the head not yet completed, folded across the same
+            # pages. Absent on a light record (no evidence read), which reads
+            # as zero: the arms that consult it only run on evidence.
+            | ((.checks_in_flight // 0) | tonumber) as $in_flight
             | (if .checks_requested == false then "unread"
                elif .checks_complete == true then "complete"
                else "partial" end) as $evidence
@@ -512,9 +516,30 @@ jobs:
                 # very next tick), and any later completion reopens it. A
                 # pending with NO completed check is left alone for the same
                 # reason: its lanes are still owed.
+                #
+                # Later evidence is necessary, not sufficient. Readiness cannot
+                # leave pending until EVERY monitored lane has completed, so a
+                # recompute fired while lanes are still landing re-derives the
+                # same pending -- and a sweep on a two-minute cadence sees each
+                # of the twelve completions on one head on a different tick, which
+                # measured live as eight recomputes per head where a fifteen-
+                # minute cadence saw one or two. The head is therefore held
+                # while it still has a check-run in flight, and delivered on
+                # the first of: no check-run left running (the verdict can now
+                # change), a FAILING completion past the floor (red is final,
+                # and a red gate should not wait on the lanes beside it), or
+                # the STALE_MINUTES backstop (a queued orphan or a slow
+                # optional check must not hold the gate all day). The count
+                # comes from the rollup pages the scan read; a page it could
+                # not read leaves the count LOW, so a non-zero count is real
+                # and a zero on partial evidence delivers, as it did before.
                 elif $newest > ($updated - $lag) then
-                  {v: "dispatch",
-                   n: "pending for \($age)s with a check completed later at \(.newest_completed_check_at)"}
+                  if ($in_flight > 0 and $newest_fail <= ($updated - $lag) and $age < $stale) then
+                    {v: "skip",
+                     n: "pending for \($age)s with a check completed later at \(.newest_completed_check_at) but \($in_flight) check-run(s) still in flight; the verdict cannot leave pending until they land, so waiting for the head to settle."}
+                  else
+                    {v: "dispatch",
+                     n: "pending for \($age)s with a check completed later at \(.newest_completed_check_at)"} end
                 # No evidence. The one pending that still deserves a nudge is
                 # the read-failure class, published at the end of a job whose
                 # reads broke, so it can post-date every check on the head and

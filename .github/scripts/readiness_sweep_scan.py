@@ -44,8 +44,17 @@ Output is one JSON object per line on stdout, one per open pull request:
      "readiness": {"state": "pending", "updated_at": "<ISO8601>"} | null,
      "newest_completed_check_at": "<ISO8601>" | null,
      "newest_failed_check_at": "<ISO8601>" | null,
+     "checks_in_flight": 0,
      "checks_complete": true,
      "checks_requested": true}
+
+`checks_in_flight` counts the check-runs on the head that have not completed
+(queued, in progress, waiting). The workflow reads it to hold a recompute
+while a head's lanes are still landing: readiness cannot leave `pending`
+until every monitored lane has finished, so a recompute fired on each
+completion in turn re-derives the same pending, once per lane. A page the
+walk could not read leaves the count LOW, never high, so a non-zero count is
+always real and a zero one is only trusted alongside `checks_complete`.
 
 Two scopes (`--mode`). `full` is the walk described above: every open pull
 request, rollup and all, 25 a page. `delivery` walks the same set on a LIGHT
@@ -454,17 +463,22 @@ def _readiness(commit: dict[str, Any], status_context: str) -> dict[str, str] | 
     return None
 
 
-def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> None:
+def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> int:
     """Accumulate completion timestamps from one page of rollup contexts.
 
-    Non-CheckRun nodes (the commit statuses the rollup mixes in) carry no
-    conclusion and are skipped -- the readiness verdict is read from
-    `status.contexts` instead, so nothing is lost here.
+    Returns how many CheckRun nodes on the page are NOT completed (queued,
+    in progress, waiting): the count the workflow uses to tell a head whose
+    lanes are still landing from one that has settled. Non-CheckRun nodes
+    (the commit statuses the rollup mixes in) carry no conclusion and are
+    skipped -- the readiness verdict is read from `status.contexts` instead,
+    so nothing is lost here.
     """
+    in_flight = 0
     for node in nodes:
         if not isinstance(node, dict) or node.get("__typename") != "CheckRun":
             continue
         if node.get("status") != "COMPLETED":
+            in_flight += 1
             continue
         at = node.get("completedAt")
         if not at:
@@ -472,6 +486,7 @@ def _fold_checks(nodes: list[Any], completed: list[str], failed: list[str]) -> N
         completed.append(str(at))
         if str(node.get("conclusion") or "").upper() in FAILURE_CONCLUSIONS:
             failed.append(str(at))
+    return in_flight
 
 
 def _newest(values: list[str]) -> str | None:
@@ -499,7 +514,7 @@ def _scan_pr(
     failed: list[str] = []
 
     contexts = ((commit.get("statusCheckRollup") or {}).get("contexts")) or {}
-    _fold_checks(contexts.get("nodes") or [], completed, failed)
+    in_flight = _fold_checks(contexts.get("nodes") or [], completed, failed)
     total = contexts.get("totalCount") or 0
     if isinstance(total, int) and total > CONTEXTS_PAGE_SIZE:
         counters.oversized += 1
@@ -533,7 +548,7 @@ def _scan_pr(
             )
             or {}
         ).get("contexts") or {}
-        _fold_checks(contexts.get("nodes") or [], completed, failed)
+        in_flight += _fold_checks(contexts.get("nodes") or [], completed, failed)
         if document.get("errors"):
             # A field error nulled part of this page: whatever it held past the
             # nodes that did arrive was never read.
@@ -562,6 +577,7 @@ def _scan_pr(
         "readiness": _readiness(commit, status_context),
         "newest_completed_check_at": _newest(completed),
         "newest_failed_check_at": _newest(failed),
+        "checks_in_flight": in_flight,
         "checks_complete": checks_complete,
         "checks_requested": True,
     }
@@ -588,6 +604,7 @@ def _light_record(pr: dict[str, Any], *, status_context: str) -> dict[str, Any] 
         "readiness": _readiness(_head_commit(pr), status_context),
         "newest_completed_check_at": None,
         "newest_failed_check_at": None,
+        "checks_in_flight": 0,
         "checks_complete": False,
         "checks_requested": False,
     }

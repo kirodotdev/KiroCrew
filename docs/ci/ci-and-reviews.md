@@ -2602,7 +2602,18 @@ Two subtleties:
   lag old (180 s), and a check counts as evidence when it completed after the verdict's
   publication minus that same lag; binding the two to one value is what makes a rescue
   self-terminating on the next tick whatever the cadence (`test_pr_readiness_sweep.py`
-  pins the pairing and the reasoning). The cost is latency in the safe direction only: a
+  pins the pairing and the reasoning). Later evidence is necessary, not sufficient: a
+  head still landing its lanes is HELD, because readiness cannot leave `pending` until
+  every monitored lane has completed and a recompute fired per completion re-derives the
+  same pending -- on a two-minute cadence the twelve completions of one head land on
+  twelve ticks, measured live as eight recomputes per head (~700 an hour, half the shared
+  pool) where the fifteen-minute cadence saw one or two. The scan folds the count of
+  check-runs not yet completed from the same rollup pages (`checks_in_flight`), and the
+  pending is delivered on the first of: no check-run left running, a FAILING completion
+  past the floor (red is final and does not wait on the lanes beside it), or the
+  `STALE_MINUTES` backstop so a queued orphan or slow optional check cannot hold the gate
+  all day. A page the scan could not read leaves the count low, so a non-zero count is
+  always real. The cost is latency in the safe direction only: a
   verdict goes green up to one sweep plus the lag later than the event made it, never
   earlier.
 
