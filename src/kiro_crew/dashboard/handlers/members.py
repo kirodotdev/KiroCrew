@@ -37,7 +37,7 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.dashboard.state import DashboardState, record_project, request_slot_origin
 from kiro_crew.external_text import redact_external_text
 from kiro_crew.members import MemberSlugError
 
@@ -948,7 +948,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
                     mode=members_mod.DM_SLOT_MODE,
                     origin=request_slot_origin(request.get("app", "")),
                 )
-                slot.project = project
+                record_project(slot, project)
     if slot.mode != members_mod.DM_SLOT_MODE:
         # The derived key is already occupied by a foreign slot (mode is set at
         # creation only, so a pre-existing non-member slot keeps its own). Never

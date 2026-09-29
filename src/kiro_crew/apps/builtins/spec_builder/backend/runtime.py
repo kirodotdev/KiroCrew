@@ -13,6 +13,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+from kiro_crew.dashboard.state import record_project
 
 from .parsers import _SLOT_KEY_RE, _redact, _redact_and_truncate, _usable_name
 from .repository import APP_NAME, _audit, _load_settings, _safe_dir, _slot_key
@@ -197,7 +198,7 @@ async def _ensure_worker_slot(
         # turns every tool pill in the chat into identical cd-noise -- and for a
         # discovered spec it would edit files outside the project entirely.
         if safe_wd is not None:
-            slot.project = str(safe_wd)
+            record_project(slot, str(safe_wd))
         # '' = inherit: the session layer's resolution chain applies unchanged.
         # A concrete pick rides slot.model, which chat_runner already resolves
         # first — and if the pick stops being served, its withhold keeps the pin

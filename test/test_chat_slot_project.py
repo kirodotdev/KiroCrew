@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import inspect
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.config.paths import CWD_CLEARED
+from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard.chat import api_chat_slot_project
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -62,6 +66,47 @@ class TestChatSlotProject:
             )
             assert resp.status == 200
             assert slot.project == ""
+            assert slot.project_cleared is True
+            assert slot.claim_cwd == CWD_CLEARED
+
+    @pytest.mark.asyncio
+    async def test_clearing_a_never_scoped_slot_states_no_requirement(self):
+        """A clear and a slot that never had a project must not collapse.
+
+        Both leave ``project`` empty, but only a clear invalidates a warm pooled child's
+        binding, so a never-scoped slot has to keep stating nothing and keep the pool.
+        """
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/project",
+                json={"project": ""},
+            )
+            assert resp.status == 200
+            assert slot.project_cleared is False
+            assert slot.claim_cwd is None
+
+    @pytest.mark.asyncio
+    async def test_re_scoping_after_a_clear_lowers_the_marker(self, tmp_path):
+        slot = _ChatSlot("test")
+        slot.project = str(tmp_path)
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                cleared = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": ""},
+                )
+                assert cleared.status == 200
+                assert slot.claim_cwd == CWD_CLEARED
+                again = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert again.status == 200
+                assert slot.project_cleared is False
+                assert slot.claim_cwd == str(tmp_path)
 
     @pytest.mark.asyncio
     async def test_nonexistent_dir_returns_400(self):
@@ -220,3 +265,28 @@ class TestFolderProjectDirOverlapPreflight:
         clean = tmp_path / "clean"
         clean.mkdir()
         assert _folder_project_overlap_denied(str(clean)) is None
+
+
+class TestADirectAssignmentMovesTheClearedMarkerWithIt:
+    def test_the_agent_switch_assigns_its_project_through_the_single_writer(self):
+        """Assigning ``slot.project`` directly leaves a marker raised by an earlier clear, so
+        the next claim states CWD_CLEARED and allocation binds the default workspace."""
+        src = inspect.getsource(chat_handlers.api_chat_slot_agent)
+        assert "record_project(slot, _CommitToken(" in src
+        assert not re.search(r"slot\.project = _CommitToken\(", src), (
+            "the switch assigns the project without its marker, so a cleared slot keeps "
+            "reporting CWD_CLEARED over the project it was just given"
+        )
+
+    def test_every_project_rollback_restores_the_cleared_marker(self):
+        """A rollback returning project without its marker leaves the inverse defect: a slot
+        that is still cleared but reports otherwise, so the claim stops stating the clear."""
+        lines = inspect.getsource(chat_handlers).splitlines()
+        undo = re.compile(r"slot\.project = (pre_await_project|prior_project|old_project)\b")
+        found = [i for i, ln in enumerate(lines) if undo.search(ln)]
+        assert len(found) == 3, f"the rollback set changed; re-check each one: {found}"
+        for i in found:
+            assert "project_cleared" in lines[i + 1], (
+                f"rollback at source line {i + 1} returns project without its marker: "
+                f"{lines[i].strip()}"
+            )

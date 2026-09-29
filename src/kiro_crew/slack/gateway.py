@@ -93,10 +93,10 @@ from kiro_crew.config.loader import (
     CRED_WECOM_BOT_ID,
     CRED_WECOM_SECRET,
     CRED_WEIXIN_TOKEN,
-    _session_work_dir,
     build_provider_factory,
     config_dir,
     data_home,
+    session_default_cwd,
     workspace_root,
 )
 from kiro_crew.config.paths import kiro_agents_dir
@@ -11407,7 +11407,7 @@ class GatewayOrchestrator:
             sessions=self.sessions,
             context_builder=self.ctx_builder,
             on_notify=_task_notify,
-            work_dir=_session_work_dir("taskrunner:main"),
+            work_dir=session_default_cwd("taskrunner:main"),
             conversation_log=self.conv_log,
             consolidator=self.consolidator,
             lesson_store=LessonStore(),
