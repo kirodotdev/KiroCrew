@@ -468,6 +468,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
                   ? i18nT(a.pendingKey)
                   : <><Play className="lucide-inline" /> {i18nT(a.labelKey)}</>}
               primary={!waiting}
+              nowrap
               disabled={
                 advancing
                 || messageMutation.isPending
@@ -511,15 +512,15 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
   )
 
   // Doc column header: shared segmented tabs + expand + phase-gated actions.
-  // On a desktop this matches the chat column header's height and bottom border
-  // so the two line up. While narrow the columns are STACKED, so that alignment
-  // buys nothing and the fixed height costs the phase control: at 390px the row
-  // measures 414px against a 390px viewport, and the `overflow-hidden` on the
-  // pane clips the action with no way to scroll to it. Wrapping puts the action
-  // on its own line instead, fully reachable.
+  // It wraps at every width. While the row fits, it is one 52px line that lines
+  // up with the chat column header. When it does not, the phase button drops to
+  // a second line and the two headers no longer line up; that costs less than a
+  // clipped control. A fixed height used to squeeze the button instead: at a
+  // 1440px window the docs column (default 44%) is too narrow for the tabs plus
+  // `Approve -> Design`, and at 390px the pane's `overflow-hidden` cut it off with
+  // no way to scroll to it.
   const docTabsHeader = (fullscreen: boolean) => (
-    <div className={`flex gap-1.5 items-center px-2.5 border-b border-border shrink-0 ${
-      isMobile && !fullscreen ? 'flex-wrap min-h-[52px] py-1.5' : 'h-[52px]'}`}>
+    <div className="flex flex-wrap gap-1.5 items-center min-h-[52px] py-1.5 px-2.5 border-b border-border shrink-0">
       <SegmentedControl<DocTabId>
         segments={docSegments}
         value={tab}

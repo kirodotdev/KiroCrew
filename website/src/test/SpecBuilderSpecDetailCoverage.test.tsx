@@ -423,6 +423,17 @@ describe('SpecDetail review overlay', () => {
 })
 
 describe('SpecDetail phase actions', () => {
+  it('keeps the advance button on one line in the crowded doc header', async () => {
+    installFetch(BASE)
+    renderDetail()
+
+    // At 1440px the label wrapped to three lines and ran past the header edge.
+    const approve = await screen.findByRole('button', { name: /Approve → Design/ })
+    expect(approve).toHaveClass('whitespace-nowrap', 'shrink-0', 'rounded-full')
+    // Too narrow for tabs plus button, the header drops the button to a second row.
+    expect(approve.parentElement).toHaveClass('flex-wrap')
+  })
+
   it('refuses to advance when the reviewed document has no trustworthy hash', async () => {
     installFetch({ ...BASE, docs: {} })
     renderDetail()
