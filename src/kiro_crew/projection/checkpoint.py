@@ -67,7 +67,7 @@ rediscovered):
     |------------------|---------------------------------|-----------------|
     | store            | ``unit`` = (kind, unit_id)      | slug            |
     | key              | fold ``name``                   | projection key  |
-    | state_version    | ``v`` (one constant, all folds) | per definition  |
+    | state_version    | per fold (``_Fold.state_version``) | per definition  |
     | watermark        | ``last_seq``                    | ``observed_seq``|
     | state            | ``state``                       | cell state      |
     | identity block   | ``origin``, ``first_seq``       | (client's own)  |

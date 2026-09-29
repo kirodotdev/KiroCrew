@@ -22,6 +22,7 @@ import pytest
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog
+from kiro_crew.crew_log import eager as crew_log_eager
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log
 
@@ -33,13 +34,25 @@ CREW = "crew-77"
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
-    """Own data home, crew log on, and no warm fold carried between tests."""
+    """Own data home, crew log on, and no warm fold carried between tests.
+
+    The eager folder is silenced, for the reason
+    ``test_work_fold_warm_read.py``'s fixture gives: this file counts ``CrewLog.iter_from``
+    calls on the CLASS, so a background thread folding this same log has its reads land in
+    the counter. Committing a ``work/recorded`` wakes exactly that thread, and whether its
+    pass falls inside the counted window is a matter of how loaded the runner is -- which
+    is a measurement of the machine, not of the read. The lazy contract measured here is
+    unchanged either way: it is what the read path honours whenever no wake arrived.
+    """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    monkeypatch.setattr(crew_log_eager, "note_commit", lambda *a, **k: None)
     crew_log_emit.reset_caches()
+    crew_log_eager.stop_for_tests()
     crew_log.forget_slot_folds()
     yield
     crew_log_emit.reset_caches()
+    crew_log_eager.stop_for_tests()
     crew_log.forget_slot_folds()
 
 

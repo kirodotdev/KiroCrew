@@ -85,9 +85,9 @@ from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.crew_log.lease import acquire as acquire_lease
 from kiro_crew.crew_log.lease import release as release_lease
 from kiro_crew.crew_log.projection import (
-    FOLD_STATE_VERSION,
     Checkpoint,
     SessionProjections,
+    fold_state_version,
     log_origin,
     require_name,
 )
@@ -110,15 +110,6 @@ logger = logging.getLogger(__name__)
 
 #: Directory inside a unit's store directory that holds its fold savepoints.
 CHECKPOINT_DIR: Final[str] = "projections"
-
-#: The payload shape this build writes and is willing to read, under the name this
-#: module's files and docs use. The NUMBER belongs to the folds, because it describes
-#: what their ``start`` and ``step`` store, so it is stated once in
-#: :data:`~kiro_crew.crew_log.projection.FOLD_STATE_VERSION` and the rule for moving
-#: it is recorded there. A file carrying anything else was written by a build this one
-#: does not understand, and the answer is the cold fold rather than a guess at which
-#: fields still mean what they did.
-CHECKPOINT_VERSION: Final[int] = FOLD_STATE_VERSION
 
 #: Largest savepoint file this package reads or writes, and the number the kernel
 #: store ENFORCES (:data:`~kiro_crew.projection.MAX_PAYLOAD_BYTES`). Every fold's
@@ -548,7 +539,7 @@ def _save_one(
         unit,
         Savepoint(
             key=checkpoint.name,
-            state_version=FOLD_STATE_VERSION,
+            state_version=fold_state_version(checkpoint.name),
             watermark=checkpoint.last_seq,
             state=checkpoint.state,
             identity=identity,
@@ -575,7 +566,7 @@ def _resume_one(
         savepoint = store.load(
             handle.id,
             name,
-            state_version=FOLD_STATE_VERSION,
+            state_version=fold_state_version(name),
             identity=block,
             admit=admit,
         )

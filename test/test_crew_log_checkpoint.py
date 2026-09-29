@@ -179,33 +179,35 @@ def _state_digest(state: dict[str, Any]) -> str:
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
-#: What each fold STORES over the script above, recorded at
-#: :data:`_DIGESTS_RECORDED_AT_VERSION`. A fold whose meaning changes while its
-#: keys do not moves its digest here, which is what obliges the version bump that
-#: retires savepoints written by the older build.
-_FOLD_STATE_DIGESTS: dict[str, str] = {
-    "status": "929af8634f6d6a5f",
-    "usage": "fca1ed719ebf34fc",
-    "timeline": "72b9531063943783",
-    "tools": "008b36fed498d32b",
-    "approvals": "c9db629215cc2620",
-    "class": "1eb292eff34fd7d9",
-}
-
-#: The savepoint version the digests above were taken at.
+#: What each fold STORES over the script above, and the version its state was recorded
+#: at. A fold whose meaning changes while its keys do not moves its digest here, which
+#: is what obliges the bump of THAT FOLD's ``state_version`` -- the number that retires
+#: savepoints written by the older build.
 #:
-#: A fold ADDED to :data:`PROJECTION_NAMES` lands its digest here without moving the
-#: version, and that is not a way around the bump: the version retires savepoints
-#: that would resume onto changed meaning, and a new fold has none on any disk --
-#: ``_checkpoint_from`` matches a file to a fold by NAME, so no file on disk claims
-#: to be this one. Bumping for a new fold would instead retire every VALID savepoint
-#: of the other folds, costing each a refold to retire nothing. What obliges the bump
-#: is an EXISTING fold's digest moving, which is why this number is at 4: ``usage`` now
-#: stores a credit bucket per source, so every savepoint written at 3 describes the old
-#: meaning. ``status``, ``timeline`` and ``class`` moved with it because the script above
-#: grew the entries that reach those buckets, and a fold retaining a seq or a moment sees
-#: them; the arithmetic of those three is unchanged.
-_DIGESTS_RECORDED_AT_VERSION = 4
+#: The version is per fold because the retirement is: a file carries the version of the
+#: fold it holds, so bumping ``usage`` retires ``usage``'s savepoints and leaves every
+#: other fold's standing. A pair recorded here is therefore a claim about one fold
+#: alone, and a change to one fold obliges exactly one pair to move.
+#:
+#: A fold ADDED to :data:`PROJECTION_NAMES` lands its pair here at the base version
+#: without a bump, and that is not a way around one: the version retires savepoints that
+#: would resume onto changed meaning, and a new fold has none on any disk --
+#: ``_resume_one`` matches a file to a fold by NAME, so no file on disk claims to be
+#: this one. What obliges a bump is an EXISTING fold's digest moving.
+#:
+#: Every pair stands at 4, which is where the folds arrived together: ``usage`` stores a
+#: credit bucket per source, so a savepoint written at 3 describes different meaning, and
+#: ``status``, ``timeline`` and ``class`` moved with it because the script above grew the
+#: entries that reach those buckets and a fold retaining a seq or a moment sees them. From
+#: here a bump is one fold's own, which is the whole point of the pair.
+_FOLD_STATE_PINS: dict[str, tuple[str, int]] = {
+    "status": ("929af8634f6d6a5f", 4),
+    "usage": ("fca1ed719ebf34fc", 4),
+    "timeline": ("72b9531063943783", 4),
+    "tools": ("008b36fed498d32b", 4),
+    "approvals": ("c9db629215cc2620", 4),
+    "class": ("1eb292eff34fd7d9", 4),
+}
 
 
 def _log(unit_id: str = SESSION) -> CrewLog:
@@ -260,9 +262,8 @@ def _files(unit_id: str = SESSION) -> list[str]:
 #: envelope stores them. The envelope nests: the facts that must MATCH this log go in
 #: an ``identity`` block, the digest a later read re-checks goes in a ``witness``, and
 #: the seq the state stands at is the kernel's ``watermark``. ``v`` here is the FOLD's
-#: stored shape (``state_version``), which is what ``CHECKPOINT_VERSION`` names and
-#: what a build changing a fold has to move; the envelope's own ``v`` belongs to the
-#: kernel and no test here touches it.
+#: stored shape (``state_version``), the one number a build changing a fold has to move;
+#: the envelope's own ``v`` belongs to the kernel and no test here touches it.
 #:
 #: A field maps to SEVERAL routes when the envelope stores it more than once, and
 #: ``seq`` is the one that does: the watermark the state resumes at and the boundary
@@ -436,7 +437,7 @@ def test_a_folded_session_writes_one_savepoint_per_fold():
     assert payload["fold"] == "status"
     assert payload["seq"] == handle.last_seq
     assert payload["unit"] == SESSION
-    assert payload["v"] == savepoints.CHECKPOINT_VERSION
+    assert payload["v"] == crew_log.fold_state_version("status")
     assert payload["first_seq"] == 1
     assert payload["origin"] == crew_log.log_origin(handle)
     # The state is the fold's own bookkeeping, not the rendered value: that
@@ -772,7 +773,7 @@ def test_a_savepoint_from_before_the_kernel_is_discarded_rather_than_migrated():
     witness = savepoints.prefix_witness(handle, handle.last_seq)
     assert witness is not None, "the fixture's own boundary did not resolve"
     legacy = {
-        "v": savepoints.CHECKPOINT_VERSION,
+        "v": crew_log.fold_state_version("status"),
         "unit": SESSION,
         "origin": crew_log.log_origin(handle),
         "first_seq": 1,
@@ -864,7 +865,7 @@ def test_a_savepoint_from_a_future_build_is_ignored():
     _long_log()
     crew_log.fold_session(SESSION)
     payload = _payload("status")
-    payload["v"] = savepoints.CHECKPOINT_VERSION + 1
+    payload["v"] = crew_log.fold_state_version("status") + 1
     payload["state"]["turns_completed"] = 99999
     _write_payload("status", payload)
 
@@ -885,7 +886,9 @@ def test_a_savepoint_from_an_older_build_is_refused_and_folded_cold():
     _long_log()
     crew_log.fold_session(SESSION)
     payload = _payload("usage")
-    payload["v"] = savepoints.CHECKPOINT_VERSION - 1
+    # ``usage``'s OWN version, because that is the number a ``usage`` file carries and the
+    # only one its resume compares against.
+    payload["v"] = crew_log.fold_state_version("usage") - 1
     payload["state"]["credits"] = 99999.0
     _write_payload("usage", payload)
 
@@ -897,21 +900,27 @@ def test_a_savepoint_from_an_older_build_is_refused_and_folded_cold():
 
 
 def test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move(monkeypatch):
-    """A fold's stored state is pinned, so changing it cannot pass CI silently.
+    """A fold's stored state is pinned to ITS OWN version, per fold.
 
-    ``CHECKPOINT_VERSION`` and ``_state_matches_fold`` both guard the payload's
-    SHAPE, and the case neither can see is a fold whose meaning changes while its
-    keys do not -- a counting fix in ``usage`` or ``status`` being the likely one.
-    A savepoint written by the old build then resumes onto the new logic, so the
-    long sessions this module exists to speed up are exactly the ones that keep
-    serving pre-fix numbers, for the life of the unit.
+    ``state_version`` and ``_state_matches_fold`` both guard the payload's SHAPE, and
+    the case neither can see is a fold whose meaning changes while its keys do not -- a
+    counting fix in ``usage`` or ``status`` being the likely one. A savepoint written by
+    the old build then resumes onto the new logic, so the long sessions this module
+    exists to speed up are exactly the ones that keep serving pre-fix numbers, for the
+    life of the unit.
 
-    The obligation is therefore recorded as a test rather than as a sentence:
-    prose cannot fail, and a rule nothing enforces is one a future fix forgets.
-    The digest is over each fold's STATE, which is what a savepoint stores, so
-    editing a comment or renaming a local does not move it and a changed number
-    does. ``render`` is deliberately outside it: a rendering change moves the cold
-    fold and the resumed fold together, so an old savepoint stays valid.
+    The obligation is therefore recorded as a test rather than as a sentence: prose
+    cannot fail, and a rule nothing enforces is one a future fix forgets. The digest is
+    over each fold's STATE, which is what a savepoint stores, so editing a comment or
+    renaming a local does not move it and a changed number does. ``render`` is
+    deliberately outside it: a rendering change moves the cold fold and the resumed fold
+    together, so an old savepoint stays valid.
+
+    The pin is PER FOLD because the retirement is. A file carries the version of the
+    fold it holds, so a fold that changed meaning is the only one whose savepoints must
+    go -- and pinning the digests against one shared number would demand a bump that
+    retires five valid savepoints to retire one stale one, which is the cost this
+    change removed.
 
     The clock is frozen because four of the five folds retain an entry's ``ts``,
     which would otherwise move every digest on every run. ``store.now_ms`` is the
@@ -926,21 +935,30 @@ def test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move(monkey
     entries = list(handle.iter_from(1, known=crew_log.KNOWN_TYPES))
 
     measured = {
-        name: _state_digest(crew_log.advance(crew_log.initial(name), entries).state)
+        name: (
+            _state_digest(crew_log.advance(crew_log.initial(name), entries).state),
+            crew_log.fold_state_version(name),
+        )
         for name in crew_log.PROJECTION_NAMES + crew_log.INTERNAL_PROJECTION_NAMES
     }
 
-    assert savepoints.CHECKPOINT_VERSION == _DIGESTS_RECORDED_AT_VERSION, (
-        "CHECKPOINT_VERSION moved, so re-record _FOLD_STATE_DIGESTS at the new "
-        "version: the point of the bump is that savepoints from the old one retire "
-        "to a cold fold, and this pin is what proves the bump was not forgotten"
+    changed = sorted(
+        name
+        for name, pin in measured.items()
+        if _FOLD_STATE_PINS.get(name, (None, None))[0] != pin[0]
     )
-    assert measured == _FOLD_STATE_DIGESTS, (
-        "a fold now stores something different, so every savepoint on disk "
-        "describes the OLD meaning and will resume onto this logic. Bump "
-        f"CHECKPOINT_VERSION in checkpoint.py (currently {savepoints.CHECKPOINT_VERSION}) "
-        "so those files retire to a cold fold, then record the new digests here: "
-        f"{measured}"
+    unbumped = sorted(
+        name for name in changed if _FOLD_STATE_PINS.get(name, ("", 0))[1] == measured[name][1]
+    )
+    assert not unbumped, (
+        f"these folds now store something different: {unbumped}. Every savepoint on "
+        "disk for them describes the OLD meaning and will resume onto this logic. Bump "
+        "each one's state_version in projection.py's _FOLDS so those files retire to a "
+        "cold fold -- the others keep theirs -- then record the new pairs in "
+        f"_FOLD_STATE_PINS: {measured}"
+    )
+    assert measured == _FOLD_STATE_PINS, (
+        "a fold's stored state or version moved, so re-record _FOLD_STATE_PINS: " f"{measured}"
     )
 
 
@@ -1278,8 +1296,8 @@ def test_a_savepoint_still_resumes_after_the_log_merely_grew(monkeypatch):
 def test_a_savepoint_without_a_prefix_digest_is_ignored():
     """A payload from a build before this guard is retired, not trusted.
 
-    The alternative was bumping ``CHECKPOINT_VERSION``, and the rule that constant
-    documents is about what a fold STORES, not about the envelope around it: the
+    The alternative was bumping a fold's ``state_version``, and the rule that number
+    carries is about what a fold STORES, not about the envelope around it: the
     fold state here is unchanged. Rejecting the envelope field directly costs one
     cold fold per fold per unit, once, and keeps the version number meaning what it
     says.

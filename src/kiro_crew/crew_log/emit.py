@@ -103,7 +103,7 @@ import traceback
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.constants import CREW_LOG_ENV, crew_log_enabled
 from kiro_crew.executors import crew_log_executor
@@ -979,6 +979,65 @@ def _notify_growth(session_id: str) -> None:
             listener(session_id)
         except Exception as exc:  # pragma: no cover - a listener's own failure
             _report("growth listener", exc, op="growth-listener")
+
+
+#: The one entry type whose payload names a BOARD other than its unit's own slot. A
+#: worker's report carries the conductor's ``slot``, so that is the fold it belongs to.
+#: Spelled here rather than imported from ``entry_types``: this module is the boot-path
+#: import gate (see ``_crew_log``), and one string is cheaper than pulling the vocabulary
+#: in. ``test_the_real_append_path_wakes_the_eager_fold`` drives this path end to end.
+_WORK_TYPE: Final[str] = "work/recorded"
+
+
+def _note_eager(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]) -> None:
+    """Tell the eager folder one entry of *entry_type* committed. Never raises.
+
+    Called from inside the append job, immediately after the append returned -- the same
+    place the causal-order publish goes, and for the same reason: until the entry is
+    really on disk there is nothing to fold, and a fold run before it would have to be
+    run again.
+
+    The whole call is one ``put_nowait`` behind a set membership test
+    (:func:`kiro_crew.crew_log.eager.note_commit`). It does not resolve the slot, fold
+    anything or build a frame: this runs on the writer thread that every append of this
+    session is serialized through, so work done here is latency for the next entry.
+
+    The BOARD is read from *data* here rather than at each call site, so the rule lives in
+    one place. Only ``work/recorded`` carries a board of its own: a worker's report names
+    the CONDUCTOR's slot, which is not what the worker unit's header says, so folding by
+    the header would advance the worker's board and leave the conductor's -- the one a
+    dashboard reads -- stale. Every other type has no board field and the header is right
+    for it, which is what an empty value asks the folder to use.
+
+    The import is function-local, which is this module's standing rule for anything that
+    reaches the fold surface -- a launch that never commits an eager entry never loads
+    it.
+    """
+    seq = int(getattr(entry, "seq", 0) or 0)
+    if seq <= 0:
+        return
+    try:
+        # boot-path import gate, the same one ``_crew_log`` above documents: this module is
+        # reachable from the gateway's boot path and the fold surface is not, so the import
+        # is paid by the first process that actually commits an eager entry.
+        from kiro_crew.crew_log import eager
+
+        board = str(data.get("slot") or "") if entry_type == _WORK_TYPE else ""
+        eager.note_commit(session_id, entry_type, seq, board)
+    except Exception:  # pragma: no cover - a cache must not cost a committed entry
+        # Rendered text, never ``exc_info``: this runs inside the append job, whose frame
+        # binds the live ``CrewLog`` whose finalizer releases the write lease, so a record
+        # carrying the traceback would keep that handle and its lease alive past the drop
+        # that should have released it. The store's ``log_exception_text`` does exactly
+        # this, but this module is the boot-path import gate (see ``_crew_log``) and may
+        # not import the store at module level, so the render uses the ``traceback``
+        # module already imported above. Pinned by test_crew_log_exc_info_sites.py.
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "crew log eager wake not delivered for %s:\n%s",
+                entry_type,
+                traceback.format_exc().rstrip(),
+            )
 
 
 def _on_event_loop() -> bool:
@@ -2868,7 +2927,12 @@ def _write(
         log = _handle(session_id)
         if log is None:
             return
-        log.append(entry_type, data, src=src, ignorable=ignorable)
+        entry = log.append(entry_type, data, src=src, ignorable=ignorable)
+        # Here rather than at each emitter: this is the append every ordinary entry type
+        # goes through, so an entry type that becomes eager later is covered without a
+        # second edit. The hook's own membership test drops the types no eager fold
+        # names, which is nearly all of them.
+        _note_eager(entry, entry_type, session_id, data)
 
     _submit(
         _job,
@@ -5589,7 +5653,7 @@ def on_panel_published(session_id: str, data: dict[str, Any], *, timeout: float 
             log = _handle(session_id)
             if log is None:
                 return
-            log.append("panel/published", data, src=_SRC_GATEWAY)
+            entry = log.append("panel/published", data, src=_SRC_GATEWAY)
             # The panel fold spans replacement sessions, and a unit header's clock can
             # step BACKWARD, which would fold a retired session's publish last and make
             # it the current panel with history built against the wrong predecessor.
@@ -5597,6 +5661,12 @@ def on_panel_published(session_id: str, data: dict[str, Any], *, timeout: float 
             from kiro_crew import session_ledger
 
             session_ledger.note_panel_unit_recorded("", session_id)
+            # AFTER the order is recorded, never before. The fold the wake triggers reads
+            # that order to decide which unit applies last, so a wake enqueued first can
+            # be folded on a thread that still sees this unit unordered -- and the panel
+            # fold takes the newest entry whole, so it would serve a retired session's
+            # panel as the current one.
+            _note_eager(entry, "panel/published", session_id, data)
             outcome["ok"] = True
 
     _submit(_job, "appending panel/published", session_id, after=landed.set)
@@ -5654,12 +5724,15 @@ def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 
             log = _handle(session_id)
             if log is None:
                 return
-            log.append("work/recorded", data, src=_SRC_GATEWAY)
+            entry = log.append("work/recorded", data, src=_SRC_GATEWAY)
             # The work fold spans replacement sessions, so header wall clocks are
             # not a causal order. Publish only after this append has really landed.
             from kiro_crew import session_ledger
 
             session_ledger.note_work_unit_recorded(str(data.get("by") or ""), session_id)
+            # AFTER the order is recorded, for the reason the panel emitter gives: the
+            # fold this wake triggers reads that order.
+            _note_eager(entry, "work/recorded", session_id, data)
             outcome["ok"] = True
 
     _submit(_job, "appending work/recorded", session_id, after=landed.set)

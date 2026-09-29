@@ -42,6 +42,18 @@ A fold is three pure pieces:
 | step | one entry applied to the state, in place |
 | render | the state as the value a reader is served |
 
+and two declarations about itself:
+
+| declaration | what it decides |
+|---|---|
+| `state_version` | the version of what THIS fold stores, and what its savepoint files carry (section 7) |
+| `mode` | `lazy` -- folded when a reader asks; `eager` -- folded when the entry lands (section 5.1) |
+
+`mode = "eager"` requires `affects`, and `_Fold.__post_init__` refuses the pair at
+import. An eager fold is woken by entry TYPE, so one that every entry moves would be
+woken for every message body in the log -- which is the cost the mode exists to take
+off the read, paid on the append path instead.
+
 `fold(name, entries)` is those pieces run over every entry. The INCREMENTAL form
 is the primitive and the whole-file form is one line on top of it, so a resumed
 answer and a from-scratch answer come out of one implementation. Two
@@ -610,6 +622,154 @@ therefore spelled in this module and a test pins that spelling against the
 emitter's own constant, so the duplication cannot drift unnoticed. With the flag
 off the installer builds no publisher and registers no listener.
 
+### 5.1 Eager folds
+
+The push above is SESSION-keyed and driven by a reader on the event loop. The
+slot-keyed folds (section 3) have a second path, because their cost is different: a
+slot fold interprets one entry type and its reader has to walk every line of every
+unit the slot ran under to find it, so the first read of a cold cell is O(the slot's
+whole history) to produce a value that is a function of entries this process just
+wrote. A fold marked `eager` is therefore folded when the entry lands.
+
+`work` and `panel` are eager. Everything else is lazy, and `timeline` is the one
+where that deserves saying: it is the fold that looks like a live feed, but its value
+is a 200-row window the dashboard does not read, and it is session-keyed.
+
+**What the append path pays is one `queue.Queue.put_nowait`.** Not the slot lookup,
+not the fold. `emit`'s append job calls
+`crew_log.eager.note_commit(unit_id, entry_type, seq, board)` after the append
+returns, and that call is a membership test against the eager folds' declared types
+plus the enqueue. One daemon thread drains the queue.
+
+The hook sits in the emitter's generic `_write` job, which every ordinary entry type
+takes, so a fold marked eager later needs no second edit; the two emitters that build
+their own append job (`work/recorded`, `panel/published`) call it themselves.
+
+**The wake carries the BOARD, and that is a correctness requirement.** A unit's header
+names the slot that unit ran under, which is the board for a conductor's own entry. A
+worker's `work/recorded` names the CONDUCTOR's board in its own `slot` field and reaches
+that fold only by being joined into it (`_work_units`). So resolving the header would
+advance the worker's own board -- which nothing reads -- and leave the conductor's exactly
+as stale as before. The emitter holds the entry, so it reads the board there; an empty
+board means the header names it, which is true of every type that carries none.
+
+**The wake is enqueued AFTER the causal order is recorded.** Both eager entry types are
+folded over units ordered by a record the emitter writes beside the append
+(`note_work_unit_recorded`, `note_panel_unit_recorded`), and the fold reads that order to
+decide which unit applies last. A wake enqueued first can be folded on the other thread
+while this unit is still unordered -- and the `panel` fold takes the newest entry whole, so
+it would serve a retired session's panel as the current one.
+
+**A full queue DROPS and counts (`eager_dropped`), and never waits.** Same posture the
+emitter takes about its own buffer: a slow consumer must cost currency, not turn
+latency. Dropping is safe because the fold is not the record -- the log is -- so a
+dropped wake leaves the memo behind the file and the next READ carries it forward,
+which is exactly the lazy behaviour that was there before.
+
+**The worker runs the read path, not a second folding path.** It calls
+`read_slot_projection`, which is what the dashboard route calls: the rules about
+continuing a warm cell -- a changed unit list, a recreated unit, an earlier unit that
+grew, a rewritten prefix -- are stated once, and a rule missing from a copy here would
+be a wrong record rather than a slow one. A batch is coalesced first, newest wake per
+(unit, board), because a turn writes several entries and folding per wake would pay the
+same continuation repeatedly to reach the value the last one reaches. Keyed by the PAIR
+and not by the unit: one unit can append to two boards -- a worker bound to two
+conductors -- and collapsing those onto the unit would fold one and drop the other.
+
+**Nothing is PUSHED, and that is a decision.** A slot fold's `last_seq` is the newest
+unit's own seq by contract, and conductor units are folded before worker units -- so a
+conductor-side change on a board with any worker bound leaves that number unmoved, and a
+client rule that ordered frames by it would discard the changed value. Pushing correctly
+needs a monotonic per-(slot, fold) revision that reads and frames share, which is a new
+contract in the read path, and there is no consumer yet to need it. So the value is folded
+here and READ from here; the revision belongs to the change that adds the reader.
+
+**One pass per (slot, fold) at a time.** `fold_slot_warm` holds a per-key lock for its
+whole body, and the reason is a defect eager folding created rather than a tidiness rule.
+Two warm passes on one key SHARE the cell: the continuation drives `memo.registry`, and
+`_slot_checkpoint` then reads that live cell and pairs it with the CALLER's own `reached`.
+So a pass whose stream ended earlier could return the other pass's newer state labelled
+with its own older seq -- and `seq` is what a reader truncates against, so the value is
+newer than the number describing it. The kernel's watermark repairs the cell on a later
+read; nothing repairs a value already returned.
+
+Two readers on one slot is the NORMAL mode here, because the append-driven wake folds the
+same board a dashboard poll is reading -- which is what eager folding is for. The lock is
+held across the pass rather than around the drive, because the state and the seq are read
+at different moments and it is their PAIRING that has to be atomic. A caller that
+waits is waiting for a fold it would otherwise have duplicated, and finds the cell warm
+when it arrives. `test_two_concurrent_folds_never_pair_one_passs_seq_with_anothers_state`
+forces the interleaving rather than racing for it, and reports the mismatch as "3 items at
+seq 2" when the lock is removed.
+
+**A closed session drops its slot's memos.** `session/closed` wakes the worker like any
+other type and it calls `forget_slot_folds(slot=...)`: a unit that will never append
+again has no value being held warm for it. This costs the next read of that slot one
+cold fold and never an answer.
+
+**The warm memos are bounded by COUNT, and that is the whole bound.**
+`SLOT_FOLD_CACHE_SLOTS` is 64 cells, keyed (data home, slot, fold). What that is in bytes
+is measured at each fold's declared caps rather than reasoned about: the largest cell is
+`radar` at `RADAR_ITEM_LIMIT` items, 995,342 bytes, so a full table of those is 60.8 MiB;
+`work` at `WORK_ITEM_LIMIT` items plus `WORK_EVENT_LIMIT` events is 138,067 bytes, 8.4 MiB
+for 64.
+
+A separate byte ceiling was written and then removed, and the reason is worth keeping. Its
+case was that eager folding uncouples the retained set from what a reader asked for -- true,
+but the count ceiling bounds the SET either way, so all that changes is which 64 cells are
+held. At any value above the measured worst case it never fires; below it, the eviction
+order stops meaning "least recently used" and starts meaning "whoever has the biggest board
+loses", which is a cache policy nothing asked for. The first version of this section quoted
+1.2 MB for a `work` cell and 79 MB for the table, from a per-item cost multiplied out; both
+were wrong, because the per-item figure included the board-level event log that 256 items
+share. The numbers above are direct measurements of the state at the caps.
+
+Eviction order is least recently STORED OR ADVANCED, not least recently read: a read that
+finds the cell already at the file's position returns it without storing, so it does not
+move towards the back. A frequently-read cell can therefore be evicted and refold cold.
+That is the price of not taking the guard on a read that had nothing to record. A cell that
+IS stored again -- by a read that carried it forward, or by an eager fold -- moves to the
+back, so the order tracks stores rather than arrival.
+
+More than 64 boards being WRITTEN at once is the one regime where that order stops helping:
+every eager fold stores a cell, each store evicts the cell furthest from the back, and the
+next wake for the evicted board folds it cold. The worker degrades to bounded churn -- one
+cold fold per wake, on one thread, at the cap -- and the queue's own limit absorbs the rest
+by dropping wakes and counting them, which costs a reader a cold fold and never an answer.
+A 65th active board therefore makes eager folding stop paying without making anything
+slower than the lazy path it replaced.
+
+The per-key fold locks are a second table, and what bounds it is the passes in flight: an
+entry exists while some pass holds or waits for that key's lock, and the last holder to
+leave drops it. Dropping one any earlier would hand the next caller a different lock object,
+which serializes nothing.
+
+**What eager folding does NOT make free: unit discovery.** A slot read has two halves --
+finding which units name this board, then folding them -- and only the second is moved.
+Discovery is not free either: the only record that a worker belongs to a board is a `bind`
+entry in the conductor's own log, so `_work_units` parses every entry of every conductor
+unit before the fold is asked for anything. That is a per-read cost by design
+(`test_work_fold_warm_read.py` measures it separately and names it discovery), it is
+unchanged here, and the eager worker pays it once per batch
+(`test_a_burst_of_entries_costs_the_worker_one_pass`).
+
+Which half dominates is measured, not assumed. On a board with four bound workers -- each
+with its own message-heavy log -- and a message-heavy conductor log, 1,813 entries total:
+a cold `read_slot_projection(slot, "work")` parses 2,422 entries, 609 of them discovery and
+1,813 the fold. The warm read parses 609. So this change removes 74% of a cold read's parse
+work, and what remains is discovery, on every read, unchanged.
+
+The fold measurement is therefore taken at `fold_slot_warm` with the unit list handed in:
+`test_a_fold_after_an_eager_fold_parses_no_entries` reads 0 entries parsed warm against 41
+cold. Caching the unit list is a separate change and a harder one -- the resolved list
+depends on each bound worker's own unit tuple, so a worker slot gaining a unit on a
+session reset changes it while no conductor mark moves.
+
+**What it does not warm: a slot this process never wrote to.** A cell exists because an
+entry landed here, so a restart, or a dashboard reading a board another process writes,
+still pays the cold fold once. The win is on the repeat read of a board this gateway is
+writing, which is the case the dashboard timer is in while a fleet runs.
+
 **A close does not close a turn.** A session cut off mid-turn writes
 `session/closed` with no `turn/completed`, and the `status` fold leaves the open
 turn standing. Clearing it would assert the turn finished when nothing recorded it
@@ -973,8 +1133,9 @@ interpreted by it. The `witness` holds the evidence a LIVE check needs, which ca
 be equality: a reader cannot state a record count before opening the file that states
 it, so a digest placed in the identity block would refuse every savepoint carrying
 one. The kernel hands the witness to the adapter's `admit` once every equality check
-has passed. `v` is the kernel's envelope version; `state_version` is the folds' own
-`FOLD_STATE_VERSION`, which `CHECKPOINT_VERSION` names.
+has passed. `v` is the kernel's envelope version; `state_version` is the version of
+the ONE fold this file holds (`fold_state_version(name)`), which is why a bump retires
+that fold's files alone.
 
 A savepoint written before the witness existed carries none, `admit` refuses an empty
 one, and the payload is DISCARDED and cold-folded rather than migrated -- and since
@@ -1154,24 +1315,42 @@ The size cap is a BACKSTOP on section 2's bounds, not a bound itself: a fold tha
 grew unbounded state loses its savepoint instead of writing an unbounded file on
 every read.
 
-**Changing what a fold stores moves `FOLD_STATE_VERSION`, and a test enforces
-it.** The number lives in `projection.py`, beside the folds whose stored shape it
-describes, and the projection kernel reads it off each definition;
-`checkpoint.py` re-exports it as `CHECKPOINT_VERSION`, the name its files use. It
-and `_state_matches_fold` both check the payload's
-SHAPE, so the case neither sees is a fold whose MEANING changes while its keys do
-not -- a counting fix in `usage` or `status` being the likely one. The old build's
-savepoint then resumes onto the new logic, and the long sessions this exists to
-speed up are the ones that keep serving pre-fix numbers for the life of the unit,
-with no in-product way to retire the file because the tree is fenced from the
-agent. So the rule is: any change to what a fold's `start` or `step` stores moves
-the version, which retires every savepoint to a cold fold at one refold each. The
-rule is not left as this paragraph --
-`test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move` digests
-each fold's stored state over a fixed script with the clock frozen, so a changed
-fold reddens CI with the bump named in the failure. One global number over a
-per-fold one is deliberate: it over-retires, and over-retiring costs a refold
-while under-retiring serves a wrong number.
+**Changing what a fold stores moves THAT FOLD's `state_version`, and a test
+enforces it.** The number lives on the fold in `projection.py`, beside the `start`
+and `step` whose stored shape it describes, and the projection kernel reads it off
+each definition. It and `_state_matches_fold` both check the payload's SHAPE, so
+the case neither sees is a fold whose MEANING changes while its keys do not -- a
+counting fix in `usage` or `status` being the likely one. The old build's savepoint
+then resumes onto the new logic, and the long sessions this exists to speed up are
+the ones that keep serving pre-fix numbers for the life of the unit, with no
+in-product way to retire the file because the tree is fenced from the agent. So the
+rule is: any change to what a fold's `start` or `step` stores moves that fold's
+version, which retires that fold's savepoints to a cold fold at one refold each and
+leaves every other fold's standing. The rule is not left as this paragraph --
+`test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move` digests each
+fold's stored state over a fixed script with the clock frozen and pins the digest
+against that fold's own version, so a changed fold reddens CI with the bump named in
+the failure.
+
+There is ONE number per fold and no module-wide one beside it. A savepoint is written
+with, and demanded back at, `fold_state_version(name)`, which is the only spelling either
+side of the round trip uses. A maximum over the folds was kept for a while on the grounds
+that `checkpoint.py` published it as `CHECKPOINT_VERSION` for its store's payload table;
+that was wrong -- `session_tree_projection.py` declares its own `CHECKPOINT_VERSION` and
+imports neither name -- so both are gone, and a fold's version is unreachable except
+through its own fold.
+
+*This reverses an earlier decision recorded here, and the reason it was right then
+is worth keeping.* One shared number was chosen because it OVER-retires, and
+over-retiring costs a refold while under-retiring serves a wrong number. That
+argument held while nothing proved the bump had happened for the fold that needed
+it: a per-fold number with a global pin can be forgotten for one fold, and the
+forgotten one is the one that serves stale state. What changed is the enforcement,
+not the appetite for risk -- the digest pin is now per fold and names the fold whose
+version it wants moved, so under-retiring fails CI rather than shipping. With that in
+place the shared number's only remaining effect was its cost: a counting fix in one
+fold retired all six, and the units that paid the six refolds were the long-lived
+ones savepoints exist for.
 
 ## 8. The pull-request holders -- the second fold across logs
 

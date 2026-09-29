@@ -1715,6 +1715,50 @@ def _join_install_receipt_workers() -> None:
         waiter()
 
 
+def _resume_crew_log_eager_fold() -> None:
+    """Lift the eager-fold fence for the test about to run.
+
+    The mirror of :func:`_retire_crew_log_eager_fold`: that one fences the gap between
+    tests, this one hands the worker back to the test itself. Looked up rather than
+    imported, so a run that never touches the crew log pays nothing.
+    """
+    mod = sys.modules.get("kiro_crew.crew_log.eager")
+    resume = getattr(mod, "resume_for_tests", None)
+    if resume is not None:
+        resume()
+
+
+def _retire_crew_log_eager_fold() -> "BaseException | None":
+    """Retire the crew log's append path and its fold worker before this test's pins lift.
+
+    The worker is a process-wide daemon that the PRODUCTION append path starts: an
+    ``emit`` call with the crew log on reaches ``note_commit``, which starts the thread.
+    So any test that appends a work or panel entry has one running, whether or not it
+    knows the module exists -- and the worker resolves ``KIROCREW_HOME`` when it folds,
+    which is the pin that lifts a moment later. Stopping it here rather than in each
+    file's own fixture is the point: the next test file to call ``on_work_recorded``
+    should be safe by default, not by remembering.
+
+    Same place and same reason as :func:`_join_install_receipt_workers` -- the
+    ``tryfirst`` teardown hook runs before any fixture finalization, so the pins still
+    hold. The module is looked up rather than imported, so a run that never touches the
+    crew log pays nothing.
+
+    ``retire_for_tests`` owns the ORDER (drain the writer, then stop the worker, and stop
+    nothing if the writer will not drain) because both halves are its own; this floor owns
+    only WHEN and WHERE TO REPORT. The failure is RETURNED, never raised from here: raising
+    on this side of the hookwrapper's ``yield`` would skip every fixture finalization behind
+    it, which is worse than the leak it reports. The caller raises it after the ``yield``
+    instead, beside :func:`_refuse_a_resolved_real_default_home`, which is the established
+    place for "this test left damage".
+    """
+    mod = sys.modules.get("kiro_crew.crew_log.eager")
+    retire = getattr(mod, "retire_for_tests", None)
+    if retire is None:
+        return None
+    return retire()
+
+
 #: How long the executor join waits before giving up on a wedged job. Long enough for
 #: a config read on a loaded host; short enough that a job blocked forever surfaces as
 #: a slow teardown rather than a hung worker (pytest-timeout is not armed here).
@@ -1946,6 +1990,12 @@ def pytest_runtest_teardown(item, nextitem):
     """
     _join_install_receipt_workers()
     _join_test_loop_executor(item)
+    # LAST, and the order is load-bearing: everything above cancels tasks, joins executor
+    # jobs and drains the crew-log writer, and the ``finally`` blocks that run as they
+    # unwind APPEND -- which reaches ``note_commit``, and an enqueue after a stop starts a
+    # fresh daemon nothing holds a handle to. Stopping the worker once its producers are
+    # quiescent is what makes the stop final.
+    wedged_eager_fold = _retire_crew_log_eager_fold()
     resolved_real_home = (
         _resolved_real_default_home() if item.stash.get(_HOME_PIN_ARMED, False) else None
     )
@@ -1953,6 +2003,10 @@ def pytest_runtest_teardown(item, nextitem):
     yield
     if resolved_real_home is not None:
         _refuse_a_resolved_real_default_home(resolved_real_home)
+    if wedged_eager_fold is not None:
+        # Reported AFTER the yield for the reason on _retire_crew_log_eager_fold: fixture
+        # finalization has run by here, so failing the test costs nothing but the failure.
+        raise wedged_eager_fold
 
 
 def _restore_session_cwd() -> None:
@@ -2351,7 +2405,13 @@ _probe_attempted = False
 
 
 def pytest_runtest_setup(item):
-    """Keep ``sandbox._backend`` warm for every test, at one probe per worker.
+    """Keep ``sandbox._backend`` warm for every test, at one probe per worker, and hand
+    the crew log's eager fold worker back to it.
+
+    The teardown floor fences that worker between tests (see
+    :func:`_retire_crew_log_eager_fold`), because a wake arriving in that gap comes from
+    the previous test's writer and folds against a home nobody pinned. A test is the other
+    side of that gap: it is meant to reach the worker, so the fence lifts here.
 
     ``detect_backend()`` reached from a running event loop with a COLD cache
     deliberately refuses to probe -- the probe forks and waits, which must never
@@ -2386,6 +2446,7 @@ def pytest_runtest_setup(item):
     every test in the run. A probe failure is swallowed either way -- a host genuinely
     without a sandbox must still run the tests that do not need one.
     """
+    _resume_crew_log_eager_fold()
     global _probe_verdict, _probe_attempted
     try:
         from kiro_crew import sandbox

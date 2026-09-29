@@ -288,7 +288,11 @@ def test_the_kernel_definition_folds_to_what_advance_folds(name):
         state = definition.apply(state, entry)
 
     assert definition.view(state) == crew_log.fold(name, entries)
-    assert definition.state_version == crew_log.FOLD_STATE_VERSION
+    # The version the kernel is handed is THIS fold's, not the module maximum: a bump
+    # to one fold must retire that fold's savepoints and leave the others standing, and
+    # comparing against the maximum here would pass while the wrapper published the
+    # wrong number for every fold below it.
+    assert definition.state_version == crew_log.fold_state_version(name)
 
 
 @pytest.mark.parametrize("name", crew_log.SESSION_FOLD_NAMES)

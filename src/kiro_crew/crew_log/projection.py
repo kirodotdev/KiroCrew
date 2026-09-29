@@ -65,7 +65,7 @@ import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
@@ -189,19 +189,26 @@ FOLD_NAMES: Final[tuple[str, ...]] = (
 #: projection kernel reads it off each definition
 #: (:class:`~kiro_crew.projection.ProjectionDefinition`) and refuses a payload
 #: written under another number, so a stored state cannot resume onto logic that
-#: keeps different bookkeeping. ``crew_log.checkpoint`` re-exports it as
-#: ``CHECKPOINT_VERSION``, the name its files and its own docs use.
+#: keeps different bookkeeping.
 #:
-#: THE RULE: any change to what a fold's ``start`` or ``step`` STORES moves it,
-#: including one that keeps the same keys. Shape is all this number and
-#: ``_state_matches_fold`` can check, so a counting fix that leaves the keys alone
-#: would resume the old build's state onto the new logic -- and the long sessions a
-#: savepoint speeds up are the ones that then serve pre-fix numbers for the life of
-#: the unit. Moving it retires every savepoint to a cold fold, which costs one refold
-#: each and is the only in-product way to retire them, since the tree is fenced from
-#: the agent. ``test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move``
-#: pins each fold's stored state, so forgetting the move fails CI rather than shipping.
-FOLD_STATE_VERSION: Final[int] = 4
+#: THE RULE: any change to what a fold's ``start`` or ``step`` STORES moves that
+#: FOLD's version, including one that keeps the same keys. Shape is all this number
+#: and ``_state_matches_fold`` can check, so a counting fix that leaves the keys
+#: alone would resume the old build's state onto the new logic -- and the long
+#: sessions a savepoint speeds up are the ones that then serve pre-fix numbers for the
+#: life of the unit. Moving it retires that fold's savepoints to a cold fold, which
+#: costs one refold each and is the only in-product way to retire them, since the tree
+#: is fenced from the agent.
+#: ``test_changing_what_a_fold_stores_forces_the_savepoint_version_to_move`` pins each
+#: fold's stored state against its own version, so forgetting the move fails CI rather
+#: than shipping.
+#:
+#: THE NUMBER IS PER FOLD (:attr:`_Fold.state_version`), and this is the value a fold
+#: that has never moved still stands at. A savepoint file records the version of the
+#: fold it holds, so a bump retires THAT fold's files and leaves every other fold's
+#: standing -- where one shared number retired all six for a change to one of them,
+#: and the sessions paying for it were the long ones the savepoints exist for.
+_FOLD_STATE_VERSION_BASE: Final[int] = 4
 
 #: The types these folds can interpret, handed to ``iter_from(known=...)`` so an
 #: entry from a newer writer stops the fold instead of skewing it. The set is the
@@ -405,6 +412,20 @@ class _Fold:
     whole state. A shallower copy is what makes the per-entry cost bounded, and
     ``test_a_fold_never_reaches_into_the_state_it_was_handed`` is what keeps it
     honest: a nested container left shared shows up there as the prior state moving.
+
+    ``state_version`` is the version of what THIS fold stores, and it is the number
+    its savepoint files carry. It is per fold so that retiring one fold's stored
+    meaning costs a cold fold to that fold alone -- see
+    :data:`_FOLD_STATE_VERSION_BASE` for the rule that moves it.
+
+    ``mode`` decides WHEN the fold runs. ``"lazy"`` is the original posture: the value
+    is folded when a reader asks for it. ``"eager"`` folds it off the append path
+    instead, so a reader is served a value that was already current
+    (:mod:`kiro_crew.crew_log.eager`). An eager fold must declare ``affects``: the worker
+    wakes on the entry types its folds name, and a fold every entry moves would wake it
+    for every message body in the log -- the exact cost the mode exists to remove from
+    the read. That is checked here, at import, because a registry the process cannot
+    honour is not a thing to discover under load.
     """
 
     name: str
@@ -414,10 +435,30 @@ class _Fold:
     bind_slot: Callable[[dict[str, Any], str], None] | None = None
     affects: frozenset[str] | None = None
     copy_state: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    state_version: int = _FOLD_STATE_VERSION_BASE
+    mode: Literal["eager", "lazy"] = "lazy"
+
+    def __post_init__(self) -> None:
+        if self.mode == "eager" and self.affects is None:
+            raise ValueError(
+                f"the {self.name} fold is eager with no affects set: an eager fold is "
+                "woken by entry type, so one that every entry moves would fold on every "
+                "entry in the log off the append path"
+            )
 
     def touched_by(self, entry: Entry) -> bool:
         """Whether *entry* can move this fold, so a copy is worth making."""
         return self.affects is None or entry.type in self.affects
+
+    def touched_by_type(self, entry_type: str) -> bool:
+        """:meth:`touched_by` for a caller holding only the TYPE, not the entry.
+
+        The eager path decides which folds a committed entry wakes before it has read
+        the entry back, so it has the type and nothing else. Same answer as
+        :meth:`touched_by`, from the same set, rather than a second membership test that
+        could drift from it.
+        """
+        return self.affects is None or entry_type in self.affects
 
     def copied(self, state: dict[str, Any]) -> dict[str, Any]:
         """*state* copied deeply enough that :attr:`step` cannot reach the original."""
@@ -435,6 +476,16 @@ def require_name(name: str) -> str:
             field="name",
         )
     return name
+
+
+def fold_state_version(name: str) -> int:
+    """The version of what the *name* fold STORES, which its savepoint is keyed to.
+
+    Public because the savepoint module writes this number into each file and demands
+    it back on resume, and the fold registry is this module's. One accessor rather than
+    a second copy of the table, so a bump lands in one place.
+    """
+    return _FOLDS[require_name(name)].state_version
 
 
 def initial(name: str) -> Checkpoint:
@@ -975,7 +1026,7 @@ class _SessionFold:
     def __init__(self, fold: _Fold) -> None:
         self._fold = fold
         self.key = fold.name
-        self.state_version = FOLD_STATE_VERSION
+        self.state_version = fold.state_version
 
     def init(self) -> dict[str, Any]:
         return self._fold.start()
@@ -2855,6 +2906,14 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
 #: by COUNT: each cell is a bounded record, so what needs a ceiling is how many are
 #: retained, and the insertion order makes the oldest the one evicted. An evicted slot
 #: folds cold on its next read, which costs time and never correctness.
+#:
+#: What that bound is in BYTES, measured at each fold's declared caps rather than
+#: reasoned about: the largest cell is ``radar`` at :data:`RADAR_ITEM_LIMIT` items,
+#: 995,342 bytes, so a table of 64 of those is 60.8 MiB; ``work`` at
+#: :data:`WORK_ITEM_LIMIT` plus :data:`WORK_EVENT_LIMIT` is 138,067 bytes, 8.4 MiB for 64.
+#: A separate byte ceiling was tried and removed: at any value above this it never fires,
+#: and below it the eviction order stops meaning "least recently used" and starts meaning
+#: "whoever has the biggest board loses", which is not a policy anything asked for.
 SLOT_FOLD_CACHE_SLOTS: Final[int] = 64
 
 
@@ -3011,7 +3070,7 @@ class _SlotFold:
         self._fold = fold
         self._slot = slot
         self.key = fold.name
-        self.state_version = FOLD_STATE_VERSION
+        self.state_version = fold.state_version
 
     def init(self) -> dict[str, Any]:
         state = self._fold.start()
@@ -3121,6 +3180,75 @@ _slot_memos: "dict[tuple[str, str, str], _SlotMemo]" = {}
 _slot_memo_guard = threading.Lock()
 
 
+@dataclass
+class _FoldLock:
+    """One key's fold lock, beside the number of passes holding or waiting for it.
+
+    The count is what makes the table droppable: an entry at zero is one no pass can be
+    inside, so replacing it with a fresh lock serializes exactly what it needs to.
+    """
+
+    lock: threading.Lock
+    holders: int = 0
+
+
+#: One lock per (data home, slot, fold), held across a whole pass of
+#: :func:`fold_slot_warm`. Created under :data:`_slot_memo_guard`.
+#:
+#: WHY A PASS AND NOT A DICT ACCESS. Two warm passes on one key SHARE the cell: the
+#: continuation drives ``memo.registry``, and :func:`_slot_checkpoint` then reads that
+#: live cell and pairs it with the caller's OWN ``reached``. So a pass that read a
+#: shorter tail could return the other pass's newer state labelled with its own older
+#: seq -- and ``seq`` is what a reader truncates against, so the value is newer than the
+#: number that describes it. The kernel's watermark repairs the CELL on a later read; it
+#: cannot repair a value already returned.
+#:
+#: The pairing matters here because two readers on one slot is the NORMAL mode: the
+#: append-driven wake folds the same board a dashboard poll is reading, which is what eager
+#: folding is for. A lock is therefore the mechanism rather than a documented caveat.
+#:
+#: PER KEY, not one lock, because two slots have nothing to share. And held across the
+#: pass rather than around the drive alone: the state and the seq are read at different
+#: moments and it is their PAIRING that must be atomic. A caller that waits here waits
+#: for a fold it would otherwise have duplicated, and finds the cell warm when it
+#: arrives, so the lock costs no wall time it was not already paying.
+#:
+#: WHAT BOUNDS THIS TABLE. One entry per key with a pass holding or waiting for it, so
+#: its size is the folds running right now rather than the slots this process has ever
+#: folded. :func:`_release_fold_lock` drops an entry when its last holder leaves, which is
+#: the only moment at which dropping one is safe: a lock handed out twice as two different
+#: objects serializes nothing, so an entry with a waiter has to stay.
+_slot_fold_locks: "dict[tuple[str, str, str], _FoldLock]" = {}
+
+
+def _acquire_fold_lock(key: "tuple[str, str, str]") -> "_FoldLock":
+    """Claim one (data home, slot, fold)'s lock entry, creating it on first use.
+
+    Claiming is counting a holder, not taking the lock: the caller takes ``entry.lock``
+    itself, outside :data:`_slot_memo_guard`, because a pass holds it while folding and
+    the guard is taken inside that pass. Every claim owes a :func:`_release_fold_lock`.
+    """
+    with _slot_memo_guard:
+        entry = _slot_fold_locks.get(key)
+        if entry is None:
+            entry = _FoldLock(lock=threading.Lock())
+            _slot_fold_locks[key] = entry
+        entry.holders += 1
+        return entry
+
+
+def _release_fold_lock(key: "tuple[str, str, str]", entry: "_FoldLock") -> None:
+    """Give up a claim, and drop the entry once nobody holds or waits for it.
+
+    The identity check keeps a release from deleting an entry some other pass created for
+    the same key after this one was dropped.
+    """
+    with _slot_memo_guard:
+        entry.holders -= 1
+        if entry.holders <= 0 and _slot_fold_locks.get(key) is entry:
+            del _slot_fold_locks[key]
+
+
 def forget_slot_folds(slot: str = "", name: str = "") -> None:
     """Drop warm slot folds, so the next read folds cold.
 
@@ -3131,6 +3259,9 @@ def forget_slot_folds(slot: str = "", name: str = "") -> None:
     another's needs.
     """
     home = str(data_home())
+    # The locks (``_slot_fold_locks``) are not touched here: an entry exists only while a
+    # pass holds or waits for it, and dropping one out from under that pass would hand the
+    # next caller a different lock object and reopen the race it exists to close.
     with _slot_memo_guard:
         if not slot and not name:
             _slot_memos.clear()
@@ -3144,8 +3275,20 @@ def forget_slot_folds(slot: str = "", name: str = "") -> None:
 
 
 def _remember_slot_fold(key: "tuple[str, str, str]", memo: _SlotMemo) -> None:
-    """Keep *memo* under *key*, capped by count; the oldest slot is evicted first."""
+    """Keep *memo* under *key*, capped by COUNT; least recently STORED goes first.
+
+    Eviction order is least recently stored or advanced, which is not the same as least
+    recently read: a read that finds the cell already at the file's position returns it
+    without storing anything, so it does not move the cell towards the back. A cell can
+    therefore be read often while sitting at the front, be evicted, and fold cold on its
+    next read. That is the cost of not taking the guard on a read that had nothing to
+    record, and it is the cheaper side of the trade.
+
+    Insertion order tracks stores because a cell is never edited in place -- a read or an
+    eager fold that carries one forward stores a NEW memo, which moves it to the end.
+    """
     with _slot_memo_guard:
+        _slot_memos.pop(key, None)
         _slot_memos[key] = memo
         while len(_slot_memos) > SLOT_FOLD_CACHE_SLOTS:
             _slot_memos.pop(next(iter(_slot_memos)))
@@ -3219,6 +3362,25 @@ def fold_slot_warm(name: str, unit_ids: Sequence[str], *, slot: str) -> Checkpoi
     """
     require_name(name)
     key = (str(data_home()), slot, name)
+    # The whole pass, under this key's own lock. Everything below reads or advances one
+    # shared cell and then pairs that cell's state with this pass's own seq, and it is
+    # the PAIRING that a second pass would break -- see ``_slot_fold_locks``.
+    entry = _acquire_fold_lock(key)
+    try:
+        with entry.lock:
+            return _fold_slot_warm_locked(name, key, unit_ids, slot=slot)
+    finally:
+        _release_fold_lock(key, entry)
+
+
+def _fold_slot_warm_locked(
+    name: str, key: "tuple[str, str, str]", unit_ids: Sequence[str], *, slot: str
+) -> Checkpoint:
+    """:func:`fold_slot_warm`'s body, with this key's lock already held.
+
+    Split out so the lock's extent is one ``with`` statement rather than an indentation
+    a later edit could fall out of: every return below is inside it by construction.
+    """
     with _slot_memo_guard:
         memo = _slot_memos.get(key)
     marks = _unit_marks(unit_ids)
@@ -4242,8 +4404,8 @@ USAGE_TYPES: Final[frozenset[str]] = frozenset(
 #: Where a credit charge came from, which is the split ``usage`` keeps beside its
 #: total. Fixed rather than discovered: these are the three writers that carry a
 #: ``credits`` field, so the buckets are a closed set and a reader is never shown a
-#: partial split. A fourth spender would add a bucket here and move
-#: :data:`FOLD_STATE_VERSION`.
+#: partial split. A fourth spender would add a bucket here and move ``usage``'s own
+#: :attr:`_Fold.state_version`, which is the version its savepoints carry.
 CREDIT_SOURCES: Final[tuple[str, ...]] = ("turn", "subagent", "background")
 
 #: Which bucket each billing entry type lands in.
@@ -4334,6 +4496,11 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=USAGE_TYPES,
         copy_state=_usage_copy,
     ),
+    # LAZY on purpose, and the one fold where that deserves saying. It is the fold a
+    # reader would guess wants pushing, because it is the one that looks like a live
+    # feed -- but its value is a 200-entry window (``TIMELINE_LIMIT``) that the
+    # dashboard does not read, and it is session-keyed, so folding it eagerly would
+    # advance state nothing asks for.
     "timeline": _Fold(
         "timeline",
         _timeline_start,
@@ -4379,6 +4546,10 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _radar_render,
         affects=frozenset({RADAR_ENTRY_TYPE}),
     ),
+    # EAGER. These two are the folds a dashboard reads on a timer, and each answers to
+    # exactly one entry type -- so the eager worker wakes for one type in a log that is
+    # otherwise message bodies, and the read it serves is a memo lookup rather than a
+    # walk of every unit the slot ran under.
     "work": _Fold(
         "work",
         _work_start,
@@ -4394,6 +4565,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         cast("Callable[[dict[str, Any]], dict[str, Any]]", _work_render),
         bind_slot=_work_bind_slot,
         affects=frozenset({WORK_ENTRY_TYPE}),
+        mode="eager",
     ),
     PANEL_FOLD_NAME: _Fold(
         PANEL_FOLD_NAME,
@@ -4401,12 +4573,27 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _panel_step,
         _panel_render,
         affects=frozenset({PANEL_ENTRY_TYPE}),
+        mode="eager",
     ),
 }
 
 if tuple(_FOLDS) != FOLD_NAMES:  # pragma: no cover - import-time consistency
     raise RuntimeError(
         "the fold registry and FOLD_NAMES disagree: " f"{tuple(_FOLDS)} against {FOLD_NAMES}"
+    )
+
+#: The eager folds, resolved once at import. Every one is SLOT-keyed: eager folding
+#: continues the warm slot memo (:func:`fold_slot_warm`), which is the one warm path
+#: this module has, and a session-keyed fold's warm state is a bundle its own caller
+#: holds rather than anything this module could advance on its behalf.
+EAGER_FOLD_NAMES: Final[tuple[str, ...]] = tuple(
+    name for name, fold in _FOLDS.items() if fold.mode == "eager"
+)
+
+if not set(EAGER_FOLD_NAMES) <= set(SLOT_PROJECTION_NAMES):  # pragma: no cover - import-time
+    raise RuntimeError(
+        "an eager fold must be slot-keyed, because eager folding advances the slot "
+        f"memo: {sorted(set(EAGER_FOLD_NAMES) - set(SLOT_PROJECTION_NAMES))}"
     )
 
 
