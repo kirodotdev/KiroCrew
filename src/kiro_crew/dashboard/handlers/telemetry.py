@@ -37,11 +37,15 @@ from typing import Any, Iterator, NamedTuple
 
 from aiohttp import web
 
-from kiro_crew import __version__, beacon
+from kiro_crew import __version__, beacon, prompt_trace
 from kiro_crew import sel as _sel_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
-from kiro_crew.dashboard.chat_utils import slot_transcript_key
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    session_key_for,
+    slot_transcript_key,
+)
 from kiro_crew.dashboard.handlers.usage import (
     SPEND_WINDOW_DAYS,
     context_occupancy,
@@ -1383,6 +1387,108 @@ async def api_context_trace(request: web.Request) -> web.Response:
         return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
     trace = await asyncio.to_thread(context_trace, slot, _WINDOW_DAYS)
     return web.json_response(trace)
+
+
+def _prompt_trace_session_key(request: web.Request, slot: str) -> str:
+    """The session key whose prompts a slot's Context tab is asking for."""
+    try:
+        state = request.app["state"]
+    except KeyError:
+        return session_key_for(slot)
+    get_slot = getattr(state, "get_slot", None)
+    live = get_slot(slot) if callable(get_slot) else None
+    return effective_session_key(live) if live is not None else session_key_for(slot)
+
+
+async def api_prompt_trace(request: web.Request) -> web.Response:
+    """GET /api/telemetry/prompt-trace?slot=<session key> — the prompts as sent.
+
+    The developer-mode companion of ``context-trace``: where that endpoint says
+    how many characters each block of a turn had, this one returns the TEXT the
+    newest turns handed the agent transport, each with the ``(start, end,
+    label)`` spans :func:`kiro_crew.context_blocks.block_spans` finds in it — the
+    same scan FUNCTION that produced the sizes, run over the text as sent rather
+    than as assembled, so a boundary is found the same way in both views while
+    the covered text may differ (a receipt substitution, the per-turn cap, an
+    unannounced user span); the tab says so per case instead of warning.
+    Read from :mod:`kiro_crew.prompt_trace`'s in-memory ring: nothing here is on
+    disk, a gateway restart empties it, and a restricted (incognito / temporary)
+    session never recorded anything to return.
+
+    Dashboard-only, with the same refusal as ``context-trace`` and for a stronger
+    reason: a prompt carries the user's memory, lessons and skill text verbatim,
+    so an app caller is refused outright (deny-by-default, App Kit §5.2) with the
+    indistinguishable ``404`` and a SEL audit line.
+    """
+    request_app = str(request.get("app", "") or "")
+    slot = (request.query.get("slot") or "").strip()
+    if request_app:
+
+        def _audit_denied() -> None:
+            _sel_mod.sel().log_api_access(
+                caller=request_app,
+                operation="prompt_trace",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot or '(missing)'}",
+                error="dashboard-only endpoint",
+            )
+
+        await asyncio.to_thread(_audit_denied)
+        return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    if not slot:
+        return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
+    # The ring is keyed by the SESSION the turns ran on, which is not the slot
+    # name the tab knows itself by: an ordinary tab's session is
+    # ``dashboard:<slot>`` and a channel-linked tab's is the channel's own key.
+    # Resolve through the live slot when it exists, and through the same rule
+    # the restore paths use when it does not.
+    session_key = _prompt_trace_session_key(request, slot)
+
+    def _collect() -> bytes:
+        snap = prompt_trace.snapshot(session_key)
+        # ``to_dict`` serves the PRESENTED record: every block's slice through the
+        # exfiltration-URL + credential chain (``PromptRecord.presented``), with
+        # the spans rebuilt over the scrubbed text so they still line up — the
+        # same scan function that sizes the usage rows, here over the text as
+        # sent, carved at the user span the assembler announced for the turn (a
+        # prompt recorded without one is
+        # scanned uncarved, and the user's text then sits inside the block that
+        # physically holds it). The spans and the redaction VERDICT are cached
+        # on the record, so a poll re-serves rather than re-scans; the rare record
+        # that needs scrubbing is scrubbed again per read, since a retained copy
+        # would sit outside the ring's budget. ``redacted`` tells the tab to say so.
+        turns: list[dict[str, Any]] = [rec.to_dict() for rec in snap.records]
+        # The bounds are said out loud: a truncated ring and an evicted session
+        # would otherwise read exactly like a session that never recorded.
+        # Serialized HERE, on the worker: the body is the prompt text itself, up
+        # to MAX_TURNS_PER_SESSION × MAX_CHARS_PER_TURN of it, and the tab polls.
+        # Serialized AND encoded here: the UTF-8 encode of a multi-megabyte
+        # string is the other half of the cost a Response(text=...) would put
+        # back on the event loop. ``ensure_ascii=False``: the body is prompt text
+        # bounded in CHARACTERS, and the default escapes every non-ASCII code
+        # point to 6 (BMP) or 12 (astral) ASCII bytes — a ring of ordinary
+        # non-English prompts near its 16M-character budget would serialize to
+        # a multi-hundred-megabyte ``str`` with a second full copy live during
+        # the encode. UTF-8 holds the same text in at most 4 bytes per code
+        # point, and the response declares its charset. ``backslashreplace``: a
+        # chat body is admitted unvalidated, so a message can carry a lone
+        # surrogate, which the ring stores verbatim and UTF-8 cannot encode — a
+        # strict encode would raise here and 500 every poll for the rest of the
+        # session. The replacement writes the ``\uXXXX`` escape ``ensure_ascii``
+        # would have written for exactly that code point, which inside a JSON
+        # string is a valid escape for the lone surrogate itself, so the body
+        # parses and the text round-trips; every other code point is UTF-8.
+        return json.dumps(
+            {"slot": slot, "turns": turns, "dropped": snap.dropped, "evicted": snap.evicted},
+            ensure_ascii=False,
+        ).encode("utf-8", errors="backslashreplace")
+
+    # Off-loop end to end: the first read of a session-start prompt scans
+    # hundreds of kilobytes, and even a cached re-serve serializes them —
+    # ``json_response`` would do that dumps on the event loop.
+    body = await asyncio.to_thread(_collect)
+    return web.Response(body=body, content_type="application/json", charset="utf-8")
 
 
 async def api_usage_turns(request: web.Request) -> web.Response:

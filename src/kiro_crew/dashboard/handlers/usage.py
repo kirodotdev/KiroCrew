@@ -858,6 +858,11 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
                 # count to an array index would corrupt it, because the index counts only
                 # the rows still present AND inside the window.
                 "ordinal": _coerce_int(row.get("ordinal")),
+                # The composer's own turn number, as it stamped the row — the id the
+                # prompt-trace record of the same turn carries, so the two join by
+                # id and not by time. Distinct from ``ordinal``, which the fold
+                # derives and the composer never sees.
+                "turn": _coerce_int(row.get("turn")),
             }
         )
         # The peak INSIDE the requested window, with the window that same reading was

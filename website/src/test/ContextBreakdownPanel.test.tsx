@@ -19,6 +19,7 @@ import {
   groupBlocks,
   categorise,
   categoryOf,
+  axisGutter,
   niceTicks,
   axisLabelIndices,
   CATEGORIES,
@@ -128,6 +129,16 @@ describe('groupBlocks — every-turn bucket', () => {
 
   it('leaves a trace with no every-turn members untouched', () => {
     expect(groupBlocks({ memory: 10, loaded_skill: 20 })).toEqual({ memory: 10, loaded_skill: 20 })
+  })
+})
+
+describe('axisGutter — the y-axis labels always fit', () => {
+  it('keeps the fixed margin for short labels and widens for a seven-digit one', () => {
+    expect(axisGutter('50,000')).toBe(60)
+    const wide = axisGutter('2,500,000')
+    expect(wide).toBeGreaterThan(60)
+    // Wide enough for every character plus the gap: no ",000,000" clip.
+    expect(wide).toBeGreaterThanOrEqual(Math.ceil('2,500,000'.length * 6.6) + 10)
   })
 })
 

@@ -314,7 +314,7 @@ def test_the_row_cap_bounds_the_keys_it_retains_not_just_how_many():
 
     retained = max(len(k) for k in runtime_death._shared_streaks)
     assert (
-        retained <= runtime_death._MAX_RETAINED_KEY_CHARS + len("sha256:") + 64
+        retained <= runtime_death.MAX_RETAINED_KEY_CHARS + len("sha256:") + 64
     ), f"the table retains a {retained}-char key, so the row cap does not bound it"
     # Control: a short key is kept verbatim, so the digest is not applied blindly.
     runtime_death.note_shared_death("chat-short")

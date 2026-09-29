@@ -243,14 +243,47 @@ def split_blocks(
     Returns a label -> characters mapping (UTF-8 bytes with ``utf8_bytes=True``).
     Span coordinates always remain characters; use an authoritative ``user_span``
     for exact byte attribution. No tokenizer or provider serialization is involved.
-    Zero-length blocks are omitted. Every character of ``prompt`` is accounted for exactly once, so the values
-    sum to ``len(prompt)`` — a property the tests assert, and the reason
-    ``unclassified`` exists rather than a silent drop.
+    Zero-length blocks are omitted. Every character of ``prompt`` is accounted for
+    exactly once, so the values sum to ``len(prompt)`` — a property the tests
+    assert, and the reason ``unclassified`` exists rather than a silent drop.
+
+    The sizes are the sums of :func:`block_spans`: the usage rows' per-turn sizes
+    and the developer prompt view's ordered spans come from the same scan
+    FUNCTION, so both find a boundary the same way. Their inputs may legitimately
+    differ — the usage row scans the assembled prompt at its announced user span,
+    the prompt view scans the text as sent (receipt-substituted, capped, and
+    uncarved when no span was announced) — so the two can differ in what they
+    cover, never in where a marker starts.
     """
     if utf8_bytes and user_span is None:
         raise ValueError("UTF-8 attribution requires an authoritative user_span")
+    out: dict[str, int] = {}
+    for start, end, label in block_spans(
+        prompt, user_chars=user_chars, user_offset=user_offset, user_span=user_span
+    ):
+        size = len(prompt[start:end].encode("utf-8")) if utf8_bytes else end - start
+        out[label] = out.get(label, 0) + size
+    return {label: size for label, size in out.items() if size > 0}
+
+
+def block_spans(
+    prompt: str,
+    *,
+    user_chars: int = 0,
+    user_offset: int = 0,
+    user_span: tuple[int, int] | None = None,
+) -> list[tuple[int, int, str]]:
+    """Split ``prompt`` into ordered ``(start, end, label)`` spans.
+
+    The spans are contiguous, non-overlapping and cover ``[0, len(prompt))``
+    exactly (the empty prompt yields no spans). Adjacent spans may share a
+    label — a block's body and the ``unclassified`` gap after its closer are
+    distinct spans, and the user's text carves its host block into up to three
+    — so a reader that wants one span per block merges neighbours itself.
+    Parameters are those of :func:`split_blocks`, which sums these.
+    """
     if not prompt:
-        return {}
+        return []
 
     hits: list[tuple[int, str]] = []
     for label, pattern in _COMPILED:
@@ -300,39 +333,46 @@ def split_blocks(
     if user_start >= 0:
         hits = [(pos, label) for pos, label in hits if not (user_start <= pos < user_end)]
 
-    # Keep marker/span coordinates in characters in both modes. Only the
-    # measured extents change; native serialization is outside this boundary.
-    def size(start: int, end: int) -> int:
-        return len(prompt[start:end].encode("utf-8")) if utf8_bytes else end - start
+    spans: list[tuple[int, int, str]] = []
 
-    out: dict[str, int] = {}
+    def _emit(start: int, end: int, label: str) -> None:
+        """Append ``[start, end)`` as *label*, carving out the user's own span.
+
+        No marker survives inside ``[user_start, user_end)`` (filtered above), so
+        the user span lies within a single block — the one physically holding it,
+        which is NOT necessarily the request header: prepended marked context
+        (e.g. a drained "[Memory ...]") starts a block of its own, and the user's
+        text then sits inside THAT block. Carving where the span physically sits
+        is what credits the user's bytes to USER_LABEL exactly there.
+        """
+        if end <= start:
+            return
+        if user_start < 0:
+            spans.append((start, end, label))
+            return
+        lo, hi = max(start, user_start), min(end, user_end)
+        if lo >= hi:
+            spans.append((start, end, label))
+            return
+        if start < lo:
+            spans.append((start, lo, label))
+        spans.append((lo, hi, USER_LABEL))
+        if hi < end:
+            spans.append((hi, end, label))
+
     if not hits:
-        start = user_start if user_start >= 0 else 0
-        end = user_end if user_start >= 0 else min(user_chars, len(prompt))
-        if end > start:
-            out[USER_LABEL] = size(start, end)
-        remainder = size(0, len(prompt)) - out.get(USER_LABEL, 0)
-        if remainder > 0:
-            out[UNCLASSIFIED_LABEL] = remainder
-        return out
+        # No markers at all: a bare prompt (minimal-context cron runs reach
+        # here). Attribute what the caller told us and leave the rest visible:
+        # the authoritative span where it sits, or the first ``user_chars``
+        # when only a length is known.
+        if user_start < 0:
+            user_start, user_end = 0, min(user_chars, len(prompt))
+        _emit(0, len(prompt), UNCLASSIFIED_LABEL)
+        return spans
 
     if hits[0][0] > 0:
-        out[UNCLASSIFIED_LABEL] = size(0, hits[0][0])
+        _emit(0, hits[0][0], UNCLASSIFIED_LABEL)
 
-    # Accumulate each block's span, carving out any overlap with the user span
-    # so the user's bytes are credited to USER_LABEL EXACTLY where they sit.
-    # No marker survives inside [user_start, user_end] (filtered above), so the
-    # span lies within a single block — the one physically holding it, which is
-    # NOT necessarily the request header: prepended marked context (e.g. a
-    # drained "[Memory ...]") starts a block of its own, and the user's text
-    # then sits inside THAT block. Subtracting user_chars from request_header by
-    # count would leave the user's bytes mis-credited to memory and strip
-    # unrelated header bytes instead.
-    user_taken = 0
-    if user_start >= 0 and hits[0][0] > user_start:
-        right = min(hits[0][0], user_end)
-        user_taken = size(user_start, right)
-        out[UNCLASSIFIED_LABEL] -= user_taken
     for index, (start, label) in enumerate(hits):
         next_start = hits[index + 1][0] if index + 1 < len(hits) else len(prompt)
         # A block owns up to its own closer when it has one IN RANGE, otherwise up
@@ -361,43 +401,53 @@ def split_blocks(
                 # of `unclassified` after every single closed block.
                 while end < next_start and prompt[end] in " \t\r\n":
                     end += 1
-        seg = size(start, end)
-        if user_start >= 0:
-            left, right = max(start, user_start), min(end, user_end)
-            overlap = size(left, right) if right > left else 0
-            seg -= overlap
-            user_taken += overlap
-        if seg > 0:
-            out[label] = out.get(label, 0) + seg
+        _emit(start, end, label)
         # The characters after this block's closer and before the next block
         # started. Naming them ``unclassified`` is the whole point: billing them to
         # whichever block happens to precede them would read as a confident
         # measurement of something nobody measured.
         if end < next_start:
-            gap = size(end, next_start)
-            if user_start >= 0:
-                left, right = max(end, user_start), min(next_start, user_end)
-                overlap = size(left, right) if right > left else 0
-                gap -= overlap
-                user_taken += overlap
-            if gap > 0:
-                out[UNCLASSIFIED_LABEL] = out.get(UNCLASSIFIED_LABEL, 0) + gap
+            _emit(end, next_start, UNCLASSIFIED_LABEL)
 
-    if user_taken > 0:
-        out[USER_LABEL] = out.get(USER_LABEL, 0) + user_taken
-    elif user_chars > 0:
-        # No locatable span (a header-less prompt, so user_start < 0): fall back
-        # to crediting the largest block by count, so the user's contribution is
-        # never reported as zero when it isn't.
-        host = max(out, key=lambda k: out[k]) if out else None
-        if host is not None:
-            taken = min(user_chars, out[host])
-            out[host] -= taken
-            out[USER_LABEL] = out.get(USER_LABEL, 0) + taken
-            if out[host] <= 0:
-                del out[host]
+    if user_start < 0 and user_chars > 0:
+        # No locatable span (a header-less prompt): fall back to crediting the
+        # largest block by count, so the user's contribution is never reported
+        # as zero when it isn't.
+        spans = _credit_user_to_largest(spans, user_chars)
 
-    return {label: size for label, size in out.items() if size > 0}
+    return spans
+
+
+def _credit_user_to_largest(
+    spans: list[tuple[int, int, str]], user_chars: int
+) -> list[tuple[int, int, str]]:
+    """Re-label the first ``user_chars`` of the largest block as the user's.
+
+    The fallback for a prompt whose user text cannot be located: the caller
+    still knows how much of it was the user's, so that many characters are
+    taken from the block most likely to hold it (the largest) rather than
+    reporting the user's contribution as zero. Sizes per label are what
+    :func:`split_blocks` reports, so the carve is by count; it lands at the
+    start of that block's first span, which is as good a guess as any.
+    """
+    if user_chars <= 0 or not spans:
+        return spans
+    sizes: dict[str, int] = {}
+    for start, end, label in spans:
+        sizes[label] = sizes.get(label, 0) + (end - start)
+    host = max(sizes, key=lambda k: sizes[k])
+    remaining = min(user_chars, sizes[host])
+    out: list[tuple[int, int, str]] = []
+    for start, end, label in spans:
+        if label == host and remaining > 0:
+            take = min(remaining, end - start)
+            out.append((start, start + take, USER_LABEL))
+            if start + take < end:
+                out.append((start + take, end, label))
+            remaining -= take
+        else:
+            out.append((start, end, label))
+    return out
 
 
 def _block_domain(label: str) -> str:

@@ -118,15 +118,35 @@ class EssentialDelivery:
     async def stream(
         self,
         message: str,
-        send: Callable[[str], AsyncIterator[EventT]],
+        send: Callable[..., AsyncIterator[EventT]],
         incarnation: Callable[[], object],
+        on_accepted: Callable[[str, int], None] | None = None,
     ) -> AsyncGenerator[EventT, None]:
-        """Deduplicate only trusted, byte-matched builder content on the wire."""
+        """Deduplicate only trusted, byte-matched builder content on the wire.
+
+        ``on_accepted`` is told the FINAL text — after the receipt substitution
+        below — plus the length of the text as it ARRIVED here (the arrival
+        length is what the assembler sized and the usage row reports; the
+        substitution is the one step between the two, so a reader comparing them
+        needs both numbers rather than a guess at the delta). It fires once the
+        transport has taken the prompt and never when the write raised: when
+        ``on_accepted`` is given, ``send`` is called as ``send(message,
+        on_sent=...)`` and the transport calls ``on_sent`` the moment its write
+        returned, before it awaits a single event — so a backend that dies
+        between the write and its first event cannot un-send the prompt (the
+        two transports' ``stream_events`` / ``prompt`` take ``on_sent``). A
+        sender that never calls ``on_sent`` is still accepted at its first event,
+        or at a completion with none. This is what :mod:`kiro_crew.prompt_trace`
+        records: a prompt the pipe refused must not appear in the developer view
+        as sent, and a record made before the write would have nothing to
+        retract it.
+        """
         from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPLETED as EVENT_COMPLETE
         from kiro_crew.agent_sdk import CONTEXT_EVENT_TEXT as EVENT_TEXT_CHUNK
         from kiro_crew.agent_sdk import CONTEXT_EVENT_TOOL as EVENT_TOOL_CALL
         from kiro_crew.agent_sdk import TURN_STOP_REASON_END_TURN as STOP_REASON_END_TURN
 
+        assembled_chars = len(message)
         identity = incarnation()
         with self._lock:
             candidate = self._pending
@@ -144,9 +164,23 @@ class EssentialDelivery:
             message = message.replace(candidate.envelope, replacement, 1)
         productive = False
         completed = False
+        accepted = False
+
+        def _accept() -> None:
+            # Once. Normally from the transport's on_sent, right after its write;
+            # at the latest before the first event is yielded, since a collector
+            # may close the generator right after that event.
+            nonlocal accepted
+            if not accepted:
+                accepted = True
+                if on_accepted is not None:
+                    on_accepted(message, assembled_chars)
+
         try:
-            async with _closing_events(send(message)) as events:
+            events_in = send(message, on_sent=_accept) if on_accepted is not None else send(message)
+            async with _closing_events(events_in) as events:
                 async for event in events:
+                    _accept()
                     if event.kind in RECEIPT_INVALIDATING_EVENTS:
                         self.invalidate()
                     if event.kind == EVENT_TOOL_CALL or (
@@ -170,6 +204,8 @@ class EssentialDelivery:
                                 if self._pending is candidate and self._epoch == epoch:
                                     self._acknowledged = (identity, candidate.digest, epoch)
                     yield event
+            # A stream that ended with no event still completed its write.
+            _accept()
         except GeneratorExit:
             # Collectors may close immediately after consuming a raw terminal.
             raise

@@ -1199,6 +1199,9 @@ class TestContextTraceParityWithTheShardScan:
                     "context_window": 200_000,
                     "model": "opus-5",
                     "ordinal": 1,
+                    # The composer's own turn number, the id the prompt-trace
+                    # record of the same turn carries.
+                    "turn": 1,
                 },
                 {
                     "phase": "per_turn",
@@ -1208,6 +1211,7 @@ class TestContextTraceParityWithTheShardScan:
                     "context_window": 200_000,
                     "model": "opus-5",
                     "ordinal": 2,
+                    "turn": 2,
                 },
             ],
             "totals": {"memory": 30_000, "lessons": 5_000, "your_message": 460, "surface": 200},
