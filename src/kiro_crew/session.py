@@ -1940,6 +1940,8 @@ class SessionManager:
                 acp_backend_kiro=ACP_BACKEND_KIRO,
                 bg_recycle_pct=_BG_RECYCLE_PCT,
                 bg_blind_recycle_prompts=_BG_BLIND_RECYCLE_PROMPTS,
+                rss_max_mb=lambda: self._rss_max_mb,
+                tree_rss_mb=lambda pid: get_session_rss_mb(pid),
                 runtime_backends=lambda: _bg_runtime_backends(),
                 context_pct_is_unknown=lambda provider: _context_pct_is_unknown(provider),
                 runtime_types=lambda: _load_bg_runtime_types(),

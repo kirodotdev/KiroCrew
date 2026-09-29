@@ -118,6 +118,8 @@ class _BackgroundOwner(Protocol):
 
     async def _provider_backed_bg_session(self) -> object: ...
 
+    def get_pid(self, key: str) -> int | None: ...  # pid-owner-ok: _bg runtime owner
+
     async def _reacquire_and_validate(
         self,
         key: str,
@@ -158,6 +160,12 @@ class BackgroundRuntimeDeps:
     acp_backend_kiro: str
     bg_recycle_pct: float
     bg_blind_recycle_prompts: int
+    #: ``session.watchdog_rss_max_mb`` read live, off the same state the cleanup
+    #: sweep's RSS check reads, so a config change applies on the next
+    #: background turn. ``0`` disables the RSS criterion, as it does there.
+    rss_max_mb: Callable[[], int]
+    #: Resident MiB of a pid's whole process tree, or ``None`` when unreadable.
+    tree_rss_mb: Callable[[int], int | None]
     runtime_backends: Callable[[], Set[str]]
     context_pct_is_unknown: Callable[[LLMProvider], bool]
     runtime_types: Callable[
@@ -816,6 +824,43 @@ class BackgroundSessionRuntime:
                         self._bg_runtime = None
         raise AcpRuntimeDead("get_bg_session exhausted retries")
 
+    async def _rss_recycle_reason(self, background_key: str) -> str | None:
+        """The recycle reason when the background tree is at or over its ceiling.
+
+        The ceiling is ``session.watchdog_rss_max_mb``; ``0`` disables the check.
+        The RSS sweep in ``session_cleanup`` skips persistent keys and the
+        background key is one, so this is the only path that compares this
+        runtime's tree against that number. It belongs here rather than there
+        because the sweep resets a session in place, while ``recycle_background``
+        spawns the replacement before retiring the old provider.
+
+        A pid with no reading, or a reading that raises, yields ``None`` so the
+        context and prompt criteria decide the turn on their own.
+        """
+        ceiling = self._deps.rss_max_mb()
+        if ceiling <= 0:
+            return None
+        # This module owns the background runtime: it spawns the provider, is the
+        # one place that retires it, and the background key is a pool of one, so
+        # the reading below attributes the tree to the session that alone holds it.
+        pid = self._owner.get_pid(background_key)  # pid-owner-ok: owns the _bg runtime
+        if pid is None:
+            return None
+        try:
+            # Off-loop: the reading walks ``/proc`` for the whole tree, and this
+            # runs after every background turn.
+            rss = await asyncio.to_thread(self._deps.tree_rss_mb, pid)
+        except Exception:
+            self._deps.logger.debug(
+                "recycle_background: tree RSS read failed for pid %s",
+                pid,
+                exc_info=True,
+            )
+            return None
+        if rss is None or rss < ceiling:
+            return None
+        return f"tree rss={rss}MB exceeds {ceiling}MB"
+
     async def recycle_background(self) -> None:
         """Recycle the persistent background provider when context is full."""
         background_key = self._deps.background_key
@@ -851,6 +896,13 @@ class BackgroundSessionRuntime:
                 # percentage was read — leaving this provider with no lifetime
                 # bound at all for the rest of the gateway's uptime.
                 reason = f"blind ({session.prompt_count} prompts, context at {pct:.0f}%)"
+            elif (rss_reason := await self._rss_recycle_reason(background_key)) is not None:
+                # Last, so the cheaper criteria keep naming themselves and the
+                # tree walk is spent only on a turn that would otherwise keep
+                # this provider. A background transcript of oversized records
+                # drives the runtime past the ceiling long before either of the
+                # criteria above fires, which is the whole gap this closes.
+                reason = rss_reason
             else:
                 return
             logger.info("Recycling background session — %s", reason)
