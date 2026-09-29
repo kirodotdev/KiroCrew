@@ -27,7 +27,9 @@ from chat_test_helpers import _make_state
 from kiro_crew import _process_group_supervisor as supervisor
 from kiro_crew import kiro_prerequisite as prerequisite_module
 from kiro_crew import platform_compat
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_create
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
@@ -3765,6 +3767,198 @@ class TestKiroPrerequisiteHandlers:
         assert called_with == ["test-user"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("app_owner", [True, False])
+    async def test_first_boot_on_a_foreign_backend_skips_the_kiro_cli_setup_screen(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        app_owner: bool,
+    ) -> None:
+        # A fresh data home (no marker, no sessions) on a gateway configured for
+        # claude-agent-acp. The first-run screen asks for kiro-cli, which this
+        # backend never runs, so the status must report setup complete -- for the
+        # owner and for a non-owner alike -- while `ready` keeps describing
+        # kiro-cli itself.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=tmp_path / "crew",
+            audit_writer=_no_audit,
+        )
+        assert service.initial_setup_complete is False
+
+        async def fake_snapshot(*, force: bool = False, coalesce: bool = False) -> dict[str, Any]:
+            del force, coalesce
+            return {"ready": False, "installed": False, "initial_setup_complete": False}
+
+        monkeypatch.setattr(service, "snapshot", fake_snapshot)
+        cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE, model=""))
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        owner = "test-user" if app_owner else "someone-else"
+        async with TestClient(
+            TestServer(self._app(service, app_claim="", owner_id=owner))
+        ) as client:
+            body = await (await client.get("/api/kiro-prerequisite")).json()
+
+        assert body["initial_setup_complete"] is True
+        assert body["ready"] is False
+        # The per-route gates read the service, not this payload: its latch is
+        # untouched, so a kiro-backed spawn is still refused.
+        assert service.initial_setup_complete is False
+        assert await service.session_ready() is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("initial_setup_complete", [False, True])
+    async def test_foreign_backend_without_kiro_cli_hides_spec_repair(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        initial_setup_complete: bool,
+    ) -> None:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        snapshot = {
+            "ready": True,
+            "installed": False,
+            "initial_setup_complete": initial_setup_complete,
+            "missing_agent_specs": [AGENT_FILENAME],
+            "repair_required": True,
+        }
+
+        async def fake_snapshot(*, force: bool = False, coalesce: bool = False) -> dict[str, Any]:
+            del force, coalesce
+            return snapshot
+
+        monkeypatch.setattr(service, "snapshot", fake_snapshot)
+        cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE, model=""))
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        async with TestClient(TestServer(self._app(service, app_claim=""))) as client:
+            body = await (await client.get("/api/kiro-prerequisite")).json()
+
+        assert body["missing_agent_specs"] == []
+        assert body["repair_required"] is False
+        assert body["initial_setup_complete"] is True
+        assert body["ready"] is snapshot["ready"]
+
+    @pytest.mark.asyncio
+    async def test_foreign_backend_with_kiro_cli_keeps_spec_repair(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        snapshot = {
+            "ready": False,
+            "installed": True,
+            "initial_setup_complete": False,
+            "missing_agent_specs": [AGENT_FILENAME],
+            "repair_required": True,
+        }
+
+        async def fake_snapshot(*, force: bool = False, coalesce: bool = False) -> dict[str, Any]:
+            del force, coalesce
+            return snapshot
+
+        monkeypatch.setattr(service, "snapshot", fake_snapshot)
+        cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE, model=""))
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        async with TestClient(TestServer(self._app(service, app_claim=""))) as client:
+            body = await (await client.get("/api/kiro-prerequisite")).json()
+
+        assert body["missing_agent_specs"] == [AGENT_FILENAME]
+        assert body["repair_required"] is True
+        assert body["initial_setup_complete"] is True
+        assert body["ready"] is snapshot["ready"]
+
+    @pytest.mark.asyncio
+    async def test_kiro_backend_keeps_spec_repair(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=_no_audit,
+        )
+        snapshot = {
+            "ready": False,
+            "installed": False,
+            "initial_setup_complete": True,
+            "missing_agent_specs": [AGENT_FILENAME],
+            "repair_required": True,
+        }
+
+        async def fake_snapshot(*, force: bool = False, coalesce: bool = False) -> dict[str, Any]:
+            del force, coalesce
+            return snapshot
+
+        monkeypatch.setattr(service, "snapshot", fake_snapshot)
+        cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_KIRO, model=""))
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        async with TestClient(TestServer(self._app(service, app_claim=""))) as client:
+            body = await (await client.get("/api/kiro-prerequisite")).json()
+
+        assert body["missing_agent_specs"] == [AGENT_FILENAME]
+        assert body["repair_required"] is True
+        assert body["initial_setup_complete"] is True
+        assert body["ready"] is snapshot["ready"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, None])
+    async def test_first_boot_on_kiro_or_an_unreadable_config_keeps_the_setup_screen(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        backend: str | None,
+    ) -> None:
+        # kiro-cli is the backend (or config cannot be read, which fails closed
+        # toward the gate): the first-run screen is the right answer and stays.
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=tmp_path / "crew",
+            audit_writer=_no_audit,
+        )
+
+        async def fake_snapshot(*, force: bool = False, coalesce: bool = False) -> dict[str, Any]:
+            del force, coalesce
+            return {"ready": False, "installed": False, "initial_setup_complete": False}
+
+        monkeypatch.setattr(service, "snapshot", fake_snapshot)
+        if backend is None:
+
+            def unreadable(cls: type) -> Any:
+                raise OSError("config.json unreadable")
+
+            monkeypatch.setattr(KiroCrewConfig, "load", classmethod(unreadable))
+        else:
+            cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=backend, model=""))
+            monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        async with TestClient(TestServer(self._app(service, app_claim=""))) as client:
+            body = await (await client.get("/api/kiro-prerequisite")).json()
+
+        assert body["initial_setup_complete"] is False
+        assert body["ready"] is False
+
+    @pytest.mark.asyncio
     async def test_status_endpoint_returns_not_ready_instead_of_500_on_probe_error(
         self,
         tmp_path: Path,
@@ -3965,7 +4159,7 @@ class TestKiroPrerequisiteHandlers:
             {"role": "assistant", "content": "answer", "ts": "a1"},
         ]
         original_messages = copy.deepcopy(messages)
-        slot = SimpleNamespace(messages=messages)
+        slot = SimpleNamespace(key="paused", messages=messages)
         sessions = MagicMock()
         persistence = MagicMock()
         state = SimpleNamespace(

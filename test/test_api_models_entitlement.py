@@ -25,17 +25,29 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import model_registry
 from kiro_crew.acp.client import (
     catalog_row_would_drop,
     model_is_unusable,
     resolve_pin_spelling,
 )
 from kiro_crew.acp.session_handle import EntitlementRevalidating
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    backends_retired_by_host_logout,
+    model_registry_namespace,
+)
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.handlers import agents
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
@@ -740,3 +752,173 @@ async def test_endpoint_keeps_exactly_the_rows_the_shared_verdict_keeps():
     ]
     assert len(rows) == len(expected)
     assert _names(rows) == ["auto", "claude-sonnet-5", "claude-opus-4.8"]
+
+
+# ── Foreign harnesses: the advertised list is the answer, kiro-cli never is ──
+#
+# deepseek, goose, opencode and pi accept only the model ids their own adapter
+# advertised on ``session/new`` (``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``), so
+# the picker for each is built from that list -- exactly as codex's is -- and never
+# from kiro-cli's catalog, which kiro-cli may still be installed and signed out to
+# serve: an unauthenticated ``--list-models`` spawn opens a browser login on every
+# poll. A selected backend with no advertised selection keeps the refusal, and
+# still spawns nothing.
+
+_FOREIGN_ADVERTISED_BACKENDS = sorted(
+    ACP_BACKENDS_ADVERTISED_MODEL_SELECTION - {ACP_BACKEND_CLAUDE}
+)
+_RESOLVE_TARGET = "kiro_crew.acp.client._resolve_kiro_bin_for_spawn"
+
+
+@pytest.fixture
+def _cold_advertised_cache(monkeypatch):
+    """Start from an empty cross-session cache: other tests on the same xdist
+    worker feed ``model_registry._ADVERTISED_MODELS``, and these tests assert on
+    which namespace bucket answers."""
+    monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+    monkeypatch.setattr(model_registry, "persist_advertised_models", lambda: None)
+
+
+def _selecting(backend: str):
+    return patch.object(
+        agents.KiroCrewConfig,
+        "load",
+        return_value=SimpleNamespace(agent=SimpleNamespace(acp_backend=backend, model="")),
+    )
+
+
+def _live_provider(backend: str, ids: list[str]) -> MagicMock:
+    """A live session of *backend* advertising *ids* (its own namespace)."""
+    provider = MagicMock()
+    provider.capabilities = capabilities_for(backend)
+    provider.available_models = MagicMock(
+        return_value=[{"modelId": i, "name": i, "description": ""} for i in ids]
+    )
+    return provider
+
+
+async def _api_models_without_kiro_cli(backend: str, *providers: MagicMock):
+    """Run the handler for *backend* while pinning that no kiro-cli path is reached:
+    the readiness gate is not consulted, the binary is not resolved, nothing is
+    spawned."""
+    never_gate = AsyncMock(side_effect=AssertionError("readiness gate consulted"))
+    with (
+        _selecting(backend),
+        patch.object(agents, "reject_if_kiro_unverified", never_gate),
+        patch(_RESOLVE_TARGET, AsyncMock(return_value="/usr/bin/kiro-cli")) as resolve,
+        patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn,
+    ):
+        resp = await agents.api_models(_request(*providers))
+    never_gate.assert_not_called()
+    resolve.assert_not_called()
+    spawn.assert_not_called()
+    return resp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", _FOREIGN_ADVERTISED_BACKENDS)
+async def test_api_models_serves_a_foreign_backends_cached_ids(
+    backend: str, _cold_advertised_cache
+) -> None:
+    """A cold dashboard after a restart: the cross-session cache for that backend's
+    own namespace answers, ``auto`` first, with no kiro-cli involvement."""
+    namespace = model_registry_namespace(backend)
+    model_registry.refresh_advertised_models(namespace, ["vendor/model-a", "vendor/model-b"])
+
+    resp = await _api_models_without_kiro_cli(backend)
+
+    assert resp.status == 200
+    assert _names(json.loads(resp.body)) == ["auto", "vendor/model-a", "vendor/model-b"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", _FOREIGN_ADVERTISED_BACKENDS)
+async def test_api_models_serves_a_foreign_backends_live_session_ids(
+    backend: str, _cold_advertised_cache
+) -> None:
+    """A live session of the selected backend wins over the cache, and a live
+    session of ANOTHER advertised-selection harness is not its answer: the read is
+    filtered on the namespace the selected backend's ids live in."""
+    other = next(b for b in _FOREIGN_ADVERTISED_BACKENDS if b != backend)
+    model_registry.refresh_advertised_models(model_registry_namespace(backend), ["stale/cached"])
+    providers = [
+        _live_provider(other, ["other/never-offered"]),
+        _live_provider(backend, ["live/model-a"]),
+    ]
+
+    resp = await _api_models_without_kiro_cli(backend, *providers)
+
+    assert resp.status == 200
+    assert _names(json.loads(resp.body)) == ["auto", "live/model-a"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", _FOREIGN_ADVERTISED_BACKENDS)
+async def test_api_models_cold_foreign_backend_offers_auto_alone(
+    backend: str, _cold_advertised_cache
+) -> None:
+    """Nothing cached and no live session: ``auto`` (inherit the harness default)
+    is a real 200 the frontend caches until the next session spawn, not a 503 it
+    re-polls forever."""
+    resp = await _api_models_without_kiro_cli(backend)
+
+    assert resp.status == 200
+    assert _names(json.loads(resp.body)) == ["auto"]
+
+
+@pytest.mark.asyncio
+async def test_api_models_refuses_a_backend_with_no_advertised_selection(
+    _cold_advertised_cache,
+) -> None:
+    """A selected backend outside every set that has a model list of its own is
+    refused -- kiro-cli's catalog is not its answer -- and still spawns nothing."""
+    backend = "harness-with-no-model-list"
+    assert backend not in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+    assert backend not in backends_retired_by_host_logout()
+    model_registry.refresh_advertised_models("acp", ["claude-opus-5"])
+
+    resp = await _api_models_without_kiro_cli(backend)
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "model_list_backend_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_api_models_codex_answer_is_unchanged(_cold_advertised_cache) -> None:
+    model_registry.refresh_advertised_models(
+        model_registry_namespace(ACP_BACKEND_CODEX), ["gpt-5.4", "gpt-5.4-codex"]
+    )
+
+    resp = await _api_models_without_kiro_cli(ACP_BACKEND_CODEX)
+
+    assert resp.status == 200
+    assert _names(json.loads(resp.body)) == ["auto", "gpt-5.4", "gpt-5.4-codex"]
+
+
+@pytest.mark.asyncio
+async def test_api_models_claude_answer_is_unchanged(_cold_advertised_cache) -> None:
+    """claude keeps its registry-filtered builder; the advertised-only builder is
+    not consulted for it even though claude is an advertised-selection member."""
+    sentinel = [{"model_name": "auto"}, {"model_name": "claude-opus-5"}]
+    with (
+        patch.object(agents, "_cc_models", MagicMock(return_value=sentinel)) as cc,
+        patch.object(agents, "_advertised_backend_models") as advertised_only,
+    ):
+        resp = await _api_models_without_kiro_cli(ACP_BACKEND_CLAUDE)
+
+    cc.assert_called_once()
+    advertised_only.assert_not_called()
+    assert resp.status == 200
+    assert _names(json.loads(resp.body)) == ["auto", "claude-opus-5"]
+
+
+def test_the_four_advertised_only_harnesses_are_covered_here() -> None:
+    """The parametrization above is derived from the set itself, so a harness added
+    to ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` is pinned the day it joins; this
+    only says the four harnesses this section names are among its members."""
+    assert {
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+    } <= set(_FOREIGN_ADVERTISED_BACKENDS)

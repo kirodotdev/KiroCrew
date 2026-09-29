@@ -10,6 +10,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.kiro_readiness import backend_signs_in_via_kiro_cli, selected_backend
 from kiro_crew.kiro_prerequisite import (
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
@@ -155,6 +156,27 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             bool(service.initial_setup_complete),
             probe_error=f"{type(exc).__name__}: {exc}"[:400],
         )
+    # The first-run screen asks the user to install and sign in to kiro-cli. A
+    # gateway whose configured backend signs in some other way (claude, codex)
+    # never runs kiro-cli, so that screen has nothing to offer it -- on a fresh
+    # data home it would otherwise hold the whole dashboard until a restart
+    # happens to make the home look established. When kiro-cli is not installed,
+    # its agent-spec repair card is equally inert because no active backend can
+    # consume those specs. Both decisions are read per request, so installing
+    # kiro-cli or switching back to kiro restores the card.
+    #
+    # ``ready`` still reports kiro-cli itself, and the per-route gates read the
+    # service directly, so nothing here un-gates a kiro-backed spawn.
+    if not backend_signs_in_via_kiro_cli(await selected_backend()):
+        overrides: dict[str, Any] = {"initial_setup_complete": True}
+        if not snapshot.get("installed"):
+            overrides.update(
+                {
+                    "missing_agent_specs": [],
+                    "repair_required": False,
+                }
+            )
+        snapshot = {**snapshot, **overrides}
     if _is_dashboard_owner(request):
         return web.json_response({**snapshot, "setup_allowed": True})
 

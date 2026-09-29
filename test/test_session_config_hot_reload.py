@@ -347,6 +347,27 @@ class TestRefreshDefaultsRederivesThePool:
         assert mgr._pool_agent == "kirocrew"
         assert mgr._pool_ttl_secs == 1800
 
+    @pytest.mark.asyncio
+    async def test_reload_raising_builder_leaves_cfg_and_factory_untouched(self) -> None:
+        """A failed reload must leave the installed config/factory pair intact."""
+        mgr, old_factory = _make_manager()
+        old_cfg = mgr._cfg
+        new_cfg = _make_cfg(pool_size=3, pool_agent="reviewer", pool_ttl_secs=60)
+
+        with (
+            patch("kiro_crew.session.default_project_dir", return_value="/new-ws"),
+            patch(
+                "kiro_crew.session.build_provider_factory",
+                side_effect=RuntimeError("factory build failed"),
+            ),
+            patch.object(mgr, "start_pool", AsyncMock()),
+        ):
+            with pytest.raises(RuntimeError, match="factory build failed"):
+                await mgr.reload_provider_factory(cfg=new_cfg)
+
+        assert mgr._cfg is old_cfg
+        assert mgr._provider_factory is old_factory
+
 
 class TestCleanupLoopRereadsPolicy:
     def test_adopt_reads_timeout_and_rss_from_the_current_config(self) -> None:

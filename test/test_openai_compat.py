@@ -105,6 +105,8 @@ def _make_slot():
     slot = MagicMock()
     slot.key = "test-slot"
     slot.agent = ""
+    slot.linked_session_key = ""
+    slot.channel_origin = False
     slot.task = None
     slot.running = False
     slot.turn_running = False
@@ -259,6 +261,24 @@ def _make_request(body: dict, state, app: str = ""):
     return request
 
 
+def _install_factory_backend(state, backend: str) -> None:
+    """Install the concrete config/factory pair ``selected_backend`` reads.
+
+    Same seam ``test_kiro_spawn_readiness_gate._set_installed_backend`` uses:
+    ``state.sessions._cfg`` + ``_provider_factory`` are what the session manager
+    builds new sessions from, and a newer disk config may still be waiting for
+    the watcher to install them. ``_sessions`` is empty: no live session.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.config import KiroCrewConfig
+
+    installed = KiroCrewConfig()
+    installed.agent.acp_backend = backend
+    installed.agent.member_acp_backend = backend
+    state.sessions = SimpleNamespace(_sessions={}, _cfg=installed, _provider_factory=object())
+
+
 @pytest.mark.asyncio
 class TestApiCompletionsBlocking:
     async def test_prerequisite_error_uses_openai_schema(self, tmp_path):
@@ -293,6 +313,467 @@ class TestApiCompletionsBlocking:
         assert body["error"]["code"] == "kiro_prerequisite_required"
         assert body["error"]["type"] == "service_unavailable_error"
         assert isinstance(body["error"]["message"], str)
+
+    async def test_app_ownership_precedes_readiness_inspection(self):
+        """An app that does not own a slot cannot probe its live backend readiness."""
+        slot = _make_slot()
+        slot._app = "app-B"
+        state = _make_state(slot)
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+            app="app-A",
+        )
+
+        with patch(
+            "kiro_crew.dashboard.openai_compat.reject_if_kiro_unverified",
+            AsyncMock(side_effect=AssertionError("readiness leaked across app ownership")),
+        ) as readiness:
+            response = await api_completions(request)
+
+        assert response.status == 403
+        assert json.loads(response.text)["error"]["type"] == "forbidden"
+        readiness.assert_not_awaited()
+
+    async def test_app_session_ownership_precedes_readiness_inspection(self):
+        """A matching slot claim does not authorize its foreign effective session."""
+        slot = _make_slot()
+        slot._app = "app-A"
+        slot.linked_session_key = "slack:1712345.6789"
+        slot.channel_origin = ""
+        state = _make_state(slot)
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+            app="app-A",
+        )
+
+        with patch(
+            "kiro_crew.dashboard.openai_compat.reject_if_kiro_unverified",
+            AsyncMock(side_effect=AssertionError("readiness leaked across app ownership")),
+        ) as readiness:
+            response = await api_completions(request)
+
+        body = json.loads(response.text)
+        assert response.status == 403
+        assert body["error"]["type"] == "forbidden"
+        assert body["error"]["code"] == "app_token_forbidden"
+        assert body["code"] == "app_token_forbidden"
+        readiness.assert_not_awaited()
+
+    async def test_recreated_foreign_remote_slot_is_rejected_before_remote_state(self):
+        """A post-readiness replacement cannot leak its remote-slot branch."""
+        original = _make_slot()
+        original.mode = ""
+        original._app = "app-A"
+        replacement = _make_slot()
+        replacement.mode = ""
+        replacement._app = "app-B"
+        replacement.executor = "remote"
+        state = _make_state(original)
+        state.get_or_create_slot.return_value = replacement
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": original.key,
+            },
+            state,
+            app="app-A",
+        )
+
+        response = await api_completions(request)
+        body = json.loads(response.text)
+
+        assert response.status == 403
+        assert body["error"]["code"] == "app_token_forbidden"
+        assert body["code"] == "app_token_forbidden"
+        assert body["code"] != "remote_slot_unsupported"
+
+    async def test_construction_refusal_on_a_foreign_replacement_rechecks_ownership(self):
+        """A constructor refusal cannot describe a slot another app now holds at the key."""
+        original = _make_slot()
+        original.mode = ""
+        original._app = "app-A"
+        foreign = _make_slot()
+        foreign.mode = ""
+        foreign._app = "app-B"
+        state = _make_state(original)
+
+        def _replaced_then_refused(_slot_id):
+            state._slots[original.key] = foreign
+            raise ValueError("slot 'test-slot' is still being built")
+
+        state.get_or_create_slot.side_effect = _replaced_then_refused
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": original.key,
+            },
+            state,
+            app="app-A",
+        )
+
+        response = await api_completions(request)
+        body = json.loads(response.text)
+
+        assert response.status == 403
+        assert body["error"]["code"] == "app_token_forbidden"
+        assert body["code"] == "app_token_forbidden"
+
+    async def test_construction_refusal_on_an_owned_or_absent_slot_stays_409(self):
+        """The owning app, and a key with no slot yet, keep the constructor's 409."""
+        original = _make_slot()
+        original.mode = ""
+        original._app = "app-A"
+        state = _make_state(original)
+
+        def _vacated_then_refused(_slot_id):
+            state._slots.pop(original.key, None)
+            raise ValueError("member-* keys are reserved")
+
+        state.get_or_create_slot.side_effect = _vacated_then_refused
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": original.key,
+            },
+            state,
+            app="app-A",
+        )
+
+        response = await api_completions(request)
+        body = json.loads(response.text)
+
+        assert response.status == 409
+        assert body["code"] == "member_slot_reserved"
+
+    async def test_member_replacement_during_binding_read_rechecks_ownership(self):
+        """The member branch cannot answer from a slot replaced during its last await."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+
+        original = _make_slot()
+        original.mode = ""
+        original._app = "app-A"
+        replacement = _make_slot()
+        replacement.key = "member-vanellope"
+        replacement.mode = "member"
+        replacement.agent = "vanellope"
+        replacement._app = "app-A"
+        replacement.executor = ""
+        state = _make_state(original)
+        state.get_or_create_slot.return_value = replacement
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": original.key,
+            },
+            state,
+            app="app-A",
+        )
+        configured = SimpleNamespace(
+            agent=SimpleNamespace(
+                acp_backend=ACP_BACKEND_CLAUDE,
+                member_acp_backend=ACP_BACKEND_CLAUDE,
+            ),
+            agents={"vanellope": object()},
+        )
+
+        def replace_during_binding_read(_slot_key: str):
+            replacement._app = "app-B"
+            return None
+
+        with (
+            patch(
+                "kiro_crew.dashboard.openai_compat.KiroCrewConfig.load",
+                return_value=configured,
+            ),
+            patch(
+                "kiro_crew.dashboard.openai_compat.members_mod.read_dm_binding_for_slot",
+                side_effect=replace_during_binding_read,
+            ),
+        ):
+            response = await api_completions(request)
+        body = json.loads(response.text)
+
+        assert response.status == 403
+        assert body["error"]["code"] == "app_token_forbidden"
+        assert body["code"] == "app_token_forbidden"
+        assert body["code"] != "member_binding_missing"
+
+    async def test_foreign_backend_auth_required_uses_openai_error_schema(self):
+        """A harness-specific auth failure must not become an empty completion."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+        from kiro_crew.config import KiroCrewConfig
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {"model": "vanellope", "messages": [{"role": "user", "content": "hello"}]},
+            state,
+        )
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+
+        async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+            slot._pending.append(
+                {
+                    "role": "error",
+                    "content": "Claude Code sign-in is required.",
+                }
+            )
+            slot.event.set()
+            await asyncio.sleep(0)
+            slot._last_turn_auth_required = True
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)),
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+        ):
+            response = await api_completions(request)
+
+        body = json.loads(response.text)
+        assert response.status == 401
+        assert body == {
+            "error": {
+                "message": "Claude Code sign-in is required.",
+                "type": "authentication_error",
+                "code": "auth_required",
+            },
+            # Top-level duplicate is the dashboard/i18n contract
+            # (test_error_code_contract reads the top-level dict).
+            "code": "auth_required",
+        }
+
+    async def test_gates_on_the_live_sessions_backend_after_a_hot_switch(self, tmp_path):
+        """An `id` naming a slot with a live session gates on THAT session's backend.
+
+        The live session keeps the harness it started on across a PATCH of
+        agent.acp_backend, so with the default switched to Claude Code and the
+        slot still on a signed-out kiro-cli, gating on the configured default
+        would answer the empty 200 this endpoint fails closed to prevent.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        state.sessions = SimpleNamespace(
+            _sessions={
+                effective_session_key(slot): SimpleNamespace(
+                    provider=SimpleNamespace(uses_kiro_identity_store=True)
+                )
+            }
+        )
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+        )
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=AsyncMock(),
+        )
+        service._has_probed = True
+        request.app["kiro_prerequisite_service"] = service
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+
+        with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)):
+            response = await api_completions(request)
+
+        assert response.status == 503
+        assert json.loads(response.text)["error"]["code"] == "kiro_prerequisite_required"
+
+    async def test_gates_on_the_installed_factory_backend_not_the_disk_config(self, tmp_path):
+        """A not-yet-live slot gates on the backend the installed factory will BUILD.
+
+        ``agent.acp_backend`` is installed asynchronously by the config watcher
+        (a poll of at least 2s), so right after ``PATCH agent.acp_backend`` to
+        Claude the disk says claude while ``state.sessions`` still holds the kiro
+        factory. A fresh session for this slot is built through THAT factory --
+        ``_run_chat`` -> ``state.sessions.get_or_create`` -- so gating on the
+        disk read lets a signed-out kiro-cli spawn, the browser login the gate
+        exists to prevent. The verdict must read the installed pair.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+        from kiro_crew.config import KiroCrewConfig
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        _install_factory_backend(state, ACP_BACKEND_KIRO)
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+        )
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=AsyncMock(),
+        )
+        service._has_probed = True
+        request.app["kiro_prerequisite_service"] = service
+        # Both fields, as a real config carries them: a keyed read that finds no
+        # ``member_acp_backend`` fails CLOSED, which would mask the disk verdict.
+        on_disk = SimpleNamespace(
+            agent=SimpleNamespace(
+                acp_backend=ACP_BACKEND_CLAUDE, member_acp_backend=ACP_BACKEND_CLAUDE
+            )
+        )
+
+        async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+            slot._pending.append({"role": "assistant", "content": "spawned anyway"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch.object(KiroCrewConfig, "load", classmethod(lambda cls: on_disk)),
+            patch(
+                "kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat
+            ) as run_chat,
+        ):
+            response = await api_completions(request)
+
+        assert response.status == 503
+        assert json.loads(response.text)["error"]["code"] == "kiro_prerequisite_required"
+        # Refused BEFORE the slot is claimed or a session is built through the factory.
+        state.get_or_create_slot.assert_not_called()
+        run_chat.assert_not_called()
+
+    async def test_installed_foreign_factory_is_not_refused_by_a_kiro_disk_config(self, tmp_path):
+        """The inverse: installed claude, disk says kiro, signed-out host -- not refused.
+
+        The session this request builds runs on Claude Code, whose own ACP
+        attempt is the authority for its sign-in; the kiro-cli latch describes a
+        binary that session never spawns, so a disk config the watcher has not
+        installed yet must not hold the turn behind a kiro-cli sign-in.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+        from kiro_crew.config import KiroCrewConfig
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        _install_factory_backend(state, ACP_BACKEND_CLAUDE)
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+        )
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=AsyncMock(),
+        )
+        service._has_probed = True
+        assert await service.session_ready() is False
+        request.app["kiro_prerequisite_service"] = service
+        on_disk = SimpleNamespace(
+            agent=SimpleNamespace(acp_backend=ACP_BACKEND_KIRO, member_acp_backend=ACP_BACKEND_KIRO)
+        )
+
+        async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+            slot._pending.append({"role": "assistant", "content": "ran on claude"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch.object(KiroCrewConfig, "load", classmethod(lambda cls: on_disk)),
+            patch(
+                "kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat
+            ) as run_chat,
+        ):
+            response = await api_completions(request)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert body["choices"][0]["message"]["content"] == "ran on claude"
+        run_chat.assert_called_once()
+
+    async def test_app_token_member_slot_is_404_before_the_live_session_peek(self, tmp_path):
+        """The readiness gate's live-session peek must not become an existence oracle.
+
+        An app can never own a member slot, so it gets the uniform 404 whether or
+        not that slot holds a live kiro session -- a 503 for a live signed-out one
+        would let an app enumerate member threads through the gate.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        slot = _make_slot()
+        slot.key = "member-alpha"
+        state = _make_state(slot)
+        state.sessions = SimpleNamespace(
+            _sessions={
+                effective_session_key(slot): SimpleNamespace(
+                    provider=SimpleNamespace(uses_kiro_identity_store=True)
+                )
+            }
+        )
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "id": slot.key,
+            },
+            state,
+            app="some-app",
+        )
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            audit_writer=AsyncMock(),
+        )
+        service._has_probed = True
+        request.app["kiro_prerequisite_service"] = service
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+
+        with patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)):
+            response = await api_completions(request)
+
+        assert response.status == 404
+        assert json.loads(response.text)["code"] == "not_found"
 
     async def test_basic_response(self):
         slot = _make_slot()
@@ -468,6 +949,147 @@ class TestStreamingResponse:
         assert "1 2 3" in combined
         assert '"finish_reason": "stop"' in combined
         assert "data: [DONE]" in combined
+
+    async def test_stream_auth_required_before_output_returns_http_error(self):
+        from types import SimpleNamespace
+
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
+        from kiro_crew.config import KiroCrewConfig
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+            state,
+        )
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CLAUDE))
+
+        async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+            slot._pending.append(
+                {
+                    "role": "error",
+                    "content": "Claude Code sign-in is required.",
+                }
+            )
+            slot.event.set()
+            await asyncio.sleep(0)
+            slot._last_turn_auth_required = True
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)),
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse") as stream_response,
+        ):
+            response = await api_completions(request)
+
+        assert response.status == 401
+        assert json.loads(response.text)["error"]["type"] == "authentication_error"
+        stream_response.assert_not_called()
+
+    async def test_stream_kiro_backed_turn_prepares_before_any_output(self):
+        """A turn the readiness gate vouched for sends its SSE headers at once.
+
+        The deferred ``prepare()`` exists so a foreign harness's sign-in failure
+        can still be a plain HTTP 401; a kiro-backed turn was already gated, so
+        holding its headers until the first token would only re-introduce the
+        header latency the base never had.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+        from kiro_crew.config import KiroCrewConfig
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+            state,
+        )
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_KIRO))
+        order: list[str] = []
+
+        async def fake_prepare(_req):
+            order.append("prepare")
+
+        mock_resp = MagicMock()
+        mock_resp.prepare = AsyncMock(side_effect=fake_prepare)
+        mock_resp.write = AsyncMock()
+        mock_resp.content_type = None
+        mock_resp.headers = {}
+
+        async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+            order.append("output")
+            slot._pending.append({"role": "assistant", "content": "hi"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)),
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
+        ):
+            response = await api_completions(request)
+
+        assert response is mock_resp
+        assert order == ["prepare", "output"]
+        mock_resp.prepare.assert_awaited_once()
+
+    async def test_stream_kiro_backed_auth_failure_is_an_sse_event_on_prepared_response(self):
+        """With headers already out, a confirmed auth failure is an SSE error event."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+        from kiro_crew.config import KiroCrewConfig
+
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {
+                "model": "kiro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+            state,
+        )
+        configured = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_KIRO))
+        written: list[bytes] = []
+
+        mock_resp = MagicMock()
+        mock_resp.prepare = AsyncMock()
+        mock_resp.write = AsyncMock(side_effect=lambda d: written.append(d))
+        mock_resp.content_type = None
+        mock_resp.headers = {}
+
+        async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+            slot._pending.append({"role": "error", "content": "Kiro sign-in is required."})
+            slot.event.set()
+            await asyncio.sleep(0)
+            slot._last_turn_auth_required = True
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch.object(KiroCrewConfig, "load", classmethod(lambda cls: configured)),
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
+        ):
+            response = await api_completions(request)
+
+        assert response is mock_resp
+        combined = "".join(w.decode() for w in written)
+        assert '"type": "authentication_error"' in combined
+        assert "Kiro sign-in is required." in combined
+        assert combined.endswith("data: [DONE]\n\n")
 
     async def test_stream_skips_non_assistant_messages(self):
         slot = _make_slot()

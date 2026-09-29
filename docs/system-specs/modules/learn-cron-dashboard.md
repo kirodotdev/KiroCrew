@@ -1156,7 +1156,11 @@ specified compatibility change.
   persists an owner-only setup-complete marker; existing installations are
   inferred only from that marker or non-empty persisted session/history
   content. Empty directories and zero-byte files created during gateway startup
-  do not bypass first-run setup. App tokens remain denied. The two
+  do not bypass first-run setup. On backends that sign in outside kiro-cli, each
+  status read reports first-run setup as complete and withholds missing-spec
+  repair state while kiro-cli is absent, because no active backend can consume
+  those specs; installing kiro-cli or switching back to the kiro backend restores
+  the repair state. App tokens remain denied. The two
   owner-only POST route (`repair-specs`) rewrites Kiro Crew's own agent specs and
   returns `200`; it is the only write on this surface.
   **Probing is boot-and-explicit-action only.** The readiness probe (two
@@ -1225,16 +1229,26 @@ specified compatibility change.
   server logs)", since the side panel has no other channel to tell the user what
   to do. It latches the service signed-out too.
   **Two classes still fail closed** via the blocking guard
-  `reject_if_kiro_unverified()`, because neither can use the ACP attempt as its
-  authority: the **poll-driven `kiro-cli` spawn sites** (`/api/models`,
-  `/api/sessions/usage`) have no turn to carry the failure and `kiro-cli`
-  auto-opens an interactive browser login when run unauthenticated (and
-  `kiro-cli chat` hangs), so an unverified spawn on a timer opens a window and
-  leaks a process every poll; and the **destructive reruns** (regenerate,
-  edit-resend, rewind) have already rewritten durable history by the time a turn
-  could fail; and `POST /v1/chat/completions` has no transcript, so an error card
-  would surface as a successful empty completion. A missing or invalid service
-  fails closed in all three.
+  `reject_if_kiro_unverified()`: the **poll-driven `kiro-cli` spawn sites**
+  (`/api/models`, `/api/sessions/usage`) have no turn to carry the failure and
+  would auto-open an interactive login every poll, while
+  `POST /v1/chat/completions` has no transcript and would otherwise surface an
+  authentication error card as an empty success. Destructive reruns also use
+  the guard when their selected harness signs in through kiro-cli; a foreign
+  harness uses its turn as the authority, and a failed rerun leaves the durable
+  truncation in place with the discarded tail in `archive/`. **All three apply
+  only while the selected harness
+  signs in through kiro-cli**: the guard reads `agent.acp_backend` first and
+  stands aside — returning `None` without consulting the service — unless the
+  backend is a member of `backends_retired_by_host_logout()`, because the latch
+  describes a kiro-cli sign-in and says nothing about a claude-agent-acp or
+  codex-acp session (see `modules/acp-client.md` § "The latch governs only a
+  harness that signs in through kiro-cli"). "Selected" means the backend the
+  turn will run on: plain regenerate continues the slot's live session, which
+  keeps its backend across a hot switch, so it gates on
+  `live_session_signs_in_via_kiro_cli()` (the provider's own
+  `uses_kiro_identity_store` declaration) and falls back to the configured
+  default only with no session live.
   **These callers authorize on a FRESH probe, not the latch**
   (`kiro_verified_ready` → `KiroPrerequisiteService.verified_ready`, re-probing
   when the latch is older than `_VERIFY_MAX_AGE_SECS` = 30s). The latch is
@@ -2810,23 +2824,33 @@ budget is torn down by the `StartCollector` rather than handed to the slot (the
 subagent path already adopts, `subagent_manager/run.py`); binding a late handle
 to a slot is a lifecycle change wider than this guard.
 
-**The destructive reruns are the exception and still fail closed.** `regenerate`,
-`edit-resend`, and `rewind` truncate `slot.messages` and **persist** the result
-(`_save_slot_to_history`, `_pending_rewrite`) *before* dispatching the background
-turn, so "let the ACP attempt be the authority" does not hold for them: by the
-time the turn raises `AcpAuthRequired` the history is already rewritten and no
-error card can undo it. All three therefore call `reject_if_kiro_unverified`
-BEFORE any mutation, returning the shared `kiro_prerequisite_required` 503.
+**Destructive reruns fail closed only for a kiro-cli-authenticated harness.**
+`regenerate`, `edit-resend`, and `rewind` call `reject_if_kiro_unverified`
+before mutation when the selected backend signs in through kiro-cli. A foreign
+harness uses the replacement turn as the authority. If that turn fails for
+authentication, it behaves like any failed rerun: the truncation stays durable
+and the discarded tail remains in the transcript's `archive/`.
 (`switch-variant` is exempt — it swaps an already-stored variant and starts no
 turn.)
 
 **`POST /v1/chat/completions` also fails closed**, for a different reason: it has
 no transcript the caller reads. Its collectors pick up only `chunk`/`assistant`
-roles, so the `error` card an `AcpAuthRequired` turn appends is invisible and the
-request would return **HTTP 200 with empty content** — an OpenAI SDK client
-cannot distinguish that from a model that legitimately said nothing. It returns
-the `kiro_prerequisite_required` 503 in OpenAI error shape until the endpoint
-learns to translate `AcpAuthRequired` itself.
+roles, so the `error` card an `AcpAuthRequired` turn appends would otherwise be
+invisible and the request would return **HTTP 200 with empty content** — an
+OpenAI SDK client cannot distinguish that from a model that legitimately said
+nothing. For a kiro-cli-authenticated harness the endpoint returns the shared
+`kiro_prerequisite_required` 503 in OpenAI error shape before the turn starts.
+On any other selected backend the endpoint translates `AcpAuthRequired` itself:
+both collectors retain the turn's terminal `error` row, and when the turn ends
+with the structural auth-required verdict they return the OpenAI
+`authentication_error` envelope (HTTP 401, `code: auth_required`) instead of an
+empty 200. The streaming path defers `StreamResponse.prepare()` only on turns
+the gate stands aside for (`defer_prepare=not signs_in_via_kiro_cli`, the same
+per-request verdict the gate used), so a pre-output auth failure on a foreign
+harness still carries the 401 status while a kiro-backed turn — which the gate
+already vouched for pre-turn — sends its SSE headers eagerly as before. On the
+deferred path, headers can arrive as late as the first token or the keepalive,
+whichever comes first.
 
 **An unresolved check is never rendered as "setup required."** The cold probe
 spawns two sandboxed `kiro-cli` subprocesses (`--version`, then `whoami`), which
@@ -2854,7 +2878,13 @@ Two layers close that window:
   also remembers completion locally (`kirocrew:kiro-setup-complete`) so a COLD
   load with an empty query cache can still tell a returning user from a genuine
   first run. That memory only ever suppresses first-run chrome — it never grants
-  session readiness, which stays server-driven via `ready`.
+  session readiness, which stays server-driven via `ready`. The status route
+  also reports `initial_setup_complete=true` when the configured
+  `agent.acp_backend` does not sign in through kiro-cli (claude-agent-acp,
+  codex-acp): the first-run screen offers only kiro-cli install and sign-in,
+  which that backend never runs. The answer is read per request, so switching
+  back to kiro restores the screen, and it moves only the first-run bit: `ready`
+  and the service latch the per-route gates read are unchanged.
 
 Accordingly, a status-check failure for a user who has completed setup leaves the
 dashboard mounted and fully usable with **no banner at all** — an unreachable

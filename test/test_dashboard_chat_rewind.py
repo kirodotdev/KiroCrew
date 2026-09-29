@@ -555,6 +555,50 @@ class TestRewindSlot:
         state.sessions.discard_conversation.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_rewind_app_on_a_linked_slot_never_sees_the_readiness_503(self, tmp_path):
+        """The ownership 404 precedes the kiro-cli gate, so its 503 reveals nothing.
+
+        With kiro-cli signed out the gate would answer 503. An app that owns the
+        slot but not the channel conversation it is linked to must get the same
+        404 as for a missing slot -- the 503 would tell it the host's backend
+        and sign-in state.
+        """
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import patch as _patch
+
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard import chat_rewind
+        from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind
+
+        state = _make_state(tmp_path)
+        slot = _populate_slot(state)
+        slot._app = "some-app"
+        slot.linked_session_key = "slack:1234567890.123"
+        app = _make_app(state)
+        fake_request = make_mocked_request(
+            "POST",
+            "/api/chat/slots/src/rewind",
+            match_info={"slot": "src"},
+            app=app,
+        )
+        fake_request["app"] = "some-app"
+
+        async def _json():
+            return {"at_message_index": 0, "content": "x"}
+
+        fake_request.json = _json  # type: ignore[method-assign]
+        from aiohttp import web as _web
+
+        refused = _web.json_response({"code": "kiro_prerequisite_required"}, status=503)
+        with _patch.object(
+            chat_rewind, "reject_if_kiro_unverified", _AsyncMock(return_value=refused)
+        ) as gate:
+            resp = await api_chat_slot_rewind(fake_request)
+        assert resp.status == 404
+        gate.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_rewind_rejects_when_the_sid_flush_fails(self, tmp_path):
         """The cleared resume sid must be durable before the commit.
 

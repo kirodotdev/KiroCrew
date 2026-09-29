@@ -833,9 +833,10 @@ class SessionLifecycleService:
         stale: list[tuple[str, Any]] = []
         async with owner._pool_fill_lock:
             pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
+            provider_factory = self._deps.build_provider_factory(cfg)
             async with owner._lock:
                 owner._cfg = cfg
-                owner._provider_factory = self._deps.build_provider_factory(cfg)
+                owner._provider_factory = provider_factory
                 # The same four pool fields refresh_defaults adopts: a reset
                 # handler that loads a disk-edited pool_ttl_secs must not evict
                 # the warm pool at the stale TTL until the watcher's next cycle.
