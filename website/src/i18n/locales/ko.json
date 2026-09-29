@@ -16736,9 +16736,22 @@
       "saving": "저장 중…"
     },
     "offline": {
+      "change_folder_settings": "폴더 설정을 변경",
+      "continue": "계속하기",
+      "create_folders": "폴더를 생성",
+      "create_sessions": "세션을 생성",
+      "delete_folders": "폴더를 삭제",
       "disabled_gateway_offline": "{{label}}이(가) 비활성화되었습니다 — 게이트웨이가 오프라인입니다",
       "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
-      "submit_comments": "댓글 제출"
+      "hide_folders": "폴더를 숨기기",
+      "menu_reason": "게이트웨이가 오프라인입니다 — 흐리게 표시된 작업에는 연결이 필요합니다",
+      "move_folders": "폴더를 이동",
+      "optimize": "최적화",
+      "rename_folders": "폴더 이름을 변경",
+      "resume_sessions": "세션을 재개",
+      "send": "보내기",
+      "submit_comments": "댓글 제출",
+      "switch_sessions": "세션을 전환"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "브라우저가 팝아웃 창을 차단했습니다. 이 사이트의 팝업을 허용한 다음 다시 시도하세요."

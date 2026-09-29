@@ -16979,9 +16979,22 @@
       "saving": "सहेजा जा रहा है..."
     },
     "offline": {
+      "change_folder_settings": "फ़ोल्डर सेटिंग्स बदलने",
+      "continue": "जारी रखने",
+      "create_folders": "फ़ोल्डर बनाने",
+      "create_sessions": "सेशन बनाने",
+      "delete_folders": "फ़ोल्डर मिटाने",
       "disabled_gateway_offline": "{{label}} बंद — गेटवे ऑफ़लाइन",
       "gateway_offline_reconnect": "गेटवे ऑफ़लाइन — {{action}} के लिए फिर से कनेक्ट करो",
-      "submit_comments": "टिप्पणियाँ सबमिट करने"
+      "hide_folders": "फ़ोल्डर छिपाने",
+      "menu_reason": "गेटवे ऑफ़लाइन — धुँधले विकल्पों के लिए कनेक्शन ज़रूरी है",
+      "move_folders": "फ़ोल्डर ले जाने",
+      "optimize": "अनुकूलित करने",
+      "rename_folders": "फ़ोल्डर का नाम बदलने",
+      "resume_sessions": "सेशन फिर से शुरू करने",
+      "send": "भेजने",
+      "submit_comments": "टिप्पणियाँ सबमिट करने",
+      "switch_sessions": "सेशन बदलने"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "तुम्हारे ब्राउज़र ने पॉप-आउट विंडो ब्लॉक कर दी। इस साइट के लिए पॉप-अप की अनुमति दें और फिर कोशिश करें।"

@@ -88,17 +88,33 @@ const ContextMenuContent = React.forwardRef<
 ))
 ContextMenuContent.displayName = ContextMenuPrimitive.Content.displayName
 
+/**
+ * `offline` dims a row whose action needs a live gateway — the same prop, the
+ * same weight and the same composition order as `DropdownMenuItem`, which
+ * documents the reasoning in full.
+ *
+ * It exists on BOTH families because one caller renders one list of rows through
+ * either of them: `renderFolderMenuItems` picks the family from its `variant`, so
+ * the folder ⋯-menu and the right-click menu are the same rows. A dim on only the
+ * dropdown would leave the context menu presenting the identical gateway writes at
+ * full weight.
+ *
+ * Composed AFTER `className` on purpose: `cn` is tailwind-merge, so the last class
+ * in a conflicting group wins, and with `className` last the `text-danger` delete
+ * row would keep full-saturation red at 40% opacity while its siblings went muted.
+ */
 const ContextMenuItem = React.forwardRef<
   React.ComponentRef<typeof ContextMenuPrimitive.Item>,
-  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Item> & { inset?: boolean }
->(({ className, inset, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof ContextMenuPrimitive.Item> & { inset?: boolean; offline?: boolean }
+>(({ className, inset, offline, ...props }, ref) => (
   <ContextMenuPrimitive.Item
     ref={ref}
     className={cn(
       'relative flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-1.5 text-[13px] outline-hidden transition-colors',
       'focus:bg-bg-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       inset && 'pl-8',
-      className
+      className,
+      offline && 'text-muted opacity-40'
     )}
     {...props}
   />

@@ -17222,9 +17222,22 @@
       "saving": "Enregistrement..."
     },
     "offline": {
+      "change_folder_settings": "modifier les réglages du dossier",
+      "continue": "continuer",
+      "create_folders": "créer des dossiers",
+      "create_sessions": "créer des sessions",
+      "delete_folders": "supprimer des dossiers",
       "disabled_gateway_offline": "{{label}} désactivé — passerelle hors ligne",
       "gateway_offline_reconnect": "Passerelle hors ligne — reconnecte-toi pour {{action}}",
-      "submit_comments": "envoyer les commentaires"
+      "hide_folders": "masquer des dossiers",
+      "menu_reason": "Passerelle hors ligne — les actions grisées nécessitent une connexion",
+      "move_folders": "déplacer des dossiers",
+      "optimize": "optimiser",
+      "rename_folders": "renommer des dossiers",
+      "resume_sessions": "reprendre des sessions",
+      "send": "envoyer",
+      "submit_comments": "envoyer les commentaires",
+      "switch_sessions": "changer de session"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Votre navigateur a bloqué la fenêtre détachée. Autorisez les fenêtres pop-up pour ce site et réessayez."

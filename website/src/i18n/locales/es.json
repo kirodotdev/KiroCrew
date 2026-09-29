@@ -17222,9 +17222,22 @@
       "saving": "Guardando…"
     },
     "offline": {
+      "change_folder_settings": "cambiar los ajustes de carpeta",
+      "continue": "continuar",
+      "create_folders": "crear carpetas",
+      "create_sessions": "crear sesiones",
+      "delete_folders": "eliminar carpetas",
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
-      "submit_comments": "enviar comentarios"
+      "hide_folders": "ocultar carpetas",
+      "menu_reason": "Gateway sin conexión — las acciones atenuadas necesitan conexión",
+      "move_folders": "mover carpetas",
+      "optimize": "optimizar",
+      "rename_folders": "cambiar el nombre de las carpetas",
+      "resume_sessions": "reanudar sesiones",
+      "send": "enviar",
+      "submit_comments": "enviar comentarios",
+      "switch_sessions": "cambiar de sesión"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Tu navegador bloqueó la ventana desacoplada. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."

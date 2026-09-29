@@ -212,6 +212,9 @@ interface RenderOpts {
   board?: boolean
   /** Flip into flat view (every chat in one lane, no folder tree). */
   flat?: boolean
+  /** Gateway state. Defaults to CONNECTED because every other case here asserts a
+   *  drag that reaches the server; the one offline case opts out. */
+  connected?: boolean
 }
 
 let panes: HTMLElement[] = []
@@ -248,7 +251,7 @@ function renderSidebar(opts: RenderOpts = {}) {
   const store = createTestStore({
     dashboard: {
       ...defaults.dashboard,
-      status: {}, connected: true, slots, approvalMode: 'normal',
+      status: {}, connected: opts.connected ?? true, slots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -557,6 +560,22 @@ describe('ChatSidebar — drop routing (onDragEnd)', () => {
     }
     // The per-row PATCH path is retired: reordering never touches updateChatFolder.
     expect(mocks.updateChatFolder).not.toHaveBeenCalled()
+  })
+
+  /** Opus 5 on 3b0e657a07: `reorderFolders` had no `connected` check, so offline a
+   *  sibling drag moved optimistically, snapped back and raised the
+   *  `folder_update_failed` notice -- the same false failure the `moveFolderTo` gate
+   *  was added to stop, reached by the same gesture routed one sink over. */
+  it('offline a sibling reorder sends nothing and reports no failure', async () => {
+    renderSidebar({ connected: false })
+    await waitFor(() => expect(dnd.onDragEnd).toBeTruthy())
+    dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: HIDDEN_FOLDER_ID, data: { type: 'folder' } })
+    // Refused before the optimistic write, so neither sink is touched.
+    expect(mocks.reorderChatFolders).not.toHaveBeenCalled()
+    expect(mocks.updateChatFolder).not.toHaveBeenCalled()
+    // And the refusal is the neutral offline notice, not "Folder update failed".
+    await waitFor(() => expect(screen.getByTestId('folder-action-offline').textContent).toContain('move folders'))
+    expect(screen.queryByTestId('folder-action-error')).toBeNull()
   })
 
   it('does nothing when a folder is dropped onto itself', async () => {
