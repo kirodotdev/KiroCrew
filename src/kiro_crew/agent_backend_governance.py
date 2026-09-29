@@ -79,6 +79,7 @@ from __future__ import annotations
 import logging
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_CUSTOM,
     GOVERNANCE_FLOOR_BACKEND,
     POLICY_ID_BY_BACKEND,
     apply_selectable_denials,
@@ -181,6 +182,67 @@ def _scope_permits(backend: str) -> bool:
         return False
 
 
+#: Backends a POLICY ceiling must NAME before they are selectable. Custom runs an
+#: operator's arbitrary harness whose unasked tool calls reach no Crew gate, so under
+#: a ceiling silence is not consent: a policy with no ``agent_backend`` rule, or a
+#: deny-mode rule written before ``custom`` existed, must not admit it.
+_CEILING_MUST_NAME: frozenset[str] = frozenset({ACP_BACKEND_CUSTOM})
+
+
+def _literal_allow_grant(control: object, item: str) -> bool:
+    """Whether some allow-mode ruleset in *control* lists *item* verbatim.
+
+    Walks a composed ``_AndRuleset`` down to its leaves. Only an ``allow``-mode leaf
+    counts, and only an entry equal to *item* (case-insensitive), never a pattern
+    that merely matches it.
+    """
+    from kiro_crew.platform.governance import MODE_ALLOW
+
+    stack = [control]
+    while stack:
+        node = stack.pop()
+        outer, inner = getattr(node, "outer", None), getattr(node, "inner", None)
+        if outer is not None or inner is not None:
+            stack.extend(n for n in (outer, inner) if n is not None)
+            continue
+        if getattr(node, "mode", None) != MODE_ALLOW:
+            continue
+        if any(str(p).strip().casefold() == item.casefold() for p in getattr(node, "allow", ())):
+            return True
+    return False
+
+
+def _ceiling_names(backend: str) -> bool:
+    """Whether an installed POLICY ceiling explicitly allows *backend*.
+
+    True when no ceiling is installed (an ungoverned install keeps today's
+    behaviour). Under a ceiling, the scope's own rule must permit the id AND an
+    allow-mode rule must list it by its exact name. A glob (``*``, ``cust*``) written
+    before ``custom`` existed is not consent, and the ignored ``allow`` list of a
+    deny-mode rule is not a grant. Fails closed.
+    """
+    try:
+        from kiro_crew.platform.context import current_context
+
+        ceiling = getattr(current_context(), "governance", None)
+        if ceiling is None:
+            return True
+        control = ceiling.get(SCOPE)
+        if control is None:
+            named = False
+        else:
+            item = _policy_id(backend)
+            named = bool(control.permits(item).permitted) and _literal_allow_grant(control, item)
+    except Exception:
+        logger.debug("agent_backend ceiling check failed for %r; denying", backend, exc_info=True)
+        named = False
+    if not named:
+        from kiro_crew.platform.governance import Decision
+
+        _audit(backend, Decision(False, "policy ceiling does not name it", rule="must-name"), False)
+    return named
+
+
 def narrow_selectable_backends() -> list[str]:
     """Recompute which backends this deployment may select. Returns what was removed.
 
@@ -203,7 +265,11 @@ def narrow_selectable_backends() -> list[str]:
         denied = {
             backend
             for backend in sorted(registered_backends())
-            if backend != GOVERNANCE_FLOOR_BACKEND and not _scope_permits(backend)
+            if backend != GOVERNANCE_FLOOR_BACKEND
+            and (
+                (backend in _CEILING_MUST_NAME and not _ceiling_names(backend))
+                or not _scope_permits(backend)
+            )
         }
         removed = sorted(apply_selectable_denials(denied))
         if removed:

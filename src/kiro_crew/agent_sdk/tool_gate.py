@@ -63,6 +63,7 @@ from kiro_crew import platform_compat
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_CUSTOM,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_PI,
@@ -84,20 +85,9 @@ logger = logging.getLogger(__name__)
 #: adding a mechanism here without implementing it would assert a guarantee
 #: nothing performs.
 #:
-#: KNOWN SEAM GAP, recorded here because this is where a reader meets it.
-#: :func:`is_enforced` reads this set to answer TWO different questions: "does a
-#: non-ROUTED verdict refuse this session?" and, through
-#: :func:`adapter_hidden_credential_dirs`, "does this harness get the OS credential
-#: mask?". Those are not the same question. The mask compensates for a harness whose
-#: passive READS bypass the gate, which is a property of the harness, not of whether
-#: its routing verdict is capable of refusing. They agree for every harness carried
-#: today, so nothing is wrong now and nothing here is a workaround -- but a harness
-#: that needs the mask while declaring a mechanism that cannot refuse would get
-#: neither, and one that refuses without doing passive reads would carry a mask it
-#: does not need. Splitting them is a change to a security control and belongs in its
-#: own change; tracked at
-#: docs/system-specs/modules/harness-onboarding.md#worked-example-the-deepseek-harness,
-#: which records the run that surfaced it.
+#: Credential masking is a separate question, answered by
+#: :func:`_requires_credential_mask`. Custom ACP needs that OS boundary while its
+#: tool routing remains explicitly UNVERIFIED. No other harness changes posture.
 ENFORCED_ROUTINGS: frozenset = frozenset(
     {
         Routing.SESSION_CONFIG,
@@ -124,6 +114,7 @@ UNENFORCED_CONTROLS = (
 #: their own: neither has a launch record, and the name an operator knows the harness
 #: by is not its adapter's package name.
 _LABELS: dict = {
+    ACP_BACKEND_CUSTOM: "Custom ACP",
     ACP_BACKEND_CODEX: "OpenAI Codex",
     ACP_BACKEND_PI: "Pi",
     **{backend: record.label for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
@@ -291,6 +282,11 @@ class ToolGateUnroutable(Exception):
     """
 
 
+def _requires_credential_mask(backend: str) -> bool:
+    """Custom requires isolation without claiming that its tool routing is verified."""
+    return backend == ACP_BACKEND_CUSTOM or is_enforced(backend)
+
+
 def adapter_hidden_credential_dirs(backend: str) -> tuple:
     """Absolute paths on the read-gate floor to hide from *backend*'s child.
 
@@ -335,7 +331,7 @@ def adapter_hidden_credential_dirs(backend: str) -> tuple:
     ``subpath`` and a ``literal`` deny for each one, so a plain file is covered
     without depending on how Seatbelt treats a subpath over a non-directory.
     """
-    if not is_enforced(backend):
+    if not _requires_credential_mask(backend):
         return ()
     # Imported here rather than at module scope: this is a LEAF that
     # ``acp/client.py`` imports at import time, and security.py is a large module
@@ -489,7 +485,7 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     hosts where a backend can exist. Neither message consults
     ``sandbox_allow_unsandboxed_exec``.
     """
-    if not is_enforced(backend):
+    if not _requires_credential_mask(backend):
         return
     # Local import for the same reason as the mask builder: this is a leaf that
     # ``acp/client.py`` imports at import time.
@@ -512,6 +508,12 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
             "sandbox backend here to protect credential files; changing agent.sandbox "
             "cannot enable it. Select Kiro CLI in Settings → Agent Backend and start "
             "a new session.".format(label_for(backend))
+        )
+    if backend == ACP_BACKEND_CUSTOM:
+        raise ToolGateUnroutable(
+            "Custom ACP requires a working OS sandbox to protect credential files. "
+            "Enable agent.sandbox on a supported host or select Kiro CLI; "
+            "unverified tool routing cannot replace credential isolation."
         )
     raise ToolGateUnroutable(
         "{} routes tool calls through an enforced permission route whose "
