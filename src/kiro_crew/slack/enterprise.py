@@ -45,6 +45,11 @@ _validated_enterprise_id: str = ""
 # self-exclusion.
 _validated_self_bot_id: str = ""
 
+# The gateway's own Slack USER id (``auth.test`` ``user_id``), the id a human
+# writes as ``<@U…>`` to address this bot. Empty when auth.test was unavailable;
+# consumers must then skip any check that needs it (no behaviour change).
+_validated_self_user_id: str = ""
+
 # Set of team_ids accepted by check_message_origin().  Contains the
 # validated team_id plus any workspace IDs explicitly listed in
 # ``slack.allowed_enterprise_ids`` config — populated once during
@@ -470,6 +475,7 @@ def validate_enterprise(
     """
     global _validated_team_id, _validated_enterprise_id, _allowed_team_ids
     global _allowlist_configured, _validated_self_bot_id, _configured_ids
+    global _validated_self_user_id
 
     # Clear stale state before re-validating.
     _validated_team_id = ""
@@ -477,6 +483,7 @@ def validate_enterprise(
     _allowed_team_ids = set()
     _allowlist_configured = False
     _validated_self_bot_id = ""
+    _validated_self_user_id = ""
     _configured_ids = set()
 
     extra = extra_ids or set()
@@ -589,6 +596,7 @@ def validate_enterprise(
     # loop guard). str() defends against a non-string field in a degraded
     # response.
     _validated_self_bot_id = str(resp.get("bot_id") or "")
+    _validated_self_user_id = str(resp.get("user_id") or "")
     degraded = _load_allowed_team_ids()
     if extra and degraded:
         # The config read REFUSED, and ``extra`` is the caller's own
@@ -721,6 +729,16 @@ def validated_self_bot_id() -> str:
     validation takes for an allowlist with unverifiable workspace identity.
     """
     return _validated_self_bot_id
+
+
+def validated_self_user_id() -> str:
+    """The gateway's own bot USER id from startup ``auth.test`` ("" when unavailable).
+
+    Zero-cost in-memory read. Lets thread-follow tell a message addressed to this
+    bot from one addressed only to someone else; "" means unknown, and callers
+    then keep their existing behaviour.
+    """
+    return _validated_self_user_id
 
 
 def trusted_bot_admission(bot_id: str, trusted_ids: Container[str]) -> tuple[bool, str]:

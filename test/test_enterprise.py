@@ -126,6 +126,28 @@ def test_self_identity_cached_from_auth_test_and_reset_on_failure(tmp_path):
     assert enterprise.validated_self_bot_id() == ""
 
 
+def test_self_user_id_cached_from_auth_test_and_reset_on_failure(tmp_path):
+    """auth.test's user_id is the id humans write as <@U…> to address this bot.
+
+    Thread-follow compares it against a reply's mentions, so a stale id must not
+    survive a failed re-validation: it resets to "" (unknown).
+    """
+    resp = {
+        "team_id": "T_GOOD",
+        "team": "Good Co",
+        "url": "https://x",
+        "bot_id": "B0SELF",
+        "user_id": "U0SELF",
+    }
+    _write_allowlist(tmp_path, [])
+    with _install_fake_slack_sdk(resp):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    assert enterprise.validated_self_user_id() == "U0SELF"
+    with _install_fake_slack_sdk(raise_exc=True):
+        enterprise.validate_enterprise("xoxb-token")
+    assert enterprise.validated_self_user_id() == ""
+
+
 # --------------------------------------------------------------------------
 # Allowlist configured + auth.test succeeds
 # --------------------------------------------------------------------------

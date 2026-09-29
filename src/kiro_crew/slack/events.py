@@ -77,7 +77,7 @@ from kiro_crew.slack.blocks import (
     dashboard_link_block,
     voice_config_modal,
 )
-from kiro_crew.slack.enterprise import trusted_bot_admission
+from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
     VOICE_MEMO_FAILED,
@@ -2060,6 +2060,78 @@ _SLACK_BLOCK_FALLBACKS = frozenset({
     "This content can't be displayed.",
 })
 
+#: A Slack user mention, ``<@U123>`` or ``<@U123|name>``; group 1 is the user id.
+_USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+
+#: The run of user mentions a message opens with, the addressing position.
+_LEADING_MENTIONS_RE = re.compile(r"\s*(?:<@[UW][A-Z0-9]+(?:\|[^>]*)?>\s*)+")
+
+
+def _addressed_to_someone_else(text: str, self_uid: str) -> bool:
+    """True when *text* opens with @-mentions and none of them is this bot.
+
+    Only the leading run of mentions (after leading whitespace) addresses the
+    message: ``<@U0OTHER> please verify`` is for U0OTHER, while ``please retry,
+    cc <@U0OTHER>`` names someone in passing and is not. A message with no
+    leading mention, or whose leading mentions include *self_uid*, is not
+    addressed elsewhere. False when *self_uid* is unknown, so callers keep
+    answering.
+    """
+    if not self_uid:
+        return False
+    leading = _LEADING_MENTIONS_RE.match(text or "")
+    if leading is None:
+        return False
+    return self_uid not in _USER_MENTION_RE.findall(leading.group(0))
+
+
+def _thread_follow_admits(
+    orch: GatewayOrchestrator,
+    *,
+    thread_follow: bool,
+    activation: str,
+    thread_ts: str | None,
+    text: str,
+    sender_id: str,
+    channel: str,
+) -> bool:
+    """Whether thread-follow admits an unmentioned message; logs the SEL denial when not.
+
+    The one admission rule for every activation mode that answers followed-thread
+    replies without an @-mention (mention, review, observe). The message must be
+    a reply in a thread this bot already holds a session, session link, or
+    conversation log for, with ``thread_follow`` on. A reply that opens with a
+    mention of someone else is addressed to them and skipped, so answering does
+    not talk over the addressee. A reply that opens with (or is) a mention of this
+    bot is admitted by that same rule: Slack also delivers it as a plain
+    ``message`` event, which reaches here with ``is_mention`` False.
+    """
+    in_active_thread = (
+        thread_follow
+        and thread_ts
+        and orch.sessions
+        and (
+            orch.sessions.has_session(thread_ts)
+            or orch.sessions.get_session_for_thread(thread_ts)
+            or (orch.conv_log and orch.conv_log.has_log(thread_ts))
+        )
+    )
+    if not in_active_thread:
+        error = f"activation={activation}, no mention or active thread"
+    elif _addressed_to_someone_else(text, validated_self_user_id()):
+        error = "thread-follow: addressed to another user"
+    else:
+        return True
+    sel().log_api_access(
+        caller=sender_id,
+        operation="slack.message",
+        outcome="denied",
+        source="slack",
+        resources=channel,
+        error=error,
+    )
+    return False
+
 
 def _normalize_message_blocks(raw: list) -> list[dict]:
     """Drill into the Slack message_blocks wrapper structure.
@@ -2445,52 +2517,32 @@ async def _route_message(
         if should_record_observe_history(orch.channel_history, _user_authorized):
             assert orch.channel_history is not None  # narrowed by helper
             orch.channel_history.push(channel, sender_id, text, thread_ts=thread_ts, msg_ts=msg_ts)
-        if not is_mention:
-            in_active_thread = (
-                ch_cfg.thread_follow
-                and thread_ts
-                and orch.sessions
-                and (
-                    orch.sessions.has_session(thread_ts)
-                    or orch.sessions.get_session_for_thread(thread_ts)
-                    or (orch.conv_log and orch.conv_log.has_log(thread_ts))
-                )
-            )
-            if not in_active_thread:
-                sel().log_api_access(
-                    caller=sender_id,
-                    operation="slack.message",
-                    outcome="denied",
-                    source="slack",
-                    resources=channel,
-                    error="activation=observe, no mention or active thread",
-                )
-                return
+        if not is_mention and not _thread_follow_admits(
+            orch,
+            thread_follow=ch_cfg.thread_follow,
+            activation=activation,
+            thread_ts=thread_ts,
+            text=text,
+            sender_id=sender_id,
+            channel=channel,
+        ):
+            return
 
     if activation in (ACTIVATION_MENTION, ACTIVATION_REVIEW) and not is_mention:
         # In mention/review mode: ignore messages without @mention UNLESS the
         # message is a reply in a thread where the bot already has an active
-        # session (i.e., the bot was previously @mentioned in that thread).
-        # When thread_follow=false, always require @mention even in active threads.
-        in_active_thread = (
-            ch_cfg.thread_follow
-            and thread_ts
-            and orch.sessions
-            and (
-                orch.sessions.has_session(thread_ts)
-                or orch.sessions.get_session_for_thread(thread_ts)
-                or (orch.conv_log and orch.conv_log.has_log(thread_ts))
-            )
-        )
-        if not in_active_thread:
-            sel().log_api_access(
-                caller=sender_id,
-                operation="slack.message",
-                outcome="denied",
-                source="slack",
-                resources=channel,
-                error=f"activation={activation}, no mention or active thread",
-            )
+        # session (i.e., the bot was already @mentioned in that thread) and is
+        # not addressed to someone else. When thread_follow=false, always require
+        # @mention even in active threads.
+        if not _thread_follow_admits(
+            orch,
+            thread_follow=ch_cfg.thread_follow,
+            activation=activation,
+            thread_ts=thread_ts,
+            text=text,
+            sender_id=sender_id,
+            channel=channel,
+        ):
             return
 
     # ── Access control: send ephemeral rejection ──

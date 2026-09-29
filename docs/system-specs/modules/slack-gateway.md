@@ -392,6 +392,8 @@ Each channel can have its own activation mode controlling when the bot responds:
 
 **Thread reply behavior** (mention mode): When the bot is @mentioned in a group channel, it responds in a thread. Subsequent replies in that thread are processed without needing @mention, as long as the bot has an active session for that thread (`SessionManager.has_session(thread_ts)`). Replies in threads where the bot was never mentioned are ignored.
 
+**Replies addressed to someone else** (`thread_follow`, in mention, review, and observe mode): one admission rule covers every followed-thread reply that does not arrive as an @-mention. A reply whose text, after leading whitespace, starts with one or more @-mentions of other users or bots and none of this bot is addressed to them and is skipped (SEL `slack.message` denied, `thread-follow: addressed to another user`), so a reply handing the thread to someone else is not talked over. The check reads the message text after forward and Block Kit recovery. A reply with no leading mention is answered, including one that only names someone in passing (`please retry the deploy, cc <@U…>`), and so is a reply that starts with a mention of this bot: Slack also delivers that as a plain `message` event, which reaches this rule and is admitted by it. The bot's own user id comes from startup `auth.test` (`enterprise.validated_self_user_id()`); when it is unknown the check is skipped and the reply is answered.
+
 **Owner commands** (`!channel`):
 - `!channel` — show current channel activation mode and agent
 - `!channel always|mention|observe|off` — set activation mode, persisted to `config.json`

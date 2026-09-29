@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.config.loader import (
+    ACTIVATION_MENTION,
+    ACTIVATION_OBSERVE,
+    ACTIVATION_REVIEW,
+    ChannelConfig,
+)
 from kiro_crew.slack.events import (
     _MAX_RECOVERED_TEXT_CHARS,
     _SLACK_BLOCK_FALLBACKS,
     _extract_blocks_text,
     _extract_shared_text,
     _normalize_message_blocks,
+    _route_message,
 )
 
 
@@ -756,3 +764,142 @@ class TestRouteMessageFallbackRecovery:
         ]
         extracted = _extract_blocks_text(event_blocks)
         assert extracted == ""
+
+
+class TestThreadFollowAddressedToOthers:
+    """Thread-follow must not answer a reply addressed to someone else.
+
+    In a thread the bot follows (mention, review, or observe mode, thread_follow
+    on), a reply that opens with @-mentions of other users or bots, none of them
+    this bot, is theirs and is skipped. A reply with no leading mention, one that
+    leads with this bot, one that only names someone in passing, or one routed
+    while this bot's own user id is unknown is still dispatched.
+    """
+
+    SELF_UID = "U0SELF"
+    OTHER_UID = "U0OTHER"
+    GATE_DENIAL = "thread-follow: addressed to another user"
+
+    def _orch(self, activation: str) -> MagicMock:
+        orch = AsyncMock()
+        cfg = MagicMock()
+        cfg.channel_config.return_value = ChannelConfig(activation=activation, thread_follow=True)
+        orch._cfg = cfg
+        orch.channel_history = None
+        orch.sessions = MagicMock()
+        orch.sessions.has_session.return_value = True
+        orch.sessions.enqueue.return_value = False
+        orch.sessions.dequeue.return_value = None
+        orch.conv_log = None
+        orch.slack = None
+        orch._session_tasks = {}
+        orch._handler_tasks = set()
+        orch._pending_queue = {}
+        return orch
+
+    def _seen(self) -> MagicMock:
+        seen = MagicMock()
+        seen.check_and_add = lambda x: False
+        seen.check = lambda x: False
+        seen.add = lambda x: None
+        return seen
+
+    async def _route(
+        self,
+        text: str,
+        self_uid: str,
+        activation: str = ACTIVATION_MENTION,
+        extra: dict | None = None,
+    ) -> tuple[list[str], AsyncMock]:
+        """Route one thread reply; return its ``slack.message`` denials and the dispatch mock."""
+        denials: list[str] = []
+
+        def _log(**kw):
+            if kw.get("operation") == "slack.message" and kw.get("outcome") == "denied":
+                denials.append(kw.get("error", ""))
+
+        event = {
+            "user": "U0HUMAN",
+            "channel": "C0MAIN",
+            "text": text,
+            "ts": "1700.2",
+            "thread_ts": "1700.1",
+            "team": "T0TEAM",
+            **(extra or {}),
+        }
+        orch = self._orch(activation)
+        dispatch = AsyncMock()
+        with (
+            patch("kiro_crew.slack.events.sel") as mock_sel,
+            patch("kiro_crew.slack.events.is_allowed_user", return_value=True),
+            patch("kiro_crew.slack.events.is_owner", return_value=True),
+            patch("kiro_crew.slack.events.validated_self_user_id", return_value=self_uid),
+            patch("kiro_crew.slack.events.handle_message", dispatch),
+        ):
+            mock_sel.return_value.log_api_access = _log
+            await _route_message(orch, event, self._seen(), is_mention=False)
+            if orch._handler_tasks:
+                await asyncio.gather(*orch._handler_tasks, return_exceptions=True)
+        return denials, dispatch
+
+    async def _assert_skipped(self, text: str, activation: str = ACTIVATION_MENTION) -> None:
+        denials, dispatch = await self._route(text, self.SELF_UID, activation)
+        assert denials == [self.GATE_DENIAL]
+        dispatch.assert_not_called()
+
+    async def _assert_answered(
+        self, text: str, self_uid: str = SELF_UID, activation: str = ACTIVATION_MENTION
+    ) -> None:
+        denials, dispatch = await self._route(text, self_uid, activation)
+        assert denials == []
+        dispatch.assert_awaited_once()
+        assert dispatch.await_args.args[3] == text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "activation", [ACTIVATION_MENTION, ACTIVATION_REVIEW, ACTIVATION_OBSERVE]
+    )
+    async def test_reply_addressed_to_another_bot_is_not_answered(self, activation):
+        text = f"<@{self.OTHER_UID}> the issue has been fixed, please verify"
+        await self._assert_skipped(text, activation)
+
+    @pytest.mark.asyncio
+    async def test_reply_with_labelled_leading_mention_of_another_user_is_not_answered(self):
+        await self._assert_skipped(f"  <@{self.OTHER_UID}|other> please verify")
+
+    @pytest.mark.asyncio
+    async def test_recovered_forward_text_addressed_to_another_user_is_not_answered(self):
+        """The check reads the text recovered from a forward, not the placeholder."""
+        forward = {"attachments": [{"is_share": True, "text": f"<@{self.OTHER_UID}> verify"}]}
+        denials, dispatch = await self._route(
+            "This message contains interactive elements.", self.SELF_UID, extra=forward
+        )
+        assert denials == [self.GATE_DENIAL]
+        dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reply_leading_with_several_other_mentions_is_not_answered(self):
+        await self._assert_skipped(f"<@{self.OTHER_UID}> <@U0THIRD> please verify")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "activation", [ACTIVATION_MENTION, ACTIVATION_REVIEW, ACTIVATION_OBSERVE]
+    )
+    async def test_reply_without_mentions_is_still_answered(self, activation):
+        await self._assert_answered("thanks, can you also add a test?", activation=activation)
+
+    @pytest.mark.asyncio
+    async def test_reply_naming_another_user_in_passing_is_answered(self):
+        await self._assert_answered(f"please retry the deploy, cc <@{self.OTHER_UID}>")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "activation", [ACTIVATION_MENTION, ACTIVATION_REVIEW, ACTIVATION_OBSERVE]
+    )
+    async def test_reply_leading_with_self_and_another_is_answered(self, activation):
+        text = f"<@{self.SELF_UID}> <@{self.OTHER_UID}> both take a look"
+        await self._assert_answered(text, activation=activation)
+
+    @pytest.mark.asyncio
+    async def test_unknown_self_id_keeps_existing_behaviour(self):
+        await self._assert_answered(f"<@{self.OTHER_UID}> please verify", self_uid="")
