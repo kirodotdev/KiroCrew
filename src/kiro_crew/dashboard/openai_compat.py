@@ -28,6 +28,7 @@ from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -718,6 +719,11 @@ async def _stream_response(
                 # Stream assistant and chunk roles (token-level streaming)
                 if msg.get("role") not in ("assistant", "chunk"):
                     continue
+                # A system notice is an assistant-role status row the gateway
+                # injects (a KAS recap lands at the start of a resumed turn),
+                # not model output.
+                if is_system_notice(msg.get("role"), msg.get("meta")):
+                    continue
                 content = msg.get("content") or ""
                 if not content:
                     continue
@@ -814,7 +820,11 @@ async def _blocking_response(
                     )
                 if msg.get("role") == "chunk":
                     collected.append(msg.get("content", ""))
-                elif msg.get("role") == "assistant" and not collected:
+                elif (
+                    msg.get("role") == "assistant"
+                    and not collected
+                    and not is_system_notice("assistant", msg.get("meta"))
+                ):
                     collected.append(msg.get("content", ""))
 
             # Detect task failure — prevents infinite loop

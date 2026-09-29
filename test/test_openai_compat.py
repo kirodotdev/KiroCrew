@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.dashboard.openai_compat import _flatten_messages, _make_id, api_completions
+from kiro_crew.dashboard.system_notices import SYSTEM_NOTICE_KINDS
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 
@@ -323,6 +324,34 @@ class TestApiCompletionsBlocking:
         assert data["choices"][0]["message"]["content"] == "hey there"
         assert data["choices"][0]["finish_reason"] == "stop"
 
+    @pytest.mark.parametrize("kind", sorted(SYSTEM_NOTICE_KINDS))
+    async def test_system_notice_row_is_not_the_reply(self, kind):
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {
+                "model": "vanellope",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
+            state,
+        )
+
+        async def fake_run_chat(s, sl, prompt, **_kwargs):
+            # A resumed KAS turn opens with the recap notice before the reply.
+            slot._pending.append(
+                {"role": "assistant", "content": "Recap: session so far", "meta": {"kind": kind}}
+            )
+            slot._pending.append({"role": "assistant", "content": "hey there"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat):
+            resp = await api_completions(request)
+
+        data = json.loads(resp.body)
+        assert data["choices"][0]["message"]["content"] == "hey there"
+
     async def test_missing_messages_returns_400(self):
         slot = _make_slot()
         state = _make_state(slot)
@@ -502,6 +531,40 @@ class TestStreamingResponse:
 
         combined = "".join(w.decode() for w in written if isinstance(w, bytes))
         assert "ignored" not in combined
+        assert "hello" in combined
+
+    @pytest.mark.parametrize("kind", sorted(SYSTEM_NOTICE_KINDS))
+    async def test_stream_skips_system_notice_rows(self, kind):
+        slot = _make_slot()
+        state = _make_state(slot)
+        request = _make_request(
+            {"model": "vanellope", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            state,
+        )
+        written = []
+
+        mock_resp = MagicMock()
+        mock_resp.prepare = AsyncMock()
+        mock_resp.write = AsyncMock(side_effect=lambda d: written.append(d))
+        mock_resp.content_type = None
+        mock_resp.headers = {}
+
+        async def fake_run_chat(s, sl, prompt, **_kwargs):
+            slot._pending.append(
+                {"role": "assistant", "content": "Recap: session so far", "meta": {"kind": kind}}
+            )
+            slot._pending.append({"role": "assistant", "content": "hello"})
+            slot._pending.append({"cls": "done"})
+            slot.event.set()
+
+        with (
+            patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+            patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
+        ):
+            await api_completions(request)
+
+        combined = "".join(w.decode() for w in written if isinstance(w, bytes))
+        assert "Recap" not in combined
         assert "hello" in combined
 
     async def test_stream_ephemeral_cleanup(self):

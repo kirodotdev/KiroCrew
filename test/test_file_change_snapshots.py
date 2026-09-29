@@ -5,8 +5,10 @@ Covers:
   * ``_safe_read_snapshot`` — reads through the descriptor gate; rejects sensitive
     paths and hardlink/symlink aliases of them.
   * ``_snapshot_write_target`` — captures before-content for write tools only.
-  * ``_flush_file_changes`` — dedups, scrubs credentials, attaches to last assistant message
-    or creates a synthetic one when the turn aborts before any assistant text.
+  * ``_flush_file_changes`` — dedups, scrubs credentials, attaches to the turn's last
+    non-notice assistant message, scanning only the rows after the turn-start anchor
+    row (a window that holds on a slot at the message cap too), or creates a
+    synthetic one when the turn has no such row.
 
 These tests target the file-chips feature added. They drive
 new-line coverage on chat_runner.py from ~0% to a substantial fraction without
@@ -28,6 +30,7 @@ import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from conftest import requires_symlinks
+from kiro_crew.dashboard import state as state_module
 from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
     _MAX_SNAPSHOT_PATH_CHARS,
@@ -41,8 +44,10 @@ from kiro_crew.dashboard.chat_runner import (
     _snapshot_write_target,
     _truncate_snapshot,
     _turn_line_changes,
+    _turn_window,
 )
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.dashboard.system_notices import SYSTEM_NOTICE_KINDS
 from kiro_crew.security import redact
 
 
@@ -339,6 +344,259 @@ class TestFlushFileChanges:
         # Slot's accumulator is reset for the next turn.
         assert slot._file_changes == []
 
+    @pytest.mark.parametrize("kind", sorted(SYSTEM_NOTICE_KINDS))
+    def test_notice_only_turn_does_not_overwrite_previous_turn(
+        self, short_tmp_dir: Path, kind: str
+    ) -> None:
+        # A resumed KAS slot opens its turn with a recap notice. When the agent
+        # writes a file and the turn is cancelled before any reply text, the
+        # notice is the turn's only assistant row: the flush must skip it (a
+        # notice draws no chips) WITHOUT walking back past the user prompt into
+        # the previous turn's reply, whose persisted file_changes are not this
+        # turn's to overwrite.
+        f = short_tmp_dir / "notice-only.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("notice-only-turn")
+        slot.append("user", "previous prompt", "msg msg-u", broadcast=False)
+        slot.append(
+            "assistant",
+            "previous reply",
+            "msg msg-a",
+            broadcast=False,
+            meta={"file_changes": [{"path": "/previous.py", "before": "old\n", "after": "new\n"}]},
+        )
+        slot.append("user", "continue", "msg msg-u", broadcast=False)
+        turn_anchor = slot.messages[-1]
+        slot.append(
+            "assistant",
+            "Recap: session so far",
+            "msg msg-a",
+            broadcast=False,
+            meta={"kind": kind},
+        )
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=turn_anchor)
+
+        assert slot.messages[1]["meta"]["file_changes"] == [
+            {"path": "/previous.py", "before": "old\n", "after": "new\n"}
+        ]
+        assert "file_changes" not in slot.messages[-2]["meta"]
+        synthetic = slot.messages[-1]
+        assert synthetic["role"] == "assistant"
+        assert "stopped" in synthetic["content"].lower()
+        assert synthetic["meta"]["file_changes"][0]["path"] == str(f)
+        assert slot._dirty is True
+        assert slot._file_changes == []
+
+    def test_tool_only_turn_does_not_overwrite_previous_turn(self, short_tmp_dir: Path):
+        # No assistant row at all in the window (the turn aborted before any
+        # text): the previous turn's reply is outside the window, so the
+        # synthetic row carries the chips instead of that reply.
+        f = short_tmp_dir / "tool-only.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("tool-only-turn")
+        slot.append("user", "previous prompt", "msg msg-u", broadcast=False)
+        slot.append(
+            "assistant",
+            "previous reply",
+            "msg msg-a",
+            broadcast=False,
+            meta={"file_changes": [{"path": "/previous.py", "before": "old\n", "after": "new\n"}]},
+        )
+        slot.append("user", "write a file", "msg msg-u", broadcast=False)
+        turn_start_count = len(slot.messages)
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=slot.messages[-1])
+
+        assert slot.messages[1]["meta"]["file_changes"] == [
+            {"path": "/previous.py", "before": "old\n", "after": "new\n"}
+        ]
+        assert len(slot.messages) == turn_start_count + 1
+        synthetic = slot.messages[-1]
+        assert "stopped" in synthetic["content"].lower()
+        assert synthetic["meta"]["file_changes"][0]["path"] == str(f)
+
+    def test_in_turn_reply_receives_changes_without_a_synthetic_row(
+        self, short_tmp_dir: Path
+    ) -> None:
+        # The bounded window must not over-correct: a reply appended during the
+        # turn still receives the chips, and no synthetic row is added.
+        f = short_tmp_dir / "reply.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("reply-in-turn")
+        slot.append("user", "previous prompt", "msg msg-u", broadcast=False)
+        slot.append("assistant", "previous reply", "msg msg-a", broadcast=False)
+        slot.append("user", "write a file", "msg msg-u", broadcast=False)
+        turn_anchor = slot.messages[-1]
+        turn_start_count = len(slot.messages)
+        slot.append("assistant", "done.", "msg msg-a", broadcast=False)
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=turn_anchor)
+
+        assert len(slot.messages) == turn_start_count + 1
+        assert "file_changes" not in slot.messages[1].get("meta", {})
+        assert slot.messages[-1]["meta"]["file_changes"][0]["path"] == str(f)
+
+    @pytest.mark.parametrize("kind", sorted(SYSTEM_NOTICE_KINDS))
+    def test_in_turn_reply_before_notice_receives_changes(
+        self, short_tmp_dir: Path, kind: str
+    ) -> None:
+        # A notice row after the reply is skipped in favour of the reply, which
+        # is inside the window, rather than triggering a synthetic row.
+        f = short_tmp_dir / "reply.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("reply-before-notice")
+        slot.append("user", "write a file", "msg msg-u", broadcast=False)
+        turn_anchor = slot.messages[-1]
+        slot.append("assistant", "done.", "msg msg-a", broadcast=False)
+        slot.append(
+            "assistant",
+            "Recap: session so far",
+            "msg msg-a",
+            broadcast=False,
+            meta={"kind": kind},
+        )
+        message_count = len(slot.messages)
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=turn_anchor)
+
+        assert len(slot.messages) == message_count
+        reply, notice = slot.messages[-2], slot.messages[-1]
+        assert "file_changes" not in notice.get("meta", {})
+        assert reply["meta"]["file_changes"][0]["path"] == str(f)
+
+    def test_both_exit_sites_scope_the_flush_to_the_turn_window(self) -> None:
+        # The success-path flush and the finally (cancel/error) flush must both
+        # pass the runner's turn-start anchor row, the trim-safe marker of the
+        # turn window; a site that drops it re-opens the previous-turn
+        # overwrite on that exit path alone, and a site passing the index
+        # window (`_turn_msg_boundary`, which `_attach_turn_stats` takes) would
+        # select nothing on a slot at the message cap.
+        tree = ast.parse(inspect.getsource(_run_chat))
+        flushes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_flush_file_changes"
+        ]
+        assert len(flushes) == 2
+        for call in flushes:
+            scopes = [kw for kw in call.keywords if kw.arg == "turn_anchor"]
+            assert len(scopes) == 1, f"line {call.lineno}: flush is not scoped to the turn window"
+            assert isinstance(scopes[0].value, ast.Name)
+            assert scopes[0].value.id == "_turn_anchor_row"
+
+    def test_every_window_index_assignment_also_sets_the_anchor(self) -> None:
+        # The runner keeps two markers of one window: the index
+        # `_turn_msg_boundary` for the stats attach and the row
+        # `_turn_anchor_row` for the file-change flush. Wherever it assigns the
+        # index (the function-scope declaration, the turn-start capture, the
+        # mid-turn /clear reset) it must assign the anchor in the same
+        # statement list, or the two markers describe different windows.
+        tree = ast.parse(inspect.getsource(_run_chat))
+        paired = 0
+        for node in ast.walk(tree):
+            for field in ("body", "orelse", "finalbody"):
+                statements = getattr(node, field, None)
+                if not isinstance(statements, list):
+                    continue
+                assigned = {
+                    target.id
+                    for statement in statements
+                    if isinstance(statement, (ast.Assign, ast.AnnAssign))
+                    for target in (
+                        statement.targets
+                        if isinstance(statement, ast.Assign)
+                        else [statement.target]
+                    )
+                    if isinstance(target, ast.Name)
+                }
+                if "_turn_msg_boundary" in assigned:
+                    assert "_turn_anchor_row" in assigned, (
+                        f"line {statements[0].lineno}: the window index is assigned "
+                        "without the anchor row"
+                    )
+                    paired += 1
+        assert paired >= 3
+
+    def test_the_runner_anchors_the_turn_on_the_last_pre_turn_row(self) -> None:
+        # Execute the runner's own turn-start capture statement: the anchor is
+        # the row that is last when the turn starts, and None for an empty list,
+        # so a first turn on a fresh slot scans the whole list.
+        tree = ast.parse(inspect.getsource(_run_chat))
+        captures = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "_turn_anchor_row"
+            and not (isinstance(node.value, ast.Constant) and node.value.value is None)
+        ]
+        assert len(captures) == 1
+        module = ast.Module(body=captures, type_ignores=[])
+        code = compile(module, "<anchor-capture>", "exec")
+
+        slot = _ChatSlot("anchor-capture")
+        slot.append("user", "previous prompt", "msg msg-u", broadcast=False)
+        slot.append("assistant", "previous reply", "msg msg-a", broadcast=False)
+        slot.append("user", "write a file", "msg msg-u", broadcast=False)
+        env = {"slot": slot}
+        exec(code, env)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs the PRODUCTION capture statement lifted out of this repo's own source by AST, never external input  # noqa: E501  # fmt: skip
+        assert env["_turn_anchor_row"] is slot.messages[-1]
+
+        empty = _ChatSlot("anchor-capture-empty")
+        env = {"slot": empty}
+        exec(code, env)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- same lifted production statement  # noqa: E501  # fmt: skip
+        assert env["_turn_anchor_row"] is None
+
+    @pytest.mark.parametrize("anchor_reset", [True, False])
+    def test_a_mid_turn_clear_scopes_the_flush_to_the_rows_after_the_clear(
+        self, short_tmp_dir: Path, anchor_reset: bool
+    ) -> None:
+        # A confirmed /clear empties the list mid-turn and the runner resets the
+        # anchor to None (pinned by the pairing test above), so the window is the
+        # whole post-clear list: the clear confirmation and the reply. The
+        # outcome is the same for a stale anchor, since the row it names is gone
+        # with the list and an absent anchor selects the whole list too.
+        f = short_tmp_dir / "after-clear.py"
+        f.write_text("after\n")
+        slot = _ChatSlot("mid-turn-clear")
+        slot.append("user", "previous prompt", "msg msg-u", broadcast=False)
+        previous_reply = slot.append(
+            "assistant",
+            "previous reply",
+            "msg msg-a",
+            broadcast=False,
+            meta={"file_changes": [{"path": "/previous.py", "before": "old\n", "after": "new\n"}]},
+        )
+        slot.append("user", "/clear, then write a file", "msg msg-u", broadcast=False)
+        turn_anchor = slot.messages[-1]
+        slot.messages.clear()
+        if anchor_reset:
+            turn_anchor = None
+        confirmation = slot.append(
+            "assistant", "🗑️ Conversation cleared.", "msg msg-a", broadcast=False
+        )
+        reply = slot.append("assistant", "done.", "msg msg-a", broadcast=False)
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=turn_anchor)
+
+        assert len(slot.messages) == 2
+        assert slot.messages[0] is confirmation
+        assert slot.messages[1] is reply
+        assert reply["meta"]["file_changes"][0]["path"] == str(f)
+        assert "file_changes" not in confirmation.get("meta", {})
+        assert previous_reply["meta"]["file_changes"] == [
+            {"path": "/previous.py", "before": "old\n", "after": "new\n"}
+        ]
+
     @pytest.mark.parametrize(
         ("before_length", "after_length"),
         [(_MAX_SNAPSHOT + 1, 1), (1, _MAX_SNAPSHOT + 1), (_MAX_SNAPSHOT + 1, _MAX_SNAPSHOT + 2)],
@@ -502,6 +760,148 @@ class TestFlushFileChanges:
         assert last["role"] == "assistant"
         assert "stopped" in last["content"].lower()
         assert last["meta"]["file_changes"][0]["path"] == str(f)
+
+
+class TestFlushOnASlotAtTheMessageCap:
+    """The flush window on a slot whose message list is full.
+
+    ``_ChatSlot.append`` front-trims ``slot.messages`` at ``_MAX_SLOT_MESSAGES``, so
+    on a full slot the list is exactly as long after every append of the turn as
+    it was at turn start, and a window read as ``messages[len_at_start:]`` is
+    empty for the whole turn. The window is anchored on the row that was last at
+    turn start instead, and holds the rows after it wherever the trim has moved
+    them. The cap is patched low so the trim really runs.
+    """
+
+    CAP = 6
+    PREVIOUS = {"path": "/previous.py", "before": "old\n", "after": "new\n"}
+
+    @pytest.fixture(autouse=True)
+    def _low_cap(self, monkeypatch) -> None:
+        monkeypatch.setattr(state_module, "_MAX_SLOT_MESSAGES", self.CAP)
+
+    def _full_slot(self, key: str) -> tuple[_ChatSlot, dict]:
+        """A slot at the cap ending in the previous turn and this turn's prompt."""
+        slot = _ChatSlot(key)
+        for n in range(self.CAP - 3):
+            slot.append("assistant", f"filler {n}", "msg msg-a", broadcast=False)
+        slot.append("user", "previous prompt", "msg msg-u", broadcast=False)
+        previous_reply = slot.append(
+            "assistant",
+            "previous reply",
+            "msg msg-a",
+            broadcast=False,
+            meta={"file_changes": [dict(self.PREVIOUS)]},
+        )
+        slot.append("user", "write a file", "msg msg-u", broadcast=False)
+        assert len(slot.messages) == self.CAP
+        return slot, previous_reply
+
+    def test_the_turn_reply_receives_the_chips_and_no_synthetic_row(
+        self, short_tmp_dir: Path
+    ) -> None:
+        f = short_tmp_dir / "at-cap-reply.py"
+        f.write_text("after\n")
+        slot, previous_reply = self._full_slot("at-cap-reply")
+        turn_anchor = slot.messages[-1]
+        reply = slot.append("assistant", "done.", "msg msg-a", broadcast=False)
+        # The append evicted the oldest row: the list is as long as at turn start.
+        assert len(slot.messages) == self.CAP
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=turn_anchor)
+
+        assert slot.messages[-1] is reply
+        assert reply["meta"]["file_changes"][0]["path"] == str(f)
+        assert not any("stopped" in m["content"].lower() for m in slot.messages)
+        assert previous_reply["meta"]["file_changes"] == [self.PREVIOUS]
+        assert slot._file_changes == []
+
+    @pytest.mark.parametrize("kind", [None, *sorted(SYSTEM_NOTICE_KINDS)])
+    def test_a_turn_without_a_reply_gets_a_synthetic_row_and_keeps_the_previous_turn(
+        self, short_tmp_dir: Path, kind: str | None
+    ) -> None:
+        # No non-notice assistant row in the window: the turn aborted before any
+        # text (``kind`` None), or its only assistant row is a notice such as a
+        # resumed KAS slot's recap. The chips ride a synthetic row, and the
+        # previous turn's reply, still in the list, keeps its own.
+        f = short_tmp_dir / "at-cap-no-reply.py"
+        f.write_text("after\n")
+        slot, previous_reply = self._full_slot("at-cap-no-reply")
+        turn_anchor = slot.messages[-1]
+        notice = None
+        if kind is not None:
+            notice = slot.append(
+                "assistant",
+                "Recap: session so far",
+                "msg msg-a",
+                broadcast=False,
+                meta={"kind": kind},
+            )
+            assert len(slot.messages) == self.CAP
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=turn_anchor)
+
+        assert len(slot.messages) == self.CAP
+        synthetic = slot.messages[-1]
+        assert synthetic is not notice
+        assert synthetic["role"] == "assistant"
+        assert "stopped" in synthetic["content"].lower()
+        assert synthetic["meta"]["file_changes"][0]["path"] == str(f)
+        if notice is not None:
+            assert "file_changes" not in notice["meta"]
+        assert any(m is previous_reply for m in slot.messages)
+        assert previous_reply["meta"]["file_changes"] == [self.PREVIOUS]
+        assert any(m is turn_anchor for m in slot.messages)
+
+    def test_an_anchor_evicted_during_the_turn_widens_the_window_to_the_whole_list(
+        self, short_tmp_dir: Path
+    ) -> None:
+        # A turn that appends a full window of rows evicts its own anchor, and
+        # every older row left before it, so each surviving row is the turn's
+        # own: the whole list is the window and the reply receives the chips.
+        f = short_tmp_dir / "at-cap-long-turn.py"
+        f.write_text("after\n")
+        slot, previous_reply = self._full_slot("at-cap-long-turn")
+        turn_anchor = slot.messages[-1]
+        for n in range(self.CAP):
+            slot.append("tool", f"tool call {n}", "msg msg-tool", broadcast=False)
+        reply = slot.append("assistant", "done.", "msg msg-a", broadcast=False)
+        assert not any(m is turn_anchor for m in slot.messages)
+        assert not any(m is previous_reply for m in slot.messages)
+        slot._file_changes = [{"path": str(f), "content": "before\n"}]
+
+        _flush_file_changes(slot, turn_anchor=turn_anchor)
+
+        assert slot.messages[-1] is reply
+        assert reply["meta"]["file_changes"][0]["path"] == str(f)
+        assert previous_reply["meta"]["file_changes"] == [self.PREVIOUS]
+
+
+class TestTurnWindow:
+    def test_the_rows_after_the_anchor_are_the_window(self) -> None:
+        rows = [{"n": 0}, {"n": 1}, {"n": 2}]
+        assert _turn_window(rows, rows[0]) == [{"n": 1}, {"n": 2}]
+        assert _turn_window(rows, rows[1]) == [{"n": 2}]
+        assert _turn_window(rows, rows[2]) == []
+
+    def test_no_anchor_and_an_absent_anchor_select_the_whole_list(self) -> None:
+        rows = [{"n": 0}, {"n": 1}]
+        assert _turn_window(rows, None) == rows
+        assert _turn_window(rows, {"n": -1}) == rows
+        assert _turn_window([], None) == []
+        assert _turn_window([], {"n": -1}) == []
+
+    def test_the_anchor_is_matched_by_identity_not_equality(self) -> None:
+        # Two rows with equal content are two rows. Matched by equality from the
+        # tail, the turn's own twin would stand in for the pre-turn anchor and
+        # the window would be empty.
+        anchor = {"role": "user", "content": "again"}
+        twin = dict(anchor)
+        window = _turn_window([anchor, twin], anchor)
+        assert len(window) == 1
+        assert window[0] is twin
 
 
 # ── Regression tests: real event ordering & content-block paths ────────────
@@ -1544,7 +1944,11 @@ def snapshot_turn():
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "<snapshot-turn>", "exec"), env)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs the PRODUCTION admission statements lifted out of this repo's own source by AST, never external input; a hand-copied duplicate of them is exactly what this test exists to rule out  # noqa: E501  # fmt: skip
 
     def start(slot):
-        env = {**_run_chat.__globals__, "slot": slot}
+        # The lifted flush statements read the runner's turn-start anchor row. A
+        # slot built by ``_make_slot_with_assistant_message`` stands for a turn
+        # whose reply is already present, so the anchor is None, the value the
+        # runner declares before a turn captures it: the whole list is the window.
+        env = {**_run_chat.__globals__, "slot": slot, "_turn_anchor_row": None}
 
         def record(path, key="call", site=0, content="before\n"):
             env["event"] = SimpleNamespace(tool_call_id=key)

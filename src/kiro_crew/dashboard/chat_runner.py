@@ -42,6 +42,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    EVENT_SESSION_RECAP,
     EVENT_STEER_CONSUMED,
     STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
@@ -140,6 +141,7 @@ from kiro_crew.dashboard.chat_utils import (
     _MAX_TOOL_PURPOSE,
     ResetCause,
     _append_compaction_notice,
+    _append_recap_notice,
     _apply_incognito_prefix,
     _broadcast_auto_tool,
     _broadcast_compaction_result,
@@ -239,6 +241,7 @@ from kiro_crew.dashboard.state import (
     stage_boundary_for,
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.turn_dispatch import (
     format_approval_no_budget_card,
     format_approval_timeout_card,
@@ -2911,7 +2914,36 @@ def _turn_line_changes(changes: Any) -> int:
     return line_changes_from_file_changes(resolved)
 
 
-def _flush_file_changes(slot: "_ChatSlot") -> None:
+def _turn_window(
+    messages: list[dict[str, Any]], anchor: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """The rows of ``messages`` that follow ``anchor``: the turn's own rows.
+
+    ``anchor`` is the row that was LAST in the list when the turn started, or
+    ``None`` when the list was empty then. A row rather than an index, because
+    ``_ChatSlot.append`` front-trims the list at ``_MAX_SLOT_MESSAGES``: on a slot
+    at the cap every append during the turn evicts one leading row, the length
+    does not grow, and an index captured at turn start selects nothing, while
+    the rows after the anchor are exactly the rows the turn appended.
+
+    The anchor is matched by identity, searched from the tail. Every rewrite of
+    ``slot.messages`` (the chunk drop at segment finalization, the queue
+    reorder, a trim, a clear) keeps or removes the row dicts themselves and
+    never replaces one with a copy, so identity is stable for a surviving row;
+    ``meta.mid`` is not, since a row restored from a transcript written without
+    ids carries none. An anchor absent from the list -- front-trimmed during the
+    turn, or dropped with the list by a mid-turn clear -- leaves every surviving
+    row newer than it, so the window is then the whole list.
+    """
+    if anchor is None:
+        return list(messages)
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index] is anchor:
+            return messages[index + 1 :]
+    return list(messages)
+
+
+def _flush_file_changes(slot: "_ChatSlot", turn_anchor: dict[str, Any] | None = None) -> None:
     """Attach accumulated file changes to the last assistant message.
 
     Dedups by path (first before, last after), reads the AFTER content from
@@ -2920,6 +2952,17 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     int present only when it is non-zero. Called on
     every exit path (success / cancel / error) so users always see what was
     modified, even on aborted turns.
+
+    ``turn_anchor`` is the last row of ``slot.messages`` at turn start (``None``
+    for an empty list): only the rows after it, this turn's own rows, are
+    attachment candidates (``_turn_window``). Without that window, a turn whose
+    only assistant row is a system notice (a resumed KAS slot opens with a
+    recap) would skip that notice, walk back into the PREVIOUS turn's reply and
+    overwrite the ``file_changes`` it already persisted. The window is anchored
+    on a row rather than on the list length so that it stays correct on a slot
+    already at ``_MAX_SLOT_MESSAGES``, where the length does not grow during
+    the turn. A turn window with no non-notice assistant row gets a synthetic
+    message so its chips still surface.
     """
     # Defensive: only proceed when a real, non-empty list is present. Tests
     # using MagicMock slots leave _file_changes as a MagicMock attribute
@@ -3001,11 +3044,16 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     file_meta: dict[str, Any] = {"file_changes": fc_list}
     if _dropped:
         file_meta["file_changes_omitted_files"] = _dropped
-    # Attach to the most recent assistant message; if none exists (turn
-    # aborted before any text), create a synthetic message so the chips
-    # still surface.
-    for m in reversed(slot.messages):
-        if m.get("role") == "assistant":
+    # Attach to this turn's most recent assistant message that is not a system
+    # notice (a notice row draws no chips, so changes attached there are never
+    # shown). The scan is bounded to the rows after ``turn_anchor``, this turn's
+    # own rows: a resumed KAS slot opens its turn with a recap notice, and an
+    # unbounded scan skipping that notice walks back past the user prompt into
+    # the PREVIOUS turn's reply and overwrites the file_changes it already
+    # persisted. If the window holds no such row (turn aborted before any text,
+    # or notice-only), create a synthetic message so the chips still surface.
+    for m in reversed(_turn_window(slot.messages, turn_anchor)):
+        if m.get("role") == "assistant" and not is_system_notice("assistant", m.get("meta")):
             meta = m.setdefault("meta", {})
             meta.update(file_meta)
             # The count describes the file_changes written beside it, so a
@@ -9954,6 +10002,12 @@ async def _run_chat(
     # makes every emitter call a no-op.
     _crew_log_sid = ""
     _turn_msg_boundary = 0
+    # The file-change flush's window marker, declared here for the same reason:
+    # the finally's flush runs on every exit path, including one that leaves
+    # before turn start captures it. None selects the whole list; a flush that
+    # early finds the accumulator the previous turn's flush emptied, so it
+    # attaches nothing.
+    _turn_anchor_row: "dict[str, Any] | None" = None
     # The turn's ORDINAL for the crew log, kept separate from the message-slice
     # index above even though both start at the same value. The slice index is
     # reset when a mid-turn clear empties the message list, because the turn-stats
@@ -13119,12 +13173,18 @@ async def _run_chat(
         # dashboard shows the same end-of-turn stats kiro-cli prints natively.
         # _turn_msg_boundary scopes the attach to THIS turn's messages so an
         # error-only turn can't overwrite the previous turn's stats.
+        # _turn_anchor_row is the file-change flush's marker for the same window,
+        # as a row instead of an index: `slot.messages` is front-trimmed at
+        # `_MAX_SLOT_MESSAGES`, so on a slot at the cap the length does not grow
+        # during the turn and the index window is empty, while the rows after
+        # the anchor are exactly this turn's rows (see `_turn_window`).
         _turn_t0 = time.monotonic()
         _turn_elapsed_ms = 0
         _turn_credits = 0.0
         _turn_cost_usd = 0.0
         _turn_model = ""
         _turn_msg_boundary = len(slot.messages)
+        _turn_anchor_row = slot.messages[-1] if slot.messages else None
         # The crew log ordinal is the ABSOLUTE durable position, not the window
         # length. `slot.messages` is front-trimmed at `_MAX_SLOT_MESSAGES`, so past
         # that cap its length stops growing and every later turn drew the SAME
@@ -16216,6 +16276,18 @@ async def _run_chat(
                     _still_pending = settle_consumed_steers(_refusal_notices, event.text or "")
                     _refusal_notices_settled += len(_refusal_notices) - len(_still_pending)
                     _refusal_notices[:] = _still_pending
+            elif event.kind == EVENT_SESSION_RECAP:
+                # A short re-orientation line for the returning user (goal,
+                # current task, next action). Rendered as a muted system
+                # notice through the single recap chokepoint; never treated
+                # as the turn's reply. Deliberately NOT counted as
+                # _produced_visible_output: the recap arrives at stream start
+                # (pre-turn drain capture) on exactly the first prompt after
+                # a resume, and counting it would suppress the empty-response
+                # recovery ladder for that turn — the user would get the
+                # recap and then silence, with the give-up notice (the rung
+                # that says to re-send) skipped.
+                _append_recap_notice(state, slot, event.text or "")
             elif event.kind == EVENT_COMPACTION_STATUS:
                 logger.debug("Main loop: compaction event text=%r", event.text)
                 if event.text == "started":
@@ -16296,8 +16368,11 @@ async def _run_chat(
                 # count; the list is now empty, so reset it to 0 or the
                 # clear-confirmation appended below would fall outside the
                 # turn-stats scan slice and the completed turn would drop its
-                # elapsed/credits stats.
+                # elapsed/credits stats. The anchor row left with the list, so
+                # it is cleared too: the file-change window is then the whole
+                # post-clear list, the rows appended from here on.
                 _turn_msg_boundary = 0
+                _turn_anchor_row = None
                 assistant_text = ""
                 _wsred.reset()
                 _produced_visible_output = True
@@ -18355,8 +18430,10 @@ async def _run_chat(
                 turn_boundary=_turn_msg_boundary,
                 model=_turn_model,
             )
-            # Attach accumulated file changes to last assistant message before persist
-            _flush_file_changes(slot)
+            # Attach accumulated file changes to this turn's last assistant
+            # message before persist, scoped to the rows after _turn_anchor_row,
+            # the turn-start marker of the same window.
+            _flush_file_changes(slot, turn_anchor=_turn_anchor_row)
             # The reply is in the window, so this save is the durable clear of
             # the in-flight marker: retire it first and the omission rides the
             # same write instead of costing a second one in the finally. Not
@@ -20361,9 +20438,13 @@ async def _run_chat(
             pass
         # Ensure file changes always surface, even on cancel/error. Wrapped so
         # a raise here cannot skip the re-arm below and re-introduce the orphan
-        # bug this fix prevents.
+        # bug this fix prevents. _turn_anchor_row is declared at function scope
+        # (None until turn start captures the last pre-turn row, None again
+        # after a mid-turn /clear empties the list), so it is in scope here on
+        # every exit path and a cancelled recap-only turn cannot write onto the
+        # previous turn.
         try:
-            _flush_file_changes(slot)
+            _flush_file_changes(slot, turn_anchor=_turn_anchor_row)
         except Exception:
             logger.debug("_flush_file_changes failed", exc_info=True)
         # Replay settlement belongs on the one path every turn exit crosses.

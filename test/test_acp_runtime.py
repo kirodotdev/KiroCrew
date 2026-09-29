@@ -14021,3 +14021,359 @@ async def test_read_path_revalidation_reuses_the_shared_probe_not_a_second_one()
     # refresh path — proof the read path did not grow a second parser/probe.
     assert calls["n"] == 1
     assert [m["modelId"] for m in handle.available_models] == ["auto", "claude-opus-5"]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_captures_a_between_turns_recap():
+    """A recap frame stranded in the between-turns gap (session load/resume
+    is exactly when KAS emits it) is not discarded with the stale frames:
+    the drain keeps the LAST one and the next turn's stream surfaces it
+    FIRST, so the returning user re-orients before the new output."""
+    import contextlib
+
+    from kiro_crew.acp.types import EVENT_SESSION_RECAP
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    q = _register(rt, "sR")
+    handle = AcpSessionHandle("sR", q["sR"], rt)
+
+    def _recap_frame(text):
+        return JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sR",
+                    "update": {
+                        "sessionUpdate": "session_info_update",
+                        "_meta": {"kiro": {"kind": "recap", "text": text}},
+                    },
+                },
+            }
+        )
+
+    # Two recaps stranded between turns: only the LAST survives (a newer
+    # recap supersedes an older one), plus an ordinary stale frame that
+    # still takes the silent-discard path.
+    q["sR"].put_nowait(_recap_frame("old recap"))
+    q["sR"].put_nowait(_recap_frame("Goal: ship. Next: fix the red test."))
+    q["sR"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {"sessionId": "sR", "update": {"sessionUpdate": "plan"}},
+            }
+        )
+    )
+    rt.send_request = AsyncMock(return_value=9)
+
+    gen = handle.prompt("hi", timeout=0.2)
+    first = None
+    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+        first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await gen.aclose()
+
+    assert first is not None, "stream yielded nothing"
+    assert first.kind == EVENT_SESSION_RECAP
+    assert first.text == "Goal: ship. Next: fix the red test."
+    # Snapshot-and-clear: an abandoned stream must not replay it next turn.
+    assert handle._pending_recap is None
+
+
+@pytest.mark.asyncio
+async def test_load_window_recap_is_staged_and_survives_into_the_resumed_handle(monkeypatch):
+    """A KAS recap arriving DURING session/load — before the queue is
+    registered — must not take the flood-drop path: the reader loop stages
+    it with the init frames, _finish_session_init hands it to the freshly
+    registered queue, and the resumed handle's pre-turn drain captures it
+    for the next turn's stream start."""
+    import contextlib
+
+    from kiro_crew.acp.types import EVENT_SESSION_RECAP
+
+    rt, feed, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    rt._can_load_session = True
+
+    recap_frame = JsonRpcMessage.from_dict(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sid-77",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "_meta": {"kiro": {"kind": "recap", "text": "Goal: resume. Next: run tests."}},
+                },
+            },
+        }
+    )
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            # The recap arrives INSIDE the load window: the queue for sid-77
+            # is not registered yet, and inits are in flight — the reader
+            # loop's staging branch must retain it.
+            assert rt._session_inits_in_flight >= 1
+            assert "sid-77" not in rt._session_queues
+            rt._pending_init_notifications.append(recap_frame)
+            return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    # The KAS resume path ends in the managed-MCP readiness barrier, which
+    # waits on _kiro/mcp/status frames this fake wire never sends (its own
+    # tests drive it). Stand in for it here, and use the moment to pin the
+    # ordering that keeps the recap safe: the barrier consumes QUEUE frames,
+    # so the recap must already be parked on the handle when it runs.
+    seen_at_readiness: list[str | None] = []
+
+    async def _readiness(self, *args, **kwargs):
+        seen_at_readiness.append(self._pending_recap)
+
+    with patch.object(AcpSessionHandle, "wait_mcp_ready", _readiness):
+        handle = await rt.load_session(
+            "/home/u/.kiro/sessions/cli/sid-77.json", "sid-77", cwd="/w", agent="kirocrew"
+        )
+    assert seen_at_readiness == ["Goal: resume. Next: run tests."]
+    # The staged recap was extracted BEFORE the queue (drain_init would eat a
+    # queued frame) and parked on the handle's pending slot...
+    assert handle._pending_recap == "Goal: resume. Next: run tests."
+
+    rt.send_request = AsyncMock(return_value=9)
+    gen = handle.prompt("hi", timeout=0.2)
+    first = None
+    with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+        first = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+    await gen.aclose()
+
+    # ...and the next turn's stream surfaced it as its first event.
+    assert first is not None and first.kind == EVENT_SESSION_RECAP
+    assert first.text == "Goal: resume. Next: run tests."
+
+
+@pytest.mark.asyncio
+async def test_load_window_recap_extraction_is_kas_only(monkeypatch):
+    """The Kiro counterpart of the test above (H5/H13): load_session is the
+    shared resume path, and the recap discriminant is KAS's own wire format.
+    On the Kiro backend a recap-SHAPED session/update in the buffered init
+    frames is queued unchanged like every other init frame -- the shared
+    predicate is never consulted, stage_recap is never called, and the
+    handle's pending slot stays empty. Removing the positive KAS gate from
+    the extraction diverts the frame and stages it; this test goes red."""
+    from kiro_crew.acp import kas_wire
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KIRO
+    rt._can_load_session = True
+
+    recap_shaped = JsonRpcMessage.from_dict(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sid-79",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "_meta": {"kiro": {"kind": "recap", "text": "Goal: resume. Next: run tests."}},
+                },
+            },
+        }
+    )
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            # Same arrival as the KAS test: inside the load window, before the
+            # queue for sid-79 exists, riding the shared init buffer.
+            assert rt._session_inits_in_flight >= 1
+            assert "sid-79" not in rt._session_queues
+            rt._pending_init_notifications.append(recap_shaped)
+            return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    predicate_calls: list[object] = []
+    real_is_recap_update = kas_wire.is_recap_update
+
+    def _counting_is_recap_update(params):
+        predicate_calls.append(params)
+        return real_is_recap_update(params)
+
+    monkeypatch.setattr(kas_wire, "is_recap_update", _counting_is_recap_update)
+
+    # drain_init is what consumes queued init frames on the kiro path; stand it
+    # down so the queue can be read back after the resume returns. stage_recap
+    # keeps its real body (a call would still fill the pending slot) and only
+    # gains a call recorder.
+    with (
+        patch.object(AcpSessionHandle, "drain_init", AsyncMock()),
+        patch.object(
+            AcpSessionHandle,
+            "stage_recap",
+            autospec=True,
+            side_effect=AcpSessionHandle.stage_recap,
+        ) as staged,
+    ):
+        handle = await rt.load_session(
+            "/home/u/.kiro/sessions/cli/sid-79.json", "sid-79", cwd="/w", agent="kirocrew"
+        )
+
+    # The frame took the ordinary init-buffer path: queued, the same object,
+    # nothing diverted around it.
+    queued = []
+    while not handle._queue.empty():
+        queued.append(handle._queue.get_nowait())
+    assert queued == [recap_shaped]
+    assert queued[0] is recap_shaped
+    assert not rt._pending_init_notifications
+    # Nothing on the KAS-only side ran: no predicate call, no hand-off, no
+    # staged text.
+    assert predicate_calls == []
+    staged.assert_not_called()
+    assert handle._pending_recap is None
+
+
+def test_recap_mapping_and_stage_recap_share_normalizer(monkeypatch):
+    import kiro_crew.acp.session_handle as session_handle
+
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    handle = AcpSessionHandle("sR", asyncio.Queue(), rt)
+    update = {
+        "sessionUpdate": "session_info_update",
+        "_meta": {"kiro": {"kind": "recap", "text": "backend text"}},
+    }
+    calls: list[object] = []
+
+    def _normalize(candidate: object) -> str:
+        calls.append(candidate)
+        return "normalized recap"
+
+    monkeypatch.setattr(session_handle, "_normalize_kas_recap_text", _normalize)
+    events = handle._handle_kas_session_info(update)
+    handle.stage_recap(update)
+
+    assert events[0].text == "normalized recap"
+    assert handle._pending_recap == "normalized recap"
+    assert calls == [update, update]
+
+
+@pytest.mark.asyncio
+async def test_reader_loop_bounds_and_redacts_load_window_recap_before_retention(monkeypatch):
+    """The load-window buffer owns only a safe minimal recap copy."""
+    from kiro_crew.acp.session_handle import _RECAP_MAX_CHARS
+    from kiro_crew.acp.types import EVENT_SESSION_RECAP
+
+    rt, reader, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KAS
+    rt._can_load_session = True
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    prefix = "x" * (_RECAP_MAX_CHARS - len(secret) // 2)
+    oversized = (prefix + secret + ("y" * 50000))[:50000]
+    assert len(oversized) == 50000
+    raw_update = {
+        "sessionUpdate": "session_info_update",
+        "ignoredUpdateText": "drop this update field",
+        "_meta": {
+            "kiro": {
+                "kind": "recap",
+                "text": oversized,
+                "ignoredKiroText": "drop this kiro field",
+            }
+        },
+    }
+
+    mapping_handle = AcpSessionHandle("mapping", asyncio.Queue(), rt)
+    mapped = mapping_handle._handle_kas_session_info(raw_update)
+    assert [event.kind for event in mapped] == [EVENT_SESSION_RECAP]
+    expected = mapped[0].text
+    assert len(expected) == _RECAP_MAX_CHARS
+    assert "AKIA" not in expected
+
+    task = asyncio.create_task(rt._reader_loop())
+    try:
+
+        async def _wait_for_staged() -> None:
+            while not rt._pending_init_notifications:
+                await asyncio.sleep(0)
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_LOAD:
+                assert rt._session_inits_in_flight >= 1
+                assert "sid-78" not in rt._session_queues
+                _feed(
+                    reader,
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "sid-78",
+                            "ignoredParamsText": "drop this params field",
+                            "update": raw_update,
+                        },
+                    },
+                )
+                await asyncio.wait_for(_wait_for_staged(), timeout=1.0)
+
+                retained = rt._pending_init_notifications[-1]
+                retained_params = retained.params
+                assert retained.method == METHOD_SESSION_UPDATE
+                assert isinstance(retained_params, dict)
+                assert set(retained_params) == {"sessionId", "update"}
+                assert retained_params["sessionId"] == "sid-78"
+
+                retained_update = retained_params["update"]
+                assert set(retained_update) == {"sessionUpdate", "_meta"}
+                assert set(retained_update["_meta"]) == {"kiro"}
+                retained_kiro = retained_update["_meta"]["kiro"]
+                assert set(retained_kiro) == {"kind", "text"}
+                assert retained_kiro["text"] == expected
+                assert len(retained_kiro["text"]) == _RECAP_MAX_CHARS
+                assert "AKIA" not in retained_kiro["text"]
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        with patch.object(AcpSessionHandle, "wait_mcp_ready", AsyncMock()):
+            handle = await rt.load_session(
+                "/home/u/.kiro/sessions/cli/sid-78.json", "sid-78", cwd="/w", agent="kirocrew"
+            )
+        assert handle._pending_recap == expected
+        assert not rt._pending_init_notifications
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+def test_reader_loop_staging_branch_covers_recap_updates():
+    """The staging condition itself: with inits in flight on the KAS backend,
+    a recap session/update is shaped for the staging branch (the shared
+    kas_wire predicate), so it cannot take the flood-drop path."""
+    from kiro_crew.acp import kas_wire
+
+    params = {
+        "sessionId": "s",
+        "update": {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"kiro": {"kind": "recap", "text": "x"}},
+        },
+    }
+    assert kas_wire.is_recap_update(params)
+    assert not kas_wire.is_recap_update({"update": {"sessionUpdate": "plan"}})
+    assert not kas_wire.is_recap_update(
+        {
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"kiro": {"kind": "context_usage"}},
+            }
+        }
+    )
+    assert not kas_wire.is_recap_update("not a dict")
