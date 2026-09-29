@@ -17,6 +17,11 @@ import { APPROVAL_MODE_KEYS, runTitle, type RunState } from './model'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { REQUEST_PUBLISHED_VIEW } from './commandCenter.prompt'
 
+/** Marks the panel heading the chat's one-time Dashboard card moves focus to
+ * once it has opened the panel: the card unmounts on click, so focus needs a
+ * home that exists afterwards, and the heading names where the user landed. */
+export const PANEL_HEADING_ATTR = 'data-command-center-heading'
+
 const STATE_KEYS: Record<RunState, string> = {
   running: 'commandCenter.running', idle: 'commandCenter.idle', done: 'commandCenter.done',
   blocked: 'commandCenter.blocked', waiting: 'commandCenter.waiting', needs_input: 'commandCenter.state_needs_input', stopped: 'commandCenter.stopped',
@@ -55,7 +60,7 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
   })
   return <div className="h-full flex flex-col min-w-0 bg-bg text-text" data-testid="command-center-panel">
     <header className="shrink-0 p-3 border-b border-border space-y-3">
-      <div className="flex gap-2 items-center flex-wrap"><LayoutDashboard size={17} className="text-accent" /><h2 className="font-semibold text-sm">{t('commandCenter.title')}</h2>
+      <div className="flex gap-2 items-center flex-wrap"><LayoutDashboard size={17} className="text-accent" /><h2 tabIndex={-1} {...{ [PANEL_HEADING_ATTR]: '' }} className="font-semibold text-sm outline-hidden">{t('commandCenter.title')}</h2>
         {sessionReady && <span className="ml-auto text-[11px] text-muted inline-flex items-center gap-1"><ShieldCheck size={12} />{t('commandCenter.permission_mode', { mode: t(APPROVAL_MODE_KEYS[data.approvalMode]) })}</span>}
       </div>
       <p className="text-[12px] text-muted">{t('commandCenter.description')}</p>

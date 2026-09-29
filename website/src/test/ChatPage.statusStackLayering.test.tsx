@@ -38,7 +38,7 @@ const STACK = /<div ref=\{composerBandRef\} className="([^"]*)" data-testid="com
 /** Every component the stack renders, paired with the z-index its own outermost
  *  wrapper declares. Each value is read out of that component's real source. */
 const CHILDREN: Record<string, RegExp> = {
-  CommandCenterDock: /className="mx-4 mb-2 rounded-lg border border-border bg-card overflow-hidden relative z-\[(\d+)\]"/,
+  CommandCenterDock: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   TaskProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   SubagentProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   WorkflowProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,

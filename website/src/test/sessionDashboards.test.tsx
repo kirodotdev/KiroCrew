@@ -38,7 +38,7 @@ describe('all session dashboards', () => {
     const generate = vi.spyOn(api, 'generateSessionSummary')
     renderWithProviders(<SessionDashboardsPage />, { store: store() })
     await screen.findByText('Summary for slot-1')
-    expect(screen.getByText('Dynamic Dashboards for currently open sessions, with saved summaries and requests that need you.')).toBeVisible()
+    expect(screen.getByText('Dashboards for currently open sessions, with saved summaries and requests that need you.')).toBeVisible()
     const cards = screen.getAllByTestId('session-dashboard-card')
     expect(within(cards[0]).getByText('No published view yet. Use Open session, then ask the agent to publish a view for this task.')).toBeVisible()
     expect(within(cards[0]).getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=slot-1')

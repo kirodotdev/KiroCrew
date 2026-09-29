@@ -1006,13 +1006,14 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(await rosterRow('oncall'))
     fireEvent.click(await screen.findByRole('button', { name: 'Open task dashboard' }))
     expect(screen.getByTestId('side-panel-leading-tab-crew-dashboard')).toHaveAttribute('aria-selected', 'true')
-    expect(screen.queryByRole('tab', { name: /Dynamic Dashboard/ })).not.toBeInTheDocument()
+    // The session Dashboard shares the label, so assert the crew tab is the ONLY one.
+    expect(screen.getAllByRole('tab', { name: /Dashboard/ })).toHaveLength(1)
     const dashboard = await screen.findByTestId('member-dashboard')
     expect(await within(dashboard).findByTestId('crew-webview-empty')).toBeVisible()
     expect(within(dashboard).getByTestId('command-center-panel')).toBeVisible()
     expect(within(dashboard).queryByRole('button', { name: 'Create published view' })).not.toBeInTheDocument()
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Open side panel tab' }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: /Dynamic Dashboard/ })).not.toBeInTheDocument()
+    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: /Dashboard/ })).not.toBeInTheDocument()
   })
 
   it('keeps the unified dashboard body across Notes and panel hide/show', async () => {

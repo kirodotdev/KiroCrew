@@ -53,7 +53,9 @@ The Needs you inbox precedes cards, and all answer/approval authority stays in
 native controls. Disabling automatic content does not disable those controls.
 
 An HTML/widget artifact tagged `task-dashboard` is a model-authored task view,
-not a fixed dashboard schema. The chat's **Dynamic Dashboard** panel and Crew's
+not a fixed dashboard schema. The chat's **Dynamic Dashboard** side-panel tab
+(labelled **Dashboard**; a one-time hint card above the composer opens it once
+and then stays gone for that session, the tab being the way back) and Crew's
 single **Dashboard** tab select
 only artifacts whose recorded originating slot is the current slot or a durable
 `created_by` descendant. A presentation-only child session can therefore publish

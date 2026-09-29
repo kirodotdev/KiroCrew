@@ -40,6 +40,8 @@ const SESSION_PREFIXES = [
   'mc-webpreview-pending:',
   'mc-webpreview-applied:',
   'mc-busy-send-mode:',
+  // Writer: `DISMISS_PREFIX` in `pages/chat/command-center/CommandCenterDock.tsx`.
+  'mc-task-dashboard-dismissed:',
 ] as const
 
 /** Names that appear where a session id is expected but are not sessions.

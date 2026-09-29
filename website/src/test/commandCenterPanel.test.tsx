@@ -1,9 +1,10 @@
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import * as transport from '../chat-core/transport/sendTurn'
 import { createTestStore, renderWithProviders } from './helpers'
-import CommandCenterPanel from '../pages/chat/command-center/CommandCenterPanel'
+import CommandCenterPanel, { PANEL_HEADING_ATTR } from '../pages/chat/command-center/CommandCenterPanel'
 import CommandCenterDock from '../pages/chat/command-center/CommandCenterDock'
 import { REQUEST_PUBLISHED_VIEW } from '../pages/chat/command-center/commandCenter.prompt'
 
@@ -19,8 +20,24 @@ function taskStore() {
   ] } })
 }
 
+// The DOM test environment has no layout. Model heading boxes independently of
+// the focus helper, including CSS-hidden ancestors, and restore the spy per test.
+function mockPanelHeadingRects() {
+  function isRendered(el: HTMLElement): boolean {
+    return !el.hidden && getComputedStyle(el).display !== 'none'
+      && (!el.parentElement || isRendered(el.parentElement))
+  }
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(function (this: HTMLElement) {
+    const rects: DOMRect[] = []
+    if (this.hasAttribute(PANEL_HEADING_ATTR) && isRendered(this)) {
+      rects.push(new DOMRect(0, 0, 100, 20))
+    }
+    return Object.assign(rects, { item: (index: number) => rects[index] ?? null })
+  })
+}
+
 describe('task dashboard host controls', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ dashboard: { dynamic_dashboard_cards: false } })
@@ -221,17 +238,120 @@ describe('task dashboard host controls', () => {
     expect(screen.getByRole('radio', { name: /Questions/ })).toBeVisible()
   })
 
-  it('keeps the dock entrance when collapsed and opens the existing panel', async () => {
+  it('names the one-time outcome on the card, has no collapse toggle, and opens the existing panel', async () => {
     const open = vi.fn()
     vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
     renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store: taskStore() })
     await screen.findByText('Needs you: 1')
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse summary' }))
-    expect(screen.getByRole('button', { name: 'Expand summary' })).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getByText('Needs you: 1')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Dynamic Dashboard Needs you: 1' }))
+    // Nothing is collapsible: the card is a hint that goes away once used.
+    expect(screen.queryByRole('button', { name: /summary/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { expanded: true })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { expanded: false })).not.toBeInTheDocument()
+    expect(screen.getByText('Running 1 · Blocked 1 · Approvals 1')).toBeVisible()
+    // The outcome is announced with the button, not just printed beside it.
+    const button = screen.getByRole('button', { name: 'Dashboard Needs you: 1' })
+    const hint = screen.getByText("Opens the Dashboard panel. This hint won't show again.")
+    expect(hint).toBeVisible()
+    expect(button).toHaveAttribute('aria-describedby', hint.id)
+    expect(button).toHaveAccessibleDescription("Opens the Dashboard panel. This hint won't show again.")
+    fireEvent.click(button)
     expect(open).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Expand summary' }))
-    expect(screen.getByRole('button', { name: 'Collapse summary' })).toHaveAttribute('aria-expanded', 'true')
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+  })
+
+  // The chat mounts the panel when its tab opens; the Crew page and a revisited
+  // chat tab keep it mounted and merely un-hide it. Focus must land in it either way.
+  it.each(['mounts on open', 'is un-hidden on open'])('moves focus from the clicked card into the opened panel when the panel %s', async mode => {
+    mockPanelHeadingRects()
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
+    function Host() {
+      const [open, setOpen] = useState(false)
+      return <>
+        <CommandCenterDock slot="root" onOpen={() => setOpen(true)} />
+        {(open || mode === 'is un-hidden on open') && <div hidden={!open}><CommandCenterPanel slot="root" active={open} /></div>}
+      </>
+    }
+    renderWithProviders(<Host />, { store: taskStore() })
+    const button = await screen.findByRole('button', { name: 'Dashboard Needs you: 1' })
+    // A keyboard user activates the focused button; the card then unmounts under them.
+    button.focus()
+    expect(document.activeElement).toBe(button)
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2, name: 'Dashboard' })))
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('skips a CSS-hidden heading and retries until the visible panel mounts', async () => {
+    mockPanelHeadingRects()
+    function Host() {
+      const [open, setOpen] = useState(false)
+      return <>
+        <CommandCenterDock slot="root" onOpen={() => setOpen(true)} />
+        <div style={{ display: 'none' }}>
+          <h2 tabIndex={-1} {...{ [PANEL_HEADING_ATTR]: '' }}>Hidden dashboard</h2>
+        </div>
+        {open && <CommandCenterPanel slot="root" active />}
+      </>
+    }
+    renderWithProviders(<Host />, { store: taskStore() })
+    const hiddenHeading = screen.getByText('Hidden dashboard')
+    const focusHidden = vi.spyOn(hiddenHeading, 'focus')
+    expect(hiddenHeading.closest('[hidden]')).toBeNull()
+    expect(hiddenHeading.getClientRects()).toHaveLength(0)
+    expect(screen.queryByRole('heading', { name: 'Dashboard' })).not.toBeInTheDocument()
+    const button = await screen.findByRole('button', { name: 'Dashboard' })
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Dashboard' })))
+    expect(focusHidden).not.toHaveBeenCalled()
+  })
+
+  it('does not come back for that session once clicked, but still shows for another session', async () => {
+    const open = vi.fn()
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
+    const store = taskStore()
+    const view = renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store })
+    fireEvent.click(await screen.findByRole('button', { name: 'Dashboard Needs you: 1' }))
+    expect(open).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    view.unmount()
+    // A remount (reload, session switch and back) reads the stored dismissal.
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
+    expect(localStorage.getItem('mc-task-dashboard-dismissed:root')).toBe('1')
+    expect(localStorage.getItem('mc-task-dashboard-dismissed:other')).toBeNull()
+  })
+
+  it('still hides the clicked card for this mount when the dismissal cannot be persisted', async () => {
+    const open = vi.fn()
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
+    // Storage full or blocked: safeSetItem swallows the throw and returns false.
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('quota', 'QuotaExceededError') })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={open} />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Dashboard Needs you: 1' }))
+    expect(open).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
+    expect(localStorage.getItem('mc-task-dashboard-dismissed:root')).toBeNull()
+  })
+
+  it('issues no command-center reads for a dismissed session, while an undismissed one still reads', async () => {
+    localStorage.setItem('mc-task-dashboard-dismissed:root', '1')
+    const store = taskStore()
+    const view = renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
+    expect(api.pendingQuestions).not.toHaveBeenCalled()
+    expect(api.approvals).not.toHaveBeenCalled()
+    expect(api.workflowRuns).not.toHaveBeenCalled()
+    expect(api.sessionWorkProjection).not.toHaveBeenCalled()
+    expect(api.artifacts).not.toHaveBeenCalled()
+    view.unmount()
+    // Control: the same spies fire for a session that was never dismissed.
+    localStorage.removeItem('mc-task-dashboard-dismissed:root')
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: taskStore() })
+    await waitFor(() => expect(api.approvals).toHaveBeenCalled())
+    expect(api.pendingQuestions).toHaveBeenCalled()
   })
 })

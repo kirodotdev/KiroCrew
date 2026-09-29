@@ -11,12 +11,17 @@ conventions around them (a11y, data fetching, typography) live in
 
 ## Page skeleton
 
-### Dynamic Dashboard in chat and Crew
+### Dashboard in chat and Crew
 
 Long-run status uses the existing side-panel dock, expansion and narrow-screen
-overlay, not another drawer. In chat, a collapsible summary above the composer
-opens the Dynamic Dashboard tab; the panel's + menu remains the empty-state
-entry. Crew reuses its single permanent **Dashboard** tab instead: its compact
+overlay, not another drawer. In chat, a one-time hint card above the composer
+opens the **Dashboard** tab. It sits in the chat content column like the other
+status bars and carries the Running/Blocked/Approvals summary plus one line
+naming the outcome (“Opens the Dashboard panel. This hint won't show again.”,
+also the button's accessible description); it has no collapse toggle. Once
+clicked it fades out (cut, under reduced motion) and stays dismissed for that
+session (`mc-task-dashboard-dismissed:<slot>`, collected by `storageGc`); the
+panel tab and its + menu are the way back in. Crew reuses its single permanent **Dashboard** tab instead: its compact
 entrance focuses that tab, and its + menu withholds the parallel chat view.
 The existing member publication and task artifacts share a Published view selector, with
 human-readable titles, while retaining their separate renderer sandboxes. A
@@ -31,10 +36,11 @@ tabs, but unload model-authored iframe documents while inactive to cap resources
 This does not change the existing Crew protected-template renderer's lifecycle.
 Approval counts and exact session identity stay outside the
 sandboxed page, so a model redesign cannot hide or impersonate those controls.
-The panel keeps its approval count on the Approvals tab; the compact entrance
-retains its Needs you count while collapsed.
+The panel keeps its approval count on the Approvals tab; the hint card shows the
+Needs you count until it is dismissed, after which the panel's Questions and
+Approvals tabs carry it.
 
-The Sessions header's three-dot menu offers **All Dynamic Dashboards**, a standalone
+The Sessions header's three-dot menu offers **All Dashboards**, a standalone
 `/session-dashboards` page with currently open sessions' saved summaries and authored
 dashboards. Native pending questions and approvals appear in a central **Needs
 you** inbox above the summary gallery, with each request labeled by its exact

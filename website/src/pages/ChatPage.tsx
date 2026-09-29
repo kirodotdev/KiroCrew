@@ -8616,7 +8616,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   calls and goes stale when the user clicks a tab in the panel. */}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
-              <CommandCenterDock slot={activeSlot} onOpen={() => { dispatch(openActivityPanel()); tabsCtl.openView('command-center') }} />
+              {/* Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
+                  handleOpenDiff do: the find pane owns the right-hand dock
+                  exclusively (shouldMountSidePanel returns false while it is
+                  open), and the card persists its one-time dismissal before
+                  calling this -- so without the close the card would be gone
+                  for good while the dashboard opened behind a pane the user
+                  cannot see past. `close()` is safe with nothing open. */}
+              <CommandCenterDock slot={activeSlot} onOpen={() => { search.close(); dispatch(openActivityPanel()); tabsCtl.openView('command-center') }} />
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>

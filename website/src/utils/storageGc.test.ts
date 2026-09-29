@@ -32,6 +32,7 @@ const HEIGHTS = 'vc_heights_'
 const TOUCHED = 'kirocrew:touched-files:'
 const PANEL_TABS = 'mc-panel-tabs:'
 const ACTIVITY = 'mc-activity-open:'
+const DASHBOARD_DISMISSED = 'mc-task-dashboard-dismissed:'
 
 describe('gcOrphanedStorage', () => {
   beforeEach(() => {
@@ -138,6 +139,17 @@ describe('gcOrphanedStorage', () => {
     })
   })
 
+  it('collects an orphaned dashboard-dismissed flag and keeps a live one', () => {
+    // `CommandCenterDock` writes one flag per slot on click. Without this
+    // family in SESSION_PREFIXES every dismissed session left a key behind.
+    localStorage.setItem(`${DASHBOARD_DISMISSED}chat-1-1`, '1')
+    localStorage.setItem(`${DASHBOARD_DISMISSED}chat-2-2`, '1')
+
+    expect(gcOrphanedStorage(new Set(['chat-2-2']))).toBe(1)
+    expect(localStorage.getItem(`${DASHBOARD_DISMISSED}chat-1-1`)).toBeNull()
+    expect(localStorage.getItem(`${DASHBOARD_DISMISSED}chat-2-2`)).toBe('1')
+  })
+
   it('does not delete a key whose remainder is empty', () => {
     // `vc_heights_` with nothing after it yields '' — falsy, so it is skipped
     // rather than deleted as an orphan of the empty session.
@@ -170,6 +182,16 @@ describe('gcSessionStorage', () => {
     expect(localStorage.getItem(`${TOUCHED}${slot}:toolClearedAt`)).toBeNull()
     // A different session is untouched.
     expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBe('{}')
+  })
+
+  it('removes the dashboard-dismissed flag of the deleted session only', () => {
+    localStorage.setItem(`${DASHBOARD_DISMISSED}chat-1-1`, '1')
+    localStorage.setItem(`${DASHBOARD_DISMISSED}chat-1-10`, '1')
+
+    gcSessionStorage('chat-1-1')
+
+    expect(localStorage.getItem(`${DASHBOARD_DISMISSED}chat-1-1`)).toBeNull()
+    expect(localStorage.getItem(`${DASHBOARD_DISMISSED}chat-1-10`)).toBe('1')
   })
 
   it('is a no-op for an empty session key', () => {
