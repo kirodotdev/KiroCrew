@@ -10,7 +10,7 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown, AppWindow } from 'lucide-react'
-import { PanelRightSolid } from '../../components/icons/panels'
+import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ErrorNotice from '../../components/ErrorNotice'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ChatMessage } from '../../types'
@@ -1056,7 +1056,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           aria-label={i18nT('pages.chat.toolCallLine.open_in_side_panel', { path: filePath })}
         >
           <span className="max-w-[240px] truncate">{basename}</span>
-          <PanelRightSolid size={12} className="shrink-0" />
+          <SidePanelGlyph size={12} className="shrink-0" />
         </button>
       )}
       </div>

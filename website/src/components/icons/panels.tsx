@@ -33,7 +33,7 @@ import type { CSSProperties, SVGProps } from 'react'
  * API is lucide-compatible (size + spread SVG props incl. className), so these
  * drop into existing <PanelLeft size={16}/> call sites unchanged.
  */
-type PanelIconProps = SVGProps<SVGSVGElement> & { size?: number | string }
+export type PanelIconProps = SVGProps<SVGSVGElement> & { size?: number | string }
 
 const FRAME = { x: 2.5, y: 3.25, width: 19, height: 17.5, rx: 3 } as const
 
