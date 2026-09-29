@@ -1489,6 +1489,13 @@ DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
 DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
 DENY_CAUSE_APPROVAL_NO_BUDGET = "approval_no_budget"
 DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
+#: A channel approval card refused because the request was too long for the
+#: channel to show in full. A reader who cannot see the whole command cannot
+#: approve it, so the host declines without judging the action; the model can
+#: split the request into steps that fit. Distinct from
+#: ``DENY_CAUSE_APPROVAL_UNDELIVERABLE`` (the card could not be posted at all):
+#: here the fix is in the model's hands, and the notice must say so.
+DENY_CAUSE_APPROVAL_OVERSIZE = "approval_oversize"
 
 #: Upper bound on the best-effort in-band deny notice steered into a running
 #: turn before a permission rejection goes back on the wire. Every deny site

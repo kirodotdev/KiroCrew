@@ -335,6 +335,50 @@ steer still answers the wire: the reject is scheduled as a strongly referenced
 task whose outcome is read when it settles, and the cancellation re-raises at
 once — the cancellation is the caller's deadline, so nothing waits past it.
 
+**The messaging surfaces steer the same notice.** The native Slack handler
+(`slack/handler.py`) and the channel-neutral `messaging.TurnDriver` each carry
+a thin `_steer_host_deny` that redacts the reason and forwards to
+`deny_notice.steer_refusal_notice`; the channel agent stream (`channel.py`)
+reuses `llm_helpers`' helper (passing the rendered tool name as `title`), since
+its cancellation shape is the same. Each is
+awaited immediately before each host-deny `reject_tool` with the SEL row
+written first. Per site:
+
+- Slack: the PreToolUse hook's `deny` on the message path — `policy`, with the
+  hook's reason; the approval prompt expiring unanswered — `approval_timeout`.
+  A Deny click in
+  `handle_interaction` and the teardown-only `_reject_orphaned_tool` send no
+  notice.
+- Channel agents: the containment boundary refusing a direct-to-user messaging
+  tool — `surface_policy` (the model's way forward is a channel post); the
+  PreToolUse gate's deny — `policy`, with the gate's reason; an approval card the
+  channel cannot show in full — the new `approval_oversize` (nothing was judged;
+  the model can split the request, and the notice says so — kept apart from
+  `approval_undeliverable`, whose guidance is to state the permission needed); a
+  card that expired unanswered — `approval_timeout`. The reader's own Deny on
+  that same card shares its `reject_tool` line and sends no notice: the steer sits
+  under the timeout flag alone.
+- TurnDriver: the deny-every-tool switch for a sender other than the operator —
+  `surface_policy`; the PreToolUse gate's deny — `policy`. A gate built by
+  `messaging.dispatch.build_tool_gate` leaves the hook's reason on itself as
+  `last_deny_reason` (the same attribute-on-a-callable shape as
+  `ApprovalDecider.last_deny_cause`), so the notice names the rule; a plain
+  callable gets a notice naming the gate. The decider path is unchanged: only a
+  recorded `approval_timeout` steers, a human's Deny stays bare.
+
+A cancellation inside any of these steers answers the wire through an orphan
+reject, and that reject audits ONLY where the caller audits after the wire (the
+Slack approval-timeout arm, the TurnDriver's decider path -- `audited=False`);
+an audit-first site (`audited=True`) already has its SEL row, and the ledger is
+append-only, so a second row for one decision would be a duplicate nothing
+reconciles.
+
+`test_messaging_deny_notice.py` enumerates every `reject_tool(` on the three
+surfaces with its verdict (host deny / user rejection / cleanup / mixed) and
+fails when a site is missing from the enumeration, a host deny is not preceded
+by the steer, a user rejection is, or a mixed site's steer is not under its host
+guard.
+
 The recovery classification for the last two rows of the marker table above
 is **structural**: the queue entry
 carries `kind == "synthetic_recovery"` (`SYNTHETIC_RECOVERY_KIND`), set at insert

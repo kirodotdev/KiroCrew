@@ -530,6 +530,14 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
     Sensitive-path keystone + governance ceiling + deny-list. Returns ``"deny"``
     (un-overridable), ``"auto_approve"``, or ``""`` (passthrough). Built here so
     no channel package needs to import ``kiro_crew.slack``.
+
+    The gate also carries ``last_deny_reason``: the hook's own reason for the
+    most recent ``"deny"`` and ``""`` otherwise, set on every call. The
+    ``TurnDriver`` reads it after a deny and steers it into the running turn
+    before the reject, so the model learns which rule blocked the call instead
+    of reading kiro-cli's generic "User denied tool execution" -- the same
+    attribute-on-a-callable shape ``ApprovalDecider.last_deny_cause`` uses. A
+    plain callable without the attribute is a deny with no reason, as before.
     """
 
     def _tool_gate(event: Any) -> str:
@@ -539,12 +547,16 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
             agent=agent,
             **hook_gate_kwargs(event),
         )
-        if result.action == TOOL_DENY:
+        denied = result.action == TOOL_DENY
+        reason = str(getattr(result, "reason", "") or "") if denied else ""
+        _tool_gate.last_deny_reason = reason  # type: ignore[attr-defined]
+        if denied:
             return "deny"
         if result.action == TOOL_AUTO_APPROVE:
             return "auto_approve"
         return ""
 
+    _tool_gate.last_deny_reason = ""  # type: ignore[attr-defined]
     return _tool_gate
 
 

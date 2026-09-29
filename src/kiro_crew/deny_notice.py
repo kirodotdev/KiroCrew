@@ -23,6 +23,7 @@ from typing import Any
 
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
+    DENY_CAUSE_APPROVAL_OVERSIZE,
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_BATCH_CASCADE,
@@ -109,6 +110,15 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "delivery failed, so the action itself was never judged — do not "
         "abandon it or route around it on this evidence. State the permission "
         "you need and why, then continue with what you can do without it.",
+    ),
+    DENY_CAUSE_APPROVAL_OVERSIZE: (
+        "was auto-declined because its approval card was too long for this "
+        "channel to show in full",
+        "a reader who cannot see the whole request cannot approve it, so the "
+        "action itself was never judged — do not abandon it or route around it "
+        "on this evidence. The reason above gives the limit: split the request "
+        "into shorter steps that each fit it and reissue them one at a time; if "
+        "it cannot be split, say so and stop with the reason.",
     ),
 }
 

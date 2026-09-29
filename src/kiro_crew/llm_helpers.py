@@ -1393,7 +1393,9 @@ class ToolApprovalPolicy(Enum):
 _orphan_rejects: set[asyncio.Task[Any]] = set()
 
 
-async def _steer_host_deny(provider: Any, event: Any, reason: str, *, cause: str) -> None:
+async def _steer_host_deny(
+    provider: Any, event: Any, reason: str, *, cause: str, title: str = ""
+) -> None:
     """Tell the model, in-band, that the HOST denied this call -- not the person.
 
     A rejected permission reaches the model as kiro-cli's fixed "User denied tool
@@ -1420,7 +1422,10 @@ async def _steer_host_deny(provider: Any, event: Any, reason: str, *, cause: str
     ``test_llm_helpers_deny_notice`` walks the file to keep both halves honest.
 
     *reason* may echo agent-authored text (a matched path, a hook's reason), so it
-    is redacted here; the shared helper redacts the title. The reason is
+    is redacted here; the shared helper redacts the title. *title* overrides the
+    event's own when a caller renders the call differently -- the channel agent
+    stream (``kiro_crew.channel``) reuses this helper and names a permission
+    request by ``event.text`` where ``event.title`` is empty. The reason is
     otherwise passed VERBATIM, as the chat runner does: a rule-authored refusal's
     fixed lead (``Blocked by security policy: ``, the unverifiable-path stall
     prefix) is the structural key ``deny_guidance.classify_deny`` reads before any
@@ -1456,7 +1461,7 @@ async def _steer_host_deny(provider: Any, event: Any, reason: str, *, cause: str
     """
     safe_reason, _ = redact_exfiltration_urls(reason or "")
     safe_reason, _ = redact_credentials(safe_reason)
-    title = str(getattr(event, "title", "") or "") or "unnamed tool call"
+    title = title or str(getattr(event, "title", "") or "") or "unnamed tool call"
     try:
         await steer_refusal_notice(provider, title, safe_reason, cause=cause)
     except asyncio.CancelledError:

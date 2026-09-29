@@ -60,6 +60,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_POLICY,
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
     strip_control_comments,
@@ -4434,12 +4435,11 @@ async def handle_message(
                             sel_factory=sel,
                         )
                     if tool_result.action == TOOL_DENY:
-                        await client.reject_tool(event.request_id)
-                        Stats().inc_tool_denial()
-                        # event.title is LLM-authored — redact before posting.
-                        _blocked_title, _ = redact_exfiltration_urls(event.title)
-                        _blocked_title, _ = redact_credentials(_blocked_title)
-                        accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
+                        # Audit FIRST, then steer, then reject: the steer and
+                        # the reject both await the ACP pipe, and a backend that
+                        # stops reading stdin cancels this coroutine at the
+                        # turn deadline -- an SEL row sequenced after them
+                        # never runs (the chat runner's audit-first rule).
                         sel().log_tool_invocation(
                             session_key=session_key,
                             source="slack",
@@ -4449,6 +4449,22 @@ async def handle_message(
                             request_id=event.request_id,
                             error="hook_deny",
                         )
+                        # A hook deny is a HOST verdict on the call, not the
+                        # person's: tell the model so in-band before the reject
+                        # hands it kiro-cli's "User denied tool execution".
+                        await _steer_host_deny(
+                            client,
+                            event,
+                            tool_result.reason,
+                            cause=DENY_CAUSE_POLICY,
+                            audited=True,
+                        )
+                        await client.reject_tool(event.request_id)
+                        Stats().inc_tool_denial()
+                        # event.title is LLM-authored — redact before posting.
+                        _blocked_title, _ = redact_exfiltration_urls(event.title)
+                        _blocked_title, _ = redact_credentials(_blocked_title)
+                        accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
                         continue
 
                 # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
@@ -5886,7 +5902,9 @@ async def _maybe_auto_title_slack(
     )
 
 
-async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") -> bool:
+async def _reject_orphaned_tool(
+    provider: LLMProvider, request_id: "str | int", *, audit: bool = True
+) -> bool:
     """Reject a pending ACP permission request that we can no longer surface.
 
     Both the pre-approval stream-prep and the approval-prompt post happen BEFORE
@@ -5894,7 +5912,10 @@ async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") 
     unanswered and the agent subprocess wedges forever (every later turn blocks
     behind it). Callers invoke this on failure, then re-raise. Swallows any
     reject failure, and audit failure after a successful rejection, so the
-    original error still propagates.
+    original error still propagates. ``audit=False`` is for a caller whose
+    decision already has its SEL row (the audit-first deny sites): the wire
+    still gets answered, but the ledger is append-only and a second row for
+    one decision would be a duplicate nothing reconciles.
     """
     try:
         await provider.reject_tool(request_id)
@@ -5904,6 +5925,8 @@ async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") 
     # The fallback arms re-raise past the normal permission audit, so record
     # the denial here: a rejection that reached the wire but never reached the
     # audit trail is a silent gap in a security control.
+    if not audit:
+        return True
     try:
         sel().log_tool_invocation(
             session_key="",
@@ -5916,6 +5939,66 @@ async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") 
     except Exception:
         logger.warning("Failed to audit orphaned tool %s", request_id, exc_info=True)
     return True
+
+
+async def _steer_host_deny(
+    provider: Any, event: Any, reason: str, *, cause: str, audited: bool
+) -> None:
+    """Tell the model, in-band, that the HOST denied this call -- not the person.
+
+    A rejected permission reaches the model as kiro-cli's fixed "User denied
+    tool execution", so without this it reads a refusal that never happened.
+    Awaited immediately BEFORE a host-deny ``reject_tool`` in this module: while
+    the permission request is unanswered the turn is provably in flight, which
+    is what gets the notice queued rather than dropped (``kiro_crew.deny_notice``).
+    The Slack handler has two host denies -- a hook ``deny`` on the message
+    path (``DENY_CAUSE_POLICY``, the hook's reason) and the approval prompt
+    expiring unanswered (``DENY_CAUSE_APPROVAL_TIMEOUT``). *cause* is REQUIRED
+    because the wrong noun sends the model the wrong way. The two genuine USER
+    rejections (a Deny click in ``handle_interaction``) and the teardown-only
+    ``_reject_orphaned_tool`` must NOT call this: there kiro-cli's wording is
+    the truth, and "this was NOT a user action" would be a lie.
+    ``test_messaging_deny_notice`` walks the file to keep both halves honest.
+
+    *reason* may echo agent-authored text (a hook's reason quotes the matched
+    path), so it is redacted here; the shared helper redacts the title.
+    Best-effort by construction: ``steer_refusal_notice`` probes the capability
+    and swallows every failure, so a backend without a steer channel behaves
+    exactly as before and the caller's reject always runs.
+
+    Cancellation mid-steer (teardown) must still answer the wire: a stranded
+    ``session/request_permission`` blocks the subprocess forever and wedges
+    every later turn behind it. The reject is scheduled as a strongly referenced
+    referenced task and awaited through ``asyncio.shield`` so it is stepped
+    while this coroutine unwinds; ``_reject_orphaned_tool`` retrieves its
+    exception so teardown stays quiet. *audited* is REQUIRED and says whether
+    the caller wrote the decision's SEL row BEFORE this await (the hook deny
+    does) or writes it after the wire (the approval-timeout arm, whose
+    caller audits both outcomes once the request is answered). The orphan
+    reject audits only in the second case: the SEL ledger is append-only,
+    and a decision already on it must not gain a second row nothing
+    reconciles.
+    """
+    safe_reason, _ = redact_exfiltration_urls(reason or "")
+    safe_reason, _ = redact_credentials(safe_reason)
+    try:
+        await steer_refusal_notice(
+            provider,
+            str(getattr(event, "title", "") or ""),
+            safe_reason,
+            cause=cause,
+            bound_secs=_STEER_NOTICE_BOUND_SECS,
+        )
+    except asyncio.CancelledError:
+        reject = asyncio.ensure_future(
+            _reject_orphaned_tool(provider, event.request_id, audit=not audited)
+        )
+        _orphan_rejects.add(reject)
+        reject.add_done_callback(_orphan_rejects.discard)
+        with contextlib.suppress(BaseException):
+            if await asyncio.shield(reject):
+                Stats().inc_tool_denial()
+        raise
 
 
 class _LinkedApprovalEvent:
@@ -6163,33 +6246,23 @@ async def _request_approval(
         # dashboard chat runner's host-decline arms. On Slack the driver stops
         # rendering after a rejection, so this corrects the model-side
         # transcript attribution only; the notice's continue-guidance has no
-        # Slack consumer. Best-effort: steer_refusal_notice (capability probe,
-        # redaction, build, bounded send -- the same helper the messaging
-        # TurnDriver uses) swallows every failure, so the reject below still
-        # runs; only cancellation escapes it, handled next.
-        try:
-            if claimed:
-                await steer_refusal_notice(
-                    provider,
-                    event.title,
-                    "the Slack approval prompt went unanswered for "
-                    f"{max(1, round(_APPROVAL_TIMEOUT))}s",
-                    cause=DENY_CAUSE_APPROVAL_TIMEOUT,
-                    bound_secs=_STEER_NOTICE_BOUND_SECS,
-                )
-        except asyncio.CancelledError:
-            # Teardown while steering must still answer the wire: a stranded
-            # session/request_permission blocks the subprocess forever and
-            # wedges every later turn behind it. Shield the reject so it is
-            # stepped even while this coroutine unwinds; _reject_orphaned_tool
-            # retrieves its exception so teardown stays quiet.
-            reject = asyncio.ensure_future(_reject_orphaned_tool(provider, event.request_id))
-            _orphan_rejects.add(reject)
-            reject.add_done_callback(_orphan_rejects.discard)
-            with contextlib.suppress(BaseException):
-                if await asyncio.shield(reject):
-                    Stats().inc_tool_denial()
-            raise
+        # Slack consumer. Best-effort: _steer_host_deny (capability probe,
+        # redaction, build, bounded send -- the same shared helper the
+        # messaging TurnDriver uses) swallows every failure, so the reject
+        # below still runs; a cancellation mid-steer schedules the orphan
+        # reject itself before re-raising, so teardown still answers the wire.
+        if claimed:
+            await _steer_host_deny(
+                provider,
+                event,
+                "the Slack approval prompt went unanswered for "
+                f"{max(1, round(_APPROVAL_TIMEOUT))}s",
+                cause=DENY_CAUSE_APPROVAL_TIMEOUT,
+                # The caller audits this outcome after the wire is answered;
+                # a cancellation here would skip that row, so the orphan
+                # reject writes it.
+                audited=False,
+            )
         if claimed:
             # Only the claim winner answers the wire. A lost claim means a
             # click is answering (or answered) this request itself; a second
