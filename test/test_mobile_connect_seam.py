@@ -46,11 +46,12 @@ def _permits(denied: set[str]):
 
 
 class TestDefaultProvider:
-    def test_personal_install_pair(self) -> None:
+    def test_personal_install_methods(self) -> None:
         methods = DefaultMobileConnectProvider().connect_methods()
         assert [(m.id, m.kind) for m in methods] == [
             ("tailnet_qr", "tailnet_qr"),
             ("login_link", "login_link"),
+            ("ssh_device", "ssh_device"),
         ]
 
     def test_scope_catalog_row_is_a_scoped_capability(self) -> None:
@@ -79,6 +80,7 @@ class TestGovernedMethods:
         assert out == [
             {"id": "tailnet_qr", "kind": "tailnet_qr"},
             {"id": "login_link", "kind": "login_link"},
+            {"id": "ssh_device", "kind": "ssh_device"},
         ]
 
     def test_capability_off_hides_everything(self) -> None:
@@ -90,7 +92,7 @@ class TestGovernedMethods:
         # that passes "" for every row keeps both and fails this test.
         out = self._with_provider(
             DefaultMobileConnectProvider().connect_methods(),
-            denied={"methods:tailnet_qr"},
+            denied={"methods:tailnet_qr", "methods:ssh_device"},
         )
         assert out == [{"id": "login_link", "kind": "login_link"}]
 

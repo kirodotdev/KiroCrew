@@ -545,6 +545,31 @@ from kiro_crew.dashboard.handlers.teams import (  # noqa: E402, F401
 # exactly as the work_ledger and session-control routes do.
 
 
+# ── Mobile SSH enrollment and token mint (handlers/mobile_ssh.py), imported on first use ──
+async def api_mobile_ssh_devices(request):
+    from kiro_crew.dashboard.handlers.mobile_ssh import api_mobile_ssh_devices as handler
+
+    return await handler(request)
+
+
+async def api_mobile_ssh_enroll(request):
+    from kiro_crew.dashboard.handlers.mobile_ssh import api_mobile_ssh_enroll as handler
+
+    return await handler(request)
+
+
+async def api_mobile_ssh_revoke(request):
+    from kiro_crew.dashboard.handlers.mobile_ssh import api_mobile_ssh_revoke as handler
+
+    return await handler(request)
+
+
+async def api_mobile_ssh_token(request):
+    from kiro_crew.dashboard.handlers.mobile_ssh import api_mobile_ssh_token as handler
+
+    return await handler(request)
+
+
 # ── Durable task queue + capacity view (handlers/tasks.py) ──
 async def api_task_action(request):
     from kiro_crew.dashboard.handlers.tasks import api_task_action as handler

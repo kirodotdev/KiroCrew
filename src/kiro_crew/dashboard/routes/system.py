@@ -205,6 +205,12 @@ def register(app: web.Application) -> None:
     # Tunnel status
     app.router.add_get("/api/tunnel/status", api_tunnel_status)
 
+    # Each mobile SSH handler requires loopback plus X-Local-Secret, not a cookie.
+    app.router.add_post("/api/mobile/ssh/enroll", handlers.api_mobile_ssh_enroll)
+    app.router.add_get("/api/mobile/ssh/devices", handlers.api_mobile_ssh_devices)
+    app.router.add_post("/api/mobile/ssh/revoke", handlers.api_mobile_ssh_revoke)
+    app.router.add_post("/api/mobile/ssh/token", handlers.api_mobile_ssh_token)
+
     # Session revocation (called by `kirocrew logout` CLI)
     app.router.add_post("/api/logout", handlers.api_logout)
     app.router.add_post("/api/shutdown", handlers.api_shutdown)

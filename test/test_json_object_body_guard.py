@@ -179,6 +179,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
+    # Mobile SSH enroll/revoke/token bodies are a device id, a key line and a label.
+    "handlers/mobile_ssh.py::_read_body": ("_MAX_REQUEST_BYTES", _BOUNDED_BY_DEFAULT),
     "handlers/messaging.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,

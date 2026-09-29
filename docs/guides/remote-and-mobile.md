@@ -289,6 +289,76 @@ with `KIROCREW_ALLOWED_LOOPBACK_PORTS` on the gateway host; the CSRF check
 deliberately does not blanket-trust every loopback port, because a malicious
 local page on an arbitrary port would otherwise pass it.
 
+### Native mobile client over a paired SSH key
+
+A native mobile client can use the same loopback tunnel without receiving the
+gateway local secret or a long-lived dashboard credential. The host contract is
+standard OpenSSH and does not depend on a cloud provider: `HOST` may be a stable DNS
+name, private IPv4 address, or LAN/mDNS name such as `crewbox.local`, as long as the
+phone can route to TCP 22. A public VM is one optional reachability arrangement, not
+part of the token architecture.
+
+Run enrollment as the same non-root account that runs Kiro Crew, passing only the
+phone's Ed25519 **public** key:
+
+```bash
+kirocrew mobile ssh enroll my-phone \
+  --host crewbox.local \
+  --public-key-file phone-key.pub \
+  --qr
+```
+
+`--qr` prints a pairing QR code to stderr for Kiro Mobile to scan after the
+`authorized_keys` line is in place. It holds only the SSH host, port, username,
+gateway port and host key fingerprint, no token or secret.
+
+The command emits one JSON object. It discovers the account username and reads only
+the root-owned, non-writable OpenSSH public host key
+`/etc/ssh/ssh_host_ed25519_key.pub`; the response contains `ssh_host`, `ssh_port`,
+`ssh_username`, `host_key_algorithm`, and `host_key_fingerprint` for the client to
+pin. It also contains `authorized_keys_path` and an exact `authorized_keys_line`.
+Kiro Crew deliberately does not append that line: SSH account administration remains
+an explicit host-owner action. If the host key is absent, enable/configure the
+OpenSSH server first. Windows returns an actionable unsupported-platform error until
+its OpenSSH service and host-key source are validated.
+
+On reconnect, the phone authenticates with its stored private key, opens a dynamic
+local forward to the gateway's loopback port (`127.0.0.1:5476` by default; enrollment
+records whichever port the gateway is serving on), and sends an SSH exec request whose command
+is exactly `kirocrew-mobile-token-v1`. The generated `authorized_keys` line replaces
+that request with a forced token-mint command, limits local (`-L`) forwarding to the
+one loopback destination, and permits no shell or PTY. Remote (`-R`) listens are pinned
+to `127.0.0.1:1`, a privileged port the account cannot bind (`permitlisten="none"` makes
+OpenSSH reject the whole key); set `AllowTcpForwarding local` for this account in
+`sshd_config` to refuse `-R` outright. Key options cannot restrict Unix-socket
+forwarding: `port-forwarding` also allows `direct-streamlocal`, which `permitopen` does not
+cover, so set `AllowStreamLocalForwarding no` for this account as well, for example:
+
+```text
+Match User <account>
+    AllowTcpForwarding local
+    AllowStreamLocalForwarding no
+```
+ Stdout is exactly one JSON object carrying
+a 15-minute `gateway:mobile` token; refresh means repeating the SSH exec. The token
+exchanges through the normal `?token=` path into a separate cookie with the same
+remaining lifetime, and no refresh cookie is issued.
+
+```bash
+kirocrew mobile ssh list
+kirocrew mobile ssh revoke my-phone
+```
+
+Revocation is per device. The gateway rejects that device's already-issued tokens on
+their next request, including in another gateway process sharing the data home, and the
+forced command refuses new mints. Revocation does not remove SSH authorization: until the
+`authorized_keys` line is deleted, the key can still log in and open the local forward to
+the gateway port (and, without `AllowStreamLocalForwarding no`, connect to the account's own
+Unix sockets), and a chat stream that was already open runs until it ends. Deleting the
+line is what removes SSH access.
+Enrollment state stores public-key and binding hashes only; private keys remain on the
+phone, and gateway tokens are never written to the registry or logs.
+
 ### Named HTTPS tunnel (phone)
 
 A phone cannot open an SSH port-forward, so put a tunnel provider in front of
