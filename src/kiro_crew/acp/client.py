@@ -6662,6 +6662,15 @@ class AcpClient:
         diagnostic to report.
         """
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        # A stored skill-view name is never the agent to launch: it maps back to
+        # the agent it was built from, whose current view the spawn prepares.
+        # Folded into this hop for the reason above (it may read one sidecar).
+        from kiro_crew.acp.skill_projection import RetiredSkillView, source_agent_name
+
+        try:
+            self._agent = source_agent_name(self._agent)
+        except RetiredSkillView as exc:
+            raise AcpError(str(exc)) from exc
         self._mcp_ref_spec = self._read_mcp_ref_spec()
 
     def _read_mcp_ref_spec(self) -> dict[str, Any] | None:

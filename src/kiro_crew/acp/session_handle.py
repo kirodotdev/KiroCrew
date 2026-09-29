@@ -2350,7 +2350,17 @@ class AcpSessionHandle:
     # ── Session Configuration ──
 
     async def set_mode(self, agent_name: str) -> None:
-        """Activate an agent via session/set_mode."""
+        """Activate an agent via session/set_mode.
+
+        A stored skill-view name maps back to the agent it was built from first,
+        so the projection sends that agent's CURRENT view, never the stored one.
+        """
+        from kiro_crew.acp.skill_projection import RetiredSkillView, resolve_source_agent
+
+        try:
+            agent_name = await resolve_source_agent(agent_name)
+        except RetiredSkillView as exc:
+            raise AcpRuntimeError(str(exc)) from exc
         # send_request only queues the request; it does not await a mode ACK.
         self.active_agent = ""
         await self._runtime.send_request(

@@ -8,6 +8,7 @@ the first prompt. Bounding only the Crew prompt cannot bound that native cost.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import errno
 import fnmatch
@@ -35,6 +36,7 @@ from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+from kiro_crew.validation import is_registered_agent_name
 from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
 
 logger = logging.getLogger(__name__)
@@ -157,6 +159,172 @@ _MANAGED_SOURCE = "x-kirocrew-source"
 _MANAGED_ALIAS_SHA256 = "x-kirocrew-alias-sha256"
 
 
+# Every view name this process has published, mapped to the agent it projects.
+# A projection is replaced when a view's content changes, so a frame or a
+# session can still carry a name the CURRENT projection does not hold; this
+# is what turns that name back into its agent without a file read. Bounded:
+# the oldest names go first, and a name that falls out is still resolved from
+# its ownership sidecar, or from the view ledger below.
+_VIEW_SOURCES: dict[str, str] = {}
+_VIEW_SOURCES_LOCK = threading.Lock()
+# One entry bound for this map and the ledger below, so a name the ledger still
+# holds is never one the map was sized to forget, or the reverse.
+_VIEW_SOURCES_MAX = 2048
+# The same map on disk, so a view name stored before a restart still resolves
+# after the boot drain removed its alias AND its sidecar. It lives beside the
+# sidecars (the directory the prune never walks) under a name no alias can
+# take, is rewritten only under the publication lock, and keeps the newest
+# entries up to _VIEW_SOURCES_MAX. A missing or unreadable ledger resolves nothing.
+_VIEW_LEDGER_NAME = "view-sources.json"
+
+
+class RetiredSkillView(ValueError):
+    """A mode name is a skill view whose source agent cannot be recovered."""
+
+    def __init__(self, view: str) -> None:
+        self.view = view
+        super().__init__(
+            f"'{view}' is a generated skill view from an earlier run, and the agent it "
+            "was built from is not recorded anywhere. Pick the agent for this chat or "
+            "crewmate again; a gateway restart rebuilds every view."
+        )
+
+
+def _admissible_source_agent(agent_name: object) -> bool:
+    """Whether *agent_name* may be recorded or returned as a view's source agent.
+
+    One admission for the in-memory map, the sidecar read and the ledger: the
+    registered agent-name grammar, which bounds the length and admits no
+    control character, so a recorded name is safe to log and to send. Never
+    another view name.
+    """
+    return is_registered_agent_name(agent_name) and not is_skill_view_name(agent_name)
+
+
+def _remember_view_sources(aliases: dict[str, str]) -> None:
+    with _VIEW_SOURCES_LOCK:
+        for agent_name, alias in aliases.items():
+            if not _admissible_source_agent(agent_name):
+                continue
+            _VIEW_SOURCES.pop(alias, None)
+            _VIEW_SOURCES[alias] = agent_name
+        while len(_VIEW_SOURCES) > _VIEW_SOURCES_MAX:
+            _VIEW_SOURCES.pop(next(iter(_VIEW_SOURCES)))
+
+
+def is_skill_view_name(name: object) -> bool:
+    """Whether *name* is a generated skill-view name rather than an agent."""
+    return isinstance(name, str) and name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+
+
+def remembered_view_source(name: str) -> str | None:
+    """The agent a view name projects, from this process's memory only. No I/O."""
+    with _VIEW_SOURCES_LOCK:
+        return _VIEW_SOURCES.get(name)
+
+
+def _read_json_regular_file(path: Path) -> Any:
+    """Parse *path* when it is a regular, non-link file; ``None`` otherwise."""
+    try:
+        info = pinned_fs.lstat_by_name(path)
+        if info is None or platform_compat.is_link_or_junction(path):
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        raw = safe_read_file_bytes(str(path))
+    except (OSError, ValueError, FileTooLargeError):
+        return None
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError, RecursionError):
+        return None
+
+
+def _read_view_ledger(metadata_dir: Path) -> dict[str, str]:
+    """The ledger's admissible entries, oldest first; empty when unreadable."""
+    data = _read_json_regular_file(metadata_dir / _VIEW_LEDGER_NAME)
+    if not isinstance(data, dict):
+        return {}
+    return {
+        alias: agent_name
+        for alias, agent_name in data.items()
+        if isinstance(alias, str)
+        and _LEGACY_ALIAS_NAME_RE.fullmatch(alias)
+        and _admissible_source_agent(agent_name)
+    }
+
+
+def _record_view_ledger(metadata_dir: Path, aliases: dict[str, str]) -> None:
+    """Add *aliases* to the ledger. The caller holds the publication lock."""
+    ledger = _read_view_ledger(metadata_dir)
+    updated = dict(ledger)
+    for agent_name, alias in aliases.items():
+        if _admissible_source_agent(agent_name) and _LEGACY_ALIAS_NAME_RE.fullmatch(alias):
+            updated.pop(alias, None)
+            updated[alias] = agent_name
+    while len(updated) > _VIEW_SOURCES_MAX:
+        updated.pop(next(iter(updated)))
+    if list(updated.items()) == list(ledger.items()):
+        return
+    atomic_write(
+        metadata_dir / _VIEW_LEDGER_NAME,
+        json.dumps(updated, ensure_ascii=False, separators=(",", ":")),
+        restrict_to_owner=True,
+    )
+
+
+def _recorded_view_source(name: str) -> str | None:
+    """The agent a view's sidecar or the view ledger names, or ``None``. Blocking.
+
+    Only a name of the exact shape this module mints is looked up, so the name
+    cannot steer the read outside the sidecar directory. The alias itself may be
+    gone; the sidecar's agent field is read on its own, and it must carry the
+    managed marker and name an agent rather than another view. When the boot
+    drain has removed the sidecar too, the ledger still answers.
+    """
+    if not _LEGACY_ALIAS_NAME_RE.fullmatch(name):
+        return None
+    try:
+        metadata_dir = kiro_agents_dir() / _PROJECTION_METADATA_DIR_NAME
+    except (OSError, ValueError, RuntimeError):
+        return None
+    metadata = _read_json_regular_file(metadata_dir / f"{name}.json")
+    if _managed_marker(metadata):
+        agent_name = metadata.get(_MANAGED_AGENT)
+        if _admissible_source_agent(agent_name):
+            return str(agent_name)
+    return _read_view_ledger(metadata_dir).get(name)
+
+
+def source_agent_name(name: str) -> str:
+    """The agent to activate for a mode name that may be a stored view name.
+
+    A mode name is sent to kiro-cli only after it is mapped to the running
+    projection, so a stored view name -- written by an earlier version, or by an
+    earlier projection of this process -- is never sent as is: it names a file
+    the boot drain or a content change may already have removed. It maps back
+    to the agent it was built from, whose CURRENT view the caller then uses.
+    Blocking (it may read one sidecar); callers on the event loop run it in a
+    thread. Raises :class:`RetiredSkillView` when nothing records the source,
+    rather than guessing an agent, which could be a broader one.
+    """
+    if not is_skill_view_name(name):
+        return name
+    source = remembered_view_source(name) or _recorded_view_source(name)
+    if source is None:
+        raise RetiredSkillView(name)
+    return source
+
+
+async def resolve_source_agent(name: str) -> str:
+    """:func:`source_agent_name` for an event-loop caller; no hop for an agent name."""
+    if not is_skill_view_name(name):
+        return name
+    return await asyncio.to_thread(source_agent_name, name)
+
+
 @dataclass
 class NativeSkillProjection:
     """Translate transport identities while Crew keeps the authored agent name."""
@@ -168,6 +336,13 @@ class NativeSkillProjection:
     _lease_finalizer: Any = field(default=None, repr=False, compare=False)
 
     def agent(self, name: str) -> str:
+        if is_skill_view_name(name):
+            if name in self.aliases.values():
+                return name
+            source = remembered_view_source(name)
+            if source is None:
+                raise RetiredSkillView(name)
+            name = source
         if name not in self.aliases:
             if name in self.errors:
                 raise ValueError(f"Agent {name!r}: {self.errors[name]}")
@@ -210,7 +385,12 @@ class NativeSkillProjection:
             if field in {"id", "name", "agentName", "modeId", "currentModeId"} and isinstance(
                 value, str
             ):
-                return reverse.get(value, value)
+                if value in reverse:
+                    return reverse[value]
+                if is_skill_view_name(value):
+                    # A view an earlier projection of this process published:
+                    # report its agent, so no session stores a view name.
+                    return remembered_view_source(value) or value
             return value
 
         return visit(frame)
@@ -1725,11 +1905,19 @@ def prepare_native_skill_projection(
                             json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
                             restrict_to_owner=True,
                         )
+                    if metadata_dir is not None:
+                        try:
+                            _record_view_ledger(metadata_dir, aliases)
+                        except OSError:
+                            # The ledger only serves names stored before a
+                            # restart; losing one write never blocks a spawn.
+                            logger.debug("skill projection: view ledger not written", exc_info=True)
                     local[_MANAGED_SETTING] = inherited
                     local[_INHERIT_SOURCE] = preference_source
                     local[_INHERIT_SETTING] = True
                     atomic_write(locked_settings, json.dumps(local, indent=2))
                     prepared = NativeSkillProjection(aliases, specs, errors, search_agents)
+                    _remember_view_sources(aliases)
                     prepared._lease_finalizer = weakref.finalize(prepared, lease_stack.close)
                 except BaseException:
                     lease_stack.close()
