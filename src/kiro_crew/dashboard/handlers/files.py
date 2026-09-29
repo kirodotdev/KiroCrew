@@ -4347,6 +4347,13 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
         resp.content_length = end - start + 1
         resp.headers["Accept-Ranges"] = "bytes"
         resp.headers["X-Content-Type-Options"] = "nosniff"
+        # inline (not attachment) keeps playback in the <video>/<audio> element,
+        # while naming the file so a player-initiated download (the native media
+        # controls' Download) saves under the real name instead of "file-stream"
+        # -- the last segment of this endpoint's URL, which the browser would
+        # otherwise use. Sibling parity with api_file_download's Content-Disposition.
+        safe_name = urllib.parse.quote(os.path.basename(path), safe="")
+        resp.headers["Content-Disposition"] = f"inline; filename*=UTF-8''{safe_name}"
         if status == 206:
             resp.headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         # SEL: record the ALLOW decision before any bytes move. prepare() and

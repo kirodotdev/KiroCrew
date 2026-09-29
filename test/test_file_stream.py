@@ -104,6 +104,40 @@ async def test_full_body_200_with_accept_ranges(tmp_path, mock_sel):
 
 
 @pytest.mark.asyncio
+async def test_content_disposition_carries_real_filename(tmp_path, mock_sel):
+    """A player-initiated download (the native <video>/<audio> controls) reads
+    the save name from Content-Disposition; without it the browser falls back
+    to the URL's last segment and saves as "file-stream". The header names the
+    file and stays `inline` so playback is unaffected."""
+    f = tmp_path / "pcm-worklet-before.mp4"
+    f.write_bytes(_MP4_BYTES)
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-stream?path={f}")
+            assert resp.status == 200
+            assert (
+                resp.headers["Content-Disposition"]
+                == "inline; filename*=UTF-8''pcm-worklet-before.mp4"
+            )
+
+
+@pytest.mark.asyncio
+async def test_content_disposition_percent_encodes_the_name(tmp_path, mock_sel):
+    """A name with spaces/unicode must round-trip through RFC 5987 encoding,
+    not break the header."""
+    f = tmp_path / "my clip (v2).mp4"
+    f.write_bytes(_MP4_BYTES)
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-stream?path={f}")
+            assert resp.status == 200
+            assert (
+                resp.headers["Content-Disposition"]
+                == "inline; filename*=UTF-8''my%20clip%20%28v2%29.mp4"
+            )
+
+
+@pytest.mark.asyncio
 async def test_range_request_returns_206_partial(tmp_path, mock_sel):
     f = tmp_path / "demo.mp4"
     f.write_bytes(_MP4_BYTES)
