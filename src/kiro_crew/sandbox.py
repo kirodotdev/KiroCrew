@@ -514,6 +514,18 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Auth stores and signing keys owned by the gateway web server alone.
     "token_signing.key",
     "refresh_chains.json",
+    # The advisory lock the signing-key healer and the in-place key creator share
+    # (``token_secret._open_heal_lock``). MASKED, not sealed read-only: POSIX
+    # ``flock`` can be taken through a read-only descriptor, so a read-only seal
+    # would hand a sandboxed process the lock itself -- one ``flock`` from inside
+    # the sandbox and the healer times out into an ephemeral secret, which
+    # quarantines every HMAC-certified tag grant. Behind the mask the sandbox sees
+    # an empty tmpfs inode; a lock taken on that reaches nothing. Created lazily by
+    # both lockers, so it is also in ``_CREW_PRECREATE_HIDDEN_FILE_LEAVES``: the
+    # ``isfile``-guarded mask loop binds nothing over an absent name, and a
+    # sandbox spawned before the first heal would otherwise watch the lock
+    # appear unmasked -- and could squat the name first.
+    ".token_signing.key.heal.lock",
     # The staging directory those two publish through. Masked as a whole DIRECTORY so the
     # in-flight temp -- which holds the same key and chain-state bytes as the two leaves
     # above -- and any crash orphan are covered at every name, present and future.
@@ -1675,6 +1687,20 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "agent_model_state.json.lock",
 )
 
+#: HIDDEN file leaves created lazily by the gateway that must nevertheless EXIST before
+#: every spawn, for the reason :data:`_CREW_PRECREATE_HIDDEN_DIR_LEAVES` gives for its
+#: directories: the ``isfile``-guarded mask loop binds nothing over an absent name, so a
+#: sandbox spawned before the first write would see the file appear unmasked -- and could
+#: create it first, owning the inode the gateway then locks. Created EMPTY with an
+#: exclusive no-follow open rather than through the read-only ceilings' stage-then-link
+#: publisher: a masked leaf is never read, so it needs no content, and the plain create
+#: also works on a link-less home where a hard-link publish would refuse every spawn.
+_CREW_PRECREATE_HIDDEN_FILE_LEAVES: tuple[str, ...] = (
+    # The signing-key healer / in-place creator lock; see its ``_CREW_HIDDEN_LEAVES`` entry.
+    ".token_signing.key.heal.lock",
+)
+assert set(_CREW_PRECREATE_HIDDEN_FILE_LEAVES) <= set(_CREW_HIDDEN_LEAVES)
+
 #: The one masked leaf that carries its own argument (see the sibling-gap note
 #: above): a DIRECTORY the gateway creates on demand, whose EMPTY state is
 #: absent-equivalent because nothing but the gateway reads it -- it cuts a fresh
@@ -1873,7 +1899,10 @@ def _sealable_absent_ceilings() -> tuple[list[str], list[str]]:
     except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
         logger.debug("could not resolve the crew data home for ceiling sealing", exc_info=True)
         return ([], [])
-    file_targets = [os.path.join(root, leaf) for leaf in _CREW_PRECREATE_READONLY_FILE_LEAVES]
+    file_targets = [
+        os.path.join(root, leaf)
+        for leaf in _CREW_PRECREATE_READONLY_FILE_LEAVES + _CREW_PRECREATE_HIDDEN_FILE_LEAVES
+    ]
     # Read-only ceilings AND hidden leaves: the seal needs the former to exist,
     # the mask needs the latter (see the docstring), so both are materialised here.
     dir_targets = [
@@ -2559,6 +2588,31 @@ def _materialize_sealable_ceilings(established: list[str] | None = None) -> list
             _warn_if_alias_backed(target)
             continue
         if not os.path.isdir(parent):
+            continue
+        if os.path.basename(target) in _CREW_PRECREATE_HIDDEN_FILE_LEAVES:
+            # A HIDDEN leaf is masked, never read, so it needs no content and no
+            # temp-then-link publish: an exclusive no-follow create is atomic on
+            # its own, and it works on a link-less home (FAT, some network
+            # mounts) where the hard-link publisher below cannot, which would
+            # otherwise refuse every spawn on such a home over a lock file. The
+            # gateway's own lazy create of this leaf is also a no-follow O_CREAT
+            # open, so however the two creators interleave exactly one inode
+            # results and both end up with a name for it.
+            try:
+                fd = os.open(
+                    target,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                )
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                _warn_unsealed_ceiling(target, exc)
+                raise SandboxCeilingUnsealable(
+                    f"cannot create the masked lock leaf {target}: {exc}"
+                ) from exc
+            os.close(fd)
+            created.append(target)
             continue
         if _publish_empty_ceiling(target, parent):
             created.append(target)

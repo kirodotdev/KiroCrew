@@ -560,6 +560,47 @@ class TestALinkedProtectedLeafRefusesTheSpawn:
         ), "a no-alias leaf that is never materialised is never checked"
 
 
+class TestHiddenLockLeafIsCreatedWithoutHardLinks:
+    """The masked heal-lock leaf is pre-created by an exclusive no-follow open, not
+    the stage-then-link publisher, so a link-less data home (FAT, some network
+    mounts) does not refuse every spawn over a content-free lock file."""
+
+    @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_PRECREATE_HIDDEN_FILE_LEAVES))
+    def test_a_linkless_home_still_gets_the_leaf(self, crew_home, monkeypatch, leaf):
+        def _no_links(*_a, **_k):
+            raise OSError(errno.EPERM, "hard links are not supported on this filesystem")
+
+        monkeypatch.setattr(sandbox.os, "link", _no_links)
+        target = crew_home / leaf
+        if target.exists() or target.is_symlink():
+            target.unlink()
+        # The read-only ceilings would need the publisher; keep them present so the
+        # only absent leaf is the one under test.
+        for ro in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES:
+            p = crew_home / ro
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if not p.exists():
+                p.write_bytes(b"{}\n")
+
+        created = sandbox._materialize_sealable_ceilings()  # must not raise
+
+        assert str(target) in created
+        assert target.is_file() and not target.is_symlink()
+        assert target.stat().st_size == 0, "a masked lock carries no content"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    @pytest.mark.parametrize("leaf", sorted(sandbox._CREW_PRECREATE_HIDDEN_FILE_LEAVES))
+    def test_an_existing_leaf_is_left_alone(self, crew_home, leaf):
+        """A leaf the gateway already created (its lazy lock open) is not recreated,
+        so the inode the gateway may already hold locked is preserved."""
+        target = crew_home / leaf
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"")
+        before = target.stat().st_ino
+        sandbox._materialize_sealable_ceilings()
+        assert target.stat().st_ino == before
+
+
 class TestEveryMaskedLeafIsEnumerated:
     """No masked leaf may be silently outside the alias decision.
 

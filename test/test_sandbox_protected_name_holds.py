@@ -308,7 +308,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 250, "cc": 257, "strict": 258}
+    #: * ``.token_signing.key.heal.lock`` -- the advisory lock the signing-key
+    #:   healer and the in-place key creator share. It sits beside the key rather
+    #:   than inside ``auth-store-staging`` because the in-place creator must
+    #:   work on a home that cannot stage at all (``test_token_auth``'s
+    #:   cannot-stage contract), and it is MASKED (an empty tmpfs inode inside
+    #:   every agent namespace, since POSIX ``flock`` works through a read-only
+    #:   descriptor and a read-only seal would hand the lock to the sandbox) and
+    #:   pre-created so the mask always has a name to bind over.
+    EXPECTED: dict[str, int] = {"standard": 253, "cc": 260, "strict": 261}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
