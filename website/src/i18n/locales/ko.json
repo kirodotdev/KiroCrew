@@ -7362,8 +7362,6 @@
       "error_create_failed": "{{name}}을(를) 만들 수 없었습니다. 연결을 확인하고 다시 시도해 주세요.",
       "error_create_unknown": "{{name}}이(가) 만들어졌는지 알 수 없습니다. 서버가 응답하지 않았습니다. 다시 시도하기 전에 Crew Members 페이지를 확인하세요. {{name}}이(가) 있으면 스케줄 페이지에서 일을 추가하세요.",
       "save_failed": "이 소개를 완료로 표시하지 못해 한 번 더 나타날 수 있습니다.",
-      "eligibility_error": "CrewMates 만나기를 표시할지 확인할 수 없습니다.",
-      "eligibility_open": "CrewMates 만나기 열기",
       "step4_title": "{{name}} 준비 완료",
       "ready_starts_morning": "{{name}}은(는) 내일 9:00에 시작합니다.",
       "ready_starts_morning_today": "{{name}}은(는) 오늘 9:00에 시작합니다.",

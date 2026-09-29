@@ -1,53 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-
-import { api, type MemberRosterRow } from '../api/client'
-import { membersRosterQuery } from '../api/membersQuery'
-import { START_MEET_CREWMATES_EVENT } from '../components/MeetCrewmatesFlow'
+import { type MemberRosterRow } from '../api/client'
+import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../components/MeetCrewmatesFlow'
 import { PREVIEW_CREW } from '../utils/previewFlags'
 import { usePreviewFlag } from './usePreviewFlag'
 import { useTheme } from './useTheme'
-
-/**
- * A row Kiro Crew itself wrote (never a user's own custom agent). The server
- * stamps every `/api/agents/installed` row with `kirocrew_owned`
- * (`agent_discovery.AgentInfo`, from `OWNED_KIRO_AGENT_FILES`), so a new
- * built-in template needs no edit here; a row without the flag is not a
- * built-in.
- */
-export function isBuiltinAgent(a: { name: string; kirocrew_owned?: boolean }): boolean {
-  return a.kirocrew_owned === true
-}
 
 /** No crewmate beyond the always-present `default` row (the main assistant). */
 export function hasNoCrewmates(rows: readonly Pick<MemberRosterRow, 'name'>[] | undefined): boolean {
   return Array.isArray(rows) && rows.every(r => r.name === 'default')
 }
 
-/** No installed agent beyond the ones Kiro Crew itself wrote. */
-export function hasNoCustomAgents(installed: readonly { name: string; kirocrew_owned?: boolean }[] | undefined): boolean {
-  return Array.isArray(installed) && installed.every(isBuiltinAgent)
-}
-
 /**
  * Decides when the "Meet CrewMates" first-run flow is on screen.
  *
- * Fires ONCE per workspace, automatically, after the other first-run chapters
- * are done, only while the Crew Members preview (`PREVIEW_CREW`, Settings ->
- * Developer -> Feature Previews) is on — the same switch that shows the
- * Crewmates page and its rail item, so the flow launches with them and never
- * introduces a page the user cannot reach — and only for a user with no
- * crewmates AND no custom agents (an existing user with custom agents is
- * never shown it: their earlier-sync crewmates are the launch migration's job,
- * see rfc-crewmates-launch.md "Existing installs"; and a gate whose reads fail
- * fails safe by not firing). Completion or
- * dismissal is persisted as `dashboard.crewmates_onboarded` through the
- * theme-config endpoint, the same server-backed record the other chapters
- * use, so a second machine does not replay it.
+ * The ONLY condition on showing it is whether this workspace has seen it:
+ * completion or dismissal is persisted as `dashboard.crewmates_onboarded`
+ * through the theme-config endpoint, the same server-backed record the other
+ * chapters use, so a second machine does not replay it. Existing crewmates or
+ * custom agents do not suppress it.
  *
- * The Crewmates page re-opens it on demand through the
- * `mc-start-meet-crewmates` window event (no eligibility check: the page is
- * itself behind the preview, and the user asked).
+ * It opens, once, at the first of:
+ * - the end of the first-run tour for a new user, while the Crew Members
+ *   preview (`PREVIEW_CREW`, Settings -> Developer -> Feature Previews) is on
+ *   -- the same switch that shows the Crewmates page, so the flow never
+ *   introduces a page the user cannot reach;
+ * - the first visit to the Crewmates page (`mc-crewmates-page-entered`), for
+ *   everyone else, e.g. a workspace that finished first run before the
+ *   chapter shipped.
+ *
+ * The Crewmates page also re-opens it on demand through the
+ * `mc-start-meet-crewmates` window event (no check: the user asked).
  */
 export function useMeetCrewmatesGate(): {
   open: boolean
@@ -58,12 +40,6 @@ export function useMeetCrewmatesGate(): {
    *  write failed, on the next entry when the write at exit failed (an exit
    *  never waits for the server). */
   persistFailed: boolean
-  /** One of the two eligibility reads (roster, installed agents) failed while
-   *  the auto-fire was still possible, so the flow could not decide whether
-   *  to show itself. App renders this as an ErrorNotice; the Crew Members
-   *  page entry stays available regardless. */
-  eligibilityError: boolean
-  dismissEligibilityError: () => void
 } {
   const {
     onboarded,
@@ -71,20 +47,16 @@ export function useMeetCrewmatesGate(): {
     privacyAcked,
     themeBootReady,
     crewmatesOnboarded,
+    crewmatesFlowSeen,
     markCrewmatesOnboarded,
   } = useTheme()
   const crewPreview = usePreviewFlag(PREVIEW_CREW)
   const firstRunDone = themeBootReady && onboarded && importOnboarded && privacyAcked
-  const eligible = crewPreview && firstRunDone && !crewmatesOnboarded
-
-  // Both reads are needed only while the auto-fire is still possible; once the
-  // flag is set they never run again for this workspace.
-  const roster = useQuery({ ...membersRosterQuery, enabled: eligible })
-  const installed = useQuery<{ name: string; kirocrew_owned?: boolean }[]>({
-    queryKey: ['agents-installed'],
-    queryFn: () => api.agentsInstalled(),
-    enabled: eligible,
-  })
+  // Tour-end timing: `crewmatesOnboarded` is false only for a workspace whose
+  // first run this browser saw end (the `mc-crewmates-pending` mark) and that
+  // has not seen the flow, so an existing user is not interrupted mid-task on
+  // their next load -- they get it on the Crewmates page instead.
+  const tourEndDue = crewPreview && firstRunDone && !crewmatesOnboarded
 
   // `open` is STICKY once it fires: the flow persists "done" the moment the
   // crewmate exists (onCreated), which flips `eligible` off, and the ready step
@@ -101,21 +73,23 @@ export function useMeetCrewmatesGate(): {
   // appear once more (after a reload, where the refused write means it is
   // genuinely still due). The Crew Members entry still opens it on demand.
   const closedThisSessionRef = useRef(false)
-  const autoOpen = eligible && hasNoCrewmates(roster.data) && hasNoCustomAgents(installed.data)
   useEffect(() => {
-    if (autoOpen && !closedThisSessionRef.current) setOpen(true)
-  }, [autoOpen])
+    if (tourEndDue && !closedThisSessionRef.current) setOpen(true)
+  }, [tourEndDue])
 
-  // A failed eligibility read is shown, not swallowed: without this the flow
-  // would simply never appear and the user would not know why. Dismissal is
-  // per failure -- a later refetch that fails again shows it again.
-  const readFailed = eligible && (roster.isError || installed.isError)
-  const [eligibilityDismissed, setEligibilityDismissed] = useState(false)
+  // First visit to the Crewmates page. The entry is remembered, not judged on
+  // arrival: on a reload straight into /members the page can announce itself
+  // before the theme boot says whether the flow was already seen.
+  const pageEntryDue = firstRunDone && !crewmatesFlowSeen
+  const [pageEntered, setPageEntered] = useState(false)
   useEffect(() => {
-    if (!readFailed) setEligibilityDismissed(false)
-  }, [readFailed])
-  const eligibilityError = readFailed && !eligibilityDismissed
-  const dismissEligibilityError = useCallback(() => setEligibilityDismissed(true), [])
+    const entered = () => setPageEntered(true)
+    window.addEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
+    return () => window.removeEventListener(CREWMATES_PAGE_ENTERED_EVENT, entered)
+  }, [])
+  useEffect(() => {
+    if (pageEntered && pageEntryDue && !closedThisSessionRef.current) setOpen(true)
+  }, [pageEntered, pageEntryDue])
 
   // A refused write is shown, not swallowed, and nothing local is marked done
   // on a refusal (`markCrewmatesOnboarded` applies its local state only after
@@ -154,5 +128,5 @@ export function useMeetCrewmatesGate(): {
     void persist()
   }, [persist])
 
-  return { open, onDone, onCreated, persistFailed, eligibilityError, dismissEligibilityError }
+  return { open, onDone, onCreated, persistFailed }
 }

@@ -6,7 +6,7 @@ created: 2026-09-22
 last-audited: 2026-09-22
 audited-at: 87553ba866
 doc-pr:
-implementation-prs: [12797, 12798, 12805, 12806, 12924]
+implementation-prs: [12797, 12798, 12805, 12806, 12924, 14914]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -255,6 +255,20 @@ cannot -- so the row reads "Active" or "Off" with the reason under it, and the
 only delivery choice the flow offers is "Its own chat" (`hide_in_chat`). Step 2
 calls the base agent "Starting setup" ("Standard (built in)" for the default),
 and the crewmate name is held to the roster's agent-name grammar before Next.
+
+Amended 2026-09-28 by the product owner (PR #14914): when the flow shows.
+Having seen it -- finished or dismissed, recorded as
+`dashboard.crewmates_onboarded` -- is the ONLY condition on showing it.
+Existing crewmates and custom agents do not suppress it; this supersedes the
+exclusion the first implementation applied, which kept the flow from any
+workspace with custom agents because their earlier-sync crewmates were
+screen 03's job. It opens once, at the first of: the end of the first-run tour
+for a new user, or the first visit to the Crewmates page for everyone else,
+including a workspace that finished first run before the flow shipped. The
+Crewmates page keeps its on-demand **Meet CrewMates** entry. Reasoning: the
+flow introduces the concept and creates one crewmate the person names; neither
+depends on what the workspace already holds, and a person who opens the
+Crewmates page is looking for exactly this.
 
 Already shipped and shown in the review as evidence, not re-decided here:
 crewmates are out of the ordinary session list; the ghost icon marks a

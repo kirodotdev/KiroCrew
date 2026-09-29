@@ -7584,8 +7584,6 @@
       "error_create_failed": "Impossible de créer {{name}}. Vérifie la connexion et réessaie.",
       "error_create_unknown": "{{name}} a peut-être été créé, peut-être pas : le serveur n'a pas répondu. Vérifie la page Crew Members avant de réessayer ; si {{name}} y figure, ajoute son travail depuis la page Planification.",
       "save_failed": "Impossible de marquer cette introduction comme terminée ; elle pourra donc réapparaître une fois.",
-      "eligibility_error": "Impossible de vérifier s'il faut afficher Rencontre les CrewMates.",
-      "eligibility_open": "Ouvrir Rencontre les CrewMates",
       "step4_title": "{{name}} est prêt",
       "ready_starts_morning": "{{name}} commence demain à 9h00.",
       "ready_starts_morning_today": "{{name}} commence aujourd'hui à 9h00.",

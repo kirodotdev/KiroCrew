@@ -7473,8 +7473,6 @@
       "error_create_failed": "{{name}} তৈরি করা যায়নি। কানেকশন দেখে আবার চেষ্টা করো।",
       "error_create_unknown": "{{name}} তৈরি হয়েছে কি হয়নি বলা যাচ্ছে না: সার্ভার উত্তর দেয়নি। আবার চেষ্টা করার আগে Crew Members পেজ দেখো; {{name}} সেখানে থাকলে শিডিউল পেজ থেকে তার কাজ যোগ করো।",
       "save_failed": "এই পরিচিতিটা শেষ হিসেবে চিহ্নিত করা যায়নি, তাই এটা আরেকবার দেখা দিতে পারে।",
-      "eligibility_error": "Meet CrewMates দেখানো হবে কি না তা পরীক্ষা করা যায়নি।",
-      "eligibility_open": "Meet CrewMates খোলো",
       "step4_title": "{{name}} প্রস্তুত",
       "ready_starts_morning": "{{name}} আগামীকাল সকাল 9:00-এ শুরু করবে।",
       "ready_starts_morning_today": "{{name}} আজ সকাল 9:00-এ শুরু করবে।",

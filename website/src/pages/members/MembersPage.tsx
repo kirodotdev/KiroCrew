@@ -91,7 +91,7 @@ import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewWebview from './CrewWebview'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
-import { START_MEET_CREWMATES_EVENT } from '../../components/MeetCrewmatesFlow'
+import { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT } from '../../components/MeetCrewmatesFlow'
 import { hasNoCrewmates } from '../../hooks/useMeetCrewmatesGate'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import CrewNotesTab from './CrewNotesTab'
@@ -697,6 +697,13 @@ export default function MembersPage() {
   const existingNames = useMemo(() => rows.map((r) => r.name), [rows])
   const loaded = rosterQuery.data !== undefined || rosterQuery.isError
   const loadError = rosterQuery.data === undefined && rosterQuery.isError
+  // Ask the host to show Meet CrewMates on the first visit. The host decides
+  // whether it is still due (whether this workspace has seen it, nothing
+  // else), so announcing on every mount is safe; the empty-state button stays
+  // the on-demand entry.
+  useEffect(() => {
+    window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT))
+  }, [])
   // ONE source of truth for the roster fields the page derives from (starred
   // count, the Starred filter, search, sort, source chips): the react-query
   // rows merged with each member's pushed `roster` projection, projection
@@ -2723,11 +2730,10 @@ export default function MembersPage() {
             </li>
           )}
           {loaded && !loadError && hasNoCrewmates(members) && (
-            /* The Meet CrewMates entry point: `hasNoCrewmates` is the gate's own
-               predicate (the built-in `default` row is the main assistant), so the
-               page and the auto-fire can never disagree on "no crewmate yet".
-               Re-opens the first-run flow (App hosts it) — the user asked, so
-               no eligibility check applies. */
+            /* The on-demand Meet CrewMates entry, beside the empty state
+               (the built-in `default` row is the main assistant, not a
+               crewmate). Re-opens the first-run flow (App hosts it) — the user
+               asked, so no check applies. */
             <li className="px-4 py-2">
               <button
                 onClick={() => window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT))}

@@ -7473,8 +7473,6 @@
       "error_create_failed": "{{name}} konnte nicht erstellt werden. Prüfe die Verbindung und versuche es noch einmal.",
       "error_create_unknown": "{{name}} wurde vielleicht erstellt, vielleicht nicht: Der Server hat nicht geantwortet. Prüfe die Seite Crew Members, bevor du es erneut versuchst; steht {{name}} dort, lege die Aufgabe auf der Zeitplan-Seite an.",
       "save_failed": "Diese Einführung konnte nicht als erledigt markiert werden, darum kann sie noch einmal erscheinen.",
-      "eligibility_error": "Es konnte nicht geprüft werden, ob „Lerne die CrewMates kennen“ gezeigt werden soll.",
-      "eligibility_open": "„Lerne die CrewMates kennen“ öffnen",
       "step4_title": "{{name}} ist bereit",
       "ready_starts_morning": "{{name}} fängt morgen um 9:00 an.",
       "ready_starts_morning_today": "{{name}} fängt heute um 9:00 an.",

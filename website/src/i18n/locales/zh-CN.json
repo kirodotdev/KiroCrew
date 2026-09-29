@@ -7362,8 +7362,6 @@
       "error_create_failed": "无法创建 {{name}}。检查连接后再试一次。",
       "error_create_unknown": "{{name}} 可能已创建，也可能没有：服务器没有响应。重试前请先查看 Crew Members 页面；如果 {{name}} 已在那里，请到日程页面为它添加工作。",
       "save_failed": "无法把这段介绍标记为已完成，所以它可能再出现一次。",
-      "eligibility_error": "无法确认是否要显示“认识 CrewMates”。",
-      "eligibility_open": "打开“认识 CrewMates”",
       "step4_title": "{{name}} 准备好了",
       "ready_starts_morning": "{{name}} 明天早上 9:00 开工。",
       "ready_starts_morning_today": "{{name}} 今天早上 9:00 开工。",

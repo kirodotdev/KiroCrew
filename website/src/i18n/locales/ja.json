@@ -7362,8 +7362,6 @@
       "error_create_failed": "{{name}} を作成できませんでした。接続を確認してもう一度試してください。",
       "error_create_unknown": "{{name}} は作成されたかどうか分かりません。サーバーが応答しませんでした。やり直す前に Crew Members ページを確認してください。{{name}} がそこにあれば、スケジュールページから仕事を追加してください。",
       "save_failed": "この紹介を完了として記録できなかったため、もう一度表示されることがあります。",
-      "eligibility_error": "「CrewMates と出会う」を表示するかどうかを確認できませんでした。",
-      "eligibility_open": "「CrewMates と出会う」を開く",
       "step4_title": "{{name}} の準備ができました",
       "ready_starts_morning": "{{name}} は明日の 9:00 に始めます。",
       "ready_starts_morning_today": "{{name}} は今日の 9:00 に始めます。",

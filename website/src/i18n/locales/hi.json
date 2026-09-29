@@ -7473,8 +7473,6 @@
       "error_create_failed": "{{name}} नहीं बन सका। कनेक्शन जाँचो और फिर कोशिश करो।",
       "error_create_unknown": "{{name}} बना भी हो सकता है, नहीं भी: सर्वर ने जवाब नहीं दिया। दोबारा कोशिश करने से पहले Crew Members पेज देखो; अगर {{name}} वहाँ है, तो शेड्यूल पेज से उसका काम जोड़ो।",
       "save_failed": "यह परिचय पूरा हुआ के रूप में चिह्नित नहीं हो सका, इसलिए यह एक बार फिर दिख सकता है।",
-      "eligibility_error": "यह जाँच नहीं हो सकी कि Meet CrewMates दिखाना है या नहीं।",
-      "eligibility_open": "Meet CrewMates खोलो",
       "step4_title": "{{name}} तैयार है",
       "ready_starts_morning": "{{name}} कल सुबह 9:00 बजे शुरू करेगा।",
       "ready_starts_morning_today": "{{name}} आज सुबह 9:00 बजे शुरू करेगा।",

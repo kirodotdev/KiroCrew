@@ -34,6 +34,7 @@ const themeState = {
   importOnboarded: true,
   privacyAcked: true,
   crewmatesOnboarded: true,
+  crewmatesFlowSeen: true,
   themeBootReady: false,
   themes: [],
   markOnboarded: vi.fn(),

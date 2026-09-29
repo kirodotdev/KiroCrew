@@ -4951,8 +4951,6 @@
       "error_create_failed": "{{name}} could not be created. Check the connection and try again.",
       "error_create_unknown": "{{name}} may or may not have been created: the server did not answer. Check the Crew Members page before trying again; if {{name}} is there, add its job from the Schedule page.",
       "save_failed": "This intro could not be marked as done, so it may appear once more.",
-      "eligibility_error": "Could not check whether to show Meet CrewMates.",
-      "eligibility_open": "Open Meet CrewMates",
       "step4_title": "{{name}} is ready",
       "ready_starts_morning": "{{name}} starts tomorrow at 9:00.",
       "ready_starts_morning_today": "{{name}} starts today at 9:00.",

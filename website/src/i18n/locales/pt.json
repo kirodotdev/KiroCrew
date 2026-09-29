@@ -7584,8 +7584,6 @@
       "error_create_failed": "Não foi possível criar {{name}}. Verifique a conexão e tente de novo.",
       "error_create_unknown": "{{name}} pode ou não ter sido criado: o servidor não respondeu. Verifique a página Crew Members antes de tentar de novo; se {{name}} estiver lá, adicione o trabalho pela página Agenda.",
       "save_failed": "Não foi possível marcar esta introdução como concluída, então ela pode aparecer mais uma vez.",
-      "eligibility_error": "Não foi possível verificar se Conheça os CrewMates deve aparecer.",
-      "eligibility_open": "Abrir Conheça os CrewMates",
       "step4_title": "{{name}} está pronto",
       "ready_starts_morning": "{{name}} começa amanhã às 9:00.",
       "ready_starts_morning_today": "{{name}} começa hoje às 9:00.",
