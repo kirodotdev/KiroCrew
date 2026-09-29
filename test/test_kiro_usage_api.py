@@ -1202,7 +1202,8 @@ class TestExpectedArnAnchor:
 
 
 class TestCandidateOrdering:
-    """Candidates are ranked by expiry (freshest first), not by path order."""
+    """Candidates rank kiro-cli's own store first, then by expiry (freshest
+    first), never by path order."""
 
     def test_freshest_expiry_ranks_first(self, tmp_path):
         # A stale-but-unexpired JSON credential sits in the highest-priority PATH
@@ -1267,6 +1268,62 @@ class TestCandidateOrdering:
              patch.object(api, "_OTHER_SQLITE_DBS", ()):
             cands = api._candidate_tokens()
         assert [c.token for c in cands] == ["same"]
+
+    def test_shared_profile_prefers_cli_store_over_fresher_sso_cache(self):
+        # Two accounts in one IdC org share a profile ARN. The signed-in one's token
+        # sits in kiro-cli's own store; the other account's leftover sits in a JSON
+        # SSO cache and was refreshed LATER. Both clear the ARN proof, so the first
+        # candidate wins: ranking by expiry alone served the other account's balance.
+        # The readers are stubbed; the store paths stay where they are.
+        now = datetime.now(timezone.utc)
+        soon = now + timedelta(minutes=20)
+        later = now + timedelta(hours=8)
+        own_db = api._CLI_SQLITE_DBS[0]
+
+        def fake_json(read_id, _now):
+            return ("other-account", later) if read_id == api._JSON_TOKEN_READ_IDS[0] else None
+
+        def fake_sqlite(db, _now):
+            return ("signed-in", soon) if db == own_db else None
+
+        shared_arn = "arn:aws:codewhisperer:us-east-1:1:profile/SHARED"
+        usage = {
+            "other-account": {"usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 10276.0, "usageLimit": 10000.0}]},
+            "signed-in": {"usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 214.0, "usageLimit": 10000.0}]},
+        }
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": shared_arn}]})
+            return _resp(200, usage[token])
+
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+        try:
+            with patch.object(api, "_token_from_json", side_effect=fake_json), \
+                 patch.object(api, "_token_from_sqlite", side_effect=fake_sqlite), \
+                 patch.object(api, "_post", side_effect=fake_post):
+                cands = api._candidate_tokens()
+                out = api.fetch_usage_limits(expected_arn=shared_arn).usage
+        finally:
+            api._PROFILE_ARN_CACHE.clear()
+            api._PROFILE_NAME_CACHE.clear()
+        assert [c.token for c in cands] == ["signed-in", "other-account"]
+        assert out is not None
+        assert out["credits_used"] == 214.0, "served the other account's balance"
+
+    def test_expiry_breaks_ties_within_the_same_provenance(self):
+        now = datetime.now(timezone.utc)
+        first, second = api._JSON_TOKEN_READ_IDS[0], api._JSON_TOKEN_READ_IDS[1]
+        found = {first: ("stale-tok", now + timedelta(minutes=20)),
+                 second: ("fresh-tok", now + timedelta(hours=8))}
+
+        with patch.object(api, "_token_from_json",
+                          side_effect=lambda read_id, _now: found.get(read_id)), \
+             patch.object(api, "_token_from_sqlite", return_value=None):
+            assert [c.token for c in api._candidate_tokens()] == ["fresh-tok", "stale-tok"]
 
     def test_expired_candidates_excluded(self):
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
