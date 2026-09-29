@@ -107,7 +107,14 @@ export const SECTION_CLASS =
 export const SCRIM_CLASS =
   'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto bg-bg/70 backdrop-blur-xs p-0 text-text sm:items-center sm:justify-center sm:p-6'
 export const PANEL_CLASS =
-  'relative flex min-h-svh w-full flex-col overflow-clip bg-card shadow-xl sm:h-[min(760px,calc(100vh-48px))] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
+  'relative flex min-h-svh w-full flex-col overflow-clip bg-card shadow-xl sm:h-[calc(100vh-48px)] sm:max-h-[760px] sm:min-h-0 sm:max-w-6xl sm:flex-row sm:rounded-2xl sm:border sm:border-border'
+
+// The pinned-footer behaviour every consumer of the stacked shell needs: on a
+// narrow viewport the SCRIM scrolls, so the actions stick to its bottom (the
+// panel's `overflow-clip` keeps it the sticky scrollport); from `sm` up the
+// section scrolls internally and the footer is ordinary flow. Each footer adds
+// its own padding, bottom padding clearing the safe-area inset.
+export const PINNED_FOOTER_CLASS = 'sticky bottom-0 z-10 bg-card sm:static'
 
 export interface ShellAsideCopy {
   ariaLabel: string
@@ -299,7 +306,7 @@ export default function OnboardingChapterShell({
         // Sticky on narrow viewports so the step's navigation stays on screen
         // however tall the stacked aside + body grow; the bottom padding
         // clears the home indicator / floating browser toolbar.
-        <footer className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-end gap-3 bg-card px-6 pt-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:static sm:px-10 sm:pb-10">
+        <footer className={`${PINNED_FOOTER_CLASS} flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-border px-6 pt-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:border-t-0 sm:px-10 sm:pb-10`}>
           {footer}
         </footer>
       )}
