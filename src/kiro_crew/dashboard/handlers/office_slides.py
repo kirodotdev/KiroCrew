@@ -116,6 +116,7 @@ from kiro_crew import platform_compat, security
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard import token_secret as _token_secret
 from kiro_crew.dashboard.handlers import files as _files
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.github_runner import validate_provider_executable
 from kiro_crew.platform import redact_via_context as redact
@@ -1414,6 +1415,9 @@ def _render_finish(work: _Staging, digest: str, ext: str, key: bytes) -> dict[st
 
 async def api_file_office_slides(request: web.Request) -> web.Response:
     """GET /api/file-office-slides?path=... -- the rendered deck's manifest (renders on a miss)."""
+    owner_denied = await require_owner_dashboard_request(request, "file_office_slides")
+    if owner_denied is not None:
+        return owner_denied
     raw_path, early = await _resolve_path(request, _TOOL_NAME)
     if early is not None:
         return early
@@ -1566,6 +1570,9 @@ def _locate_slide(raw_path: str, n: int, want_digest: str) -> tuple[str, bytes]:
 
 async def api_file_office_slide(request: web.Request) -> web.StreamResponse:
     """GET /api/file-office-slide?path=...&n=<k> -- one rendered slide as PNG."""
+    owner_denied = await require_owner_dashboard_request(request, "file_office_slide")
+    if owner_denied is not None:
+        return owner_denied
     raw_path, early = await _resolve_path(request, _TOOL_NAME)
     if early is not None:
         return early

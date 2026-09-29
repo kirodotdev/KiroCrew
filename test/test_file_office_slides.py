@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers import office_slides as mod
 from kiro_crew.dashboard.handlers.office_slides import (
@@ -34,7 +35,7 @@ def _make_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/file-office-slides", api_file_office_slides)
     app.router.add_get("/api/file-office-slide", api_file_office_slide)
-    return app
+    return as_owner(app)
 
 
 @pytest.fixture
