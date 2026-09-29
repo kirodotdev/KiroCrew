@@ -3622,36 +3622,31 @@ def _register_workflow_lifecycle(app: web.Application, state: DashboardState) ->
 # answered 503. The pass is marker-gated and runs immediately after the bind, so
 # on every boot but the first after the upgrade the wait is the few milliseconds
 # the pass takes to find the marker; on that first boot it is one config read
-# and one scan of the session metadata lines.
+# and one read of each candidate's DM transcript.
 _CREWMATE_PRUNE_GATE_TIMEOUT_S = 60.0
 _CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-#: Held whatever the method. A read of the member roster is not a pure read:
-#: ``GET /api/members`` calls ``MemberEventLogService.ensure`` for every row,
-#: which folds a member's pre-log ``activity.jsonl`` into the event log and
-#: RETIRES the file under another name, and ``reconcile_member_config`` appends
-#: to the same log. The prune reads both places (``_activity_names_member``);
-#: a fold running beside it can move a crewmate's only activity record out of
-#: the file after the prune read the log and before it read the file, and the
-#: crewmate reads as never chatted. Every ``/api/members`` route reaches the
-#: same logs, so the whole prefix waits.
+#: Held whatever the method, so the roster is read once the pass has settled
+#: and never lists a row the pass is removing. ``GET /api/members`` is not a
+#: pure read either: it calls ``MemberEventLogService.ensure`` for every row
+#: and ``reconcile_member_config`` appends to the member log. Every
+#: ``/api/members`` route reaches the same rows, so the whole prefix waits.
 _CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
 
 
 def _register_crewmate_prune_gate(app: web.Application, state: DashboardState) -> None:
     """Arm the crewmate-prune barrier before bind; the pass itself runs after.
 
-    The startup prune (``crewmate_prune_migration``) decides from chat history
-    and the DM bindings which sync-generated crewmates were never used, then
+    The startup prune (``crewmate_prune_migration``) decides from each
+    candidate's Crewmates-page DM thread which sync-generated crewmates were
+    never chatted with, then
     deletes their rows. Every writer that can bind an agent to a session while
     the gateway is up reaches it through a mutating request -- the chat send,
     slot create, slot agent switch, member thread, channel and import routes
     under ``/api/``, and the OpenAI-compatible ``POST /v1/chat/completions`` --
     so ONE middleware holds every non-safe-method request until the pass
     settles, with no path list to keep in step with the route table. The
-    member roster is the one READ that writes evidence -- its ``ensure`` folds
-    and retires a member's legacy activity file and its reconcile appends to
-    the member log, both of which the prune reads -- so every request under
-    ``/api/members`` is held whatever its method
+    member roster is held too, whatever its method, so it is read once the
+    pass has settled and never lists a row the pass is removing
     (``_CREWMATE_PRUNE_GATE_HELD_PREFIXES``). The writers that do not come
     through HTTP wait in ``await_crewmate_prune_settled`` instead.
 
