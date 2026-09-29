@@ -3400,12 +3400,43 @@ a trust root on its own; publication therefore also writes a
 `session_pid_<pid>.sig` sidecar:
 
 - **MAC**: HMAC-SHA256 over `"<pid>:<body>"`, where *body* is the full
-  published `.txt` content — the session key alone (legacy), or
-  `"<session_key>\n<start_token>"` (recycle-guarded, below). The pid is bound
+  published `.txt` content — the session key alone (legacy),
+  `"<session_key>\n<start_token>"` (recycle-guarded, below), or those plus the
+  tenant section (shared-runtime, below). The pid is bound
   into the MAC so one pid's pair cannot be replayed under another pid, and
   covering the whole body signs the start token too — flipping only the token
   invalidates the MAC. A legacy body yields a byte-identical message to the
   pre-token scheme, so mappings signed before the format change still verify.
+- **Tenant section** (shared runtime): one kiro-cli process hosts several ACP
+  sessions — a `spawn_run` subagent on its parent's runtime, a workflow pool
+  worker — while the mapping names ONE. Publication therefore records the set
+  of sessions sharing the pid, inside the same MAC, and the section is written
+  ONLY above one session, so a 1:1 pid produces byte-identical output to the
+  scheme above and an older reader still parses it. The set comes from
+  `SessionManager.runtime_pids()`, filtered to rows carrying `sid`: that
+  snapshot also appends one row per manager-owned companion RUNTIME whose `key`
+  is display text, and a subagent runtime is frequently the runtime a session is
+  already served by, so counting those rows would record two tenants for a pid
+  hosting one session. The section is size-bounded, so a runtime with many
+  sessions records the true count while dropping members — a short membership
+  is INCOMPLETE, never a closed set.
+  Readers ask two different questions of it and must not share an answer:
+  a reader resolving its OWN identity treats a recorded count above one as a
+  refusal (no single key names it), while a reader VERIFYING a key someone else
+  declared checks membership. Absence of the section is UNKNOWN, never
+  "not shared": a manager that cannot answer must not make readers confident
+  about a pid it has no evidence for.
+- **Shared-pid attestation**: membership is necessary but NOT sufficient for a
+  declared key, because the `.txt` is agent-readable — a co-tenant could read a
+  sibling's key out of the roster and declare it. A pid demonstrably hosting
+  several sessions therefore also requires an `X-Session-Token` resolving to
+  exactly the declared key (`dashboard/token_auth.py`); the token's MAC uses the
+  agent-unreadable SEL trust root and names one session, which the kernel's
+  proof of the PROCESS cannot do on a shared runtime. A 1:1 pid requires no
+  token: only one session lives there, so there is no other identity to mistake
+  it for. Both admitted paths record which roster shape they judged, so the SEL
+  trail distinguishes a declaration checked against a full membership from one
+  checked against a short.
 - **PID-recycle guard** (issue #8343): the mapping used to bind only the pid
   *number*, so a recycled pid kept verifying and answered for the new
   process with the previous owner's session key until the next restart's

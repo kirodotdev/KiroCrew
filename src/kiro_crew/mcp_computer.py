@@ -135,6 +135,7 @@ from kiro_crew.mcp_core import (
     _replay_target,
     _resolve_api_target,
     _session_key_header_error,
+    _session_token_header,
     require_strict_session_key,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
@@ -799,6 +800,14 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
     }
     if _declares_identity(session_key):
         headers["X-Session-Key"] = session_key
+        # The token travels WITH the key, never without it. On a pid hosting
+        # several sessions the kernel's proof of the PROCESS cannot say which of
+        # them holds this socket, so the gateway requires a token naming exactly
+        # the declared key and refuses the declaration otherwise. Both values
+        # come from the same place -- the ladder resolves the key from this
+        # token on such a pid -- so they agree by construction. Empty on a 1:1
+        # install, where the helper returns no header and nothing changes.
+        headers.update(_session_token_header())
 
     def _send_once(target: tuple[str, str]):
         base, socket_path = target

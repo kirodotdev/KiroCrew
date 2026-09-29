@@ -252,6 +252,14 @@ def _post_command(
     session key) goes in the ``X-Session-Key`` HEADER, which the strict route's
     AF_UNIX peer check compares against the HMAC-signed session the caller
     resolves to; a bare header would be a 403.
+
+    The per-session token goes WITH it, and the pair must not be separated. On a
+    pid hosting several sessions the kernel's proof of the PROCESS cannot say
+    which of them holds this socket, so the peer check requires a token naming
+    exactly the declared key there and refuses the declaration otherwise. The two
+    agree by construction, because on such a pid the ladder resolves the key from
+    that very token. On a 1:1 install the helper contributes no header at all, so
+    the request is byte-identical to before.
     """
     body = json.dumps(
         {"session_key": bus_key, "op": op, "args": args, "timeout_ms": timeout_ms}
@@ -263,6 +271,7 @@ def _post_command(
             "Content-Type": "application/json",
             "X-Internal-Secret": mcp_core._internal_secret(),
             "X-Session-Key": session_header,
+            **mcp_core._session_token_header(),
         },
         method="POST",
     )

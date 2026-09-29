@@ -2472,6 +2472,8 @@ class TestUnresolvedKeysAreNeverDeclared:
                     {
                         "has_session_header": "X-Session-Key" in self.headers,
                         "session_header": self.headers.get("X-Session-Key"),
+                        "has_token_header": "X-Session-Token" in self.headers,
+                        "token_header": self.headers.get("X-Session-Token"),
                         "body": json.loads(raw),
                     }
                 )
@@ -2525,6 +2527,35 @@ class TestUnresolvedKeysAreNeverDeclared:
         hit = self._invoke_through(monkeypatch, "dashboard:main")
         assert hit["session_header"] == "dashboard:main"
         assert hit["body"]["session_key"] == "dashboard:main"
+
+    def test_a_declared_key_carries_its_session_token(self, monkeypatch):
+        """HEADLINE: the token travels WITH the key, at the wire.
+
+        On a pid hosting several sessions the peer check cannot tell which of them
+        holds the socket from kernel credentials, so it requires a token naming
+        exactly the declared key and refuses the declaration otherwise. Without
+        this header every computer-use call on a shared runtime is refused -- the
+        founder's included, which worked before that demand existed. Asserted on a
+        real listener so a refactor that rebuilds the header dict cannot drop it
+        silently, which is how it was missing in the first place.
+        """
+        monkeypatch.setattr(
+            mcp_computer, "_session_token_header", lambda: {"X-Session-Token": "a-signed-token"}
+        )
+        hit = self._invoke_through(monkeypatch, "dashboard:main")
+        assert hit["session_header"] == "dashboard:main"
+        assert hit["token_header"] == "a-signed-token"
+
+    def test_an_undeclared_key_sends_no_token_either(self, monkeypatch):
+        """The converse: the token is an attestation OF a declaration, so it must
+        not travel alone. Sending one where no key is claimed would offer the
+        gateway an identity the caller deliberately withheld."""
+        monkeypatch.setattr(
+            mcp_computer, "_session_token_header", lambda: {"X-Session-Token": "a-signed-token"}
+        )
+        hit = self._invoke_through(monkeypatch, mcp_computer._unresolved_session_key())
+        assert hit["has_session_header"] is False, hit
+        assert hit["has_token_header"] is False, hit
 
     def test_the_call_path_routes_an_unresolved_identity_without_a_header(
         self, keystone: Path, monkeypatch

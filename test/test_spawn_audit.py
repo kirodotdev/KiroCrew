@@ -1439,7 +1439,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Messages.app through the operator's own Full Disk Access and
         # Automation grants, which a scrubbed-env sandbox strips.
         "imessage/rpc.py::start",
-        "mcp_core.py::_get_ppid",
         "mcp_gateway/backend.py::spawn_backend",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the one-shot
@@ -1502,7 +1501,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # and every failure (openssl missing included) already fails safe to
         # "no floor".
         "platform/feed_trust.py::_verify_signature",
-        "mcp_shared.py::_get_ppid",
         # File-manager launchers for the dashboard's reveal action. The
         # command is an absolute literal resolved in this module (never a bare
         # argv name, so an agent-writable PATH entry cannot supply it), the

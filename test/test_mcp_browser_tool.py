@@ -323,3 +323,62 @@ def test_post_command_parses_success_and_transport_errors(monkeypatch: pytest.Mo
     monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _raise_url)
     status, payload = mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
     assert status is None and payload == {}
+
+
+def test_post_command_sends_the_session_token_beside_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HEADLINE: the token travels WITH the declared key, asserted on the real request.
+
+    On a pid hosting several sessions the peer check cannot tell which of them holds
+    the socket from kernel credentials, so it requires a token naming exactly the
+    declared key and refuses the declaration otherwise. Without this header every
+    native browser-panel op on a shared runtime is refused -- including the founder's,
+    which worked before that demand existed. The header dict is read off the request
+    object rather than from a stub, so a refactor that rebuilds it cannot drop the
+    token silently, which is how it came to be missing.
+    """
+    seen: list[dict] = []
+
+    monkeypatch.setattr(mod.mcp_core, "_api_base", lambda: "http://127.0.0.1:9")
+    monkeypatch.setattr(mod.mcp_core, "_internal_secret", lambda: "sekret")
+    monkeypatch.setattr(
+        mod.mcp_core, "_session_token_header", lambda: {"X-Session-Token": "a-signed-token"}
+    )
+
+    def _record(req, timeout):
+        seen.append(dict(req.headers))
+        return _FakeResp(200, b'{"ok": true}')
+
+    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _record)
+    mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
+
+    assert len(seen) == 1
+    # urllib title-cases header names on the Request object.
+    headers = {k.lower(): v for k, v in seen[0].items()}
+    assert headers["x-session-key"] == "dashboard:chat-1"
+    assert headers["x-session-token"] == "a-signed-token"
+
+
+def test_post_command_adds_no_token_header_when_there_is_no_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The converse, and what keeps a 1:1 install byte-identical: with no token the
+    helper contributes no header at all, rather than an empty one that the gateway
+    would have to tell apart from a real attestation."""
+    seen: list[dict] = []
+
+    monkeypatch.setattr(mod.mcp_core, "_api_base", lambda: "http://127.0.0.1:9")
+    monkeypatch.setattr(mod.mcp_core, "_internal_secret", lambda: "sekret")
+    monkeypatch.setattr(mod.mcp_core, "_session_token_header", dict)
+
+    def _record(req, timeout):
+        seen.append(dict(req.headers))
+        return _FakeResp(200, b'{"ok": true}')
+
+    monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _record)
+    mod._post_command("chat-1", "snapshot", {}, "dashboard:chat-1", 15000)
+
+    headers = {k.lower() for k in seen[0]}
+    assert "x-session-key" in headers
+    assert "x-session-token" not in headers
