@@ -466,6 +466,10 @@ a token header begins with is left alone in chat, history and channel output, an
 on the KAS backend every Kiro Crew tool call had been refused as unattested and
 answers again.
 
+## [0.7.2] - 2026-09-28
+
+A small fix.
+
 ## [0.7.1] - 2026-09-24
 
 A hot patch for two ways the dashboard had become slow: slow to start a chat, and slow to
