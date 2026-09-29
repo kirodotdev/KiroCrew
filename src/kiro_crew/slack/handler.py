@@ -233,6 +233,29 @@ APPROVAL_AUTO = "auto"
 APPROVAL_INTERACTIVE = "interactive"
 
 
+def _is_classified_acp_error(exc: BaseException) -> bool:
+    """Whether *exc* is an ``AcpError`` whose message the ACP client wrote for a user.
+
+    The client marks that by setting ``transient``: ``_raise_acp_error`` always
+    sets it from the raw JSON-RPC frame after ``_format_acp_error`` has worded the
+    message, and the curated raise sites (an unavailable model, a sandbox refusal,
+    a signed-out harness) fix it. ``AcpPromptBusy`` is the one classified type that
+    leaves it unset, since ``_raise_acp_error`` raises it straight from the
+    formatted text. A bare ``AcpError`` raised with ad hoc text, such as a child
+    exit carrying its stderr tail or a shutdown notice, leaves ``transient`` as
+    ``None`` and is not classified. Timeouts and process deaths are excluded by
+    type, because their messages are internal detail whatever they carry.
+
+    Defined here rather than in ``transport_dispatch``, which reads it, because
+    this module already depends on the ACP error types and the transport path
+    does not (``scripts/check_agent_sdk_boundary.py`` keeps that edge from
+    spreading).
+    """
+    if not isinstance(exc, AcpError) or isinstance(exc, (AcpTimeoutError, AcpProcessDied)):
+        return False
+    return exc.transient is not None or isinstance(exc, AcpPromptBusy)
+
+
 def _should_auto_approve_spawn(context_builder, event) -> bool:
     """Check if a spawn_run tool call should be auto-approved.
 
