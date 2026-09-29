@@ -152,6 +152,7 @@ describe('useVirtualChat: return surface and callback identity', () => {
       'scrollerRef',
       'topSentinelRef',
       'totalHeight',
+      'trailingRef',
       'virtualItems',
     ])
   })

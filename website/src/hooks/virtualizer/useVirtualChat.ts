@@ -240,6 +240,7 @@ export function useVirtualChat<T>(
     contentRef,
     topSentinelRef,
     bottomSentinelRef,
+    trailingRef,
     leadingOffset,
     scrollerEl,
     syncScrollerEl,
@@ -296,7 +297,7 @@ export function useVirtualChat<T>(
   const sync = useGeometrySync({ itemsRef, eagerFirstMeasureRef, heightIndexRef, shift, follow, pinning, ops })
   const measurement = useRowMeasurement({
     itemsRef, getKeyRef, streamingIndexRef, eagerFirstMeasureRef, elIndexRef, resizeObserverRef,
-    heightIndexRef, windowRangeRef, grace, sync,
+    trailingRef, heightIndexRef, windowRangeRef, grace, sync,
   })
 
   // Layout effects, pre-paint: the shift compensation's consumers, then
@@ -315,7 +316,7 @@ export function useVirtualChat<T>(
   })
   useScrollListener({ scrollerEl, bottomThreshold, setIsAtBottom, itemsRef, getKeyRef, follow, pinning, reading, ops })
   useCoverageWatchdog({ scrollerEl, leadingOffset, itemsRef, heightIndexRef, windowRangeRef, ops, follow, pinning })
-  useResizeObserver({ scrollerRef, scrollerEl, elIndexRef, resizeObserverRef, measurement, compensation, sync, pinning, ops })
+  useResizeObserver({ scrollerRef, scrollerEl, elIndexRef, trailingRef, resizeObserverRef, measurement, compensation, sync, pinning, ops })
   useWindowEdgeTriggers({
     windowRange, itemCount, overscan, prefetchStartIndex, sessionId, scrollerRef, scrollerEl,
     topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange,
@@ -498,6 +499,7 @@ export function useVirtualChat<T>(
     contentRef,
     topSentinelRef,
     bottomSentinelRef,
+    trailingRef,
     virtualItems,
     offsetBefore,
     offsetAfter,

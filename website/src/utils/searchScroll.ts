@@ -290,7 +290,7 @@ function scrollKeyDirection(key: string): 'up' | 'down' | undefined {
  */
 export function attachUserScrollIntent(
   target: EventTarget | undefined,
-  onUser: (dir?: 'up' | 'down') => void,
+  onUser: (dir?: ScrollIntentDirection) => void,
 ): () => void {
   if (!target) return () => {}
   const onKey = (e: Event) => {
@@ -357,8 +357,14 @@ export function attachUserScrollIntent(
     lastTouchY = y
     onUser(Number.isNaN(prev) || y === prev ? undefined : y > prev ? 'up' : 'down')
   }
-  // A scrollbar grab carries no direction until it actually scrolls.
-  const onPointer = () => onUser()
+  // A scrollbar grab carries no direction until it actually scrolls -- but it
+  // IS a scroll about to happen: the thumb is under the pointer and the first
+  // drag movement scrolls with no wheel delta or key to name the direction.
+  // Reported as `grab` so the follow guard can hold an automatic pin until that
+  // first scroll event (or give up after its settle window if the reader only
+  // clicked the thumb). A pointer anywhere else stays directionless: it moves
+  // nothing and must not hold anything.
+  const onPointer = (e: Event) => { if (pointerOnScrollbar(target, e as MouseEvent)) onUser('grab'); else onUser() }
   const passive = { passive: true } as const
   target.addEventListener('wheel', onWheel, passive)
   target.addEventListener('touchstart', onTouchStart, passive)
@@ -378,6 +384,40 @@ export function attachUserScrollIntent(
     target.removeEventListener('pointerdown', onPointer)
     target.removeEventListener('keydown', onKey)
   }
+}
+
+/** What an input said about where it will move the reader. `up`/`down` are
+ *  confirmed by the input itself (a wheel delta, a scrolling key, a finger path);
+ *  `grab` is a pointer landing on the scrollbar -- a scroll is about to happen
+ *  but nothing names its direction until the first drag movement scrolls;
+ *  `undefined` is directionless input that moves nothing on its own. */
+export type ScrollIntentDirection = 'up' | 'down' | 'grab'
+
+/**
+ * Did this pointer land on the scroller's own scrollbar band?
+ *
+ * `clientWidth` excludes the scrollbar and the element's box includes it, so
+ * the band is the strip between the two -- on the right in LTR, on the left in
+ * RTL. An overlay scrollbar (macOS default) has no band at all, and geometry
+ * the host does not report (jsdom, a detached node) reads as no band: both
+ * answer false, which is today's behaviour exactly. A pointer anywhere else in
+ * the scroller -- selecting text, clicking a link -- is not a grab and must
+ * never be read as one.
+ */
+export function pointerOnScrollbar(target: EventTarget, e: { clientX?: number }): boolean {
+  if (!(target instanceof HTMLElement) || typeof e.clientX !== 'number') return false
+  if (typeof target.getBoundingClientRect !== 'function') return false
+  const rect = target.getBoundingClientRect()
+  const band = rect.width - target.clientWidth
+  if (!(band >= 1)) return false
+  const x = e.clientX - rect.left
+  let rtl = false
+  try {
+    rtl = typeof getComputedStyle === 'function' && getComputedStyle(target).direction === 'rtl'
+  } catch {
+    rtl = false
+  }
+  return rtl ? x <= band : x >= target.clientWidth
 }
 
 export function scrollCurrentMatchIntoView(

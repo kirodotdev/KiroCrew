@@ -96,6 +96,10 @@ import { i18nT } from '../i18n/t'
  * s.dashboard.slots. Server reads/writes go through React Query + the api client.
  */
 
+/** Delay before the post-send bottom pin, so the optimistic bubble's commit has
+ *  landed in the tail window the pin mounts (ChatPage uses the same figure). */
+const SCROLL_AFTER_RENDER_MS = 100
+
 /** Variables of the composer upload mutation: the files, the slot they were
  *  picked in, and the AbortController that can end the request. */
 type UploadVars = { files: File[]; forSlot: string; controller: AbortController }
@@ -1065,6 +1069,15 @@ export default function ChatPane({
         message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
       }))
     }
+    // Sending is explicit intent to be at the end, so the pane force-pins the
+    // transcript exactly as ChatPage does after its own optimistic append: the
+    // reader lands on the bubble they just sent, and follow is re-armed for the
+    // reply — including a reader who had scrolled up to read and sends from
+    // there, whom no automatic pin may move (see evaluateAutoPin). Without this
+    // a crewmate DM sent from mid-history streamed its answer below the fold.
+    // Through the virtualizer's own handle, not a raw scrollTop write, so the
+    // follow guard accounts for the move (followPolicy's write invariant).
+    setTimeout(scrollToBottom, SCROLL_AFTER_RENDER_MS)
     // A failed send has to say so on the pane it was typed into. This path
     // reported nothing at all: the composer had already cleared and a rejected
     // fetch was swallowed by `.catch(() => undefined)`, so an undelivered
@@ -1152,7 +1165,7 @@ export default function ChatPane({
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
-  }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
+  }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom])
   // The endpointer auto-submit (handed to the Voice atom above) reads the
   // latest send through this ref.
   doSendRef.current = doSend
