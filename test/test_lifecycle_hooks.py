@@ -202,6 +202,14 @@ class TestShellBeforePython:
         if "kiro_crew.dashboard.server" not in sys.modules:
             sys.modules["kiro_crew.dashboard.server"] = MagicMock()
 
+        # The enable route re-reads the manifest from disk after onEnable and
+        # denies admission if the identity changed. This test has no app on
+        # disk, so serve a matching manifest from a stand-in — an unmocked
+        # re-read would return None and deny before the Python hook runs.
+        class _FakeManifest:
+            name = "test-app"
+            version = None  # matches fake_app_info's versionless manifest
+
         with (
             patch("kiro_crew.apps.routes.get_app", return_value=fake_app_info),
             patch("kiro_crew.apps.routes.enable_app", return_value=MagicMock(ok=True, to_dict=lambda: {"ok": True})),
@@ -209,6 +217,8 @@ class TestShellBeforePython:
             patch("kiro_crew.apps.routes.start_app_backend", return_value=None),
             patch("kiro_crew.apps.routes._run_lifecycle_script", side_effect=mock_shell),
             patch("kiro_crew.apps.routes.on_app_enable", side_effect=mock_python),
+            patch("kiro_crew.apps.routes.get_app_manifest", return_value=_FakeManifest()),
+            patch("kiro_crew.apps.routes.app_admission_denied", return_value=None),
             patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
         ):
             from kiro_crew.apps.routes import handle_enable_app

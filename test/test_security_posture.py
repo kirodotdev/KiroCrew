@@ -256,6 +256,10 @@ def _gate_side_baseline_log_sites(
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     # +1: model-unavailable warning log in the rejected-model path
     "acp/client.py": 8,
+    # +1: install-script failure audit line in the app-manager process, which
+    # never composes a companion context; the failure text is the payload of
+    # the registered "App install-script failures" sink.
+    "apps/manager.py": 1,
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
     "dashboard/chat_orchestrator.py": 1,

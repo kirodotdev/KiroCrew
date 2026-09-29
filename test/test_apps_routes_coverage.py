@@ -2256,12 +2256,15 @@ class TestRepeatedToggleIsIdempotent:
         async with TestClient(TestServer(_make_app())) as client:
             first = await client.post(f"/api/apps/{APP}/enable")
             assert first.status == 200
-            assert calls == ["backend", "onEnable", "hooks"]
+            # onEnable now runs BEFORE the backend starts (a race fix: a script
+            # installing backend deps, e.g. npm install, must finish before the
+            # backend process spawns and hits missing node_modules).
+            assert calls == ["onEnable", "backend", "hooks"]
             second = await client.post(f"/api/apps/{APP}/enable")
             assert second.status == 200
             assert (await second.json())["message"] == f"{APP} is already enabled"
         # The flag is not evidence onEnable ran, so the script and backend start repeat.
-        assert calls == ["backend", "onEnable", "hooks", "backend", "onEnable"]
+        assert calls == ["onEnable", "backend", "hooks", "onEnable", "backend"]
 
     @pytest.mark.asyncio
     async def test_concurrent_disables_run_on_disable_once(

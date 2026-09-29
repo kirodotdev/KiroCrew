@@ -78,6 +78,7 @@ DECLARED_SITES = frozenset(
         ("apps/manager.py", "_entry_stands_for_a_dropped_app"),
         ("apps/manager.py", "_path_is_occupied"),
         ("apps/manager.py", "_remove_any_shape"),
+        ("apps/manager.py", "_remove_installed_tree_except_data"),
         ("apps/manager.py", "app_enabled_state"),
         ("apps/manager.py", "uninstall_app"),
         ("apps/plugin_import.py", "_convert_skills"),
