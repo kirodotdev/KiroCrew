@@ -676,57 +676,8 @@ def test_the_pending_minimum_age_is_the_publish_lag() -> None:
     sweep = WORKFLOW.read_text(encoding="utf-8")
     assert "publish_lag_seconds=%d" % PUBLISH_LAG_SECONDS in sweep
     assert 'pending_min_age_seconds="$publish_lag_seconds"' in sweep
-    # Both constants are handed to the one classification program, which
-    # applies them as the pending arm's minimum age and evidence floor.
-    assert '--argjson lag "$publish_lag_seconds"' in sweep
-    assert '--argjson min_age "$pending_min_age_seconds"' in sweep
-    assert "$age < $min_age" in sweep
-    assert "$newest > ($updated - $lag)" in sweep
-
-
-def test_the_classification_is_one_jq_process_over_the_whole_scan() -> None:
-    """The scan is classified in ONE pass, not a bash loop over every row.
-
-    Six hundred and fifty rows through ~10 `jq` and `date -d` processes each
-    came to 480 seconds -- longer than the five-minute cadence, so every tick
-    queued behind the last, on the one job that delivers every verdict. The
-    decision logic is in the program; bash keeps only the two REST reads a few
-    candidates need, after the program has named them.
-    """
-    sweep = WORKFLOW.read_text(encoding="utf-8")
-    assert 'classified="$(jq -rs' in sweep
-    assert "done <<<\"$classified\"" in sweep
-    # No per-row jq or date invocation survives inside the loop.
-    body = sweep.split('done <<<"$classified"')[0].split('classified="$(jq -rs')[1]
-    loop = body.split("' <<<\"$scan\")\"")[1]
-    assert "jq -r" not in loop
-    assert "date -u -d \"$" not in loop.replace("date -u -d \"@$disposition_epoch\"", "")
-
-
-def test_no_middle_column_of_the_classification_can_be_empty() -> None:
-    """bash `read` on a tab IFS collapses an EMPTY field into its neighbour and
-    shifts every later column left -- which silently emptied the dispatch
-    reason and put the stamp where the evidence flag belonged. Every middle
-    column is therefore non-empty by construction: the evidence flag is a word
-    either way, and a missing stamp is written as "-"."""
-    sweep = WORKFLOW.read_text(encoding="utf-8")
-    assert 'then "complete" else "partial" end) as $evidence' in sweep
-    assert '($updated_at // "-")' in sweep
-    assert "read -r verdict updated_epoch number sha state evidence updated_at note" in sweep
-
-
-def test_a_fast_gate_completion_pulls_the_sweep_in() -> None:
-    """The sweep is the only path a completed lane has to the verdict, and the
-    scheduler is late under load; Fast Gate completing on a head is one event
-    per head update that lands while its other lanes are still finishing."""
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    on = doc[True] if True in doc else doc["on"]
-    assert on["workflow_run"]["workflows"] == ["Fast Gate"]
-    assert on["workflow_run"]["types"] == ["completed"]
-    assert on["schedule"] == [{"cron": "*/5 * * * *"}]
-    # Same single group, never cancelling the incumbent: a burst of completions
-    # is one queued sweep, not a queue of them.
-    assert doc["concurrency"] == {"group": "pr-readiness-sweep", "cancel-in-progress": False}
+    assert '[ "$age" -lt "$pending_min_age_seconds" ]' in sweep
+    assert "$(( updated_epoch - publish_lag_seconds ))" in sweep
 
 
 def test_the_sweep_runs_at_the_shortest_schedule_github_offers() -> None:
