@@ -240,9 +240,12 @@ async def test_headless_name_grant_refusal_steers_before_rejecting(monkeypatch):
     monkeypatch.setattr(llm_helpers.name_grant, "refusal_for_event", _refuse)
     ok = await _resolve_permission(provider, _event(), ToolApprovalPolicy.HOOK_BASED, hooks)
     assert ok is False
-    # The withheld grant is about the command itself (its program name), so it
-    # keeps the policy wording.
-    _assert_steered_then_rejected(provider, "name", "safety policy")
+    # The refusal is the surface's: the grant was the only approver and this
+    # caller has none, so the notice says what the surface permits and appends
+    # no remediation -- the host-authored reason carries no rule identity, and
+    # the model's own title would be the only anchor for one.
+    _assert_steered_then_rejected(provider, "name", "surface this turn runs on")
+    assert "How to do this properly" not in provider.steered[0]
 
 
 @pytest.mark.asyncio
@@ -520,28 +523,27 @@ async def test_cancelled_mid_steer_still_answers_the_wire_for_the_bg_oneliner():
 
 
 @pytest.mark.asyncio
-async def test_an_audit_failure_still_answers_the_wire(monkeypatch, caplog):
-    """Audit-first must not become audit-or-nothing: a SEL that cannot reach its
-    audit root raises on first touch, and an uncontained raise before the reject
-    would leave the permission request unanswered and the backend wedged."""
+async def test_an_audit_failure_on_a_deny_raises_before_the_wire(monkeypatch):
+    """Every permission decision is SEL-logged (backend-security-controls). A
+    SEL that cannot reach its audit root raises on first touch, and that raise
+    reaches the caller BEFORE the steer and the reject: a deny whose row cannot
+    be written is not answered on the wire, so it never proceeds unaudited."""
 
     def _broken_sel():
         raise OSError("audit root unavailable")
 
     monkeypatch.setattr("kiro_crew.sel.sel", _broken_sel)
     provider = _Provider()
-    with caplog.at_level("WARNING", logger="kiro_crew.llm_helpers"):
-        ok = await _resolve_permission(provider, _event(), ToolApprovalPolicy.REJECT_ALL, None)
-    assert ok is False
-    assert provider.calls == ["steer", "reject"], provider.calls
-    assert any("audit write failed" in r.message for r in caplog.records)
+    with pytest.raises(OSError):
+        await _resolve_permission(provider, _event(), ToolApprovalPolicy.REJECT_ALL, None)
+    assert provider.calls == [], provider.calls
 
 
 @pytest.mark.asyncio
 async def test_an_audit_failure_on_an_approval_still_raises(monkeypatch):
-    """Containment is for the deny sites only. The approval sites audit AFTER
-    the wire is answered, so a swallowed failure there would let an unattended
-    AUTO_APPROVE turn keep approving tools with no audit row at all."""
+    """The approval sites audit AFTER the wire is answered and raise the same
+    way, so an unattended AUTO_APPROVE turn cannot keep approving tools with no
+    audit row at all."""
 
     def _broken_sel():
         raise OSError("audit root unavailable")
@@ -554,7 +556,7 @@ async def test_an_audit_failure_on_an_approval_still_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_audit_failure_still_rejects_for_the_bg_oneliner(monkeypatch):
+async def test_an_audit_failure_raises_before_the_wire_for_the_bg_oneliner(monkeypatch):
     def _broken_sel():
         raise OSError("audit root unavailable")
 
@@ -576,8 +578,9 @@ async def test_an_audit_failure_still_rejects_for_the_bg_oneliner(monkeypatch):
             return self._session
 
     session = _Session()
-    await llm_helpers.run_bg_oneliner(_Sessions(session), "p", sel_source="test")
-    assert session.calls == ["steer", "reject"], session.calls
+    with pytest.raises(OSError):
+        await llm_helpers.run_bg_oneliner(_Sessions(session), "p", sel_source="test")
+    assert session.calls == [], session.calls
 
 
 @pytest.mark.asyncio
@@ -643,10 +646,10 @@ class TestEveryHostDenyInLlmHelpersSteersFirst:
     MODULE = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/llm_helpers.py"
     REJECT = re.compile(r"^\s*await \w+\.reject_tool\(")
     STEER = re.compile(r"^\s*await _steer_host_deny\(")
-    #: The CONTAINED audit spellings: the deny funnel, and the bg one-liner's
-    #: try-wrapped direct call. A bare ``_log(`` before a reject would re-open the
-    #: stranded-request gap the containment closes.
-    AUDIT = re.compile(r"^\s*(_log_deny\(|_sel\(\)\.log_tool_invocation\()")
+    #: The audit spellings: ``_resolve_permission``'s single raising funnel, and
+    #: the bg one-liner's direct call. Both raise, so a decision whose row
+    #: cannot be written is never answered on the wire.
+    AUDIT = re.compile(r"^\s*(_log\(|_sel\(\)\.log_tool_invocation\()")
     #: An approval may bind its result (``approval_sent = await ...``) so the
     #: transport floor's ``False`` can be audited as a rejected approval.
     APPROVE = re.compile(r"^\s*(\w+ = )?await \w+\.approve_tool\(")
@@ -738,17 +741,24 @@ class TestEveryHostDenyInLlmHelpersSteersFirst:
             f"stalled pipe cancels the coroutine with the decision unaudited: lines {late}"
         )
 
-    def test_approvals_never_use_the_contained_funnel(self):
-        # An approval audits after the wire; swallowing its failure would let an
-        # unattended turn keep approving with no audit trail.
+    def test_no_audit_call_is_contained(self):
+        # A ``try:`` immediately above an audit call would let a decision proceed
+        # with no audit row; the module has exactly one raising funnel.
+        lines = self._lines()
+        assert "_log_deny" not in "\n".join(lines)
+        for i, line in enumerate(lines):
+            if not self.AUDIT.match(line):
+                continue
+            above = lines[max(0, i - 1)].strip()
+            assert above != "try:", f"line {i + 1}: an audit call must not be contained"
+
+    def test_approvals_are_audited(self):
+        # An approval audits after the wire, through the same raising funnel.
         lines = self._lines()
         approvals = [i for i, line in enumerate(lines) if self.APPROVE.match(line)]
         assert approvals, "the module answers approvals; the walker found none"
         for i in approvals:
             window = lines[i : i + 4]
-            assert not any(
-                "_log_deny(" in line for line in window
-            ), f"line {i + 1}: an approval must audit through the raising funnel"
             assert any(
                 "_log(" in line for line in window
             ), f"line {i + 1}: an approval must still be audited"

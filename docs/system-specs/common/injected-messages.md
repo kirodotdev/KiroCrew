@@ -305,14 +305,16 @@ awaits `deny_notice.steer_refusal_notice` through the module's
 `_steer_host_deny` immediately before `reject_tool`, naming its cause per site:
 
 - `policy` — a safety rule judged the call itself: an always-deny pattern hit, a
-  hook `deny`, the shared permission floor refusing an `AUTO_APPROVE` call, a
-  name-based grant withheld with no approver to fall back to. Carries the class
-  remediation.
+  hook `deny`, the shared permission floor refusing an `AUTO_APPROVE` call.
+  Carries the class remediation.
 - `surface_policy` — the SURFACE refused the call, not a rule about the call:
-  the reject-all and read-only tool policies, and the tool-free one-liner. No
+  the reject-all and read-only tool policies, the tool-free one-liner, and a
+  name-based grant withheld on a surface with no approver to fall back to. No
   remediation, because it is keyed off the reason and the model's own title, and
-  on a surface where no tool can run it would name a sanctioned command that
-  cannot run there.
+  on a surface where no tool can run (or no one can approve) it would name a
+  sanctioned command the model cannot run there; the withheld-grant reason is
+  host-authored and carries no rule identity, so the title would be the only
+  anchor.
 - `invalid_name` — the call carried no title, the one deny the model can fix.
 
 The one genuine user rejection on that funnel (the interactive approver said no)
@@ -320,9 +322,10 @@ sends no notice. Two orderings are load-bearing at every site and are pinned by
 a source-walking test (`test_llm_helpers_deny_notice.py`): the SEL audit row is
 written BEFORE the steer and the reject (both await the ACP pipe, and a stalled
 pipe cancels the coroutine at the turn deadline — an audit sequenced after them
-never runs), and an audit that cannot be written is contained rather than
-allowed to strand the request (contained on the deny funnel only — an approval
-audits after the wire and keeps raising). A cancellation that lands inside the
+never runs), and an audit that cannot be written raises before the wire, so a
+deny never proceeds unaudited — the request stays unanswered and the caller's
+own deadline bounds it, exactly as an approval whose audit fails after the wire
+keeps raising. A cancellation that lands inside the
 steer still answers the wire: the reject is scheduled as a strongly referenced
 task whose outcome is read when it settles, and the cancellation re-raises at
 once — the cancellation is the caller's deadline, so nothing waits past it.
