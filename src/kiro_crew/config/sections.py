@@ -310,6 +310,20 @@ def coerce_effort(raw: object) -> str:
     return ""
 
 
+def coerce_fallback_models(raw: object) -> list[str]:
+    """Normalize an ordered list of explicit throttle-fallback models."""
+    if not isinstance(raw, list):
+        return []
+    models: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            spelling = item.strip()
+            model = model_registry.to_provider_id(spelling, "acp") or spelling
+            if model not in models:
+                models.append(model)
+    return models
+
+
 def coerce_fallback_model(raw: object) -> str:
     """Normalize the throttle-fallback model (agent.fallback_model).
 
@@ -755,6 +769,13 @@ class AgentConfig:
             "(keys: 'background', 'subagent'). Empty for a role inherits the chat "
             "default (agent.reasoning_effort) and then the provider/model default. "
             "Only applies on reasoning-capable models.",
+        ),
+    )
+    fallback_models: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Ordered fallback models",
+            "Ordered models tried after a zero-activity usage limit or exhausted transient retry budget.",
         ),
     )
     fallback_model: str = field(

@@ -339,6 +339,17 @@ def fallback_rewound_transient_budget() -> int:
 # successful restore, never on turn completion: the swap is sticky for the
 # remainder of the session by design.
 TURN_FALLBACK_ATTR = "_kc_active_fallback"
+FALLBACK_RESTORE_AFTER_ATTR = "_kc_fallback_restore_after"
+FALLBACK_REASON_ATTR = "_kc_fallback_reason"
+
+
+def defer_fallback_restore(provider: Any, seconds: float = 3600) -> None:
+    """Avoid reselecting a likely spent primary on every unattended turn."""
+    try:
+        setattr(provider, FALLBACK_RESTORE_AFTER_ATTR, time.time() + seconds)
+    except Exception:
+        logger.debug("setting fallback restore cooldown failed", exc_info=True)
+
 
 # Exception attribute carrying the chain-exhaustion story (set by the fallback
 # walks when every candidate also failed). The delivering surface appends it to
@@ -440,10 +451,13 @@ def annotate_model_fallback(text: str, provider: Any) -> str:
         safe_candidate = redact_credentials(redact_exfiltration_urls(str(candidate))[0])[0][
             :_FALLBACK_STORY_CAP
         ]
-        line = (
-            f"⚠️ Model '{safe_primary}' throttled; this run was served by fallback "
-            f"'{safe_candidate}'."
+        reason = getattr(provider, FALLBACK_REASON_ATTR, "throttle-exhaustion")
+        cause = (
+            "reached its usage limit"
+            if reason == "usage-limit"
+            else ("returned no response" if reason == "empty-response" else "throttled")
         )
+        line = f"⚠️ Model '{safe_primary}' {cause}; this run was served by fallback '{safe_candidate}'."
         return f"{line}\n\n{text}" if text else line
     except Exception:  # noqa: BLE001 — annotation is best-effort visibility
         logger.debug("fallback annotation failed", exc_info=True)
@@ -599,6 +613,7 @@ async def advance_fallback_candidate(
     *,
     surface: str,
     log_suffix: str = "",
+    reason: str = "throttle-exhaustion",
 ) -> str | None:
     """One chain-walk step — THE shared advance used by every fallback surface.
 
@@ -632,6 +647,11 @@ async def advance_fallback_candidate(
     active = provider_active_model(provider) or (fb_state.active or "") or "auto"
     if not fb_state.primary:
         _marker = getattr(provider, TURN_FALLBACK_ATTR, None)
+        if not _marker:
+            try:
+                setattr(provider, FALLBACK_RESTORE_AFTER_ATTR, 0.0)
+            except Exception:
+                pass
         _marker_primary = ""
         if isinstance(_marker, (tuple, list)) and _marker and isinstance(_marker[0], str):
             _marker_primary = _marker[0].strip()
@@ -686,12 +706,14 @@ async def advance_fallback_candidate(
         fb_state.walked.append(wire)
         try:
             setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, wire))
+            setattr(provider, FALLBACK_REASON_ATTR, reason)
         except Exception:
             logger.debug("publishing fallback marker failed", exc_info=True)
         logger.warning(
-            "model fallback: %s -> %s (reason=throttle-exhaustion, surface=%s%s)",
+            "model fallback: %s -> %s (reason=%s, surface=%s%s)",
             fb_state.primary or "?",
             wire,
+            reason,
             surface,
             log_suffix,
         )
@@ -870,6 +892,7 @@ async def probe_fallback_restore(
     clear: Callable[[], None] | None = None,
     on_restored: Callable[[], None] | None = None,
     log_suffix: str = "",
+    restore_after: float | None = None,
 ) -> None:
     """One ``set_model(primary)`` restore probe at the start of a turn.
 
@@ -923,6 +946,8 @@ async def probe_fallback_restore(
     def _default_clear() -> None:
         try:
             setattr(provider, TURN_FALLBACK_ATTR, None)
+            setattr(provider, FALLBACK_RESTORE_AFTER_ATTR, 0.0)
+            setattr(provider, FALLBACK_REASON_ATTR, "")
         except Exception:
             pass
 
@@ -945,6 +970,16 @@ async def probe_fallback_restore(
     if stale or primary_missing:
         _run_hook(_clear, "clear")
         return
+    try:
+        deadline = (
+            getattr(provider, FALLBACK_RESTORE_AFTER_ATTR, 0.0)
+            if restore_after is None
+            else restore_after
+        )
+        if isinstance(deadline, (int, float)) and time.time() < deadline:
+            return
+    except Exception:
+        logger.debug("fallback restore cooldown read failed", exc_info=True)
     set_model_fn = resolve_substitute_set_model(provider)
     if set_model_fn is None:
         return
@@ -1012,7 +1047,11 @@ def configured_fallback_chain() -> tuple[str, ...]:
     turn.
     """
     try:
-        fm = KiroCrewConfig.load().agent.fallback_model
+        agent = KiroCrewConfig.load().agent
+        explicit_chain = tuple(getattr(agent, "fallback_models", ()) or ())
+        if explicit_chain:
+            return explicit_chain
+        fm = agent.fallback_model
     except Exception:
         return ()
     if not fm:
@@ -2560,10 +2599,13 @@ async def stream_and_collect(
                 and not result_text
                 and not _turn_tool_activity
                 and _fb_state is not None
-                and acp_error_is_transient(exc)
-                and transient_attempts >= _TRANSIENT_RETRIES
+                and (acp_error_is_transient(exc) or bool(getattr(exc, "usage_limit", False)))
+                and (
+                    bool(getattr(exc, "usage_limit", False))
+                    or transient_attempts >= _TRANSIENT_RETRIES
+                )
             ):
-                if _fb_state.should_retry_active():
+                if not getattr(exc, "usage_limit", False) and _fb_state.should_retry_active():
                     # Final attempt on the current candidate — the shared
                     # budget body already recorded it.
                     delay = transient_retry_delay(1)
@@ -2583,9 +2625,18 @@ async def stream_and_collect(
                 # step (marker-seeded primary, skip-active, substitute
                 # set_model, sticky-marker publish, greppable warning).
                 _cand = await advance_fallback_candidate(
-                    provider, _fb_state, surface="stream_and_collect"
+                    provider,
+                    _fb_state,
+                    surface="stream_and_collect",
+                    reason=(
+                        "usage-limit"
+                        if getattr(exc, "usage_limit", False)
+                        else "throttle-exhaustion"
+                    ),
                 )
                 if _cand is not None:
+                    if getattr(exc, "usage_limit", False):
+                        defer_fallback_restore(provider)
                     await asyncio.sleep(transient_retry_delay(1))
                     retrying = True
                     continue

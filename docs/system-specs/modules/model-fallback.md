@@ -9,8 +9,10 @@ successful swap is observable before it is recorded.
 ## Configuration
 
 `AgentConfig.fallback_model` is normalized by
-`config/sections.py:coerce_fallback_model`. `llm_helpers.configured_fallback_chain`
-is the shared derivation used by the fallback callers:
+`config/sections.py:coerce_fallback_model`. The optional `agent.fallback_models`
+array is normalized by `coerce_fallback_models` and, when non-empty, is the exact
+ordered chain. This preserves legacy scalar configuration when the array is absent.
+`llm_helpers.configured_fallback_chain` is the shared derivation used by the fallback callers:
 
 - The automatic-routing sentinel is the field default; its configured value
   produces a chain containing that sentinel.
@@ -29,13 +31,26 @@ advertised-model set is available.
 
 ## Trigger and candidate walk
 
-The fallback path is eligible only after the normal transient retry budget is
-spent on a transient error with no qualifying prior activity. Each surface
+The fallback path is eligible after the normal transient retry budget is spent on a
+transient error, or immediately on a classified usage-limit error, with no
+qualifying prior activity. A usage-limit response advances directly to the next
+candidate rather than retrying the exhausted candidate. Auth and malformed errors
+remain terminal. Each surface
 tracks that condition in its own stream loop: `llm_helpers.stream_and_collect`
 requires no result text or tool activity, `dashboard/chat_runner.py` requires
 no emitted or thought activity, and `subagent_manager/run.py::RunEventCoordinator._run_impl`'s nested `_stream_with_transient_retry`
 requires no activity. Post-activity recovery does not enter the model-fallback
 walk.
+
+Pi ACP currently converts a provider `result: error` into an ordinary empty
+`end_turn`, without an error frame. The dashboard and sub-agent runners therefore
+retry one zero-activity empty completion on the same model, then advance to the
+next configured candidate if a second completion is also empty. This is a
+bounded heuristic: it cannot identify the upstream error as a usage limit, and
+it never replays a turn that produced text, thought, or tool activity. After a
+usage-limit error or this repeated-empty case, unattended restore probes wait
+one hour before trying the primary again. Explicit model picks still take effect
+immediately.
 
 `llm_helpers.advance_fallback_candidate` owns candidate selection for all three
 paths. It preserves the original primary from an existing provider marker when

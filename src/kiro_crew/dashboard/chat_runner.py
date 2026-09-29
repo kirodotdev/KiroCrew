@@ -427,6 +427,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     _SYNTHETIC_RECOVERY_MSGS,
     AUTH_REQUIRED_KIND,
     CRON_NOTIFICATION_KIND,
+    EMPTY_CAUSE_PROVIDER_EMPTY,
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
     EMPTY_RUNG_REPLAY,
@@ -1790,7 +1791,9 @@ def _sync_served_model(slot: Any, client: Any) -> None:
     record(str(getattr(client, "served_model", "") or ""))
 
 
-async def _fallback_swap_for_turn(slot: Any, client: Any) -> str | None:
+async def _fallback_swap_for_turn(
+    slot: Any, client: Any, *, reason: str = "throttle-exhaustion"
+) -> str | None:
     """Move the slot's live session onto the next usable fallback candidate.
 
     Called from the interactive error ladder once the same-model transient
@@ -1833,7 +1836,11 @@ async def _fallback_swap_for_turn(slot: Any, client: Any) -> str | None:
             primary=slot._fallback_primary_model or "",
         )
         candidate = await advance_fallback_candidate(
-            client, fb_state, surface="dashboard", log_suffix=f", slot={slot.key}"
+            client,
+            fb_state,
+            surface="dashboard",
+            log_suffix=f", slot={slot.key}",
+            reason=reason,
         )
         slot._fallback_candidate_idx = fb_state.pos
         if candidate is None:
@@ -1842,6 +1849,7 @@ async def _fallback_swap_for_turn(slot: Any, client: Any) -> str | None:
         # follow it, or an inheriting slot keeps naming the primary.
         _sync_served_model(slot, client)
         if not slot._fallback_primary_model:
+            slot._fallback_restore_after = 0.0
             slot._fallback_primary_model = fb_state.primary
             # Snapshot slot.model and the explicit-pick generation at activation.
             # The generation is what tells a LATER genuine user pick (drop sticky
@@ -1958,6 +1966,7 @@ async def _probe_fallback_restore_for_slot_locked(slot: Any, client: Any) -> Non
         # comparison an alias's explicit re-pick of the substitute would be
         # silently overwritten by this restore. Mirrors the refusal path.
         stale=slot._model_pick_gen != slot._fallback_pick_gen or _epoch_moved,
+        restore_after=slot._fallback_restore_after,
         clear=lambda: _clear_fallback_sticky_state(slot, client),
         on_restored=_heal_backfilled_slot_model,
         log_suffix=f", slot={slot.key}",
@@ -1991,6 +2000,7 @@ def _clear_fallback_sticky_state(slot: Any, client: Any) -> None:
         logger.debug("clearing fallback marker failed; keeping slot state for retry", exc_info=True)
         return
     slot._active_fallback_model = ""
+    slot._fallback_restore_after = 0.0
     slot._fallback_primary_model = ""
     slot._fallback_slot_model = ""
 
@@ -17632,7 +17642,64 @@ async def _run_chat(
             # turn skips to the continuation rung, which tells the model the work
             # above already happened.
             _may_replay_verbatim = not _empty_activity.productive
-            if _prompt_depth == 0 and slot._empty_response_retries < 1 and _may_replay_verbatim:
+            # pi-acp 0.0.33 maps a provider's `result == "error"` to ACP
+            # `stopReason: end_turn` with no error frame or text. A spent xAI
+            # allowance therefore reaches this exact provider-empty verdict,
+            # not AcpError. After one ordinary replay, try the configured next
+            # model rather than nudging the same failed provider again. This is
+            # bounded by the fallback chain and requires zero activity: a tool
+            # result, thought, or visible partial must never replay on a new
+            # model. A genuine empty end_turn gets the same recovery only after
+            # its first replay also returned nothing.
+            _empty_fb_candidate = None
+            if (
+                _empty_cause == EMPTY_CAUSE_PROVIDER_EMPTY
+                and _may_replay_verbatim
+                and slot._empty_response_retries >= 1
+                and _prompt_depth == 0
+                and not _should_suppress_requeue(slot)
+                and not _stop_pressed()
+                and not _has_user_queued_followup(slot)
+            ):
+                _empty_fb_candidate = await _fallback_swap_for_turn(
+                    slot, client, reason="empty-response"
+                )
+            if _empty_fb_candidate is not None:
+                _empty_rung = EMPTY_RUNG_REPLAY
+                # The Pi ACP adapter currently turns a model error into an
+                # empty end_turn. If it was a spent allowance, probing the
+                # primary on every patrol wake would repeat the same failure.
+                # Recheck hourly while keeping the successful fallback sticky.
+                slot._fallback_restore_after = time.time() + 3600
+                _fb_safe, _ = redact_exfiltration_urls(_empty_fb_candidate)
+                _fb_safe, _ = redact_credentials(_fb_safe)
+                slot.append(
+                    "notice",
+                    f"⚠️ The model returned nothing twice — retrying on {_fb_safe}.",
+                    "msg msg-info",
+                )
+                crew_log_emit.on_model_selected(
+                    _crew_log_sid, _empty_fb_candidate, "fallback", turn=_crew_log_turn_no
+                )
+                slot._empty_response_retries = 0
+                await _report_consumed(False)
+                if (
+                    not _should_suppress_requeue(slot)
+                    and not _stop_pressed()
+                    and not bool(getattr(slot, "_pending_steers", None))
+                    and not _has_user_queued_followup(slot)
+                ):
+                    _queue_recovery(
+                        0,
+                        message,
+                        kind=SYNTHETIC_RECOVERY_KIND,
+                        payload=payload_for_replay(_is_synthetic),
+                    )
+                    _retrying_empty = True
+                else:
+                    slot._fallback_candidate_idx = 0
+                    slot._fallback_walked = []
+            elif _prompt_depth == 0 and slot._empty_response_retries < 1 and _may_replay_verbatim:
                 _empty_rung = EMPTY_RUNG_REPLAY
                 # Seamless self-heal: silently re-queue on the first empty
                 # response. An ephemeral status indicator is not used here — it
@@ -19208,6 +19275,8 @@ async def _run_chat(
             )
         elif (
             not _turn_emitted
+            and not _turn_thought
+            and _turn_tool_calls == 0
             and acp_error_is_transient(exc)
             and slot._transient_5xx_retries < TRANSIENT_RETRIES
         ):
@@ -19336,12 +19405,30 @@ async def _run_chat(
                 )
         elif (
             not _turn_emitted
-            and acp_error_is_transient(exc)
-            and slot._transient_5xx_retries >= TRANSIENT_RETRIES
+            and not _turn_thought
+            and _turn_tool_calls == 0
+            and (acp_error_is_transient(exc) or bool(getattr(exc, "usage_limit", False)))
+            and (
+                bool(getattr(exc, "usage_limit", False))
+                or slot._transient_5xx_retries >= TRANSIENT_RETRIES
+            )
             and _prompt_depth == 0
             and not _should_suppress_requeue(slot)
-            and (_fb_candidate := await _fallback_swap_for_turn(slot, client)) is not None
+            and (
+                _fb_candidate := await _fallback_swap_for_turn(
+                    slot,
+                    client,
+                    reason=(
+                        "usage-limit"
+                        if getattr(exc, "usage_limit", False)
+                        else "throttle-exhaustion"
+                    ),
+                )
+            )
+            is not None
         ):
+            if getattr(exc, "usage_limit", False):
+                slot._fallback_restore_after = time.time() + 3600
             # Append-only the session's log (flag-gated, fail-soft). Emitted HERE,
             # in the branch body, so it runs after _fallback_swap_for_turn has
             # released slot._model_pick_lock rather than while it is held. This
@@ -19384,7 +19471,9 @@ async def _run_chat(
             # session stays on the fallback until the restore probe succeeds).
             slot.append(
                 "notice",
-                f"⚠️ {_fb_primary_safe} is throttled — running on {_fb_cand_safe} "
+                f"⚠️ {_fb_primary_safe} "
+                f"{'reached its usage limit' if getattr(exc, 'usage_limit', False) else 'is throttled'}"
+                f" — running on {_fb_cand_safe} "
                 f"until {_fb_primary_safe} recovers.",
                 "msg msg-info",
             )

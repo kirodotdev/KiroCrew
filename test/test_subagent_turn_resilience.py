@@ -387,6 +387,90 @@ async def test_throttle_fallback_chain_swaps_model_and_annotates():
 
 
 @pytest.mark.asyncio
+async def test_usage_limit_advances_fallback_without_same_model_retry():
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                exc = _TransientError("403 usage limit")
+                exc.usage_limit = True
+                raise exc
+            yield _text_event("fallback result")
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = sessions._provider
+    provider.available_models = MagicMock(return_value=[{"modelId": "openai-codex/gpt-6-luna"}])
+    provider.served_model = "primary-model"
+    provider._model = "primary-model"
+
+    async def _move(model_id):
+        provider._model = model_id
+        provider.served_model = model_id
+
+    provider.set_model = AsyncMock(side_effect=_move)
+    mgr = _manager(sessions)
+    with patch(
+        "kiro_crew.subagent.configured_fallback_chain",
+        return_value=("xai/grok-4.7", "openai-codex/gpt-6-luna"),
+    ):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    assert calls == ["built_message", "built_message"]
+    provider.set_model.assert_awaited_once_with("openai-codex/gpt-6-luna")
+    assert "fallback result" in info.result
+
+
+@pytest.mark.asyncio
+async def test_pi_empty_error_completion_advances_ordered_fallback():
+    """Pi's error-to-end_turn mapping must not strand an empty worker."""
+    calls: list[tuple[str, str]] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append((provider.served_model, msg))
+
+        async def _gen():
+            if provider.served_model == "openai-codex/gpt-6-luna":
+                yield _text_event("fallback result")
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = sessions._provider
+    provider.available_models = MagicMock(return_value=[{"modelId": "openai-codex/gpt-6-luna"}])
+    provider.served_model = "xai/grok-4.7"
+    provider._model = "xai/grok-4.7"
+
+    async def _move(model_id):
+        provider._model = model_id
+        provider.served_model = model_id
+
+    provider.set_model = AsyncMock(side_effect=_move)
+    mgr = _manager(sessions)
+    with patch(
+        "kiro_crew.subagent.configured_fallback_chain",
+        return_value=("openai-codex/gpt-6-luna",),
+    ):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    assert calls == [
+        ("xai/grok-4.7", "built_message"),
+        ("xai/grok-4.7", "built_message"),
+        ("openai-codex/gpt-6-luna", "built_message"),
+    ]
+    provider.set_model.assert_awaited_once_with("openai-codex/gpt-6-luna")
+    assert "fallback result" in info.result
+
+
+@pytest.mark.asyncio
 async def test_throttle_fallback_chain_exhausted_propagates():
     """Every candidate also fails: the error surfaces after the bounded
     per-candidate attempts, exactly like today's exhaustion."""

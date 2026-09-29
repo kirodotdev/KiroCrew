@@ -827,6 +827,16 @@ class TestConfiguredFallbackChain:
         # set_model's own resolve when auto is unserved).
         assert self._chain_for("claude-opus-4.8") == ("claude-opus-4.8", "auto")
 
+    def test_explicit_ordered_config_wins(self) -> None:
+        from kiro_crew.llm_helpers import configured_fallback_chain
+
+        cfg = MagicMock()
+        cfg.agent.fallback_model = "auto"
+        cfg.agent.fallback_models = ("provider/model-a", "provider/model-b")
+        with patch("kiro_crew.llm_helpers.KiroCrewConfig") as kc:
+            kc.load.return_value = cfg
+            assert configured_fallback_chain() == ("provider/model-a", "provider/model-b")
+
     def test_load_failure_disables(self) -> None:
         from kiro_crew.llm_helpers import configured_fallback_chain
 
@@ -1118,6 +1128,35 @@ class TestStreamAndCollectThrottleFallback:
         assert getattr(provider, TURN_FALLBACK_ATTR) == ("primary-model", "fb-1")
 
     @pytest.mark.asyncio
+    async def test_usage_limit_advances_immediately_in_order(self) -> None:
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        calls: list[int] = []
+
+        async def _stream(msg):
+            calls.append(len(calls))
+            if len(calls) <= 2:
+                exc = AcpError("403 usage limit")
+                exc.usage_limit = True
+                raise exc
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        chain = ("openai-codex/gpt-6-luna", "anthropic/claude-sonnet-5")
+        provider = self._provider(_stream, advertised=("xai/grok-4.7", *chain))
+        provider._model = "xai/grok-4.7"
+        provider.served_model = "xai/grok-4.7"
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await stream_and_collect(provider, "test", fallback_models=chain)
+
+        assert result == "recovered"
+        assert len(calls) == 3  # Grok and Luna are spent; Sonnet succeeds
+        assert [call.args[0] for call in provider.set_model.await_args_list] == [
+            "openai-codex/gpt-6-luna",
+            "anthropic/claude-sonnet-5",
+        ]
+
+    @pytest.mark.asyncio
     async def test_two_attempts_per_candidate_then_advance(self) -> None:
         """A failing candidate gets exactly FALLBACK_CANDIDATE_ATTEMPTS
         attempts, then the chain advances to the next candidate."""
@@ -1367,6 +1406,25 @@ class TestProbeFallbackRestore:
     async def test_restores_primary_and_clears_marker(self) -> None:
         provider = self._provider(served="fb-1")
         setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fb-1"))
+        await probe_fallback_restore(provider)
+        provider.set_model.assert_awaited_once_with("primary-model")
+        assert getattr(provider, TURN_FALLBACK_ATTR) is None
+
+    @pytest.mark.asyncio
+    async def test_usage_cooldown_keeps_fallback_until_probe_is_due(self) -> None:
+        from kiro_crew.llm_helpers import (
+            FALLBACK_RESTORE_AFTER_ATTR,
+            defer_fallback_restore,
+        )
+
+        provider = self._provider(served="fb-1")
+        setattr(provider, TURN_FALLBACK_ATTR, ("primary-model", "fb-1"))
+        defer_fallback_restore(provider, 3600)
+        await probe_fallback_restore(provider)
+        provider.set_model.assert_not_awaited()
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("primary-model", "fb-1")
+
+        setattr(provider, FALLBACK_RESTORE_AFTER_ATTR, 0.0)
         await probe_fallback_restore(provider)
         provider.set_model.assert_awaited_once_with("primary-model")
         assert getattr(provider, TURN_FALLBACK_ATTR) is None

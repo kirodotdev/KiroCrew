@@ -22852,6 +22852,54 @@ class TestRunChatModelFallback:
     _TRANSIENT = "Prompt error: {'message': 'Internal error: API Error: Internal server error'}"
 
     @pytest.mark.asyncio
+    async def test_pi_error_mapped_to_empty_end_turn_walks_ordered_chain(
+        self, tmp_path, monkeypatch
+    ):
+        """Pi maps provider `error` to an empty `end_turn`; Crew still moves on.
+
+        One empty retry per model is allowed before advancing. No model text or
+        tool activity occurs on the failed models, so replay is safe.
+        """
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        chain = ("openai-codex/gpt-6-luna", "anthropic/claude-sonnet-5")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: chain)
+        attempts = []
+        client = None
+
+        async def _stream(msg):
+            attempts.append(client._model)
+            if client._model != chain[-1]:
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+                return
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ready")
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream, advertised=("xai/grok-4.7", *chain))
+        client._model = "xai/grok-4.7"
+        client.served_model = "xai/grok-4.7"
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await _run_chat(state, slot, "hello")
+        await self._drain_bg(state)
+
+        assert attempts == ["xai/grok-4.7"] * 2 + [chain[0]] * 2 + [chain[1]]
+        assert [call.args[0] for call in client.set_model.await_args_list] == list(chain)
+        assert any("ready" in t for t in self._assistant_texts(slot))
+        assert not any(t.startswith("❌") for t in self._err_texts(slot))
+
+        # A fresh patrol turn stays on the healthy fallback during the quota
+        # cooldown; otherwise every wake would probe spent Grok again.
+        await _run_chat(state, slot, "another")
+        await self._drain_bg(state)
+        assert attempts[-1] == chain[-1]
+        assert [call.args[0] for call in client.set_model.await_args_list] == list(chain)
+
+    @pytest.mark.asyncio
     async def test_fallback_swap_refreshes_the_served_model_cache(self, tmp_path, monkeypatch):
         """The swap moves the LIVE session onto the candidate without a spawn,
         so the spawn-time cache would keep naming the primary; it must follow
@@ -23116,6 +23164,42 @@ class TestRunChatModelFallback:
         from kiro_crew.dashboard.handlers.usage import read_turn_model
 
         assert read_turn_model(client) == "fallback-model"
+
+    @pytest.mark.asyncio
+    async def test_usage_limit_advances_ordered_chain_without_retry(self, tmp_path, monkeypatch):
+        from kiro_crew.acp.client import AcpError
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        chain = ("openai-codex/gpt-6-luna", "anthropic/claude-sonnet-5")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: chain)
+        attempts = 0
+
+        async def _stream(msg):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                exc = AcpError("403 usage limit")
+                exc.usage_limit = True
+                raise exc
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="sonnet result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream, advertised=("xai/grok-4.7", *chain))
+        client._model = "xai/grok-4.7"
+        client.served_model = "xai/grok-4.7"
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+
+        assert attempts == 3
+        assert [call.args[0] for call in client.set_model.await_args_list] == list(chain)
+        assert any("sonnet result" in text for text in self._assistant_texts(slot))
 
     @pytest.mark.asyncio
     async def test_empty_chain_is_todays_terminal_error(self, tmp_path, monkeypatch):
