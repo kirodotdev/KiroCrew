@@ -813,7 +813,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setPreviewDuringEdit(false)
   }, [dirty, confirm])
 
-  const handleSave = useCallback(async (snapshot = false) => {
+  // `overwrite` is passed ONLY by the relabelled Save button's own click after a
+  // 409. Every other save path (Cmd+S, Cmd+Shift+S, Snapshot) keeps the base
+  // token, so it is refused again instead of silently replacing newer content.
+  const handleSave = useCallback(async (snapshot = false, overwrite = false) => {
     if (!artifact || !dirty) return
     // Same race as commitRename: the discard snapshot still reads empty until
     // the query refetches, so disarm synchronously or an unmount landing
@@ -826,7 +829,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       const saved = await api.updateArtifact(artifact.slug, {
         content: editedContent,
         snapshot,
-        expected_token: saveConflict ? overwriteTokenRef.current : editBaseTokenRef.current,
+        expected_token: overwrite ? overwriteTokenRef.current : editBaseTokenRef.current,
       })
       editBaseTokenRef.current = saved?.content_token
       overwriteTokenRef.current = undefined
@@ -859,7 +862,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     } finally {
       setSaving(false)
     }
-  }, [artifact, dirty, editedContent, queryClient, saveConflict, slug])
+  }, [artifact, dirty, editedContent, queryClient, slug])
 
   // Stash for the keyboard handler effect — keeps deps minimal.
   const handleSaveRef = useRef(handleSave)
@@ -1993,7 +1996,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               <>
                 <button
                   type="button"
-                  onClick={() => handleSave(false)}
+                  onClick={() => handleSave(false, saveConflict)}
                   disabled={!dirty || saving}
                   className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
                   title={saveConflict
@@ -2519,7 +2522,9 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
         setNotice(String(res.pull_result.reason || i18nT('pages.artifactDetailPage.nothing_to_pull')))
       else onPulled()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.pull_failed'))
+      // A refused flush is already shown by the page's conflict notice.
+      if (conflictToken(e) === undefined)
+        setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.pull_failed'))
     } finally {
       setPulling(false)
     }
@@ -2540,7 +2545,9 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
         setError(String(res.overwrite_result.reason || i18nT('pages.artifactDetailPage.could_not_overwrite')))
       else onPulled()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.overwrite_failed'))
+      // A refused flush is already shown by the page's conflict notice.
+      if (conflictToken(e) === undefined)
+        setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.overwrite_failed'))
     } finally {
       setOverwriting(false)
     }
@@ -2558,7 +2565,8 @@ function UpstreamSyncBanner({ artifact, onPulled, onBeforeMutate }: { artifact: 
       if ((res as { error?: string })?.error) setError(String((res as { error?: string }).error))
       else onPulled()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.snapshot_failed'))
+      if (conflictToken(e) === undefined)
+        setError(e instanceof Error ? e.message : i18nT('pages.artifactDetailPage.snapshot_failed'))
     } finally {
       setSnapshotting(false)
     }

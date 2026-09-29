@@ -137,6 +137,24 @@ describe('stale-write guard', () => {
     expect(await screen.findByRole('button', { name: 'Save' })).toBeInTheDocument()
   })
 
+  // Only the relabelled Save may send the overwrite token; every other save
+  // path keeps the base token and is refused again.
+  it.each([
+    ['the Snapshot button', () => fireEvent.click(screen.getByRole('button', { name: /^Snapshot/ })), true],
+    ['Cmd+S', () => fireEvent.keyDown(document, { key: 's', metaKey: true }), false],
+    ['Cmd+Shift+S', () => fireEvent.keyDown(document, { key: 's', metaKey: true, shiftKey: true }), true],
+  ])('after a 409, %s keeps the base token', async (_label, act, snapshot) => {
+    vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(conflict())
+    await editAndDirty()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByRole('button', { name: 'Save — overwrite newer content' })
+
+    act()
+    await waitFor(() => expect(saveCalls()).toHaveLength(2))
+    expect(saveCalls()[1]).toEqual({ content: '# v1 edited', snapshot, expected_token: TOKEN_V1 })
+    expect(screen.getByTestId('editor-stub')).toHaveValue('# v1 edited')
+  })
+
   it('after a 409, a pull still flushes on the base token and is refused, not an overwrite', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({
@@ -177,6 +195,9 @@ describe('stale-write guard', () => {
     await waitFor(() => expect(saveCalls()).toHaveLength(2))
     expect(saveCalls()[1].expected_token).toBe(TOKEN_V1)
     expect(api.pullLatest).not.toHaveBeenCalled()
+    // The refusal shows once, as the localized notice, not the raw server message.
+    expect(screen.getByText('Not saved.')).toBeInTheDocument()
+    expect(screen.queryByText(/artifact changed since it was read/)).not.toBeInTheDocument()
     expect(screen.getByTestId('editor-stub')).toHaveValue('# v1 edited')
   })
 

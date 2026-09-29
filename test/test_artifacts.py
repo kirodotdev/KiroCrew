@@ -2816,6 +2816,22 @@ class TestConflictToken:
         with pytest.raises(ArtifactConflictError):
             store.update("x", content="v3", expected_token=token)
 
+    @pytest.mark.parametrize("snapshot", [True, False])
+    def test_metadata_only_update_of_an_unsalted_artifact(
+        self, store: ArtifactStore, snapshot: bool
+    ) -> None:
+        # An agent rename/retag of a pre-token artifact, with no read first: the
+        # snapshot path mints a token too and must not assert on the missing salt.
+        store.create(name="x", content="v1")
+        path = store.root / "x" / "meta.json"
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        del meta["content_salt"]
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        art = store.update("x", name="renamed", tags=["t"], snapshot=snapshot)
+        assert art.name == "renamed"
+        assert len(json.loads(path.read_text(encoding="utf-8"))["content_salt"]) == 32
+        assert store.get("x").content_token
+
     def test_token_survives_a_new_store_instance(self, tmp_path: Path) -> None:
         # No process-held key: a gateway restart must not 409 every open editor.
         a = ArtifactStore(root=tmp_path / "artifacts")

@@ -485,6 +485,14 @@ class ArtifactStore:
             bytes.fromhex(art.content_salt), content.encode("utf-8"), hashlib.sha256
         ).hexdigest()
 
+    def _ensure_content_salt_locked(self, art: Artifact) -> None:
+        """Give an artifact saved before content tokens existed (or whose salt was
+        reset as malformed) a salt, persisted so later reads mint the same token.
+        Called under the store lock by every path that can mint a token."""
+        if not art.content_salt:
+            art.content_salt = _new_content_salt()
+            self._write_meta(art)
+
     @staticmethod
     def _is_live_pointer(art: Artifact) -> bool:
         """True when reads come from ``source_path`` rather than the store's own copy."""
@@ -847,9 +855,7 @@ class ArtifactStore:
                     meta.content = self._read_text(self._artifact_dir(slug) / "current.html")
             else:
                 meta.content = self._read_text(self._artifact_dir(slug) / "current.html")
-                if not meta.content_salt:
-                    meta.content_salt = _new_content_salt()
-                    self._write_meta(meta)
+                self._ensure_content_salt_locked(meta)
                 meta.content_token = self._content_token(meta, meta.content)
             # Compute live_dirty by comparing the live content to the
             # latest numbered snapshot. Catches both silent saves AND
@@ -1123,6 +1129,9 @@ class ArtifactStore:
             )
         with self._lock:
             art = self._load_meta(slug)
+            # Unconditional: this call can demote a live pointer to copy-only and
+            # then mint a token for it.
+            self._ensure_content_salt_locked(art)
             guarded = (
                 expected_token is not None
                 and content is not None
