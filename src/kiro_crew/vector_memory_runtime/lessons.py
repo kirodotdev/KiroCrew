@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -38,6 +40,7 @@ from kiro_crew.vector_memory_runtime.text_scoring import (
     _hybrid_score,
     _keyword_score,
     _row_stem_tokens_for_scan,
+    _stem_one,
     _stem_words,
 )
 
@@ -901,10 +904,11 @@ def get_lessons_context(
     """Format lessons for prompt injection, most relevant first.
 
     Lessons are ranked against *query_text* using the same hybrid
-    vector + keyword score as :meth:`get_semantic_context`, then emitted
-    until *cap* characters are used. Ranking is relevance-only — neither
-    ``source`` nor ``confidence`` contributes — so an unrelated user-taught
-    rule cannot displace a relevant inferred one.
+    vector + keyword score as :meth:`get_semantic_context` when the query has a
+    vector, and by rarity-weighted word overlap when it has none (see
+    ``rank_lessons``), then emitted until *cap* characters are used. Ranking is
+    relevance-only — neither ``source`` nor ``confidence`` contributes — so an
+    unrelated user-taught rule cannot displace a relevant inferred one.
 
     Args:
         query_text: Request to rank against. Empty keeps recency order for
@@ -1161,19 +1165,31 @@ def rank_lessons(
     query rather than one per lesson. The sort is stable and *entries*
     arrives newest-first, so equal scores keep recency order and a query
     that matches nothing degrades to plain recency.
+
+    A query with no vector -- every startup render, and any recall whose embed
+    is unavailable -- is scored by :func:`_lexical_lesson_scores` instead of the
+    capped overlap count the hybrid score takes as its keyword half.
     """
-    query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
+    request_words = set(re.findall(r"\w+", query_text.lower()))
     if recall_query is not None:
         query_emb = recall_query.vector
     elif store.embed_fn:
         query_emb = store._try_embed(query_text, PRIORITY_INTERACTIVE)
     else:
         query_emb = None
-    similarity = store._stored_similarity_scorer(query_emb)
     # Same row-side derivation, and the same width rule, as the semantic scan:
     # a lesson's tokens depend only on its own rendered text, and only a pass
     # that fits the cache can hit it.
     row_tokens = _row_stem_tokens_for_scan(len(entries))
+    if not query_emb:
+        lexical_query_words = {_stem_one(word) for word in request_words}
+        lexical = _lexical_lesson_scores(entries, lexical_query_words, row_tokens)
+        # ``sorted`` is stable, so equal scores -- including every zero-overlap
+        # row -- keep the caller's newest-first order.
+        order = sorted(range(len(entries)), key=lambda index: -lexical[index])
+        return [entries[index] for index in order]
+    query_words = _stem_words(request_words)
+    similarity = store._stored_similarity_scorer(query_emb)
     scored: list[tuple[float, tuple[dict, str]]] = []
     for entry in entries:
         row, text = entry
@@ -1187,17 +1203,62 @@ def rank_lessons(
     return [entry for _, entry in scored]
 
 
+def _lexical_lesson_scores(
+    entries: list[tuple[dict, str]],
+    query_words: set[str],
+    row_tokens: Callable[[str], frozenset[str]],
+) -> list[float]:
+    """Score each entry's words against the request's, one float per entry.
+
+    Each shared token is weighted by how rare it is among *entries*
+    (``log((N + 1) / (df + 0.5))``), and the sum is divided by the square root
+    of the row's token count.
+
+    The hybrid score's keyword half, ``_keyword_score``, saturates at ten shared
+    tokens, so a long first message would tie nearly every stored rule at the top
+    and the stable sort would return newest-first. A distinctive term counts for
+    far more than a common one; a token carried by nearly every row weighs close
+    to nothing (about ``0.5 / N``). The length factor discounts incidental overlap
+    in a long row, the same correction ``history_search.search_sessions`` makes
+    for long sessions.
+
+    Every weight is positive, since ``df <= N``, so any overlap still outranks
+    none: ordering is unchanged for a zero-overlap row, and the findings tier's
+    admission test (``any_lesson_overlap``) still agrees with this ranking.
+    Document frequency is counted only for tokens the request carries, over row
+    token sets ``row_tokens`` already memoises, so no row is re-stemmed.
+    """
+    shared_by_row: list[frozenset[str]] = []
+    sizes: list[int] = []
+    document_frequency: dict[str, int] = {}
+    for _, text in entries:
+        tokens = row_tokens(text.lower())
+        shared = tokens & query_words
+        shared_by_row.append(shared)
+        sizes.append(len(tokens))
+        for token in shared:
+            document_frequency[token] = document_frequency.get(token, 0) + 1
+    rows = len(entries)
+    weight = {
+        token: math.log((rows + 1) / (count + 0.5)) for token, count in document_frequency.items()
+    }
+    return [
+        sum(weight[token] for token in shared) / math.sqrt(size) if shared else 0.0
+        for shared, size in zip(shared_by_row, sizes)
+    ]
+
+
 def any_lesson_overlap(
     store: VectorMemoryStore, entries: list[tuple[dict, str]], query_text: str
 ) -> bool:
     """Whether ANY entry shares a stemmed word with *query_text*.
 
-    The admission test for the findings tier, and deliberately the same
-    tokenization ``_rank_lessons`` scores with -- ordering and admission must
-    read one signal, or the tier is suppressed for a match its own ranking
-    found. That is also why this is not the shared unstemmed helper the JSONL
-    store uses: stemming matches strictly more, so borrowing that answer would
-    discard this store's stem-only hits.
+    The admission test for the findings tier deliberately uses the broader
+    surface-plus-stem request set, while lexical ranking uses one stem per request
+    word. Any overlap found by ranking is therefore admitted, without letting an
+    exact inflection count twice in the ranking. This is not the shared unstemmed
+    helper the JSONL store uses: stemming matches strictly more, so borrowing that
+    answer would discard this store's stem-only hits.
 
     Only the KEYWORD half is consulted, which is exactly right on the startup
     path: it passes a recall query whose vector is ``None``, so the similarity
