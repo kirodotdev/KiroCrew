@@ -11,6 +11,13 @@ from typing import Any, Protocol
 
 from aiohttp import web
 
+from kiro_crew.dashboard.ws_event_scope import (
+    DASHBOARD_USER_AUDITEE,
+    _audit_allow,
+    _audit_deny,
+)
+from kiro_crew.gateway.constants import SESSION_MESSAGE_EVENT, SESSION_PLAN_EVENT
+
 #: Capability a dashboard tab declares in the ``caps`` query parameter of
 #: ``/api/ws`` when its bundle applies ``slot_patch`` frames.
 SLOT_PATCH_CAPABILITY = "slot_patch"
@@ -138,6 +145,32 @@ class WebSocketHub:
         if exc is not None:
             self._log.debug("WS send failed (client likely disconnected): %s", exc)
 
+    def _audit_session_event_decision(
+        self,
+        ws: web.WebSocketResponse,
+        msg_type: str,
+        *,
+        allowed: bool,
+        reason: str,
+    ) -> None:
+        """Record a dedicated session-socket delivery decision."""
+        try:
+            auditee = str(ws.get("_app") or "")
+            if ws.get("_is_dashboard_user", False):
+                auditee = DASHBOARD_USER_AUDITEE
+            elif not auditee:
+                auditee = "<session-events>"
+            if allowed:
+                _audit_allow(auditee, msg_type)
+            else:
+                _audit_deny(auditee, msg_type, reason)
+        except Exception:
+            self._log.debug(
+                "state: SEL audit for session-event decision %s failed",
+                msg_type,
+                exc_info=True,
+            )
+
     def _ws_client_allowed(
         self,
         ws: web.WebSocketResponse,
@@ -165,6 +198,35 @@ class WebSocketHub:
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
                 return False
+        session_subscription = ws.get("_session_events_subscription", False) is True
+        if msg_type in (SESSION_MESSAGE_EVENT, SESSION_PLAN_EVENT):
+            session_allowed = bool(
+                session_subscription
+                and isinstance(data, dict)
+                and data.get("slot") in ws.get("_session_event_keys", set())
+            )
+            self._audit_session_event_decision(
+                ws,
+                msg_type,
+                allowed=session_allowed,
+                reason=(
+                    "slot_scope_denied" if session_subscription else "session_subscription_required"
+                ),
+            )
+            return session_allowed
+        if session_subscription:
+            session_allowed = bool(
+                msg_type == "slot_title"
+                and isinstance(data, dict)
+                and data.get("key") in ws.get("_session_event_keys", set())
+            )
+            self._audit_session_event_decision(
+                ws,
+                msg_type,
+                allowed=session_allowed,
+                reason="session_event_type_or_slot_denied",
+            )
+            return session_allowed
         if ws.get("_is_dashboard_user", False):
             # Granted, and the grant is a permission decision like any other:
             # ``AUTOSDE.yaml`` wants an SEL record for it, not only for the
@@ -230,6 +292,18 @@ class WebSocketHub:
         default_msg: str,
     ) -> str:
         """Return a payload filtered for one dashboard or app client."""
+        if (
+            ws.get("_session_events_subscription", False) is True
+            and msg_type == "slot_title"
+            and isinstance(data, dict)
+        ):
+            safe_data = dict(data)
+            title = safe_data.get("title")
+            if isinstance(title, str):
+                title, _ = self._redact_exfiltration_urls_provider()(title)
+                title, _ = self._redact_credentials_provider()(title)
+                safe_data["title"] = title
+            return json.dumps({"type": msg_type, "data": safe_data})
         if ws.get("_is_dashboard_user", False):
             return default_msg
         if msg_type in ("subagent_batch_update", "subagent_batch_chunks"):

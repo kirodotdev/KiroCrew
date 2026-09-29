@@ -25,6 +25,26 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 > or run `kirocrew setup`, whose setup path calls the narrowly scoped
 > `mcp_cleanup.clean_stale_managed_mcp()` helper.
 
+## Client-supplied session servers
+
+The generic Gateway session API accepts a bounded list of stdio MCP definitions.
+Parsing establishes shape, reserved-name isolation, and resource bounds; it does
+not grant a server. Every retained server name, command, argument, environment
+name, and environment value has an explicit length ceiling, and argument and
+environment collections have per-server count ceilings. Managed `kirocrew-*`
+identities and app-style `name:server` namespaces are rejected so a client cannot
+shadow host-managed control planes. HTTP and SSE transports are rejected until
+they have an explicit lifecycle and credential contract.
+
+The array remains an explicit per-session input through allocation. It does not
+merge with ambient per-agent MCP configuration and it bypasses shared/warm pools.
+At `session/new` and `session/load`, the selected harness applies its existing
+`session_mcp_servers` narrowing against host capabilities. Therefore an editor or
+other local client can request servers, but cannot turn that request into an
+ambient grant or bypass a harness policy that withholds them. The adapter layer
+may supervise requested processes; authorization remains owned by the host
+harness and ordinary tool permission gate.
+
 ## Config file hierarchy
 
 | File | Owner | Purpose | Read by |

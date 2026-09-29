@@ -166,6 +166,7 @@ from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
     _cookie_port_from_host,
     _is_spa_shell_request,
+    install_pending_auth_cookie_finalizer,
     internal_path_matches,
     is_csrf_exempt,
     register_app_window_paths,
@@ -876,6 +877,20 @@ def _make_csrf_middleware(caller: str) -> Callable:
         return await handler(request)  # type: ignore[operator]
 
     return csrf_middleware
+
+
+_EXACT_MIXED_INTERNAL_API_PATHS = frozenset(
+    {
+        # Trusted local clients use these singleton endpoints. Exact matching
+        # prevents unrelated future siblings from inheriting internal admission.
+        "/api/models",
+        "/api/effort-levels",
+        "/api/slash-commands",
+        # A trusted local client subscribes to explicitly selected session events.
+        # Exact matching keeps /api/ws/stt and /api/ws/terminal cookie-authorized.
+        "/api/ws",
+    }
+)
 
 
 # Mixed internal API paths — called by BOTH internal processes (loopback +
@@ -2054,12 +2069,19 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_ask_question_answer,
         api_ask_question_dismiss,
         api_ask_question_pending,
+        api_ask_question_slot_answer,
+        api_ask_question_slot_pending,
     )
 
     app.router.add_post("/api/ask-question", api_ask_question)
     # Registered before the {ask_id} route so the literal path is not captured
     # as an ask_id.
     app.router.add_get("/api/ask-question/pending", api_ask_question_pending)
+    app.router.add_get("/api/chat/slots/{slot_key}/questions", api_ask_question_slot_pending)
+    app.router.add_post(
+        "/api/chat/slots/{slot_key}/questions/{card_id}/answer",
+        api_ask_question_slot_answer,
+    )
     app.router.add_post("/api/ask-question/dismiss", api_ask_question_dismiss)
     app.router.add_post("/api/ask-question/{ask_id}/answer", api_ask_question_answer)
 
@@ -5659,6 +5681,7 @@ async def start_dashboard(
     # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
     # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
     # number as a global request cap is the false invariant to avoid.
+    install_pending_auth_cookie_finalizer(app)
     app["state"] = state
 
     # Bind the serving loop once, here: this runs ON that loop, so every
@@ -6233,6 +6256,7 @@ async def start_dashboard(
             token_auth_middleware(
                 internal_paths=_STRICT_INTERNAL_API_PATHS,
                 mixed_internal_paths=_mixed_internal_api_paths(),
+                exact_mixed_internal_paths=_EXACT_MIXED_INTERNAL_API_PATHS,
                 internal_secret=_internal_secret,
                 port=port,
                 local_only=local_only,
@@ -7161,6 +7185,7 @@ async def start_api_server(
     # handlers/files.py streams past it under its own _MAX_VIDEO_UPLOAD_BYTES
     # (pinned by test_streaming_bypasses_the_app_client_max_size). Reading this
     # number as a global request cap is the false invariant to avoid.
+    install_pending_auth_cookie_finalizer(app)
     app["state"] = state
     # Bind the serving loop once, here: this runs ON that loop, so every
     # surface that later hands work in from a foreign thread -- slots
@@ -7349,6 +7374,7 @@ async def start_api_server(
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
             mixed_internal_paths=_mixed_internal_api_paths(),
+            exact_mixed_internal_paths=_EXACT_MIXED_INTERNAL_API_PATHS,
             internal_secret=_internal_secret,
             port=port,
             local_only=local_only,

@@ -189,7 +189,14 @@ from kiro_crew.dashboard.state import (
     stage_boundary_for,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
+from kiro_crew.dashboard.token_auth import attach_pending_access_cookie
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+from kiro_crew.gateway.constants import MCP_OWNER_HEADER, TURN_ORIGIN_HEADER
+from kiro_crew.gateway.session_mcp import (
+    McpConfigError,
+    parse_mcp_servers,
+    servers_to_session_dicts,
+)
 from kiro_crew.history import (
     HUMAN_TURN_META_KEY,
     carry_provenance,
@@ -360,7 +367,7 @@ def _deny_app_yolo(request_app: str, operation: str) -> web.Response:
 #: (``chat_persistence._newest_human_turn_ts``), so an app token owning its slot
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send.
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY})
+RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, "_gateway_turn_origin"})
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the
@@ -459,6 +466,14 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         user_meta = {k: v for k, v in user_meta.items() if k not in RESERVED_ROW_META_KEYS}
         if not user_meta:
             user_meta = None
+    requested_turn_origin = request.headers.get(TURN_ORIGIN_HEADER, "")
+    requested_mcp_owner = request.headers.get(MCP_OWNER_HEADER, "")
+
+    if (
+        request.get("internal_auth") is not True or request.get("app")
+    ) and not is_owner_dashboard_request(request):
+        requested_turn_origin = ""
+        requested_mcp_owner = ""
     theme_consent = body.get("theme_consent") is True
     # Content-bound persona consent: the sha256 hex the user
     # granted in the consent modal. Injection is gated on this matching the
@@ -476,6 +491,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if not isinstance(slot_name, str) and slot_name is not None:
         slot_name = None  # coerce non-string slot to auto-generate
     _requested_key = _normalize_slot_key(slot_name) if slot_name else ""
+    if requested_turn_origin and requested_turn_origin != _requested_key:
+        return web.json_response(
+            {"error": "turn origin does not match slot", "code": "invalid_origin"}, status=409
+        )
     if request.get("app", "") and _requested_key.casefold().startswith(
         members_mod.DM_SLOT_KEY_PREFIX
     ):
@@ -834,6 +853,25 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
 
     _pending_stage_boundary = stage_boundary_for(slot).stage is not None
+
+    turn_origin = requested_turn_origin if requested_turn_origin == slot.key else ""
+    if turn_origin and requested_mcp_owner != slot.session_mcp_owner:
+        return web.json_response(
+            {
+                "error": "this client no longer owns the slot MCP registration",
+                "code": "mcp_owner_stale",
+            },
+            status=409,
+        )
+    request_mcp_servers = (
+        list(slot.session_mcp_servers) if turn_origin and slot._session_mcp_configured else None
+    )
+    if turn_origin and (slot.turn_running or slot._in_stage_execution or _pending_stage_boundary):
+        return web.json_response(
+            {"error": "slot prompt is in progress", "code": "slot_busy"},
+            status=409,
+        )
+
     if slot.turn_running or slot._in_stage_execution or _pending_stage_boundary:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
@@ -1008,6 +1046,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         and state.subagents is not None
         and state.subagents.running_agents_for(f"dashboard:{slot.key}")
     ):
+        if turn_origin:
+            return web.json_response(
+                {"error": "slot prompt is held while subagents are running", "code": "slot_busy"},
+                status=409,
+            )
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta
 
@@ -1126,8 +1169,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # session, message count) proves no other request rebound the slot while
     # the store was being resolved.
     if created_in_send and not slot.is_remote:
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-
         if is_owner_dashboard_request(request):
             async with slot._lock:
                 assignment = (
@@ -1186,6 +1227,37 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     )
                 if assigned_store:
                     slot.memory_store = assigned_store
+
+    # Private-store admission above can suspend while another client replaces
+    # this slot's MCP registration. Bind the turn to the final owned snapshot,
+    # not the state observed before that await.
+    if turn_origin:
+        if requested_mcp_owner != slot.session_mcp_owner:
+            return web.json_response(
+                {
+                    "error": "this client no longer owns the slot MCP registration",
+                    "code": "mcp_owner_stale",
+                },
+                status=409,
+            )
+        request_mcp_servers = (
+            list(slot.session_mcp_servers) if slot._session_mcp_configured else None
+        )
+
+    origin_token = None
+    mcp_token = None
+    if turn_origin:
+        origin_token = slot._turn_origin.set(turn_origin)
+        mcp_token = slot._request_mcp_servers.set(request_mcp_servers)
+
+    def _reset_request_context() -> None:
+        nonlocal origin_token, mcp_token
+        if origin_token is not None:
+            slot._turn_origin.reset(origin_token)
+            origin_token = None
+        if mcp_token is not None:
+            slot._request_mcp_servers.reset(mcp_token)
+            mcp_token = None
 
     # A dashboard's busy snapshot can suppress its optimistic user bubble even
     # when this send starts a turn. Echo correlated sends BEFORE starting the
@@ -1322,6 +1394,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             ),
         ),
     )
+    _reset_request_context()
     slot.task = task
     stage_boundary_for(slot).recovery_retrigger_count = 0
     state.push_slots_update()
@@ -1341,6 +1414,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
+    attach_pending_access_cookie(request, resp)
     try:
         await resp.prepare(request)
     except BaseException:
@@ -1368,7 +1442,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                         await resp.write(b"data: [DONE]\n\n")
                         slot._has_reader = False
                         return resp
-                    chunk = _build_stream_chunk(msg, include_row_meta=relay_mode)
+                    chunk = _build_stream_chunk(
+                        msg,
+                        include_row_meta=relay_mode,
+                        include_turn_origin=bool(turn_origin),
+                    )
                     await resp.write(f"data: {chunk}\n\n".encode())
                 try:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)
@@ -11850,6 +11928,55 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     return web.json_response(ws_resp)
 
 
+_MUTATION_RECEIPT_LIMIT = 16
+
+
+def _mutation_receipt_parts(
+    body: dict[str, Any],
+) -> tuple[str | None, str | None, web.Response | None]:
+    mutation_id = body.get("mutation_id")
+    if mutation_id is None:
+        return None, None, None
+    if not isinstance(mutation_id, str) or not mutation_id or len(mutation_id) > 128:
+        return (
+            None,
+            None,
+            web.json_response(
+                {"error": "invalid mutation id", "code": "invalid_request"}, status=400
+            ),
+        )
+    payload = {key: value for key, value in body.items() if key != "mutation_id"}
+    return mutation_id, json.dumps(payload, sort_keys=True, separators=(",", ":")), None
+
+
+def _replay_mutation_receipt(
+    receipts: dict[str, tuple[str, dict[str, Any]]], mutation_id: str, signature: str
+) -> web.Response | None:
+    receipt = receipts.get(mutation_id)
+    if receipt is None:
+        return None
+    prior_signature, response = receipt
+    if prior_signature != signature:
+        return web.json_response(
+            {"error": "mutation id reused with different request", "code": "mutation_conflict"},
+            status=409,
+        )
+    return web.json_response(response)
+
+
+def _remember_mutation_receipt(
+    receipts: dict[str, tuple[str, dict[str, Any]]],
+    mutation_id: str | None,
+    signature: str | None,
+    response: dict[str, Any],
+) -> None:
+    if mutation_id is None or signature is None:
+        return
+    receipts[mutation_id] = (signature, dict(response))
+    while len(receipts) > _MUTATION_RECEIPT_LIMIT:
+        receipts.pop(next(iter(receipts)))
+
+
 async def api_chat_slot_project(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/project — set project directory for file search scoping."""
     state: DashboardState = request.app["state"]
@@ -11864,10 +11991,27 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+        return _slot_not_found()
     project = body.get("project", "")
     if not isinstance(project, str):
         return web.json_response({"error": "project must be a string"}, status=400)
     project = project.strip()
+    expected_generation = body.get("expected_generation")
+    return_previous = body.get("return_previous") is True
+    if return_previous and request.get("internal_auth") is not True:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if expected_generation is not None and (
+        not isinstance(expected_generation, str)
+        or not expected_generation
+        or len(expected_generation) > 128
+    ):
+        return web.json_response(
+            {"error": "invalid project generation", "code": "invalid_request"}, status=400
+        )
+    mutation_id, mutation_signature, mutation_error = _mutation_receipt_parts(body)
+    if mutation_error is not None:
+        return mutation_error
     # Session-level app isolation BEFORE any filesystem probing: the
     # isdir / sensitive-path / voice-runtime checks below answer differently
     # for existing vs missing paths, so running them ahead of the denial
@@ -11878,6 +12022,12 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     denied = _app_cancel_denied(request, slot, "chat.slot_project", effective_session_key(slot))
     if denied is not None:
         return denied
+    if mutation_id is not None and mutation_signature is not None:
+        replay = _replay_mutation_receipt(
+            slot._project_mutation_receipts, mutation_id, mutation_signature
+        )
+        if replay is not None:
+            return replay
     if project:
         project = os.path.realpath(os.path.expanduser(project))
         if not os.path.isdir(project):
@@ -11921,6 +12071,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     # reset is awaited while holding the lock beyond what the other switch
     # handlers already hold.
     async with slot._lock:
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
         # The session the deferred reset will address — ``effective_session_key``,
         # never ``_history_key_for`` (see api_chat_slot_model): a channel- or
         # cron-born slot runs its turns under its linked key, and the
@@ -11939,6 +12091,23 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_project", session_key)
         if denied is not None:
             return denied
+        if mutation_id is not None and mutation_signature is not None:
+            replay = _replay_mutation_receipt(
+                slot._project_mutation_receipts, mutation_id, mutation_signature
+            )
+            if replay is not None:
+                return replay
+        if expected_generation is not None and slot._project_generation != expected_generation:
+            response = {
+                "ok": True,
+                "project": slot.project,
+                "generation": slot._project_generation,
+                "applied": False,
+            }
+            _remember_mutation_receipt(
+                slot._project_mutation_receipts, mutation_id, mutation_signature, response
+            )
+            return web.json_response(response)
         old_project = slot.project
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
@@ -11948,6 +12117,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
         slot.project = committed_project
+        assigned_generation = slot._project_generation
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),
@@ -11961,6 +12131,15 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 await asyncio.to_thread(_save_recent_project, project)
             except Exception:
                 logger.warning("Failed to save recent project", exc_info=True)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            if slot.project is committed_project:
+                slot.project = old_project
+            return _slot_not_found()
+        if slot.project is not committed_project or slot._project_generation != assigned_generation:
+            return web.json_response(
+                {"error": "slot project changed during the switch", "code": "project_changed"},
+                status=409,
+            )
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
         # Only on an actual change — avoids a needless cold start on a no-op set.
@@ -11998,7 +12177,163 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             # same killpg constraint that deferred the reset applies to it.
             schedule_eager_spawn(state, slot)
     state.push_slots_update()
-    return web.json_response({"ok": True, "project": project})
+    response = {
+        "ok": True,
+        "project": project,
+        "generation": assigned_generation,
+    }
+    if expected_generation is not None:
+        response["applied"] = True
+    if return_previous:
+        response["previous_project"] = str(old_project)
+    _remember_mutation_receipt(
+        slot._project_mutation_receipts, mutation_id, mutation_signature, response
+    )
+    return web.json_response(response)
+
+
+async def api_chat_slot_mcp(request: web.Request) -> web.Response:
+    """Replace or conditionally restore client-supplied session MCP servers."""
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    denied = deny_non_dashboard_caller(request, "chat_slot_mcp")
+    if denied is not None:
+        return denied
+    slot = state._slots.get(name)
+    if slot is None:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None
+    if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_mcp"):
+        return _slot_not_found()
+
+    mode = body.get("mode", "replace")
+    owner_id = body.get("owner", "")
+    if mode not in ("replace", "clear_if_owner", "restore_if_owner") or not isinstance(
+        owner_id, str
+    ):
+        return web.json_response(
+            {"error": "invalid MCP registration mode", "code": "invalid_request"}, status=400
+        )
+    configured_value = body.get("configured")
+    if "configured" in body and not isinstance(configured_value, bool):
+        return web.json_response(
+            {"error": "configured must be a boolean", "code": "invalid_request"}, status=400
+        )
+    owner_required = mode in ("replace", "clear_if_owner") or (
+        mode == "restore_if_owner" and configured_value is not False
+    )
+    if len(owner_id) > 128 or (owner_required and not owner_id):
+        return web.json_response(
+            {"error": "invalid MCP registration owner", "code": "invalid_request"}, status=400
+        )
+    return_previous = body.get("return_previous") is True
+    expected_owner = body.get("expected_owner", owner_id)
+    expected_generation = body.get("expected_generation")
+    if return_previous or mode == "restore_if_owner":
+        if request.get("internal_auth") is not True:
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if mode == "restore_if_owner" and (
+        not isinstance(expected_owner, str) or len(expected_owner) > 128
+    ):
+        return web.json_response(
+            {"error": "invalid MCP registration owner", "code": "invalid_request"}, status=400
+        )
+    if expected_generation is not None and (
+        not isinstance(expected_generation, str)
+        or not expected_generation
+        or len(expected_generation) > 128
+    ):
+        return web.json_response(
+            {"error": "invalid MCP registration generation", "code": "invalid_request"},
+            status=400,
+        )
+    configures_session = mode == "replace" or (
+        mode == "restore_if_owner" and configured_value is not False
+    )
+    if slot.is_remote and configures_session:
+        return web.json_response(
+            {
+                "error": "session MCP configuration is not supported for remote slots",
+                "code": "remote_slot_unsupported",
+            },
+            status=409,
+        )
+    mutation_id, mutation_signature, mutation_error = _mutation_receipt_parts(body)
+    if mutation_error is not None:
+        return mutation_error
+    if mutation_id is not None and mutation_signature is not None:
+        replay = _replay_mutation_receipt(
+            slot._session_mcp_mutation_receipts, mutation_id, mutation_signature
+        )
+        if replay is not None:
+            return replay
+
+    raw = body.get("servers")
+    try:
+        servers = parse_mcp_servers(raw)
+    except McpConfigError as exc:
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="chat_slot_mcp",
+            outcome="denied",
+            resources=f"slot={name}",
+            error=str(exc),
+        )
+        return web.json_response({"error": str(exc), "code": "invalid_mcp_servers"}, status=400)
+
+    previous = {
+        "servers": list(slot.session_mcp_servers),
+        "owner": slot.session_mcp_owner,
+        "configured": slot._session_mcp_configured,
+    }
+    if mode == "clear_if_owner" and owner_id != slot.session_mcp_owner:
+        response = {"ok": True, "servers": [], "applied": False}
+        _remember_mutation_receipt(
+            slot._session_mcp_mutation_receipts, mutation_id, mutation_signature, response
+        )
+        return web.json_response(response)
+    if mode == "restore_if_owner" and (
+        slot.session_mcp_owner != expected_owner
+        or (expected_generation is not None and slot._session_mcp_generation != expected_generation)
+    ):
+        response = {"ok": True, "servers": [], "applied": False}
+        _remember_mutation_receipt(
+            slot._session_mcp_mutation_receipts, mutation_id, mutation_signature, response
+        )
+        return web.json_response(response)
+
+    configured = mode != "clear_if_owner"
+    if mode == "restore_if_owner" and configured_value is False:
+        configured = False
+    names = [server.name for server in servers] if configured else []
+    slot.session_mcp_servers = servers_to_session_dicts(servers) if configured else []
+    slot.session_mcp_owner = owner_id if configured else ""
+    slot._session_mcp_configured = configured
+    slot._session_mcp_generation = uuid.uuid4().hex
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="chat_slot_mcp",
+        outcome="allowed",
+        resources=f"slot={name} servers={','.join(names)}",
+    )
+    response = {
+        "ok": True,
+        "servers": names,
+        "generation": slot._session_mcp_generation,
+        "configured": configured,
+        "applied": True,
+    }
+    if return_previous:
+        previous["expected_owner"] = slot.session_mcp_owner
+        previous["expected_generation"] = slot._session_mcp_generation
+        response["previous"] = previous
+    _remember_mutation_receipt(
+        slot._session_mcp_mutation_receipts, mutation_id, mutation_signature, response
+    )
+    return web.json_response(response)
 
 
 # Fields carried per follow-up item on the wire. Kept explicit so a future
@@ -12114,13 +12449,14 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
     ``local-app``). A dashboard token issued for a different subject would
     otherwise mutate repositories it does not own.
 
-    ONE exception, and it is the path every MCP call arrives on: a request that
-    presented a valid ``X-Internal-Secret`` from loopback is granted by the
-    middleware WITHOUT an app claim (there is no app identity to set), so it
-    carries ``request["internal_auth"] is True`` instead. Refusing that would
-    403 ``suggest_followup`` outright — the tool could never raise a card.
+    ONE exception exists for legacy loopback HTTP relays: a request that
+    presented a valid ``X-Internal-Secret`` is granted when no app identity was
+    positively derived, so it carries ``request["internal_auth"] is True`` and
+    no app claim. App-derived internal callers continue through the ordinary
+    app/owner checks. Current ``suggest_followup`` calls are stateless directives
+    applied inside the calling turn and do not depend on this exemption.
     """
-    if request.get("internal_auth") is True:
+    if request.get("internal_auth") is True and not request.get("app"):
         return None
     # Imported here, not at module scope: source_providers imports chat state
     # helpers, so a top-level import would close a cycle (same pattern as
@@ -12152,7 +12488,7 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
 
 async def deny_session_approval_caller(request: web.Request, operation: str) -> web.Response | None:
     """Allow the dashboard owner or an app with the live session approval grant."""
-    if request.get("internal_auth") is True:
+    if request.get("internal_auth") is True and not request.get("app"):
         return None
     request_app = str(request.get("app") or "")
     if not request_app:
@@ -12192,10 +12528,10 @@ async def deny_session_approval_caller(request: web.Request, operation: str) -> 
 async def api_chat_slot_followup(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/followup — show an agent-authored follow-up card.
 
-    Backs the ``suggest_followup`` MCP tool. Reachable over loopback HTTP from
-    inside the kiro-cli process group, so the payload is re-validated here
-    against the same schema the MCP layer used: this endpoint is a trust
-    boundary in its own right, not merely a relay.
+    Compatibility relay for older loopback ``suggest_followup`` callers. Current
+    tool calls return a stateless directive that the active turn applies directly.
+    The payload is still re-validated here against the same schema the MCP layer
+    uses: this endpoint is a trust boundary in its own right, not merely a relay.
 
     The card is ephemeral (broadcast-only, held in frontend state) and one card
     per slot: a second call replaces an unacted-on card rather than stacking.

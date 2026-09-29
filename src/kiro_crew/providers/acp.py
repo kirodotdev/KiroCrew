@@ -414,6 +414,7 @@ class AcpProvider(LLMProvider):
         on_gate_acquired: Callable[[float], None] | None = None,
         on_gate_queued: Callable[[], None] | None = None,
         disposable_work_dir: bool = False,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -433,6 +434,7 @@ class AcpProvider(LLMProvider):
             "acp_backend": acp_backend,
             "mcp_gateway_overlay": mcp_gateway_overlay,
             "mcp_gateway_socket": mcp_gateway_socket,
+            "session_mcp_servers": session_mcp_servers,
             # Claude permission mode (Auto-mode/permission-UI parity). None on the
             # kiro-cli path — fully inert; a companion-registered backend threads
             # it.
@@ -471,6 +473,9 @@ class AcpProvider(LLMProvider):
         # decision through the filesystem reclaim, closing the successor race.
         self._work_dir_claim_probe: Callable[[], AsyncContextManager[bool]] | None = None
         self._client = AcpClient(**kwargs)
+        self._session_mcp_servers: list[dict[str, Any]] | None = (
+            list(session_mcp_servers) if session_mcp_servers is not None else None
+        )
         # Consumer opt-in for the low-fidelity child permission downgrade
         # (see child_fidelity_aware property). Set by fidelity-aware
         # consumers (dashboard chat) BEFORE startup; re-applied when
@@ -1054,6 +1059,8 @@ class AcpProvider(LLMProvider):
                     member_session_key=member_session_key,
                     session_key=session_key,
                     channel_id=channel_id,
+                    mcp_servers=self._session_mcp_servers,
+                    explicit_mcp_override=self._session_mcp_servers is not None,
                 )
                 if attempt:
                     logger.info(
@@ -1356,6 +1363,8 @@ class AcpProvider(LLMProvider):
                         channel_id=self._owning_channel_id() or "",
                         on_gate_acquired=self._on_gate_acquired,
                         on_gate_queued=self._on_gate_queued,
+                        mcp_servers=self._session_mcp_servers,
+                        explicit_mcp_override=self._session_mcp_servers is not None,
                     )
                 except AcpRuntimeError as exc:
                     sandbox_failure = await sandbox_init_failure_for_runtime(runtime)

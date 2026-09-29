@@ -181,7 +181,11 @@ from kiro_crew.metrics.events import (
     SKILL_VIEW_FALLBACKS,
     emit_counter,
 )
-from kiro_crew.providers.mirrors.registry import has_mirror, mirror_for
+from kiro_crew.providers.mirrors.registry import (
+    has_mirror,
+    mirror_for,
+    project_explicit_session_mcp,
+)
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.runtime_ownership import authorize_runtime_kill, outstanding_leases
 from kiro_crew.sandbox import (
@@ -6524,6 +6528,7 @@ class AcpRuntime:
         on_gate_acquired: Callable[[float], None] | None = None,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
         on_gate_queued: Callable[[], None] | None = None,
+        explicit_mcp_override: bool = False,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -6617,11 +6622,25 @@ class AcpRuntime:
                 )
                 mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         else:
-            # An explicit array is the caller's own composition (a mirror's
-            # projection, a test double); it is not this method's to re-key, and it
-            # carries no spec snapshot, so the unresolved-ref guard has nothing to
-            # judge against and stays silent -- as the client does with no warmed
-            # snapshot.
+            if explicit_mcp_override:
+                projection = await asyncio.to_thread(
+                    project_explicit_session_mcp,
+                    self.acp_backend,
+                    agent or self._agent,
+                    list(mcp_servers),
+                    work_dir=session_work_dir,
+                    session_key=session_key,
+                    channel_id=channel_id,
+                )
+                projected_servers = projection.params.get("mcpServers")
+                mcp_servers = list(projected_servers) if isinstance(projected_servers, list) else []
+                denied_tools = projection.denied_tools
+                mirrored_snapshot = projection.derived_spec_snapshot
+            else:
+                mcp_servers = list(mcp_servers)
+            # Explicit Gateway arrays are request-owned and not re-keyed or
+            # combined with ambient broker stubs. Internal control-plane lists
+            # retain their established composition semantics.
             stub_token = ""
         member_withheld = False
         # False for every non-member session, set without an awaited call so the
@@ -6713,7 +6732,11 @@ class AcpRuntime:
         # ``hoist_managed_servers``). The kiro path returns None here and is
         # untouched.
         kas_agents, mcp_servers = hoist_managed_servers(
-            kas_agents, active_agent, mcp_servers, session_token=stub_token
+            kas_agents,
+            active_agent,
+            mcp_servers,
+            session_token=stub_token,
+            explicit_session_servers=explicit_mcp_override,
         )
         # The host's last word on its own tool surface. A host that reads an
         # agent spec passes the list straight back; one that has nothing else
@@ -7411,6 +7434,8 @@ class AcpRuntime:
         member_session_key: str = "",
         session_key: str = "",
         channel_id: str = "",
+        mcp_servers: list[dict[str, Any]] | None = None,
+        explicit_mcp_override: bool = False,
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -7460,42 +7485,61 @@ class AcpRuntime:
         denied_tools: frozenset[tuple[str, str]] = frozenset()
         mirrored_snapshot: Any = None
         ref_spec: Any = None
-        # A mirrored host re-declares the array its projection built, not the raw
-        # pooled one: session/load re-initializes the session's servers, so an
-        # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
-        # one on a conversation whose session/new withheld it.
-        #
-        # Gated on the registry read rather than entered unconditionally, for the
-        # reason this method already gives for gating the KAS re-attach on the
-        # backend: the kiro resume path must reach a comparison and STOP -- no awaited
-        # step, nothing to unwind, no shared coroutine that could grow a failure mode
-        # later. A membership read is the sanctioned form of that comparison.
-        mirrored = None
-        if has_mirror(self.acp_backend):
-            mirrored = await self._mirrored_session_mcp(
-                active_agent,
-                work_dir=session_work_dir,
-                session_key=session_key,
-                channel_id=channel_id,
-            )
-        if mirrored is not None:
-            mcp_servers = mirrored.servers
-            stub_token = mirrored.stub_token
-            denied_tools = mirrored.denied_tools
-            mirrored_snapshot = mirrored.derived_spec_snapshot
-            ref_spec = mirrored.ref_spec
+        if mcp_servers is None:
+            # A mirrored host re-declares the array its projection built, not the raw
+            # pooled one: session/load re-initializes the session's servers, so an
+            # unprojected array here does not merely fail to withhold a stub -- it MOUNTS
+            # one on a conversation whose session/new withheld it.
+            #
+            # Gated on the registry read rather than entered unconditionally, for the
+            # reason this method already gives for gating the KAS re-attach on the
+            # backend: the kiro resume path must reach a comparison and STOP -- no awaited
+            # step, nothing to unwind, no shared coroutine that could grow a failure mode
+            # later. A membership read is the sanctioned form of that comparison.
+            mirrored = None
+            if has_mirror(self.acp_backend):
+                mirrored = await self._mirrored_session_mcp(
+                    active_agent,
+                    work_dir=session_work_dir,
+                    session_key=session_key,
+                    channel_id=channel_id,
+                )
+            if mirrored is not None:
+                mcp_servers = mirrored.servers
+                stub_token = mirrored.stub_token
+                denied_tools = mirrored.denied_tools
+                mirrored_snapshot = mirrored.derived_spec_snapshot
+                ref_spec = mirrored.ref_spec
+            else:
+                pooled, ref_spec = await asyncio.to_thread(
+                    _pooled_session_servers_and_ref_spec,
+                    self._mcp_gateway_overlay,
+                    active_agent,
+                    self.acp_backend,
+                    session_work_dir,
+                )
+                mcp_servers = await self._unpooled_control_planes(
+                    pooled, active_agent, session_work_dir
+                )
+                mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         else:
-            pooled, ref_spec = await asyncio.to_thread(
-                _pooled_session_servers_and_ref_spec,
-                self._mcp_gateway_overlay,
-                active_agent,
-                self.acp_backend,
-                session_work_dir,
-            )
-            mcp_servers = await self._unpooled_control_planes(
-                pooled, active_agent, session_work_dir
-            )
-            mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            if explicit_mcp_override:
+                projection = await asyncio.to_thread(
+                    project_explicit_session_mcp,
+                    self.acp_backend,
+                    active_agent,
+                    list(mcp_servers),
+                    work_dir=session_work_dir,
+                    session_key=session_key,
+                    channel_id=channel_id,
+                )
+                projected_servers = projection.params.get("mcpServers")
+                mcp_servers = list(projected_servers) if isinstance(projected_servers, list) else []
+                denied_tools = projection.denied_tools
+                mirrored_snapshot = projection.derived_spec_snapshot
+            else:
+                mcp_servers = list(mcp_servers)
+            stub_token = ""
         member_withheld = False
         # False for every non-member session, set without an awaited call so the
         # Kiro construction path is untouched by this capability (H13).
@@ -7608,7 +7652,11 @@ class AcpRuntime:
             # its servers, and the managed ones must win the same-name contest
             # on load exactly as they did on new.
             kas_agents, mcp_servers = hoist_managed_servers(
-                kas_agents, active_agent, mcp_servers, session_token=stub_token
+                kas_agents,
+                active_agent,
+                mcp_servers,
+                session_token=stub_token,
+                explicit_session_servers=explicit_mcp_override,
             )
             # REBIND, not just re-assign the param: the hoist changes the array, and
             # wire_servers is what the stall diagnostic and the session report read.

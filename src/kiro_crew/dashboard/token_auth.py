@@ -79,6 +79,7 @@ from kiro_crew.dashboard.token_secret import (  # noqa: F401  # re-exports
     _load_or_create_secret,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.gateway.constants import PRESIGNED_TOKEN_HEADER
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.peer_resolve import resolve_peer_tenancy
@@ -2703,10 +2704,71 @@ def _internal_caller_record_missing(request: web.Request) -> bool:
     )
 
 
+_PENDING_ACCESS_COOKIE_KEY = "_pending_access_cookie"
+_PENDING_REFRESH_COOKIE_CLEAR_KEY = "_pending_refresh_cookie_clear"
+_PENDING_AUTH_COOKIES_ATTACHED_KEY = "_pending_auth_cookies_attached"
+
+
+def _clear_pending_refresh_cookie(
+    request: web.Request,
+    response: web.StreamResponse,
+    cookie_name: str | None = None,
+) -> None:
+    if cookie_name is None:
+        pending_name = request.get(_PENDING_REFRESH_COOKIE_CLEAR_KEY)
+        cookie_name = pending_name if isinstance(pending_name, str) else ""
+    if cookie_name:
+        response.set_cookie(cookie_name, "", max_age=0, path=REFRESH_COOKIE_PATH)
+
+
+def _attach_access_cookie(
+    response: web.StreamResponse, pending: tuple[str, str, int, bool]
+) -> None:
+    cookie_name, session_token, cookie_max_age, secure = pending
+    response.set_cookie(
+        cookie_name,
+        session_token,
+        httponly=True,
+        samesite="Lax",
+        secure=secure,
+        path="/",
+        max_age=cookie_max_age,
+    )
+    response.set_cookie("mc_token", "", max_age=0, path="/")
+
+
+def attach_pending_access_cookie(request: web.Request, response: web.StreamResponse) -> None:
+    """Attach the exchanged access cookie and staged refresh cleanup."""
+    if request.get(_PENDING_AUTH_COOKIES_ATTACHED_KEY):
+        return
+    pending = request.get(_PENDING_ACCESS_COOKIE_KEY)
+    if isinstance(pending, tuple) and len(pending) == 4:
+        _attach_access_cookie(response, pending)
+    _clear_pending_refresh_cookie(request, response)
+    request[_PENDING_AUTH_COOKIES_ATTACHED_KEY] = True
+
+
+async def _attach_pending_auth_cookies_on_prepare(
+    request: web.Request, response: web.StreamResponse
+) -> None:
+    """Transmit staged auth cookies before a prepared response sends headers."""
+    staged = web.Response()
+    attach_pending_access_cookie(request, staged)
+    for morsel in staged.cookies.values():
+        response.headers.add("Set-Cookie", morsel.OutputString())
+
+
+def install_pending_auth_cookie_finalizer(app: web.Application) -> None:
+    """Install the prepared-response auth-cookie finalizer once per app."""
+    if _attach_pending_auth_cookies_on_prepare not in app.on_response_prepare:
+        app.on_response_prepare.append(_attach_pending_auth_cookies_on_prepare)
+
+
 def token_auth_middleware(
     *,
     internal_paths: frozenset[str] = frozenset(),
     mixed_internal_paths: frozenset[str] = frozenset(),
+    exact_mixed_internal_paths: frozenset[str] = frozenset(),
     internal_secret: str = "",
     port: int = 5476,
     local_only: bool = True,
@@ -2724,12 +2786,14 @@ def token_auth_middleware(
     ``X-Internal-Secret`` header (read from ``~/.kiro/crew/.local_secret``).
     Non-loopback access to these paths is always denied.
 
-    *mixed_internal_paths* are paths called by BOTH internal processes
-    (loopback + secret) AND the browser (cookie auth).  On non-loopback
-    they perform explicit cookie validation (deny-by-default) instead
-    of hard-denying, so DCV/SSH-forwarded browsers polling these routes
-    (e.g. ``/api/spawn`` every 5s) don't trigger false session-expired
-    banners.  Use this for any internal-path that the browser polls.
+    *mixed_internal_paths* are prefix-scoped paths called by BOTH internal
+    processes (loopback + secret) AND the browser (cookie auth).
+    *exact_mixed_internal_paths* has the same credentials but matches only the
+    named route, never sibling child paths. On non-loopback both sets perform
+    explicit cookie validation (deny-by-default) instead of hard-denying, so
+    DCV/SSH-forwarded browsers polling these routes (e.g. ``/api/spawn`` every
+    5s) don't trigger false session-expired banners. Use the exact set when a
+    route has differently-authorized siblings.
 
     *tailnet_trust* is the operator's identity-trust opt-in (RFC §2–§3.1,
     validated at config load). When set and enabled, a request arriving from
@@ -2765,8 +2829,12 @@ def token_auth_middleware(
         accepts a session pin the main flow would refuse.
         """
         cookie_name = f"mc_token_{_cookie_port_from_host(request, _port)}"
+        header_token = request.headers.get(PRESIGNED_TOKEN_HEADER) or ""
         query_token = request.query.get("token") or ""
         cookie_token = request.cookies.get(cookie_name, "")
+        if header_token:
+            valid, uid, reason, app = validate_token_with_app(header_token)
+            return valid, uid, reason, app, header_token
         if not query_token and not cookie_token:
             return False, "", "no token", "", ""
         if query_token:
@@ -2809,7 +2877,8 @@ def token_auth_middleware(
             tailnet_trust is not None
             and tailnet_trust.enforces_identity
             and (
-                bool(request.query.get("token"))
+                bool(request.headers.get(PRESIGNED_TOKEN_HEADER))
+                or bool(request.query.get("token"))
                 or any(c.startswith(("mc_token_", "mc_refresh_")) for c in request.cookies)
             )
         ):
@@ -2951,7 +3020,9 @@ def token_auth_middleware(
         # If the secret is missing (browser request), fall through to
         # normal cookie auth so dashboard pages can call these routes.
         _matches_strict = internal_path_matches(path, internal_paths)
-        _matches_mixed = internal_path_matches(path, mixed_internal_paths)
+        _matches_mixed = internal_path_matches(path, mixed_internal_paths) or (
+            path in exact_mixed_internal_paths
+        )
         # local_only=False: treat ALL internal paths as mixed (backward compat
         # with mainline's local_only semantics — user opted into remote access)
         if not local_only and _matches_strict and not _matches_mixed:
@@ -2963,7 +3034,20 @@ def token_auth_middleware(
         # qualifies as "local" for the internal branch even though it has no
         # loopback peer IP (request.remote is empty for AF_UNIX transports).
         _unix_sock = _unix_request_socket(request) if _matches_internal else None
-        if _matches_internal and (_unix_sock is not None or is_loopback(request.remote or "")):
+        _local_internal = _unix_sock is not None or is_loopback(request.remote or "")
+        _defer_presigned_exchange = (
+            bool(request.headers.get(PRESIGNED_TOKEN_HEADER))
+            or (bool(request.query.get("token")) and path in exact_mixed_internal_paths)
+        ) and (
+            "X-Internal-Secret" not in request.headers
+            and not _matches_strict
+            and (_local_internal or _matches_mixed)
+        )
+        if _defer_presigned_exchange and _unix_sock is not None:
+            _peer_deny = await _verify_unix_peer(request, _unix_sock, path)
+            if _peer_deny is not None:
+                return _peer_deny
+        if _matches_internal and _local_internal and not _defer_presigned_exchange:
             # Kernel-attested peer verification (AF_UNIX only): deny a caller
             # whose /proc ancestry resolves to a DIFFERENT session than the
             # one its X-Session-Key header declares. Runs before either auth
@@ -3071,6 +3155,21 @@ def token_auth_middleware(
                     f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})",
                 )
                 return _deny(request, "Forbidden", "internal_auth_mismatch")
+            # A strict route may preserve its pre-existing loopback browser-cookie
+            # behavior, but the explicit presigned carrier is not that browser
+            # session and never substitutes for the machine credential.
+            if _matches_strict and request.headers.get(PRESIGNED_TOKEN_HEADER):
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=_caller,
+                    operation="internal_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error="presigned token on strict internal route",
+                )
+                _log_auth(request, "internal", "denied", "presigned token on strict route")
+                return _deny(request, "Forbidden", "internal_auth_required")
             # No secret header (browser request) → verify cookie/query-param auth
             # inline to satisfy deny-by-default: positively confirm auth
             # at the decision point rather than deferring to downstream.
@@ -3134,7 +3233,7 @@ def token_auth_middleware(
                 )
             _log_auth(request, _audit_uid(_uid), "granted", f"cookie auth for {_uid}")
             return await handler(request)  # type: ignore[operator]
-        elif _matches_internal:
+        elif _matches_internal and not _defer_presigned_exchange:
             if _matches_mixed:
                 # Mixed paths on non-loopback (DCV/SSH-forwarded browsers):
                 # explicit cookie validation, mirroring the loopback
@@ -3290,7 +3389,9 @@ def token_auth_middleware(
 
         # Extract token from query param or cookie
         cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
-        token = request.query.get("token") or ""
+        header_token = request.headers.get(PRESIGNED_TOKEN_HEADER) or ""
+        token = header_token or request.query.get("token") or ""
+        from_header = bool(header_token)
         from_cookie = False
         if not token:
             token = request.cookies.get(cookie_name, "")
@@ -3311,7 +3412,7 @@ def token_auth_middleware(
         valid, user_id, reason, app_name = validate_token_with_app(
             token, use_session_exp=from_cookie
         )
-        if not valid and not from_cookie:
+        if not valid and not from_cookie and not from_header:
             # A stale ``?token=`` must not veto a still-valid session cookie.
             # Re-opening a bookmarked / previously-scanned link replays the
             # long-expired link token in the URL; the browser ALSO sends the
@@ -3579,7 +3680,7 @@ def token_auth_middleware(
         # "the token I sent was accepted". ``api_auth_me`` returns this so the
         # in-banner re-auth exchange can tell the two apart, which it cannot do
         # from Set-Cookie: that header is unreadable from a browser.
-        request["auth_from_query_token"] = not from_cookie
+        request["auth_from_query_token"] = not from_cookie and not from_header
 
         # App-token least-privilege gate (CWE-269): an app token is confined to
         # its own namespace + its manifest ``permissions.api`` allowlist. This
@@ -3589,31 +3690,36 @@ def token_auth_middleware(
         if _scope_deny is not None:
             return _scope_deny
 
-        # Proceed to handler
-        resp = await handler(request)  # type: ignore[operator]
-
-        # Set cookie after handler (needs response object)
         if not from_cookie:
             cookie_max_age = MAX_SESSION_TTL_SECS
             if session_exp:
                 remaining = int(session_exp - time.time())
                 if 0 < remaining <= MAX_SESSION_TTL_SECS:
                     cookie_max_age = remaining
-            resp.set_cookie(
+            pending_access_cookie = (
                 cookie_name,
                 session_token,
-                httponly=True,
-                samesite="Lax",
-                # Secure only when over HTTPS (direct or via a
-                # TLS-terminating tunnel/proxy — see is_https_request).
-                # Localhost plain HTTP must not set it or the browser
-                # refuses to send it back.
-                secure=is_https_request(request),
-                path="/",
-                max_age=cookie_max_age,
+                cookie_max_age,
+                is_https_request(request),
             )
-            # Clean up legacy cookie from pre-port-specific era
-            resp.set_cookie("mc_token", "", max_age=0, path="/")
+            request[_PENDING_ACCESS_COOKIE_KEY] = pending_access_cookie
+            if _no_refresh:
+                request[_PENDING_REFRESH_COOKIE_CLEAR_KEY] = refresh_cookie_name(
+                    _cookie_port_from_host(request, port)
+                )
+
+        # Proceed to handler
+        resp = await handler(request)  # type: ignore[operator]
+
+        # Set cookie after ordinary handlers; streaming handlers attach the
+        # staged access cookie before preparing their response.
+        if not from_cookie:
+            if not resp.prepared:
+                _attach_access_cookie(resp, pending_access_cookie)
+                request[_PENDING_AUTH_COOKIES_ATTACHED_KEY] = True
+            else:
+                _log_auth(request, _audit_uid(user_id), "ok", "")
+                return resp
 
             # Trim other-port auth cookies from the shared 127.0.0.1 jar so it
             # can't grow past aiohttp's header limit (see
@@ -3665,11 +3771,10 @@ def token_auth_middleware(
                 # Only THIS port's cookie is cleared. A `mc_refresh_<other>`
                 # belongs to a different gateway instance, cannot refresh this
                 # session, and is not ours to revoke.
-                resp.set_cookie(
+                _clear_pending_refresh_cookie(
+                    request,
+                    resp,
                     refresh_cookie_name(_cookie_port_from_host(request, port)),
-                    "",
-                    max_age=0,
-                    path=REFRESH_COOKIE_PATH,
                 )
             else:
                 try:

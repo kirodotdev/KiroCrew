@@ -927,6 +927,7 @@ class CompactionCoordinator:
                 channel_id=owner.get_channel(key) or None,
                 model=getattr(session, "requested_model", "") or None,
                 crew_agent=getattr(session, "capability_member", "") or None,
+                session_mcp_servers=getattr(session, "session_mcp_servers", None),
                 speculative=True,
             )
             started = True

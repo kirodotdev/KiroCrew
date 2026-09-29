@@ -112,6 +112,13 @@ class SessionProjection:
     """
 
     params: dict[str, Any]
+    admitted_server_names: frozenset[str] = frozenset()
+    """Names admitted by the parsed spec before caller-owned elements are appended.
+
+    Explicit Gateway arrays are requests, so their names must intersect this set.
+    Keeping it beside the wire params lets a mirror yield a declared entry to a
+    same-named stub without losing the declaration boundary or parsing twice.
+    """
     denied_tools: frozenset[tuple[str, str]] = frozenset()
     disabled_servers: frozenset[str] = frozenset()
     """Servers this session switches off WHOLE (``disabled: true``).

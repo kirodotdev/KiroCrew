@@ -26,9 +26,11 @@ folder, so the declaration that selects between them belongs beside it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
+from typing import Any
 
+from kiro_crew.acp import session_mcp
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -38,10 +40,11 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    overlay_project_scope,
 )
-from kiro_crew.providers.mirrors.base import AgentConfigMirror
+from kiro_crew.providers.mirrors.base import AgentConfigMirror, SessionProjection
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
-from kiro_crew.providers.mirrors.codex import CodexMirror
+from kiro_crew.providers.mirrors.codex import CodexMirror, codex_elements, codex_name
 from kiro_crew.providers.mirrors.goose import GooseMirror
 from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
 
@@ -406,3 +409,99 @@ def mirror_for(backend: str) -> AgentConfigMirror | None:
         return cls()
     projection_for(backend)
     return None
+
+
+def project_explicit_session_mcp(
+    backend: str,
+    agent: str | None,
+    requested: list[dict[str, Any]],
+    *,
+    work_dir: object = None,
+    permission_surface_owned: bool = False,
+    session_key: str = "",
+    channel_id: str = "",
+) -> SessionProjection:
+    """Intersect a request-owned MCP array with the selected agent's grants.
+
+    The request keeps ownership of each retained element's command, arguments,
+    and environment.  The agent projection owns only admission: a server must
+    already be declared and granted, whole-server disables always win, and
+    per-tool restrictions use the backend's existing deny channel or withhold
+    the server when no such channel exists.
+    """
+    requested_names = {
+        str(element.get("name"))
+        for element in requested
+        if isinstance(element, dict) and element.get("name")
+    }
+    mirror = mirror_for(backend)
+    if mirror is not None:
+        projected = mirror.session_projection(
+            agent,
+            stub_server_names=requested_names,
+            stub_elements=requested,
+            permission_surface_owned=permission_surface_owned,
+            work_dir=work_dir,
+            session_key=session_key,
+            channel_id=channel_id,
+        )
+        wire = projected.params.get("mcpServers")
+        admitted_names = projected.admitted_server_names
+        if backend == ACP_BACKEND_CODEX:
+            wire_names = (
+                {
+                    codex_name(str(element.get("name") or ""))
+                    for element in wire
+                    if isinstance(element, dict) and element.get("name")
+                }
+                if isinstance(wire, list)
+                else set()
+            )
+            disabled_names = {codex_name(name) for name in projected.disabled_servers}
+            kept = [
+                element
+                for element in codex_elements(
+                    [dict(element) for element in requested if isinstance(element, dict)]
+                )
+                if str(element.get("name")) in admitted_names
+                and str(element.get("name")) in wire_names
+                and str(element.get("name")) not in disabled_names
+            ]
+        else:
+            kept = (
+                [
+                    dict(element)
+                    for element in wire
+                    if isinstance(element, dict)
+                    if str(element.get("name")) in admitted_names
+                    and str(element.get("name")) in requested_names
+                    and str(element.get("name")) not in projected.disabled_servers
+                ]
+                if isinstance(wire, list)
+                else []
+            )
+        return replace(projected, params={"mcpServers": kept})
+
+    projection = session_mcp.session_mcp_projection(
+        agent,
+        work_dir=overlay_project_scope(backend, work_dir).get("work_dir"),
+    )
+    allowed_names = {
+        str(element.get("name"))
+        for element in projection.servers
+        if isinstance(element, dict) and element.get("name")
+    }
+    blocked_names = projection.disabled_servers | projection.restricted
+    kept = [
+        dict(element)
+        for element in requested
+        if isinstance(element, dict)
+        and str(element.get("name")) in allowed_names
+        and str(element.get("name")) not in blocked_names
+    ]
+    return SessionProjection(
+        params={"mcpServers": kept},
+        disabled_servers=projection.disabled_servers,
+        restricted_servers=projection.restricted,
+        derived_spec_snapshot=projection.derived_spec_snapshot,
+    )

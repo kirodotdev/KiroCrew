@@ -338,6 +338,7 @@ def opencode_projection(
         out.append(without_stdio_tag(dict(stub)))
     return SessionProjection(
         params={"mcpServers": out},
+        admitted_server_names=projection.admitted_server_names,
         # The restriction half of ``withheld`` above, identity half excluded: an
         # identity-bound name is withheld from the spec-described element precisely so
         # Crew can author its own, while these names must not come back at all -- this

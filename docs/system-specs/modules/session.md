@@ -95,6 +95,127 @@ history-cache owners are listed in
 sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
 [mcp-apps](mcp-apps.md).
 
+## Gateway session API
+
+Trusted local clients can drive an existing dashboard slot without importing an
+adapter protocol into the Gateway. `X-KiroCrew-Turn-Origin` identifies the slot
+whose live response stream owns the turn. Only an owner-dashboard request or an
+unscoped internal-secret transport request may assert the turn-origin and MCP-owner
+headers; an app-derived internal request remains app-scoped and those headers are
+ignored. A matching origin makes busy admission fail with `409 slot_busy` instead
+of returning a delayed queue receipt, and rows created by that request carry the
+origin only for the lifetime of its task context. Its initiating SSE stream includes
+only that origin marker from private row metadata; unrelated row metadata remains
+withheld. Session-event subscribers
+use `caps=session_events`, `X-KiroCrew-Event-Subscription: sessions`, and a
+`subscribe_sessions` frame. Their connection receives no initial slots snapshot
+or dashboard-status stream; each replacement subscription is capped at 64 keys
+of at most 256 characters, and invalid input clears the prior set. After
+subscription they receive only `session_message`, `session_plan`, and `slot_title`
+for those explicit keys. Inbound text frames on this dedicated control plane accept
+only `subscribe_sessions`; ordinary dashboard commands are ignored before their
+handlers run. Dedicated sockets are excluded from the owner-only
+WebSocket registry, whose direct fan-out intentionally bypasses per-event scope
+checks, and are never marked slot-patch-capable because that direct fan-out is
+also unscoped. Finalized message delivery is independent of the initiating
+`/api/chat` SSE reader; the reader suppresses only the ordinary global rebroadcast
+duplicate. Every dedicated-socket allow and deny decision is SEL-audited.
+Message, plan, and title content is credential- and exfiltration-redacted before
+crossing the dedicated socket, and request metadata cannot mint the server-owned
+origin marker. Every session-event delivery decision is SEL-audited with distinct
+reasons for a socket that never subscribed and a subscriber missing the event's slot.
+A `session_plan` is the complete current checklist snapshot: agent
+updates, dashboard checkbox changes, and `/clear` all publish it, with an empty
+`tasks` array withdrawing a cleared plan. Internal-secret admission is exact to
+`/api/ws`; sibling STT and terminal WebSocket routes retain their own dashboard
+credential checks. Ordinary dashboard sockets and `slot_patch` behavior are
+unchanged.
+
+`POST /api/chat/slots/{slot}/mcp` stores validated, explicit stdio MCP
+configuration for that slot. A peer-bound slot refuses configuration-creating
+modes with `409 remote_slot_unsupported`: its turns execute in the peer's slot,
+and the relay does not claim to apply owner-side process configuration there.
+Clear and unconfigured-restore modes remain available to remove state recorded
+before a slot became peer-bound. The configuration is independent of member context,
+memory mode, and pooled projection. Absence and an explicit empty array are
+distinct: absence keeps ambient session-injected composition, while an empty
+array withholds every ambient session-injected server. Harness-native MCP
+configuration remains subject to that harness's existing semantics; in
+particular, kiro-cli still reads its agent spec, while KAS removes the active
+agent's projected MCP declarations for an explicit array. Before either path
+uses the array, requested names are intersected with that selected agent's
+existing declared-and-granted server set; whole-server disables win, and
+per-tool restrictions use the backend's deny channel or withhold the server.
+Retained entries keep the client's command, arguments, and environment. The
+ordered array's opaque fingerprint is part of live provider identity: an equal
+array reuses the provider, while any changed order or entry waits for the current
+lease and recreates it. Compaction and hard-stop successors carry the same
+accepted snapshot, so reconstruction cannot turn a valid provider into an
+immediate fingerprint mismatch. Sessions with explicit client MCP configuration,
+including an empty array, bypass the warm pool. Both `session/new` and
+`session/load` receive the same array.
+Every configured registration carries a non-empty owner; `clear_if_owner`
+removes the explicit configuration and releases that owner. An origin-scoped
+turn requires its asserted owner to equal the slot's current owner, including
+the empty owner of an unconfigured slot: a request carrying a released owner is
+stale and cannot fall through to ambient MCP composition. The turn rechecks
+that equality after awaited admission work and takes its definitive MCP
+snapshot immediately before dispatch. Captured absence remains absence even
+if another client configures the slot before the spawned task runs; a replacement
+owner receives `409 mcp_owner_stale` and its registration is never inherited by
+the queued request. Queue drains and automatic subagent-synthesis turns clear the predecessor turn's
+Gateway origin and request snapshot before writing or spawning an ordinary successor,
+so that successor has no inherited origin provenance and resolves the slot's current
+MCP registration.
+The selected ACP harness still performs its ordinary final narrowing.
+
+Project and MCP mutations accept a bounded `mutation_id`. Repeating an id with
+the same payload returns the retained response without reapplying the mutation;
+reusing it with another payload returns `409 mutation_conflict`. A mutation whose
+slot is removed and replaced under the same key during an awaited request step is
+refused as `slot_not_found`; it never commits to the detached predecessor. Project
+and MCP responses carry opaque generations for conditional restore. An MCP
+`return_previous` receipt carries the replaced state plus the replacement owner and
+generation that must still hold before that state can be restored. A supplied
+`restore_if_owner.configured` value must be a JSON boolean. Receipts are bounded
+per live slot and are not persisted across Gateway restarts.
+
+Stateless question cards are readable at
+`GET /api/chat/slots/{slot}/questions`. Answers are accumulated through
+`POST /api/chat/slots/{slot}/questions/{card}/answer`; incomplete answers
+remain on the card, while a complete answer is dispatched through the existing
+queue or turn runner before the route acknowledges it. A missing card returns
+`404 question_not_found`; an answer that does not fit an existing card returns
+`400 invalid_answers` and leaves the card pending. A multi-select question
+accepts either a non-empty list of offered labels or one non-empty custom-answer
+string, matching the card's mutually exclusive option and free-text controls. While
+subagents hold an
+idle slot, incomplete no-origin answers continue to accumulate and a completed
+no-origin answer enters that same queue; an origin-scoped answer first requires its
+asserted owner to equal the slot's current owner, including the empty owner after a
+release, and is refused before mutation if ownership is stale or its immutable MCP
+admission snapshot would have to wait through the hold.
+A native card raised by
+the harness while its turn waits for an answer is the exception: a complete answer
+is validated without consuming the card, atomically claims that card's delivery,
+steered into that live turn, and retired only after delivery is accepted. An
+origin-scoped native answer stamps the persisted steer row with that origin for
+session-event correlation, then releases the request-local stamp. If turn teardown
+races the steer and requeues it, the answer drains alone with the immutable MCP
+request snapshot admitted by its route; a later owner replacement cannot substitute
+that client's composition. Both the admission marker and row-origin provenance are
+process-local: durable queue serialization omits them, restoration strips hand-added
+copies, and the drain never copies either key from queue metadata into its row. A
+restored or edited entry therefore cannot acquire Gateway turn origin or request MCP
+authority. A concurrent
+answer receives `409 native_answer_in_progress`; if steering is unavailable or the
+request is interrupted, the claim is released and the card remains answerable.
+An unavailable steer returns `409 native_answer_not_delivered` with the card intact.
+Other origin-scoped Gateway
+answers arriving while a turn is already live return `409 slot_busy` before the
+card is consumed, so they cannot wait in the queue while another MCP owner replaces
+the slot's server set. Turn admission and persistence therefore remain single-sourced.
+
 ## Implementation Boundaries
 
 `SessionManager` remains the compatibility facade in `session.py`; callers keep
@@ -2711,9 +2832,10 @@ so absence clears it.
   restart is not that event happening again); an entry carrying a `payload` is a
   synthetic recovery continuation; an entry carrying `_on_consumed` /
   `_on_irreversibly_consumed` acknowledges an automatic payload through a
-  callback that does not survive the process. `meta` rides along verbatim,
-  because it holds the admission-time containment snapshot the drain
-  re-validates against and an entry without one fails closed.
+  callback that does not survive the process. `meta` rides along except for the
+  process-local Gateway MCP admission and row-origin keys. The remaining
+  metadata holds the admission-time containment snapshot the drain re-validates
+  against and an entry without one fails closed.
 - **Provenance does NOT survive the restart, and that is a security property.**
   `_directive_user_origin` / `_directive_channel_origin` record that an entry's
   words came from an authenticated human, and the drain reduces the consumed
@@ -2726,6 +2848,14 @@ so absence clears it.
   it: the keys are absent from `_DURABLE_QUEUE_KEYS` so the writer never emits
   them, and `sanitize_restored_queue` drops a hand-added one, so a restored
   entry is non-directive by construction.
+- **Gateway MCP admission and row-origin provenance do NOT survive the restart.**
+  The admission marker restores both Gateway turn origin and the request's
+  immutable MCP snapshot. The row-origin key can independently stamp that same
+  correlation onto a finalized row and its `session_message` event. The durable
+  writer omits both keys, `sanitize_restored_queue` drops hand-added copies, and
+  the drain excludes both from row metadata, so an edited transcript cannot turn
+  an ordinary restored prompt into an origin-scoped request, choose its MCP
+  composition, or forge client-origin correlation.
 - **Correctness rests on the window and the queue being ONE observation.** The
   drain removes the entry and appends its row in the same event-loop step, and
   the save runs in the flush executor thread, so the save takes the pair under

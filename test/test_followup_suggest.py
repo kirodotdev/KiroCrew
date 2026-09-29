@@ -7,7 +7,7 @@ same payload and broadcasts the card.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -304,6 +304,27 @@ class TestRealMiddlewareIntegration:
             )
             assert resp.status == 200, await resp.text()
         state.deliver_ws_owners.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_app_owned_internal_session_stays_owner_gated(self):
+        slot = _ChatSlot("test")
+        slot._app = "some-app"
+        state = _mock_state(slot)
+        with patch(
+            "kiro_crew.dashboard.handlers._shared.private_chat_route_refusal",
+            AsyncMock(return_value=None),
+        ):
+            async with TestClient(TestServer(self._app(state, "s3cr3t"))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/followup",
+                    json={"items": [_item()]},
+                    headers={
+                        "X-Internal-Secret": "s3cr3t",
+                        "X-Session-Key": "dashboard:test",
+                    },
+                )
+                assert resp.status == 403, await resp.text()
+        state.deliver_ws_owners.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_wrong_internal_secret_never_reaches_the_handler(self):

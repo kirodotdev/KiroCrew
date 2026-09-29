@@ -231,6 +231,10 @@ class ApprovalCoordinator:
         return False
 
 
+class QuestionAnswerInProgress(ValueError):
+    """A complete native-card answer already owns the delivery attempt."""
+
+
 class QuestionCoordinator:
     """Own stateless cards and legacy blocking question futures."""
 
@@ -358,6 +362,120 @@ class QuestionCoordinator:
             slot._question_pending.pop(current_id, None)
         state._broadcast_question_retired(slot_key, retired)
         state._push_slots()
+        return True
+
+    @staticmethod
+    def pending_for_slot(state: Any, slot_key: str) -> list[dict]:
+        """Return only renderable stateless questions for one slot."""
+        slot = state._slots.get(slot_key)
+        if slot is None:
+            return []
+        out: list[dict] = []
+        for card_id, record in slot._question_pending.items():
+            questions = record.get("questions")
+            if record.get("blocking") or not isinstance(questions, list):
+                continue
+            answers = record.get("answers")
+            out.append(
+                {
+                    "question_id": card_id,
+                    "state": "pending",
+                    "questions": questions,
+                    "answers": dict(answers) if isinstance(answers, dict) else {},
+                }
+            )
+        return out
+
+    @staticmethod
+    def answer_card(
+        state: Any,
+        slot_key: str,
+        card_id: str,
+        answers: dict[str, Any],
+        *,
+        consume: bool = True,
+        claim_token: str = "",
+    ) -> str | None:
+        """Retain validated answers and return a user prompt when complete."""
+        slot = state._slots.get(slot_key)
+        if slot is None:
+            raise ValueError("unknown slot")
+        record = slot._question_pending.get(card_id)
+        if not isinstance(record, dict) or record.get("blocking"):
+            raise ValueError("question card not found")
+        if record.get("_answer_claim"):
+            raise QuestionAnswerInProgress("question card answer delivery is in progress")
+        questions = record.get("questions")
+        if not isinstance(questions, list) or not questions:
+            raise ValueError("question card has no questions")
+        stored = record.setdefault("answers", {})
+        if not isinstance(stored, dict):
+            raise ValueError("question card has invalid answer state")
+        by_text = {
+            question.get("question"): question
+            for question in questions
+            if isinstance(question, dict) and isinstance(question.get("question"), str)
+        }
+        validated: dict[str, str | list[str]] = {}
+        for question_text, answer in answers.items():
+            question = by_text.get(question_text)
+            if question is None:
+                raise ValueError("answer targets an unknown question")
+            labels = {
+                option.get("label")
+                for option in question.get("options", [])
+                if isinstance(option, dict) and isinstance(option.get("label"), str)
+            }
+            if question.get("multiSelect"):
+                if isinstance(answer, str) and answer:
+                    validated[question_text] = answer
+                elif (
+                    not isinstance(answer, list)
+                    or not answer
+                    or any(not isinstance(value, str) or value not in labels for value in answer)
+                ):
+                    raise ValueError(
+                        "answer must be custom text or select one or more offered options"
+                    )
+                else:
+                    validated[question_text] = list(dict.fromkeys(answer))
+            else:
+                if not isinstance(answer, str) or not answer:
+                    raise ValueError("answer must be a non-empty string")
+                validated[question_text] = answer
+        stored.update(validated)
+        if any(text not in stored for text in by_text):
+            return None
+        prompt_lines: list[str] = []
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            text = question.get("question")
+            answer = stored.get(text)
+            if isinstance(answer, list):
+                answer = ", ".join(answer)
+            prompt_lines.append(f"{text}: {answer}")
+        if consume:
+            slot._question_pending.pop(card_id, None)
+            state._broadcast_question_retired(slot_key, [card_id])
+            state._push_slots()
+        elif claim_token:
+            record["_answer_claim"] = claim_token
+        return "\n".join(prompt_lines)
+
+    @staticmethod
+    def release_answer_claim(
+        state: Any,
+        slot_key: str,
+        card_id: str,
+        claim_token: str,
+    ) -> bool:
+        """Release this delivery's claim while preserving the answerable card."""
+        slot = state._slots.get(slot_key)
+        record = slot._question_pending.get(card_id) if slot is not None else None
+        if not isinstance(record, dict) or record.get("_answer_claim") != claim_token:
+            return False
+        record.pop("_answer_claim", None)
         return True
 
     @staticmethod

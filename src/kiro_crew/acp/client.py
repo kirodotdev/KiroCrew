@@ -3363,6 +3363,7 @@ class AcpClient:
         audit_source: str | None = None,
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
         permission_mode: str | None = None,
         shared_scratch: Path | None = None,
     ):
@@ -3517,6 +3518,9 @@ class AcpClient:
         # authentication; member memory uses that session's execution record.
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
+        self._requested_session_mcp_servers = (
+            list(session_mcp_servers) if session_mcp_servers is not None else None
+        )
         # Token this client's injected broker-stub entries carry, so gatewayd can
         # tell this session's stub connections from those of another session on
         # the same runtime PID (``mcp_gateway.claim.mint_stub_session_token``).
@@ -3910,6 +3914,8 @@ class AcpClient:
         RAISES for a backend registered in neither map, and kiro's construction
         path must not gain a failure mode in service of an adapter (H13).
         """
+        if getattr(self, "_requested_session_mcp_servers", None) is not None:
+            return []
         return [] if self.backend in MIRRORS else self._pooled_broker_stubs()
 
     def _resolve_session_mcp_servers(self) -> list[dict[str, Any]]:
@@ -3940,6 +3946,24 @@ class AcpClient:
         that gates natively ignores it. Read here, AFTER the writer has run on the
         spawn path, so the value describes this session's real state.
         """
+        requested_session_mcp_servers = getattr(self, "_requested_session_mcp_servers", None)
+        if requested_session_mcp_servers is not None:
+            # circular import: registry imports kiro_crew.acp while this client initializes it.
+            from kiro_crew.providers.mirrors.registry import project_explicit_session_mcp
+
+            projection = project_explicit_session_mcp(
+                self.backend,
+                self._agent,
+                requested_session_mcp_servers,
+                work_dir=self._work_dir,
+                permission_surface_owned=self._permission_surface_governed,
+                session_key=self._session_key or "",
+                channel_id=self._channel_id or "",
+            )
+            self._spec_denied_tools = projection.denied_tools
+            self._session_mcp_snapshot = projection.derived_spec_snapshot
+            servers = projection.params.get("mcpServers")
+            return list(servers) if isinstance(servers, list) else []
         try:
             stubbed: Collection[str] = injection_server_names(
                 # The same checkout the projection below resolves the agent SPEC
@@ -4367,7 +4391,10 @@ class AcpClient:
         MCP install or toggle takes effect on the next session with no gateway
         restart.
         """
-        if self.backend not in ACP_BACKENDS_SESSION_MCP_ARRAY:
+        if (
+            getattr(self, "_requested_session_mcp_servers", None) is None
+            and self.backend not in ACP_BACKENDS_SESSION_MCP_ARRAY
+        ):
             return []
         if self._session_mcp_cache is None:
             self._session_mcp_cache = self._resolve_session_mcp_servers()
@@ -4398,6 +4425,11 @@ class AcpClient:
         kiro-cli (harness-parity H13).
         """
         return self._session_mcp_servers()
+
+    async def _warm_requested_session_mcp_cache(self) -> None:
+        """Resolve an explicit Gateway array off-loop before wire composition."""
+        if self._requested_session_mcp_servers is not None and self._session_mcp_cache is None:
+            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
 
     def _opencode_session_mcp_servers(self) -> list:
         """MCP server array passed to an opencode ``session/new`` / ``session/load``.
@@ -9007,6 +9039,8 @@ class AcpClient:
         advisory), and so is the re-seed: the kiro-cli branch writes no
         ``settings.local.json`` at all.
         """
+        if self._requested_session_mcp_servers is not None:
+            await self._warm_requested_session_mcp_cache()
         new_params: dict = {
             "cwd": await self._session_work_dir(),
             # kiro-cli loads servers from --agent; a harness in
@@ -9027,9 +9061,26 @@ class AcpClient:
             # point to that backend's construction path (harness-parity H13).
             # The pooled read stays off the loop, as it already was.
             "mcpServers": [
-                *(self._claude_session_mcp_servers() if self._is_claude else []),
-                *(self._opencode_session_mcp_servers() if self._is_opencode else []),
-                *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(
+                    self._session_mcp_servers()
+                    if self._requested_session_mcp_servers is not None
+                    else []
+                ),
+                *(
+                    self._claude_session_mcp_servers()
+                    if self._is_claude and self._requested_session_mcp_servers is None
+                    else []
+                ),
+                *(
+                    self._opencode_session_mcp_servers()
+                    if self._is_opencode and self._requested_session_mcp_servers is None
+                    else []
+                ),
+                *(
+                    self._goose_session_mcp_servers()
+                    if self._is_goose and self._requested_session_mcp_servers is None
+                    else []
+                ),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -9095,9 +9146,26 @@ class AcpClient:
             resolved_mcp = await asyncio.to_thread(self._resolve_session_mcp_servers)
             self._session_mcp_cache = resolved_mcp
             new_params["mcpServers"] = [
-                *(self._claude_session_mcp_servers() if self._is_claude else []),
-                *(self._opencode_session_mcp_servers() if self._is_opencode else []),
-                *(self._goose_session_mcp_servers() if self._is_goose else []),
+                *(
+                    self._session_mcp_servers()
+                    if self._requested_session_mcp_servers is not None
+                    else []
+                ),
+                *(
+                    self._claude_session_mcp_servers()
+                    if self._is_claude and self._requested_session_mcp_servers is None
+                    else []
+                ),
+                *(
+                    self._opencode_session_mcp_servers()
+                    if self._is_opencode and self._requested_session_mcp_servers is None
+                    else []
+                ),
+                *(
+                    self._goose_session_mcp_servers()
+                    if self._is_goose and self._requested_session_mcp_servers is None
+                    else []
+                ),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ]
             self._begin_session_report(new_params.get("mcpServers"))
@@ -9232,6 +9300,8 @@ class AcpClient:
                     else METHOD_SESSION_LOAD
                 )
                 try:
+                    if self._requested_session_mcp_servers is not None:
+                        await self._warm_requested_session_mcp_cache()
                     load_params: dict = {
                         "sessionId": resume_sid,
                         "cwd": await self._session_work_dir(),
@@ -9243,9 +9313,26 @@ class AcpClient:
                         # broker. Gated per backend, and in-memory here vs
                         # off-loop there, for the same reasons as session/new.
                         "mcpServers": [
-                            *(self._claude_session_mcp_servers() if self._is_claude else []),
-                            *(self._opencode_session_mcp_servers() if self._is_opencode else []),
-                            *(self._goose_session_mcp_servers() if self._is_goose else []),
+                            *(
+                                self._session_mcp_servers()
+                                if self._requested_session_mcp_servers is not None
+                                else []
+                            ),
+                            *(
+                                self._claude_session_mcp_servers()
+                                if self._is_claude and self._requested_session_mcp_servers is None
+                                else []
+                            ),
+                            *(
+                                self._opencode_session_mcp_servers()
+                                if self._is_opencode and self._requested_session_mcp_servers is None
+                                else []
+                            ),
+                            *(
+                                self._goose_session_mcp_servers()
+                                if self._is_goose and self._requested_session_mcp_servers is None
+                                else []
+                            ),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }

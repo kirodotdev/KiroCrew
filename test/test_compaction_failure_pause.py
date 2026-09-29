@@ -24,7 +24,7 @@ from kiro_crew.messaging.queue_drain import (
     register_drain,
     reset_drains,
 )
-from kiro_crew.session import SessionManager
+from kiro_crew.session import SessionManager, _mcp_fingerprint
 from kiro_crew.session_compaction import COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS
 
 
@@ -224,10 +224,14 @@ async def test_a_new_message_queues_behind_the_carried_one():
     mgr, key, runs, _order, _notices = await _setup()
     session = mgr._sessions[key]
     session.requested_model = "model-pinned"
+    servers = [{"name": "echo", "command": "echo", "args": [], "env": []}]
+    session.session_mcp_servers = servers
+    session.mcp_fingerprint = _mcp_fingerprint(servers)
     await _restart(mgr, key, runs, "hello while waiting")
 
     assert mgr._sessions[key] is not session
     assert mgr._sessions[key].requested_model == "model-pinned"
+    assert mgr._sessions[key].session_mcp_servers == servers
     assert mgr.enqueue(key, "ts-9", "after the restart", force=True)
     assert mgr.dequeue(key)[:2] == ("ts-1", "hello while waiting")
     assert mgr.dequeue(key) == ("ts-9", "after the restart", {})

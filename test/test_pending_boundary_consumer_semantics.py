@@ -275,6 +275,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
             for site in {
                 ("channel_slots.py", "_window_refresh_is_safe"),
                 ("chat_slack.py", "drain_slack_backfill"),
+                ("handlers/ask_question.py", "api_ask_question_slot_answer"),
                 ("slot_projection.py", "SlotProjection.to_dict"),
                 ("slot_registry.py", "SlotRegistry.running_session_keys"),
                 ("state.py", "_ChatSlot.running"),
@@ -300,6 +301,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_runner.py", "_finish_queue_cycle"),
         ("chat_runner.py", "_start_next_queued_turn"),
         ("handlers/mcp_apps.py", "api_mcp_apps_message"),
+        ("handlers/ask_question.py", "api_ask_question_slot_answer"),
         ("handlers/messaging.py", "api_send_message"),
         ("handlers/taskrunner.py", "api_taskrunner_to_chat"),
         ("openai_compat.py", "api_completions"),

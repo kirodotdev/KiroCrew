@@ -17,6 +17,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Coroutine, Iterable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
@@ -76,6 +77,7 @@ from kiro_crew.deny_notice import (  # noqa: F401 -- re-exported for dashboard i
     build_refusal_steer_notice,
     steer_refusal_notice,
 )
+from kiro_crew.gateway.constants import SESSION_MESSAGE_EVENT, SESSION_PLAN_EVENT
 from kiro_crew.history import (
     latest_transcript_ts,
     mint_row_mid,
@@ -2699,7 +2701,12 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_project",
+        "_project_generation",
+        "_project_mutation_receipts",
+        "_session_mcp_generation",
+        "_session_mcp_configured",
+        "_session_mcp_mutation_receipts",
         "created_at",
         "messages",
         "total_messages",
@@ -2757,6 +2764,9 @@ class _ChatSlot:
         "_dashboard_card_exempt",
         "_on_question_retired",
         "_coordinator_approvals",
+        "_on_session_message",
+        "_turn_origin",
+        "_request_mcp_servers",
         "_has_reader_flag",
         "_compacting",
         "_stop_declined_at",
@@ -2914,6 +2924,8 @@ class _ChatSlot:
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
         "_steer_attachment_meta",
+        "session_mcp_servers",
+        "session_mcp_owner",
         "_wait_state",
         "_end_wait_request",
         "_end_wait_by",
@@ -3030,7 +3042,12 @@ class _ChatSlot:
         # assignment. Only a protected binding or an explicit owner pick clears
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
-        self.project: str = ""
+        self._project: str = ""
+        self._project_generation = uuid.uuid4().hex
+        self._project_mutation_receipts: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._session_mcp_generation = uuid.uuid4().hex
+        self._session_mcp_configured = False
+        self._session_mcp_mutation_receipts: dict[str, tuple[str, dict[str, Any]]] = {}
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
         # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
@@ -3379,6 +3396,13 @@ class _ChatSlot:
         # registry, never on _approval_futures, so the projection has to ask
         # the state to learn that this slot is waiting.
         self._coordinator_approvals: Callable[[str], list[dict]] | None = None
+        self._on_session_message: object | None = None
+        self._turn_origin: ContextVar[str] = ContextVar(
+            f"gateway_turn_origin_{self.key}", default=""
+        )
+        self._request_mcp_servers: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+            f"gateway_request_mcp_{self.key}", default=None
+        )
         self._has_reader_flag: bool = False  # True when HTTP SSE stream is draining
         # True while the session manager runs an automatic compaction on this
         # slot's session. Written by the compacting observer wired in
@@ -4130,6 +4154,9 @@ class _ChatSlot:
         # to the queue entry; a consumption echo releases them after an accepted
         # steer has stamped its own row.
         self._steer_attachment_meta: dict[str, dict[str, list[str]]] = {}
+        # Explicit client configuration is narrowed by the selected host harness.
+        self.session_mcp_servers: list[dict[str, Any]] = []
+        self.session_mcp_owner: str = ""
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so
@@ -4182,6 +4209,15 @@ class _ChatSlot:
         # "the agent is done and asked you something", and which entries a user
         # message may retire.
         self._question_pending: dict[str, dict] = {}
+
+    @property
+    def project(self) -> str:
+        return self._project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        self._project = value
+        self._project_generation = uuid.uuid4().hex
 
     def bump_tags_revision(self) -> str:
         """Rotate and return the revision for the current tag list.
@@ -4802,6 +4838,13 @@ class _ChatSlot:
         }
         if meta:
             msg["meta"] = meta
+        turn_origin = self._turn_origin.get()
+        if turn_origin:
+            existing_meta = msg.get("meta")
+            msg["meta"] = {
+                **(existing_meta if isinstance(existing_meta, dict) else {}),
+                "_gateway_turn_origin": turn_origin,
+            }
         # Stamp a per-row delivery identity. A client sees the SAME row through
         # two doors — the slot-detail HTTP rebuild and the live `chat_message`
         # broadcast — and must be able to tell "this row again" from "another row
@@ -4891,6 +4934,8 @@ class _ChatSlot:
                 self._on_row(self.key, msg)  # type: ignore[operator]
             except Exception:
                 logger.debug("slot row hook failed", exc_info=True)
+        if broadcast and self._on_session_message and role in ("user", "assistant"):
+            self._on_session_message(self.key, msg)  # type: ignore[operator]
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
             excess = len(self.messages) - _MAX_SLOT_MESSAGES
@@ -7350,6 +7395,43 @@ class DashboardState:
             card_id=card_id,
         )
 
+    def pending_question_cards(self, slot_key: str) -> list[dict]:
+        """Return renderable stateless question cards for one slot."""
+        return _questions_for(self).pending_for_slot(self, slot_key)
+
+    def answer_question_card(
+        self,
+        slot_key: str,
+        card_id: str,
+        answers: dict[str, Any],
+        *,
+        consume: bool = True,
+        claim_token: str = "",
+    ) -> str | None:
+        """Record card answers and return a prompt once the card is complete."""
+        return _questions_for(self).answer_card(
+            self,
+            slot_key,
+            card_id,
+            answers,
+            consume=consume,
+            claim_token=claim_token,
+        )
+
+    def release_question_answer_claim(
+        self,
+        slot_key: str,
+        card_id: str,
+        claim_token: str,
+    ) -> bool:
+        """Release a failed native-answer delivery claim."""
+        return _questions_for(self).release_answer_claim(
+            self,
+            slot_key,
+            card_id,
+            claim_token,
+        )
+
     def _broadcast_question_retired(self, slot_key: str, card_ids: list[str]) -> None:
         """Tell owner clients that question cards are no longer actionable."""
         _questions_for(self).broadcast_retired(self, slot_key, card_ids)
@@ -7755,6 +7837,7 @@ class DashboardState:
         slot._on_message = self._broadcast_chat_message
         slot._on_row = self._record_member_row
         slot._on_card_event = self.notify_dashboard_card
+        slot._on_session_message = self._broadcast_session_message
         slot._on_question_retired = self._broadcast_question_retired
         slot._coordinator_approvals = self.pending_coordinator_approvals
         slot._app = app
@@ -8091,6 +8174,64 @@ class DashboardState:
             eventlog_hooks.submit(_emit_message)
         except Exception:
             logger.debug("member/message event-log hook failed", exc_info=True)
+
+    def _broadcast_session_message(self, slot_key: str, msg: dict[str, Any]) -> None:
+        """Publish one finalized user or assistant row to session subscribers."""
+        role = msg.get("role")
+        content = msg.get("content")
+        message_id = row_mid(msg)
+        if role not in ("user", "assistant") or not isinstance(content, str) or not message_id:
+            return
+        content, _ = redact_exfiltration_urls(content)
+        content, _ = redact_credentials(content)
+        data: dict[str, str] = {
+            "slot": slot_key,
+            "role": role,
+            "content": content,
+            "messageId": message_id,
+        }
+        meta = msg.get("meta")
+        origin = meta.get("_gateway_turn_origin") if isinstance(meta, dict) else ""
+        if isinstance(origin, str) and origin:
+            data["origin"] = origin
+        self._send_ws_all(
+            SESSION_MESSAGE_EVENT,
+            data,
+            json.dumps({"type": SESSION_MESSAGE_EVENT, "data": data}),
+        )
+
+    def _broadcast_session_plan(self, slot_key: str, todo: dict[str, Any] | None) -> None:
+        """Publish a complete redacted task snapshot to session subscribers."""
+        if todo is None:
+            data = {"slot": slot_key, "description": "", "tasks": []}
+        elif isinstance(todo, dict) and isinstance(todo.get("tasks"), list):
+            data = {
+                "slot": slot_key,
+                "description": self._redact_session_event_value(todo.get("description") or ""),
+                "tasks": self._redact_session_event_value(todo["tasks"]),
+            }
+        else:
+            return
+        self._send_ws_all(
+            SESSION_PLAN_EVENT,
+            data,
+            json.dumps({"type": SESSION_PLAN_EVENT, "data": data}),
+        )
+
+    @staticmethod
+    def _redact_session_event_value(value: Any) -> Any:
+        """Recursively redact strings crossing the external session boundary."""
+        if isinstance(value, str):
+            value, _ = redact_exfiltration_urls(value)
+            value, _ = redact_credentials(value)
+            return value
+        if isinstance(value, dict):
+            return {
+                key: DashboardState._redact_session_event_value(item) for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [DashboardState._redact_session_event_value(item) for item in value]
+        return value
 
     # ── Folder persistence ──
 
