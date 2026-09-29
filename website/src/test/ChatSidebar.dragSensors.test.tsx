@@ -34,11 +34,26 @@
  * scanned there, for every file at once.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
 const src = readFileSync(SRC, 'utf8')
+
+/** The facade plus every owner module under pages/chat-sidebar/: the drag rows and
+ *  drop targets live in the owners, so a touch lockout there must be seen too. */
+function sidebarSources(): Array<[string, string]> {
+  const out: Array<[string, string]> = [[SRC, src]]
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name)) out.push([p, readFileSync(p, 'utf8')])
+    }
+  }
+  walk(join(__dirname, '..', 'pages', 'chat-sidebar'))
+  return out
+}
 
 describe('chat sidebar drag sensors', () => {
   it('takes its sensors from the shared hook, with this surface 5px distance', () => {
@@ -61,12 +76,15 @@ describe('chat sidebar drag sensors', () => {
     // dnd-kit; a resize handle must own the touch). A lockout on a DRAG ROW
     // would re-break panning by the other mechanism, so every occurrence must
     // sit on a role="separator" element.
-    expect(src).not.toMatch(/\btouch-none\b/)
-    const occurrences = [...src.matchAll(/touchAction:\s*'none'/g)]
-    expect(occurrences.length).toBeGreaterThan(0)
-    for (const m of occurrences) {
-      const context = src.slice(Math.max(0, (m.index ?? 0) - 600), m.index ?? 0)
-      expect(context).toContain('role="separator"')
+    let occurrences = 0
+    for (const [file, text] of sidebarSources()) {
+      expect(text, file).not.toMatch(/\btouch-none\b/)
+      for (const m of text.matchAll(/touchAction:\s*'none'/g)) {
+        occurrences += 1
+        const context = text.slice(Math.max(0, (m.index ?? 0) - 600), m.index ?? 0)
+        expect(context, file).toContain('role="separator"')
+      }
     }
+    expect(occurrences).toBeGreaterThan(0)
   })
 })

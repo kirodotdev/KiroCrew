@@ -192,13 +192,16 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
 })
 
 const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
+/** The reveal owner: both reveal effects live here, the session one first. */
+const REVEAL_SRC = join(__dirname, '..', 'pages', 'chat-sidebar', 'reveal.ts')
 // Flattened first: a line-by-line scan misses a construct the moment a
 // reformat splits it across lines.
 const flat = readFileSync(SRC, 'utf8').replace(/\s+/g, ' ')
+const revealFlat = readFileSync(REVEAL_SRC, 'utf8').replace(/\s+/g, ' ')
 
-/** The reveal effect's body, from its guard clause to its dependency array. */
+/** The session reveal effect's body, from its guard clause to its dependency array. */
 function revealEffect(): string {
-  const body = flat.match(/if \(!revealRequest\) return.*?\}, \[revealRequest[^\]]*\]\)/)?.[0]
+  const body = revealFlat.match(/if \(!revealRequest\) return.*?\}, \[revealRequest[^\]]*\]\)/)?.[0]
   expect(body).toBeDefined()
   return body!
 }

@@ -206,6 +206,58 @@ older-page request with it; it reads the page before `slotOldestIndex` and lands
 it only while the slot it was read for is still active. None of these owners filters rows by memory
 mode, so a restricted transcript is cached and paged like any other.
 
+### The Sessions sidebar (frontend)
+
+The dashboard's session list, `website/src/pages/ChatSidebar.tsx`, draws two
+projections of this history. The live list shows the open slots, plus peer rows
+from connected crews when the instance-sessions preview is on. The Older Sessions
+pane shows the `fetchHistory` pages owned by `store/chat/lifecycle.ts`. Once its
+search box holds `SEARCH_MIN_CHARS` characters it shows `search_sessions` results in
+the server's order, federated across connected crews while one is connected. Both lists order, group
+and narrow rows only by what the person chose (sort, lane, filters, folders).
+Neither list's ordering, grouping or filtering reads memory mode, so an incognito or
+temporary session is listed, searched and filtered like any other (see
+[A restricted transcript is kept](#a-restricted-transcript-is-kept-what-is-derived-from-it-is-not)).
+The row reads memory mode only to draw its incognito or temporary glyph, and a
+restricted session cannot be dropped into the composer as a reference.
+
+`ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
+calls each owner hook where that block used to sit, so React runs the effects in
+the same order as before. `ChatSidebar.ownerComposition.test.ts` pins that call
+order, and pins that no owner imports the facade:
+
+| Owner (`website/src/pages/chat-sidebar/`) | Owns |
+|---|---|
+| `sessionSources.ts` | the rendered row set (local tabs plus live peer rows, deduplicated by row identity, local wins), the peer-list error, and the federated Older Sessions search |
+| `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
+| `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer guards on local pin and folder state |
+| `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`; and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips and the folders-shelved flag (`filters.tsx`) |
+| `filters.tsx` | the status chips (`SESSION_FILTERS`), the folder and tag filter state, the Recent window, the running, recent and unread sets and chip counts, and the unread auto-drain |
+| `lanes.ts`, `conductor.ts` | the lane preference, the flat-lane projection and the lane cycle; the conductor lane's lineage seed poll, population, lineage tree and open conductors |
+| `folders.ts` | folder sort mode, visibility, the subtree index and ancestor expansion, the filter-menu rows, and folder writes |
+| `board.ts` | the tag-column board: columns, the column popover, column writes, lane seeding (it widens the sidebar through `resize.ts`), per-column collapse and membership |
+| `stale.ts`, `pinnedOrder.ts`, `hoverHold.ts` | the dormant-session collapse, the manual pinned order, and the hover hold |
+| `reveal.ts` | reveal-in-sidebar for a session or a folder |
+| `rename.ts`, `history.ts`, `resize.ts`, `tags.ts`, `shortcuts.ts`, `create.ts` | row and folder rename, the Older Sessions pane state, the sidebar width (including the width saved while the board is open), the tag vocabulary, the chat-jump order, and session creation |
+| `dnd/` | collision geometry (`collision.ts`), drop targets and drag previews (`targets.tsx`), and the drag lifecycle with its folder writes and undo offers (`useSidebarDrag.ts`) |
+
+Some code stays in `ChatSidebar.tsx`: `SessionRow` and its source-link chips, the
+row and folder render closures, the filter-dimension registry, the peer-session
+adopt, the idle-session cleanup, the bulk model switch and the JSX. Source pins
+read them in that file:
+
+- `switchSlotCallsiteClassification.test.ts` counts the four `switchSlot`
+  dispatches there, the row's three and the adopted session's activation.
+- `listShellParity.test.ts` reads the list-shell recipes the row and the card use.
+- `useInteractiveModels.test.ts` reads the bulk model switch.
+- `ChatSidebar.filterDimensions.test.tsx` reads the filter-dimension registry.
+- The restyle ratchet counts this file's flagged sites in the header, the filter
+  and folder menus and the board column.
+
+The idle-session cleanup is state that only the header menu's dialog in this file
+reads. The render closures also stamp rows in paint order, and the row memo depends
+on that order.
+
 ## ConversationLog (`history.py` facade)
 
 Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).

@@ -20,7 +20,7 @@
  * defect this file also pins against.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { render, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -96,6 +96,19 @@ import type { RootState } from '../store'
 import type { ChatFolder, ChatSlot } from '../types'
 
 const SIDEBAR_SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatSidebar.tsx'), 'utf8')
+/** The facade plus every owner under pages/chat-sidebar/: the surface the plural rule covers. */
+const SIDEBAR_SURFACE: Array<[string, string]> = (() => {
+  const out: Array<[string, string]> = [['pages/ChatSidebar.tsx', SIDEBAR_SRC]]
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name)) out.push([p, readFileSync(p, 'utf8')])
+    }
+  }
+  walk(join(__dirname, '..', 'pages', 'chat-sidebar'))
+  return out
+})()
 
 const HIDDEN_FOLDER = 'folder-hidden'
 const SHOWN_FOLDER = 'folder-shown'
@@ -424,7 +437,9 @@ describe('one derived count, reported the same way everywhere', () => {
     // keep a failure's output the needle rather than the whole file.
     const ns = 'pages.chatSidebar.'
     for (const leaf of ['hidden\'', 'hidden' + '_folder\'', 'hidden' + '_folders\'']) {
-      expect(SIDEBAR_SRC.includes(ns + leaf), `${ns}${leaf} is still referenced`).toBe(false)
+      for (const [file, text] of SIDEBAR_SURFACE) {
+        expect(text.includes(ns + leaf), `${ns}${leaf} is still referenced in ${file}`).toBe(false)
+      }
     }
     // Control: the replacement really is present, so the three absences above mean the
     // fragments are gone rather than that the file failed to load.

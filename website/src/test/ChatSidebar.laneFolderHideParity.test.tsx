@@ -92,18 +92,20 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatFolder, ChatSlot } from '../types'
 
-// ── the lane universe, read out of the component's own source ────────────────
+// ── the lane universe, read out of the sidebar's own source ──────────────────
 
 const SIDEBAR_SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatSidebar.tsx'), 'utf8')
+/** The sidebar's shared view types, where the `SidebarLane` union is declared. */
+const SIDEBAR_TYPES_SRC = readFileSync(join(__dirname, '..', 'pages', 'chat-sidebar', 'types.ts'), 'utf8')
 
 /** The `SidebarLane` union's members, in declaration order. */
 function declaredLanes(src: string): string[] {
-  const m = /^type SidebarLane =([^\n]+)$/m.exec(src)
+  const m = /^export type SidebarLane =([^\n]+)$/m.exec(src)
   if (!m) return []
   return m[1].split('|').map(s => s.trim().replace(/^'(.*)'$/, '$1')).filter(Boolean)
 }
 
-const DECLARED_LANES = declaredLanes(SIDEBAR_SRC)
+const DECLARED_LANES = declaredLanes(SIDEBAR_TYPES_SRC)
 
 /**
  * How to put each lane on screen.
