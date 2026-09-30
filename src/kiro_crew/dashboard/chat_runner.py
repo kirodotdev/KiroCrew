@@ -5196,25 +5196,35 @@ def _jev_route_armed(slot: Any) -> bool:
     return str(getattr(slot, "model", "") or "").strip().lower() in _JEV_ROUTE_AUTO_MODELS
 
 
-def _jev_preview_on(session_key: str) -> bool:
-    """Whether the Jev preview's two switches are both on for *session_key*. Blocking.
+def _route_armed(session_key: str) -> bool:
+    """Whether ``model.route`` stands behind routing *session_key* this turn. Blocking.
 
-    The OWNER's keystone and the FLEET's ``capabilities.decisions`` ceiling, plus the
-    sampling bucket -- i.e. every refusal ``decide`` re-runs on its first line, asked
-    through the helper the gate exposes for exactly this ("a hook whose state is
-    expensive to build"). It grants nothing: ``decide`` checks all of it again, so a
-    config change racing this read costs one wasted question and never a turn.
+    The OWNER's act, the FLEET's ``capabilities.decisions`` ceiling and the sampling
+    bucket -- the refusals ``decide`` re-runs on its first line, asked through
+    ``gate.route_armed``, which the gate exposes for exactly this. It is the ONE
+    predicate both arms go through: the explicit one (the owner picked ``Auto
+    (Jev)`` at the picker) and the implicit one (a slot nobody armed), so a
+    consent withdrawn or a keystone switched off stops a picker-armed slot the way
+    it did before the small-model lane existed. The owner's act is the keystone:
+    with consent it arms the Jev lane as it always has; switched on, it also stands
+    behind ``decisions.model_route_judge.provider = llm``, a knob that lives in
+    ``config.json``, a settings file that is not owner-gated, and so is no act on
+    its own. It is deliberately NOT ``gate.is_enabled``: under ``auto`` with no
+    consent that helper says the small model WOULD answer if asked, which for the
+    shipped install -- consent off and every slot on ``auto`` -- would put a model
+    call in front of every turn nobody asked to route. It grants nothing:
+    ``decide`` checks all of it again, so a consent withdrawn between this read and
+    that one is refused there and the turn keeps its model.
 
-    Filesystem IO, so every caller runs it off the event loop. It exists to keep the
-    implicit arm cheap on the overwhelmingly common install: consent off, every slot
-    on ``auto``, and one small keystone read per turn instead of the history budget,
-    tier map and provider round trip below it.
+    Filesystem IO, so every caller runs it off the event loop. It exists to keep
+    the common install cheap: consent off, every slot on ``auto``, and one small
+    keystone read per turn instead of the history budget, tier map and provider
+    round trip below it.
     """
     try:
         from kiro_crew.decisions import gate as _gate
-        from kiro_crew.decisions.points import model_route as _model_route
 
-        return _gate.is_enabled(_model_route.POINT, session_key=session_key)
+        return _gate.route_armed(session_key=session_key)
     except Exception:  # pragma: no cover - a build without the point
         logger.debug("model.route: preview probe failed; not routing", exc_info=True)
         return False
@@ -5473,17 +5483,17 @@ async def _route_model_for_turn(
         from kiro_crew.decisions.points import model_route
     except Exception:  # pragma: no cover - a build without the point
         return
-    if not getattr(slot, "jev_route", False):
-        # The IMPLICIT arm: the owner never picked the sentinel, so the preview's
-        # own two switches are what authorises spending on a routed turn. Asked
-        # here rather than in the turn gate because it reads the keystone, and
-        # asked BEFORE the work below because the shipped default is consent off
-        # with every slot on ``auto`` -- which must keep costing one small read
-        # rather than a history budget, a tier map and a provider round trip.
-        # Not asked for the explicit arm: that request already proved owner
-        # identity at the picker, and ``decide`` re-checks both switches anyway.
-        if not await asyncio.to_thread(_jev_preview_on, session_key):
-            return
+    # Both arms through one predicate. The explicit arm (``slot.jev_route``) proved
+    # owner identity at the picker, but that pick was made under a consent that
+    # may since have been withdrawn, and a withdrawn consent must stop routing as
+    # it did before the second lane existed. The implicit arm has no act of its own
+    # and the predicate says which owner act stands behind it. Asked here rather
+    # than in the turn gate because it reads the keystone, and asked BEFORE the
+    # work below because the shipped default is consent off with every slot on
+    # ``auto`` -- which must keep costing one small read rather than a history
+    # budget, a tier map and a provider round trip.
+    if not await asyncio.to_thread(_route_armed, session_key):
+        return
     # Read BEFORE the round trip and kept apart: ``_live_model`` is the session's
     # model right now, which is what the re-pick guard below compares against, and
     # ``_baseline`` is the model it ran on before routing, which is what the receipt
@@ -5548,6 +5558,7 @@ async def _route_model_for_turn(
             latency_ms=int(routed.get("latency_ms") or 0),
             error=model_route.ERROR_WINDOW_REFUSED,
             p=routed.get("p"),
+            lane=str(routed.get("lane") or ""),
         )
 
     # The window rules apply to a TIER's model only. An unpinned tier's restore goes
@@ -5594,6 +5605,7 @@ async def _route_model_for_turn(
             tier=str(routed.get("tier") or ""),
             latency_ms=int(routed.get("latency_ms") or 0),
             error=model_route.ERROR_NO_SWITCH,
+            lane=str(routed.get("lane") or ""),
         )
         return
     _pick_lock = getattr(slot, "_model_pick_lock", None)
@@ -5706,6 +5718,7 @@ async def _route_model_for_turn(
             tier=str(routed.get("tier") or ""),
             latency_ms=int(routed.get("latency_ms") or 0),
             error=model_route.ERROR_SWITCH_FAILED,
+            lane=str(routed.get("lane") or ""),
         )
         return
     if _refused:
