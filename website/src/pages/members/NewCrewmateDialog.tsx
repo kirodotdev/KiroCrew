@@ -41,7 +41,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Input } from '../../components/ui'
 import { api } from '../../api/client'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
-import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
+import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 // From the side-effect-free module, not `api/client`: test doubles of the
 // client mock only `api`, and an `instanceof` against an undefined import
 // throws instead of falling through to the generic message.
@@ -296,6 +296,37 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
       mounted.current = false
     }
   }, [])
+  /**
+   * Re-read the roster behind EVERY door this dialog is opened from.
+   *
+   * Two readers, because the two doors do not share a query: the Crewmates page
+   * renders `MEMBERS_ROSTER_QUERY_KEY` (`['kirocrew-agents', 'members-roster']`)
+   * and the crew manager renders `['kirocrew-agents']` itself. An invalidation
+   * matches when the FILTER key is a PREFIX of a query's key, and the roster leaf
+   * is one segment LONGER than the registry key — so invalidating the leaf alone
+   * never reaches the crew manager's list. Under the app's `staleTime: Infinity`
+   * (queryClient.ts) that left the Crews-tab door holding its pre-request
+   * snapshot: `existingNames` would keep refusing a name whose create never
+   * landed, or miss one that did and let a resubmit leave as a second POST, which
+   * is exactly the prediction the reconcile below is built on.
+   *
+   * `exact` on the registry key, so this stays the two queries that are stale
+   * rather than every per-member projection nested under the prefix.
+   *
+   * `['kirocrewConfig']` goes with the registry key because the SAME write
+   * (`POST /api/agents`) lands in both, and the crew manager's list is
+   * config-derived (`KiroCrewAgentsPage`'s `['kirocrewConfig']` query). The
+   * success path already invalidates both; this reconcile path — reached when a
+   * create committed server-side but its response was lost (socket drop /
+   * gateway restart mid-POST) or came back 409 `agent_exists` — must refresh the
+   * same pair, or the committed crewmate is absent from the config-derived view
+   * until a manual reload.
+   */
+  const refreshRosterReaders = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+    void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'], exact: true })
+    void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  }, [queryClient])
   const createMut = useMutation({
     mutationFn: (body: CreateBody) => api.createKirocrewAgent(body) as Promise<{ error?: string; name?: string }>,
     onSuccess: async (r, body) => {
@@ -349,7 +380,7 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
           // The server has just proved the roster behind this dialog is
           // stale (the name got past `existingNames`): refresh it, so the row
           // shows and the next attempt is refused here, without a request.
-          void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+          refreshRosterReaders()
           setError(t('pages.membersPage.create_name_taken', { name: body.name }))
           setNameRefused(true)
           return
@@ -418,7 +449,7 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
       ])
       if (!mounted.current) return
       if (present) {
-        void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+        refreshRosterReaders()
         setError(t('pages.membersPage.create_name_taken', { name: body.name }))
         setNameRefused(true)
         return
@@ -431,7 +462,7 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
         // `existingNames` and a resubmit of the same name is refused up front
         // as taken (no request), instead of reaching the server as a second
         // create that a stale roster could not predict.
-        void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+        refreshRosterReaders()
         setUnconfirmed(true)
         // The attempted name leads the sentence: "whether the crewmate was
         // created" reads as the retry-safe "couldn't create the crewmate", and
@@ -453,12 +484,23 @@ export default function NewCrewmateDialog({ open, onClose, onCreated, existingNa
   // published to the app shell: a typed draft asks before leaving, and a POST
   // in flight asks too, since leaving loses the answer (the crewmate may be
   // created, but its chat will not open here).
+  //
+  // ONE registration for both of this dialog's doors, through the side-panel
+  // channel. Opened from a pane inside a SidePanelLayout (the crew manager's
+  // Crews tab) it fills the pane slot the layout gates its tab switches on, and
+  // rides the layout's own forward out to the app shell. Opened standalone (the
+  // Crewmates page) there is no pane context, so `alsoGuardAppShell` makes the
+  // hook register with the app shell itself. The hook publishes the stake and
+  // registers the guard once through this one call — registering with the shell
+  // HERE as well would put two entries resolving to this one predicate in the
+  // shell's set inside a layout, and `ask()` would raise this confirm twice for
+  // a single navigation — the second Cancel vetoing a leave already approved.
   const atStake = open && (dirty || busy || (wsModalOpen && wsDirty))
-  useRegisterNavigationLeaveGuard(() => {
+  const mayLeave = () => {
     if (!atStake) return true
     return window.confirm(t(busy ? 'pages.membersPage.create_leave_busy' : 'pages.membersPage.create_leave_draft'))
-  })
-  usePublishNavigationStake(atStake)
+  }
+  useSidePanelLeaveGuard(mayLeave, atStake, true)
 
   const submit = () => {
     setError(''); setHint(''); setUnconfirmed(false)

@@ -129,10 +129,21 @@ const SidePanelLeaveGuardContext = React.createContext<
  * draft belongs next to the draft — the shell has no idea what is in it, and a
  * shell-owned string would have to be vague enough to cover every pane.
  *
- * One registration, several askers: this layout also forwards the guard to the
- * app shell (see NavigationLeaveGuard), so the same answer covers an in-app
- * route change that unmounts the layout itself. A pane declares dirtiness here
- * and nowhere else.
+ * One registration, several askers. Inside a layout the pane registers here and
+ * the layout forwards that same answer to the app shell (see
+ * NavigationLeaveGuard), so an in-app route change that unmounts the layout
+ * itself is covered too. A surface mounted OUTSIDE a layout has no pane to
+ * forward through; if it also needs the app shell to ask (a surface that can be
+ * mounted BOTH ways, like `NewCrewmateDialog` — the Crewmates page standalone
+ * and the crew manager's Crews tab inside a layout), pass `alsoGuardAppShell`
+ * and this hook registers with the shell itself when there is no pane context.
+ * Such a surface must NOT also call `useRegisterNavigationLeaveGuard` on its
+ * own, or inside a layout the shell would hold two entries resolving to the
+ * same guard and `ask()` would raise that surface's confirm TWICE for one
+ * navigation — the second "Cancel" vetoing a leave the user had already
+ * approved. A surface that only ever lives inside a layout leaves
+ * `alsoGuardAppShell` at its default and declares dirtiness HERE and nowhere
+ * else.
  *
  * `atStake` is that same dirtiness as a plain value, for the one asker that
  * cannot ask: the browser's Back button arrives with no component to intercept
@@ -142,7 +153,7 @@ const SidePanelLeaveGuardContext = React.createContext<
  * cannot drift. Omitting it leaves Back unguarded for that pane, which is where
  * every pane started.
  */
-export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard, atStake = false) {
+export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard, atStake = false, alsoGuardAppShell = false) {
   const register = React.useContext(SidePanelLeaveGuardContext)
   // Published from the PANE, not forwarded by the layout: the stake changes on
   // the keystroke that dirties the draft, and that keystroke re-renders the pane
@@ -156,6 +167,16 @@ export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard, atStake = fal
   // draft forever — losing exactly the text this exists to protect.
   const latest = React.useRef(guard)
   latest.current = guard
+  // The app shell, for a surface that OPTS IN (`alsoGuardAppShell`) and is
+  // mounted OUTSIDE any layout. Called UNCONDITIONALLY — hook rules — and
+  // answers a bare `true` unless BOTH hold: the caller opted in AND there is no
+  // pane context. Inside a layout the layout already forwards `mayLeavePane`
+  // into this same channel, so answering here too would put two entries in the
+  // shell's set resolving to one guard and `ask()` would raise its confirm
+  // TWICE for one navigation. A caller that does NOT opt in (every pane that
+  // only ever lives inside a layout, and MemoryTab, which deliberately did not
+  // reach the shell) keeps its prior behaviour: a no-op outside a layout.
+  useRegisterNavigationLeaveGuard(() => (alsoGuardAppShell && !register ? latest.current() : true))
   React.useEffect(() => {
     if (!register) return
     return register(() => latest.current())
