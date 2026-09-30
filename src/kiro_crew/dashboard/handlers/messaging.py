@@ -739,7 +739,10 @@ async def api_spawn(request: web.Request) -> web.Response:
         if crew and config is not None and not config.agents[crew].triggers.strip():
             return web.json_response(
                 {
-                    "error": "The target member has not enabled delegated tasks.",
+                    "error": (
+                        "The target member has no Triggers set. Add Triggers on "
+                        "its Crew page (Routing tab) to let other agents delegate to it."
+                    ),
                     "code": "crew_delegation_disabled",
                 },
                 status=403,

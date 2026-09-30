@@ -457,6 +457,41 @@ class TestTheSpawnEndpointActuallyDelegates:
         assert json.loads(resp.text)["code"] == "unknown_member"
         mgr.spawn.assert_not_called()
 
+    def test_a_crew_without_triggers_is_refused_with_a_message_naming_triggers(
+        self, tmp_path, monkeypatch
+    ):
+        """Triggers is the only delegation switch, so the refusal must name it.
+
+        A member added from an agent template starts with empty triggers. The
+        caller reads this text to learn what to fix, and a message that names a
+        switch the UI does not have sends them looking for a toggle.
+        """
+        cfg = {
+            "default_agent": "kirocrew",
+            "agents": {
+                "kirocrew": {"kiro_agent": "kirocrew"},
+                "builder": {"kiro_agent": "kirocrew", "triggers": "  "},
+            },
+        }
+        resp, mgr = self._spawn_call({"task": "x", "crew": "builder"}, cfg, tmp_path, monkeypatch)
+        assert resp.status == 403
+        body = json.loads(resp.text)
+        assert body["code"] == "crew_delegation_disabled"
+        assert "no Triggers set" in body["error"]
+        assert "Routing tab" in body["error"]
+        assert "delegated tasks" not in body["error"]
+        mgr.spawn.assert_not_called()
+
+    def test_the_crew_field_description_names_triggers_as_the_switch(self):
+        """The tool text is what an agent reads before it delegates."""
+        import inspect
+
+        from kiro_crew.mcp_tools import spawn as spawn_tool
+
+        src = inspect.getsource(spawn_tool)
+        assert "must have non-empty Triggers" in src
+        assert "delegated tasks" not in src
+
     def test_the_mcp_tool_forwards_the_field_it_accepts(self):
         """A schema field the handler drops is a documented no-op. `select_crew`,
         `route_crew` and the conductor skill all instruct `spawn_run(crew=...)`,
